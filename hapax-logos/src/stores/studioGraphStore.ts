@@ -2,6 +2,30 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Node, Edge } from "@xyflow/react";
 
+export interface PresetChain {
+  id: string;
+  presets: string[];
+  durationSeconds: number;
+}
+
+export interface SequenceState {
+  chains: PresetChain[];
+  activeChainIndex: number;
+  playing: boolean;
+  looping: boolean;
+}
+
+function defaultSequence(initialPresets: string[]): SequenceState {
+  return {
+    chains: [
+      { id: crypto.randomUUID(), presets: initialPresets, durationSeconds: 30 },
+    ],
+    activeChainIndex: 0,
+    playing: false,
+    looping: true,
+  };
+}
+
 export interface StudioGraphState {
   // Graph
   nodes: Node[];
@@ -19,9 +43,12 @@ export interface StudioGraphState {
   rightDrawerOpen: boolean;
   outputFullscreen: boolean;
 
-  // Chain
+  // Chain (legacy — kept for backward compat, mirrors active chain presets)
   chainPresets: string[];
   chainSlotCount: number;
+
+  // Sequence
+  sequence: SequenceState;
 
   // Actions
   setNodes: (nodes: Node[]) => void;
@@ -40,6 +67,16 @@ export interface StudioGraphState {
   setChainPresets: (presets: string[]) => void;
   setChainSlotCount: (count: number) => void;
   loadPreset: (name: string, nodes: Node[], edges: Edge[]) => void;
+
+  // Sequence actions
+  setSequenceChains: (chains: PresetChain[]) => void;
+  setActiveChainIndex: (index: number) => void;
+  setSequencePlaying: (playing: boolean) => void;
+  setSequenceLooping: (looping: boolean) => void;
+  addChain: () => void;
+  removeChain: (index: number) => void;
+  updateChainPresets: (index: number, presets: string[]) => void;
+  updateChainDuration: (index: number, durationSeconds: number) => void;
 }
 
 export const useStudioGraph = create<StudioGraphState>()(
@@ -57,6 +94,7 @@ export const useStudioGraph = create<StudioGraphState>()(
       outputFullscreen: false,
       chainPresets: [],
       chainSlotCount: 0,
+      sequence: defaultSequence([]),
 
       setNodes: (nodes: Node[]) => set({ nodes }),
       setEdges: (edges: Edge[]) => set({ edges }),
@@ -88,16 +126,72 @@ export const useStudioGraph = create<StudioGraphState>()(
           graphDirty: false,
           selectedNodeId: null,
         }),
+
+      // Sequence actions
+      setSequenceChains: (chains) =>
+        set((s) => ({ sequence: { ...s.sequence, chains } })),
+      setActiveChainIndex: (index) =>
+        set((s) => ({ sequence: { ...s.sequence, activeChainIndex: index } })),
+      setSequencePlaying: (playing) =>
+        set((s) => ({ sequence: { ...s.sequence, playing } })),
+      setSequenceLooping: (looping) =>
+        set((s) => ({ sequence: { ...s.sequence, looping } })),
+      addChain: () =>
+        set((s) => ({
+          sequence: {
+            ...s.sequence,
+            chains: [
+              ...s.sequence.chains,
+              { id: crypto.randomUUID(), presets: [], durationSeconds: 30 },
+            ],
+          },
+        })),
+      removeChain: (index) =>
+        set((s) => {
+          const chains = s.sequence.chains.filter((_, i) => i !== index);
+          const safeChains = chains.length > 0 ? chains : [
+            { id: crypto.randomUUID(), presets: [], durationSeconds: 30 },
+          ];
+          const activeChainIndex = Math.min(
+            s.sequence.activeChainIndex,
+            safeChains.length - 1,
+          );
+          return { sequence: { ...s.sequence, chains: safeChains, activeChainIndex } };
+        }),
+      updateChainPresets: (index, presets) =>
+        set((s) => {
+          const chains = s.sequence.chains.map((c, i) =>
+            i === index ? { ...c, presets } : c,
+          );
+          return { sequence: { ...s.sequence, chains }, chainPresets: presets };
+        }),
+      updateChainDuration: (index, durationSeconds) =>
+        set((s) => {
+          const chains = s.sequence.chains.map((c, i) =>
+            i === index ? { ...c, durationSeconds } : c,
+          );
+          return { sequence: { ...s.sequence, chains } };
+        }),
     }),
     {
       name: "hapax-studio-graph",
-      version: 2,
+      version: 3,
+      migrate: (persisted: unknown, version: number) => {
+        const state = persisted as Partial<StudioGraphState>;
+        if (version < 3) {
+          // Migrate: wrap existing chainPresets into a sequence
+          const initialPresets = state.chainPresets ?? [];
+          state.sequence = defaultSequence(initialPresets);
+        }
+        return state as StudioGraphState;
+      },
       partialize: (state: StudioGraphState) => ({
         graphName: state.graphName,
         hapaxLocked: state.hapaxLocked,
         leftDrawerOpen: state.leftDrawerOpen,
         rightDrawerOpen: state.rightDrawerOpen,
         chainPresets: state.chainPresets,
+        sequence: state.sequence,
       }),
     },
   ),
