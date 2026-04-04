@@ -84,6 +84,8 @@ Ollama runs CPU-only. TabbyAPI exclusively owns the GPU for inference.
 
 **Current Ollama role**: CPU embedding only (`nomic-embed-cpu`, called directly by `shared/config.py:embed()`). `qwen3:8b` has been deleted from Ollama and its model route removed from LiteLLM — even zombie retry requests cannot reload it.
 
+**Embed frequency optimization** (PR #617): Startup capability indexing batched from 142 individual Ollama calls to 1 `embed_batch()` call, with a disk-persisted cache (`~/.cache/hapax/embed-cache.json`) that eliminates re-embedding across restarts. Second-and-subsequent daimonion startups index 142 capabilities with zero Ollama calls. Steady-state impingement embeds deduplicated by rendered narrative text (~50% reduction). See `shared/embed_cache.py`, `shared/affordance_pipeline.py:index_capabilities_batch()`.
+
 ## Installation
 
 ```bash
