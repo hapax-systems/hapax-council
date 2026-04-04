@@ -42,45 +42,29 @@ class SlotPipeline:
         self._temporal_shaders: list[object | None] = [None] * num_slots
 
     def create_slots(self, Gst: Any, plan: ExecutionPlan | None = None) -> list[Any]:
-        """Create slot elements. Temporal steps get glfilterapp; others get glshader."""
+        """Create slot elements. ALL slots use glfilterapp for temporal readiness.
+
+        glfilterapp gives GL-thread access via client-draw callback. The callback
+        handles both passthrough (no temporal state) and temporal feedback (ping-pong
+        FBOs). This avoids needing to know the plan at pipeline construction time —
+        temporal state is set dynamically when activate_plan is called.
+        """
         self._slots = []
         self._slot_base_params = [{} for _ in range(self._num_slots)]
         self._slot_pending_frag = [None] * self._num_slots
         self._temporal_states = [None] * self._num_slots
         self._temporal_shaders = [None] * self._num_slots
-
-        # Determine which slot indices need temporal support
-        temporal_slots: set[int] = set()
-        if plan:
-            idx = 0
-            for step in plan.steps:
-                if step.node_type == "output":
-                    continue
-                if idx >= self._num_slots:
-                    break
-                if step.temporal:
-                    temporal_slots.add(idx)
-                    self._temporal_states[idx] = TemporalSlotState(
-                        num_buffers=max(1, step.temporal_buffers)
-                    )
-                idx += 1
+        self._Gst = Gst  # stored for activate_plan temporal setup
 
         for i in range(self._num_slots):
-            if i in temporal_slots:
-                slot = Gst.ElementFactory.make("glfilterapp", f"effect-slot-{i}")
-                if slot is None:
-                    log.warning("glfilterapp unavailable for slot %d — falling back to glshader", i)
-                    slot = Gst.ElementFactory.make("glshader", f"effect-slot-{i}")
-                    slot.set_property("fragment", PASSTHROUGH_SHADER)
-                    slot.connect("create-shader", self._on_create_shader, i)
-                    self._temporal_states[i] = None
-                else:
-                    slot.connect("client-draw", self._on_temporal_render, i)
-                    log.info("Slot %d: glfilterapp (temporal)", i)
-            else:
+            slot = Gst.ElementFactory.make("glfilterapp", f"effect-slot-{i}")
+            if slot is None:
+                log.warning("glfilterapp unavailable — falling back to glshader for slot %d", i)
                 slot = Gst.ElementFactory.make("glshader", f"effect-slot-{i}")
                 slot.set_property("fragment", PASSTHROUGH_SHADER)
                 slot.connect("create-shader", self._on_create_shader, i)
+            else:
+                slot.connect("client-draw", self._on_temporal_render, i)
             self._slots.append(slot)
         return list(self._slots)
 
@@ -162,7 +146,55 @@ class SlotPipeline:
             from OpenGL import GL
 
             state = self._temporal_states[slot_idx]
+            shader = self._temporal_shaders[slot_idx]
+
+            # No shader assigned — passthrough (draw input texture directly)
+            if shader is None and not self._slot_pending_frag[slot_idx]:
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
+                GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+                return True
+
+            # Non-temporal slot with a shader — render without tex_accum
             if state is None:
+                # Lazy compile
+                if shader is None and self._slot_pending_frag[slot_idx]:
+                    ctx = element.get_property("context")
+                    if ctx:
+                        shader = self._compile_temporal_shader(slot_idx, ctx)
+                        self._temporal_shaders[slot_idx] = shader
+                if shader is None:
+                    # Still no shader — passthrough
+                    GL.glActiveTexture(GL.GL_TEXTURE0)
+                    GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
+                    GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+                    return True
+                # Render with shader but no tex_accum
+                prog_id = shader.get_program_handle()
+                GL.glUseProgram(prog_id)
+                tex_loc = GL.glGetUniformLocation(prog_id, "tex")
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
+                if tex_loc >= 0:
+                    GL.glUniform1i(tex_loc, 0)
+                # Set uniforms
+                params = self._slot_base_params[slot_idx]
+                for key, value in params.items():
+                    if isinstance(value, (int, float)):
+                        loc = GL.glGetUniformLocation(prog_id, f"u_{key}")
+                        if loc >= 0:
+                            GL.glUniform1f(loc, float(value))
+                import time as time_mod
+
+                time_loc = GL.glGetUniformLocation(prog_id, "u_time")
+                if time_loc >= 0:
+                    GL.glUniform1f(time_loc, time_mod.monotonic() % 3600.0)
+                for uname, uval in [("u_width", float(width)), ("u_height", float(height))]:
+                    loc = GL.glGetUniformLocation(prog_id, uname)
+                    if loc >= 0:
+                        GL.glUniform1f(loc, uval)
+                GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+                GL.glUseProgram(0)
                 return True
 
             # Lazy-init accumulation texture on first frame
@@ -304,9 +336,11 @@ class SlotPipeline:
         self._slot_assignments = [None] * self._num_slots
         self._slot_base_params = [{} for _ in range(self._num_slots)]
 
-        # Default all slots to passthrough
+        # Reset all slots: clear pending frag (passthrough) and temporal state
         for i in range(self._num_slots):
-            self._slot_pending_frag[i] = PASSTHROUGH_SHADER
+            self._slot_pending_frag[i] = None  # None = passthrough in render callback
+            self._temporal_states[i] = None
+            self._temporal_shaders[i] = None
 
         # Assign actual shaders to used slots
         slot_idx = 0
@@ -320,20 +354,22 @@ class SlotPipeline:
                 self._slot_pending_frag[slot_idx] = step.shader_source
                 self._slot_assignments[slot_idx] = step.node_type
                 self._slot_base_params[slot_idx] = dict(step.params)
-                self._set_uniforms(slot_idx, step.params)
-                if step.temporal and self._temporal_states[slot_idx] is not None:
-                    # Temporal: shader compiled lazily in _on_temporal_render
-                    self._temporal_shaders[slot_idx] = None
+                if step.temporal:
+                    self._temporal_states[slot_idx] = TemporalSlotState(
+                        num_buffers=max(1, step.temporal_buffers)
+                    )
+                    log.info(
+                        "Slot %d (%s): temporal with %d buffers",
+                        slot_idx,
+                        step.node_type,
+                        step.temporal_buffers,
+                    )
+                # Shader compiled lazily on GL thread in _on_temporal_render
+                self._temporal_shaders[slot_idx] = None
                 slot_idx += 1
 
-        # Trigger GL recompilation in a single pass after all assignments are final.
-        # Avoids race where GL thread compiles a stale passthrough before the actual
-        # shader is assigned (create-shader signals fire asynchronously on GL thread).
-        # Only non-temporal slots use glshader's update-shader property.
-        for i in range(self._num_slots):
-            if self._temporal_states[i] is None:
-                self._slots[i].set_property("update-shader", True)
-
+        # All slots are glfilterapp — no GStreamer update-shader needed.
+        # Shaders compile lazily on the GL thread in _on_temporal_render.
         log.info("Activated plan '%s': %d/%d slots used", plan.name, slot_idx, self._num_slots)
 
     def find_slot_for_node(self, node_type: str) -> int | None:
@@ -354,40 +390,26 @@ class SlotPipeline:
             self._set_uniforms(slot_idx, self._slot_base_params[slot_idx])
 
     def _set_uniforms(self, slot_idx: int, params: dict[str, Any]) -> None:
-        """Build uniform string from params and set on slot element."""
-        if self._temporal_states[slot_idx] is not None:
-            return  # temporal slots set uniforms in the render callback
-        parts = []
+        """Store uniform params for the render callback to apply.
+
+        All slots are glfilterapp — uniforms are set via direct GL calls
+        in _on_temporal_render, not via GStreamer's uniforms property.
+        This method resolves enum values to float indices and stores the
+        result in _slot_base_params for the callback to read.
+        """
+        resolved: dict[str, Any] = {}
         for key, value in params.items():
             if isinstance(value, bool):
-                parts.append(f"u_{key}=(float){1.0 if value else 0.0}")
+                resolved[key] = 1.0 if value else 0.0
             elif isinstance(value, (int, float)):
-                parts.append(f"u_{key}=(float){float(value)}")
+                resolved[key] = float(value)
             elif isinstance(value, str):
                 defn = self._registry.get(self._slot_assignments[slot_idx] or "")
                 if defn and key in defn.params and defn.params[key].enum_values:
                     vals = defn.params[key].enum_values or []
                     idx = vals.index(value) if value in vals else 0
-                    parts.append(f"u_{key}=(float){float(idx)}")
-        if not parts:
-            return
-        slot = self._slots[slot_idx]
-        if hasattr(slot, "_mock_name") or not hasattr(slot, "get_factory"):
-            return
-        try:
-            import gi
-
-            gi.require_version("Gst", "1.0")
-            from gi.repository import Gst
-
-            uniform_str = "uniforms, " + ", ".join(parts)
-            result = Gst.Structure.from_string(uniform_str)
-            if result and result[0]:
-                slot.set_property("uniforms", result[0])
-            else:
-                log.warning("Failed to parse uniform string: %s", uniform_str)
-        except (ImportError, ValueError):
-            log.exception("Failed to set uniforms on slot %d", slot_idx)
+                    resolved[key] = float(idx)
+        self._slot_base_params[slot_idx].update(resolved)
 
     @property
     def num_slots(self) -> int:
