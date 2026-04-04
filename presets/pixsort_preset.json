@@ -6,8 +6,8 @@
     "pixsort": {
       "type": "pixsort",
       "params": {
-        "threshold_low": 0.1,
-        "threshold_high": 0.9,
+        "threshold_low": 0.02,
+        "threshold_high": 0.95,
         "sort_length": 400,
         "direction": 0.0
       }
