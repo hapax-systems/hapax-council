@@ -99,7 +99,7 @@ fn main_1() {
     texel = vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y));
     loop {
         let _e64 = i;
-        if !((_e64 < 64i)) {
+        if !((_e64 < 256i)) {
             break;
         }
         {
@@ -136,7 +136,7 @@ fn main_1() {
     }
     loop {
         let _e116 = i_1;
-        if !((_e116 < 64i)) {
+        if !((_e116 < 256i)) {
             break;
         }
         {
