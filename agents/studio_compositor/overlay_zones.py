@@ -17,9 +17,9 @@ SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
 ZONES: list[dict[str, Any]] = [
     {
         "id": "main",
-        "folder": None,
-        "file": str(SNAPSHOT_DIR / "overlay-main.md"),
-        "cycle_seconds": 45,
+        "folder": "~/Documents/Personal/30-areas/stream-overlays/",
+        "file": None,
+        "cycle_seconds": 15,
         "x": 20,
         "y": 160,
         "max_width": 700,
