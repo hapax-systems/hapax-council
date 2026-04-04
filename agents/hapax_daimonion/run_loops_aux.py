@@ -166,6 +166,40 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 )
                             continue
 
+                        # --- Studio control dispatch ---
+                        if c.capability_name.startswith("studio.") and c.capability_name not in (
+                            "studio.midi_beat",
+                            "studio.midi_tempo",
+                            "studio.mixer_energy",
+                            "studio.mixer_bass",
+                            "studio.mixer_mid",
+                            "studio.mixer_high",
+                            "studio.desk_activity",
+                            "studio.desk_gesture",
+                            "studio.speech_emotion",
+                            "studio.music_genre",
+                            "studio.flow_state",
+                            "studio.audio_events",
+                            "studio.ambient_noise",
+                        ):
+                            # Studio control affordances recruited by imagination or intent.
+                            # Records recruitment for Thompson learning. Actual invocation
+                            # requires context (which preset, which param, which camera) that
+                            # the impingement narrative would need to specify.
+                            if c.combined >= 0.3:
+                                log.info(
+                                    "Studio control recruited: %s (score=%.2f, source=%s)",
+                                    c.capability_name,
+                                    c.combined,
+                                    imp.source[:30],
+                                )
+                                daemon._affordance_pipeline.record_outcome(
+                                    c.capability_name,
+                                    success=True,
+                                    context={"source": imp.source},
+                                )
+                            continue
+
                         # --- World domain routing (feature-flagged) ---
                         if (
                             any(c.capability_name.startswith(p) for p in _WORLD_DOMAIN_PREFIXES)
