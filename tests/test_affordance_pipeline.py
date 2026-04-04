@@ -232,3 +232,126 @@ def test_affordances_in_schema():
     from shared.qdrant_schema import EXPECTED_COLLECTIONS
 
     assert "affordances" in EXPECTED_COLLECTIONS
+
+
+class TestBatchIndexing:
+    def test_batch_indexes_all_capabilities(self):
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance import CapabilityRecord, OperationalProperties
+        from shared.affordance_pipeline import AffordancePipeline
+
+        records = [
+            CapabilityRecord(
+                name=f"cap_{i}",
+                description=f"Capability {i} description",
+                daemon="test",
+                operational=OperationalProperties(),
+            )
+            for i in range(5)
+        ]
+
+        fake_embeddings = [[float(i)] * 768 for i in range(5)]
+
+        with (
+            patch("shared.affordance_pipeline.embed_batch_safe", return_value=fake_embeddings),
+            patch("shared.config.get_qdrant") as mock_qdrant,
+        ):
+            mock_client = MagicMock()
+            mock_client.collection_exists.return_value = True
+            mock_qdrant.return_value = mock_client
+
+            pipeline = AffordancePipeline()
+            count = pipeline.index_capabilities_batch(records)
+
+        assert count == 5
+        mock_client.upsert.assert_called_once()
+        points = mock_client.upsert.call_args.kwargs["points"]
+        assert len(points) == 5
+
+    def test_batch_uses_disk_cache(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance import CapabilityRecord, OperationalProperties
+        from shared.affordance_pipeline import AffordancePipeline
+        from shared.embed_cache import DiskEmbeddingCache
+
+        records = [
+            CapabilityRecord(
+                name="cached_cap",
+                description="Already cached description",
+                daemon="test",
+                operational=OperationalProperties(),
+            ),
+            CapabilityRecord(
+                name="new_cap",
+                description="Brand new description",
+                daemon="test",
+                operational=OperationalProperties(),
+            ),
+        ]
+
+        # Pre-populate cache with one entry
+        cache = DiskEmbeddingCache(
+            cache_path=tmp_path / "cache.json", model="nomic-embed-cpu", dimension=768
+        )
+        cache.put("search_document: Already cached description", [0.5] * 768)
+        cache.save()
+
+        with (
+            patch(
+                "shared.affordance_pipeline.embed_batch_safe",
+                return_value=[[0.9] * 768],
+            ) as mock_embed,
+            patch("shared.config.get_qdrant") as mock_qdrant,
+            patch(
+                "shared.affordance_pipeline._DISK_CACHE_PATH",
+                tmp_path / "cache.json",
+            ),
+        ):
+            mock_client = MagicMock()
+            mock_client.collection_exists.return_value = True
+            mock_qdrant.return_value = mock_client
+
+            pipeline = AffordancePipeline()
+            count = pipeline.index_capabilities_batch(records)
+
+        assert count == 2
+        # Only the uncached description should have been embedded
+        mock_embed.assert_called_once()
+        embedded_texts = mock_embed.call_args.args[0]
+        assert len(embedded_texts) == 1
+        assert "Brand new" in embedded_texts[0]
+
+    def test_batch_empty_list_returns_zero(self):
+        from shared.affordance_pipeline import AffordancePipeline
+
+        pipeline = AffordancePipeline()
+        assert pipeline.index_capabilities_batch([]) == 0
+
+
+class TestEmbeddingCacheTextKey:
+    def test_same_text_hits_cache(self):
+        from shared.affordance_pipeline import EmbeddingCache
+
+        cache = EmbeddingCache()
+        vec = [0.1, 0.2, 0.3]
+        cache.put_by_text("source: dmn intent: stable", vec)
+        assert cache.get_by_text("source: dmn intent: stable") == vec
+
+    def test_different_text_misses_cache(self):
+        from shared.affordance_pipeline import EmbeddingCache
+
+        cache = EmbeddingCache()
+        cache.put_by_text("source: dmn intent: stable", [0.1, 0.2, 0.3])
+        assert cache.get_by_text("source: dmn intent: degrading") is None
+
+    def test_lru_eviction_by_text(self):
+        from shared.affordance_pipeline import EmbeddingCache
+
+        cache = EmbeddingCache(max_size=2)
+        cache.put_by_text("a", [1.0])
+        cache.put_by_text("b", [2.0])
+        cache.put_by_text("c", [3.0])  # evicts "a"
+        assert cache.get_by_text("a") is None
+        assert cache.get_by_text("b") == [2.0]

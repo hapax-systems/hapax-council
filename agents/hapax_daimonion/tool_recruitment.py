@@ -57,10 +57,10 @@ class ToolRecruitmentGate:
 
         Returns the number of tools successfully indexed.
         """
-        registered = 0
+        records = []
         for name, desc in affordances:
             medium = "visual" if name in ToolRecruitmentGate._VISUAL_TOOLS else "textual"
-            ok = pipeline.index_capability(
+            records.append(
                 CapabilityRecord(
                     name=name,
                     description=desc,
@@ -68,7 +68,6 @@ class ToolRecruitmentGate:
                     operational=OperationalProperties(latency_class="fast", medium=medium),
                 )
             )
-            if ok:
-                registered += 1
+        registered = pipeline.index_capabilities_batch(records)
         log.info("Registered %d/%d tool affordances", registered, len(affordances))
         return registered

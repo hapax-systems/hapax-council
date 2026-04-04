@@ -111,10 +111,12 @@ def test_record_outcome_calls_pipeline():
 
 def test_register_tools_counts_successes():
     mock_pipeline = MagicMock()
-    mock_pipeline.index_capability.side_effect = [True, False, True]
+    mock_pipeline.index_capabilities_batch.return_value = 2
     count = ToolRecruitmentGate.register_tools(
         mock_pipeline,
         [("tool_a", "desc a"), ("tool_b", "desc b"), ("tool_c", "desc c")],
     )
     assert count == 2
-    assert mock_pipeline.index_capability.call_count == 3
+    mock_pipeline.index_capabilities_batch.assert_called_once()
+    records = mock_pipeline.index_capabilities_batch.call_args[0][0]
+    assert len(records) == 3

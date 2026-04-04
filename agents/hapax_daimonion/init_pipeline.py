@@ -112,19 +112,18 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
     from agents._affordance_pipeline import AffordancePipeline
 
     daemon._affordance_pipeline = AffordancePipeline()
-    daemon._affordance_pipeline.index_capability(
+
+    # Collect ALL capability records for batch indexing
+    _all_records: list[CapabilityRecord] = []
+
+    # Speech production
+    _all_records.append(
         CapabilityRecord(
             name="speech_production",
             description=SPEECH_DESCRIPTION,
             daemon="hapax_daimonion",
             operational=OperationalProperties(requires_gpu=True, medium="auditory"),
         )
-    )
-    daemon._affordance_pipeline.register_interrupt(
-        "population_critical", "speech_production", "hapax_daimonion"
-    )
-    daemon._affordance_pipeline.register_interrupt(
-        "operator_distress", "speech_production", "hapax_daimonion"
     )
 
     # Vocal chain: MIDI affordances for speech modulation
@@ -137,25 +136,21 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
         evil_pet_channel=daemon.cfg.midi_evil_pet_channel,
         s4_channel=daemon.cfg.midi_s4_channel,
     )
-    for record in VOCAL_CHAIN_RECORDS:
-        daemon._affordance_pipeline.index_capability(record)
+    _all_records.extend(VOCAL_CHAIN_RECORDS)
 
-    # System awareness: surface DMN degradation to operator
+    # System awareness
     from agents.hapax_daimonion.system_awareness import (
         SYSTEM_AWARENESS_DESCRIPTION,
         SystemAwarenessCapability,
     )
 
     daemon._system_awareness = SystemAwarenessCapability()
-    daemon._affordance_pipeline.index_capability(
+    _all_records.append(
         CapabilityRecord(
             name="system_awareness",
             description=SYSTEM_AWARENESS_DESCRIPTION,
             daemon="hapax_daimonion",
         )
-    )
-    daemon._affordance_pipeline.register_interrupt(
-        "system_critical", "system_awareness", "hapax_daimonion"
     )
 
     # Cross-modal expression coordinator
@@ -163,13 +158,13 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
 
     daemon._expression_coordinator = ExpressionCoordinator()
 
-    # Novel capability discovery: recursive meta-affordance
+    # Novel capability discovery
     from agents.hapax_daimonion.discovery_affordance import (
         DISCOVERY_AFFORDANCE,
         CapabilityDiscoveryHandler,
     )
 
-    daemon._affordance_pipeline.index_capability(
+    _all_records.append(
         CapabilityRecord(
             name=DISCOVERY_AFFORDANCE[0],
             description=DISCOVERY_AFFORDANCE[1],
@@ -183,28 +178,40 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
     )
     daemon._discovery_handler = CapabilityDiscoveryHandler()
 
-    # Tool recruitment: register tool affordances and create gate
+    # Tool recruitment: collect tool affordances
     from agents.hapax_daimonion.tool_affordances import TOOL_AFFORDANCES
     from agents.hapax_daimonion.tool_recruitment import ToolRecruitmentGate
 
-    ToolRecruitmentGate.register_tools(daemon._affordance_pipeline, TOOL_AFFORDANCES)
+    for name, desc in TOOL_AFFORDANCES:
+        medium = "visual" if name in ToolRecruitmentGate._VISUAL_TOOLS else "textual"
+        _all_records.append(
+            CapabilityRecord(
+                name=name,
+                description=desc,
+                daemon="hapax_daimonion",
+                operational=OperationalProperties(latency_class="fast", medium=medium),
+            )
+        )
     tool_names = {name for name, _ in TOOL_AFFORDANCES}
     daemon._tool_recruitment_gate = ToolRecruitmentGate(daemon._affordance_pipeline, tool_names)
 
-    # Index ALL world affordances from the shared registry so daimonion can
-    # recruit from the full field — not just tools and speech. Each faculty
-    # indexes the full world per SCM Property 1 (stigmergic coordination).
+    # World affordances from shared registry
     from shared.affordance_registry import ALL_AFFORDANCES
 
-    _world_indexed = 0
-    for record in ALL_AFFORDANCES:
-        if daemon._affordance_pipeline.index_capability(record):
-            _world_indexed += 1
+    _all_records.extend(ALL_AFFORDANCES)
 
-    log.info(
-        "Pipeline dependencies precomputed"
-        " (affordance pipeline: speech + 9 vocal chain dims + system_awareness"
-        " + capability_discovery + %d tool affordances + %d world affordances)",
-        len(TOOL_AFFORDANCES),
-        _world_indexed,
+    # Batch-index everything in one Ollama + Qdrant call
+    _indexed = daemon._affordance_pipeline.index_capabilities_batch(_all_records)
+
+    # Register interrupt handlers (no embedding needed)
+    daemon._affordance_pipeline.register_interrupt(
+        "population_critical", "speech_production", "hapax_daimonion"
     )
+    daemon._affordance_pipeline.register_interrupt(
+        "operator_distress", "speech_production", "hapax_daimonion"
+    )
+    daemon._affordance_pipeline.register_interrupt(
+        "system_critical", "system_awareness", "hapax_daimonion"
+    )
+
+    log.info("Pipeline dependencies precomputed (batch-indexed %d capabilities)", _indexed)
