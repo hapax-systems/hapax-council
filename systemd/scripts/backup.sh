@@ -99,6 +99,8 @@ if [[ -d "$HOME/.config/systemd/user" ]]; then
     mkdir -p "$BACKUP_DIR/systemd"
     cp "$HOME/.config/systemd/user/"*.service "$BACKUP_DIR/systemd/" 2>/dev/null || true
     cp "$HOME/.config/systemd/user/"*.timer "$BACKUP_DIR/systemd/" 2>/dev/null || true
+    cp "$HOME/.config/systemd/user/"*.target "$BACKUP_DIR/systemd/" 2>/dev/null || true
+    cp "$HOME/.config/systemd/user/"*.path "$BACKUP_DIR/systemd/" 2>/dev/null || true
     log "✓ Systemd user units"
 fi
 

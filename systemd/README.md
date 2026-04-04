@@ -42,6 +42,10 @@ Managed by:                         studio-fx-output  → ffmpeg /dev/video50
 5. officium-api.service      After: llm-stack, hapax-secrets
 6. hapax-daimonion.service       After: pipewire, hapax-secrets (+10s delay for GPU sequencing)
 7. hapax-logos.service        After: graphical-session, logos-api (__NV_DISABLE_EXPLICIT_SYNC=1)
+7a. hapax-imagination        After: hapax-secrets (GPU wgpu visual surface)
+7b. hapax-reverie             After: hapax-secrets, hapax-dmn (visual expression daemon)
+7c. hapax-content-resolver   After: logos-api (content resolution daemon)
+7d. hapax-imagination-loop   After: hapax-secrets (imagination reverberation)
 8. visual-layer-aggregator   After: logos-api, hapax-daimonion, hapax-secrets
 9. studio-compositor         After: hapax-daimonion, visual-layer-aggregator (+10s for USB cameras)
 10. studio-fx-output         After: studio-compositor
