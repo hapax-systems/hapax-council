@@ -152,7 +152,7 @@ class SlotPipeline:
             if shader is None and not self._slot_pending_frag[slot_idx]:
                 GL.glActiveTexture(GL.GL_TEXTURE0)
                 GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
-                element.draw_fullscreen_quad()
+                self._draw_quad()
                 return True
 
             # Non-temporal slot with a shader — render without tex_accum
@@ -167,7 +167,7 @@ class SlotPipeline:
                     # Still no shader — passthrough
                     GL.glActiveTexture(GL.GL_TEXTURE0)
                     GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
-                    element.draw_fullscreen_quad()
+                    self._draw_quad()
                     return True
                 # Render with shader but no tex_accum
                 prog_id = shader.get_program_handle()
@@ -193,7 +193,7 @@ class SlotPipeline:
                     loc = GL.glGetUniformLocation(prog_id, uname)
                     if loc >= 0:
                         GL.glUniform1f(loc, uval)
-                element.draw_fullscreen_quad()
+                self._draw_quad()
                 GL.glUseProgram(0)
                 return True
 
@@ -284,7 +284,7 @@ class SlotPipeline:
                     GL.glUniform1f(loc, uval)
 
             # Draw fullscreen quad
-            element.draw_fullscreen_quad()
+            self._draw_quad()
 
             # Copy rendered output to accum texture for next frame
             if state.accum_texture_id is not None:
@@ -301,6 +301,22 @@ class SlotPipeline:
         except Exception:
             log.exception("Temporal render failed for slot %d", slot_idx)
             return True
+
+    @staticmethod
+    def _draw_quad() -> None:
+        """Draw a fullscreen textured quad using legacy GL (compatibility profile)."""
+        from OpenGL import GL
+
+        GL.glBegin(GL.GL_TRIANGLE_STRIP)
+        GL.glTexCoord2f(0.0, 0.0)
+        GL.glVertex2f(-1.0, -1.0)
+        GL.glTexCoord2f(1.0, 0.0)
+        GL.glVertex2f(1.0, -1.0)
+        GL.glTexCoord2f(0.0, 1.0)
+        GL.glVertex2f(-1.0, 1.0)
+        GL.glTexCoord2f(1.0, 1.0)
+        GL.glVertex2f(1.0, 1.0)
+        GL.glEnd()
 
     def link_chain(self, upstream: Any, downstream: Any) -> None:
         """Link slots between upstream and downstream. Call after pipeline.add()."""
