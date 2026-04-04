@@ -10,7 +10,7 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 
 **Three tiers**:
 - **Tier 1** — Interactive interfaces (hapax-logos Tauri native app, waybar GTK4 status bar, VS Code extension)
-- **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000). Local: TabbyAPI serves Qwen3.5-35B-A3B (EXL3) on `:5000` for `local-fast`/`coding`/`reasoning`. No Ollama inference fallback — Ollama is GPU-isolated (`CUDA_VISIBLE_DEVICES=""`) and used only for CPU embedding. See `systemd/README.md § Ollama GPU Isolation`. Cloud: Claude Sonnet/Opus for `balanced`/governance, Gemini Flash for `fast`/vision.
+- **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000). Local: TabbyAPI serves Qwen3.5-35B-A3B (EXL3) on `:5000` for `local-fast`/`coding`/`reasoning`. No Ollama inference — Ollama is GPU-isolated (`CUDA_VISIBLE_DEVICES=""`) and used only for CPU embedding (`nomic-embed-cpu`). `qwen3:8b` deleted from Ollama and LiteLLM. See `systemd/README.md § Ollama GPU Isolation`. Cloud: Claude Sonnet/Opus for `balanced`/governance, Gemini Flash for `fast`/vision.
 - **Tier 3** — Deterministic agents (sync, health, maintenance — no LLM calls)
 
 **Reactive engine** (`logos/engine/`): inotify watcher → 14 rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).

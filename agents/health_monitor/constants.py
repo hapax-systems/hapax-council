@@ -68,7 +68,6 @@ PASS_ENTRIES = [
 
 EXPECTED_OLLAMA_MODELS = [
     "nomic-embed-cpu",
-    "qwen3:8b",
 ]
 
 REQUIRED_SECRETS = {

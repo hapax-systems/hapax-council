@@ -757,8 +757,7 @@ class TestModelChecks:
             {
                 "models": [
                     {"name": "nomic-embed-text-v2-moe:latest"},
-                    {"name": "qwen3.5:27b"},
-                    {"name": "qwen3:8b"},
+                    {"name": "nomic-embed-cpu:latest"},
                 ]
             }
         )

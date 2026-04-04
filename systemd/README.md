@@ -82,7 +82,7 @@ Ollama runs CPU-only. TabbyAPI exclusively owns the GPU for inference.
 
 **Why**: LiteLLM previously had fallback chains (`local-fast → qwen3:8b`) that loaded Ollama's qwen3:8b on GPU when TabbyAPI was slow. This caused a death spiral: qwen3:8b on GPU ate 5.5 GiB VRAM alongside TabbyAPI's 13 GiB (OOM on 24 GiB card), and on CPU ate 900% CPU (load average 38+, cascading timeouts, more fallbacks). The fallback chains for local models have been removed from `~/llm-stack/litellm-config.yaml`.
 
-**Current Ollama role**: CPU embedding only (`nomic-embed-cpu`, called directly by `shared/config.py:embed()`). The `qwen3:8b` model remains pulled but is not used by any fallback chain.
+**Current Ollama role**: CPU embedding only (`nomic-embed-cpu`, called directly by `shared/config.py:embed()`). `qwen3:8b` has been deleted from Ollama and its model route removed from LiteLLM — even zombie retry requests cannot reload it.
 
 ## Installation
 
