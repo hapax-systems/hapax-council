@@ -74,6 +74,16 @@ Written to `/run/user/1000/hapax-secrets.env` (tmpfs, 0600). All services declar
 
 System-level OOM overrides: earlyoom (-1000), docker (-900), pipewire/wireplumber (-900), ollama (-500).
 
+## Ollama GPU Isolation
+
+Ollama runs CPU-only. TabbyAPI exclusively owns the GPU for inference.
+
+**Enforcement**: `CUDA_VISIBLE_DEVICES=""` in `/etc/systemd/system/ollama.service.d/vram-optimize.conf` hides the GPU from the Ollama process entirely. This is the only reliable mechanism — `OLLAMA_NUM_GPU=0` is a default that API callers can override with `num_gpu: -1`, and per-model Modelfiles can be overwritten by `ollama pull`.
+
+**Why**: LiteLLM previously had fallback chains (`local-fast → qwen3:8b`) that loaded Ollama's qwen3:8b on GPU when TabbyAPI was slow. This caused a death spiral: qwen3:8b on GPU ate 5.5 GiB VRAM alongside TabbyAPI's 13 GiB (OOM on 24 GiB card), and on CPU ate 900% CPU (load average 38+, cascading timeouts, more fallbacks). The fallback chains for local models have been removed from `~/llm-stack/litellm-config.yaml`.
+
+**Current Ollama role**: CPU embedding only (`nomic-embed-cpu`, called directly by `shared/config.py:embed()`). The `qwen3:8b` model remains pulled but is not used by any fallback chain.
+
 ## Installation
 
 ```bash
