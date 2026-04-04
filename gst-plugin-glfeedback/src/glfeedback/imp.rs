@@ -206,19 +206,9 @@ impl GLFilterImpl for GlFeedback {
         outcaps: &gst::Caps,
     ) -> Result<(), gst::LoggableError> {
         gst_gl::subclass::prelude::GLFilterImplExt::parent_set_caps(self, incaps, outcaps)?;
-
-        let info = gst_video::VideoInfo::from_caps(incaps)
-            .map_err(|_| gst::loggable_error!(gst::CAT_RUST, "bad video caps"))?;
-        let w = info.width() as i32;
-        let h = info.height() as i32;
-
-        let mut guard = self.state.lock().unwrap();
-        if let Some(state) = guard.as_mut() {
-            if state.width != w || state.height != h {
-                self.reallocate_accum(state, w, h);
-            }
-        }
-
+        // NOTE: Do NOT allocate GL resources here — set_caps runs on the
+        // streaming thread which has no GL context.  Accum textures are
+        // lazily (re)allocated in filter_texture on the GL thread.
         Ok(())
     }
 
@@ -228,7 +218,20 @@ impl GLFilterImpl for GlFeedback {
         output: &gst_gl::GLMemory,
     ) -> Result<(), gst::LoggableError> {
         let filter = self.obj();
-        gst::trace!(gst::CAT_RUST, "filter_texture called");
+
+        // Lazy (re)allocate accum textures on the GL thread.
+        // set_caps runs on the streaming thread (no GL context), so we
+        // detect resolution changes here where GL calls are safe.
+        {
+            let w = output.texture_width();
+            let h = output.texture_height();
+            let mut guard = self.state.lock().unwrap();
+            if let Some(state) = guard.as_mut() {
+                if state.width != w || state.height != h {
+                    self.reallocate_accum(state, w, h);
+                }
+            }
+        }
 
         // Lazy-recompile shader on GL thread if fragment property changed
         {
