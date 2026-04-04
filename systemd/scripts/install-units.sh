@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-units.sh — Copy systemd user units from repo to ~/.config/systemd/user/
+# install-units.sh — Symlink systemd user units from repo to ~/.config/systemd/user/
 # and reload the daemon. Safe to run idempotently.
 set -euo pipefail
 
@@ -17,20 +17,23 @@ echo "venv synced"
 
 mkdir -p "$DEST_DIR"
 
-copied=0
-for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer; do
+changed=0
+for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REPO_DIR"/*.path; do
     [ -f "$unit" ] || continue
     name="$(basename "$unit")"
-    if ! cmp -s "$unit" "$DEST_DIR/$name" 2>/dev/null; then
-        cp "$unit" "$DEST_DIR/$name"
-        echo "updated: $name"
-        copied=$((copied + 1))
+    dest="$DEST_DIR/$name"
+    # Already a correct symlink — skip
+    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$unit" ]; then
+        continue
     fi
+    ln -sf "$unit" "$dest"
+    echo "linked: $name"
+    changed=$((changed + 1))
 done
 
-if [ "$copied" -gt 0 ]; then
+if [ "$changed" -gt 0 ]; then
     systemctl --user daemon-reload
-    echo "daemon-reload done ($copied units updated)"
+    echo "daemon-reload done ($changed units linked)"
 else
     echo "all units up to date"
 fi

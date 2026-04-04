@@ -89,14 +89,15 @@ Ollama runs CPU-only. TabbyAPI exclusively owns the GPU for inference.
 ## Installation
 
 ```bash
-# Install/update all units from this directory
+# Symlink all units from this directory (idempotent)
 systemd/scripts/install-units.sh
 
 # Or manually link a single unit
-systemctl --user link "$PWD/systemd/units/my-service.service"
-systemctl --user enable my-service.service
+ln -sf "$PWD/systemd/units/my-service.service" ~/.config/systemd/user/
 systemctl --user daemon-reload
 ```
+
+**Units are symlinked, not copied.** Edits to `systemd/units/` take effect on `daemon-reload` without re-running the install script. The script covers `.service`, `.timer`, `.target`, and `.path` files.
 
 ## Development
 
