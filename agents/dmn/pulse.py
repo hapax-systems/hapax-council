@@ -329,23 +329,20 @@ class DMNPulse:
         self._pending_impingements.clear()
         return pending
 
-    def _read_visual_observation(self) -> str:
-        """Read vision observer output if fresh (<30s)."""
+    def _read_frame_b64(self) -> str:
+        """Read the Reverie visual frame as base64, if fresh (<30s)."""
+        import base64
         from pathlib import Path
 
-        obs_path = Path("/dev/shm/hapax-vision/observation.txt")
-        status_path = Path("/dev/shm/hapax-vision/status.json")
+        frame_path = Path("/dev/shm/hapax-visual/frame.jpg")
         try:
-            if not obs_path.exists() or not status_path.exists():
+            if not frame_path.exists():
                 return ""
-            import json
-
-            status = json.loads(status_path.read_text(encoding="utf-8"))
-            age = time.time() - status.get("timestamp", 0)
+            age = time.time() - frame_path.stat().st_mtime
             if age > 30.0:
                 return ""
-            return obs_path.read_text(encoding="utf-8").strip()
-        except (OSError, json.JSONDecodeError):
+            return base64.b64encode(frame_path.read_bytes()).decode()
+        except OSError:
             return ""
 
     async def _evaluative_tick(self, snapshot: dict) -> None:
@@ -361,24 +358,53 @@ class DMNPulse:
             self._ollama_breaker.record_failure()
             self._check_ollama_degradation()
 
-        # Read visual observation from vision observer
-        visual_obs = self._read_visual_observation()
-
-        # Fire new thinking request
+        # Fire new thinking request (multimodal if frame available)
         deltas = self._buffer.format_delta_context(self._prior_snapshot, snapshot)
-        if visual_obs:
-            deltas = (deltas or []) + [f"visual surface: {visual_obs}"]
         stimmung = snapshot.get("stimmung", {})
         if not deltas and stimmung.get("stance") == "nominal":
             return
-        prompt = _format_sensor_prompt(snapshot, deltas, visual_observation=visual_obs)
+        frame_b64 = self._read_frame_b64()
+        prompt = _format_sensor_prompt(snapshot, deltas)
         if self._ollama_breaker.allow_request():
-            start_thinking("evaluative", prompt, EVALUATIVE_SYSTEM)
+            start_thinking("evaluative", prompt, EVALUATIVE_SYSTEM, frame_b64=frame_b64)
+
+    def _write_visual_observation(self, result: str) -> None:
+        """Write the evaluative result as visual observation for reverberation."""
+        from pathlib import Path
+
+        obs_dir = Path("/dev/shm/hapax-vision")
+        try:
+            obs_dir.mkdir(parents=True, exist_ok=True)
+            import json
+
+            tmp = obs_dir / "observation.tmp"
+            tmp.write_text(result, encoding="utf-8")
+            tmp.rename(obs_dir / "observation.txt")
+            status = {"timestamp": time.time(), "length": len(result), "source": "dmn"}
+            tmp_s = obs_dir / "status.tmp"
+            tmp_s.write_text(json.dumps(status), encoding="utf-8")
+            tmp_s.rename(obs_dir / "status.json")
+        except OSError:
+            pass
 
     def _process_evaluative_result(self, result: str, snapshot: dict) -> None:
+        # Extract visual description for reverberation loop
+        visual_desc = ""
+        lower = result.lower()
+        if "visual:" in lower:
+            vis_part = result.split("isual:")[-1]
+            # Take until "Trajectory:" or end
+            if "rajectory:" in vis_part:
+                visual_desc = vis_part.split("rajectory:")[0].strip().rstrip(".")
+            else:
+                visual_desc = vis_part.strip()
+            if visual_desc.lower() == "none":
+                visual_desc = ""
+        if visual_desc:
+            self._write_visual_observation(visual_desc)
+
         trajectory = "stable"
         concerns: list[str] = []
-        lower = result.lower()
         if "degrading" in lower:
             trajectory = "degrading"
         elif "improving" in lower:

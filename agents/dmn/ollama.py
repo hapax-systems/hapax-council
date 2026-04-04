@@ -26,10 +26,13 @@ SENSORY_SYSTEM = (
     "Format: one concrete sentence describing the current state."
 )
 EVALUATIVE_SYSTEM = (
-    "You are a value trajectory assessor. Given the current state and what changed, "
-    "report whether the situation is IMPROVING, DEGRADING, or STABLE. "
-    "If degrading, state the specific concern in concrete terms (what is wrong, not why). "
-    'Format: "Trajectory: [improving|degrading|stable]. Concern: [specific issue or none]" '
+    "You are a situation assessor. You receive sensor data and may also receive an image "
+    "of a visual surface. First, if an image is present, describe what you see in one "
+    "sentence (colors, shapes, patterns, spatial arrangement). Then assess whether the "
+    "overall situation is IMPROVING, DEGRADING, or STABLE. If degrading, state the "
+    "specific concern in concrete terms. "
+    'Format: "Visual: [one sentence description or none]. '
+    'Trajectory: [improving|degrading|stable]. Concern: [specific issue or none]" '
     "Never evaluate your own performance. Never use abstract language."
 )
 CONSOLIDATION_SYSTEM = (
@@ -98,11 +101,45 @@ async def _tabby_think(prompt: str, system: str) -> str:
 _pending: dict[str, asyncio.Task[str]] = {}
 
 
-def start_thinking(key: str, prompt: str, system: str) -> None:
+async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
+    """Multimodal evaluative call via gemini-flash — sees the visual surface directly."""
+    import os
+
+    try:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            base_url=os.environ.get("LITELLM_BASE", "http://localhost:4000"),
+            api_key=os.environ.get("LITELLM_API_KEY", ""),
+        )
+        user_content: list[dict] = [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"}},
+            {"type": "text", "text": prompt},
+        ]
+        resp = await client.chat.completions.create(
+            model="gemini-flash",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.1,
+            max_tokens=256,
+            extra_body={"thinking": {"type": "disabled", "budget_tokens": 0}},
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
+        log.warning("Gemini multimodal failed (%s), falling back to text-only", exc)
+        return await _tabby_think(prompt, system)
+
+
+def start_thinking(key: str, prompt: str, system: str, *, frame_b64: str = "") -> None:
     """Fire a thinking request in background. Retrieve with collect_thinking()."""
     if key in _pending and not _pending[key].done():
         return
-    _pending[key] = asyncio.ensure_future(_tabby_think(prompt, system))
+    if frame_b64:
+        _pending[key] = asyncio.ensure_future(_gemini_multimodal(prompt, system, frame_b64))
+    else:
+        _pending[key] = asyncio.ensure_future(_tabby_think(prompt, system))
 
 
 def collect_thinking(key: str) -> str | None:
@@ -118,7 +155,7 @@ def collect_thinking(key: str) -> str | None:
         return ""
 
 
-def _format_sensor_prompt(snapshot: dict, deltas: list[str], visual_observation: str = "") -> str:
+def _format_sensor_prompt(snapshot: dict, deltas: list[str]) -> str:
     parts = []
     p = snapshot.get("perception", {})
     parts.append(f"Activity: {p.get('activity', '?')}. Flow: {p.get('flow_score', 0):.1f}.")
@@ -134,8 +171,6 @@ def _format_sensor_prompt(snapshot: dict, deltas: list[str], visual_observation:
     w = snapshot.get("watch", {})
     if w.get("heart_rate", 0) > 0:
         parts.append(f"Heart rate: {w['heart_rate']} bpm.")
-    if visual_observation:
-        parts.append(f"Visual surface: {visual_observation}.")
     if deltas:
         parts.append("Changes: " + "; ".join(deltas) + ".")
     return " ".join(parts)
