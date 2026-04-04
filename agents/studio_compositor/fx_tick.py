@@ -130,6 +130,9 @@ def tick_slot_pipeline(compositor: Any, t: float) -> None:
             implicit = {k: v for k, v in time_uniforms.items() if f"u_{k}" in defn.glsl_source}
             if implicit:
                 compositor._slot_pipeline._slot_base_params[i].update(implicit)
-                compositor._slot_pipeline._set_uniforms(
-                    i, compositor._slot_pipeline._slot_base_params[i]
-                )
+                if compositor._slot_pipeline._slot_is_temporal[i]:
+                    compositor._slot_pipeline._apply_glfeedback_uniforms(i)
+                else:
+                    compositor._slot_pipeline._set_uniforms(
+                        i, compositor._slot_pipeline._slot_base_params[i]
+                    )
