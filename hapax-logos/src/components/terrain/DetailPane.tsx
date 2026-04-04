@@ -6,10 +6,12 @@
  * rendering the full GroundRegion again.
  */
 
+import { ReactFlowProvider } from "@xyflow/react";
 import { HorizonRegion } from "./regions/HorizonRegion";
 import { FieldRegion } from "./regions/FieldRegion";
 import { WatershedRegion } from "./regions/WatershedRegion";
 import { BedrockRegion } from "./regions/BedrockRegion";
+import { StudioCanvas } from "../graph/StudioCanvas";
 import type { RegionName } from "../../contexts/TerrainContext";
 
 interface DetailPaneProps {
@@ -30,8 +32,10 @@ export function DetailPane({ region }: DetailPaneProps) {
       {region === "horizon" && <HorizonRegion />}
       {region === "field" && <FieldRegion />}
       {region === "ground" && (
-        <div className="flex items-center justify-center h-full text-[var(--color-fg4)] text-sm">
-          Graph canvas controls (Plan B)
+        <div style={{ width: "100%", height: "100%", position: "relative", minHeight: 300 }}>
+          <ReactFlowProvider>
+            <StudioCanvas />
+          </ReactFlowProvider>
         </div>
       )}
       {region === "watershed" && <WatershedRegion />}
