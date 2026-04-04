@@ -191,11 +191,8 @@ class ImaginationLoop:
         context = assemble_context(observations, self.recent_fragments, sensor_snapshot)
 
         if reverb > REVERBERATION_THRESHOLD:
-            context += (
-                "\n\n## Reverberation\n"
-                "The visual output surprised you — what you see differs from what you "
-                "imagined. This is generative tension. Lean into the surprise."
-            )
+            perceived = self._read_visual_observation()
+            context += f"\n\nWhat appeared: {perceived}"
             self.cadence.force_accelerated(True)
 
         try:

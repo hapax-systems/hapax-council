@@ -329,6 +329,25 @@ class DMNPulse:
         self._pending_impingements.clear()
         return pending
 
+    def _read_visual_observation(self) -> str:
+        """Read vision observer output if fresh (<30s)."""
+        from pathlib import Path
+
+        obs_path = Path("/dev/shm/hapax-vision/observation.txt")
+        status_path = Path("/dev/shm/hapax-vision/status.json")
+        try:
+            if not obs_path.exists() or not status_path.exists():
+                return ""
+            import json
+
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            age = time.time() - status.get("timestamp", 0)
+            if age > 30.0:
+                return ""
+            return obs_path.read_text(encoding="utf-8").strip()
+        except (OSError, json.JSONDecodeError):
+            return ""
+
     async def _evaluative_tick(self, snapshot: dict) -> None:
         self._check_absolute_thresholds(snapshot)
 
@@ -342,12 +361,17 @@ class DMNPulse:
             self._ollama_breaker.record_failure()
             self._check_ollama_degradation()
 
+        # Read visual observation from vision observer
+        visual_obs = self._read_visual_observation()
+
         # Fire new thinking request
         deltas = self._buffer.format_delta_context(self._prior_snapshot, snapshot)
+        if visual_obs:
+            deltas = (deltas or []) + [f"visual surface: {visual_obs}"]
         stimmung = snapshot.get("stimmung", {})
         if not deltas and stimmung.get("stance") == "nominal":
             return
-        prompt = _format_sensor_prompt(snapshot, deltas)
+        prompt = _format_sensor_prompt(snapshot, deltas, visual_observation=visual_obs)
         if self._ollama_breaker.allow_request():
             start_thinking("evaluative", prompt, EVALUATIVE_SYSTEM)
 
