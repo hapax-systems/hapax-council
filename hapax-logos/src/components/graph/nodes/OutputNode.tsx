@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps, NodeResizer } from "@xyflow/react";
 import { ChainBuilder } from "../ChainBuilder";
+import { SequenceBar } from "../SequenceBar";
 import { useStudioGraph } from "../../../stores/studioGraphStore";
 
 export interface OutputNodeData {
@@ -211,7 +212,21 @@ function FullscreenOverlay({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
-      {showPresets && <ChainBuilder />}
+      {showPresets && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <SequenceBar />
+          <ChainBuilder />
+        </div>
+      )}
     </div>
   );
 }

@@ -183,10 +183,6 @@ function SequenceBarInner() {
     <div
       onClick={(e) => e.stopPropagation()}
       style={{
-        position: "absolute",
-        bottom: 0,
-        left: 0,
-        right: 0,
         background: "rgba(29,32,33,0.96)",
         borderTop: "1px solid #3c3836",
         fontFamily: "JetBrains Mono, monospace",
