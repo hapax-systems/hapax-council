@@ -1241,6 +1241,14 @@ class VisualLayerAggregator:
                         errors=int(engine.get("errors", 0)),
                         uptime_s=float(engine.get("uptime_s", 0)),
                     )
+                else:
+                    # Engine idle/unavailable: feed zeros to keep dimensions fresh
+                    self._stimmung_collector.update_engine(
+                        events_processed=0,
+                        actions_executed=0,
+                        errors=0,
+                        uptime_s=0,
+                    )
                 self._update_stimmung()
                 last_health = now
 
