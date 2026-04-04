@@ -6,15 +6,9 @@
     "vhs": {
       "type": "vhs",
       "params": {
-        "chroma_shift": 4
-      }
-    },
-    "trail": {
-      "type": "trail",
-      "params": {
-        "fade": 0.04,
-        "blend_mode": "lighter",
-        "opacity": 0.25
+        "chroma_shift": 6.0,
+        "head_switch_y": 0.92,
+        "noise_band_y": 0.5
       }
     },
     "scanlines": {
@@ -58,10 +52,6 @@
     ],
     [
       "vhs",
-      "trail"
-    ],
-    [
-      "trail",
       "scanlines"
     ],
     [
