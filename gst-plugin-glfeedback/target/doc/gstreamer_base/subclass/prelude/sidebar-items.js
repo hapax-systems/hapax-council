@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"trait":["AggregatorImpl","AggregatorImplExt","AggregatorPadImpl","AggregatorPadImplExt","BaseParseImpl","BaseParseImplExt","BaseSinkImpl","BaseSinkImplExt","PushSrcImpl","PushSrcImplExt"]};

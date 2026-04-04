@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["Iterated","Standalone"],"fn":["meta_api_type_get_tags","meta_api_type_has_tag","meta_api_type_has_tag_by_quark"],"mod":["tags"],"struct":["Meta","MetaRef","MetaRefMut","MetaSeqnum","MetaTransformCopy","ParentBufferMeta","ProtectionMeta","ReferenceTimestampMeta"],"trait":["MetaAPI","MetaAPIExt","MetaTag","MetaTransform"]};
