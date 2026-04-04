@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"trait":["ContextGLExt","GLBaseFilterExt","GLBaseSrcExt","GLBufferPoolExt","GLContextExt","GLContextExtManual","GLDisplayExt","GLDisplayExtManual","GLFilterExt","GLFramebufferExt","GLFramebufferExtManual","GLWindowExt"]};
