@@ -1,49 +1,28 @@
 import { memo, useCallback, useRef, useState } from "react";
 import { PresetChip } from "./PresetChip";
 import { PRESET_CATEGORIES } from "./presetData";
-import { fetchPresetGraph, type EffectGraphJson } from "./presetLoader";
-import { mergePresetGraphs, countSlots, MAX_SLOTS } from "./presetMerger";
-import { api } from "../../api/client";
 import { useStudioGraph } from "../../stores/studioGraphStore";
+import { activatePresets } from "./SequenceBar";
 
 const allPresetNames = PRESET_CATEGORIES.flatMap((cat) => cat.presets);
 
 function ChainBuilderInner() {
-  const chainPresets = useStudioGraph((s) => s.chainPresets);
-  const setChainPresets = useStudioGraph((s) => s.setChainPresets);
+  const sequence = useStudioGraph((s) => s.sequence);
+  const updateChainPresets = useStudioGraph((s) => s.updateChainPresets);
   const chainSlotCount = useStudioGraph((s) => s.chainSlotCount);
   const setChainSlotCount = useStudioGraph((s) => s.setChainSlotCount);
+
   const [activating, setActivating] = useState(false);
   const dropRef = useRef<HTMLDivElement>(null);
 
-  const activateChain = useCallback(
-    async (presets: string[]) => {
-      if (presets.length === 0) {
-        api.post("/studio/effect/select", { preset: "clean" }).catch(() => {});
-        setChainSlotCount(0);
-        return;
-      }
-      if (presets.length === 1) {
-        api.post("/studio/effect/select", { preset: presets[0] }).catch(() => {});
-        setChainSlotCount(0);
-        return;
-      }
+  const activeIdx = sequence.activeChainIndex;
+  const chainPresets = sequence.chains[activeIdx]?.presets ?? [];
 
+  const activate = useCallback(
+    async (presets: string[]) => {
       setActivating(true);
       try {
-        const graphs: EffectGraphJson[] = [];
-        for (const name of presets) {
-          const g = await fetchPresetGraph(name);
-          if (g) graphs.push(g);
-        }
-        if (graphs.length === 0) return;
-
-        const slots = countSlots(graphs);
-        setChainSlotCount(slots);
-        if (slots > MAX_SLOTS) return;
-
-        const merged = mergePresetGraphs("chain", graphs);
-        await api.put("/studio/effect/graph", merged);
+        await activatePresets(presets, setChainSlotCount);
       } finally {
         setActivating(false);
       }
@@ -51,22 +30,26 @@ function ChainBuilderInner() {
     [setChainSlotCount],
   );
 
+  const applyPresets = useCallback(
+    (next: string[]) => {
+      updateChainPresets(activeIdx, next);
+      activate(next);
+    },
+    [activeIdx, updateChainPresets, activate],
+  );
+
   const addPreset = useCallback(
     (name: string) => {
-      const next = [...chainPresets, name];
-      setChainPresets(next);
-      activateChain(next);
+      applyPresets([...chainPresets, name]);
     },
-    [chainPresets, setChainPresets, activateChain],
+    [chainPresets, applyPresets],
   );
 
   const removePreset = useCallback(
     (index: number) => {
-      const next = chainPresets.filter((_, i) => i !== index);
-      setChainPresets(next);
-      activateChain(next);
+      applyPresets(chainPresets.filter((_, i) => i !== index));
     },
-    [chainPresets, setChainPresets, activateChain],
+    [chainPresets, applyPresets],
   );
 
   const handleChainDrop = useCallback(
@@ -93,11 +76,10 @@ function ChainBuilderInner() {
         const next = [...chainPresets];
         const [moved] = next.splice(fromIdx, 1);
         next.splice(toIdx, 0, moved);
-        setChainPresets(next);
-        activateChain(next);
+        applyPresets(next);
       }
     },
-    [chainPresets, setChainPresets, addPreset, activateChain],
+    [chainPresets, addPreset, applyPresets],
   );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -107,13 +89,12 @@ function ChainBuilderInner() {
 
   const handleClickPreset = useCallback(
     (name: string) => {
-      setChainPresets([name]);
-      activateChain([name]);
+      applyPresets([name]);
     },
-    [setChainPresets, activateChain],
+    [applyPresets],
   );
 
-  const slotsOver = chainSlotCount > MAX_SLOTS;
+  const slotsOver = chainSlotCount > 8;
 
   return (
     <div
@@ -131,7 +112,9 @@ function ChainBuilderInner() {
     >
       {/* Chain strip */}
       <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 8 }}>
-        <span style={{ fontSize: 9, color: "#665c54", marginRight: 4 }}>chain:</span>
+        <span style={{ fontSize: 9, color: "#665c54", marginRight: 4 }}>
+          C{activeIdx + 1}:
+        </span>
         <div
           ref={dropRef}
           onDrop={handleChainDrop}
@@ -159,7 +142,7 @@ function ChainBuilderInner() {
         </div>
         {chainSlotCount > 0 && (
           <span style={{ fontSize: 9, color: slotsOver ? "#fb4934" : "#665c54" }}>
-            {chainSlotCount}/{MAX_SLOTS}
+            {chainSlotCount}/8
           </span>
         )}
         {activating && <span style={{ fontSize: 9, color: "#fabd2f" }}>...</span>}
