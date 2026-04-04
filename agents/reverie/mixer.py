@@ -129,6 +129,7 @@ class ReverieMixer:
         from agents.reverie.governance import read_consent_phase
 
         ctx = self._context.assemble()
+        self._pipeline.set_seeking(ctx.stimmung_stance == "seeking")
         consent_phase = read_consent_phase()
         gov_ctx = SystemContext(
             stimmung_stance=ctx.stimmung_stance,

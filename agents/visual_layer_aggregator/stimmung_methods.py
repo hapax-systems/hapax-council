@@ -101,6 +101,27 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
     # 6b. DMN health
     update_dmn_health(agg._stimmung_collector)
 
+    # 6c. Exploration deficit
+    try:
+        from shared.exploration_writer import ExplorationReader
+
+        reader = ExplorationReader()
+        signals = reader.read_all()
+        if signals:
+            boredom_vals = [s.get("boredom_index", 0.0) for s in signals.values()]
+            curiosity_vals = [s.get("curiosity_index", 0.0) for s in signals.values()]
+            deficit = max(
+                0.0,
+                min(
+                    1.0,
+                    sum(boredom_vals) / len(boredom_vals)
+                    - sum(curiosity_vals) / len(curiosity_vals),
+                ),
+            )
+            agg._stimmung_collector.update_exploration(deficit)
+    except Exception:
+        log.debug("Exploration deficit read failed", exc_info=True)
+
     # 7. Snapshot
     prev_stance = agg._stimmung.overall_stance.value if agg._stimmung else "nominal"
     agg._stimmung = agg._stimmung_collector.snapshot()
