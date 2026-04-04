@@ -109,7 +109,7 @@ def state_reader_loop(compositor: Any) -> None:
 
         # Camera profiles every ~10s
         profile_check_counter += 1
-        if profile_check_counter >= 10:
+        if profile_check_counter >= 100:
             profile_check_counter = 0
             try:
                 evaluate_camera_profile(compositor)
@@ -145,4 +145,4 @@ def state_reader_loop(compositor: Any) -> None:
             except Exception as exc:
                 log.debug("Failed to process FX request: %s", exc)
                 fx_request_path.unlink(missing_ok=True)
-        time.sleep(1.0)
+        time.sleep(0.1)
