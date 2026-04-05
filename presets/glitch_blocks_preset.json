@@ -37,6 +37,16 @@
         "vignette_strength": 0.3,
         "sediment_strength": 0.1
       }
+    },
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "saturation": 1.0,
+        "brightness": 1.0,
+        "contrast": 1.0,
+        "sepia": 0.0,
+        "hue_rotate": 0.0
+      }
     }
   },
   "edges": [
@@ -54,6 +64,10 @@
     ],
     [
       "stutter",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
       "content_layer"
     ],
     [
