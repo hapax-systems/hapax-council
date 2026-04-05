@@ -98,7 +98,7 @@ function generateRandomSequence(): PresetChain[] {
     chains.push({
       id: crypto.randomUUID(),
       presets,
-      durationSeconds: 20 + Math.floor(Math.random() * 25),
+      durationSeconds: 8 + Math.floor(Math.random() * 8), // 8-15s
       source: (["live", "live", "live", "smooth", "hls"] as const)[Math.floor(Math.random() * 5)],
     });
   }
