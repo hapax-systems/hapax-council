@@ -7,8 +7,8 @@
       "type": "colorgrade",
       "params": {
         "brightness": 1.15,
-        "contrast": 1.4,
-        "saturation": 1.5
+        "contrast": 1.2,
+        "saturation": 1.4
       }
     },
     "glitch_block": {

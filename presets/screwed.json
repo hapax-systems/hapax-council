@@ -15,8 +15,8 @@
     "stutter": {
       "type": "stutter",
       "params": {
-        "freeze_chance": 0.4,
-        "replay_frames": 10
+        "freeze_chance": 0.15,
+        "replay_frames": 3
       }
     },
     "warp": {
