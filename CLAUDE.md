@@ -10,7 +10,7 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 
 **Three tiers**:
 - **Tier 1** — Interactive interfaces (hapax-logos Tauri native app, waybar GTK4 status bar, VS Code extension)
-- **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000). Local: TabbyAPI serves Qwen3.5-35B-A3B (EXL3) on `:5000` for `local-fast`/`coding`/`reasoning`. No Ollama inference — Ollama is GPU-isolated (`CUDA_VISIBLE_DEVICES=""`) and used only for CPU embedding (`nomic-embed-cpu`). `qwen3:8b` deleted from Ollama and LiteLLM. See `systemd/README.md § Ollama GPU Isolation`. Cloud: Claude Sonnet/Opus for `balanced`/governance, Gemini Flash for `fast`/vision.
+- **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000). Local: TabbyAPI serves Qwen3.5-9B (EXL3) on `:5000` for `local-fast`/`coding`/`reasoning`. No Ollama inference — Ollama is GPU-isolated (`CUDA_VISIBLE_DEVICES=""`) and used only for CPU embedding (`nomic-embed-cpu`). `qwen3:8b` deleted from Ollama and LiteLLM. See `systemd/README.md § Ollama GPU Isolation`. Cloud: Claude Sonnet/Opus for `balanced`/governance, Gemini Flash for `fast`/vision.
 - **Tier 3** — Deterministic agents (sync, health, maintenance — no LLM calls)
 
 **Reactive engine** (`logos/engine/`): inotify watcher → 14 rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).
@@ -264,7 +264,7 @@ Destructive command detection strips quoted strings before matching to prevent f
 
 ## Key Modules
 
-- **`shared/config.py`** — Model aliases (`fast`→gemini-flash, `balanced`→claude-sonnet, `local-fast`/`coding`/`reasoning`→TabbyAPI Qwen3.5-35B-A3B), `get_model_adaptive()` for stimmung-aware routing, LiteLLM/Qdrant clients, CPU embedding via Ollama nomic-embed-cpu (Ollama is GPU-isolated, CPU only)
+- **`shared/config.py`** — Model aliases (`fast`→gemini-flash, `balanced`→claude-sonnet, `local-fast`/`coding`/`reasoning`→TabbyAPI Qwen3.5-9B), `get_model_adaptive()` for stimmung-aware routing, LiteLLM/Qdrant clients, CPU embedding via Ollama nomic-embed-cpu (Ollama is GPU-isolated, CPU only)
 - **`shared/working_mode.py`** — Reads `~/.cache/hapax/working-mode` (research/rnd). CLI: `hapax-working-mode`
 - **`shared/notify.py`** — `send_notification()` for ntfy + desktop
 - **`shared/frontmatter.py`** — Canonical frontmatter parser (never duplicate this)
