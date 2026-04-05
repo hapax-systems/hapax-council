@@ -75,6 +75,17 @@ class StudioCompositor:
     def _on_graph_plan_changed(self, old_plan: Any, new_plan: Any) -> None:
         if hasattr(self, "_slot_pipeline") and self._slot_pipeline is not None:
             self._slot_pipeline.activate_plan(new_plan)
+            # Switch FX input source if plan specifies non-live source
+            if hasattr(self, "_fx_input_selector") and hasattr(new_plan, "layer_sources"):
+                source = "@live"
+                for s in new_plan.layer_sources:
+                    if s in ("@smooth", "@hls"):
+                        source = s
+                        break
+                pads = getattr(self, "_fx_input_pads", {})
+                if source in pads:
+                    self._fx_input_selector.set_property("active-pad", pads[source])
+                    log.info("FX input switched to: %s", source)
             log.info("Slot pipeline activated: %s", new_plan.name if new_plan else "none")
 
     def _resolve_camera_role(self, element: Any) -> str | None:
