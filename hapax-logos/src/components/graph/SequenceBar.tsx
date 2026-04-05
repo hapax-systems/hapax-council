@@ -48,18 +48,23 @@ const DESTRUCTIVE_PRESETS = new Set([
   "dither_retro", "sculpture", "neon",
 ]);
 
-// Additive presets layer well — can go anywhere in chain
-const ADDITIVE_PRESETS = new Set([
-  "ghost", "trails", "feedback_preset", "datamosh", "datamosh_heavy",
-  "glitch_blocks_preset", "pixsort_preset", "vhs_preset", "screwed",
-  "trap", "ambient", "heartbeat", "fisheye_pulse", "kaleidodream",
-  "tunnelvision", "mirror_rorschach", "voronoi_crystal", "diff_preset",
-  "slitscan_preset", "nightvision",
+// Highly obscuring additive presets — can go anywhere, destroy facial detail
+const OBSCURING_PRESETS = new Set([
+  "datamosh", "datamosh_heavy", "glitch_blocks_preset", "pixsort_preset",
+  "vhs_preset", "trap", "nightvision", "feedback_preset", "screwed",
+]);
+
+// Light additive presets — layer well but don't fully obscure
+const LIGHT_PRESETS = new Set([
+  "ghost", "trails", "ambient", "heartbeat", "fisheye_pulse",
+  "kaleidodream", "tunnelvision", "mirror_rorschach", "voronoi_crystal",
+  "diff_preset", "slitscan_preset",
 ]);
 
 function generateRandomSequence(): PresetChain[] {
   const allPresets = PRESET_CATEGORIES.flatMap((c) => c.presets);
-  const additive = allPresets.filter((p) => ADDITIVE_PRESETS.has(p));
+  const obscuring = allPresets.filter((p) => OBSCURING_PRESETS.has(p));
+  const light = allPresets.filter((p) => LIGHT_PRESETS.has(p));
   const destructive = allPresets.filter((p) => DESTRUCTIVE_PRESETS.has(p));
   const numChains = 6 + Math.floor(Math.random() * 5);
   const chains: PresetChain[] = [];
@@ -68,28 +73,26 @@ function generateRandomSequence(): PresetChain[] {
   for (let i = 0; i < numChains; i++) {
     const presets: string[] = [];
 
-    // Decide chain structure:
-    // 50% chance: 1 additive solo
-    // 30% chance: 2 additive chained
-    // 20% chance: 1 additive + 1 destructive (destructive last)
+    // Every chain MUST include at least one highly obscuring preset
+    const shuffledObs = [...obscuring].sort(() => Math.random() - 0.5);
+    const availObs = shuffledObs.filter((p) => !usedRecently.includes(p));
+    const obsPool = availObs.length > 0 ? availObs : shuffledObs;
+
+    // Always start with an obscuring preset
+    presets.push(obsPool[0]);
+
+    // 40% chance: add a light preset for layering
+    // 30% chance: add a destructive preset as finisher
+    // 30% chance: solo obscuring
     const roll = Math.random();
 
-    const shuffledAdd = [...additive].sort(() => Math.random() - 0.5);
-    const available = shuffledAdd.filter((p) => !usedRecently.includes(p));
-    const pool = available.length >= 2 ? available : shuffledAdd;
-
-    if (roll < 0.5) {
-      // Solo additive
-      presets.push(pool[0]);
-    } else if (roll < 0.8) {
-      // 2 additive
-      presets.push(pool[0]);
-      if (pool[1] && pool[1] !== pool[0]) presets.push(pool[1]);
-    } else {
-      // Additive + destructive (destructive LAST)
-      presets.push(pool[0]);
+    if (roll < 0.4) {
+      const shuffledLight = [...light].sort(() => Math.random() - 0.5);
+      const pick = shuffledLight.find((p) => !presets.includes(p));
+      if (pick) presets.push(pick);
+    } else if (roll < 0.7) {
       const shuffledDest = [...destructive].sort(() => Math.random() - 0.5);
-      presets.push(shuffledDest[0]);
+      presets.push(shuffledDest[0]); // destructive LAST
     }
 
     usedRecently.length = 0;
