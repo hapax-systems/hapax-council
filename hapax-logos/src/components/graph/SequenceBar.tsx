@@ -42,73 +42,37 @@ export async function activatePresets(
   }
 }
 
-// Destructive presets override everything before them — SOLO ONLY or LAST in chain
-const DESTRUCTIVE_PRESETS = new Set([
-  "silhouette", "ascii_preset", "halftone_preset", "thermal_preset",
-  "dither_retro", "sculpture", "neon", "pixsort_preset", "feedback_preset",
-  "ambient",
-]);
-
-// Highly obscuring additive presets — chain well, destroy facial detail
-const OBSCURING_PRESETS = new Set([
-  "datamosh", "datamosh_heavy", "glitch_blocks_preset",
-  "vhs_preset", "trap", "nightvision", "screwed",
-]);
-
-// Light additive presets — layer well but don't fully obscure
-const LIGHT_PRESETS = new Set([
-  "ghost", "trails", "heartbeat", "fisheye_pulse",
-  "kaleidodream", "tunnelvision", "mirror_rorschach", "voronoi_crystal",
-  "diff_preset", "slitscan_preset",
-]);
+// With chain-safe caps (brightness/contrast ≤1.2) and compounding node
+// neutralization (only last colorgrade/bloom/vignette applies), any
+// preset can chain with any other. Categories are purely for shuffle
+// variety — not safety exclusions.
 
 function generateRandomSequence(): PresetChain[] {
-  const allPresets = PRESET_CATEGORIES.flatMap((c) => c.presets);
-  const obscuring = allPresets.filter((p) => OBSCURING_PRESETS.has(p));
-  const light = allPresets.filter((p) => LIGHT_PRESETS.has(p));
-  const destructive = allPresets.filter((p) => DESTRUCTIVE_PRESETS.has(p));
+  const allPresets = PRESET_CATEGORIES.flatMap((c) => c.presets)
+    .filter((p) => p !== "clean" && p !== "echo" && p !== "reverie_vocabulary");
   const numChains = 8 + Math.floor(Math.random() * 5); // 8-12 chains
   const chains: PresetChain[] = [];
-  const usedRecently: string[] = [];
+  let lastUsed: string[] = [];
 
   for (let i = 0; i < numChains; i++) {
-    const presets: string[] = [];
+    // Shuffle all presets, exclude recently used for variety
+    const pool = allPresets
+      .filter((p) => !lastUsed.includes(p))
+      .sort(() => Math.random() - 0.5);
+    const fallback = allPresets.sort(() => Math.random() - 0.5);
+    const available = pool.length >= 3 ? pool : fallback;
 
-    // Every chain MUST include at least one highly obscuring preset
-    const shuffledObs = [...obscuring].sort(() => Math.random() - 0.5);
-    const availObs = shuffledObs.filter((p) => !usedRecently.includes(p));
-    const obsPool = availObs.length > 0 ? availObs : shuffledObs;
+    // Pick 2-3 presets (70% chance of 3)
+    const chainSize = Math.random() < 0.7 ? 3 : 2;
+    const presets = available.slice(0, chainSize);
 
-    // Always start with an obscuring preset
-    presets.push(obsPool[0]);
-
-    // ALWAYS add a second preset to fill slots
-    const shuffledLight = [...light].sort(() => Math.random() - 0.5);
-    const lightPick = shuffledLight.find((p) => !presets.includes(p));
-    if (lightPick) presets.push(lightPick);
-
-    // 50% chance: add a third (destructive finisher OR another obscuring)
-    if (Math.random() < 0.5) {
-      if (Math.random() < 0.4) {
-        // Destructive finisher
-        const shuffledDest = [...destructive].sort(() => Math.random() - 0.5);
-        const destPick = shuffledDest.find((p) => !presets.includes(p));
-        if (destPick) presets.push(destPick);
-      } else {
-        // Another obscuring
-        const obsPick2 = obsPool.find((p) => !presets.includes(p));
-        if (obsPick2) presets.push(obsPick2);
-      }
-    }
-
-    usedRecently.length = 0;
-    usedRecently.push(...presets);
+    lastUsed = [...presets];
 
     chains.push({
       id: crypto.randomUUID(),
       presets,
       durationSeconds: 25 + Math.floor(Math.random() * 15), // 25-40s
-      source: (["live", "live", "live", "smooth", "hls"] as const)[Math.floor(Math.random() * 5)],
+      source: "live",
     });
   }
   return chains;

@@ -87,8 +87,10 @@ function OutputNodeInner({ data, selected }: NodeProps) {
   const { label } = data as OutputNodeData;
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isFullscreen = useStudioGraph((s) => s.outputFullscreen);
   const setIsFullscreen = useStudioGraph((s) => s.setOutputFullscreen);
-  const isStale = useFxStream(imgRef);
+  // Don't run stream when fullscreen is active — FullscreenOverlay has its own
+  const isStale = useFxStream(isFullscreen ? { current: null } : imgRef);
 
   // Native dblclick listener on capture phase — fires before ReactFlow can swallow it
   useEffect(() => {

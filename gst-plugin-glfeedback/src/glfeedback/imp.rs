@@ -251,8 +251,21 @@ impl GLFilterImpl for GlFeedback {
                     if let Some(context) = gst_gl::prelude::GLBaseFilterExt::context(&*filter) {
                         match self.compile_shader(&context, &frag_src) {
                             Ok(new_shader) => {
-                                self.state.lock().unwrap().as_mut().unwrap().shader = new_shader;
-                                gst::info!(gst::CAT_RUST, "Shader recompiled OK ({} chars)", frag_src.len());
+                                let mut guard = self.state.lock().unwrap();
+                                let s = guard.as_mut().unwrap();
+                                s.shader = new_shader;
+                                // Clear accumulation buffers on shader change to prevent
+                                // stale frame data from previous shader bleeding through.
+                                for i in 0..2 {
+                                    unsafe {
+                                        gl::BindFramebuffer(gl::FRAMEBUFFER, s.accum_fbos[i]);
+                                        gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+                                        gl::Clear(gl::COLOR_BUFFER_BIT);
+                                    }
+                                }
+                                unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, 0); }
+                                drop(guard);
+                                gst::info!(gst::CAT_RUST, "Shader recompiled OK ({} chars), accum cleared", frag_src.len());
                             }
                             Err(e) => {
                                 gst::error!(gst::CAT_RUST, "Shader recompile FAILED: {:?}", e);
