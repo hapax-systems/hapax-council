@@ -16,9 +16,6 @@ void main() {
     float theta = atan(uv.y, uv.x);
     float rd = r * (1.0 + u_strength * r * r);
     vec2 distorted = center + rd * vec2(cos(theta), sin(theta)) / u_zoom;
-    if (distorted.x < 0.0 || distorted.x > 1.0 || distorted.y < 0.0 || distorted.y > 1.0) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-    } else {
-        gl_FragColor = texture2D(tex, distorted);
-    }
+    distorted = clamp(distorted, 0.0, 1.0);
+    gl_FragColor = texture2D(tex, distorted);
 }
