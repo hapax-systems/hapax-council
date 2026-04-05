@@ -1,8 +1,9 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { useStudioGraph } from "../../stores/studioGraphStore";
+import { useStudioGraph, type PresetChain } from "../../stores/studioGraphStore";
 import { fetchPresetGraph, type EffectGraphJson } from "./presetLoader";
 import { mergePresetGraphs, countSlots, MAX_SLOTS } from "./presetMerger";
 import { api } from "../../api/client";
+import { PRESET_CATEGORIES } from "./presetData";
 
 /** Activate a chain of presets on the compositor. */
 export async function activatePresets(
@@ -33,6 +34,27 @@ export async function activatePresets(
   await api.put("/studio/effect/graph", merged);
 }
 
+function generateRandomSequence(): PresetChain[] {
+  const allPresets = PRESET_CATEGORIES.flatMap((c) => c.presets);
+  const numChains = 5 + Math.floor(Math.random() * 4); // 5-8 chains
+  const chains: PresetChain[] = [];
+  for (let i = 0; i < numChains; i++) {
+    const numPresets = 1 + Math.floor(Math.random() * 2); // 1-2 presets per chain
+    const presets: string[] = [];
+    for (let j = 0; j < numPresets; j++) {
+      const pick = allPresets[Math.floor(Math.random() * allPresets.length)];
+      if (!presets.includes(pick)) presets.push(pick);
+    }
+    chains.push({
+      id: crypto.randomUUID(),
+      presets,
+      durationSeconds: 15 + Math.floor(Math.random() * 31), // 15-45s
+      source: "live",
+    });
+  }
+  return chains;
+}
+
 const BLOCK_HEIGHT = 52;
 const MIN_BLOCK_WIDTH = 120;
 
@@ -49,6 +71,7 @@ function SequenceBarInner() {
   const setActiveChainIndex = useStudioGraph((s) => s.setActiveChainIndex);
   const setSequencePlaying = useStudioGraph((s) => s.setSequencePlaying);
   const setSequenceLooping = useStudioGraph((s) => s.setSequenceLooping);
+  const setSequenceChains = useStudioGraph((s) => s.setSequenceChains);
   const addChain = useStudioGraph((s) => s.addChain);
   const removeChain = useStudioGraph((s) => s.removeChain);
   const updateChainDuration = useStudioGraph((s) => s.updateChainDuration);
@@ -104,8 +127,17 @@ function SequenceBarInner() {
     const nextIdx = activeChainIndex + 1;
     if (nextIdx >= chains.length) {
       if (looping) {
+        // Re-randomize if this was a shuffle sequence (≥5 chains with random durations)
+        // Always re-generate when looping to keep the sequence fresh
+        const newChains = generateRandomSequence();
+        setSequenceChains(newChains);
         setActiveChainIndex(0);
-        activateIndex(0);
+        // activateIndex uses the stale chains closure, so call activatePresets directly
+        const firstChain = newChains[0];
+        if (firstChain) {
+          const chainSource = "@" + (firstChain.source ?? "live");
+          activatePresets(firstChain.presets, setChainSlotCount, chainSource).catch(() => {});
+        }
         elapsedRef.current = 0;
         setElapsed(0);
       } else {
@@ -117,7 +149,7 @@ function SequenceBarInner() {
       elapsedRef.current = 0;
       setElapsed(0);
     }
-  }, [activeChainIndex, chains.length, looping, setActiveChainIndex, activateIndex, setSequencePlaying]);
+  }, [activeChainIndex, chains.length, looping, setActiveChainIndex, activateIndex, setSequencePlaying, setSequenceChains, setChainSlotCount]);
 
   // Timer effect
   useEffect(() => {
@@ -156,6 +188,21 @@ function SequenceBarInner() {
     }
     setSequencePlaying(!playing);
   }, [playing, activeChainIndex, chains.length, activateIndex, setSequencePlaying]);
+
+  const handleShuffle = useCallback(() => {
+    const newChains = generateRandomSequence();
+    setSequenceChains(newChains);
+    setActiveChainIndex(0);
+    setSequenceLooping(true);
+    setSequencePlaying(true);
+    elapsedRef.current = 0;
+    setElapsed(0);
+    const firstChain = newChains[0];
+    if (firstChain) {
+      const chainSource = "@" + (firstChain.source ?? "live");
+      activatePresets(firstChain.presets, setChainSlotCount, chainSource).catch(() => {});
+    }
+  }, [setSequenceChains, setActiveChainIndex, setSequenceLooping, setSequencePlaying, setChainSlotCount]);
 
   const handleDurationClick = useCallback(
     (e: React.MouseEvent, idx: number) => {
@@ -238,6 +285,25 @@ function SequenceBarInner() {
           }}
         >
           {playing ? "⏸" : "▶"}
+        </button>
+
+        {/* Shuffle */}
+        <button
+          onClick={handleShuffle}
+          title="Random sequence"
+          style={{
+            background: "none",
+            border: "1px solid #504945",
+            borderRadius: 2,
+            padding: "2px 6px",
+            fontSize: 9,
+            fontFamily: "JetBrains Mono, monospace",
+            color: "#928374",
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+        >
+          shuffle
         </button>
 
         {/* Chain blocks */}
