@@ -1,27 +1,35 @@
 {
   "name": "Glitch Blocks",
-  "description": "Glitch blocks",
-  "transition_ms": 500,
+  "description": "Structured block corruption",
+  "transition_ms": 300,
   "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.6,
+        "contrast": 1.5,
+        "saturation": 1.5
+      }
+    },
     "glitch_block": {
       "type": "glitch_block",
       "params": {
-        "intensity": 0.8,
-        "rgb_split": 0.7,
-        "block_size": 20
-      }
-    },
-    "chroma": {
-      "type": "chromatic_aberration",
-      "params": {
-        "offset_x": 8,
-        "offset_y": 4
+        "intensity": 0.85,
+        "rgb_split": 0.6,
+        "block_size": 12
       }
     },
     "stutter": {
       "type": "stutter",
       "params": {
-        "freeze_chance": 0.2
+        "freeze_chance": 0.1
+      }
+    },
+    "chroma": {
+      "type": "chromatic_aberration",
+      "params": {
+        "offset_x": 6,
+        "offset_y": 3
       }
     },
     "out": {
@@ -35,38 +43,30 @@
     "postprocess": {
       "type": "postprocess",
       "params": {
-        "vignette_strength": 0.3,
-        "sediment_strength": 0.1
-      }
-    },
-    "colorgrade": {
-      "type": "colorgrade",
-      "params": {
-        "brightness": 1.5,
-        "contrast": 1.4,
-        "saturation": 1.3
+        "vignette_strength": 0.15,
+        "sediment_strength": 0.05
       }
     }
   },
   "edges": [
     [
       "@live",
-      "glitch_block"
-    ],
-    [
-      "glitch_block",
-      "chroma"
-    ],
-    [
-      "chroma",
-      "stutter"
-    ],
-    [
-      "stutter",
       "colorgrade"
     ],
     [
       "colorgrade",
+      "glitch_block"
+    ],
+    [
+      "glitch_block",
+      "stutter"
+    ],
+    [
+      "stutter",
+      "chroma"
+    ],
+    [
+      "chroma",
       "content_layer"
     ],
     [

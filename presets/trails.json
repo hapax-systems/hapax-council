@@ -1,30 +1,32 @@
 {
   "name": "Trails",
-  "description": "Heavy additive motion",
+  "description": "Additive motion persistence",
   "transition_ms": 500,
   "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.5,
+        "contrast": 1.2,
+        "saturation": 1.0
+      }
+    },
     "trail": {
       "type": "trail",
       "params": {
         "fade": 0.04,
         "blend_mode": "lighter",
         "opacity": 0.5,
-        "drift_x": 2,
-        "drift_y": 1
+        "drift_x": 1,
+        "drift_y": 0.5
       }
     },
     "bloom": {
       "type": "bloom",
       "params": {
-        "threshold": 0.2,
-        "radius": 14,
-        "alpha": 0.4
-      }
-    },
-    "grain": {
-      "type": "noise_overlay",
-      "params": {
-        "intensity": 0.04
+        "threshold": 0.25,
+        "radius": 12,
+        "alpha": 0.35
       }
     },
     "out": {
@@ -38,16 +40,8 @@
     "postprocess": {
       "type": "postprocess",
       "params": {
-        "vignette_strength": 0.3,
-        "sediment_strength": 0.1
-      }
-    },
-    "colorgrade": {
-      "type": "colorgrade",
-      "params": {
-        "brightness": 1.5,
-        "contrast": 1.2,
-        "saturation": 1.0
+        "vignette_strength": 0.25,
+        "sediment_strength": 0.08
       }
     }
   },
@@ -66,10 +60,6 @@
     ],
     [
       "bloom",
-      "grain"
-    ],
-    [
-      "grain",
       "content_layer"
     ],
     [
@@ -87,15 +77,7 @@
       "param": "opacity",
       "source": "audio_rms",
       "scale": 0.3,
-      "offset": 0.3,
-      "smoothing": 0.85
-    },
-    {
-      "node": "bloom",
-      "param": "alpha",
-      "source": "audio_beat",
-      "scale": 0.2,
-      "offset": 0.25,
+      "offset": 0.0,
       "smoothing": 0.7
     }
   ],

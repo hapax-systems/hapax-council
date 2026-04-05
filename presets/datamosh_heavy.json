@@ -1,29 +1,36 @@
 {
   "name": "Datamosh Heavy",
-  "description": "Datamosh heavy",
-  "transition_ms": 500,
+  "description": "Extreme block corruption",
+  "transition_ms": 200,
   "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.8,
+        "contrast": 1.6,
+        "saturation": 1.5
+      }
+    },
     "glitch_block": {
       "type": "glitch_block",
       "params": {
-        "intensity": 0.8,
-        "rgb_split": 0.7,
+        "intensity": 0.95,
+        "rgb_split": 0.8,
         "block_size": 24
+      }
+    },
+    "stutter": {
+      "type": "stutter",
+      "params": {
+        "freeze_chance": 0.3,
+        "replay_frames": 6
       }
     },
     "chroma": {
       "type": "chromatic_aberration",
       "params": {
-        "offset_x": 8,
-        "offset_y": 4
-      }
-    },
-    "trail": {
-      "type": "trail",
-      "params": {
-        "fade": 0.04,
-        "blend_mode": "lighter",
-        "opacity": 0.3
+        "offset_x": 10,
+        "offset_y": 5
       }
     },
     "out": {
@@ -37,26 +44,30 @@
     "postprocess": {
       "type": "postprocess",
       "params": {
-        "vignette_strength": 0.3,
-        "sediment_strength": 0.1
+        "vignette_strength": 0.1,
+        "sediment_strength": 0.03
       }
     }
   },
   "edges": [
     [
       "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
       "glitch_block"
     ],
     [
       "glitch_block",
+      "stutter"
+    ],
+    [
+      "stutter",
       "chroma"
     ],
     [
       "chroma",
-      "trail"
-    ],
-    [
-      "trail",
       "content_layer"
     ],
     [

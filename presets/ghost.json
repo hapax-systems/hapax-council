@@ -1,24 +1,32 @@
 {
   "name": "Ghost",
-  "description": "Transparent echo",
+  "description": "Chronophotographic echo",
   "transition_ms": 500,
   "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.5,
+        "contrast": 1.2,
+        "saturation": 0.5
+      }
+    },
     "trail": {
       "type": "trail",
       "params": {
-        "fade": 0.03,
+        "fade": 0.02,
         "blend_mode": "screen",
-        "opacity": 0.6,
-        "drift_x": 1,
-        "drift_y": 0.5
+        "opacity": 0.5,
+        "drift_x": 0,
+        "drift_y": 0
       }
     },
     "bloom": {
       "type": "bloom",
       "params": {
-        "threshold": 0.2,
-        "radius": 15,
-        "alpha": 0.3
+        "threshold": 0.3,
+        "radius": 10,
+        "alpha": 0.2
       }
     },
     "out": {
@@ -34,14 +42,6 @@
       "params": {
         "vignette_strength": 0.3,
         "sediment_strength": 0.1
-      }
-    },
-    "colorgrade": {
-      "type": "colorgrade",
-      "params": {
-        "brightness": 1.5,
-        "contrast": 1.2,
-        "saturation": 0.7
       }
     }
   },

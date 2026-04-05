@@ -6,38 +6,36 @@
     "colorgrade": {
       "type": "colorgrade",
       "params": {
-        "brightness": 1.5,
-        "contrast": 1.6,
-        "saturation": 1.5
+        "brightness": 1.8,
+        "saturation": 2.0,
+        "contrast": 1.8
       }
     },
     "glitch_block": {
       "type": "glitch_block",
       "params": {
-        "intensity": 0.8,
-        "rgb_split": 0.6,
+        "intensity": 0.85,
+        "rgb_split": 0.7,
         "block_size": 16
       }
     },
     "chroma": {
       "type": "chromatic_aberration",
       "params": {
-        "offset_x": 8,
-        "offset_y": 4
-      }
-    },
-    "trail": {
-      "type": "trail",
-      "params": {
-        "fade": 0.06,
-        "blend_mode": "lighter",
-        "opacity": 0.4
+        "offset_x": 12,
+        "offset_y": 6
       }
     },
     "noise": {
       "type": "noise_overlay",
       "params": {
-        "intensity": 0.12
+        "intensity": 0.15
+      }
+    },
+    "scanlines": {
+      "type": "scanlines",
+      "params": {
+        "opacity": 0.1
       }
     },
     "out": {
@@ -51,7 +49,7 @@
     "postprocess": {
       "type": "postprocess",
       "params": {
-        "vignette_strength": 0.2,
+        "vignette_strength": 0.15,
         "sediment_strength": 0.05
       }
     }
@@ -71,14 +69,14 @@
     ],
     [
       "chroma",
-      "trail"
-    ],
-    [
-      "trail",
       "noise"
     ],
     [
       "noise",
+      "scanlines"
+    ],
+    [
+      "scanlines",
       "content_layer"
     ],
     [

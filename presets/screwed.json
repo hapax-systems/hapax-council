@@ -1,43 +1,41 @@
 {
   "name": "Screwed",
-  "description": "Heavy syrup",
+  "description": "DJ Screw chopped temporal",
   "transition_ms": 500,
   "nodes": {
-    "warp": {
-      "type": "warp",
+    "colorgrade": {
+      "type": "colorgrade",
       "params": {
-        "slice_count": 10,
-        "slice_amplitude": 3,
-        "pan_x": 2,
-        "pan_y": 1
+        "brightness": 1.2,
+        "saturation": 0.5,
+        "contrast": 1.1,
+        "sepia": 0.15
       }
     },
     "stutter": {
       "type": "stutter",
       "params": {
-        "freeze_chance": 0.2
+        "freeze_chance": 0.25,
+        "replay_frames": 5
       }
     },
-    "trail": {
-      "type": "trail",
+    "warp": {
+      "type": "warp",
       "params": {
-        "fade": 0.015,
-        "blend_mode": "screen",
-        "opacity": 0.6
+        "slice_count": 8,
+        "slice_amplitude": 2,
+        "pan_x": 1,
+        "pan_y": 0.5
       }
     },
     "syrup": {
       "type": "syrup",
       "params": {
-        "bottom_alpha": 0.4,
+        "bottom_alpha": 0.35,
         "color_r": 0.15,
         "color_g": 0.05,
         "color_b": 0.2
       }
-    },
-    "scanlines": {
-      "type": "scanlines",
-      "params": {}
     },
     "out": {
       "type": "output",
@@ -58,26 +56,22 @@
   "edges": [
     [
       "@live",
-      "warp"
+      "colorgrade"
     ],
     [
-      "warp",
+      "colorgrade",
       "stutter"
     ],
     [
       "stutter",
-      "trail"
+      "warp"
     ],
     [
-      "trail",
+      "warp",
       "syrup"
     ],
     [
       "syrup",
-      "scanlines"
-    ],
-    [
-      "scanlines",
       "content_layer"
     ],
     [
