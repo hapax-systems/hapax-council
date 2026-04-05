@@ -18,7 +18,7 @@ import httpx
 log = logging.getLogger("dmn.ollama")
 
 TABBY_CHAT_URL = "http://localhost:5000/v1/chat/completions"
-DMN_MODEL = "Qwen3.5-35B-A3B-exl3-3.00bpw"
+DMN_MODEL = "Qwen3.5-9B-exl3-5.00bpw"
 
 SENSORY_SYSTEM = (
     "You are a continuous situation monitor. Report WHAT is happening in one sentence. "
