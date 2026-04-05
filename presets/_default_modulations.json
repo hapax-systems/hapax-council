@@ -1,15 +1,15 @@
 {
   "default_modulations": [
-    {"node": "bloom", "param": "alpha", "source": "mixer_bass", "scale": 1.5, "offset": 0.0, "smoothing": 0.6},
-    {"node": "bloom", "param": "alpha", "source": "beat_pulse", "scale": 0.8, "offset": 0.0, "smoothing": 0.2},
-    {"node": "trail", "param": "opacity", "source": "mixer_energy", "scale": 1.5, "offset": 0.0, "smoothing": 0.7},
-    {"node": "colorgrade", "param": "brightness", "source": "beat_pulse", "scale": 0.3, "offset": 0.0, "smoothing": 0.2},
-    {"node": "colorgrade", "param": "saturation", "source": "mixer_mid", "scale": 1.0, "offset": 0.0, "smoothing": 0.7},
-    {"node": "colorgrade", "param": "hue_rotate", "source": "desk_centroid", "scale": 20.0, "offset": 0.0, "smoothing": 0.92},
-    {"node": "chromatic_aberration", "param": "offset_x", "source": "beat_pulse", "scale": 10.0, "offset": 0.0, "smoothing": 0.2},
-    {"node": "noise_overlay", "param": "intensity", "source": "mixer_high", "scale": 0.3, "offset": 0.0, "smoothing": 0.7},
-    {"node": "vignette", "param": "strength", "source": "beat_pulse", "scale": -0.3, "offset": 0.0, "smoothing": 0.3},
-    {"node": "drift", "param": "speed", "source": "desk_onset_rate", "scale": 0.3, "offset": 0.0, "smoothing": 0.7},
+    {"node": "bloom", "param": "alpha", "source": "mixer_bass", "scale": 3.0, "offset": 0.0, "smoothing": 0.5},
+    {"node": "bloom", "param": "alpha", "source": "beat_pulse", "scale": 2.0, "offset": 0.0, "smoothing": 0.15},
+    {"node": "trail", "param": "opacity", "source": "mixer_energy", "scale": 3.0, "offset": 0.0, "smoothing": 0.6},
+    {"node": "colorgrade", "param": "brightness", "source": "beat_pulse", "scale": 0.5, "offset": 0.0, "smoothing": 0.15},
+    {"node": "colorgrade", "param": "saturation", "source": "mixer_mid", "scale": 3.0, "offset": 0.0, "smoothing": 0.6},
+    {"node": "colorgrade", "param": "hue_rotate", "source": "desk_centroid", "scale": 40.0, "offset": 0.0, "smoothing": 0.9},
+    {"node": "chromatic_aberration", "param": "offset_x", "source": "beat_pulse", "scale": 20.0, "offset": 0.0, "smoothing": 0.15},
+    {"node": "noise_overlay", "param": "intensity", "source": "mixer_high", "scale": 1.0, "offset": 0.0, "smoothing": 0.6},
+    {"node": "vignette", "param": "strength", "source": "beat_pulse", "scale": -0.5, "offset": 0.0, "smoothing": 0.2},
+    {"node": "drift", "param": "speed", "source": "desk_onset_rate", "scale": 0.5, "offset": 0.0, "smoothing": 0.6},
     {"node": "breathing", "param": "rate", "source": "heart_rate", "scale": 1.5, "offset": 0.0, "smoothing": 0.95},
     {"node": "noise_overlay", "param": "intensity", "source": "stress", "scale": 0.1, "offset": 0.0, "smoothing": 0.95}
   ]

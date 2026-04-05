@@ -119,9 +119,9 @@ class CompositorAudioCapture:
 
         # RMS energy — fast attack, moderate decay, no multiplier saturation
         rms = float(np.sqrt(np.mean(samples**2)))
-        alpha = 0.4 if rms > self._smoothed_rms else 0.05  # fast attack, slow decay
+        alpha = 0.5 if rms > self._smoothed_rms else 0.2  # fast attack, moderate decay
         self._smoothed_rms = alpha * rms + (1 - alpha) * self._smoothed_rms
-        energy = min(1.0, self._smoothed_rms * 2.0)  # 2x not 5x — needs loud audio to hit 1.0
+        energy = min(1.0, self._smoothed_rms * 3.0)
 
         # Beat detection: spike above baseline
         self._beat_baseline = 0.995 * self._beat_baseline + 0.005 * rms  # faster baseline adapt
