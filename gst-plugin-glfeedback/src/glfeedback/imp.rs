@@ -33,6 +33,8 @@ struct State {
     accum_textures: [u32; 2],
     /// FBOs bound to the accum textures for blit operations.
     accum_fbos: [u32; 2],
+    /// Cached FBO for blit read operations (avoids per-frame alloc/free).
+    blit_read_fbo: u32,
     /// Which accumulation buffer holds the "previous frame" output.
     current_idx: usize,
     /// Resolution (for reallocation on caps change).
@@ -175,6 +177,7 @@ impl GLBaseFilterImpl for GlFeedback {
         *self.state.lock().unwrap() = Some(State {
             accum_textures: [0; 2],
             accum_fbos: [0; 2],
+            blit_read_fbo: 0,
             current_idx: 0,
             width: 0,
             height: 0,
@@ -190,6 +193,9 @@ impl GLBaseFilterImpl for GlFeedback {
                 if state.accum_textures[0] != 0 {
                     gl::DeleteTextures(2, state.accum_textures.as_ptr());
                     gl::DeleteFramebuffers(2, state.accum_fbos.as_ptr());
+                }
+                if state.blit_read_fbo != 0 {
+                    gl::DeleteFramebuffers(1, &state.blit_read_fbo);
                 }
             }
         }
@@ -261,13 +267,14 @@ impl GLFilterImpl for GlFeedback {
         }
 
         // Snapshot what we need from state (minimise lock duration)
-        let (prev_tex, next_fbo, next_idx, uniforms) = {
+        let (prev_tex, next_fbo, next_idx, blit_fbo, uniforms) = {
             let guard = self.state.lock().unwrap();
             let s = guard.as_ref().unwrap();
             let prev = s.accum_textures[s.current_idx];
             let next = 1 - s.current_idx;
+            let blit = s.blit_read_fbo;
             let props = self.props.lock().unwrap();
-            (prev, s.accum_fbos[next], next, props.uniforms.clone())
+            (prev, s.accum_fbos[next], next, blit, props.uniforms.clone())
         };
 
         // Borrow shader for the render callback
@@ -322,14 +329,13 @@ impl GLFilterImpl for GlFeedback {
             true
         }).map_err(|e| gst::loggable_error!(gst::CAT_RUST, "render_to_target: {e}"))?;
 
-        // Pass 2: blit output into next accumulation buffer
+        // Pass 2: blit output into next accumulation buffer (cached FBO)
         unsafe {
             let out_tex = output.texture_id();
             let w = output.texture_width();
             let h = output.texture_height();
 
-            let mut read_fbo = 0u32;
-            gl::GenFramebuffers(1, &mut read_fbo);
+            let read_fbo = blit_fbo;
             gl::BindFramebuffer(gl::READ_FRAMEBUFFER, read_fbo);
             gl::FramebufferTexture2D(
                 gl::READ_FRAMEBUFFER,
@@ -341,7 +347,6 @@ impl GLFilterImpl for GlFeedback {
             gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, next_fbo);
             gl::BlitFramebuffer(0, 0, w, h, 0, 0, w, h, gl::COLOR_BUFFER_BIT, gl::NEAREST);
             gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
-            gl::DeleteFramebuffers(1, &read_fbo);
         }
 
         // Advance ping-pong index
@@ -390,8 +395,12 @@ impl GlFeedback {
                 gl::DeleteTextures(2, state.accum_textures.as_ptr());
                 gl::DeleteFramebuffers(2, state.accum_fbos.as_ptr());
             }
+            if state.blit_read_fbo != 0 {
+                gl::DeleteFramebuffers(1, &state.blit_read_fbo);
+            }
             gl::GenTextures(2, state.accum_textures.as_mut_ptr());
             gl::GenFramebuffers(2, state.accum_fbos.as_mut_ptr());
+            gl::GenFramebuffers(1, &mut state.blit_read_fbo);
             for i in 0..2 {
                 gl::BindTexture(gl::TEXTURE_2D, state.accum_textures[i]);
                 gl::TexImage2D(

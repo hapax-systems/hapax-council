@@ -1,1 +1,50 @@
-{"node_type":"trail","glsl_fragment":"trail.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"fade":{"type":"float","default":0.04},"blend_mode":{"type":"enum","default":"lighter","enum_values":["lighter","screen","multiply","difference","overlay"]},"opacity":{"type":"float","default":0.5},"drift_x":{"type":"float","default":0.0},"drift_y":{"type":"float","default":0.0}},"temporal":true,"temporal_buffers":1}
+{
+  "node_type": "trail",
+  "glsl_fragment": "trail.frag",
+  "inputs": {
+    "in": "frame"
+  },
+  "outputs": {
+    "out": "frame"
+  },
+  "params": {
+    "fade": {
+      "type": "float",
+      "default": 0.04,
+      "min": 0.0,
+      "max": 0.2
+    },
+    "blend_mode": {
+      "type": "enum",
+      "default": "lighter",
+      "enum_values": [
+        "lighter",
+        "screen",
+        "multiply",
+        "difference",
+        "overlay",
+        "add"
+      ]
+    },
+    "opacity": {
+      "type": "float",
+      "default": 0.5,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "drift_x": {
+      "type": "float",
+      "default": 0.0,
+      "min": -20.0,
+      "max": 20.0
+    },
+    "drift_y": {
+      "type": "float",
+      "default": 0.0,
+      "min": -20.0,
+      "max": 20.0
+    }
+  },
+  "temporal": true,
+  "temporal_buffers": 1
+}
