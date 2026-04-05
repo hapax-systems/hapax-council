@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import time
 import uuid
 from collections import OrderedDict
@@ -15,6 +16,7 @@ from typing import Any
 from shared.affordance import ActivationState, CapabilityRecord, SelectionCandidate
 from shared.affordance_metrics import AffordanceMetrics
 from shared.embed_cache import DiskEmbeddingCache
+from shared.exploration import ExplorationSignal
 from shared.impingement import Impingement, render_impingement_text
 
 log = logging.getLogger("affordance_pipeline")
@@ -29,6 +31,24 @@ W_SIMILARITY = 0.50
 W_BASE_LEVEL = 0.20
 W_CONTEXT = 0.10
 W_THOMPSON = 0.20
+
+
+def _apply_exploration_noise(
+    candidates: list[SelectionCandidate],
+    signal: ExplorationSignal | None,
+    sigma_explore: float,
+) -> None:
+    """Apply boredom-proportional noise to candidate scores (15th control law).
+
+    When boredom_index > 0.4, inject Gaussian noise scaled by
+    sigma_explore * boredom_index. This disrupts monotonic winners
+    without affecting focused states. Modifies candidates in-place.
+    """
+    if signal is None or signal.boredom_index <= 0.4:
+        return
+    noise_scale = sigma_explore * signal.boredom_index
+    for c in candidates:
+        c.combined += random.gauss(0, noise_scale)
 
 
 class EmbeddingCache:
@@ -378,8 +398,12 @@ class AffordancePipeline:
         spread = float(len(self._activation))
         self._exploration.feed_interest("activation_spread", spread, 5.0)
         self._exploration.feed_error(0.0 if survivors else 1.0)
-        self._exploration.compute_and_publish()
+        sig = self._exploration.compute_and_publish()
         self._prev_source_hash = source_hash
+
+        # 15th control law: boredom-proportional scoring noise
+        _apply_exploration_noise(survivors, sig, self._exploration.sigma_explore)
+        survivors.sort(key=lambda c: -c.combined)
 
         return survivors
 
