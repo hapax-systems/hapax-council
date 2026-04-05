@@ -38,6 +38,8 @@ dependencies = [
     "uvloop>=0.21.0",
     "pillow>=11.3.0",
     "evdev>=1.9.3",
+    "pygobject>=3.56.2",
+    "pycairo>=1.29.0",
 ]
 
 [project.optional-dependencies]
