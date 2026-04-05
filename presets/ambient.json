@@ -1,36 +1,38 @@
 {
   "name": "Ambient",
-  "description": "Dim atmospheric",
-  "transition_ms": 500,
+  "description": "Warm atmospheric wash",
+  "transition_ms": 1000,
   "nodes": {
     "colorgrade": {
       "type": "colorgrade",
       "params": {
-        "brightness": 0.5,
-        "saturation": 0.4,
-        "contrast": 0.8
+        "brightness": 0.8,
+        "saturation": 0.5,
+        "contrast": 0.7,
+        "sepia": 0.3
       }
     },
     "drift": {
       "type": "drift",
       "params": {
-        "speed": 0.2,
-        "amplitude": 5,
-        "frequency": 1.0
+        "speed": 0.1,
+        "amplitude": 3,
+        "frequency": 0.5,
+        "coherence": 0.8
       }
     },
     "bloom": {
       "type": "bloom",
       "params": {
-        "threshold": 0.3,
-        "radius": 12,
-        "alpha": 0.2
+        "threshold": 0.15,
+        "radius": 20,
+        "alpha": 0.4
       }
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "strength": 0.5
+        "strength": 0.4
       }
     },
     "out": {
@@ -50,34 +52,13 @@
     }
   },
   "edges": [
-    [
-      "@live",
-      "colorgrade"
-    ],
-    [
-      "colorgrade",
-      "drift"
-    ],
-    [
-      "drift",
-      "bloom"
-    ],
-    [
-      "bloom",
-      "vignette"
-    ],
-    [
-      "vignette",
-      "content_layer"
-    ],
-    [
-      "content_layer",
-      "postprocess"
-    ],
-    [
-      "postprocess",
-      "out"
-    ]
+    ["@live", "colorgrade"],
+    ["colorgrade", "bloom"],
+    ["bloom", "drift"],
+    ["drift", "vignette"],
+    ["vignette", "content_layer"],
+    ["content_layer", "postprocess"],
+    ["postprocess", "out"]
   ],
   "modulations": [],
   "layer_palettes": {}

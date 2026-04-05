@@ -1,34 +1,36 @@
 {
   "name": "Night Vision",
-  "description": "Green phosphor",
+  "description": "Gen 3 image intensifier",
   "transition_ms": 500,
   "nodes": {
+    "nvtint": {
+      "type": "nightvision_tint",
+      "params": {
+        "green_intensity": 0.9,
+        "brightness": 3.0,
+        "contrast": 1.6
+      }
+    },
     "bloom": {
       "type": "bloom",
       "params": {
-        "threshold": 0.2,
-        "radius": 12,
-        "alpha": 0.4
-      }
-    },
-    "scanlines": {
-      "type": "scanlines",
-      "params": {
-        "opacity": 0.15
+        "threshold": 0.1,
+        "radius": 25,
+        "alpha": 0.7
       }
     },
     "noise": {
       "type": "noise_overlay",
       "params": {
-        "intensity": 0.08,
+        "intensity": 0.15,
         "animated": true
       }
     },
     "mask": {
       "type": "circular_mask",
       "params": {
-        "radius": 0.38,
-        "softness": 0.08
+        "radius": 0.35,
+        "softness": 0.04
       }
     },
     "out": {
@@ -42,52 +44,19 @@
     "postprocess": {
       "type": "postprocess",
       "params": {
-        "vignette_strength": 0.3,
-        "sediment_strength": 0.1
-      }
-    },
-    "nvtint": {
-      "type": "nightvision_tint",
-      "params": {
-        "green_intensity": 0.85,
-        "brightness": 2.5,
-        "contrast": 1.5
+        "vignette_strength": 0.4,
+        "sediment_strength": 0.05
       }
     }
   },
   "edges": [
-    [
-      "@live",
-      "nvtint"
-    ],
-    [
-      "nvtint",
-      "bloom"
-    ],
-    [
-      "bloom",
-      "scanlines"
-    ],
-    [
-      "scanlines",
-      "noise"
-    ],
-    [
-      "noise",
-      "mask"
-    ],
-    [
-      "mask",
-      "content_layer"
-    ],
-    [
-      "content_layer",
-      "postprocess"
-    ],
-    [
-      "postprocess",
-      "out"
-    ]
+    ["@live", "nvtint"],
+    ["nvtint", "bloom"],
+    ["bloom", "noise"],
+    ["noise", "mask"],
+    ["mask", "content_layer"],
+    ["content_layer", "postprocess"],
+    ["postprocess", "out"]
   ],
   "modulations": [],
   "layer_palettes": {}

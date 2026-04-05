@@ -1,27 +1,21 @@
 {
   "name": "Thermal IR",
-  "description": "Thermal infrared",
+  "description": "FLIR iron bow thermography",
   "transition_ms": 500,
   "nodes": {
-    "color_map": {
-      "type": "color_map",
+    "thermal": {
+      "type": "thermal",
       "params": {
-        "blend": 1.0
+        "edge_glow": 0.8,
+        "palette_shift": 0.0
       }
     },
-    "edge": {
-      "type": "edge_detect",
+    "colorgrade": {
+      "type": "colorgrade",
       "params": {
-        "threshold": 0.15,
-        "color_mode": 2
-      }
-    },
-    "bloom": {
-      "type": "bloom",
-      "params": {
-        "threshold": 0.5,
-        "radius": 6,
-        "alpha": 0.2
+        "brightness": 1.0,
+        "contrast": 1.0,
+        "saturation": 1.0
       }
     },
     "out": {
@@ -35,50 +29,17 @@
     "postprocess": {
       "type": "postprocess",
       "params": {
-        "vignette_strength": 0.3,
-        "sediment_strength": 0.1
-      }
-    },
-    "colorgrade": {
-      "type": "colorgrade",
-      "params": {
-        "saturation": 1.0,
-        "brightness": 1.0,
-        "contrast": 1.0,
-        "sepia": 0.0,
-        "hue_rotate": 0.0
+        "vignette_strength": 0.15,
+        "sediment_strength": 0.05
       }
     }
   },
   "edges": [
-    [
-      "@live",
-      "color_map"
-    ],
-    [
-      "color_map",
-      "edge"
-    ],
-    [
-      "edge",
-      "bloom"
-    ],
-    [
-      "bloom",
-      "colorgrade"
-    ],
-    [
-      "colorgrade",
-      "content_layer"
-    ],
-    [
-      "content_layer",
-      "postprocess"
-    ],
-    [
-      "postprocess",
-      "out"
-    ]
+    ["@live", "thermal"],
+    ["thermal", "colorgrade"],
+    ["colorgrade", "content_layer"],
+    ["content_layer", "postprocess"],
+    ["postprocess", "out"]
   ],
   "modulations": [],
   "layer_palettes": {}

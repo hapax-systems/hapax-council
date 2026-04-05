@@ -1,23 +1,31 @@
 {
   "name": "Sculpture",
-  "description": "Wireframe terrain",
+  "description": "Rutt-Etra wireframe terrain",
   "transition_ms": 500,
   "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 3.0,
+        "contrast": 1.5,
+        "saturation": 0.3
+      }
+    },
     "rutt_etra": {
       "type": "rutt_etra",
       "params": {
-        "displacement": 80,
-        "line_density": 8,
+        "displacement": 40,
+        "line_density": 5,
         "line_width": 2.0,
-        "color_mode": 1.0
+        "color_mode": 0.0
       }
     },
     "bloom": {
       "type": "bloom",
       "params": {
         "threshold": 0.05,
-        "radius": 10,
-        "alpha": 0.6
+        "radius": 8,
+        "alpha": 0.5
       }
     },
     "out": {
@@ -31,46 +39,18 @@
     "postprocess": {
       "type": "postprocess",
       "params": {
-        "vignette_strength": 0.3,
-        "sediment_strength": 0.1
-      }
-    },
-    "colorgrade": {
-      "type": "colorgrade",
-      "params": {
-        "saturation": 1.0,
-        "brightness": 1.0,
-        "contrast": 1.0,
-        "sepia": 0.0,
-        "hue_rotate": 0.0
+        "vignette_strength": 0.2,
+        "sediment_strength": 0.05
       }
     }
   },
   "edges": [
-    [
-      "@live",
-      "rutt_etra"
-    ],
-    [
-      "rutt_etra",
-      "bloom"
-    ],
-    [
-      "bloom",
-      "colorgrade"
-    ],
-    [
-      "colorgrade",
-      "content_layer"
-    ],
-    [
-      "content_layer",
-      "postprocess"
-    ],
-    [
-      "postprocess",
-      "out"
-    ]
+    ["@live", "colorgrade"],
+    ["colorgrade", "rutt_etra"],
+    ["rutt_etra", "bloom"],
+    ["bloom", "content_layer"],
+    ["content_layer", "postprocess"],
+    ["postprocess", "out"]
   ],
   "modulations": [],
   "layer_palettes": {}
