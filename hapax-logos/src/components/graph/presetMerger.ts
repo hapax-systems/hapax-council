@@ -138,4 +138,4 @@ export function countSlots(graphs: EffectGraphJson[]): number {
   return count;
 }
 
-export const MAX_SLOTS = 8;
+export const MAX_SLOTS = 16;

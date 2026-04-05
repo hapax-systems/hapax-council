@@ -30,7 +30,7 @@ class SlotPipeline:
     ``set_property("fragment", ...)`` is ignored after pipeline start.
     """
 
-    def __init__(self, registry: ShaderRegistry, num_slots: int = 8) -> None:
+    def __init__(self, registry: ShaderRegistry, num_slots: int = 16) -> None:
         self._registry = registry
         self._num_slots = num_slots
         self._slots: list[Any] = []
