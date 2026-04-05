@@ -7,15 +7,23 @@ content (text render, Qdrant query, etc.), and writes to the sources protocol.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
+
+from shared.config import embed_safe, get_qdrant
 
 log = logging.getLogger("reverie.content_resolvers")
 
 SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
 
 
-def resolve_narrative_text(narrative: str, level: float, sources_dir: Path = SOURCES_DIR) -> bool:
+def resolve_narrative_text(
+    narrative: str,
+    level: float,
+    sources_dir: Path = SOURCES_DIR,
+    recent_ids: deque | None = None,
+) -> bool:
     """Render imagination narrative as visible text on the visual surface."""
     from agents.reverie.content_injector import inject_text
 
@@ -28,11 +36,14 @@ def resolve_narrative_text(narrative: str, level: float, sources_dir: Path = SOU
     )
 
 
-def resolve_episodic_recall(narrative: str, level: float, sources_dir: Path = SOURCES_DIR) -> bool:
+def resolve_episodic_recall(
+    narrative: str,
+    level: float,
+    sources_dir: Path = SOURCES_DIR,
+    recent_ids: deque | None = None,
+) -> bool:
     """Query operator-episodes Qdrant collection for similar past experiences."""
     try:
-        from shared.config import embed_safe, get_qdrant
-
         embedding = embed_safe(narrative, prefix="search_query")
         if embedding is None:
             return _fallback_text("episodic_recall", f"Recalling: {narrative[:80]}", level)
@@ -41,24 +52,42 @@ def resolve_episodic_recall(narrative: str, level: float, sources_dir: Path = SO
         results = client.query_points(
             collection_name="operator-episodes",
             query=embedding,
-            limit=1,
+            limit=3,
         ).points
         if not results:
             return _fallback_text("episodic_recall", f"No episodes match: {narrative[:80]}", level)
 
-        top = results[0]
-        text = top.payload.get("narrative", top.payload.get("text", str(top.payload)))
+        # Recency penalty
+        recent_set = set(recent_ids) if recent_ids is not None else set()
+        non_recent = [pt for pt in results if str(pt.id) not in recent_set]
+        selected = non_recent[0] if non_recent else results[0]
+
+        if recent_ids is not None:
+            recent_ids.append(str(selected.id))
+
+        text = selected.payload.get(
+            "narrative", selected.payload.get("text", str(selected.payload))
+        )
         return _inject_recalled_text("episodic_recall", text[:400], level)
     except Exception:
         log.debug("Episodic recall failed", exc_info=True)
         return _fallback_text("episodic_recall", f"Recalling: {narrative[:80]}", level)
 
 
-def resolve_knowledge_recall(narrative: str, level: float, sources_dir: Path = SOURCES_DIR) -> bool:
-    """Query documents Qdrant collection for relevant knowledge."""
-    try:
-        from shared.config import embed_safe, get_qdrant
+def resolve_knowledge_recall(
+    narrative: str,
+    level: float,
+    sources_dir: Path = SOURCES_DIR,
+    recent_ids: deque | None = None,
+) -> bool:
+    """Query documents Qdrant collection for relevant knowledge.
 
+    Retrieves top-5, deduplicates by source filename, applies recency
+    penalty (ACT-R principle: recently returned content is suppressed
+    to prevent monotonic lock-on). Maintains the recruitment invariant:
+    narrative drives the query, recency modulates selection.
+    """
+    try:
         embedding = embed_safe(narrative, prefix="search_query")
         if embedding is None:
             return _fallback_text("knowledge_recall", f"Searching: {narrative[:80]}", level)
@@ -67,26 +96,46 @@ def resolve_knowledge_recall(narrative: str, level: float, sources_dir: Path = S
         results = client.query_points(
             collection_name="documents",
             query=embedding,
-            limit=1,
+            limit=5,
         ).points
         if not results:
             return _fallback_text(
                 "knowledge_recall", f"No documents match: {narrative[:80]}", level
             )
 
-        top = results[0]
-        text = top.payload.get("text", top.payload.get("content", str(top.payload)))
+        # Dedup by filename (same document chunked multiple times)
+        seen_files: set[str] = set()
+        unique: list = []
+        for pt in results:
+            fname = pt.payload.get("filename", pt.id)
+            if fname not in seen_files:
+                seen_files.add(fname)
+                unique.append(pt)
+
+        # Recency penalty: prefer documents not recently shown
+        recent_set = set(recent_ids) if recent_ids is not None else set()
+        non_recent = [pt for pt in unique if str(pt.id) not in recent_set]
+        selected = non_recent[0] if non_recent else unique[0]
+
+        # Track this selection
+        if recent_ids is not None:
+            recent_ids.append(str(selected.id))
+
+        text = selected.payload.get("text", selected.payload.get("content", str(selected.payload)))
         return _inject_recalled_text("knowledge_recall", text[:400], level)
     except Exception:
         log.debug("Knowledge recall failed", exc_info=True)
         return _fallback_text("knowledge_recall", f"Searching: {narrative[:80]}", level)
 
 
-def resolve_profile_recall(narrative: str, level: float, sources_dir: Path = SOURCES_DIR) -> bool:
+def resolve_profile_recall(
+    narrative: str,
+    level: float,
+    sources_dir: Path = SOURCES_DIR,
+    recent_ids: deque | None = None,
+) -> bool:
     """Query profile-facts Qdrant collection for operator preferences."""
     try:
-        from shared.config import embed_safe, get_qdrant
-
         embedding = embed_safe(narrative, prefix="search_query")
         if embedding is None:
             return _fallback_text("profile_recall", f"Profile: {narrative[:80]}", level)
@@ -107,7 +156,12 @@ def resolve_profile_recall(narrative: str, level: float, sources_dir: Path = SOU
         return _fallback_text("profile_recall", f"Profile: {narrative[:80]}", level)
 
 
-def resolve_waveform_viz(narrative: str, level: float, sources_dir: Path = SOURCES_DIR) -> bool:
+def resolve_waveform_viz(
+    narrative: str,
+    level: float,
+    sources_dir: Path = SOURCES_DIR,
+    recent_ids: deque | None = None,
+) -> bool:
     """Render current audio energy as a simple visual waveform indicator."""
     try:
         import json as json_mod

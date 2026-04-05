@@ -18,6 +18,11 @@ RECRUITMENT_THRESHOLD = 0.3
 DISMISSAL_THRESHOLD = 0.05
 REBUILD_COOLDOWN_S = 2.0
 
+# If a satellite hasn't been recruited for this many seconds after dismissal,
+# its habituation counter resets and re-recruitment starts fresh. Shorter gaps
+# (satellite flickers out and back) retain habituation.
+_HABITUATION_RESET_S = 15.0
+
 
 class SatelliteManager:
     """Manages satellite node recruitment, decay, and graph rebuilds."""
@@ -26,6 +31,8 @@ class SatelliteManager:
         self._core_vocab = core_vocab
         self._decay_rate = decay_rate
         self._recruited: dict[str, float] = {}
+        self._recruit_count: dict[str, int] = {}
+        self._last_recruit_ts: dict[str, float] = {}
         self._active_set: frozenset[str] = frozenset()
         self._last_rebuild = 0.0
 
@@ -38,11 +45,37 @@ class SatelliteManager:
         return len(self._recruited)
 
     def recruit(self, node_type: str, strength: float) -> None:
-        """Recruit a satellite node (or boost its strength if already recruited)."""
+        """Recruit a satellite node with habituating refresh.
+
+        First-ever recruitment (or after prolonged absence) sets full strength.
+        Re-recruitment of an active or recently-dismissed satellite applies
+        divisive normalization (Carandini-Heeger): gain = 1 / (1 + count * 0.5),
+        where count grows with each recruit call. Habituation resets when a
+        satellite has not been recruited for _HABITUATION_RESET_S seconds.
+        """
         if strength < RECRUITMENT_THRESHOLD:
             return
+        now = time.monotonic()
         prev = self._recruited.get(node_type, 0.0)
-        self._recruited[node_type] = max(prev, strength)
+        count = self._recruit_count.get(node_type, 0)
+        last_ts = self._last_recruit_ts.get(node_type, 0.0)
+
+        # Reset habituation if satellite hasn't been recruited for a while
+        if count > 0 and (now - last_ts) > _HABITUATION_RESET_S:
+            count = 0
+
+        if prev > 0 or count > 0:
+            effective = strength / (1.0 + count * 0.5)
+            gain = effective / strength  # = 1 / (1 + count * 0.5)
+            if prev > 0:
+                self._recruited[node_type] = prev + (effective - prev) * gain
+            else:
+                self._recruited[node_type] = effective
+            self._recruit_count[node_type] = count + 1
+        else:
+            self._recruited[node_type] = strength
+            self._recruit_count[node_type] = 1
+        self._last_recruit_ts[node_type] = now
         if node_type not in self._active_set:
             log.info("Satellite recruited: %s (strength=%.2f)", node_type, strength)
 
