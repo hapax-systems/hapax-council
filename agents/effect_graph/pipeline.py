@@ -174,10 +174,20 @@ class SlotPipeline:
         log.info("Activated plan '%s': %d/%d slots used", plan.name, slot_idx, self._num_slots)
 
     def find_slot_for_node(self, node_type: str) -> int | None:
-        """Find which slot a node type is assigned to."""
+        """Find which slot a node type is assigned to.
+
+        Handles prefixed IDs from merged chains: 'p0_bloom' matches slot type 'bloom'.
+        """
+        # Exact match first
         for i, assigned in enumerate(self._slot_assignments):
             if assigned == node_type:
                 return i
+        # Prefix match: strip 'pN_' prefix and match base type
+        base = node_type.split("_", 1)[-1] if "_" in node_type and node_type[0] == "p" else None
+        if base:
+            for i, assigned in enumerate(self._slot_assignments):
+                if assigned == base:
+                    return i
         return None
 
     def update_node_uniforms(self, node_type: str, params: dict[str, Any]) -> None:
