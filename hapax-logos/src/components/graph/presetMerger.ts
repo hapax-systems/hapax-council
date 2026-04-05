@@ -120,7 +120,42 @@ export function mergePresetGraphs(
     }
   }
 
+  // Neutralize compounding nodes so only the LAST instance of each type
+  // retains its authored params. Earlier instances become visual identities
+  // (passthrough) while preserving edge topology.
+  neutralizeCompounding(merged);
+
   return merged;
+}
+
+/**
+ * Node types that compound destructively when chained in series.
+ * Values here make the shader a visual identity (no-op passthrough).
+ */
+const COMPOUNDING_NEUTRALS: Record<string, Record<string, number>> = {
+  colorgrade: { brightness: 1.0, contrast: 1.0, saturation: 1.0, sepia: 0.0, hue_rotate: 0.0 },
+  bloom: { alpha: 0.0 },
+  vignette: { strength: 0.0 },
+  noise_overlay: { intensity: 0.0 },
+};
+
+function neutralizeCompounding(graph: EffectGraphJson): void {
+  const byType = new Map<string, string[]>();
+  for (const [id, def] of Object.entries(graph.nodes)) {
+    if (def.type in COMPOUNDING_NEUTRALS) {
+      const ids = byType.get(def.type) ?? [];
+      ids.push(id);
+      byType.set(def.type, ids);
+    }
+  }
+  for (const [nodeType, ids] of byType) {
+    if (ids.length <= 1) continue;
+    const neutrals = COMPOUNDING_NEUTRALS[nodeType];
+    // Keep last instance's authored params, neutralize all earlier ones
+    for (let i = 0; i < ids.length - 1; i++) {
+      graph.nodes[ids[i]].params = { ...graph.nodes[ids[i]].params, ...neutrals };
+    }
+  }
 }
 
 /** Count total effect slots needed for a merged chain. */
