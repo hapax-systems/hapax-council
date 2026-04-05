@@ -28,44 +28,32 @@ void main() {
     float trackingMix = 0.0;  // how much tracking corruption to blend
     vec3 trackingColor = vec3(0.0);
 
-    // --- Characteristic 4: Tracking artifacts — integrated rolling bands ---
-    // Primary band — subtle displacement, noise blends with content
-    float bandCenter = fract(t * 0.08 + 0.2);
-    float bandDist = abs(uv.y - bandCenter);
-    float bandWidth = 0.08;
-    if (bandDist < bandWidth) {
-        float bandInt = 1.0 - bandDist / bandWidth;
-        bandInt = pow(bandInt, 1.5);
-        // Per-line variation WITHIN the band — each line has its own character
-        float lineChar = hash(vec2(line * 2.3, t * 1.7));
-        float lineIntensity = bandInt * (0.4 + lineChar * 0.6);  // 40-100% per line
-        // Displacement varies wildly per line
-        float lineShift = hash(vec2(line * 0.3, t * 3.0));
-        float disp = (lineShift - 0.5) * 45.0 * px * lineIntensity;
-        uv.x += disp;
-        // Some lines get more noise, some get brightness spikes
-        float nr = hash(vec2(uv.x * 80.0, line + t * 17.0));
-        float ng = hash(vec2(uv.x * 80.0 + 7.0, line + t * 23.0));
-        float nb = hash(vec2(uv.x * 80.0 + 13.0, line + t * 31.0));
-        trackingColor = vec3(nr, ng, nb) * 0.4;
-        trackingMix = lineIntensity * 0.35;
-        // Random bright flashes on some lines within the band
-        if (lineChar > 0.85) trackingMix += 0.2;
-    }
-    // Secondary band — similar treatment
-    float band2Center = fract(bandCenter + 0.4);
-    float band2Dist = abs(v_texcoord.y - band2Center);
-    if (band2Dist < 0.04) {
-        float b2Int = 1.0 - band2Dist / 0.04;
-        b2Int = pow(b2Int, 1.5);
-        float b2LineChar = hash(vec2(line * 3.1, t * 2.3));
-        float b2LineInt = b2Int * (0.3 + b2LineChar * 0.7);
-        float b2Shift = (hash(vec2(line, t * 7.0)) - 0.5) * 25.0 * px * b2LineInt;
-        uv.x += b2Shift;
-        float b2n = hash(vec2(uv.x * 60.0, line + t * 11.0));
-        trackingColor = vec3(b2n * 0.3, b2n * 0.15, b2n * 0.5);
-        trackingMix = max(trackingMix, b2LineInt * 0.3);
-        if (b2LineChar > 0.9) trackingMix += 0.15;
+    // --- Characteristic 4: Multiple thin tracking bands ---
+    // 5 bands at different speeds/positions, each thin (2-3%) with per-line dynamism
+    for (int bi = 0; bi < 5; bi++) {
+        float bSpeed = 0.05 + float(bi) * 0.03;
+        float bOffset = float(bi) * 0.19 + 0.1;
+        float bCenter = fract(t * bSpeed + bOffset);
+        float bDist = abs(uv.y - bCenter);
+        float bWidth = 0.015 + float(bi) * 0.005;  // 1.5% to 4% each
+        if (bDist < bWidth) {
+            float bInt = 1.0 - bDist / bWidth;
+            bInt = pow(bInt, 1.5);
+            // Per-line variation — each line has its own character
+            float lineChar = hash(vec2(line * 2.3 + float(bi) * 7.0, t * 1.7));
+            float lineIntensity = bInt * (0.4 + lineChar * 0.6);
+            // Displacement varies per line
+            float lineShift = hash(vec2(line * 0.3, t * 3.0 + float(bi) * 5.0));
+            float disp = (lineShift - 0.5) * 35.0 * px * lineIntensity;
+            uv.x += disp;
+            // Color noise — tints content
+            float nr = hash(vec2(uv.x * 80.0, line + t * 17.0 + float(bi) * 3.0));
+            float ng = hash(vec2(uv.x * 80.0 + 7.0, line + t * 23.0 + float(bi)));
+            float nb = hash(vec2(uv.x * 80.0 + 13.0, line + t * 31.0 + float(bi)));
+            trackingColor = max(trackingColor, vec3(nr, ng, nb) * 0.35);
+            trackingMix = max(trackingMix, lineIntensity * 0.3);
+            if (lineChar > 0.85) trackingMix = min(trackingMix + 0.15, 0.55);
+        }
     }
 
     // --- Characteristic 3: Head-switching noise (bottom 5-8%) ---
@@ -77,7 +65,7 @@ void main() {
     }
 
     // --- Characteristic 2: Chroma bleed — HEAVY RGB separation ---
-    float shift = u_chroma_shift * px * 6.0;
+    float shift = u_chroma_shift * px * 1.5;  // ~9px — subtle edge fringing only
     float r = texture2D(tex, vec2(uv.x + shift, uv.y)).r;
     float g = texture2D(tex, uv).g;
     float b = texture2D(tex, vec2(uv.x - shift, uv.y)).b;
@@ -93,27 +81,29 @@ void main() {
     float scanMask = smoothstep(0.0, 0.5, scanY) * smoothstep(3.0, 2.5, scanY);
     color.rgb *= mix(0.65, 1.0, scanMask);
 
-    // Per-line luminance noise
+    // Per-line luminance noise — denser (ref: wedding tape static)
     float lineNoise = hash(vec2(line * 1.7, t * 0.5 + 42.0));
-    color.rgb *= 0.82 + lineNoise * 0.36;
+    color.rgb *= 0.75 + lineNoise * 0.50;  // stronger per-line variation
 
-    // High-frequency snow/static
-    float snow = hash(vec2(uv.x * u_width * 0.3, line + t * 40.0));
-    color.rgb += (snow - 0.5) * 0.14;
+    // High-frequency snow/static — heavier
+    float snow = hash(vec2(uv.x * u_width * 0.5, line + t * 40.0));
+    color.rgb += (snow - 0.5) * 0.20;
+
+    // Per-pixel noise shimmer (extra density)
+    float pixNoise = hash(vec2(gl_FragCoord.x * 0.7, gl_FragCoord.y + t * 60.0));
+    color.rgb += (pixNoise - 0.5) * 0.06;
 
     // --- Tape degradation ---
     float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
-    vec3 blurL = texture2D(tex, vec2(uv.x - 3.0 * px, uv.y)).rgb;
-    vec3 blurR = texture2D(tex, vec2(uv.x + 3.0 * px, uv.y)).rgb;
-    vec3 blurChroma = (blurL + blurR) * 0.5;
-    float blurLum = dot(blurChroma, vec3(0.299, 0.587, 0.114));
-    color.rgb = vec3(lum) + (blurChroma - vec3(blurLum)) * 0.6;
 
-    // Cool blue/cyan VHS color cast
-    color.rgb = mix(color.rgb, vec3(lum * 0.75, lum * 0.92, lum * 1.2), 0.3);
+    // Soft cyan/teal color wash (ref: Boards of Canada — underwater feel)
+    color.rgb = mix(color.rgb, vec3(lum * 0.7, lum * 1.0, lum * 1.2), 0.25);
 
-    // Contrast reduction
-    color.rgb = mix(vec3(0.15), color.rgb, 0.82);
+    // Slight warmth in shadows (tape aging)
+    color.r += (1.0 - lum) * 0.04;
+
+    // Contrast reduction + lifted blacks (washed out look)
+    color.rgb = mix(vec3(0.08), color.rgb, 0.85);
 
     gl_FragColor = clamp(color, 0.0, 1.0);
 }
