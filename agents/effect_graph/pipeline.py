@@ -36,15 +36,16 @@ class SlotPipeline:
         self._slots: list[Any] = []
         self._slot_assignments: list[str | None] = [None] * num_slots
         self._slot_base_params: list[dict[str, Any]] = [{} for _ in range(num_slots)]
+        self._slot_preset_params: list[dict[str, Any]] = [{} for _ in range(num_slots)]
         self._slot_pending_frag: list[str | None] = [None] * num_slots
         self._slot_is_temporal: list[bool] = [False] * num_slots
 
     def create_slots(self, Gst: Any, plan: ExecutionPlan | None = None) -> list[Any]:
-        """Create N slot elements using glfeedback for all slots.
+        """Create N glfeedback slot elements.
 
-        glfeedback provides tex_accum for temporal effects and works as a
-        drop-in replacement for glshader for spatial effects. Falls back
-        to glshader if glfeedback is not installed.
+        All slots use glfeedback which applies shaders instantly via property
+        (no create-shader signal timing issues) and provides tex_accum for
+        temporal effects.  Falls back to glshader if glfeedback not installed.
         """
         self._slots = []
         self._slot_base_params = [{} for _ in range(self._num_slots)]
@@ -52,8 +53,6 @@ class SlotPipeline:
         self._slot_is_temporal = [False] * self._num_slots
 
         has_glfeedback = Gst.ElementFactory.find("glfeedback") is not None
-        if has_glfeedback:
-            log.info("glfeedback available — all slots support temporal feedback")
 
         for i in range(self._num_slots):
             if has_glfeedback:
@@ -65,6 +64,8 @@ class SlotPipeline:
                 slot.set_property("fragment", PASSTHROUGH_SHADER)
                 slot.connect("create-shader", self._on_create_shader, i)
             self._slots.append(slot)
+
+        log.info("Created %d glfeedback slots", self._num_slots)
         return list(self._slots)
 
     def _on_create_shader(self, element: Any, slot_idx: int) -> Any:
@@ -103,8 +104,13 @@ class SlotPipeline:
             log.exception("Failed to compile shader for slot %d", slot_idx)
             return None
 
-    def link_chain(self, upstream: Any, downstream: Any) -> None:
-        """Link slots between upstream and downstream. Call after pipeline.add()."""
+    def link_chain(self, pipeline: Any, Gst: Any, upstream: Any, downstream: Any) -> None:
+        """Link slots directly between upstream and downstream.
+
+        No inter-slot queues: all GL filter elements share a single GL context
+        (single GPU command stream), so adding queues/threads between them only
+        adds synchronization overhead without enabling actual GPU parallelism.
+        """
         prev = upstream
         for slot in self._slots:
             if not prev.link(slot):
@@ -126,7 +132,7 @@ class SlotPipeline:
         slots = self.create_slots(Gst, plan=plan)
         for slot in slots:
             pipeline.add(slot)
-        self.link_chain(upstream, downstream)
+        self.link_chain(pipeline, Gst, upstream, downstream)
 
     def activate_plan(self, plan: ExecutionPlan) -> None:
         """Assign graph nodes to slots in topological order."""
@@ -142,7 +148,7 @@ class SlotPipeline:
         for i in range(self._num_slots):
             self._slot_pending_frag[i] = PASSTHROUGH_SHADER
 
-        # Assign actual shaders to used slots
+        # Assign actual shaders to used slots sequentially
         slot_idx = 0
         for step in plan.steps:
             if step.node_type == "output":
@@ -193,7 +199,9 @@ class SlotPipeline:
     def update_node_uniforms(self, node_type: str, params: dict[str, Any]) -> None:
         """Update uniforms for a node — ADDITIVE on top of preset base values.
 
-        Modulated params are added to the preset's compiled defaults.
+        Modulated params are added to the preset's compiled defaults,
+        then clamped to the param's declared min/max bounds to prevent
+        audio reactivity from blowing out effects (e.g. brightness to white).
         Non-numeric params (time, width, height) replace directly.
         """
         slot_idx = self.find_slot_for_node(node_type)
@@ -201,13 +209,22 @@ class SlotPipeline:
             preset = (
                 self._slot_preset_params[slot_idx] if hasattr(self, "_slot_preset_params") else {}
             )
+            assigned = self._slot_assignments[slot_idx] or ""
+            defn = self._registry.get(assigned)
             for key, val in params.items():
                 if key in ("time", "width", "height") or key not in preset:
                     # Direct set for time/resolution or params not in preset
                     self._slot_base_params[slot_idx][key] = val
                 elif isinstance(val, (int, float)) and isinstance(preset.get(key), (int, float)):
-                    # Additive: preset_base + modulated_delta
-                    self._slot_base_params[slot_idx][key] = preset[key] + val
+                    # Additive: preset_base + modulated_delta, clamped to bounds
+                    combined = preset[key] + val
+                    if defn and key in defn.params:
+                        pdef = defn.params[key]
+                        if pdef.min is not None:
+                            combined = max(combined, pdef.min)
+                        if pdef.max is not None:
+                            combined = min(combined, pdef.max)
+                    self._slot_base_params[slot_idx][key] = combined
                 else:
                     self._slot_base_params[slot_idx][key] = val
             if self._slot_is_temporal[slot_idx]:

@@ -31,8 +31,8 @@ qdrant-client = "1"
 reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
 urlencoding = "2"
 
-# HTTP frame server (visual surface)
-axum = "0.8"
+# HTTP frame server + WebSocket FX relay (visual surface)
+axum = { version = "0.8", features = ["ws"] }
 
 # Command relay (WebSocket server for external clients)
 tokio-tungstenite = "0.26"

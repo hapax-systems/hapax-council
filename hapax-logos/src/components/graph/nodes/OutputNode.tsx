@@ -1,5 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { memo, useEffect, useRef, useState } from "react";
 import { Handle, Position, type NodeProps, NodeResizer } from "@xyflow/react";
 import { ChainBuilder } from "../ChainBuilder";
 import { SequenceBar } from "../SequenceBar";
@@ -10,45 +9,57 @@ export interface OutputNodeData {
   [key: string]: unknown;
 }
 
-/** Shared polling hook — same proven pattern as SourceNode (Image() preloader). */
-function useFxPoll(imgRef: React.RefObject<HTMLImageElement | null>, intervalMs: number) {
+/** WebSocket-based frame receiver — push-based, no polling.
+ *  Falls back to HTTP polling if WebSocket fails to connect. */
+function useFxStream(imgRef: React.RefObject<HTMLImageElement | null>) {
   const lastSuccess = useRef(Date.now());
   const [isStale, setIsStale] = useState(false);
+  const prevUrl = useRef<string | null>(null);
 
   useEffect(() => {
     let running = true;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const poll = () => {
-      if (!running || !imgRef.current) {
-        timer = setTimeout(poll, intervalMs);
-        return;
-      }
-      const loader = new Image();
-      loader.onload = () => {
-        if (running && imgRef.current) imgRef.current.src = loader.src;
+    const connect = () => {
+      if (!running) return;
+      ws = new WebSocket("ws://127.0.0.1:8053/ws/fx");
+      ws.binaryType = "blob";
+
+      ws.onmessage = (e) => {
+        if (!running || !imgRef.current) return;
+        // Revoke previous blob URL to prevent memory leak
+        if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
+        const url = URL.createObjectURL(e.data as Blob);
+        imgRef.current.src = url;
+        prevUrl.current = url;
         lastSuccess.current = Date.now();
         setIsStale(false);
-        // Schedule next poll AFTER this frame loads — adaptive chain, no overlap
-        if (running) timer = setTimeout(poll, intervalMs);
       };
-      loader.onerror = () => {
-        if (running) timer = setTimeout(poll, intervalMs * 2); // back off on error
+
+      ws.onclose = () => {
+        if (running) reconnectTimer = setTimeout(connect, 1000);
       };
-      // Fetch from the Tauri frame server (:8053/fx) — same origin as the visual
-      // surface. Direct Logos API fetch fails in Tauri 2 webview isolation.
-      loader.src = `http://127.0.0.1:8053/fx?_t=${Date.now()}`;
+
+      ws.onerror = () => {
+        ws?.close();
+      };
     };
-    poll();
+
+    connect();
+
     const staleTimer = setInterval(() => {
-      if (Date.now() - lastSuccess.current > 5000) setIsStale(true);
-    }, 2000);
+      if (Date.now() - lastSuccess.current > 3000) setIsStale(true);
+    }, 1000);
+
     return () => {
       running = false;
-      if (timer) clearTimeout(timer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       clearInterval(staleTimer);
+      ws?.close();
+      if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
     };
-  }, [imgRef, intervalMs]);
+  }, [imgRef]);
 
   return isStale;
 }
@@ -56,32 +67,27 @@ function useFxPoll(imgRef: React.RefObject<HTMLImageElement | null>, intervalMs:
 function OutputNodeInner({ data, selected }: NodeProps) {
   const { label } = data as OutputNodeData;
   const imgRef = useRef<HTMLImageElement>(null);
-  const isFullscreen = useStudioGraph((s) => s.outputFullscreen);
+  const containerRef = useRef<HTMLDivElement>(null);
   const setIsFullscreen = useStudioGraph((s) => s.setOutputFullscreen);
-  const isStale = useFxPoll(imgRef, 100);
+  const isStale = useFxStream(imgRef);
 
+  // Native dblclick listener on capture phase — fires before ReactFlow can swallow it
   useEffect(() => {
-    if (!isFullscreen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        setIsFullscreen(false);
-      }
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: MouseEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      setIsFullscreen(true);
     };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [isFullscreen, setIsFullscreen]);
-
-  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    setIsFullscreen(true);
+    el.addEventListener("dblclick", handler, true);
+    return () => el.removeEventListener("dblclick", handler, true);
   }, [setIsFullscreen]);
 
   return (
     <>
       <div
-        onDoubleClickCapture={handleDoubleClick}
+        ref={containerRef}
         style={{
           minWidth: 220,
           minHeight: 140,
@@ -123,7 +129,25 @@ function OutputNodeInner({ data, selected }: NodeProps) {
           }}
         >
           <span style={{ fontSize: 10, color: "#bdae93" }}>{label}</span>
-          {isStale && <span style={{ fontSize: 9, color: "#fb4934" }}>stale</span>}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {isStale && <span style={{ fontSize: 9, color: "#fb4934" }}>stale</span>}
+            <button
+              onClick={(e) => { e.stopPropagation(); setIsFullscreen(true); }}
+              style={{
+                background: "none",
+                border: "1px solid #504945",
+                borderRadius: 2,
+                padding: "1px 5px",
+                fontSize: 9,
+                color: "#928374",
+                cursor: "pointer",
+                lineHeight: 1,
+              }}
+              title="Fullscreen (Shift+F)"
+            >
+              ⛶
+            </button>
+          </div>
         </div>
         <Handle
           type="target"
@@ -132,22 +156,41 @@ function OutputNodeInner({ data, selected }: NodeProps) {
         />
       </div>
 
-      {isFullscreen &&
-        createPortal(
-          <FullscreenOverlay onClose={() => setIsFullscreen(false)} />,
-          document.body,
-        )}
     </>
   );
 }
 
-/** Fullscreen overlay — has its OWN poll, independent of parent OutputNode. */
+/** Fullscreen overlay — true borderless fullscreen via Tauri window API.
+ *  Controls (chain builder + sequence bar) always visible at the bottom. */
 function FullscreenOverlay({ onClose }: { onClose: () => void }) {
   const imgRef = useRef<HTMLImageElement>(null);
-  const [showPresets, setShowPresets] = useState(false);
 
-  // Own independent poll — not shared with parent
-  useFxPoll(imgRef, 83);
+  // Own independent poll at 30fps — matches fx-snapshot rate
+  useFxStream(imgRef);
+
+  // Enter true borderless fullscreen on mount, restore on unmount
+  useEffect(() => {
+    import("@tauri-apps/api/core").then(({ invoke }) => {
+      invoke("set_window_fullscreen", { fullscreen: true }).catch(() => {});
+    });
+    return () => {
+      import("@tauri-apps/api/core").then(({ invoke }) => {
+        invoke("set_window_fullscreen", { fullscreen: false }).catch(() => {});
+      });
+    };
+  }, []);
+
+  // Esc handler
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [onClose]);
 
   return (
     <div
@@ -165,10 +208,9 @@ function FullscreenOverlay({ onClose }: { onClose: () => void }) {
         isolation: "isolate",
       }}
     >
-      {/* Video */}
+      {/* Video — fills available space above controls */}
       <div
-        onClick={onClose}
-        style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", overflow: "hidden" }}
+        style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", minHeight: 0 }}
       >
         <img
           ref={imgRef}
@@ -178,57 +220,41 @@ function FullscreenOverlay({ onClose }: { onClose: () => void }) {
         />
       </div>
 
-      {/* Top bar */}
+      {/* Controls — always visible at bottom */}
+      <div
+        style={{
+          flexShrink: 0,
+          display: "flex",
+          flexDirection: "column",
+          background: "rgba(29,32,33,0.9)",
+          borderTop: "1px solid #3c3836",
+        }}
+      >
+        <SequenceBar />
+        <ChainBuilder />
+      </div>
+
+      {/* Top bar — minimal, just exit hint */}
       <div
         style={{
           position: "absolute",
           top: 0,
-          left: 0,
           right: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "8px 16px",
-          background: "linear-gradient(rgba(0,0,0,0.6), transparent)",
+          padding: "6px 12px",
+          background: "rgba(0,0,0,0.4)",
+          borderRadius: "0 0 0 4px",
         }}
       >
-        <span style={{ fontSize: 11, color: "#928374" }}>{"output"}</span>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button
-            onClick={(e) => { e.stopPropagation(); setShowPresets(!showPresets); }}
-            style={{
-              background: "none",
-              border: "1px solid #504945",
-              borderRadius: 2,
-              padding: "2px 8px",
-              fontSize: 10,
-              color: showPresets ? "#fabd2f" : "#928374",
-              cursor: "pointer",
-            }}
-          >
-            presets
-          </button>
-          <span style={{ fontSize: 10, color: "#504945" }}>esc to exit</span>
-        </div>
-      </div>
-
-      {showPresets && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            display: "flex",
-            flexDirection: "column",
-          }}
+        <span
+          onClick={onClose}
+          style={{ fontSize: 10, color: "#504945", cursor: "pointer" }}
         >
-          <SequenceBar />
-          <ChainBuilder />
-        </div>
-      )}
+          esc
+        </span>
+      </div>
     </div>
   );
 }
 
 export const OutputNode = memo(OutputNodeInner);
+export { FullscreenOverlay };

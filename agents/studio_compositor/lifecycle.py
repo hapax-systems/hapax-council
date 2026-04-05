@@ -129,7 +129,7 @@ def start_compositor(compositor: Any) -> None:
     interval_ms = int(compositor.config.status_interval_s * 1000)
     compositor._status_timer_id = GLib.timeout_add(interval_ms, compositor._status_tick)
 
-    GLib.timeout_add(100, lambda: fx_tick_callback(compositor))  # match pipeline 10fps
+    GLib.timeout_add(33, lambda: fx_tick_callback(compositor))  # 30fps uniform updates
 
     if compositor.config.overlay_enabled:
         compositor._state_reader_thread = threading.Thread(

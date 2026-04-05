@@ -109,6 +109,7 @@ export const LOGOS_KEY_MAP: KeyBinding[] = [
   { key: "D", modifiers: { shift: true }, command: "detection.visibility.toggle" },
 
   // Studio controls (ground-context only)
+  { key: "F", modifiers: { shift: true }, command: "studio.output.fullscreen", when: "terrain.focusedRegion=ground" },
   { key: "e", command: "studio.smooth.toggle", when: "terrain.focusedRegion=ground" },
   { key: "r", command: "studio.recording.toggle", when: "terrain.focusedRegion=ground" },
   { key: "[", command: "studio.preset.cycle", args: { direction: "prev" }, when: "terrain.focusedRegion=ground" },

@@ -17,7 +17,7 @@ import "@xyflow/react/dist/style.css";
 import { useStudioGraph, type StudioGraphState } from "../../stores/studioGraphStore";
 import { SourceNode } from "./nodes/SourceNode";
 import { ShaderNode } from "./nodes/ShaderNode";
-import { OutputNode } from "./nodes/OutputNode";
+import { OutputNode, FullscreenOverlay } from "./nodes/OutputNode";
 import { SignalEdge } from "./edges/SignalEdge";
 import { GraphToolbar } from "./GraphToolbar";
 import { NodeDetailSheet } from "./NodeDetailSheet";
@@ -172,6 +172,9 @@ export function StudioCanvas() {
     selectNode(null);
   }, [selectNode]);
 
+  const isFullscreen = useStudioGraph((s: S) => s.outputFullscreen);
+  const setFullscreen = useStudioGraph((s: S) => s.setOutputFullscreen);
+
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <GraphToolbar />
@@ -179,6 +182,7 @@ export function StudioCanvas() {
       <PresetLibrary />
       <NodeDetailSheet />
       <HapaxOverlay />
+      {isFullscreen && <FullscreenOverlay onClose={() => setFullscreen(false)} />}
       <div style={{ width: "100%", height: "100%", paddingTop: 32 }}>
         <ReactFlow
           nodes={nodes}

@@ -102,11 +102,11 @@ def add_camera_branch(
 
     if cam.input_format == "mjpeg":
         src_caps = Gst.ElementFactory.make("capsfilter", f"srccaps_{role}")
+        # Don't constrain framerate in source caps — let camera produce at its
+        # native max rate. videorate downstream normalizes to pipeline fps.
         src_caps.set_property(
             "caps",
-            Gst.Caps.from_string(
-                f"image/jpeg,width={cam.width},height={cam.height},framerate={fps}/1"
-            ),
+            Gst.Caps.from_string(f"image/jpeg,width={cam.width},height={cam.height}"),
         )
         decoder = Gst.ElementFactory.make("jpegdec", f"dec_{role}")
         for el in [src, src_caps, decoder]:
@@ -120,8 +120,7 @@ def add_camera_branch(
         src_caps.set_property(
             "caps",
             Gst.Caps.from_string(
-                f"video/x-raw,format={pix_fmt},width={cam.width},height={cam.height},"
-                f"framerate={fps}/1"
+                f"video/x-raw,format={pix_fmt},width={cam.width},height={cam.height}"
             ),
         )
         convert = Gst.ElementFactory.make("videoconvert", f"rawconv_{role}")
@@ -136,10 +135,13 @@ def add_camera_branch(
     pipeline.add(camera_tee)
     last.link(camera_tee)
 
-    # Compositor branch
+    # Compositor branch: videorate normalizes camera fps to pipeline fps
     queue_comp = Gst.ElementFactory.make("queue", f"queue-comp-{role}")
     queue_comp.set_property("leaky", 2)  # drop oldest, keep newest for lowest latency
     queue_comp.set_property("max-size-buffers", 2)
+    vrate = Gst.ElementFactory.make("videorate", f"vrate_{role}")
+    vrate_caps = Gst.ElementFactory.make("capsfilter", f"vratecaps_{role}")
+    vrate_caps.set_property("caps", Gst.Caps.from_string(f"video/x-raw,framerate={fps}/1"))
     upload = Gst.ElementFactory.make("cudaupload", f"upload_{role}")
     cuda_convert = Gst.ElementFactory.make("cudaconvert", f"cudaconv_{role}")
     scale = Gst.ElementFactory.make("cudascale", f"scale_{role}")
@@ -149,9 +151,11 @@ def add_camera_branch(
         Gst.Caps.from_string(f"video/x-raw(memory:CUDAMemory),width={tile.w},height={tile.h}"),
     )
 
-    for el in [queue_comp, upload, cuda_convert, scale, scale_caps]:
+    for el in [queue_comp, vrate, vrate_caps, upload, cuda_convert, scale, scale_caps]:
         pipeline.add(el)
-    queue_comp.link(upload)
+    queue_comp.link(vrate)
+    vrate.link(vrate_caps)
+    vrate_caps.link(upload)
     upload.link(cuda_convert)
     cuda_convert.link(scale)
     scale.link(scale_caps)

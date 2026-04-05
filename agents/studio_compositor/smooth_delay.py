@@ -32,7 +32,7 @@ def add_smooth_delay_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     glupload = Gst.ElementFactory.make("glupload", "smooth-glupload")
     glcc_in = Gst.ElementFactory.make("glcolorconvert", "smooth-glcc-in")
     smooth_delay.set_property("delay-seconds", 5.0)
-    smooth_delay.set_property("fps", 24)  # must match pipeline framerate
+    smooth_delay.set_property("fps", compositor.config.framerate)
 
     glcc_out = Gst.ElementFactory.make("glcolorconvert", "smooth-glcc-out")
     gldownload = Gst.ElementFactory.make("gldownload", "smooth-gldownload")
