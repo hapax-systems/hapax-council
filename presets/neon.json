@@ -10,18 +10,11 @@
         "color_mode": 1.0
       }
     },
-    "chroma": {
-      "type": "chromatic_aberration",
-      "params": {
-        "offset_x": 6,
-        "offset_y": 3
-      }
-    },
     "colorgrade": {
       "type": "colorgrade",
       "params": {
-        "brightness": 3.0,
-        "saturation": 4.0,
+        "brightness": 3.5,
+        "saturation": 5.0,
         "contrast": 1.5
       }
     },
@@ -29,8 +22,8 @@
       "type": "bloom",
       "params": {
         "threshold": 0.02,
-        "radius": 18,
-        "alpha": 0.7
+        "radius": 20,
+        "alpha": 0.8
       }
     },
     "out": {
@@ -51,13 +44,14 @@
   },
   "edges": [
     ["@live", "edge"],
-    ["edge", "chroma"],
-    ["chroma", "colorgrade"],
+    ["edge", "colorgrade"],
     ["colorgrade", "bloom"],
     ["bloom", "content_layer"],
     ["content_layer", "postprocess"],
     ["postprocess", "out"]
   ],
-  "modulations": [],
+  "modulations": [
+    {"node": "colorgrade", "param": "hue_rotate", "source": "time", "scale": 0.5, "offset": 0.0, "smoothing": 0.0}
+  ],
   "layer_palettes": {}
 }
