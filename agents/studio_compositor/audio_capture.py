@@ -117,15 +117,15 @@ class CompositorAudioCapture:
         if CHANNELS == 2:
             samples = (samples[0::2] + samples[1::2]) * 0.5
 
-        # RMS energy with exponential smoothing
+        # RMS energy — fast attack, moderate decay, no multiplier saturation
         rms = float(np.sqrt(np.mean(samples**2)))
-        alpha = 0.3
+        alpha = 0.4 if rms > self._smoothed_rms else 0.05  # fast attack, slow decay
         self._smoothed_rms = alpha * rms + (1 - alpha) * self._smoothed_rms
-        energy = min(1.0, self._smoothed_rms * 5.0)
+        energy = min(1.0, self._smoothed_rms * 2.0)  # 2x not 5x — needs loud audio to hit 1.0
 
         # Beat detection: spike above baseline
-        self._beat_baseline = 0.999 * self._beat_baseline + 0.001 * rms
-        is_beat = rms > self._beat_baseline * 2.0 and rms > 0.01
+        self._beat_baseline = 0.995 * self._beat_baseline + 0.005 * rms  # faster baseline adapt
+        is_beat = rms > self._beat_baseline * 2.5 and rms > 0.02  # higher threshold
         if is_beat:
             self._beat_pulse = 1.0
         self._beat_pulse *= 0.85
@@ -143,10 +143,10 @@ class CompositorAudioCapture:
         mid_raw = float(np.mean(fft[mid_mask])) if mid_mask.any() else 0.0
         high_raw = float(np.mean(fft[high_mask])) if high_mask.any() else 0.0
 
-        # Peak normalization with slow decay
-        self._bass_peak = max(self._bass_peak * 0.999, bass_raw, 0.01)
-        self._mid_peak = max(self._mid_peak * 0.999, mid_raw, 0.01)
-        self._high_peak = max(self._high_peak * 0.999, high_raw, 0.01)
+        # Peak normalization — faster decay so peaks track real dynamics
+        self._bass_peak = max(self._bass_peak * 0.99, bass_raw, 0.01)
+        self._mid_peak = max(self._mid_peak * 0.99, mid_raw, 0.01)
+        self._high_peak = max(self._high_peak * 0.99, high_raw, 0.01)
 
         bass = min(1.0, bass_raw / self._bass_peak)
         mid = min(1.0, mid_raw / self._mid_peak)
