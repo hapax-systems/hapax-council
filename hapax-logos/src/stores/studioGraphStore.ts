@@ -49,6 +49,10 @@ export interface StudioGraphState {
   // Sequence
   sequence: SequenceState;
 
+  // Saved sequences
+  savedSequences: Record<string, { chains: PresetChain[]; looping: boolean }>;
+  sequenceName: string;
+
   // Actions
   setNodes: (nodes: Node[]) => void;
   setEdges: (edges: Edge[]) => void;
@@ -66,6 +70,12 @@ export interface StudioGraphState {
   setChainPresets: (presets: string[]) => void;
   setChainSlotCount: (count: number) => void;
   loadPreset: (name: string, nodes: Node[], edges: Edge[]) => void;
+
+  // Sequence name + save/load actions
+  saveSequence: (name: string) => void;
+  loadSequence: (name: string) => void;
+  deleteSequence: (name: string) => void;
+  setSequenceName: (name: string) => void;
 
   // Sequence actions
   setSequenceChains: (chains: PresetChain[]) => void;
@@ -95,6 +105,8 @@ export const useStudioGraph = create<StudioGraphState>()(
       chainPresets: [],
       chainSlotCount: 0,
       sequence: defaultSequence([]),
+      savedSequences: {},
+      sequenceName: "",
 
       setNodes: (nodes: Node[]) => set({ nodes }),
       setEdges: (edges: Edge[]) => set({ edges }),
@@ -126,6 +138,40 @@ export const useStudioGraph = create<StudioGraphState>()(
           graphDirty: false,
           selectedNodeId: null,
         }),
+
+      // Sequence name + save/load actions
+      saveSequence: (name) =>
+        set((s) => ({
+          savedSequences: {
+            ...s.savedSequences,
+            [name]: { chains: s.sequence.chains, looping: s.sequence.looping },
+          },
+          sequenceName: name,
+        })),
+      loadSequence: (name) =>
+        set((s) => {
+          const saved = s.savedSequences[name];
+          if (!saved) return {};
+          return {
+            sequenceName: name,
+            sequence: {
+              ...s.sequence,
+              chains: saved.chains,
+              looping: saved.looping,
+              activeChainIndex: saved.chains.length > 0 ? 0 : -1,
+              playing: false,
+            },
+          };
+        }),
+      deleteSequence: (name) =>
+        set((s) => {
+          const { [name]: _removed, ...rest } = s.savedSequences;
+          return {
+            savedSequences: rest,
+            sequenceName: s.sequenceName === name ? "" : s.sequenceName,
+          };
+        }),
+      setSequenceName: (sequenceName) => set({ sequenceName }),
 
       // Sequence actions
       setSequenceChains: (chains) =>
@@ -181,7 +227,7 @@ export const useStudioGraph = create<StudioGraphState>()(
     }),
     {
       name: "hapax-studio-graph",
-      version: 5,
+      version: 6,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Partial<StudioGraphState>;
         if (version < 3) {
@@ -205,6 +251,11 @@ export const useStudioGraph = create<StudioGraphState>()(
             };
           }
         }
+        if (version < 6) {
+          // Migrate: add savedSequences and sequenceName
+          if (!state.savedSequences) state.savedSequences = {};
+          if (!state.sequenceName) state.sequenceName = "";
+        }
         return state as StudioGraphState;
       },
       partialize: (state: StudioGraphState) => ({
@@ -214,6 +265,8 @@ export const useStudioGraph = create<StudioGraphState>()(
         rightDrawerOpen: state.rightDrawerOpen,
         chainPresets: state.chainPresets,
         sequence: state.sequence,
+        savedSequences: state.savedSequences,
+        sequenceName: state.sequenceName,
       }),
     },
   ),
