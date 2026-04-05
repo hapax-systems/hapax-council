@@ -14,7 +14,11 @@ export interface OutputNodeData {
 function useFxStream(imgRef: React.RefObject<HTMLImageElement | null>) {
   const lastSuccess = useRef(Date.now());
   const [isStale, setIsStale] = useState(false);
-  const prevUrl = useRef<string | null>(null);
+  const staleRef = useRef(false);
+  // Double-buffer: keep previous URL alive until new frame loads
+  const urlA = useRef<string | null>(null);
+  const urlB = useRef<string | null>(null);
+  const useA = useRef(true);
 
   useEffect(() => {
     let running = true;
@@ -28,13 +32,23 @@ function useFxStream(imgRef: React.RefObject<HTMLImageElement | null>) {
 
       ws.onmessage = (e) => {
         if (!running || !imgRef.current) return;
-        // Revoke previous blob URL to prevent memory leak
-        if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
         const url = URL.createObjectURL(e.data as Blob);
+        // Double-buffer: revoke the OLDER url, not the current one
+        if (useA.current) {
+          if (urlB.current) URL.revokeObjectURL(urlB.current);
+          urlA.current = url;
+        } else {
+          if (urlA.current) URL.revokeObjectURL(urlA.current);
+          urlB.current = url;
+        }
+        useA.current = !useA.current;
         imgRef.current.src = url;
-        prevUrl.current = url;
         lastSuccess.current = Date.now();
-        setIsStale(false);
+        // Only trigger React re-render when stale state actually changes
+        if (staleRef.current) {
+          staleRef.current = false;
+          setIsStale(false);
+        }
       };
 
       ws.onclose = () => {
@@ -49,7 +63,11 @@ function useFxStream(imgRef: React.RefObject<HTMLImageElement | null>) {
     connect();
 
     const staleTimer = setInterval(() => {
-      if (Date.now() - lastSuccess.current > 3000) setIsStale(true);
+      const nowStale = Date.now() - lastSuccess.current > 3000;
+      if (nowStale !== staleRef.current) {
+        staleRef.current = nowStale;
+        setIsStale(nowStale);
+      }
     }, 1000);
 
     return () => {
@@ -57,7 +75,8 @@ function useFxStream(imgRef: React.RefObject<HTMLImageElement | null>) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       clearInterval(staleTimer);
       ws?.close();
-      if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
+      if (urlA.current) URL.revokeObjectURL(urlA.current);
+      if (urlB.current) URL.revokeObjectURL(urlB.current);
     };
   }, [imgRef]);
 
