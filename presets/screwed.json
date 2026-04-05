@@ -51,6 +51,13 @@
         "vignette_strength": 0.3,
         "sediment_strength": 0.1
       }
+    },
+    "posterize": {
+      "type": "posterize",
+      "params": {
+        "levels": 5,
+        "gamma": 1.0
+      }
     }
   },
   "edges": [
@@ -60,6 +67,10 @@
     ],
     [
       "colorgrade",
+      "posterize"
+    ],
+    [
+      "posterize",
       "stutter"
     ],
     [

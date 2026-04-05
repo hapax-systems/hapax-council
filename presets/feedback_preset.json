@@ -17,8 +17,8 @@
         "fade": 0.015,
         "blend_mode": "screen",
         "opacity": 0.7,
-        "drift_x": 5,
-        "drift_y": 4
+        "drift_x": 7,
+        "drift_y": 5
       }
     },
     "bloom": {

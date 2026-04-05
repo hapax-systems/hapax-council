@@ -6,8 +6,8 @@
     "colorgrade": {
       "type": "colorgrade",
       "params": {
-        "brightness": 3.0,
-        "contrast": 1.5,
+        "brightness": 4.0,
+        "contrast": 2.0,
         "saturation": 0.3
       }
     },
@@ -16,7 +16,7 @@
       "params": {
         "displacement": 40,
         "line_density": 5,
-        "line_width": 2.0,
+        "line_width": 3.0,
         "color_mode": 0.0
       }
     },
@@ -45,12 +45,30 @@
     }
   },
   "edges": [
-    ["@live", "colorgrade"],
-    ["colorgrade", "rutt_etra"],
-    ["rutt_etra", "bloom"],
-    ["bloom", "content_layer"],
-    ["content_layer", "postprocess"],
-    ["postprocess", "out"]
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "rutt_etra"
+    ],
+    [
+      "rutt_etra",
+      "bloom"
+    ],
+    [
+      "bloom",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "postprocess"
+    ],
+    [
+      "postprocess",
+      "out"
+    ]
   ],
   "modulations": [],
   "layer_palettes": {}

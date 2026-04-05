@@ -6,13 +6,15 @@
     "fisheye": {
       "type": "fisheye",
       "params": {
-        "strength": 0.6
+        "strength": 0.6,
+        "zoom": 0.5
       }
     },
     "chroma": {
       "type": "chromatic_aberration",
       "params": {
-        "offset_x": 3
+        "offset_x": 10,
+        "offset_y": 5
       }
     },
     "vignette": {
@@ -35,6 +37,14 @@
         "vignette_strength": 0.3,
         "sediment_strength": 0.1
       }
+    },
+    "bloom": {
+      "type": "bloom",
+      "params": {
+        "threshold": 0.1,
+        "radius": 15,
+        "alpha": 0.4
+      }
     }
   },
   "edges": [
@@ -44,6 +54,10 @@
     ],
     [
       "fisheye",
+      "bloom"
+    ],
+    [
+      "bloom",
       "chroma"
     ],
     [

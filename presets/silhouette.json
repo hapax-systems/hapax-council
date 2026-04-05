@@ -6,7 +6,7 @@
     "threshold": {
       "type": "threshold",
       "params": {
-        "level": 0.25
+        "level": 0.2
       }
     },
     "invert": {
@@ -33,8 +33,8 @@
     "colorgrade": {
       "type": "colorgrade",
       "params": {
-        "brightness": 3.0,
-        "contrast": 2.0,
+        "brightness": 4.0,
+        "contrast": 3.0,
         "saturation": 0.0
       }
     }

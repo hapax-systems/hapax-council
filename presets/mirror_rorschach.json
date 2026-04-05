@@ -13,9 +13,9 @@
     "colorgrade": {
       "type": "colorgrade",
       "params": {
-        "brightness": 1.4,
-        "contrast": 1.2,
-        "saturation": 1.0
+        "brightness": 1.2,
+        "contrast": 0.7,
+        "saturation": 0.3
       }
     },
     "vignette": {
@@ -38,6 +38,12 @@
         "vignette_strength": 0.3,
         "sediment_strength": 0.1
       }
+    },
+    "noise": {
+      "type": "noise_overlay",
+      "params": {
+        "intensity": 0.1
+      }
     }
   },
   "edges": [
@@ -47,6 +53,10 @@
     ],
     [
       "mirror",
+      "noise"
+    ],
+    [
+      "noise",
       "colorgrade"
     ],
     [

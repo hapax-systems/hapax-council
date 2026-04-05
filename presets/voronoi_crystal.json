@@ -6,9 +6,9 @@
     "voronoi": {
       "type": "voronoi_overlay",
       "params": {
-        "cell_count": 40,
-        "edge_width": 0.08,
-        "animation_speed": 0.5
+        "cell_count": 80,
+        "edge_width": 0.05,
+        "animation_speed": 0.8
       }
     },
     "colorgrade": {

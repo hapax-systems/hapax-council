@@ -6,8 +6,8 @@
     "breathing": {
       "type": "breathing",
       "params": {
-        "amplitude": 0.12,
-        "rate": 1.2
+        "amplitude": 0.08,
+        "rate": 1.0
       }
     },
     "drift": {
@@ -39,11 +39,34 @@
         "vignette_strength": 0.3,
         "sediment_strength": 0.1
       }
+    },
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.0,
+        "contrast": 1.1,
+        "saturation": 1.0
+      }
+    },
+    "posterize": {
+      "type": "posterize",
+      "params": {
+        "levels": 4,
+        "gamma": 1.0
+      }
     }
   },
   "edges": [
     [
       "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "posterize"
+    ],
+    [
+      "posterize",
       "breathing"
     ],
     [

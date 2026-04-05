@@ -6,9 +6,9 @@
     "colorgrade": {
       "type": "colorgrade",
       "params": {
-        "brightness": 0.8,
+        "brightness": 0.6,
         "saturation": 0.5,
-        "contrast": 0.7,
+        "contrast": 0.5,
         "sepia": 0.3
       }
     },
@@ -24,9 +24,9 @@
     "bloom": {
       "type": "bloom",
       "params": {
-        "threshold": 0.15,
-        "radius": 20,
-        "alpha": 0.4
+        "threshold": 0.08,
+        "radius": 30,
+        "alpha": 0.6
       }
     },
     "vignette": {
@@ -49,16 +49,47 @@
         "vignette_strength": 0.3,
         "sediment_strength": 0.1
       }
+    },
+    "noise": {
+      "type": "noise_overlay",
+      "params": {
+        "intensity": 0.12
+      }
     }
   },
   "edges": [
-    ["@live", "colorgrade"],
-    ["colorgrade", "bloom"],
-    ["bloom", "drift"],
-    ["drift", "vignette"],
-    ["vignette", "content_layer"],
-    ["content_layer", "postprocess"],
-    ["postprocess", "out"]
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "bloom"
+    ],
+    [
+      "bloom",
+      "drift"
+    ],
+    [
+      "drift",
+      "noise"
+    ],
+    [
+      "noise",
+      "vignette"
+    ],
+    [
+      "vignette",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "postprocess"
+    ],
+    [
+      "postprocess",
+      "out"
+    ]
   ],
   "modulations": [],
   "layer_palettes": {}
