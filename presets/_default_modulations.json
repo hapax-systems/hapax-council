@@ -1,16 +1,16 @@
 {
   "default_modulations": [
-    {"node": "bloom", "param": "alpha", "source": "mixer_bass", "scale": 3.0, "offset": 0.0, "smoothing": 0.5},
-    {"node": "bloom", "param": "alpha", "source": "beat_pulse", "scale": 2.0, "offset": 0.0, "smoothing": 0.15},
-    {"node": "trail", "param": "opacity", "source": "mixer_energy", "scale": 3.0, "offset": 0.0, "smoothing": 0.6},
-    {"node": "colorgrade", "param": "brightness", "source": "beat_pulse", "scale": 0.5, "offset": 0.0, "smoothing": 0.15},
-    {"node": "colorgrade", "param": "saturation", "source": "mixer_mid", "scale": 3.0, "offset": 0.0, "smoothing": 0.6},
-    {"node": "colorgrade", "param": "hue_rotate", "source": "desk_centroid", "scale": 40.0, "offset": 0.0, "smoothing": 0.9},
-    {"node": "chromatic_aberration", "param": "offset_x", "source": "beat_pulse", "scale": 20.0, "offset": 0.0, "smoothing": 0.15},
-    {"node": "noise_overlay", "param": "intensity", "source": "mixer_high", "scale": 1.0, "offset": 0.0, "smoothing": 0.6},
-    {"node": "vignette", "param": "strength", "source": "beat_pulse", "scale": -0.5, "offset": 0.0, "smoothing": 0.2},
-    {"node": "drift", "param": "speed", "source": "desk_onset_rate", "scale": 0.5, "offset": 0.0, "smoothing": 0.6},
-    {"node": "breathing", "param": "rate", "source": "heart_rate", "scale": 1.5, "offset": 0.0, "smoothing": 0.95},
-    {"node": "noise_overlay", "param": "intensity", "source": "stress", "scale": 0.1, "offset": 0.0, "smoothing": 0.95}
+    {"node": "bloom", "param": "alpha", "source": "mixer_bass", "scale": 8.0, "offset": 0.0, "smoothing": 0.3},
+    {"node": "bloom", "param": "alpha", "source": "beat_pulse", "scale": 5.0, "offset": 0.0, "smoothing": 0.1},
+    {"node": "trail", "param": "opacity", "source": "mixer_energy", "scale": 8.0, "offset": 0.0, "smoothing": 0.4},
+    {"node": "trail", "param": "drift_x", "source": "mixer_bass", "scale": 20.0, "offset": 0.0, "smoothing": 0.3},
+    {"node": "colorgrade", "param": "brightness", "source": "beat_pulse", "scale": 1.5, "offset": 0.0, "smoothing": 0.1},
+    {"node": "colorgrade", "param": "contrast", "source": "mixer_energy", "scale": 4.0, "offset": 0.0, "smoothing": 0.4},
+    {"node": "colorgrade", "param": "saturation", "source": "mixer_mid", "scale": 8.0, "offset": 0.0, "smoothing": 0.4},
+    {"node": "colorgrade", "param": "hue_rotate", "source": "desk_centroid", "scale": 60.0, "offset": 0.0, "smoothing": 0.9},
+    {"node": "chromatic_aberration", "param": "offset_x", "source": "beat_pulse", "scale": 40.0, "offset": 0.0, "smoothing": 0.1},
+    {"node": "noise_overlay", "param": "intensity", "source": "mixer_high", "scale": 2.0, "offset": 0.0, "smoothing": 0.4},
+    {"node": "vignette", "param": "strength", "source": "beat_pulse", "scale": -1.0, "offset": 0.0, "smoothing": 0.15},
+    {"node": "drift", "param": "speed", "source": "desk_onset_rate", "scale": 1.0, "offset": 0.0, "smoothing": 0.5}
   ]
 }
