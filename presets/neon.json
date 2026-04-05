@@ -52,7 +52,7 @@
     ["postprocess", "out"]
   ],
   "modulations": [
-    {"node": "colorgrade", "param": "hue_rotate", "source": "time", "scale": 0.3, "offset": 0.0, "smoothing": 0.0}
+    {"node": "colorgrade", "param": "hue_rotate", "source": "time", "scale": 6.0, "offset": 0.0, "smoothing": 0.0}
   ],
   "layer_palettes": {}
 }
