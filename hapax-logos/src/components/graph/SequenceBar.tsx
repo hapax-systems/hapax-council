@@ -42,21 +42,22 @@ export async function activatePresets(
   }
 }
 
-// Destructive presets override everything before them — only valid as LAST in chain
+// Destructive presets override everything before them — SOLO ONLY or LAST in chain
 const DESTRUCTIVE_PRESETS = new Set([
   "silhouette", "ascii_preset", "halftone_preset", "thermal_preset",
-  "dither_retro", "sculpture", "neon",
+  "dither_retro", "sculpture", "neon", "pixsort_preset", "feedback_preset",
+  "ambient",
 ]);
 
-// Highly obscuring additive presets — can go anywhere, destroy facial detail
+// Highly obscuring additive presets — chain well, destroy facial detail
 const OBSCURING_PRESETS = new Set([
-  "datamosh", "datamosh_heavy", "glitch_blocks_preset", "pixsort_preset",
-  "vhs_preset", "trap", "nightvision", "feedback_preset", "screwed",
+  "datamosh", "datamosh_heavy", "glitch_blocks_preset",
+  "vhs_preset", "trap", "nightvision", "screwed",
 ]);
 
 // Light additive presets — layer well but don't fully obscure
 const LIGHT_PRESETS = new Set([
-  "ghost", "trails", "ambient", "heartbeat", "fisheye_pulse",
+  "ghost", "trails", "heartbeat", "fisheye_pulse",
   "kaleidodream", "tunnelvision", "mirror_rorschach", "voronoi_crystal",
   "diff_preset", "slitscan_preset",
 ]);
