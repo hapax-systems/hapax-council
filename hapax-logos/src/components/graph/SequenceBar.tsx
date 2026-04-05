@@ -5,7 +5,7 @@ import { mergePresetGraphs, countSlots, MAX_SLOTS } from "./presetMerger";
 import { api } from "../../api/client";
 import { PRESET_CATEGORIES } from "./presetData";
 
-/** Activate a chain of presets on the compositor. */
+/** Activate a chain of presets on the compositor. Retries once on failure. */
 export async function activatePresets(
   presets: string[],
   onSlotCount?: (n: number) => void,
@@ -21,34 +21,70 @@ export async function activatePresets(
     onSlotCount?.(0);
     return;
   }
-  const graphs: EffectGraphJson[] = [];
-  for (const name of presets) {
-    const g = await fetchPresetGraph(name);
-    if (g) graphs.push(g);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const graphs: EffectGraphJson[] = [];
+      for (const name of presets) {
+        const g = await fetchPresetGraph(name);
+        if (g) graphs.push(g);
+      }
+      if (graphs.length === 0) return;
+      const slots = countSlots(graphs);
+      onSlotCount?.(slots);
+      if (slots > MAX_SLOTS) return;
+      const merged = mergePresetGraphs("chain", graphs, source);
+      await api.put("/studio/effect/graph", merged);
+      return; // success
+    } catch {
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 500)); // retry after 500ms
+    }
   }
-  if (graphs.length === 0) return;
-  const slots = countSlots(graphs);
-  onSlotCount?.(slots);
-  if (slots > MAX_SLOTS) return;
-  const merged = mergePresetGraphs("chain", graphs, source);
-  await api.put("/studio/effect/graph", merged);
 }
+
+/** Estimated node count per preset (avoid fetching during generation) */
+const PRESET_SLOT_ESTIMATE: Record<string, number> = {};
 
 function generateRandomSequence(): PresetChain[] {
   const allPresets = PRESET_CATEGORIES.flatMap((c) => c.presets);
-  const numChains = 5 + Math.floor(Math.random() * 4); // 5-8 chains
+  const numChains = 6 + Math.floor(Math.random() * 5); // 6-10 chains
   const chains: PresetChain[] = [];
+  const usedRecently: string[] = []; // avoid immediate repetition
+
   for (let i = 0; i < numChains; i++) {
-    const numPresets = 1 + Math.floor(Math.random() * 2); // 1-2 presets per chain
+    // Build chain by packing presets up to slot budget
     const presets: string[] = [];
-    for (let j = 0; j < numPresets; j++) {
-      const pick = allPresets[Math.floor(Math.random() * allPresets.length)];
-      if (!presets.includes(pick)) presets.push(pick);
+    let slotsUsed = 0;
+    const budget = MAX_SLOTS - 3; // reserve 3 for content_layer+postprocess+headroom
+
+    // Shuffle available presets to avoid repetitive ordering
+    const shuffled = [...allPresets].sort(() => Math.random() - 0.5);
+
+    for (const p of shuffled) {
+      if (presets.includes(p)) continue;
+      // Avoid presets used in the previous chain
+      if (usedRecently.includes(p) && shuffled.length > 5) continue;
+      const est = PRESET_SLOT_ESTIMATE[p] ?? 4; // estimate 4 nodes if unknown
+      if (slotsUsed + est <= budget) {
+        presets.push(p);
+        slotsUsed += est;
+      }
+      if (presets.length >= 3) break; // max 3 presets per chain for variety
     }
+
+    // Fallback: at least 1 preset
+    if (presets.length === 0) {
+      presets.push(shuffled[0]);
+    }
+
+    // Track recently used to reduce repetition
+    usedRecently.length = 0;
+    usedRecently.push(...presets);
+
     chains.push({
       id: crypto.randomUUID(),
       presets,
-      durationSeconds: 15 + Math.floor(Math.random() * 31), // 15-45s
+      durationSeconds: 20 + Math.floor(Math.random() * 25), // 20-44s
       source: "live",
     });
   }
@@ -90,6 +126,7 @@ function SequenceBarInner() {
 
   const elapsedRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const shuffleModeRef = useRef(false);
 
   const { chains, activeChainIndex, playing, looping } = sequence;
   const activeChain = activeChainIndex >= 0 ? chains[activeChainIndex] : undefined;
@@ -126,9 +163,8 @@ function SequenceBarInner() {
     if (chains.length === 0) return;
     const nextIdx = activeChainIndex + 1;
     if (nextIdx >= chains.length) {
-      if (looping) {
-        // Re-randomize if this was a shuffle sequence (≥5 chains with random durations)
-        // Always re-generate when looping to keep the sequence fresh
+      if (looping && shuffleModeRef.current) {
+        // Re-randomize only in shuffle mode
         const newChains = generateRandomSequence();
         setSequenceChains(newChains);
         setActiveChainIndex(0);
@@ -138,6 +174,12 @@ function SequenceBarInner() {
           const chainSource = "@" + (firstChain.source ?? "live");
           activatePresets(firstChain.presets, setChainSlotCount, chainSource).catch(() => {});
         }
+        elapsedRef.current = 0;
+        setElapsed(0);
+      } else if (looping) {
+        // Normal loop: restart from beginning without re-randomizing
+        setActiveChainIndex(0);
+        activateIndex(0);
         elapsedRef.current = 0;
         setElapsed(0);
       } else {
@@ -190,6 +232,7 @@ function SequenceBarInner() {
   }, [playing, activeChainIndex, chains.length, activateIndex, setSequencePlaying]);
 
   const handleShuffle = useCallback(() => {
+    shuffleModeRef.current = true;
     const newChains = generateRandomSequence();
     setSequenceChains(newChains);
     setActiveChainIndex(0);
