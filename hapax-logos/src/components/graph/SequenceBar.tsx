@@ -42,49 +42,63 @@ export async function activatePresets(
   }
 }
 
-/** Estimated node count per preset (avoid fetching during generation) */
-const PRESET_SLOT_ESTIMATE: Record<string, number> = {};
+// Destructive presets override everything before them — only valid as LAST in chain
+const DESTRUCTIVE_PRESETS = new Set([
+  "silhouette", "ascii_preset", "halftone_preset", "thermal_preset",
+  "dither_retro", "sculpture", "neon",
+]);
+
+// Additive presets layer well — can go anywhere in chain
+const ADDITIVE_PRESETS = new Set([
+  "ghost", "trails", "feedback_preset", "datamosh", "datamosh_heavy",
+  "glitch_blocks_preset", "pixsort_preset", "vhs_preset", "screwed",
+  "trap", "ambient", "heartbeat", "fisheye_pulse", "kaleidodream",
+  "tunnelvision", "mirror_rorschach", "voronoi_crystal", "diff_preset",
+  "slitscan_preset", "nightvision",
+]);
 
 function generateRandomSequence(): PresetChain[] {
   const allPresets = PRESET_CATEGORIES.flatMap((c) => c.presets);
-  const numChains = 6 + Math.floor(Math.random() * 5); // 6-10 chains
+  const additive = allPresets.filter((p) => ADDITIVE_PRESETS.has(p));
+  const destructive = allPresets.filter((p) => DESTRUCTIVE_PRESETS.has(p));
+  const numChains = 6 + Math.floor(Math.random() * 5);
   const chains: PresetChain[] = [];
-  const usedRecently: string[] = []; // avoid immediate repetition
+  const usedRecently: string[] = [];
 
   for (let i = 0; i < numChains; i++) {
-    // Build chain by packing presets up to slot budget
     const presets: string[] = [];
-    let slotsUsed = 0;
-    const budget = MAX_SLOTS - 3; // reserve 3 for content_layer+postprocess+headroom
 
-    // Shuffle available presets to avoid repetitive ordering
-    const shuffled = [...allPresets].sort(() => Math.random() - 0.5);
+    // Decide chain structure:
+    // 50% chance: 1 additive solo
+    // 30% chance: 2 additive chained
+    // 20% chance: 1 additive + 1 destructive (destructive last)
+    const roll = Math.random();
 
-    for (const p of shuffled) {
-      if (presets.includes(p)) continue;
-      // Avoid presets used in the previous chain
-      if (usedRecently.includes(p) && shuffled.length > 5) continue;
-      const est = PRESET_SLOT_ESTIMATE[p] ?? 4; // estimate 4 nodes if unknown
-      if (slotsUsed + est <= budget) {
-        presets.push(p);
-        slotsUsed += est;
-      }
-      if (presets.length >= 3) break; // max 3 presets per chain for variety
+    const shuffledAdd = [...additive].sort(() => Math.random() - 0.5);
+    const available = shuffledAdd.filter((p) => !usedRecently.includes(p));
+    const pool = available.length >= 2 ? available : shuffledAdd;
+
+    if (roll < 0.5) {
+      // Solo additive
+      presets.push(pool[0]);
+    } else if (roll < 0.8) {
+      // 2 additive
+      presets.push(pool[0]);
+      if (pool[1] && pool[1] !== pool[0]) presets.push(pool[1]);
+    } else {
+      // Additive + destructive (destructive LAST)
+      presets.push(pool[0]);
+      const shuffledDest = [...destructive].sort(() => Math.random() - 0.5);
+      presets.push(shuffledDest[0]);
     }
 
-    // Fallback: at least 1 preset
-    if (presets.length === 0) {
-      presets.push(shuffled[0]);
-    }
-
-    // Track recently used to reduce repetition
     usedRecently.length = 0;
     usedRecently.push(...presets);
 
     chains.push({
       id: crypto.randomUUID(),
       presets,
-      durationSeconds: 20 + Math.floor(Math.random() * 25), // 20-44s
+      durationSeconds: 20 + Math.floor(Math.random() * 25),
       source: "live",
     });
   }
