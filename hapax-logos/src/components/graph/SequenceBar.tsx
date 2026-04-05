@@ -28,18 +28,35 @@ export async function activatePresets(
       for (const name of presets) {
         const g = await fetchPresetGraph(name);
         if (g) graphs.push(g);
+        else console.warn(`[activatePresets] fetchPresetGraph("${name}") returned null`);
       }
-      if (graphs.length === 0) return;
+      if (graphs.length === 0) {
+        console.warn("[activatePresets] no valid graphs fetched, aborting");
+        return;
+      }
       const slots = countSlots(graphs);
       onSlotCount?.(slots);
-      if (slots > MAX_SLOTS) return;
+      if (slots > MAX_SLOTS) {
+        console.warn(`[activatePresets] ${slots} slots exceeds MAX_SLOTS ${MAX_SLOTS}`);
+        return;
+      }
       const merged = mergePresetGraphs("chain", graphs, source);
-      // Pass _source alongside graph for input-selector switching
       const fxSource = source === "@live" ? "live" : source.replace("@", "");
-      await api.put("/studio/effect/graph", { ...merged, _source: fxSource });
-      return; // success
-    } catch {
-      if (attempt === 0) await new Promise((r) => setTimeout(r, 500)); // retry after 500ms
+      const payload = { ...merged, _source: fxSource };
+      try {
+        await api.put("/studio/effect/graph", payload);
+      } catch (putErr) {
+        // PUT failed — fall back to writing mutation file via POST select
+        // for the first preset as a degraded activation
+        if (presets.length > 0) {
+          await api.post("/studio/effect/select", { preset: presets[0] });
+        }
+        throw putErr;
+      }
+      return;
+    } catch (err) {
+      console.error(`[activatePresets] attempt ${attempt} failed:`, err);
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 500));
     }
   }
 }
@@ -210,8 +227,9 @@ function SequenceBarInner() {
   // Select chain (click)
   const handleSelectChain = useCallback(
     (idx: number) => {
+      console.log(`[chain-click] selecting chain ${idx}`);
       setActiveChainIndex(idx);
-      activateIndex(idx);
+      activateIndex(idx).catch((err: unknown) => console.error("[chain-click] activation failed:", err));
       elapsedRef.current = 0;
       setElapsed(0);
     },
