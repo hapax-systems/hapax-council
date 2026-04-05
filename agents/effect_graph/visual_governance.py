@@ -24,9 +24,9 @@ from agents.effect_graph.types import PresetFamily
 # State matrix: stance × energy_level → PresetFamily
 _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
     # NOMINAL
-    ("nominal", "low"): PresetFamily(presets=("clean", "ambient")),
-    ("nominal", "medium"): PresetFamily(presets=("trails", "ghost")),
-    ("nominal", "high"): PresetFamily(presets=("feedback_preset", "kaleidodream")),
+    ("nominal", "low"): PresetFamily(presets=("halftone_preset", "dither_retro", "ambient")),
+    ("nominal", "medium"): PresetFamily(presets=("vhs_preset", "ghost", "nightvision")),
+    ("nominal", "high"): PresetFamily(presets=("datamosh", "feedback_preset", "kaleidodream")),
     # CAUTIOUS
     ("cautious", "low"): PresetFamily(presets=("ambient",)),
     ("cautious", "medium"): PresetFamily(presets=("ghost",)),
@@ -75,7 +75,7 @@ class AtmosphericSelector:
     def select_family(self, stance: str, energy_level: str) -> PresetFamily:
         """Get the preset family for a stance x energy combination."""
         key = (stance, energy_level)
-        return _STATE_MATRIX.get(key, PresetFamily(presets=("clean",)))
+        return _STATE_MATRIX.get(key, PresetFamily(presets=("halftone_preset",)))
 
     def evaluate(
         self,

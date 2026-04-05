@@ -80,6 +80,13 @@ def start_compositor(compositor: Any) -> None:
     compositor._running = True
     compositor._audio_capture.start()
     compositor._write_status("running")
+
+    # Activate a default obscuring preset on startup — never show raw feed
+    from .effects import try_graph_preset
+
+    try_graph_preset(compositor, "halftone_preset")
+    compositor._current_preset_name = "halftone_preset"
+    log.info("Default startup preset: halftone_preset")
     log_consent_event(compositor, "pipeline_start", allowed=compositor._consent_recording_allowed)
 
     with compositor._camera_status_lock:
