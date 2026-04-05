@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from pathlib import Path
 
 log = logging.getLogger("reverie.content")
@@ -36,6 +37,7 @@ class ContentCapabilityRouter:
     ) -> None:
         self._sources = sources_dir
         self._compositor = compositor_dir
+        self._recent_ids: deque[str] = deque(maxlen=10)
 
     def camera_for_affordance(self, affordance_name: str) -> str | None:
         """Return the compositor camera name for a perception affordance, or None."""
@@ -112,7 +114,9 @@ class ContentCapabilityRouter:
             return False
 
         try:
-            result = resolver(narrative, level, sources_dir=self._sources)
+            result = resolver(
+                narrative, level, sources_dir=self._sources, recent_ids=self._recent_ids
+            )
             if result:
                 log.info(
                     "Content resolved: %s at %.2f (narrative: %s)",
