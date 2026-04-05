@@ -84,16 +84,19 @@ class TestGraphBuilder:
 class TestSatelliteManager:
     def test_recruit_above_threshold(self):
         mgr = SatelliteManager(_core_vocab())
+        mgr.begin_tick()
         mgr.recruit("bloom", 0.5)
         assert "bloom" in mgr.recruited
 
     def test_recruit_below_threshold_ignored(self):
         mgr = SatelliteManager(_core_vocab())
+        mgr.begin_tick()
         mgr.recruit("bloom", 0.1)
         assert "bloom" not in mgr.recruited
 
     def test_decay_dismisses(self):
         mgr = SatelliteManager(_core_vocab())
+        mgr.begin_tick()
         mgr.recruit("bloom", RECRUITMENT_THRESHOLD + 0.01)
         # Decay enough to dismiss
         mgr.decay(dt=100.0)
@@ -101,6 +104,7 @@ class TestSatelliteManager:
 
     def test_active_count(self):
         mgr = SatelliteManager(_core_vocab())
+        mgr.begin_tick()
         mgr.recruit("bloom", 0.5)
         mgr.recruit("warp", 0.4)
         assert mgr.active_count == 2
@@ -110,6 +114,7 @@ class TestSatelliteManager:
         from unittest.mock import patch
 
         mgr = SatelliteManager(_core_vocab())
+        mgr.begin_tick()
         mgr.recruit("bloom", 0.5)
         with patch("agents.reverie._satellites.write_wgsl_pipeline") as mock_write:
             rebuilt = mgr.maybe_rebuild()
@@ -121,6 +126,7 @@ class TestSatelliteManager:
         from unittest.mock import patch
 
         mgr = SatelliteManager(_core_vocab())
+        mgr.begin_tick()
         mgr.recruit("bloom", 0.5)
         with patch(
             "agents.reverie._satellites.compile_to_wgsl_plan", side_effect=RuntimeError("boom")

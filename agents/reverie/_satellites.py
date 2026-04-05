@@ -33,8 +33,13 @@ class SatelliteManager:
         self._recruited: dict[str, float] = {}
         self._recruit_count: dict[str, int] = {}
         self._last_recruit_ts: dict[str, float] = {}
+        self._recruited_this_tick: set[str] = set()
         self._active_set: frozenset[str] = frozenset()
         self._last_rebuild = 0.0
+
+    def begin_tick(self) -> None:
+        """Reset per-tick dedup gate. Call once at the start of each mixer tick."""
+        self._recruited_this_tick.clear()
 
     @property
     def recruited(self) -> dict[str, float]:
@@ -47,14 +52,19 @@ class SatelliteManager:
     def recruit(self, node_type: str, strength: float) -> None:
         """Recruit a satellite node with habituating refresh.
 
+        Per-tick dedup: only one recruit per satellite type per tick. Multiple
+        impingements targeting the same satellite within a single tick are
+        redundant — the governance cadence is 1s, not per-impingement.
+
         First-ever recruitment (or after prolonged absence) sets full strength.
-        Re-recruitment of an active or recently-dismissed satellite applies
-        divisive normalization (Carandini-Heeger): gain = 1 / (1 + count * 0.5),
-        where count grows with each recruit call. Habituation resets when a
-        satellite has not been recruited for _HABITUATION_RESET_S seconds.
+        Re-recruitment applies divisive normalization (Carandini-Heeger):
+        gain = 1 / (1 + count * 0.5). Habituation resets after _HABITUATION_RESET_S.
         """
         if strength < RECRUITMENT_THRESHOLD:
             return
+        if node_type in self._recruited_this_tick:
+            return
+        self._recruited_this_tick.add(node_type)
         now = time.monotonic()
         prev = self._recruited.get(node_type, 0.0)
         count = self._recruit_count.get(node_type, 0)

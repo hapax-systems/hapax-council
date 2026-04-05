@@ -117,6 +117,7 @@ class ReverieMixer:
         self._tick_count += 1
 
         self._recruited_content_count = 0
+        self._satellites.begin_tick()
 
         # 1. Read cross-modal input
         acoustic = self._read_acoustic_impulse()
@@ -262,6 +263,20 @@ class ReverieMixer:
                 "visual_chain.temporal_distortion", boredom_imp, 0.2
             )
 
+    @staticmethod
+    def _extract_narrative(imp: Impingement) -> str:
+        """Extract narrative from impingement, falling back to rendered text.
+
+        Exploration impingements carry narrative in content; imagination
+        impingements carry it there too. When absent (e.g. dmn.evaluative),
+        render_impingement_text produces a semantically meaningful query
+        from all available fields (source, metric, value).
+        """
+        from shared.impingement import render_impingement_text
+
+        narrative = imp.content.get("narrative", "")
+        return narrative if narrative else render_impingement_text(imp)
+
     def dispatch_impingement(self, imp: Impingement) -> None:
         """Route impingement through affordance pipeline. Recruits satellites for node.* matches."""
         candidates = self._pipeline.select(imp)
@@ -283,7 +298,7 @@ class ReverieMixer:
                 self._apply_shader_impingement(imp)
                 break
             elif name.startswith("content."):
-                narrative = imp.content.get("narrative", "")
+                narrative = self._extract_narrative(imp)
                 if self._content_router.camera_for_affordance(name):
                     self._content_router.activate_camera(name, c.combined)
                 else:
@@ -297,7 +312,7 @@ class ReverieMixer:
                 self._apply_shader_impingement(imp)
                 break
             elif name.startswith("knowledge."):
-                narrative = imp.content.get("narrative", "")
+                narrative = self._extract_narrative(imp)
                 if self._content_router.activate_content(name, narrative, c.combined):
                     self._recruited_content_count += 1
                 self._chronicle_technique(name, c.combined)
