@@ -21,7 +21,7 @@ export const PRESET_CATEGORIES: PresetCategory[] = [
   {
     id: "minimal",
     label: "Minimal / Transparent",
-    presets: ["ambient", "clean"],
+    presets: ["ambient"],
     references: [
       { artist: "Andy Warhol", title: "Screen Tests", year: "1964-66", description: "472 silent portrait films, single unbroken takes." },
       { artist: "James Benning", title: "13 Lakes", year: "2004", description: "Thirteen 10-minute static shots, pure observational cinema." },
@@ -32,7 +32,7 @@ export const PRESET_CATEGORIES: PresetCategory[] = [
   {
     id: "temporal",
     label: "Temporal Persistence / Feedback",
-    presets: ["ghost", "trails", "feedback_preset", "echo", "reverie_vocabulary"],
+    presets: ["ghost", "trails", "feedback_preset"],
     references: [
       { artist: "Nam June Paik", title: "TV Buddha", year: "1974", description: "Foundational video feedback loop as art." },
       { artist: "Steina & Woody Vasulka", title: "Noisefields", year: "1974", description: "Audio-video feedback experiments at The Kitchen." },
