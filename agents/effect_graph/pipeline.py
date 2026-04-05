@@ -136,6 +136,7 @@ class SlotPipeline:
 
         self._slot_assignments = [None] * self._num_slots
         self._slot_base_params = [{} for _ in range(self._num_slots)]
+        self._slot_preset_params: list[dict[str, Any]] = [{} for _ in range(self._num_slots)]
 
         # Default all slots to passthrough
         for i in range(self._num_slots):
@@ -153,6 +154,7 @@ class SlotPipeline:
                 self._slot_pending_frag[slot_idx] = step.shader_source
                 self._slot_assignments[slot_idx] = step.node_type
                 self._slot_base_params[slot_idx] = dict(step.params)
+                self._slot_preset_params[slot_idx] = dict(step.params)
                 slot_idx += 1
 
         # Apply changes to each slot
@@ -179,13 +181,25 @@ class SlotPipeline:
         return None
 
     def update_node_uniforms(self, node_type: str, params: dict[str, Any]) -> None:
-        """Update uniforms for a node by finding its slot.
+        """Update uniforms for a node — ADDITIVE on top of preset base values.
 
-        Merges into base params so subsequent calls include everything.
+        Modulated params are added to the preset's compiled defaults.
+        Non-numeric params (time, width, height) replace directly.
         """
         slot_idx = self.find_slot_for_node(node_type)
         if slot_idx is not None:
-            self._slot_base_params[slot_idx].update(params)
+            preset = (
+                self._slot_preset_params[slot_idx] if hasattr(self, "_slot_preset_params") else {}
+            )
+            for key, val in params.items():
+                if key in ("time", "width", "height") or key not in preset:
+                    # Direct set for time/resolution or params not in preset
+                    self._slot_base_params[slot_idx][key] = val
+                elif isinstance(val, (int, float)) and isinstance(preset.get(key), (int, float)):
+                    # Additive: preset_base + modulated_delta
+                    self._slot_base_params[slot_idx][key] = preset[key] + val
+                else:
+                    self._slot_base_params[slot_idx][key] = val
             if self._slot_is_temporal[slot_idx]:
                 self._apply_glfeedback_uniforms(slot_idx)
             else:

@@ -34,6 +34,8 @@ class UniformModulator:
             raw = signals.get(b.source)
             if raw is None:
                 continue
+            # Compute delta: offset acts as baseline shift, scale amplifies signal.
+            # The caller adds this delta to the preset's base param value.
             target = raw * b.scale + b.offset
             key = (b.node, b.param)
             prev = self._smoothed.get(key)
