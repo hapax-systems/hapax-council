@@ -18,6 +18,12 @@ RECRUITMENT_THRESHOLD = 0.3
 DISMISSAL_THRESHOLD = 0.05
 REBUILD_COOLDOWN_S = 2.0
 
+# When a single decay call removes more than this amount, the satellite is treated as
+# "genuinely absent" and its habituation counter resets. This distinguishes gradual
+# attrition (small dt, counter persists → re-recruitment stays habituated) from
+# deliberate or long-interval dismissal (large dt, counter clears → fresh start).
+_HABITUATION_RESET_REMOVED = 0.5
+
 
 class SatelliteManager:
     """Manages satellite node recruitment, decay, and graph rebuilds."""
@@ -26,6 +32,7 @@ class SatelliteManager:
         self._core_vocab = core_vocab
         self._decay_rate = decay_rate
         self._recruited: dict[str, float] = {}
+        self._recruit_count: dict[str, int] = {}
         self._active_set: frozenset[str] = frozenset()
         self._last_rebuild = 0.0
 
@@ -38,20 +45,59 @@ class SatelliteManager:
         return len(self._recruited)
 
     def recruit(self, node_type: str, strength: float) -> None:
-        """Recruit a satellite node (or boost its strength if already recruited)."""
+        """Recruit a satellite node with habituating refresh.
+
+        First-ever recruitment (or after deliberate absence) sets full strength.
+        Re-recruitment of an active or recently-dismissed satellite applies
+        divisive normalization (Carandini-Heeger): gain = 1 / (1 + count * 0.5),
+        where count grows with each recruit call and persists across gradual decay
+        dismissals. This ensures:
+
+        - Monotonic input: decay eventually wins (gain → 0 as count grows).
+        - Novel stronger signals: still boost effectively (gain > 0 ensures headroom).
+        - Deliberate absence (large decay in one call): habituation resets to fresh.
+        """
         if strength < RECRUITMENT_THRESHOLD:
             return
         prev = self._recruited.get(node_type, 0.0)
-        self._recruited[node_type] = max(prev, strength)
+        count = self._recruit_count.get(node_type, 0)
+        if prev > 0 or count > 0:
+            # Divisive normalization: effective strength decreases with recruit count.
+            # count=1: gain=0.667 (first re-recruit, moderate attenuation)
+            # count=5: gain=0.286 (repeated re-recruit, strong attenuation)
+            # gain = eff/strength = 1/(1+count*0.5) ensures new always drifts toward eff.
+            effective = strength / (1.0 + count * 0.5)
+            gain = effective / strength  # = 1 / (1 + count * 0.5)
+            if prev > 0:
+                self._recruited[node_type] = prev + (effective - prev) * gain
+            else:
+                # Re-recruited after gradual dismissal: start from habituated effective.
+                self._recruited[node_type] = effective
+            self._recruit_count[node_type] = count + 1
+        else:
+            # First-ever recruitment (or after deliberate/long absence): full strength.
+            self._recruited[node_type] = strength
+            self._recruit_count[node_type] = 1
         if node_type not in self._active_set:
             log.info("Satellite recruited: %s (strength=%.2f)", node_type, strength)
 
     def decay(self, dt: float) -> None:
-        """Decay all satellite strengths, dismiss below threshold."""
+        """Decay all satellite strengths, dismiss below threshold.
+
+        If a single decay call removes more than _HABITUATION_RESET_REMOVED units
+        of strength (i.e., a large dt representing deliberate or long absence),
+        the habituation counter is cleared so re-recruitment starts fresh.
+        For small incremental decay calls, the counter persists to keep re-entry
+        habituated.
+        """
+        removed_per_call = self._decay_rate * dt
         for node_type in list(self._recruited):
-            self._recruited[node_type] -= self._decay_rate * dt
+            self._recruited[node_type] -= removed_per_call
             if self._recruited[node_type] < DISMISSAL_THRESHOLD:
                 del self._recruited[node_type]
+                if removed_per_call > _HABITUATION_RESET_REMOVED:
+                    self._recruit_count.pop(node_type, None)
+                # else: count persists for habituated re-entry
                 log.info("Satellite dismissed: %s", node_type)
 
     def maybe_rebuild(self) -> bool:
