@@ -134,8 +134,12 @@ def build_inline_fx_chain(
     )
 
     # --- Blender pad 0: camera base (from input-selector, alpha=1.0) ---
+    out_w = compositor.config.output_width
+    out_h = compositor.config.output_height
     base_pad = blender.request_pad(blender.get_pad_template("sink_%u"), None, None)
     base_pad.set_property("zorder", 0)
+    base_pad.set_property("width", out_w)
+    base_pad.set_property("height", out_h)
     # Wire input-selector → blender base pad
     input_sel.link_pads("src", blender, base_pad.get_name())
 
@@ -153,6 +157,8 @@ def build_inline_fx_chain(
 
     overlay_pad = blender.request_pad(blender.get_pad_template("sink_%u"), None, None)
     overlay_pad.set_property("zorder", 1)
+    overlay_pad.set_property("width", out_w)
+    overlay_pad.set_property("height", out_h)
     overlay_pad.set_property("alpha", 0.0)  # hidden until flash
 
     tee_pad_overlay = pre_fx_tee.request_pad(pre_fx_tee.get_pad_template("src_%u"), None, None)

@@ -113,9 +113,9 @@ function canAdd(chain: string[], candidate: string): boolean {
 // Available FX input sources: tiled composite + individual cameras
 // Base source is always an individual camera — never "live" (tiled composite).
 // The live view flashes as an overlay at 60% opacity on a random schedule.
+// Only BRIOs — C920s have persistent USB errors after hot-plug cycles.
 const FX_SOURCES = [
   "brio-operator", "brio-room", "brio-synths",
-  "c920-desk", "c920-room", "c920-overhead",
 ];
 
 function generateRandomSequence(): PresetChain[] {
