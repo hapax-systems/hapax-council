@@ -10,6 +10,147 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+class YouTubeOverlay:
+    """Floating YouTube video overlay — bounces around the screen like Pango.
+
+    Reads from /dev/video50 (v4l2loopback fed by youtube-player daemon).
+    Creates a glvideomixer pad on-demand when video starts, removes on stop.
+    """
+
+    WIDTH = 640
+    HEIGHT = 360
+    ALPHA = 0.65
+    V4L2_DEVICE = "/dev/video50"
+    STATUS_URL = "http://127.0.0.1:8055/status"
+
+    def __init__(self) -> None:
+        self._pad: Any = None
+        self._elements: list[Any] = []
+        self._active = False
+        self._x = 100.0
+        self._y = 100.0
+        self._vx = 1.2
+        self._vy = 0.8
+        self._last_check = 0.0
+
+    def tick(self, compositor: Any, Gst: Any) -> None:
+        """Called every frame tick. Checks status, bounces position."""
+        now = time.monotonic()
+
+        # Check youtube-player status every 2 seconds
+        if now - self._last_check > 2.0:
+            self._last_check = now
+            playing = self._check_playing()
+            if playing and not self._active:
+                self._create_pad(compositor, Gst)
+            elif not playing and self._active:
+                self._remove_pad(compositor, Gst)
+
+        # Bounce animation
+        if self._active and self._pad is not None:
+            self._x += self._vx
+            self._y += self._vy
+            if self._x <= 20:
+                self._x = 20
+                self._vx = abs(self._vx)
+            elif self._x + self.WIDTH >= 1920 - 20:
+                self._x = 1920 - self.WIDTH - 20
+                self._vx = -abs(self._vx)
+            if self._y <= 20:
+                self._y = 20
+                self._vy = abs(self._vy)
+            elif self._y + self.HEIGHT >= 1080 - 20:
+                self._y = 1080 - self.HEIGHT - 20
+                self._vy = -abs(self._vy)
+            self._pad.set_property("xpos", int(self._x))
+            self._pad.set_property("ypos", int(self._y))
+
+    def _check_playing(self) -> bool:
+        try:
+            import urllib.request
+
+            r = urllib.request.urlopen(self.STATUS_URL, timeout=0.5)
+            import json
+
+            data = json.loads(r.read())
+            return data.get("playing", False)
+        except Exception:
+            return False
+
+    def _create_pad(self, compositor: Any, Gst: Any) -> None:
+        """Create v4l2src → glupload → glcolorconvert → glvideomixer pad."""
+        import os
+
+        if not os.path.exists(self.V4L2_DEVICE):
+            return
+
+        pipeline = compositor.pipeline
+        glmixer = getattr(compositor, "_fx_glmixer", None)
+        if glmixer is None:
+            return
+
+        try:
+            src = Gst.ElementFactory.make("v4l2src", "yt-overlay-src")
+            src.set_property("device", self.V4L2_DEVICE)
+            src.set_property("do-timestamp", True)
+            q = Gst.ElementFactory.make("queue", "yt-overlay-q")
+            q.set_property("leaky", 2)
+            q.set_property("max-size-buffers", 1)
+            convert = Gst.ElementFactory.make("videoconvert", "yt-overlay-convert")
+            convert.set_property("dither", 0)
+            upload = Gst.ElementFactory.make("glupload", "yt-overlay-upload")
+            glcc = Gst.ElementFactory.make("glcolorconvert", "yt-overlay-glcc")
+
+            self._elements = [src, q, convert, upload, glcc]
+            for el in self._elements:
+                pipeline.add(el)
+            src.link(q)
+            q.link(convert)
+            convert.link(upload)
+            upload.link(glcc)
+
+            for el in self._elements:
+                el.sync_state_with_parent()
+
+            self._pad = glmixer.request_pad(glmixer.get_pad_template("sink_%u"), None, None)
+            self._pad.set_property("zorder", 2)
+            self._pad.set_property("alpha", self.ALPHA)
+            self._pad.set_property("width", self.WIDTH)
+            self._pad.set_property("height", self.HEIGHT)
+            self._pad.set_property("xpos", int(self._x))
+            self._pad.set_property("ypos", int(self._y))
+            glcc.link_pads("src", glmixer, self._pad.get_name())
+
+            self._active = True
+            log.info("YouTube overlay created (%dx%d, alpha=%.2f)", self.WIDTH, self.HEIGHT, self.ALPHA)
+        except Exception:
+            log.exception("YouTube overlay creation failed")
+            self._cleanup(compositor, Gst)
+
+    def _remove_pad(self, compositor: Any, Gst: Any) -> None:
+        """Remove the YouTube overlay pad and elements."""
+        self._cleanup(compositor, Gst)
+        self._active = False
+        log.info("YouTube overlay removed")
+
+    def _cleanup(self, compositor: Any, Gst: Any) -> None:
+        pipeline = compositor.pipeline
+        glmixer = getattr(compositor, "_fx_glmixer", None)
+        if self._pad and glmixer:
+            try:
+                glmixer.release_request_pad(self._pad)
+            except Exception:
+                pass
+            self._pad = None
+        for el in reversed(self._elements):
+            try:
+                el.set_state(Gst.State.NULL)
+                pipeline.remove(el)
+            except Exception:
+                pass
+        self._elements = []
+
+
 class FlashScheduler:
     """Audio-reactive live overlay flash on the camera base.
 
@@ -182,6 +323,9 @@ def build_inline_fx_chain(
     flash_pad.set_property("alpha", 0.0)  # hidden until flash
     glcc_flash.link_pads("src", glmixer, flash_pad.get_name())
 
+    # --- Store glmixer ref for YouTube overlay pad (created on-demand) ---
+    compositor._fx_glmixer = glmixer
+
     # --- Shader chain after mixer ---
     compositor._slot_pipeline.build_chain(pipeline, Gst, glmixer, glcolorconvert_out)
 
@@ -203,6 +347,7 @@ def build_inline_fx_chain(
     compositor._fx_switching = False
     compositor._fx_flash_pad = flash_pad
     compositor._fx_flash_scheduler = FlashScheduler()
+    compositor._yt_overlay = YouTubeOverlay()
 
     log.info(
         "FX chain: %d shader slots, glvideomixer (camera base + live flash 60%%)",
@@ -329,8 +474,16 @@ def switch_fx_source(compositor: Any, source: str) -> bool:
             input_sel.set_property("active-pad", sel_pad)
 
             # Store for teardown
+            if is_youtube:
+                elements = [el for el in [
+                    pipeline.get_by_name("fxsrc-yt"),
+                    pipeline.get_by_name("fxsrc-q"),
+                    pipeline.get_by_name("fxsrc-convert"),
+                    pipeline.get_by_name("fxsrc-scale"),
+                    pipeline.get_by_name("fxsrc-caps"),
+                ] if el is not None]
             compositor._fx_camera_branch = elements
-            compositor._fx_camera_tee_pad = tee_pad
+            compositor._fx_camera_tee_pad = None if is_youtube else tee_pad
             compositor._fx_camera_sel_pad = sel_pad
             compositor._fx_active_source = source
             compositor._fx_switching = False
@@ -420,5 +573,10 @@ def fx_tick_callback(compositor: Any) -> bool:
         alpha = scheduler.tick(now)
         if alpha is not None:
             flash_pad.set_property("alpha", alpha)
+
+    # YouTube overlay: floating PiP that bounces around
+    yt_overlay = getattr(compositor, "_yt_overlay", None)
+    if yt_overlay:
+        yt_overlay.tick(compositor, compositor._Gst)
 
     return True
