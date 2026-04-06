@@ -1,18 +1,17 @@
 {
   "default_modulations": [
-    {"node": "bloom", "param": "alpha", "source": "onset_kick", "scale": 2.5, "offset": 0.0, "attack": 0.0, "decay": 0.65},
-    {"node": "bloom", "param": "radius", "source": "mixer_bass", "scale": 15.0, "offset": 0.0, "attack": 0.0, "decay": 0.7},
+    {"node": "colorgrade", "param": "brightness", "source": "sidechain_kick", "scale": -0.7, "offset": 0.0, "attack": 0.0, "decay": 0.88},
+    {"node": "colorgrade", "param": "saturation", "source": "sidechain_kick", "scale": -1.0, "offset": 0.0, "attack": 0.0, "decay": 0.88},
+    {"node": "colorgrade", "param": "contrast", "source": "mixer_energy", "scale": 0.5, "offset": 0.0, "attack": 0.05, "decay": 0.8},
+    {"node": "colorgrade", "param": "hue_rotate", "source": "spectral_centroid", "scale": 40.0, "offset": 0.0, "attack": 0.3, "decay": 0.95},
+    {"node": "vignette", "param": "strength", "source": "onset_kick", "scale": 1.5, "offset": 0.0, "attack": 0.0, "decay": 0.75},
+    {"node": "bloom", "param": "alpha", "source": "onset_kick", "scale": 2.0, "offset": 0.0, "attack": 0.0, "decay": 0.65},
+    {"node": "bloom", "param": "radius", "source": "mixer_bass", "scale": 8.0, "offset": 0.0, "attack": 0.0, "decay": 0.7},
     {"node": "chromatic_aberration", "param": "offset_x", "source": "onset_snare", "scale": 10.0, "offset": 0.0, "attack": 0.0, "decay": 0.5},
-    {"node": "noise_overlay", "param": "intensity", "source": "onset_hat", "scale": 0.6, "offset": 0.0, "attack": 0.0, "decay": 0.45},
-    {"node": "trail", "param": "opacity", "source": "mixer_energy", "scale": 1.0, "offset": 0.0, "attack": 0.0, "decay": 0.7},
-    {"node": "trail", "param": "drift_x", "source": "mixer_bass", "scale": 12.0, "offset": 0.0, "attack": 0.0, "decay": 0.65},
-    {"node": "trail", "param": "fade", "source": "beat_pulse", "scale": -0.08, "offset": 0.0, "smoothing": 0.0},
-    {"node": "colorgrade", "param": "brightness", "source": "beat_pulse", "scale": 0.5, "offset": 0.0, "attack": 0.0, "decay": 0.7},
-    {"node": "colorgrade", "param": "contrast", "source": "mixer_energy", "scale": 1.0, "offset": 0.0, "attack": 0.0, "decay": 0.75},
-    {"node": "colorgrade", "param": "saturation", "source": "mixer_mid", "scale": 2.0, "offset": 0.0, "attack": 0.0, "decay": 0.8},
-    {"node": "colorgrade", "param": "hue_rotate", "source": "spectral_centroid", "scale": 60.0, "offset": 0.0, "attack": 0.3, "decay": 0.95},
-    {"node": "vignette", "param": "strength", "source": "onset_kick", "scale": -0.6, "offset": 0.0, "attack": 0.0, "decay": 0.65},
-    {"node": "drift", "param": "speed", "source": "mixer_energy", "scale": 3.0, "offset": 0.0, "attack": 0.0, "decay": 0.75},
-    {"node": "drift", "param": "amplitude", "source": "mixer_bass", "scale": 12.0, "offset": 0.0, "attack": 0.0, "decay": 0.65}
+    {"node": "noise_overlay", "param": "intensity", "source": "onset_hat", "scale": 0.3, "offset": 0.0, "attack": 0.0, "decay": 0.45},
+    {"node": "trail", "param": "opacity", "source": "mixer_energy", "scale": 0.5, "offset": 0.0, "attack": 0.05, "decay": 0.75},
+    {"node": "trail", "param": "drift_x", "source": "mixer_bass", "scale": 6.0, "offset": 0.0, "attack": 0.0, "decay": 0.7},
+    {"node": "drift", "param": "speed", "source": "mixer_energy", "scale": 2.0, "offset": 0.0, "attack": 0.05, "decay": 0.8},
+    {"node": "drift", "param": "amplitude", "source": "mixer_bass", "scale": 8.0, "offset": 0.0, "attack": 0.0, "decay": 0.7}
   ]
 }

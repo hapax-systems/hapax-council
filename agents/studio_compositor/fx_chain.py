@@ -18,7 +18,7 @@ class FlashScheduler:
     Alpha decays smoothly from 0.6 → 0.0 for organic feel.
     """
 
-    FLASH_ALPHA = 0.6
+    FLASH_ALPHA = 0.85
     # Random baseline (fills silence)
     MIN_INTERVAL = 2.0
     MAX_INTERVAL = 5.0
@@ -41,7 +41,7 @@ class FlashScheduler:
         self._last_kick_at = t
         self._flashing = True
         # Duration scales with bass energy: more bass = longer flash
-        duration = 0.3 + bass_energy * 2.5  # 0.3s to 2.8s
+        duration = 0.1 + bass_energy * 0.4  # 0.1s to 0.5s — short punch
         self._flash_end_at = t + min(duration, self.MAX_DURATION)
         self._current_alpha = self.FLASH_ALPHA
 

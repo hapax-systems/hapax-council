@@ -85,6 +85,7 @@ def tick_modulator(compositor: Any, t: float, energy: float, b: float) -> None:
         signals["onset_kick"] = audio.get("onset_kick", 0.0)
         signals["onset_snare"] = audio.get("onset_snare", 0.0)
         signals["onset_hat"] = audio.get("onset_hat", 0.0)
+        signals["sidechain_kick"] = audio.get("sidechain_kick", 0.0)
         # Timbral features
         signals["spectral_centroid"] = audio.get("spectral_centroid", 0.0)
         signals["spectral_flatness"] = audio.get("spectral_flatness", 0.0)

@@ -109,6 +109,7 @@ class CompositorAudioCapture:
             "onset_kick": 0.0,
             "onset_snare": 0.0,
             "onset_hat": 0.0,
+            "sidechain_kick": 0.0,  # slow-decay kick for sidechain pump (0.92x)
             "spectral_centroid": 0.0,
             "spectral_flatness": 0.0,
             "spectral_rolloff": 0.0,
@@ -122,6 +123,7 @@ class CompositorAudioCapture:
         self._onset_kick: float = 0.0
         self._onset_snare: float = 0.0
         self._onset_hat: float = 0.0
+        self._sidechain_kick: float = 0.0
         self._prev_fft: np.ndarray | None = None
         self._flux_history: deque[float] = deque(maxlen=30)
         self._agc = SignalNormalizer()
@@ -159,11 +161,13 @@ class CompositorAudioCapture:
             self._onset_kick *= 0.75
             self._onset_snare *= 0.65
             self._onset_hat *= 0.55
+            self._sidechain_kick *= 0.92  # slow pump decay (~500ms to 30%)
             self._signals["beat_pulse"] = self._beat_pulse
             self._signals["mixer_beat"] = self._beat_pulse
             self._signals["onset_kick"] = self._onset_kick
             self._signals["onset_snare"] = self._onset_snare
             self._signals["onset_hat"] = self._onset_hat
+            self._signals["sidechain_kick"] = self._sidechain_kick
             return result
 
     def _capture_loop(self) -> None:
@@ -330,6 +334,7 @@ class CompositorAudioCapture:
         # Hats: centroid >3kHz, high_ratio >0.5
         if centroid < 200 and bass_ratio > 0.65:
             self._onset_kick = 1.0
+            self._sidechain_kick = 1.0
         elif centroid > 3500 and high_ratio > 0.5:
             self._onset_hat = 1.0
         elif flatness > 0.4 and 200 < centroid < 1500:
