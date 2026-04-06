@@ -25,7 +25,7 @@ class FlashScheduler:
     MIN_DURATION = 0.3
     MAX_DURATION = 1.5
     # Audio-reactive
-    KICK_COOLDOWN = 0.4  # minimum seconds between kick-triggered flashes
+    KICK_COOLDOWN = 0.2  # minimum seconds between kick-triggered flashes
 
     def __init__(self) -> None:
         self._next_flash_at: float = time.monotonic() + random.uniform(1.0, 3.0)
@@ -41,7 +41,7 @@ class FlashScheduler:
         self._last_kick_at = t
         self._flashing = True
         # Duration scales with bass energy: more bass = longer flash
-        duration = 0.2 + bass_energy * 1.5  # 0.2s to 1.7s
+        duration = 0.3 + bass_energy * 2.5  # 0.3s to 2.8s
         self._flash_end_at = t + min(duration, self.MAX_DURATION)
         self._current_alpha = self.FLASH_ALPHA
 
@@ -359,21 +359,26 @@ def fx_tick_callback(compositor: Any) -> bool:
     compositor._fx_beat_smooth = max(beat, compositor._fx_beat_smooth * 0.85)
     b = compositor._fx_beat_smooth
 
+    # Cache audio signals BEFORE tick_modulator (which calls get_signals and decays them)
+    cached_audio: dict[str, float] = {}
+    if hasattr(compositor, "_audio_capture"):
+        cached_audio = compositor._audio_capture.get_signals()
+    compositor._cached_audio = cached_audio
+
     tick_governance(compositor, t)
     tick_modulator(compositor, t, energy, b)
     tick_slot_pipeline(compositor, t)
 
     # Flash scheduler: animate glvideomixer flash pad alpha
-    # Kick onsets trigger flash, bass energy controls duration
     scheduler = getattr(compositor, "_fx_flash_scheduler", None)
     flash_pad = getattr(compositor, "_fx_flash_pad", None)
     if scheduler and flash_pad:
         now = time.monotonic()
-        # Feed kick onsets from audio capture
-        if hasattr(compositor, "_audio_capture"):
-            audio = compositor._audio_capture.get_signals()
-            if audio.get("onset_kick", 0.0) > 0.5:
-                scheduler.kick(now, audio.get("mixer_bass", 0.5))
+        kick = cached_audio.get("onset_kick", 0.0)
+        beat = cached_audio.get("beat_pulse", 0.0)
+        bass = cached_audio.get("mixer_bass", 0.0)
+        if kick > 0.3 or beat > 0.6:
+            scheduler.kick(now, bass)
         alpha = scheduler.tick(now)
         if alpha is not None:
             flash_pad.set_property("alpha", alpha)

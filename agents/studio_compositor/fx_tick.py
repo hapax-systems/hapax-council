@@ -72,9 +72,9 @@ def tick_modulator(compositor: Any, t: float, energy: float, b: float) -> None:
         signals["stimmung_valence"] = data.emotion_valence
     if data.emotion_arousal != 0:
         signals["stimmung_arousal"] = data.emotion_arousal
-    # Audio signals from direct capture (<50ms latency)
-    if hasattr(compositor, "_audio_capture"):
-        audio = compositor._audio_capture.get_signals()
+    # Audio signals — use cached signals from fx_tick_callback (already called get_signals once)
+    audio = getattr(compositor, "_cached_audio", None)
+    if audio:
         signals["mixer_energy"] = audio.get("mixer_energy", 0.0)
         signals["mixer_beat"] = audio.get("mixer_beat", 0.0)
         signals["mixer_bass"] = audio.get("mixer_bass", 0.0)
