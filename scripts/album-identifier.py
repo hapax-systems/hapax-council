@@ -145,7 +145,7 @@ def identify_album_vision(image_data: bytes) -> dict | None:
 
     body = json.dumps(
         {
-            "model": "fast",
+            "model": "balanced",
             "messages": [
                 {
                     "role": "user",
@@ -157,9 +157,16 @@ def identify_album_vision(image_data: bytes) -> dict | None:
                         {
                             "type": "text",
                             "text": (
-                                "Identify this vinyl album cover photographed under infrared light "
-                                "(grayscale). Return ONLY a JSON object with: artist, title, year, label. "
-                                'If unidentifiable, return {"artist": null}. No other text.'
+                                "Identify this vinyl album cover photographed under 850nm infrared "
+                                "light (grayscale, no color information). Think carefully — this "
+                                "collection includes underground hip hop (MF DOOM, Tha God Fahim, "
+                                "Griselda, Madlib), dungeon synth, Japanese city pop, jazz, and "
+                                "other obscure genres. The album may be rare or limited press. "
+                                "Look closely at any text, logos, label marks, catalog numbers, "
+                                "and artwork style. If you're unsure, describe what you see in "
+                                "detail first, then make your best identification.\n\n"
+                                "Return a JSON object with: artist, title, year, label, confidence (0.0-1.0). "
+                                'If truly unidentifiable, return {"artist": null}. No other text.'
                             ),
                         },
                     ],
@@ -201,22 +208,17 @@ def identify_album_vision(image_data: bytes) -> dict | None:
         return None
 
 
-# --- Gemini audio track identification ---
-def capture_and_identify_track() -> str | None:
-    """Capture audio from PipeWire (right channel = vinyl), speed up 2x,
-    send to Gemini Flash with album context for track identification."""
-    if not _current_album:
-        return None
-
+# --- Combined vision + audio identification ---
+def _capture_audio_mp3() -> str | None:
+    """Capture audio from PipeWire (right channel), speed up 2x, return mp3 path."""
     raw_path = ""
     mp3_path = ""
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             raw_path = f.name
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir="/tmp") as f:
             mp3_path = f.name
 
-        # Capture audio from PipeWire mixer (right channel = vinyl, left = contact mic)
         proc = subprocess.Popen(
             [
                 "pw-cat",
@@ -241,10 +243,8 @@ def capture_and_identify_track() -> str | None:
         proc.wait(timeout=3)
 
         if not os.path.exists(raw_path) or os.path.getsize(raw_path) < 1000:
-            log.debug("Audio capture too short")
             return None
 
-        # Extract right channel + speed up 2x + convert to mp3
         subprocess.run(
             [
                 "ffmpeg",
@@ -261,53 +261,97 @@ def capture_and_identify_track() -> str | None:
             timeout=15,
         )
 
+        if os.path.exists(raw_path):
+            os.unlink(raw_path)
+
         if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) < 1000:
-            log.debug("Audio processing failed")
             return None
 
-        with open(mp3_path, "rb") as f:
-            audio_b64 = base64.b64encode(f.read()).decode()
+        return mp3_path
+    except Exception:
+        for p in (raw_path, mp3_path):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        return None
 
-        key = _get_litellm_key()
-        if not key:
-            return None
 
-        artist = _current_album.get("artist", "Unknown")
-        title = _current_album.get("title", "Unknown")
+def identify_album_and_track(image_data: bytes) -> tuple[dict | None, str | None]:
+    """Combined identification: album cover image + audio clip in one multimodal call.
 
-        body = json.dumps(
-            {
-                "model": "fast",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_audio",
-                                "input_audio": {"data": audio_b64, "format": "mp3"},
-                            },
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"This is an audio clip from a vinyl record: {artist} — {title}. "
-                                    "The record was playing at reduced speed and has been sped back up "
-                                    "to approximate original tempo. Which specific track is playing? "
-                                    'Return ONLY a JSON object: {"track": "track name", "confidence": 0.0-1.0}. '
-                                    'If you cannot identify it, return {"track": null}.'
-                                ),
-                            },
-                        ],
-                    }
-                ],
-            }
-        ).encode()
+    Sends both the IR album cover and a speed-corrected audio sample to Gemini.
+    The visual narrows to artist/catalog, the audio pins the specific track.
+    """
+    key = _get_litellm_key()
+    if not key:
+        return None, None
 
+    image_b64 = base64.b64encode(image_data).decode()
+
+    # Capture audio in parallel-ish (blocking but that's fine for a daemon)
+    mp3_path = _capture_audio_mp3()
+    audio_content = []
+    if mp3_path:
+        try:
+            with open(mp3_path, "rb") as f:
+                audio_b64 = base64.b64encode(f.read()).decode()
+            audio_content = [
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": audio_b64, "format": "mp3"},
+                },
+            ]
+        finally:
+            try:
+                os.unlink(mp3_path)
+            except OSError:
+                pass
+
+    has_audio = bool(audio_content)
+    audio_instruction = ""
+    if has_audio:
+        audio_instruction = (
+            "\n\nI've also included an audio clip from this record playing at reduced "
+            "speed, sped back up to approximate original tempo. Use BOTH the cover art "
+            "AND the audio to identify the album and which specific track is playing."
+        )
+
+    body = json.dumps(
+        {
+            "model": "balanced",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                        },
+                        *audio_content,
+                        {
+                            "type": "text",
+                            "text": (
+                                "What album is this? What track is playing?"
+                                f"{audio_instruction}\n\n"
+                                "Return a JSON object with: artist, title, year, label, confidence (0.0-1.0), "
+                                "track (specific track, or null), model (your model name). No other text."
+                            ),
+                        },
+                    ],
+                }
+            ],
+        }
+    ).encode()
+
+    try:
         req = urllib.request.Request(
             LITELLM_URL,
             body,
             {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
-        resp = urllib.request.urlopen(req, timeout=30)
+        resp = urllib.request.urlopen(req, timeout=45)
         data = json.loads(resp.read())
         raw = data["choices"][0]["message"]["content"].strip()
 
@@ -318,35 +362,126 @@ def capture_and_identify_track() -> str | None:
             raw = raw.strip()
 
         result = json.loads(raw)
+        if result.get("artist") is None:
+            log.info("Album not identified")
+            return None, None
+
+        album = {
+            "artist": result.get("artist"),
+            "title": result.get("title"),
+            "year": result.get("year"),
+            "label": result.get("label"),
+            "model": result.get("model", "Gemini"),
+            "confidence": result.get("confidence", 0),
+        }
         track = result.get("track")
         confidence = result.get("confidence", 0)
 
+        log.info(
+            "Identified: %s — %s, track=%s (confidence=%.2f)",
+            album.get("artist"),
+            album.get("title"),
+            track,
+            confidence,
+        )
+
+        # Fetch lyrics if track identified
+        if track:
+            artist = album.get("artist", "Unknown")
+            lyrics = _fetch_lyrics(artist, track)
+            if lyrics:
+                _write_lyrics(lyrics)
+            else:
+                LYRICS_FILE.unlink(missing_ok=True)
+
+        return album, track
+
+    except Exception as e:
+        log.warning("Combined identification failed: %s", e)
+        return None, None
+
+
+def capture_and_identify_track() -> str | None:
+    """Standalone track re-identification using audio + known album context."""
+    if not _current_album:
+        return None
+
+    mp3_path = _capture_audio_mp3()
+    if not mp3_path:
+        return None
+
+    try:
+        with open(mp3_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+    finally:
+        try:
+            os.unlink(mp3_path)
+        except OSError:
+            pass
+
+    key = _get_litellm_key()
+    if not key:
+        return None
+
+    artist = _current_album.get("artist", "Unknown")
+    title = _current_album.get("title", "Unknown")
+
+    body = json.dumps(
+        {
+            "model": "fast",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": audio_b64, "format": "mp3"},
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                f"This is audio from: {artist} — {title}. "
+                                "Playing at reduced speed, sped back up to approximate original tempo. "
+                                "Which specific track is this? "
+                                'Return ONLY: {"track": "track name", "confidence": 0.0-1.0}. '
+                                'If unsure: {"track": null}.'
+                            ),
+                        },
+                    ],
+                }
+            ],
+        }
+    ).encode()
+
+    try:
+        req = urllib.request.Request(
+            LITELLM_URL,
+            body,
+            {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        )
+        resp = urllib.request.urlopen(req, timeout=30)
+        data = json.loads(resp.read())
+        raw = data["choices"][0]["message"]["content"].strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+        result = json.loads(raw)
+        track = result.get("track")
+        confidence = result.get("confidence", 0)
         if track and confidence >= 0.5:
-            log.info("Track identified: %s (confidence=%.2f)", track, confidence)
-            # Fetch lyrics if available
+            log.info("Track re-identified: %s (confidence=%.2f)", track, confidence)
             lyrics = _fetch_lyrics(artist, track)
             if lyrics:
                 _write_lyrics(lyrics)
             else:
                 LYRICS_FILE.unlink(missing_ok=True)
             return track
-        else:
-            log.info("Track ID low confidence: %s (%.2f)", track, confidence)
-            return None
-
-    except subprocess.TimeoutExpired:
-        log.debug("Audio capture timed out")
         return None
     except Exception as e:
-        log.warning("Track identification failed: %s", e)
+        log.warning("Track re-identification failed: %s", e)
         return None
-    finally:
-        for p in (raw_path, mp3_path):
-            if p:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
 
 
 def _fetch_lyrics(artist: str, track: str) -> str | None:
@@ -406,12 +541,18 @@ def write_state(album: dict, track: str) -> None:
     year = album.get("year", "")
     label = album.get("label", "")
 
-    # Attribution text for overlay
-    lines = [f"{artist} — {title}"]
+    # Splattribution text for overlay
+    model = album.get("model", "unknown LLM")
+    confidence = album.get("confidence", "?")
+    lines = [
+        "SPLATTRIBUTION",
+        f'{model} says: "{artist} — {title}"',
+    ]
     if track:
-        lines.append(f"Playing: {track}")
-    if year:
-        lines.append(str(year))
+        lines.append(f'Track: "{track}"')
+    if confidence != "?":
+        lines.append(f"Confidence: {int(float(confidence) * 100)}%")
+    lines.append("LOL")
     try:
         SHM_DIR.mkdir(parents=True, exist_ok=True)
         MUSIC_ATTRIBUTION_FILE.write_text("\n".join(lines))
@@ -420,10 +561,13 @@ def write_state(album: dict, track: str) -> None:
 
     # JSON state for other consumers
     state = {
+        "type": "splattribution",
         "artist": artist,
         "title": title,
         "year": year,
         "label": label,
+        "model": album.get("model", "unknown"),
+        "confidence": album.get("confidence", 0),
         "current_track": track,
         "timestamp": time.time(),
     }
@@ -512,18 +656,15 @@ def main() -> None:
         except OSError:
             pass
 
-        # Identify via Gemini Flash
-        album = identify_album_vision(cropped)
+        # Combined vision + audio identification
+        album, track = identify_album_and_track(cropped)
         if album is not None:
             _current_album = album
-            _current_track = ""
+            _current_track = track or ""
             _album_start_time = time.time()
-            write_state(album, "")
+            write_state(album, _current_track)
             log_album(album)
             cooldown_until = now + 30
-
-            # Trigger immediate track ID
-            threading.Thread(target=lambda: capture_and_identify_track(), daemon=True).start()
         else:
             cooldown_until = now + 15
 
