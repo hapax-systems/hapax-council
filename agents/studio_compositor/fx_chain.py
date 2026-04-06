@@ -11,37 +11,72 @@ log = logging.getLogger(__name__)
 
 
 class FlashScheduler:
-    """Random schedule for live overlay flashes on the camera base.
+    """Audio-reactive live overlay flash on the camera base.
 
-    Generates random intervals between flashes (300ms-3s) and random
-    flash durations (300ms-3s). The overlay alpha pulses to 0.6 during
-    a flash and returns to 0.0 between flashes.
+    Kick onsets trigger a flash. Flash duration scales with bass energy.
+    Random baseline schedule fills gaps when no kicks are detected.
+    Alpha decays smoothly from 0.6 → 0.0 for organic feel.
     """
 
     FLASH_ALPHA = 0.6
-    MIN_INTERVAL = 0.3  # seconds between flashes
-    MAX_INTERVAL = 3.0
-    MIN_DURATION = 0.3  # seconds per flash
-    MAX_DURATION = 3.0
+    # Random baseline (fills silence)
+    MIN_INTERVAL = 2.0
+    MAX_INTERVAL = 5.0
+    MIN_DURATION = 0.3
+    MAX_DURATION = 1.5
+    # Audio-reactive
+    KICK_COOLDOWN = 0.4  # minimum seconds between kick-triggered flashes
 
     def __init__(self) -> None:
         self._next_flash_at: float = time.monotonic() + random.uniform(1.0, 3.0)
         self._flash_end_at: float = 0.0
         self._flashing: bool = False
+        self._current_alpha: float = 0.0
+        self._last_kick_at: float = 0.0
+
+    def kick(self, t: float, bass_energy: float) -> None:
+        """Called when a kick onset is detected. Triggers a flash."""
+        if t - self._last_kick_at < self.KICK_COOLDOWN:
+            return  # cooldown
+        self._last_kick_at = t
+        self._flashing = True
+        # Duration scales with bass energy: more bass = longer flash
+        duration = 0.2 + bass_energy * 1.5  # 0.2s to 1.7s
+        self._flash_end_at = t + min(duration, self.MAX_DURATION)
+        self._current_alpha = self.FLASH_ALPHA
 
     def tick(self, t: float) -> float | None:
         """Returns target alpha if changed, None if no change needed."""
         if self._flashing:
-            if t >= self._flash_end_at:
+            # Smooth decay toward end of flash
+            remaining = self._flash_end_at - t
+            total = self._flash_end_at - self._last_kick_at if self._last_kick_at > 0 else 1.0
+            if remaining <= 0:
                 self._flashing = False
                 self._next_flash_at = t + random.uniform(self.MIN_INTERVAL, self.MAX_INTERVAL)
-                return 0.0  # flash off
+                if self._current_alpha != 0.0:
+                    self._current_alpha = 0.0
+                    return 0.0
+            else:
+                # Fade out over the last 40% of the flash
+                fade_point = total * 0.6
+                if remaining < fade_point and fade_point > 0:
+                    target = self.FLASH_ALPHA * (remaining / fade_point)
+                else:
+                    target = self.FLASH_ALPHA
+                if abs(target - self._current_alpha) > 0.02:
+                    self._current_alpha = target
+                    return target
         else:
+            # Random baseline flash (fills silence)
             if t >= self._next_flash_at:
                 self._flashing = True
-                self._flash_end_at = t + random.uniform(self.MIN_DURATION, self.MAX_DURATION)
-                return self.FLASH_ALPHA  # flash on at 60%
-        return None  # no change
+                duration = random.uniform(self.MIN_DURATION, self.MAX_DURATION)
+                self._flash_end_at = t + duration
+                self._last_kick_at = t
+                self._current_alpha = self.FLASH_ALPHA
+                return self.FLASH_ALPHA
+        return None
 
 
 def build_inline_fx_chain(
@@ -329,10 +364,17 @@ def fx_tick_callback(compositor: Any) -> bool:
     tick_slot_pipeline(compositor, t)
 
     # Flash scheduler: animate glvideomixer flash pad alpha
+    # Kick onsets trigger flash, bass energy controls duration
     scheduler = getattr(compositor, "_fx_flash_scheduler", None)
     flash_pad = getattr(compositor, "_fx_flash_pad", None)
     if scheduler and flash_pad:
-        alpha = scheduler.tick(time.monotonic())
+        now = time.monotonic()
+        # Feed kick onsets from audio capture
+        if hasattr(compositor, "_audio_capture"):
+            audio = compositor._audio_capture.get_signals()
+            if audio.get("onset_kick", 0.0) > 0.5:
+                scheduler.kick(now, audio.get("mixer_bass", 0.5))
+        alpha = scheduler.tick(now)
         if alpha is not None:
             flash_pad.set_property("alpha", alpha)
 
