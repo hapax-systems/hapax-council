@@ -454,6 +454,27 @@ async def get_consent_status():
         return {"recording_allowed": True, "guest_present": False, "phase": "no_guest"}
 
 
+@router.post("/studio/vinyl-mode/toggle")
+async def toggle_vinyl_mode():
+    """Toggle vinyl mode for half-speed content reactivity."""
+    toggle_path = Path("/dev/shm/hapax-compositor/vinyl-mode.txt")
+    try:
+        current = toggle_path.read_text().strip() == "true" if toggle_path.exists() else False
+        new_state = not current
+        toggle_path.write_text("true" if new_state else "false")
+        return {"vinyl_mode": new_state}
+    except OSError:
+        return JSONResponse({"error": "write failed"}, status_code=503)
+
+
+@router.get("/studio/vinyl-mode")
+async def get_vinyl_mode():
+    """Current vinyl mode state."""
+    toggle_path = Path("/dev/shm/hapax-compositor/vinyl-mode.txt")
+    enabled = toggle_path.read_text().strip() == "true" if toggle_path.exists() else False
+    return {"vinyl_mode": enabled}
+
+
 @router.post("/studio/visual-layer/toggle")
 async def toggle_visual_layer():
     """Toggle the visual layer overlay on/off in the compositor."""

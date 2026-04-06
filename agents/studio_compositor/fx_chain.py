@@ -25,7 +25,8 @@ class FlashScheduler:
     MIN_DURATION = 0.5  # flashes last longer
     MAX_DURATION = 3.0
     # Audio-reactive
-    KICK_COOLDOWN = 0.2  # minimum seconds between kick-triggered flashes
+    KICK_COOLDOWN = 0.2  # normal mode
+    KICK_COOLDOWN_VINYL = 0.4  # vinyl mode: half-speed = longer between kicks
 
     def __init__(self) -> None:
         self._next_flash_at: float = time.monotonic() + random.uniform(1.0, 3.0)
@@ -36,7 +37,8 @@ class FlashScheduler:
 
     def kick(self, t: float, bass_energy: float) -> None:
         """Called when a kick onset is detected. Triggers a flash."""
-        if t - self._last_kick_at < self.KICK_COOLDOWN:
+        cooldown = self.KICK_COOLDOWN_VINYL if getattr(self, '_vinyl_mode', False) else self.KICK_COOLDOWN
+        if t - self._last_kick_at < cooldown:
             return  # cooldown
         self._last_kick_at = t
         self._flashing = True

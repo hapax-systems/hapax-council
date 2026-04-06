@@ -93,6 +93,9 @@ class SignalNormalizer:
 class CompositorAudioCapture:
     """Captures mixer audio via pw-cat for low-latency reactivity signals."""
 
+    # Vinyl mode: relaxed thresholds for half-speed content
+    VINYL_MODE = False
+
     def __init__(self, target: str = "mixer_master") -> None:
         self._target = target
         self._thread: threading.Thread | None = None
@@ -161,7 +164,8 @@ class CompositorAudioCapture:
             self._onset_kick *= 0.75
             self._onset_snare *= 0.65
             self._onset_hat *= 0.55
-            self._sidechain_kick *= 0.92  # slow pump decay (~500ms to 30%)
+            # Vinyl mode: slower sidechain decay for half-speed tempo breathing
+            self._sidechain_kick *= 0.95 if self.VINYL_MODE else 0.92
             self._signals["beat_pulse"] = self._beat_pulse
             self._signals["mixer_beat"] = self._beat_pulse
             self._signals["onset_kick"] = self._onset_kick
@@ -328,16 +332,29 @@ class CompositorAudioCapture:
         else:
             flatness = 0.0
 
-        # Classification thresholds tuned for hip-hop (tighter = less false positives)
-        # 808 kicks: centroid ~60-80Hz, bass_ratio >0.7
-        # Snares: centroid 200-1500Hz, broadband AND noisy (flatness >0.4)
-        # Hats: centroid >3kHz, high_ratio >0.5
-        if centroid < 200 and bass_ratio > 0.65:
+        # Classification thresholds — vinyl mode relaxes for half-speed content
+        # where kicks have lower centroid, softer transients, longer sustain
+        if self.VINYL_MODE:
+            kick_centroid_max = 300  # shifted down at half speed
+            kick_bass_min = 0.5     # softer transients
+            hat_centroid_min = 2500  # shifted down
+            hat_ratio_min = 0.4
+            snare_flatness_min = 0.3
+            snare_centroid_max = 2000
+        else:
+            kick_centroid_max = 200
+            kick_bass_min = 0.65
+            hat_centroid_min = 3500
+            hat_ratio_min = 0.5
+            snare_flatness_min = 0.4
+            snare_centroid_max = 1500
+
+        if centroid < kick_centroid_max and bass_ratio > kick_bass_min:
             self._onset_kick = 1.0
             self._sidechain_kick = 1.0
-        elif centroid > 3500 and high_ratio > 0.5:
+        elif centroid > hat_centroid_min and high_ratio > hat_ratio_min:
             self._onset_hat = 1.0
-        elif flatness > 0.4 and 200 < centroid < 1500:
+        elif flatness > snare_flatness_min and centroid < snare_centroid_max:
             self._onset_snare = 1.0
         # Ambiguous onsets: don't attribute — let beat_pulse handle them.
         # This prevents chromatic aberration from firing on every sound.

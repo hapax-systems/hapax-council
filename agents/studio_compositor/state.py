@@ -185,6 +185,22 @@ def state_reader_loop(compositor: Any) -> None:
             except Exception as exc:
                 log.debug("Failed to process FX request: %s", exc)
                 fx_request_path.unlink(missing_ok=True)
+        # Vinyl mode toggle (Stream Deck / API)
+        vinyl_path = SNAPSHOT_DIR / "vinyl-mode.txt"
+        if vinyl_path.exists():
+            try:
+                vinyl = vinyl_path.read_text().strip() == "true"
+                from .audio_capture import CompositorAudioCapture
+
+                if vinyl != CompositorAudioCapture.VINYL_MODE:
+                    CompositorAudioCapture.VINYL_MODE = vinyl
+                    scheduler = getattr(compositor, "_fx_flash_scheduler", None)
+                    if scheduler:
+                        scheduler._vinyl_mode = vinyl
+                    log.info("Vinyl mode: %s", "ON" if vinyl else "OFF")
+            except Exception:
+                pass
+
         if hasattr(compositor, "_overlay_zone_manager"):
             compositor._overlay_zone_manager.tick()
         time.sleep(0.1)
