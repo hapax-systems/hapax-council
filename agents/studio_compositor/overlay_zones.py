@@ -27,6 +27,17 @@ ZONES: list[dict[str, Any]] = [
         "color": (1.0, 0.97, 0.90, 1.0),
         "randomize_position": True,
     },
+    {
+        "id": "lyrics",
+        "file": "/dev/shm/hapax-compositor/track-lyrics.txt",
+        "x": 1350,
+        "y": 0,
+        "max_width": 500,
+        "font": "JetBrains Mono 14",
+        "color": (0.95, 0.90, 0.80, 0.9),
+        "scroll": True,
+        "scroll_speed": 0.5,
+    },
 ]
 
 
@@ -46,6 +57,9 @@ class OverlayZone:
         self.color = config.get("color", (0.92, 0.86, 0.70, 0.9))
         self.randomize_position = config.get("randomize_position", False)
         self._attribution_format = config.get("attribution_format", False)
+        self._scroll = config.get("scroll", False)
+        self._scroll_speed = config.get("scroll_speed", 0.5)  # pixels per tick
+        self._scroll_offset = 0.0
         self._is_image = False
         self._image_surface: Any = None
         self._layout: Any = None
@@ -68,6 +82,8 @@ class OverlayZone:
         # Float/bounce every tick regardless of content source
         if self.randomize_position:
             self._tick_float()
+        elif self._scroll:
+            self._tick_scroll()
 
     def _init_float(self) -> None:
         """Initialize DVD-screensaver-style floating motion."""
@@ -77,6 +93,14 @@ class OverlayZone:
         self._vy = random.choice([-1, 1]) * random.uniform(0.5, 1.5)
         self._float_x = float(self.base_x)
         self._float_y = float(self.base_y)
+
+    def _tick_scroll(self, canvas_h: int = 1080) -> None:
+        """Scroll text upward like credits. Resets when fully scrolled off."""
+        self._scroll_offset += self._scroll_speed
+        text_h = self._cached_surface_size[1] if self._cached_surface_size[1] else 200
+        # When text scrolls completely off the top, reset to bottom
+        if self._scroll_offset > text_h + canvas_h:
+            self._scroll_offset = 0.0
 
     def _tick_float(self, canvas_w: int = 1920, canvas_h: int = 1080) -> None:
         """Move position and bounce off screen edges."""
@@ -220,6 +244,8 @@ class OverlayZone:
         self._cached_surface = None
         self._is_image = False
         self._image_surface = None
+        if self._scroll:
+            self._scroll_offset = 0.0  # reset scroll on new content
         log.debug("Overlay zone '%s' updated from %s (%d chars)", self.id, path.name, len(raw))
 
     def render(self, cr: Any, canvas_w: int, canvas_h: int) -> None:
@@ -236,7 +262,12 @@ class OverlayZone:
             return
 
         # Paint the pre-rendered outlined text surface — single blit per frame
-        cr.set_source_surface(self._cached_surface, self.x - 2, self.y - 2)
+        if self._scroll:
+            # Scroll: text moves upward from bottom
+            scroll_y = canvas_h - self._scroll_offset
+            cr.set_source_surface(self._cached_surface, self.x - 2, scroll_y)
+        else:
+            cr.set_source_surface(self._cached_surface, self.x - 2, self.y - 2)
         cr.paint()
 
     def _render_image(self, cr: Any, canvas_w: int, canvas_h: int) -> None:
