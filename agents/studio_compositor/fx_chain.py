@@ -239,12 +239,16 @@ def switch_fx_source(compositor: Any, source: str) -> bool:
         log.info("FX source: switched to live (tiled composite)")
         return True
 
-    # Switch to individual camera — need to create branch on-demand
-    role = source.replace("-", "_")
-    cam_tee = pipeline.get_by_name(f"tee_{role}")
-    if cam_tee is None:
-        log.warning("FX source: camera tee for %s not found", source)
-        return False
+    # YouTube source: v4l2src from /dev/video50
+    is_youtube = source == "youtube"
+
+    if not is_youtube:
+        # Switch to individual camera — need to create branch on-demand
+        role = source.replace("-", "_")
+        cam_tee = pipeline.get_by_name(f"tee_{role}")
+        if cam_tee is None:
+            log.warning("FX source: camera tee for %s not found", source)
+            return False
 
     compositor._fx_switching = True
 
@@ -256,39 +260,66 @@ def switch_fx_source(compositor: Any, source: str) -> bool:
             # Tear down previous camera branch if any
             _teardown_camera_branch(compositor, Gst)
 
-            # Build new branch: queue → videoconvert → videoscale → capsfilter
-            # Must match tiled composite caps exactly (BGRA, output res, pipeline fps)
             out_w = compositor.config.output_width
             out_h = compositor.config.output_height
             fps = compositor.config.framerate
-            q = Gst.ElementFactory.make("queue", "fxsrc-q")
-            q.set_property("leaky", 2)
-            q.set_property("max-size-buffers", 1)
-            convert = Gst.ElementFactory.make("videoconvert", "fxsrc-convert")
-            convert.set_property("dither", 0)  # none — Bayer default creates sawtooth
-            scale = Gst.ElementFactory.make("videoscale", "fxsrc-scale")
-            caps = Gst.ElementFactory.make("capsfilter", "fxsrc-caps")
-            caps.set_property(
-                "caps",
-                Gst.Caps.from_string(
-                    f"video/x-raw,format=BGRA,width={out_w},height={out_h},framerate={fps}/1"
-                ),
-            )
 
-            elements = [q, convert, scale, caps]
-            for el in elements:
-                pipeline.add(el)
-            q.link(convert)
-            convert.link(caps)
+            if is_youtube:
+                # YouTube: v4l2src from /dev/video50
+                v4l2 = Gst.ElementFactory.make("v4l2src", "fxsrc-yt")
+                v4l2.set_property("device", "/dev/video50")
+                v4l2.set_property("do-timestamp", True)
+                q = Gst.ElementFactory.make("queue", "fxsrc-q")
+                q.set_property("leaky", 2)
+                q.set_property("max-size-buffers", 1)
+                convert = Gst.ElementFactory.make("videoconvert", "fxsrc-convert")
+                convert.set_property("dither", 0)
+                scale = Gst.ElementFactory.make("videoscale", "fxsrc-scale")
+                caps = Gst.ElementFactory.make("capsfilter", "fxsrc-caps")
+                caps.set_property(
+                    "caps",
+                    Gst.Caps.from_string(
+                        f"video/x-raw,format=BGRA,width={out_w},height={out_h}"
+                    ),
+                )
+                elements = [v4l2, q, convert, scale, caps]
+                for el in elements:
+                    pipeline.add(el)
+                v4l2.link(q)
+                q.link(convert)
+                convert.link(scale)
+                scale.link(caps)
+                for el in elements:
+                    el.sync_state_with_parent()
+            else:
+                # Camera: branch from camera_tee
+                q = Gst.ElementFactory.make("queue", "fxsrc-q")
+                q.set_property("leaky", 2)
+                q.set_property("max-size-buffers", 1)
+                convert = Gst.ElementFactory.make("videoconvert", "fxsrc-convert")
+                convert.set_property("dither", 0)
+                scale = Gst.ElementFactory.make("videoscale", "fxsrc-scale")
+                caps = Gst.ElementFactory.make("capsfilter", "fxsrc-caps")
+                caps.set_property(
+                    "caps",
+                    Gst.Caps.from_string(
+                        f"video/x-raw,format=BGRA,width={out_w},height={out_h},framerate={fps}/1"
+                    ),
+                )
 
-            # Sync state with parent (transitions NULL→PLAYING)
-            for el in elements:
-                el.sync_state_with_parent()
+                elements = [q, convert, scale, caps]
+                for el in elements:
+                    pipeline.add(el)
+                q.link(convert)
+                convert.link(scale)
+                scale.link(caps)
+                for el in elements:
+                    el.sync_state_with_parent()
 
-            # Link camera tee → queue
-            tee_pad = cam_tee.request_pad(cam_tee.get_pad_template("src_%u"), None, None)
-            q_sink = q.get_static_pad("sink")
-            tee_pad.link(q_sink)
+                # Link camera tee → queue
+                tee_pad = cam_tee.request_pad(cam_tee.get_pad_template("src_%u"), None, None)
+                q_sink = q.get_static_pad("sink")
+                tee_pad.link(q_sink)
 
             # Link caps → new input-selector pad
             sel_pad = input_sel.request_pad(input_sel.get_pad_template("sink_%u"), None, None)
