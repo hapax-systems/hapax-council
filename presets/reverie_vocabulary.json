@@ -1,0 +1,99 @@
+{
+    "name": "Reverie Vocabulary",
+    "description": "Permanent visual vocabulary — the shader graph that Reverie always runs. Params driven by imagination fragments. There is no idle state.",
+    "transition_ms": 2000,
+    "nodes": {
+        "noise": {
+            "type": "noise_gen",
+            "params": {
+                "frequency_x": 1.5,
+                "frequency_y": 1.0,
+                "octaves": 3,
+                "amplitude": 0.7,
+                "speed": 0.08
+            }
+        },
+        "rd": {
+            "type": "reaction_diffusion",
+            "params": {
+                "feed_rate": 0.055,
+                "kill_rate": 0.062,
+                "diffusion_a": 1.0,
+                "diffusion_b": 0.5,
+                "speed": 1.0
+            }
+        },
+        "color": {
+            "type": "colorgrade",
+            "params": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "contrast": 0.8,
+                "sepia": 0.0,
+                "hue_rotate": 0.0
+            }
+        },
+        "drift": {
+            "type": "drift",
+            "params": {
+                "speed": 0.0,
+                "amplitude": 0,
+                "frequency": 0.8,
+                "coherence": 0.6
+            }
+        },
+        "breath": {
+            "type": "breathing",
+            "params": {
+                "rate": 0.0,
+                "amplitude": 0.0
+            }
+        },
+        "fb": {
+            "type": "feedback",
+            "params": {
+                "decay": 0.12,
+                "zoom": 1.0,
+                "rotate": 0.0,
+                "blend_mode": 3.0,
+                "hue_shift": 0.0,
+                "trace_center_x": 0.5,
+                "trace_center_y": 0.5,
+                "trace_radius": 0.0,
+                "trace_strength": 0.0
+            }
+        },
+        "content": {
+            "type": "content_layer",
+            "params": {
+                "salience": 0.0,
+                "intensity": 0.0,
+                "material": 0
+            }
+        },
+        "post": {
+            "type": "postprocess",
+            "params": {
+                "vignette_strength": 0.4,
+                "sediment_strength": 0.05,
+                "master_opacity": 1.0
+            }
+        },
+        "out": {
+            "type": "output",
+            "params": {}
+        }
+    },
+    "edges": [
+        ["noise", "rd"],
+        ["rd", "color"],
+        ["color", "drift"],
+        ["drift", "breath"],
+        ["breath", "fb"],
+        ["fb", "content"],
+        ["content", "post"],
+        ["post", "out"]
+    ],
+    "modulations": [],
+    "layer_palettes": {}
+}
