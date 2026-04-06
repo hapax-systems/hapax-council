@@ -50,6 +50,7 @@ struct Props {
     fragment: Option<String>,
     uniforms: Vec<(String, f32)>,
     shader_dirty: bool,
+    is_passthrough: bool,  // true when shader is DEFAULT_FRAGMENT (skip accum blit)
 }
 
 pub struct GlFeedback {
@@ -97,10 +98,11 @@ impl ObjectImpl for GlFeedback {
         match pspec.name() {
             "fragment" => {
                 let frag = value.get::<Option<String>>().unwrap();
-                self.props.lock().unwrap().fragment = frag;
-                // Mark shader as needing recompile — actual GL compilation
-                // happens in filter_texture on the GL thread
-                self.props.lock().unwrap().shader_dirty = true;
+                let is_pt = frag.as_ref().map_or(true, |f| f.trim() == DEFAULT_FRAGMENT.trim());
+                let mut props = self.props.lock().unwrap();
+                props.fragment = frag;
+                props.is_passthrough = is_pt;
+                props.shader_dirty = true;
             }
             "uniforms" => {
                 let raw = value.get::<Option<String>>().unwrap().unwrap_or_default();
@@ -279,6 +281,9 @@ impl GLFilterImpl for GlFeedback {
             }
         }
 
+        // Check if this is a passthrough shader (skip accum blit to avoid artifacts)
+        let skip_blit = self.props.lock().unwrap().is_passthrough;
+
         // Snapshot what we need from state (minimise lock duration)
         let (prev_tex, next_fbo, next_idx, blit_fbo, uniforms) = {
             let guard = self.state.lock().unwrap();
@@ -343,6 +348,12 @@ impl GLFilterImpl for GlFeedback {
         }).map_err(|e| gst::loggable_error!(gst::CAT_RUST, "render_to_target: {e}"))?;
 
         // Pass 2: blit output into next accumulation buffer (cached FBO)
+        // Skip for passthrough shaders — they don't use tex_accum and the
+        // repeated blit accumulates rounding artifacts visible as a faint
+        // sawtooth/stripe pattern.
+        if skip_blit {
+            return Ok(());
+        }
         unsafe {
             let out_tex = output.texture_id();
             let w = output.texture_width();
