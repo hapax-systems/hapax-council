@@ -21,6 +21,7 @@ import io
 import json
 import logging
 import os
+import random
 import subprocess
 import tempfile
 import threading
@@ -40,7 +41,7 @@ IR_FRAME_URL = f"http://{PI6_IP}:8090/frame.jpg"
 
 # Album cover detection — vision model finds the album bounding box in the 1080p IR frame
 
-POLL_INTERVAL = 10  # seconds between album change checks
+POLL_INTERVAL = 5  # seconds between album change checks
 TRACK_ID_INTERVAL = 30  # seconds between track identification attempts
 AUDIO_CAPTURE_SECONDS = 12  # seconds of audio to capture for fingerprinting
 
@@ -723,9 +724,9 @@ def main() -> None:
             dark, light = random.choice(tints)
             colored = ImageOps.colorize(img, dark, light)
             colored.save(str(ALBUM_COVER_FILE), format="PNG")
-            log.info("Album cover saved with color tint")
+            log.info("Album cover saved with color tint (%dx%d)", colored.size[0], colored.size[1])
         except Exception:
-            pass
+            log.exception("Album cover save failed")
 
         # Combined vision + audio identification
         album, track = identify_album_and_track(cropped)
