@@ -690,10 +690,8 @@ def main() -> None:
         if frame_data is None:
             continue
 
-        # Detect and crop album cover via vision
-        cropped = detect_and_crop_album(frame_data)
-        if cropped is None:
-            continue
+        # Use the full IR frame — camera is positioned close, album dominates
+        cropped = frame_data
 
         # Check if image changed
         h = image_hash(cropped)

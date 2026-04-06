@@ -20,6 +20,7 @@ from pathlib import Path
 import cv2
 import httpx
 import numpy as np  # noqa: TC002 — Pi-side code
+from ir_album import detect_album_cover, extract_album_crop
 from ir_biometrics import BiometricTracker
 from ir_hands import detect_hands_nir, detect_screens_nir
 from ir_inference import FaceLandmarkDetector, YoloDetector
@@ -74,6 +75,8 @@ class IrEdgeDaemon:
         )
 
         self._latest_jpeg: bytes = b""
+        self._latest_album_jpeg: bytes = b""
+        self._latest_album_detection: dict | None = None
         self._latest_jpeg_lock = __import__("threading").Lock()
 
     def request_debug_frame(self) -> None:
@@ -171,6 +174,20 @@ class IrEdgeDaemon:
 
                 hands = detect_hands_nir(grey)
                 screens = detect_screens_nir(grey)
+
+                # Album cover detection (overhead camera only)
+                if self._role == "overhead":
+                    album_det = detect_album_cover(grey)
+                    if album_det is not None:
+                        crop = extract_album_crop(color, album_det, output_size=640)
+                        if crop is not None:
+                            _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                            with self._latest_jpeg_lock:
+                                self._latest_album_jpeg = buf.tobytes()
+                                self._latest_album_detection = album_det
+                    else:
+                        with self._latest_jpeg_lock:
+                            self._latest_album_detection = None
 
                 inference_ms = int((time.monotonic() - t_infer) * 1000)
 
@@ -277,7 +294,9 @@ class _FrameHandler:
         self._daemon = daemon
 
     def __call__(self, environ, start_response):
-        if environ["PATH_INFO"] == "/frame.jpg":
+        path = environ["PATH_INFO"]
+
+        if path == "/frame.jpg":
             with self._daemon._latest_jpeg_lock:
                 data = self._daemon._latest_jpeg
             if data:
@@ -292,6 +311,41 @@ class _FrameHandler:
                 return [data]
             start_response("503 No Frame", [("Content-Type", "text/plain")])
             return [b"no frame yet"]
+
+        if path == "/album.jpg":
+            with self._daemon._latest_jpeg_lock:
+                data = self._daemon._latest_album_jpeg
+            if data:
+                start_response(
+                    "200 OK",
+                    [
+                        ("Content-Type", "image/jpeg"),
+                        ("Content-Length", str(len(data))),
+                        ("Cache-Control", "no-cache"),
+                    ],
+                )
+                return [data]
+            start_response("404 No Album", [("Content-Type", "text/plain")])
+            return [b"no album detected"]
+
+        if path == "/album.json":
+            import json as _json
+
+            with self._daemon._latest_jpeg_lock:
+                det = self._daemon._latest_album_detection
+            if det:
+                body = _json.dumps(det).encode()
+                start_response(
+                    "200 OK",
+                    [
+                        ("Content-Type", "application/json"),
+                        ("Content-Length", str(len(body))),
+                    ],
+                )
+                return [body]
+            start_response("404 No Album", [("Content-Type", "text/plain")])
+            return [b"no album detected"]
+
         start_response("404 Not Found", [("Content-Type", "text/plain")])
         return [b"not found"]
 
