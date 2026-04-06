@@ -18,12 +18,12 @@ class FlashScheduler:
     Alpha decays smoothly from 0.6 → 0.0 for organic feel.
     """
 
-    FLASH_ALPHA = 0.6
-    # Random baseline (fills silence)
-    MIN_INTERVAL = 2.0
-    MAX_INTERVAL = 5.0
-    MIN_DURATION = 0.3
-    MAX_DURATION = 1.5
+    FLASH_ALPHA = 0.5
+    # Random baseline — more on than off (bad reception feel)
+    MIN_INTERVAL = 0.1  # very short gaps between flashes
+    MAX_INTERVAL = 1.0  # max 1s gap
+    MIN_DURATION = 0.5  # flashes last longer
+    MAX_DURATION = 3.0
     # Audio-reactive
     KICK_COOLDOWN = 0.2  # minimum seconds between kick-triggered flashes
 
