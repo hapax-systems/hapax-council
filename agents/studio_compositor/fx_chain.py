@@ -129,6 +129,7 @@ def build_inline_fx_chain(
 
     # --- glvideomixer: GPU-native compositing ---
     glmixer = Gst.ElementFactory.make("glvideomixer", "fx-glmixer")
+    glmixer.set_property("background", 1)  # 1=black (default is 0=checker!)
 
     # --- Post-mixer: shader chain → output ---
     from agents.effect_graph.pipeline import SlotPipeline
