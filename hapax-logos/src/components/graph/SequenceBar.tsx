@@ -68,7 +68,7 @@ export async function activatePresets(
 const OBSCURING = new Set([
   "datamosh", "datamosh_heavy", "glitch_blocks_preset", "trap",
   "vhs_preset", "kaleidodream", "tunnelvision", "slitscan_preset",
-  "thermal_preset", "nightvision",
+  "thermal_preset",
   "ascii_preset", "halftone_preset", "dither_retro", "silhouette",
   "sculpture", "neon", "pixsort_preset",
 ]);
