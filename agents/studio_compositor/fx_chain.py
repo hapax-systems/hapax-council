@@ -18,7 +18,7 @@ class FlashScheduler:
     Alpha decays smoothly from 0.6 → 0.0 for organic feel.
     """
 
-    FLASH_ALPHA = 0.85
+    FLASH_ALPHA = 0.6
     # Random baseline (fills silence)
     MIN_INTERVAL = 2.0
     MAX_INTERVAL = 5.0
@@ -263,6 +263,7 @@ def switch_fx_source(compositor: Any, source: str) -> bool:
             q.set_property("leaky", 2)
             q.set_property("max-size-buffers", 1)
             convert = Gst.ElementFactory.make("videoconvert", "fxsrc-convert")
+            convert.set_property("dither", 0)  # none — Bayer default creates sawtooth
             scale = Gst.ElementFactory.make("videoscale", "fxsrc-scale")
             caps = Gst.ElementFactory.make("capsfilter", "fxsrc-caps")
             caps.set_property(

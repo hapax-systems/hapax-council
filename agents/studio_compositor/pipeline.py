@@ -195,6 +195,7 @@ def _add_camera_fx_sources(compositor: Any, pipeline: Any, Gst: Any, fps: int) -
         q.set_property("leaky", 2)
         q.set_property("max-size-buffers", 1)
         convert = Gst.ElementFactory.make("videoconvert", f"fxsrc-convert-{role}")
+        convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
         caps = Gst.ElementFactory.make("capsfilter", f"fxsrc-caps-{role}")
         caps.set_property(
             "caps",

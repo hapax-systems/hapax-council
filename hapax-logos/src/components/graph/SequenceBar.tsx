@@ -137,7 +137,7 @@ const FX_SOURCES = [
 
 function generateRandomSequence(): PresetChain[] {
   const allPresets = PRESET_CATEGORIES.flatMap((c) => c.presets)
-    .filter((p) => !["clean", "echo", "reverie_vocabulary", "ambient", "heartbeat"].includes(p));
+    .filter((p) => !["clean", "echo", "reverie_vocabulary", "ambient", "heartbeat", "nightvision"].includes(p));
   const numChains = 8 + Math.floor(Math.random() * 5); // 8-12 chains
   const chains: PresetChain[] = [];
   let lastUsed: string[] = [];

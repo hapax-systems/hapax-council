@@ -20,6 +20,7 @@ def add_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     queue.set_property("leaky", 2)
     queue.set_property("max-size-buffers", 1)
     convert = Gst.ElementFactory.make("videoconvert", "snapshot-convert")
+    convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     scale = Gst.ElementFactory.make("videoscale", "snapshot-scale")
     scale_caps = Gst.ElementFactory.make("capsfilter", "snapshot-scale-caps")
     scale_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=1280,height=720"))
@@ -95,6 +96,7 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     # Small resolution keeps CPU encoding fast enough for 30fps.
     # The WebSocket relay eliminates file I/O — the bottleneck that caused 1fps.
     convert = Gst.ElementFactory.make("videoconvert", "fx-snap-convert")
+    convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     scale = Gst.ElementFactory.make("videoscale", "fx-snap-scale")
     scale_caps = Gst.ElementFactory.make("capsfilter", "fx-snap-scale-caps")
     scale_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=640,height=360"))

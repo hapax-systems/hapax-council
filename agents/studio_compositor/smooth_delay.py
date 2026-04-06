@@ -26,6 +26,7 @@ def add_smooth_delay_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     queue.set_property("max-size-buffers", 2)
 
     convert_rgba = Gst.ElementFactory.make("videoconvert", "smooth-convert-rgba")
+    convert_rgba.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     rgba_caps = Gst.ElementFactory.make("capsfilter", "smooth-rgba-caps")
     rgba_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGBA"))
 
@@ -37,6 +38,7 @@ def add_smooth_delay_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     glcc_out = Gst.ElementFactory.make("glcolorconvert", "smooth-glcc-out")
     gldownload = Gst.ElementFactory.make("gldownload", "smooth-gldownload")
     out_convert = Gst.ElementFactory.make("videoconvert", "smooth-out-convert")
+    out_convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     scale = Gst.ElementFactory.make("videoscale", "smooth-scale")
     scale_caps = Gst.ElementFactory.make("capsfilter", "smooth-scale-caps")
     scale_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=640,height=360"))
