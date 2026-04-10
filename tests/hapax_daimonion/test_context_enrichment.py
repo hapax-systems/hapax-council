@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_daimonion.context_enrichment import render_goals, render_health, render_nudges
+from agents.hapax_daimonion.context_enrichment import (
+    render_dmn,
+    render_goals,
+    render_health,
+    render_nudges,
+)
 
 
 class TestRenderGoals:
@@ -137,3 +143,67 @@ class TestRenderNudges:
         mod._nudge_cache = None
         with patch("logos.data.nudges.collect_nudges", side_effect=Exception):
             assert render_nudges() == ""
+
+
+class TestRenderDmn:
+    def _make_buffer(self, tmp_path: Path, content: str) -> Path:
+        buf = tmp_path / "buffer.txt"
+        buf.write_text(content, encoding="utf-8")
+        return buf
+
+    def test_stable_buffer_compressed(self, tmp_path: Path):
+        lines = "\n".join(
+            f'<dmn_observation tick="{43169 + i}" age="{141 - i}s">stable</dmn_observation>'
+            for i in range(18)
+        )
+        content = lines + "\n"
+        buf = self._make_buffer(tmp_path, content)
+        with patch("agents.hapax_daimonion.context_enrichment._DMN_BUFFER_PATH", buf):
+            result = render_dmn()
+        assert result != ""
+        assert "stable" in result
+        assert "18" in result
+        assert "<dmn_observation" not in result
+        assert len(result) < 120
+
+    def test_changing_trajectory_shows_transitions(self, tmp_path: Path):
+        obs_stable = "\n".join(
+            f'<dmn_observation tick="{43169 + i}" age="{141 - i}s">stable</dmn_observation>'
+            for i in range(12)
+        )
+        obs_elevated = "\n".join(
+            f'<dmn_observation tick="{43181 + i}" age="{80 - i}s">elevated</dmn_observation>'
+            for i in range(3)
+        )
+        obs_cautious = "\n".join(
+            f'<dmn_observation tick="{43184 + i}" age="{50 - i}s">cautious</dmn_observation>'
+            for i in range(2)
+        )
+        eval_line = (
+            '<dmn_evaluation tick="43186" age="44s">'
+            " Trajectory: declining. Concerns: resource_pressure </dmn_evaluation>"
+        )
+        content = "\n".join([obs_stable, obs_elevated, obs_cautious, eval_line]) + "\n"
+        buf = self._make_buffer(tmp_path, content)
+        with patch("agents.hapax_daimonion.context_enrichment._DMN_BUFFER_PATH", buf):
+            result = render_dmn()
+        assert "stable" in result
+        assert "elevated" in result
+        assert "cautious" in result
+        assert "resource_pressure" in result
+
+    def test_empty_buffer_returns_empty(self, tmp_path: Path):
+        buf = self._make_buffer(tmp_path, "")
+        with patch("agents.hapax_daimonion.context_enrichment._DMN_BUFFER_PATH", buf):
+            result = render_dmn()
+        assert result == ""
+
+    def test_stale_buffer_returns_empty(self, tmp_path: Path):
+        buf = self._make_buffer(
+            tmp_path, "<dmn_observation tick='1' age='1s'>stable</dmn_observation>"
+        )
+        stale_time = time.time() - 120
+        os.utime(buf, (stale_time, stale_time))
+        with patch("agents.hapax_daimonion.context_enrichment._DMN_BUFFER_PATH", buf):
+            result = render_dmn()
+        assert result == ""

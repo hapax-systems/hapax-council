@@ -43,3 +43,31 @@ def test_session_end_with_queued() -> None:
 def test_session_end_without_queued() -> None:
     msg = session_end_message()
     assert msg == "Catch you later."
+
+
+def test_system_prompt_minimal_has_no_tool_directory() -> None:
+    prompt = system_prompt(tool_recruitment_active=True)
+    assert "Hapax" in prompt
+    assert "Your tools:" not in prompt
+    assert "get_calendar_today" not in prompt
+    assert len(prompt) < 750  # minimal prompt is ~728 chars (~180 tokens)
+
+
+def test_system_prompt_minimal_preserves_identity() -> None:
+    prompt = system_prompt(tool_recruitment_active=True)
+    assert "warm but concise" in prompt
+    assert "Never invent" in prompt
+
+
+def test_system_prompt_full_when_no_recruitment() -> None:
+    prompt = system_prompt(tool_recruitment_active=False)
+    assert "Your tools:" in prompt
+    assert "get_calendar_today" in prompt
+
+
+def test_experiment_mode_takes_priority_over_recruitment() -> None:
+    prompt = system_prompt(experiment_mode=True, tool_recruitment_active=True)
+    assert "Your tools:" not in prompt
+    assert "get_calendar_today" not in prompt
+    # Should be experiment prompt, not minimal prompt
+    assert len(prompt) < 420  # experiment prompt is ~403 chars
