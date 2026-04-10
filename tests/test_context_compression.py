@@ -54,6 +54,23 @@ class TestToToon:
         assert isinstance(result, str)
 
 
+class TestToToonSearchResults:
+    def test_search_results_more_compact_than_json(self):
+        data = {
+            "query": "meeting notes",
+            "results": [
+                {"source": "obsidian", "text": "Team standup notes", "score": 0.85},
+                {"source": "gmail", "text": "RE: Project kickoff", "score": 0.72},
+            ],
+        }
+        result = to_toon(data)
+        assert "obsidian" in result
+        import json
+
+        json_len = len(json.dumps(data))
+        assert len(result) < json_len
+
+
 class TestCompressHistory:
     def test_short_history_unchanged(self):
         messages = [
@@ -139,3 +156,19 @@ class TestCompressHistory:
 
         result = compress_history(messages, keep_recent=2)
         assert result == messages
+
+
+class TestCompressorHealth:
+    @patch("shared.context_compression._compressor", None)
+    @patch("shared.context_compression._compressor_load_attempted", True)
+    def test_health_reports_unavailable(self):
+        from shared.context_compression import compressor_available
+
+        assert compressor_available() is False
+
+    @patch("shared.context_compression._compressor", MagicMock())
+    @patch("shared.context_compression._compressor_load_attempted", True)
+    def test_health_reports_available(self):
+        from shared.context_compression import compressor_available
+
+        assert compressor_available() is True
