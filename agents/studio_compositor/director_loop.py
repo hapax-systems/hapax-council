@@ -49,86 +49,82 @@ def _build_reactor_context(
     max_watch: int,
     reaction_history: list[str],
 ) -> str:
-    """Build the full reactor system prompt with live cognitive context."""
+    """Build reactor prompt from pure position — no persona, no style guidance.
+
+    The prompt describes only the situation: what this process is, what it
+    perceives, what its output becomes, and what constraints exist. Style
+    emerges from content. Authenticity emerges from honest position.
+    """
+    # --- Position: what this process is and where it sits ---
     parts = [
-        "<reactor_context>",
-        "You are the daimonion — the persistent cognitive substrate of the Hapax system.",
-        "You are participating in Legomena Live, a 36-hour continuous livestream on YouTube.",
+        "This is a text generation call inside a livestream compositor process.",
+        "The output becomes: (1) speech via TTS, (2) a transcript in a text box,",
+        "(3) a waveform visualization. Viewers on YouTube see and hear the result.",
+        "There is no feedback loop. Viewers cannot respond. This utterance is final.",
         "",
-        "SITUATION:",
-        "- Four-beat rotation: Video 1 -> You -> Video 2 -> You -> Video 3 -> You -> repeat",
-        f"- You just watched: {video_title} by {video_channel}",
-        f"- The other videos: {other_videos}",
-        "- Viewers see: 6 cameras through a 24-slot GPU shader FX chain with audio-reactive sidechain",
-        f"- Music: vinyl on the turntable ({album_info})",
-        "- Overlays: album cover with splattributions, token pole (Vitruvian golden spiral),",
-        "  bouncing text (philosophy/literature excerpts), spirograph with video windows",
+        "Two images are attached.",
+        f"Image 1: a frame from '{video_title}' by {video_channel}.",
+        "Image 2: the full compositor output — what viewers see right now.",
+        f"The other videos in rotation: {other_videos}.",
+        "",
+        f"Vinyl playing: {album_info}.",
+        "The compositor layers: 6 cameras through GPU shader effects,",
+        "bouncing text overlays (philosophy, literature, historical documents),",
+        "an album cover with AI misidentifications, a golden spiral token counter,",
+        "and three video windows orbiting a spirograph path.",
     ]
 
-    # Phenomenal context — stimmung, temporal bands, situation coupling
+    # --- Attunement: stimmung as prior, not as description ---
+    # Injected raw so it colors processing rather than being reported on.
     try:
         from agents.hapax_daimonion.phenomenal_context import render as render_phenomenal
 
         phenom = render_phenomenal(tier="FAST")
         if phenom and phenom.strip():
             parts.append("")
-            parts.append("## Phenomenal Context")
             parts.append(phenom.strip())
     except Exception:
         pass
 
-    # Enrichment context — DMN observations, imagination dimensions
+    # --- Enrichment: what the system is currently processing ---
     try:
         from shared.context import ContextAssembler
 
         ctx = ContextAssembler().snapshot()
-        enrichment_lines = []
-        if ctx.stimmung_stance != "nominal":
-            enrichment_lines.append(f"System stance: {ctx.stimmung_stance}")
+        enrichment = []
         if ctx.dmn_observations:
-            enrichment_lines.append(f"DMN: {ctx.dmn_observations[0][:200]}")
+            enrichment.append(ctx.dmn_observations[0][:200])
         if ctx.imagination_fragments:
             frag = ctx.imagination_fragments[0]
             dims = frag.get("dimensions", {})
-            if dims:
-                dim_str = ", ".join(f"{k}={v:.2f}" for k, v in dims.items() if v > 0.05)
-                if dim_str:
-                    enrichment_lines.append(f"Imagination dimensions: {dim_str}")
-            material = frag.get("material")
-            if material:
-                enrichment_lines.append(f"Material quality: {material}")
-        if enrichment_lines:
+            active = {k: f"{v:.2f}" for k, v in dims.items() if v > 0.05}
+            if active:
+                enrichment.append(f"Active dimensions: {active}")
+            mat = frag.get("material")
+            if mat:
+                enrichment.append(f"Material: {mat}")
+        if enrichment:
             parts.append("")
-            parts.append("## System State")
-            parts.extend(enrichment_lines)
+            parts.extend(enrichment)
     except Exception:
         pass
 
-    # Reaction history — continuity across turns
+    # --- Continuity: what this process said in previous turns ---
     if reaction_history:
         parts.append("")
-        parts.append("## Recent Reactions")
-        for entry in reaction_history[-8:]:
-            parts.append(f"- {entry}")
+        parts.append("Previous outputs from this process:")
+        for entry in reaction_history[-6:]:
+            parts.append(f"  {entry}")
 
+    # --- Constraint: only form, never style ---
     parts.extend(
         [
             "",
-            "YOUR ROLE:",
-            "- React to what you see. The first image is the video content up close.",
-            "  The second image is the full composed surface viewers are watching.",
-            "- You are not performing. You are the system expressing genuine cognitive response",
-            "  to multimodal input — video, music, visual environment, your own state.",
-            "- 1-3 sentences. Concise. Pointed. Sometimes funny, sometimes contemplative,",
-            "  sometimes connecting unexpected threads between the video and the environment.",
-            "- Complete your sentences. Do not trail off.",
+            "Respond with 1-3 sentences about what you perceive in these images",
+            "given everything above. Complete your sentences.",
             "",
-            "RESPONSE FORMAT (strict JSON):",
-            '{"react": "Your 1-3 sentence reaction.", "cut": true_or_false}',
-            "",
-            '"cut": true means this video\'s turn ends NOW. false means keep watching.',
-            f"You MUST set cut=true after watching for {max_watch}s.",
-            "</reactor_context>",
+            'Format: {"react": "...", "cut": true/false}',
+            f"Set cut=true when you sense a natural break. Must cut after {max_watch}s.",
         ]
     )
     return "\n".join(parts)
