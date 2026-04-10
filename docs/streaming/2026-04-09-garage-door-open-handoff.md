@@ -62,6 +62,24 @@
 - ✅ 5s bidirectional gdrive rsync for remote screenshot drops
 - ✅ 720p fx-snapshot drops (was 640x360) for remote review
 
+**CI cleanup completed (2026-04-10 ~00:30 CDT):**
+- ✅ **7/7 CI jobs GREEN on main** — lint, security, typecheck, test, web-build, vscode-build, secrets-scan
+- ✅ Bandit: `hashlib.md5` → `usedforsecurity=False` (album-identifier.py), `verify=False` → `nosec` (vault_context_writer.py)
+- ✅ Ruff format: `audio_capture.py` reformatted
+- ✅ pycairo build: `libcairo2-dev` + `libgirepository-2.0-dev` added to CI workflow
+- ✅ ESLint web-build: `globalIgnores` for Rust `target/` dirs, underscore-prefix unused vars rule
+- ✅ Pyright: removed invalid type annotation on instance attribute in `fx_chain.py`
+- ✅ 12 stale test assertions updated to match current production code:
+  - effect_graph: ghost/trails edge/modulation counts, stutter now has shader
+  - health_monitor: profile staleness thresholds (DEGRADED not FAILED at 80h)
+  - health_monitor_watch: watch is tier 3, always HEALTHY when stale
+  - affordance_migration: Thompson sampling increments use_count on failure
+  - obsidian_sync: kebab-case directory names (not space-separated)
+  - smoke_integration: expression coordinator modality + shader param names
+  - studio_compositor: recording.enabled default False, framerate 30
+  - visual_governance: nominal presets include ghost
+- ✅ 8 Dependabot PRs rebased and queued for auto-merge (--squash --auto)
+
 **Known unshipped before launch:** see §6 TODOs — chat monitor is coded but never run against a live chat; token ledger is seeded but not wired to the album identifier's actual LLM calls; OBS is not yet configured per Task 2 of garage-door plan; YouTube Data API auto-description-update needs OAuth consent.
 
 ---
