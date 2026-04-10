@@ -155,8 +155,23 @@ Both tiers back up: PostgreSQL dumps, Qdrant snapshots, n8n workflows, Docker vo
 
 Secrets: local password in `pass show backups/restic-password`, remote in `pass show backblaze/restic-password`.
 
+### Minio Object Lifecycle
+
+Langfuse writes trace events and media to the `langfuse` minio bucket on `/data`. Without a lifecycle policy, objects accumulate indefinitely and can exhaust ext4 inodes (21M+ objects observed in April 2026 incident, causing ENOSPC on `/data` which broke backups and all services writing to that partition).
+
+**Prevention:** A 14-day lifecycle rule is configured on the `events/` prefix:
+
+```bash
+docker exec minio mc alias set L http://localhost:9000 minioadmin minioadmin
+docker exec minio mc ilm rule list L/langfuse   # verify
+docker exec minio mc ilm rule add L/langfuse --prefix "events/" --expire-days 14  # recreate if needed
+```
+
+Trace metadata survives in ClickHouse/Postgres — only raw event blobs expire. Monitor inode usage: `df -i /data`.
+
 ### Known Leak Sources
 
+- **album-identifier pw-cat**: The album identifier records audio clips via `pw-cat` to `/tmp/*.wav` for Shazam-style fingerprinting. Fixed (commit `6c58ca75b`) to use `finally` cleanup. Previously leaked orphan wavs on every early-return path, filling `/tmp` (32G tmpfs) within hours. `tmp-monitor.timer` (5-min) acts as a safety net, deleting wav/raw/pcm files older than 5 min.
 - **pacat --record**: Voice daemon's audio capture backends spawn `pacat` subprocesses that can orphan on crash/OOM. Each writes an unbounded WAV file (~7GB before detection). Mitigated by cache-cleanup.
 - **Claude Code task output**: Background task output in `/tmp/claude-1000/` can grow unbounded. Not automatically cleaned — monitor `/tmp` usage.
 
