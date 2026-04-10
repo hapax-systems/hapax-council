@@ -209,120 +209,75 @@ class VideoSlot:
         self._capturing = False
 
     def start_capture(self) -> None:
-        """Start reading frames from this slot's v4l2 device."""
-        import os
-        import subprocess as _sp
-
+        """Start polling JPEG snapshots from youtube-player HTTP API."""
         if self._capturing:
-            return
-        if not os.path.exists(self.device):
-            log.warning("VideoSlot %d: device %s not found", self.slot_id, self.device)
             return
 
         from agents.studio_compositor.fx_chain import PIP_EFFECTS
 
         self._fx_name, self._fx_func = random.choice(list(PIP_EFFECTS.items()))
-
-        try:
-            self._ffmpeg_proc = _sp.Popen(
-                [
-                    "ffmpeg",
-                    "-f",
-                    "v4l2",
-                    "-i",
-                    self.device,
-                    "-vf",
-                    f"scale={self.WIDTH}:{self.HEIGHT}",
-                    "-f",
-                    "rawvideo",
-                    "-pix_fmt",
-                    "bgra",
-                    "-an",
-                    "-v",
-                    "error",
-                    "pipe:1",
-                ],
-                stdout=_sp.PIPE,
-                stderr=_sp.PIPE,
-            )
-            self._reader_thread = threading.Thread(
-                target=self._read_frames,
-                daemon=True,
-                name=f"spirograph-video-{self.slot_id}",
-            )
-            self._reader_thread.start()
-            self._capturing = True
-            log.info("VideoSlot %d capture started (effect=%s)", self.slot_id, self._fx_name)
-        except Exception:
-            log.exception("VideoSlot %d capture failed", self.slot_id)
+        self._capturing = True
+        self._reader_thread = threading.Thread(
+            target=self._poll_snapshots,
+            daemon=True,
+            name=f"spirograph-video-{self.slot_id}",
+        )
+        self._reader_thread.start()
+        log.info("VideoSlot %d snapshot polling started (effect=%s)", self.slot_id, self._fx_name)
 
     def stop_capture(self) -> None:
-        if self._ffmpeg_proc is not None:
-            try:
-                self._ffmpeg_proc.kill()
-                self._ffmpeg_proc.wait(timeout=2)
-            except Exception:
-                pass
-            self._ffmpeg_proc = None
+        self._capturing = False
         with self._surface_lock:
             self._surface = None
-        self._capturing = False
 
-    def _read_frames(self) -> None:
+    def _poll_snapshots(self) -> None:
+        """Poll JPEG snapshots written by youtube-player to /dev/shm.
+
+        The youtube-player writes periodic snapshots to
+        /dev/shm/hapax-compositor/yt-frame-{slot_id}.jpg
+        We read them and convert to cairo surfaces at ~10fps.
+        """
+        import io
+
         import cairo
 
-        proc = self._ffmpeg_proc
-        if proc is None or proc.stdout is None:
-            log.warning("VideoSlot %d: no proc/stdout", self.slot_id)
-            return
-        log.info(
-            "VideoSlot %d frame reader started, reading %d bytes/frame",
-            self.slot_id,
-            self.FRAME_SIZE,
-        )
+        snapshot_path = SHM_DIR / f"yt-frame-{self.slot_id}.jpg"
+        log.info("VideoSlot %d polling %s", self.slot_id, snapshot_path)
         frame_count = 0
-        while proc.poll() is None:
+        last_mtime = 0.0
+        while self._capturing:
             try:
-                data = proc.stdout.read(self.FRAME_SIZE)
-                if len(data) != self.FRAME_SIZE:
-                    log.warning(
-                        "VideoSlot %d: short read %d/%d, breaking",
-                        self.slot_id,
-                        len(data),
-                        self.FRAME_SIZE,
-                    )
-                    break
-                surface = cairo.ImageSurface.create_for_data(
-                    bytearray(data),
-                    cairo.FORMAT_ARGB32,
-                    self.WIDTH,
-                    self.HEIGHT,
-                )
-                with self._surface_lock:
-                    self._surface = surface
-                frame_count += 1
-                if frame_count == 1:
-                    log.info("VideoSlot %d: first frame received", self.slot_id)
-                elif frame_count % 300 == 0:
-                    log.info("VideoSlot %d: %d frames captured", self.slot_id, frame_count)
-            except Exception as e:
-                log.warning("VideoSlot %d: read error: %s", self.slot_id, e)
-                break
-        rc = proc.poll()
-        stderr_out = ""
-        if proc.stderr:
-            try:
-                stderr_out = proc.stderr.read().decode(errors="replace")[:500]
+                if snapshot_path.exists():
+                    mtime = snapshot_path.stat().st_mtime
+                    if mtime > last_mtime:
+                        last_mtime = mtime
+                        jpeg_data = snapshot_path.read_bytes()
+                        if jpeg_data:
+                            from PIL import Image
+
+                            img = Image.open(io.BytesIO(jpeg_data))
+                            img = img.resize((self.WIDTH, self.HEIGHT))
+                            img = img.convert("RGBA")
+                            # Convert PIL RGBA to cairo ARGB32
+                            raw = img.tobytes("raw", "BGRa")
+                            surface = cairo.ImageSurface.create_for_data(
+                                bytearray(raw),
+                                cairo.FORMAT_ARGB32,
+                                self.WIDTH,
+                                self.HEIGHT,
+                            )
+                            with self._surface_lock:
+                                self._surface = surface
+                            frame_count += 1
+                            if frame_count == 1:
+                                log.info("VideoSlot %d: first frame received", self.slot_id)
+                            elif frame_count % 100 == 0:
+                                log.info("VideoSlot %d: %d frames", self.slot_id, frame_count)
             except Exception:
                 pass
-        log.info(
-            "VideoSlot %d frame reader exited (frames=%d, rc=%s, stderr=%s)",
-            self.slot_id,
-            frame_count,
-            rc,
-            stderr_out or "none",
-        )
-        self._capturing = False
+            time.sleep(0.1)  # ~10fps
+
+        log.info("VideoSlot %d poller stopped (frames=%d)", self.slot_id, frame_count)
 
     def check_finished(self) -> bool:
         """Check if youtube-player reported this slot finished."""

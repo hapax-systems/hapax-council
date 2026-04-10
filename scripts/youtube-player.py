@@ -34,17 +34,164 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("youtube-player")
 
-V4L2_DEVICE = "/dev/video50"
+V4L2_DEVICES = ["/dev/video50", "/dev/video51", "/dev/video52"]
 LISTEN_PORT = 8055
 DEVICE_ID = "aecd697f91434f7797836db631b36e3b"  # Pixel 10
+SHM_DIR = Path("/dev/shm/hapax-compositor")
 
-# --- State ---
-current_process: subprocess.Popen | None = None
-current_url: str = ""
-current_title: str = ""
+# Legacy compat
+V4L2_DEVICE = V4L2_DEVICES[0]
+lock = threading.Lock()
+
+
+class VideoSlot:
+    """Independent video playback slot with v4l2 output + JPEG snapshots."""
+
+    def __init__(self, slot_id: int) -> None:
+        self.slot_id = slot_id
+        self.device = V4L2_DEVICES[slot_id] if slot_id < len(V4L2_DEVICES) else V4L2_DEVICES[0]
+        self.process: subprocess.Popen | None = None
+        self.url: str = ""
+        self.title: str = ""
+        self.channel: str = ""
+        self.paused: bool = False
+        self.lock = threading.Lock()
+
+    def play(self, youtube_url: str) -> None:
+        self.stop()
+        try:
+            video_url, audio_url, title, channel = extract_urls(youtube_url)
+        except Exception as e:
+            log.error("Slot %d URL extraction failed: %s", self.slot_id, e)
+            return
+
+        log.info("Slot %d playing: %s by %s", self.slot_id, title, channel)
+        self.url = youtube_url
+        self.title = title
+        self.channel = channel
+        self.paused = False
+
+        attr_file = SHM_DIR / f"yt-attribution-{self.slot_id}.txt"
+        try:
+            attr_file.write_text(f"{title}\n{channel}\n{youtube_url}")
+        except OSError:
+            pass
+
+        snapshot_path = SHM_DIR / f"yt-frame-{self.slot_id}.jpg"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_delay_max",
+            "5",
+            "-i",
+            video_url,
+            "-i",
+            audio_url,
+            # Output 1: v4l2loopback
+            "-map",
+            "0:v",
+            "-vf",
+            "scale=1920:1080",
+            "-pix_fmt",
+            "yuyv422",
+            "-f",
+            "v4l2",
+            self.device,
+            # Output 2: JPEG snapshots for spirograph reactor
+            "-map",
+            "0:v",
+            "-vf",
+            "scale=384:216",
+            "-update",
+            "1",
+            "-r",
+            "10",
+            str(snapshot_path),
+            # Output 3: audio to PipeWire
+            "-map",
+            "1:a",
+            "-f",
+            "pulse",
+            "-ac",
+            "2",
+            f"youtube-audio-{self.slot_id}",
+        ]
+        self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        log.info(
+            "Slot %d ffmpeg started (PID %d), snapshots → %s",
+            self.slot_id,
+            self.process.pid,
+            snapshot_path,
+        )
+
+    def stop(self) -> None:
+        for f in [
+            SHM_DIR / f"yt-attribution-{self.slot_id}.txt",
+            SHM_DIR / f"yt-frame-{self.slot_id}.jpg",
+        ]:
+            f.unlink(missing_ok=True)
+        if self.process is not None:
+            try:
+                self.process.send_signal(signal.SIGTERM)
+                self.process.wait(timeout=3)
+            except Exception:
+                try:
+                    self.process.kill()
+                except Exception:
+                    pass
+            self.process = None
+            self.url = ""
+            self.title = ""
+            self.channel = ""
+            self.paused = False
+
+    def toggle_pause(self) -> bool:
+        if self.process is None:
+            return False
+        if self.paused:
+            self.process.send_signal(signal.SIGCONT)
+            self.paused = False
+        else:
+            self.process.send_signal(signal.SIGSTOP)
+            self.paused = True
+        return self.paused
+
+    def is_playing(self) -> bool:
+        return self.process is not None and self.process.poll() is None and not self.paused
+
+    def is_finished(self) -> bool:
+        return self.process is not None and self.process.poll() is not None
+
+    def get_status(self) -> dict:
+        running = self.process is not None and self.process.poll() is None
+        return {
+            "slot": self.slot_id,
+            "playing": running and not self.paused,
+            "paused": self.paused,
+            "url": self.url,
+            "title": self.title,
+            "channel": self.channel,
+            "finished": self.is_finished(),
+        }
+
+
+slots: list[VideoSlot] = [VideoSlot(i) for i in range(3)]
+
+# Legacy compat
+current_process = None
+current_url = ""
+current_title = ""
+current_channel: str = ""
 queue: deque[dict] = deque()
 paused = False
-lock = threading.Lock()
+
+
+def get_all_slots_status() -> list[dict]:
+    return [s.get_status() for s in slots]
 
 
 def extract_urls(youtube_url: str) -> tuple[str, str, str, str]:
@@ -471,16 +618,38 @@ def get_status() -> dict:
 
 
 # --- Auto-advance thread ---
+MAX_URL_RETRY = 2
+
+
 def auto_advance_loop() -> None:
-    """Watch for ffmpeg exit and advance to next in queue."""
-    global current_process
+    """Watch for ffmpeg exits across all slots."""
+    retry_counts: dict[int, int] = {i: 0 for i in range(len(slots))}
     while True:
         time.sleep(1)
-        with lock:
-            if current_process is not None and current_process.poll() is not None:
-                log.info("Video ended (exit %d)", current_process.returncode)
-                current_process = None
-                skip_to_next()
+        for slot in slots:
+            with slot.lock:
+                if slot.process is not None and slot.process.poll() is not None:
+                    rc = slot.process.returncode
+                    url = slot.url
+                    log.info("Slot %d ended (exit %d)", slot.slot_id, rc)
+                    if rc != 0 and url and retry_counts[slot.slot_id] < MAX_URL_RETRY:
+                        retry_counts[slot.slot_id] += 1
+                        log.info(
+                            "Slot %d retry %d/%d",
+                            slot.slot_id,
+                            retry_counts[slot.slot_id],
+                            MAX_URL_RETRY,
+                        )
+                        slot.play(url)
+                    else:
+                        retry_counts[slot.slot_id] = 0
+                        marker = SHM_DIR / f"yt-finished-{slot.slot_id}"
+                        try:
+                            marker.write_text(str(rc))
+                        except OSError:
+                            pass
+                        slot.process = None
+                        log.info("Slot %d finished", slot.slot_id)
 
 
 # --- HTTP API ---
@@ -496,7 +665,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/status":
-            self._json(get_status())
+            self._json(slots[0].get_status())
+        elif self.path == "/slots":
+            self._json(get_all_slots_status())
+        elif self.path.startswith("/slot/") and self.path.endswith("/status"):
+            try:
+                slot_id = int(self.path.split("/")[2])
+                if 0 <= slot_id < len(slots):
+                    self._json(slots[slot_id].get_status())
+                else:
+                    self._json({"error": "invalid slot"}, 400)
+            except (ValueError, IndexError):
+                self._json({"error": "invalid slot"}, 400)
         else:
             self._json({"error": "not found"}, 404)
 
@@ -504,30 +684,59 @@ class Handler(BaseHTTPRequestHandler):
         content_len = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(content_len)) if content_len > 0 else {}
 
+        # Per-slot endpoints
+        if self.path.startswith("/slot/"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) >= 3:
+                try:
+                    slot_id = int(parts[1])
+                except ValueError:
+                    self._json({"error": "invalid slot"}, 400)
+                    return
+                action = parts[2]
+                if not (0 <= slot_id < len(slots)):
+                    self._json({"error": "invalid slot"}, 400)
+                    return
+                slot = slots[slot_id]
+                if action == "play":
+                    url = body.get("url", "")
+                    if not url:
+                        self._json({"error": "url required"}, 400)
+                        return
+                    with slot.lock:
+                        slot.play(url)
+                    self._json({"status": "playing", "slot": slot_id})
+                elif action == "pause":
+                    with slot.lock:
+                        p = slot.toggle_pause()
+                    self._json({"paused": p, "slot": slot_id})
+                elif action == "stop":
+                    with slot.lock:
+                        slot.stop()
+                    self._json({"status": "stopped", "slot": slot_id})
+                else:
+                    self._json({"error": "unknown action"}, 404)
+                return
+
+        # Legacy endpoints → slot 0
         if self.path == "/play":
             url = body.get("url", "")
             if not url:
                 self._json({"error": "url required"}, 400)
                 return
-            with lock:
-                add_to_queue(url)
-            self._json({"status": "queued", "url": url})
-
+            with slots[0].lock:
+                slots[0].play(url)
+            self._json({"status": "playing", "url": url})
         elif self.path == "/pause":
-            with lock:
-                is_paused = toggle_pause()
-            self._json({"paused": is_paused})
-
+            with slots[0].lock:
+                p = slots[0].toggle_pause()
+            self._json({"paused": p})
         elif self.path == "/skip":
-            with lock:
-                skip_to_next()
-            self._json({"status": "skipped"})
-
+            self._json({"status": "use /slot/N/stop"})
         elif self.path == "/stop":
-            with lock:
-                stop_current()
+            with slots[0].lock:
+                slots[0].stop()
             self._json({"status": "stopped"})
-
         else:
             self._json({"error": "not found"}, 404)
 
