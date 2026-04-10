@@ -211,15 +211,25 @@ def get_system_prompt_fragment(agent_name: str) -> str:
             )
     neuro = data.get("neurocognitive", {})
     if neuro:
+        try:
+            from agents._context_compression import to_toon
+        except ImportError:
+            to_toon = None  # type: ignore[assignment]
         lines.append(
             "Neurocognitive patterns (discovered through operator interview — "
             "accommodate these in all interactions):"
         )
-        for category, findings in neuro.items():
-            cat_label = category.replace("_", " ").title()
-            lines.append(f"  {cat_label}:")
-            for finding in findings:
-                lines.append(f"    - {finding}")
+        if to_toon is not None:
+            try:
+                lines.append(to_toon(neuro))
+            except Exception:
+                to_toon = None  # type: ignore[assignment]
+        if to_toon is None:
+            for category, findings in neuro.items():
+                cat_label = category.replace("_", " ").title()
+                lines.append(f"  {cat_label}:")
+                for finding in findings:
+                    lines.append(f"    - {finding}")
     lines.append("")
 
     context_map = data.get("agent_context_map", {}).get(agent_name, {})

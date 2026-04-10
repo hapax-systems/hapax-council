@@ -50,6 +50,9 @@ class ContextAssembler:
         health_fn=None,
         nudges_fn=None,
         perception_fn=None,
+        goals_ttl: float = 60.0,
+        health_ttl: float = 30.0,
+        nudges_ttl: float = 30.0,
     ) -> None:
         self._stimmung_path = stimmung_path
         self._dmn_buffer_path = dmn_buffer_path
@@ -61,6 +64,64 @@ class ContextAssembler:
         self._cache: EnrichmentContext | None = None
         self._cache_time: float = 0.0
         self._cache_ttl: float = 2.0
+        # Per-fragment TTL cache: key -> (result, timestamp)
+        import threading
+
+        self._fragment_cache: dict[str, tuple[object, float]] = {}
+        self._fragment_lock = threading.Lock()
+        self._ttls: dict[str, float] = {
+            "goals": goals_ttl,
+            "health": health_ttl,
+            "nudges": nudges_ttl,
+        }
+
+    def _cached_call(self, key: str, fn) -> object:
+        """Return cached result if within TTL, otherwise call fn and cache.
+
+        Thread-safe: multiple agents may call snapshot() concurrently.
+        """
+        with self._fragment_lock:
+            now = time.time()
+            ttl = self._ttls.get(key, 30.0)
+            if key in self._fragment_cache:
+                result, ts = self._fragment_cache[key]
+                if (now - ts) < ttl:
+                    return result
+        # Call fn outside lock (may be slow — Qdrant queries, collectors)
+        result = fn()
+        with self._fragment_lock:
+            self._fragment_cache[key] = (result, now)
+        return result
+
+    def flush(self) -> None:
+        """Clear all cached fragments."""
+        with self._fragment_lock:
+            self._fragment_cache.clear()
+
+    def snapshot(self) -> EnrichmentContext:
+        """Assemble context using per-fragment TTL caches.
+
+        Shm reads (stimmung, dmn, imagination) are always fresh.
+        Callback sources (goals, health, nudges) are cached per their TTLs.
+        """
+        stimmung_raw = self._read_stimmung_raw()
+        return EnrichmentContext(
+            timestamp=time.time(),
+            stimmung_stance=stimmung_raw.get("overall_stance", "nominal"),
+            stimmung_raw=stimmung_raw,
+            active_goals=self._safe_call(  # type: ignore[arg-type]
+                lambda: self._cached_call("goals", self._goals_fn), []
+            ),
+            health_summary=self._safe_call(  # type: ignore[arg-type]
+                lambda: self._cached_call("health", self._health_fn), {}
+            ),
+            pending_nudges=self._safe_call(  # type: ignore[arg-type]
+                lambda: self._cached_call("nudges", self._nudges_fn), []
+            ),
+            dmn_observations=self._read_dmn_buffer(),
+            imagination_fragments=self._read_imagination(),
+            perception_snapshot=self._safe_call(self._perception_fn, {}),
+        )
 
     def assemble(self) -> EnrichmentContext:
         """Assemble context from all sources. Cached for _cache_ttl seconds."""

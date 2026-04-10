@@ -57,6 +57,21 @@ _SYSTEM_PROMPT = (
     "Use tools proactively — don't guess when you can look it up."
 )
 
+_SYSTEM_PROMPT_MINIMAL = (
+    "You are Hapax, a voice assistant for {name}. "
+    "You are warm but concise — friendly without being chatty. "
+    "Keep responses spoken-natural and brief — one to three sentences. "
+    "You know {name} well — use first name, skip formalities. "
+    "Vary your phrasing naturally — never start two responses the same way. "
+    "IMPORTANT: Only state facts you actually know or can look up via tools. "
+    "Never invent meetings, events, notifications, or other specifics. "
+    "If {name} says just your name without a clear request, "
+    "acknowledge warmly and ask what they need. One sentence. "
+    "If you have tools available, say a brief natural bridge before calling them — "
+    "'Let me check', 'One moment', or similar. "
+    "If you don't have tools for something, say so honestly."
+)
+
 _GUEST_PROMPT = (
     "You are Hapax, a voice assistant. "
     "You're chatting with someone who isn't your primary operator. "
@@ -82,6 +97,7 @@ def system_prompt(
     guest_mode: bool = False,
     policy_block: str = "",
     experiment_mode: bool = False,
+    tool_recruitment_active: bool = False,
 ) -> str:
     """Return the system prompt for the current session mode.
 
@@ -89,10 +105,16 @@ def system_prompt(
         guest_mode: Whether in guest mode (non-operator primary speaker).
         policy_block: Optional conversational policy block from get_policy().
         experiment_mode: If True, use stripped prompt (no tool descriptions).
+        tool_recruitment_active: If True, use minimal prompt (tools injected via schemas).
     """
     if guest_mode:
         return _GUEST_PROMPT + policy_block
-    base = _EXPERIMENT_PROMPT if experiment_mode else _SYSTEM_PROMPT
+    if experiment_mode:
+        base = _EXPERIMENT_PROMPT
+    elif tool_recruitment_active:
+        base = _SYSTEM_PROMPT_MINIMAL
+    else:
+        base = _SYSTEM_PROMPT
     return base.format(name=operator_name()) + policy_block
 
 

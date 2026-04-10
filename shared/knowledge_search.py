@@ -20,6 +20,24 @@ from shared.profile_store import ProfileStore
 log = logging.getLogger("shared.knowledge_search")
 _rag_tracer = trace.get_tracer("hapax.rag")
 
+_VOICE_LIMIT_RATIO = 0.3
+_MIN_LIMIT = 2
+
+
+def _adaptive_limit(
+    default: int,
+    pipeline: str | None = None,
+    tier: str | None = None,
+) -> int:
+    """Reduce Qdrant result limits for token-constrained contexts.
+
+    Phase 2 wiring: call this from search_documents() and ProfileStore.search()
+    once the voice pipeline passes pipeline/tier context to search functions.
+    """
+    if pipeline == "voice" or tier in ("LOCAL", "local"):
+        return max(_MIN_LIMIT, int(default * _VOICE_LIMIT_RATIO))
+    return default
+
 
 # ── Qdrant Search ────────────────────────────────────────────────────────────
 
