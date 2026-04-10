@@ -336,7 +336,7 @@ class CompositorAudioCapture:
         # where kicks have lower centroid, softer transients, longer sustain
         if self.VINYL_MODE:
             kick_centroid_max = 300  # shifted down at half speed
-            kick_bass_min = 0.5     # softer transients
+            kick_bass_min = 0.5  # softer transients
             hat_centroid_min = 2500  # shifted down
             hat_ratio_min = 0.4
             snare_flatness_min = 0.3

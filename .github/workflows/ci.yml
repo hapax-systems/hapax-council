@@ -43,6 +43,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Install system deps (cairo, gobject)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra ci
       - run: uv run pyright
@@ -52,6 +56,10 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
+      - name: Install system deps (cairo, gobject)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra ci
       - name: Run tests

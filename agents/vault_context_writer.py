@@ -140,11 +140,11 @@ def _append_to_daily(entry: str) -> bool:
     today = datetime.now().strftime("%Y-%m-%d")
     path = f"40-calendar/daily/{today}.md"
 
-    # Read current content
+    # Read current content — localhost Obsidian REST API uses self-signed cert
     resp = requests.get(
         f"{OBSIDIAN_API}/vault/{path}",
         headers={"Authorization": f"Bearer {api_key}", "Accept": "text/markdown"},
-        verify=False,
+        verify=False,  # noqa: S501  # nosec B501 - localhost self-signed
         timeout=5,
     )
 
@@ -175,7 +175,7 @@ def _append_to_daily(entry: str) -> bool:
     lines.insert(insert_idx, entry)
     new_content = "\n".join(lines)
 
-    # Write back via PUT
+    # Write back via PUT — localhost Obsidian REST API uses self-signed cert
     resp = requests.put(
         f"{OBSIDIAN_API}/vault/{path}",
         headers={
@@ -183,7 +183,7 @@ def _append_to_daily(entry: str) -> bool:
             "Content-Type": "text/markdown",
         },
         data=new_content.encode("utf-8"),
-        verify=False,
+        verify=False,  # noqa: S501  # nosec B501 - localhost self-signed
         timeout=5,
     )
 

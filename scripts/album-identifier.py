@@ -177,9 +177,10 @@ def image_hash(data: bytes) -> str:
         pixels = list(img.getdata())
         avg = sum(pixels) / len(pixels)
         bits = "".join("1" if p > avg else "0" for p in pixels)
-        return hashlib.md5(bits.encode()).hexdigest()
+        # MD5 used for perceptual hash comparison only, not security
+        return hashlib.md5(bits.encode(), usedforsecurity=False).hexdigest()
     except Exception:
-        return hashlib.md5(data).hexdigest()
+        return hashlib.md5(data, usedforsecurity=False).hexdigest()
 
 
 def hamming_distance(h1: str, h2: str) -> int:
