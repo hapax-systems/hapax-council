@@ -411,9 +411,9 @@ class DirectorLoop:
 
         body = json.dumps(
             {
-                "model": "balanced",
+                "model": "gemini-flash",
                 "messages": messages,
-                "max_tokens": 300,
+                "max_tokens": 400,
                 "temperature": 0.7,
             }
         ).encode()
@@ -448,6 +448,13 @@ class DirectorLoop:
                 log.debug("LLM returned no content (refusal or empty)")
                 return ("", force_cut)
             raw = content.strip()
+            usage = data.get("usage", {})
+            log.info(
+                "LLM raw (%d prompt, %d completion): %s",
+                usage.get("prompt_tokens", 0),
+                usage.get("completion_tokens", 0),
+                raw[:300],
+            )
             return self._parse_llm_response(raw)
         except Exception:
             log.exception("LLM call failed")
