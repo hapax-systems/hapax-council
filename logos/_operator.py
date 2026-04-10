@@ -220,8 +220,11 @@ def get_system_prompt_fragment(agent_name: str) -> str:
             "accommodate these in all interactions):"
         )
         if to_toon is not None:
-            lines.append(to_toon(neuro))
-        else:
+            try:
+                lines.append(to_toon(neuro))
+            except Exception:
+                to_toon = None  # type: ignore[assignment]
+        if to_toon is None:
             for category, findings in neuro.items():
                 cat_label = category.replace("_", " ").title()
                 lines.append(f"  {cat_label}:")

@@ -24,8 +24,8 @@ FORCE_TOKENS_DEFAULT = ["\n", "[", "]"]
 
 
 def compressor_available() -> bool:
-    """Check if LLMLingua-2 compressor is loaded. For health monitor integration."""
-    return _compressor is not None
+    """Check if LLMLingua-2 compressor can be loaded. Triggers lazy-load if needed."""
+    return _get_compressor() is not None
 
 
 def to_toon(data: dict | BaseModel | list) -> str:

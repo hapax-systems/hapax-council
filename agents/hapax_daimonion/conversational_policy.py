@@ -106,7 +106,7 @@ def _load_profile_summary() -> str | None:
 _ACTIVITY_MODULATIONS: dict[str, str] = {
     "coding": "Mode: coding. Maximum brevity. Technical register. No pleasantries.",
     "production": "Mode: production. Minimal interruption. Short confirmations only.",
-    "meeting": "Mode: meeting. SILENT unless wake-word addressed. Hold everything.",
+    "meeting": "HARD CONSTRAINT: meeting. SILENT unless wake-word addressed. Zero interruptions.",
     "idle": "Mode: idle. Conversational. Exploratory pacing. Digressions welcome.",
 }
 

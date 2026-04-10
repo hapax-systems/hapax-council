@@ -97,7 +97,8 @@ class TestEnvironmentalModulation:
         env = FakeEnv(activity_mode="meeting")
         policy = get_policy(env=env)
         assert "SILENT" in policy
-        assert "Hold everything" in policy
+        assert "HARD CONSTRAINT" in policy
+        assert "Zero interruptions" in policy
 
     def test_production_mode_minimal(self):
         env = FakeEnv(activity_mode="production")
@@ -150,7 +151,7 @@ class TestCompressedModulation:
         rules = _modulate_for_environment(env)
         activity_rules = [r for r in rules if "meeting" in r.lower()]
         assert len(activity_rules) == 1
-        assert len(activity_rules[0]) < 80
+        assert len(activity_rules[0]) < 85  # 80 chars with HARD CONSTRAINT prefix
 
 
 # ── Guest/Multi-Principal Policy ────────────────────────────────────────────

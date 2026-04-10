@@ -65,7 +65,10 @@ class ContextAssembler:
         self._cache_time: float = 0.0
         self._cache_ttl: float = 2.0
         # Per-fragment TTL cache: key -> (result, timestamp)
+        import threading
+
         self._fragment_cache: dict[str, tuple[object, float]] = {}
+        self._fragment_lock = threading.Lock()
         self._ttls: dict[str, float] = {
             "goals": goals_ttl,
             "health": health_ttl,
@@ -73,20 +76,27 @@ class ContextAssembler:
         }
 
     def _cached_call(self, key: str, fn) -> object:
-        """Return cached result if within TTL, otherwise call fn and cache."""
-        now = time.time()
-        ttl = self._ttls.get(key, 30.0)
-        if key in self._fragment_cache:
-            result, ts = self._fragment_cache[key]
-            if (now - ts) < ttl:
-                return result
+        """Return cached result if within TTL, otherwise call fn and cache.
+
+        Thread-safe: multiple agents may call snapshot() concurrently.
+        """
+        with self._fragment_lock:
+            now = time.time()
+            ttl = self._ttls.get(key, 30.0)
+            if key in self._fragment_cache:
+                result, ts = self._fragment_cache[key]
+                if (now - ts) < ttl:
+                    return result
+        # Call fn outside lock (may be slow — Qdrant queries, collectors)
         result = fn()
-        self._fragment_cache[key] = (result, now)
+        with self._fragment_lock:
+            self._fragment_cache[key] = (result, now)
         return result
 
     def flush(self) -> None:
         """Clear all cached fragments."""
-        self._fragment_cache.clear()
+        with self._fragment_lock:
+            self._fragment_cache.clear()
 
     def snapshot(self) -> EnrichmentContext:
         """Assemble context using per-fragment TTL caches.
