@@ -382,11 +382,32 @@ class DirectorLoop:
             f"Time: {datetime.now().strftime('%H:%M')}.",
         ]
 
-        # Stimmung
+        # Enrichment via ContextAssembler (TTL-cached, thread-safe)
+        try:
+            from shared.context import ContextAssembler
+
+            ctx = ContextAssembler().snapshot()
+            if ctx.stimmung_stance != "nominal":
+                parts.append(f"\nSystem stance: {ctx.stimmung_stance}.")
+            if ctx.dmn_observations:
+                parts.append(f"DMN: {ctx.dmn_observations[0][:150]}")
+            if ctx.imagination_fragments:
+                frag = ctx.imagination_fragments[0]
+                dims = frag.get("dimensions", {})
+                active = [f"{k}={v:.1f}" for k, v in dims.items() if v > 0.1]
+                if active:
+                    parts.append(f"Imagination: {', '.join(active)}")
+                mat = frag.get("material")
+                if mat:
+                    parts.append(f"Material: {mat}")
+        except Exception:
+            pass
+
+        # Phenomenal context (temporal bands, situation coupling)
         try:
             from agents.hapax_daimonion.phenomenal_context import render as render_phenomenal
 
-            phenom = render_phenomenal(tier="FAST")
+            phenom = render_phenomenal(tier="LOCAL")  # LOCAL = layers 1-3 only, ~60 tokens
             if phenom and phenom.strip():
                 parts.append("")
                 parts.append(phenom.strip())
