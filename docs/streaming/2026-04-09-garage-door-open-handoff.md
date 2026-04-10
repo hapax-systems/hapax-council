@@ -411,19 +411,49 @@ Without this, description auto-update from `attribution-log.md` will fail silent
 
 ## 6. Open TODOs (Prioritized for Tomorrow Night)
 
-### 6.1 CRITICAL (blocks launch)
+### 6.1 P0 BLOCKERS (from conversation review agent — verified 2026-04-09 23:35)
 
-- [ ] **OBS configuration** (garage-door plan Task 2, step-by-step in spec). Manual GUI work, ~10 min. StudioLive profile, NVENC p5 CBR 6000, 1920x1080@30, scene with V4L2 source + two PipeWire audio inputs, YouTube stream key.
-- [ ] **Test stream (unlisted)**. Start stream, verify compositor feed + both audio channels in YouTube Studio preview, check stream health = "Excellent", verify effect switching works on stream via curl to Logos API.
-- [ ] **Pre-flight checklist** before going public (garage-door plan Task 4, Step 1). Sensitive content scan, preset chosen.
+- [⏳] **`/data` filesystem at 100% INODE EXHAUSTION** (verified: `df -i /data` = 21733376/21733376). Cause: `/data/minio/langfuse` Langfuse observability bucket. Restic backup already failing. **Will cascade into other failures during stream.** **ANOTHER SESSION IS HANDLING THIS — don't duplicate the work.** Verify with `df -i /data` before stream; inode count must not be at 100% when launching.
+- [ ] **`hapax-daimonion.service` FAILED** (verified). Operator directive from prior session `d447edd3` was "stopped during stream" but it's in a failed state unrelated to that. Diagnose with `journalctl --user -u hapax-daimonion --since "10 min ago"`. If the failure is persistent, either fix or explicitly disable (`systemctl --user disable --now hapax-daimonion`) so it stays dead through reboots.
+- [ ] **Token ledger has SEEDED TEST TOKENS** (verified: `total_tokens=2350 pole_position=0.47`). These are leftovers from earlier testing. **MUST reset to zero before launch** or pole will start at 47%. Fix: `echo '{"session_start":1775797000,"total_tokens":0,"total_cost_usd":0.0,"components":{},"pole_position":0.0,"explosions":0,"active_viewers":1}' > /dev/shm/hapax-compositor/token-ledger.json`
+- [ ] **Attribution log has SWAPPED title/channel entries** from old code (verified: first entry shows "SP Pictures" as title instead of channel). File: `~/Documents/Personal/30-areas/legomena-live/attribution-log.md`. Fix: manually clean up lines 1-3 or regenerate from scratch.
+- [ ] **YouTube OAuth scope NOT authorized.** Stored `google/token` only has `calendar.readonly`. `shared/google_auth.py ALL_SCOPES` has been updated to add `youtube.force-ssl` but operator must run `scripts/youtube-auth.py` to complete consent flow. Without this, YouTube description auto-update silently fails.
+- [ ] **Chat monitor NOT systemd-installed.** `scripts/chat-monitor.py` exists, runs correctly, but no `~/.config/systemd/user/chat-monitor.service` exists. Without this, no real chat signal flows into the token pole during stream.
+- [ ] **Chat monitor video ID discovery not wired.** Monitor needs to know the YouTube Live video ID. No auto-discovery from `liveBroadcasts.list`. Manual: grab video ID from YouTube Studio at stream start → `echo VIDEO_ID > /dev/shm/hapax-compositor/youtube-video-id.txt`
+- [ ] **Vitruvian Man overlay visibility through shader effects NOT verified post-fix.** Last change: dark backing card 88% alpha + Vitruvian alpha bumped to 50%. Operator went remote before confirming. Drop a screenshot and verify.
 
-### 6.2 HIGH (should ship before launch)
+### 6.1.b P0 — OBS CONFIGURATION (operator-only, at machine or via VNC)
 
-- [ ] **Wire token ledger writers**. Album-identifier currently calls `litellm/master-key` LLMs for vision/audio/lyrics but does NOT record token spend. Need to import `scripts.token_ledger` and call `record_spend("album_id", prompt_tok, completion_tok, cost)` after each call. Same for splattributions and track ID. Otherwise pole never moves from LLM work.
-- [ ] **Start chat-monitor against the actual live stream.** After going live, grab the video ID, write to `/dev/shm/hapax-compositor/youtube-video-id.txt`, then `systemctl --user start chat-monitor.service` (service doesn't exist yet — needs to be created).
-- [ ] **Create `chat-monitor.service` systemd unit.** Mirror `album-identifier.service` pattern. ExecStart = `uv run python scripts/chat-monitor.py`.
-- [ ] **Review compositor snapshot branch at 720p.** Bumped from 640x360 to 1280x720. Verify it doesn't tank CPU on the stream path (only affects local preview, not the streamed /dev/video42).
-- [ ] **Verify fallback to CPU compositor** by temporarily breaking cudacompositor and confirming the pipeline still starts. Safety net for stream night.
+- [ ] **OBS StudioLive profile**: NVENC H.264 p5 Quality, CBR 6000 kbps, 2s keyframe, high profile, look-ahead OFF, B-frames 2.
+- [ ] **OBS Video settings**: 1920x1080 base + output, 30 FPS, NV12, Rec.709, Partial range.
+- [ ] **OBS Audio settings**: 48kHz stereo, 160 kbps, disable all Global Audio Devices.
+- [ ] **OBS Scene "Studio Live"** with 3 sources:
+  - V4L2 Video Capture Device → `/dev/video42` (`StudioCompositor`), 1920x1080
+  - Audio Input Capture (PipeWire) → `mixer_master` (music, label "Music (L-12)", slider -6dB)
+  - Audio Input Capture (PipeWire) → `echo_cancel_source` (voice, label "Voice (Yeti)", slider 0dB)
+- [ ] **OBS Audio sync offset: 75ms on the video source** (GUESS — operator should fine-tune by pad-hit test, but 75ms is the starting point per garage-door plan).
+- [ ] **YouTube Stream key**: visit `studio.youtube.com → Create → Go Live → Stream` → set title/description → copy Stream Key → OBS Settings → Stream → YouTube-RTMPS → paste.
+- [ ] **Test stream UNLISTED first** (garage-door plan Task 3). Verify stream health "Excellent", audio meters active, effect switching works via curl.
+
+### 6.1.c P0 — LAUNCH EXECUTION
+
+- [ ] **Pre-flight content safety scan** (§11). No employer content on any camera.
+- [ ] **Set YouTube visibility Public**.
+- [ ] **Click Start Streaming in OBS**.
+- [ ] **Grab video ID from YouTube Studio** → write to `youtube-video-id.txt` → start chat-monitor.
+
+### 6.2 P1 — STREAM DEGRADING (ships but broken in ways viewers will notice)
+
+- [ ] **Wire token ledger writers**. Album-identifier currently calls LLMs for vision/audio/lyrics but does NOT record token spend. Need to import `scripts.token_ledger` and call `record_spend("album_id", prompt_tok, completion_tok, cost)` after each call. Same for splattributions and track ID. Otherwise pole never moves from LLM work. **Without this the pole is decoration, not engagement signal.**
+- [ ] **Create `chat-monitor.service` systemd unit.** Mirror `album-identifier.service` pattern. ExecStart = `uv run python scripts/chat-monitor.py`. Don't enable until we have a video ID.
+- [ ] **YouTube description auto-update end-to-end test.** Code exists (`scripts/youtube-player.py::LivestreamDescriptionUpdater`) but only runs after OAuth scope is authorized (see 6.1). Run once manually after auth to verify `liveBroadcasts.list` → `videos.update` actually persists.
+- [ ] **Verify compositor CUDA fix is durable across reboots.** Check `/etc/ld.so.conf.d/cuda.conf` is in place; run `gst-inspect-1.0 cudacompositor` again; reboot once before freeze to confirm it still works.
+- [ ] **Review compositor snapshot branch at 720p.** Bumped from 640x360 to 1280x720 for remote dev. Verify it doesn't tank CPU on the stream path (should be preview-only, not the streamed /dev/video42 — but confirm).
+- [ ] **Exercise the CPU fallback path** by temporarily renaming `libgstnvcodec.so` to simulate cudacompositor loss — verify the pipeline comes up on CPU fallback without crashing. Revert after test. Safety net for stream night.
+- [ ] **Sawtooth pattern latent**. Per review agent: *"still latent on some preset combinations"*. Not currently visible, may resurface. No root cause known. Workaround: if it shows up during stream, switch to a different preset chain.
+- [ ] **Lyrics scrolling overlay not visually confirmed.** `track-lyrics.txt` file exists but scrolling render was never verified with fresh eyes. Check by playing a track with known lyrics and eyeballing.
+- [ ] **KDE Connect `shareReceived` browser suppression.** Operator intent: phone-shared URLs should go ONLY to the daemon, never open a browser. Verify `com.kde.share_receiver` D-Bus handler is the only consumer. If `xdg-open` or KDE Connect's default-open still triggers, disable it.
+- [ ] **Debug INFO log spam in YouTubeOverlay tick code.** Assistant temporarily bumped logging to INFO during diagnosis, never reverted. Will flood journald during 36h stream. Revert to DEBUG before freeze. File: `agents/studio_compositor/fx_chain.py` `YouTubeOverlay.tick()`.
 
 ### 6.3 MEDIUM (nice to have)
 
@@ -452,14 +482,26 @@ These are known-or-suspected leaks/drift/crash vectors that will bite during a m
 - [ ] **Disk I/O** — `/dev/shm/hapax-compositor/` is tmpfs, fine. But `~/Documents/Personal/30-areas/legomena-live/attribution-log.md` grows append-only. Also `~/.cache/hapax-compositor/hls/` segments. Verify HLS segment pruning works (should keep last N segments).
 - [ ] **rsync gdrive sync** — 5s interval for 36h = 25,920 sync runs. Each creates a snapshot. Verify no stale lock files accumulate.
 
-### 6.5 DEFERRED (garage-door spec "Future Enhancements")
+### 6.5 DEFERRED — "pegged for later" (operator explicitly said POST-LAUNCH)
 
-- Week 2: **Simulcast** to Twitch + Kick via Restream.io or OBS multistream
-- Week 2: **Chat-reactive effects** — chat votes → compositor preset switches via Logos command relay :8052
-- Week 3: **Stream overlay in compositor** — preset name, viewer count, chat highlights as cairooverlay (not OBS)
-- Month 2: **Native GStreamer RTMP** — eliminate OBS, add `audiomixer + flvmux + rtmp2sink` branch
-- Month 2: **TikTok clip pipeline** — DMN identifies key moments, auto-exports vertical clips
-- Month 3: **Stream as affordance** — DMN can "go live" autonomously via recruitment pipeline
+From conversation review agent:
+- **Stream Deck integration** — physical control surface for presets/chains. Operator: *"I have a stream deck that we can use for controls that we will set up"*
+- **PipeWire audio ducking (talkover)** — YouTube ducks 24c mix when playing, mic ducks YouTube when talking. 6-10dB smooth crossfade. Operator: *"we will need production quality audio ducking... not A LOT but enough"*
+- **60fps compositor pipeline** — videorate negotiation research needed; 30fps is the launch target
+- **Source layering** — composite multiple sources within one chain instead of switching between them
+- **BTrack beat grid** — phase-locked beat sync (external dep needed)
+- **Sequence persistence** (save/load named playlists) — UI rebuild needed post-CUDA-fix
+- **Terminal capture source** (`/dev/video10`, wf-recorder) — disabled during streams
+- **Chat-reactive effects** — chat votes → preset switches via Logos command relay :8052
+- **Native GStreamer RTMP** — eliminate OBS, add `audiomixer + flvmux + rtmp2sink` branch
+- **TikTok clip pipeline** — DMN identifies key moments, auto-exports vertical clips
+- **Stream as affordance** — DMN "goes live" autonomously via recruitment pipeline
+- **AppImage bundling fix** — QoL
+- **Camera error resilience** — one bad camera shouldn't kill everything. Operator: *"bigger change for later"*
+- **Pango overlay per-preset clarity guarantee** — some presets obscure text entirely; needs per-preset clarity floor. Open question.
+- **Explosion counter visual above goal** — built but not verified after Vitruvian pivot
+- **Pi-6 sshd persistent enable** — ALREADY RESOLVED (verified enabled + active this session)
+- **Sawtooth pattern root cause** — parked; dither=0 + passthrough blit fixes were improvements but pattern still latent on some combos
 
 ---
 
@@ -517,7 +559,51 @@ These are known-or-suspected leaks/drift/crash vectors that will bite during a m
 - **Explosion trigger:** ledger `explosions` counter increments when tokens crosses threshold. TokenPole watches for increment and spawns 60 particles from spiral center. First session start doesn't trigger — needs `_last_explosion_count > 0` guard.
 - **Vitruvian Man image** is at `assets/vitruvian_man_overlay.png`, force-committed via `git add -f` because `.gitignore` excludes `assets/`. Transparent PNG, cream-tinted ink lines on transparent background, 500x500. Prepared from Wikimedia Commons "Da Vinci Vitruve Luc Viatour" JPG with PIL contrast 2.0x, brightness 0.85x, ImageOps.colorize with dark sepia → cream gold.
 
-### 7.7 Remote dev setup
+### 7.7 GStreamer pipeline constraints (additional, from review agent)
+
+- **`v4l2loopback` (`/dev/video10`, `/dev/video50`) cannot be added to a pipeline unless something is actively writing to it.** Empty loopback causes `set_state(PLAYING) → FAILURE`. Fix: `v4l2-ctl --device=/dev/videoN --get-fmt-video` probe check before creating the source element. Applied in `_add_terminal_source` and `YouTubeOverlay._create_pad`.
+- **NVIDIA shaders + NVIDIA + Wayland GL context = black output.** Must run compositor with `GST_GL_WINDOW=x11 DISPLAY=:0` even on Wayland. Applied in `~/.config/systemd/user/studio-compositor.service.d/gl-env.conf`.
+- **`input-selector` with more than 2 pads causes caps negotiation deadlock.** Resolution: lazy pad connection via IDLE pad probes. Only ever keep 2 pads connected simultaneously. Create camera branch on-demand when switching, tear down when switching away.
+- **Stale closures in `SequenceBar.tsx`.** All callbacks must read from `useStudioGraph.getState()` not React closures.
+
+### 7.8 Shader constraints (additional, from review agent)
+
+- **Multiplicative shader params must default to 1.0 in vocabulary presets** (`colorgrade.brightness`, `colorgrade.saturation`, `postprocess.master_opacity`). Zero defaults output black. (This is in workspace CLAUDE.md but applies to all presets.)
+- **`sin()*43758` hash functions produce biased distribution on NVIDIA GPU** — causes oxide dropout to fire on majority of lines (169 brightness instead of <1%). Replaced with Dave Hoskins integer-style hash.
+- **Reverie mixer must only write non-zero chain deltas to `uniforms.json`** — zero deltas overwrite vocabulary defaults → black.
+- **`merge_default_modulations` must match by node TYPE not exact ID.** Merged chains get prefixed IDs like `p0_bloom`. Fix uses type map.
+- **`find_slot_for_node` must strip `pN_` prefix** for chain compatibility.
+- **`matching_ids[-1]` (last instance) for chain neutralization, not `matching_ids[0]`.** First instance is the neutralized one.
+- **`screen` blend banned** — causes white washout.
+- **OOB shaders clamp instead of black.**
+- **Chain neutralization rules:** colorgrade→identity, bloom→alpha:0, vignette→strength:0, noise→intensity:0. All instances except the last are neutralized.
+- **Tag cross-exclusions:** glitch+temporal, sparse+temporal, pattern+temporal, glitch+sparse, mono+anything, scanline+scanline, geometric+geometric.
+- **Shuffle source mix:** 60% live / 20% smooth / 20% hls (terminal disabled). Cameras: `brio-operator`, `brio-room`, `brio-synths` only (C920s have USB issues).
+- **Shuffle excludes:** clean, echo, reverie_vocabulary, ambient, heartbeat, nightvision.
+- **Anonymity guarantee:** every chain must include at least one obscuring preset. Obscuring set (tightened): halftone, pixsort, vhs, ascii, kaleidoscope, dither, datamosh, scrollmachine. Excludes: nightvision, neon.
+- **Universal anonymize layer:** `postprocess.frag` applies 6-level posterize + noise on every preset. Param `u_anonymize` default 1.0. Hybrid anonymization: per-preset obscuring + universal posterize.
+- **Colorgrade chain-safe cap:** ≤1.2 brightness/contrast per instance.
+
+### 7.9 Audio fingerprinting catalog gaps (additional)
+
+- **ACRCloud does NOT have MF DOOM Special Herbs, Tha God Fahim, Griselda, Tuff Kong**. "No result" at any speed correction. Verified multiple times.
+- **AcoustID (MusicBrainz)** also returned 0 results for same catalog.
+- **`shazamio` broken on Python 3.14** (`audioop` module removed).
+- **Winning pipeline:** IR camera → Gemini Pro vision → splattribution (deliberately wrong is funny).
+- **Claude has no audio modality** — multimodal image+audio MUST go through Gemini Pro.
+- **Gemini Pro image processing times out on 1080p JPEGs under load** — resize to 480×270 before sending.
+
+### 7.10 Chat monitoring design decisions (additional)
+
+- **`chat-downloader` not `pytchat`** — pytchat dead since 2021.
+- **Simple whitespace tokenizer, NOT spaCy** — spaCy is bad at chat text.
+- **`nomic-embed` via existing Ollama CPU** — don't load another embedding model.
+- **Individual message scoring / leaderboards — HARD LINE NO.** Thermometer not scoreboard.
+- **Anti-patterns rejected:**
+  - AGC on audio bands (compressed dynamics too much, reverted to fixed multipliers)
+  - Genre hints + "think carefully" for splattributions (made LLM wrong in BORING ways — operator: *"let's not try to help the LLMs be so right because then they'll be wrong in less interesting ways"*)
+
+### 7.11 Remote dev setup
 
 - **5-second bidirectional gdrive rsync** via `rclone-gdrive-drop.timer` modified from 30s to 5s. Units: `~/projects/hapax-council/systemd/units/rclone-gdrive-drop.timer`
 - **Screenshot drops:** `~/bin/drop-snapshot [label]` copies `/dev/shm/hapax-compositor/fx-snapshot.jpg` to `~/gdrive-drop/legomena-screenshots/${label}-${HHMMSS}.jpg`
