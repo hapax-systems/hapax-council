@@ -192,7 +192,19 @@ class TokenPole:
     def draw(self, cr: Any) -> None:
         self._load_bg(cr)
 
-        # --- Vitruvian Man background (semi-transparent) ---
+        # --- Dark backing card ---
+        cr.set_source_rgba(0.05, 0.04, 0.08, 0.88)
+        # Rounded rectangle
+        _r = 12
+        cr.new_sub_path()
+        cr.arc(OVERLAY_X + OVERLAY_SIZE - _r, OVERLAY_Y + _r, _r, -math.pi / 2, 0)
+        cr.arc(OVERLAY_X + OVERLAY_SIZE - _r, OVERLAY_Y + OVERLAY_SIZE - _r, _r, 0, math.pi / 2)
+        cr.arc(OVERLAY_X + _r, OVERLAY_Y + OVERLAY_SIZE - _r, _r, math.pi / 2, math.pi)
+        cr.arc(OVERLAY_X + _r, OVERLAY_Y + _r, _r, math.pi, 3 * math.pi / 2)
+        cr.close_path()
+        cr.fill()
+
+        # --- Vitruvian Man (transparent PNG, full alpha — ink lines pop) ---
         if self._bg_surface is not None:
             cr.save()
             sw = self._bg_surface.get_width()
@@ -201,7 +213,7 @@ class TokenPole:
             cr.translate(OVERLAY_X, OVERLAY_Y)
             cr.scale(scale, scale)
             cr.set_source_surface(self._bg_surface, 0, 0)
-            cr.paint_with_alpha(0.35)  # subtle background
+            cr.paint_with_alpha(1.0)
             cr.restore()
 
         # --- Spiral guide line ---
