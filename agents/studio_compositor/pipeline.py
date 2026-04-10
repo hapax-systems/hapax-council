@@ -36,11 +36,14 @@ def build_pipeline(compositor: Any) -> Any:
     )
     compositor._tile_layout = layout
 
+    # Try cudacompositor first, fall back to CPU compositor
     comp_element = Gst.ElementFactory.make("cudacompositor", "compositor")
+    compositor._use_cuda = comp_element is not None
     if comp_element is None:
-        raise RuntimeError(
-            "cudacompositor plugin not available -- install gst-plugins-bad with CUDA"
-        )
+        log.warning("cudacompositor unavailable — falling back to CPU compositor")
+        comp_element = Gst.ElementFactory.make("compositor", "compositor")
+        if comp_element is None:
+            raise RuntimeError("Neither cudacompositor nor compositor plugin available")
     pipeline.add(comp_element)
 
     fps = compositor.config.framerate
@@ -52,8 +55,7 @@ def build_pipeline(compositor: Any) -> Any:
             continue
         add_camera_branch(compositor, pipeline, comp_element, cam, tile, fps)
 
-    # Output chain: compositor -> cudadownload -> BGRA -> pre_fx_tee
-    download = Gst.ElementFactory.make("cudadownload", "download")
+    # Output chain: compositor -> [cudadownload] -> BGRA -> pre_fx_tee
     convert_bgra = Gst.ElementFactory.make("videoconvert", "convert-bgra")
     convert_bgra.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     bgra_caps = Gst.ElementFactory.make("capsfilter", "bgra-caps")
@@ -67,7 +69,12 @@ def build_pipeline(compositor: Any) -> Any:
 
     pre_fx_tee = Gst.ElementFactory.make("tee", "pre-fx-tee")
 
-    elements_pre = [download, convert_bgra, bgra_caps, pre_fx_tee]
+    # cudadownload only if we're using the CUDA compositor
+    if compositor._use_cuda:
+        download = Gst.ElementFactory.make("cudadownload", "download")
+        elements_pre = [download, convert_bgra, bgra_caps, pre_fx_tee]
+    else:
+        elements_pre = [convert_bgra, bgra_caps, pre_fx_tee]
     for el in elements_pre:
         if el is None:
             raise RuntimeError("Failed to create GStreamer element")

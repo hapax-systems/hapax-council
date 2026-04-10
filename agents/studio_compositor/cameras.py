@@ -138,25 +138,37 @@ def add_camera_branch(
     pipeline.add(camera_tee)
     last.link(camera_tee)
 
-    # Compositor branch
+    # Compositor branch — CUDA or CPU based on runtime capability
+    use_cuda = getattr(compositor, "_use_cuda", False)
     queue_comp = Gst.ElementFactory.make("queue", f"queue-comp-{role}")
     queue_comp.set_property("leaky", 2)
     queue_comp.set_property("max-size-buffers", 2)
-    upload = Gst.ElementFactory.make("cudaupload", f"upload_{role}")
-    cuda_convert = Gst.ElementFactory.make("cudaconvert", f"cudaconv_{role}")
-    scale = Gst.ElementFactory.make("cudascale", f"scale_{role}")
-    scale_caps = Gst.ElementFactory.make("capsfilter", f"scalecaps_{role}")
-    scale_caps.set_property(
-        "caps",
-        Gst.Caps.from_string(f"video/x-raw(memory:CUDAMemory),width={tile.w},height={tile.h}"),
-    )
+    if use_cuda:
+        upload = Gst.ElementFactory.make("cudaupload", f"upload_{role}")
+        cuda_convert = Gst.ElementFactory.make("cudaconvert", f"cudaconv_{role}")
+        scale = Gst.ElementFactory.make("cudascale", f"scale_{role}")
+        scale_caps = Gst.ElementFactory.make("capsfilter", f"scalecaps_{role}")
+        scale_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(f"video/x-raw(memory:CUDAMemory),width={tile.w},height={tile.h}"),
+        )
+        branch_elements = [queue_comp, upload, cuda_convert, scale, scale_caps]
+    else:
+        cpu_convert = Gst.ElementFactory.make("videoconvert", f"cpuconv_{role}")
+        cpu_convert.set_property("dither", 0)
+        scale = Gst.ElementFactory.make("videoscale", f"scale_{role}")
+        scale_caps = Gst.ElementFactory.make("capsfilter", f"scalecaps_{role}")
+        scale_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(f"video/x-raw,format=I420,width={tile.w},height={tile.h}"),
+        )
+        branch_elements = [queue_comp, cpu_convert, scale, scale_caps]
 
-    for el in [queue_comp, upload, cuda_convert, scale, scale_caps]:
+    for el in branch_elements:
         pipeline.add(el)
-    queue_comp.link(upload)
-    upload.link(cuda_convert)
-    cuda_convert.link(scale)
-    scale.link(scale_caps)
+    # Link chain
+    for i in range(len(branch_elements) - 1):
+        branch_elements[i].link(branch_elements[i + 1])
 
     tee_pad = camera_tee.request_pad(camera_tee.get_pad_template("src_%u"), None, None)
     queue_sink = queue_comp.get_static_pad("sink")
