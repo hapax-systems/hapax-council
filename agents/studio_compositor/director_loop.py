@@ -195,83 +195,18 @@ def _capture_snapshot_b64() -> str | None:
     return None
 
 
-ACTIVITIES = ("react", "chat", "vinyl", "study", "silence")
-MIN_ACTIVITY_DURATION = 15.0  # seconds before allowing activity switch
-
-
-def _score_activities() -> dict[str, float]:
-    """Score each activity based on current signals. No LLM call — pure signal read."""
-    scores: dict[str, float] = {a: 0.1 for a in ACTIVITIES}
-
-    # Chat signals
-    try:
-        chat_state = json.loads((SHM_DIR / "chat-state.json").read_text())
-        total = chat_state.get("total_messages", 0)
-        authors = chat_state.get("unique_authors", 0)
-        if authors >= 2:
-            scores["chat"] = 0.8
-        elif total > 0:
-            scores["chat"] = 0.4
-
-        recent = json.loads((SHM_DIR / "chat-recent.json").read_text())
-        # Direct questions boost chat score
-        for m in recent[-3:]:
-            text = m.get("text", "").lower()
-            if "?" in text or "what" in text or "how" in text or "who" in text:
-                scores["chat"] = max(scores["chat"], 0.9)
-                break
-    except Exception:
-        pass
-
-    # Music signals — track change boosts vinyl
-    try:
-        album = json.loads(ALBUM_STATE_FILE.read_text())
-        ts = album.get("timestamp", 0)
-        if time.time() - ts < 30:  # track changed in last 30s
-            scores["vinyl"] = 0.6
-    except Exception:
-        pass
-
-    # Video signals — videos playing boosts react
-    try:
-        for i in range(3):
-            frame = SHM_DIR / f"yt-frame-{i}.jpg"
-            if frame.exists() and (time.time() - frame.stat().st_mtime) < 5:
-                scores["react"] = max(scores["react"], 0.5)
-                break
-    except Exception:
-        pass
-
-    # Circadian bias
-    hour = datetime.now().hour
-    if 2 <= hour < 6:
-        scores["silence"] += 0.4
-        scores["study"] += 0.3
-        scores["react"] *= 0.3
-    elif hour >= 22 or hour < 2:
-        scores["silence"] += 0.2
-        scores["study"] += 0.2
-    elif 9 <= hour < 18:
-        scores["react"] += 0.2
-        scores["chat"] += 0.1
-
-    # Stimmung
-    try:
-        stimmung = json.loads(Path("/dev/shm/hapax-stimmung/state.json").read_text())
-        stance = stimmung.get("overall_stance", "nominal")
-        if stance == "seeking":
-            # Boost non-current activities
-            scores["study"] += 0.3
-            scores["vinyl"] += 0.2
-        elif stance in ("degraded", "critical"):
-            scores["silence"] += 0.5
-    except Exception:
-        pass
-
-    # Default: react is always viable if nothing else scores higher
-    scores["react"] = max(scores["react"], 0.35)
-
-    return scores
+ACTIVITY_CAPABILITIES = (
+    "\n"
+    "Activities available to you. Choose the one this moment calls for.\n"
+    "\n"
+    "- react: respond to the video content in the spirograph. What caught you?\n"
+    "- chat: engage viewers in the livestream chat. Answer, respond, explain.\n"
+    "- vinyl: comment on the music. The record, the track, the production.\n"
+    "- study: reflect on your own research. Clark & Brennan, phenomenology,\n"
+    "  grounding theory. Think out loud about what you're learning.\n"
+    "- observe: notice the composed surface. Shaders, spirograph, text overlays.\n"
+    '- silence: say nothing. Let the music carry. Return {"activity": "silence"}.\n'
+)
 
 
 class DirectorLoop:
@@ -310,39 +245,70 @@ class DirectorLoop:
         self._active_slot = (self._active_slot + 1) % len(self._slots)
 
     def _loop(self) -> None:
+        """Unified loop: Hapax decides what to do each tick."""
         while self._running:
             try:
-                # Check for activity switch (respect minimum duration)
-                elapsed = time.monotonic() - self._activity_start
-                if elapsed > MIN_ACTIVITY_DURATION and self._state != "SPEAKING":
-                    scores = _score_activities()
-                    # Current activity gets inertia bonus
-                    scores[self._activity] = scores.get(self._activity, 0) + 0.25
-                    best = max(scores, key=scores.get)
-                    if best != self._activity:
-                        log.info(
-                            "Activity switch: %s → %s (scores: %s)",
-                            self._activity,
-                            best,
-                            {k: f"{v:.2f}" for k, v in scores.items()},
-                        )
-                        self._activity = best
-                        self._activity_start = time.monotonic()
-                        self._reactor.set_header(best.upper())
-
-                # Dispatch to activity handler
                 if self._state == "SPEAKING":
-                    time.sleep(0.5)  # wait for TTS thread
-                elif self._activity == "react":
-                    self._tick_playing()
-                elif self._activity == "chat":
-                    self._tick_chat()
-                elif self._activity == "vinyl":
-                    self._tick_vinyl()
-                elif self._activity == "study":
-                    self._tick_study()
-                elif self._activity == "silence":
-                    time.sleep(2.0)
+                    time.sleep(0.5)
+                    continue
+
+                now = time.monotonic()
+                if now - self._last_perception < PERCEPTION_INTERVAL:
+                    time.sleep(0.5)
+                    continue
+                self._last_perception = now
+
+                # Build unified prompt with all signals + activity capabilities
+                prompt = self._build_unified_prompt()
+                images = self._gather_images()
+
+                # Single LLM call — Hapax chooses activity + content
+                result = self._call_activity_llm(prompt, images)
+                if not result:
+                    time.sleep(1.0)
+                    continue
+
+                # Parse activity choice
+                activity = "react"
+                text = result
+                try:
+                    obj = json.loads(result) if result.startswith("{") else None
+                    if obj:
+                        activity = obj.get("activity", "react")
+                        text = obj.get("react", "")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                # Handle activity
+                if activity == "silence" or not text:
+                    if self._activity != "silence":
+                        log.info("Activity: silence")
+                        self._activity = activity
+                        self._reactor.set_header("SILENCE")
+                    time.sleep(5.0)
+                    continue
+
+                if activity != self._activity:
+                    log.info("Activity: %s → %s", self._activity, activity)
+                    self._activity = activity
+                    self._reactor.set_header(activity.upper())
+
+                # Speak
+                self._speak_activity(text, activity)
+
+                # If react mode, advance video slot after speaking
+                if activity == "react":
+
+                    def _advance():
+                        while self._state == "SPEAKING":
+                            time.sleep(0.3)
+                        self._accumulated_reacts.clear()
+                        self._next_slot()
+                        self._slots[self._active_slot].is_active = True
+                        self._video_start_time = time.monotonic()
+
+                    threading.Thread(target=_advance, daemon=True).start()
+
             except Exception:
                 log.exception("Director loop error")
             time.sleep(0.5)
@@ -396,7 +362,96 @@ class DirectorLoop:
         path = SpirographPath()
         return path.position_at(slot.orbit_t)
 
-    # --- Activity tick methods ---
+    # --- Unified prompt ---
+
+    def _build_unified_prompt(self) -> str:
+        """Single prompt with all signals + activity capabilities. Hapax decides."""
+        live = (SHM_DIR / "stream-live").exists()
+        album_info = _read_album_info()
+        slot = self._slots[self._active_slot]
+
+        parts = [
+            "You are Hapax. This is Legomena Live. Oudepode is spinning vinyl.",
+            "This is a live performance." if live else "This is practice.",
+            "",
+            "What you are: a system learning to achieve grounding.",
+            "Every utterance is practice toward mutual understanding.",
+            "",
+            f"Current video: '{slot._title}' by {slot._channel}.",
+            f"On the turntable: {album_info}.",
+            f"Time: {datetime.now().strftime('%H:%M')}.",
+        ]
+
+        # Stimmung
+        try:
+            from agents.hapax_daimonion.phenomenal_context import render as render_phenomenal
+
+            phenom = render_phenomenal(tier="FAST")
+            if phenom and phenom.strip():
+                parts.append("")
+                parts.append(phenom.strip())
+        except Exception:
+            pass
+
+        # Chat
+        try:
+            chat_recent_path = SHM_DIR / "chat-recent.json"
+            chat_state_path = SHM_DIR / "chat-state.json"
+            if chat_state_path.exists():
+                cs = json.loads(chat_state_path.read_text())
+                total = cs.get("total_messages", 0)
+                authors = cs.get("unique_authors", 0)
+                if total == 0:
+                    parts.append("\nChat is silent.")
+                elif authors <= 2:
+                    parts.append("\nChat is quiet.")
+                else:
+                    parts.append(f"\nChat is active ({authors} people).")
+            if chat_recent_path.exists():
+                recent = json.loads(chat_recent_path.read_text())
+                for m in recent[-3:]:
+                    author = m.get("author", "")
+                    text = m.get("text", "")
+                    if text:
+                        if "oudepode" in author.lower():
+                            parts.append(f'Oudepode: "{text}"')
+                        else:
+                            parts.append(f'Someone in chat: "{text}"')
+        except Exception:
+            pass
+
+        # Images available
+        parts.append("\nTwo images attached. First: the current video frame.")
+        parts.append("Second: the full composed surface viewers see.")
+
+        # Activity capabilities
+        parts.append(ACTIVITY_CAPABILITIES)
+
+        # History
+        if self._reaction_history:
+            parts.append("\nYour recent utterances:")
+            for entry in self._reaction_history[-5:]:
+                parts.append(f"  {entry}")
+
+        # Format
+        parts.append('\nFormat: {"activity": "chosen_activity", "react": "your words"}')
+        parts.append("Complete your sentences. Say as much or as little as the moment requires.")
+
+        return "\n".join(parts)
+
+    def _gather_images(self) -> list[str]:
+        """Collect image paths for the LLM call."""
+        images = []
+        # Video frame
+        vf = SHM_DIR / f"yt-frame-{self._active_slot}.jpg"
+        if vf.exists():
+            images.append(str(vf))
+        # Compositor snapshot
+        if FX_SNAPSHOT.exists():
+            images.append(str(FX_SNAPSHOT))
+        return images
+
+    # --- Legacy activity tick methods (kept for reference, not called) ---
 
     def _tick_chat(self) -> None:
         """Respond to chat messages."""
