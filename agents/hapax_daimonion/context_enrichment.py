@@ -9,13 +9,22 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agents._context import ContextAssembler
 
 log = logging.getLogger(__name__)
+
+_DMN_BUFFER_PATH = Path("/dev/shm/hapax-dmn/buffer.txt")
+_DMN_STALE_S = 60.0
+
+_OBS_RE = re.compile(r"<dmn_observation[^>]*>([^<]*)</dmn_observation>")
+_EVAL_RE = re.compile(r"<dmn_evaluation[^>]*>\s*(.*?)\s*</dmn_evaluation>")
 
 # Nudge cache (collection is expensive — 12 sub-collectors)
 _nudge_cache: list | None = None
@@ -103,25 +112,50 @@ def render_nudges() -> str:
 def render_dmn() -> str:
     """DMN buffer — continuous background situational awareness.
 
-    Reads the DMN daemon's accumulated observations from /dev/shm.
-    Returns the U-curve-formatted buffer for injection into the VOLATILE band.
-    Empty string when DMN daemon is not running or buffer is stale.
+    Reads the DMN daemon's accumulated observations from /dev/shm and
+    run-length encodes consecutive identical states for compact injection
+    into the VOLATILE band. Empty string when DMN daemon is not running
+    or buffer is stale.
     """
     try:
-        import os
-        from pathlib import Path
-
-        path = Path("/dev/shm/hapax-dmn/buffer.txt")
+        path = _DMN_BUFFER_PATH
         if not path.exists():
             return ""
         # Staleness check: buffer older than 60s is likely from a crashed daemon
         age_s = time.time() - os.path.getmtime(path)
-        if age_s > 60:
+        if age_s > _DMN_STALE_S:
             return ""
         text = path.read_text(encoding="utf-8").strip()
         if not text:
             return ""
-        return f"## Background Awareness (DMN)\n{text}"
+
+        # Parse observations and run-length encode identical consecutive states
+        states = [m.group(1).strip() for m in _OBS_RE.finditer(text)]
+        if not states:
+            return ""
+
+        # Build RLE tuples
+        runs: list[tuple[str, int]] = []
+        for state in states:
+            if runs and runs[-1][0] == state:
+                runs[-1] = (state, runs[-1][1] + 1)
+            else:
+                runs.append((state, 1))
+
+        if len(runs) == 1:
+            summary = f"DMN: {runs[0][0]} ({runs[0][1]} ticks)"
+        else:
+            parts = " → ".join(f"{s} ({c})" for s, c in runs)
+            summary = f"DMN: {parts}"
+
+        # Append last evaluation if present
+        eval_match = _EVAL_RE.search(text)
+        if eval_match:
+            eval_text = eval_match.group(1).strip()
+            if eval_text:
+                summary += f". {eval_text}"
+
+        return f"## Background Awareness (DMN)\n{summary}"
     except Exception:
         log.debug("render_dmn failed (non-fatal)", exc_info=True)
         return ""

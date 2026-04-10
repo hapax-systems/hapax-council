@@ -90,14 +90,14 @@ class TestEnvironmentalModulation:
     def test_idle_mode_conversational(self):
         env = FakeEnv(activity_mode="idle")
         policy = get_policy(env=env)
-        assert "Conversational style permitted" in policy
+        assert "Conversational" in policy
 
-    def test_meeting_mode_hard_constraint(self):
-        """Meeting mode is a HARD CONSTRAINT — no interruptions at all."""
+    def test_meeting_mode_silent(self):
+        """Meeting mode: SILENT unless wake-word addressed."""
         env = FakeEnv(activity_mode="meeting")
         policy = get_policy(env=env)
-        assert "HARD CONSTRAINT" in policy
-        assert "no interruptions" in policy.lower()
+        assert "SILENT" in policy
+        assert "Hold everything" in policy
 
     def test_production_mode_minimal(self):
         env = FakeEnv(activity_mode="production")
@@ -112,14 +112,14 @@ class TestEnvironmentalModulation:
     def test_multi_face_accessible(self):
         env = FakeEnv(face_count=2)
         policy = get_policy(env=env)
-        assert "accessible to all listeners" in policy.lower()
+        assert "Guest present" in policy
 
     def test_long_session_conciseness(self):
         env = FakeEnv()
         session_start = time.monotonic() - (25 * 60)
         policy = get_policy(env=env, session_start=session_start)
         assert "Long session" in policy
-        assert "Tighten responses" in policy
+        assert "Extra concise" in policy
 
     def test_late_evening_lighter_tone(self):
         env = FakeEnv()
@@ -132,6 +132,25 @@ class TestEnvironmentalModulation:
         policy = get_policy(env=None)
         assert "Conversational Policy" in policy
         assert "Environment" not in policy
+
+
+# ── Compressed Modulation Directives ────────────────────────────────────────
+
+
+class TestCompressedModulation:
+    def test_coding_mode_is_terse(self):
+        env = FakeEnv(activity_mode="coding", face_count=1)
+        rules = _modulate_for_environment(env)
+        activity_rules = [r for r in rules if "coding" in r.lower()]
+        assert len(activity_rules) == 1
+        assert len(activity_rules[0]) < 80  # Compressed
+
+    def test_meeting_mode_is_terse(self):
+        env = FakeEnv(activity_mode="meeting", face_count=1)
+        rules = _modulate_for_environment(env)
+        activity_rules = [r for r in rules if "meeting" in r.lower()]
+        assert len(activity_rules) == 1
+        assert len(activity_rules[0]) < 80
 
 
 # ── Guest/Multi-Principal Policy ────────────────────────────────────────────

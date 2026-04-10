@@ -17,6 +17,16 @@ log = logging.getLogger(__name__)
 _compressor = None
 _compressor_load_attempted = False
 
+# Domain-aware force token lists for LLMLingua-2 compression
+FORCE_TOKENS_VOICE = ["\n", "[", "]", "ACCEPT", "CLARIFY", "REJECT", "IGNORE", "REPAIR", "GROUNDED"]
+FORCE_TOKENS_RETRIEVAL = ["\n", "[", "]", "source:", "score:"]
+FORCE_TOKENS_DEFAULT = ["\n", "[", "]"]
+
+
+def compressor_available() -> bool:
+    """Check if LLMLingua-2 compressor is loaded. For health monitor integration."""
+    return _compressor is not None
+
 
 def to_toon(data: dict | BaseModel | list) -> str:
     """Serialize structured data to TOON format for LLM context injection.

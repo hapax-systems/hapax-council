@@ -104,22 +104,10 @@ def _load_profile_summary() -> str | None:
 
 # Activity mode → style modulation
 _ACTIVITY_MODULATIONS: dict[str, str] = {
-    "coding": (
-        "Maximum brevity. Technical register. Answer the question, nothing more. "
-        "No pleasantries, no preamble."
-    ),
-    "production": (
-        "Minimal interruption style. Short confirmations. "
-        "Only speak substantively if directly asked."
-    ),
-    "meeting": (
-        "HARD CONSTRAINT: The operator is in a meeting. Do NOT speak unless directly "
-        "addressed by wake word. Absolutely no interruptions. Hold everything."
-    ),
-    "idle": (
-        "Conversational style permitted. Exploratory, relaxed pacing. "
-        "May elaborate if the topic warrants it. Digressions welcome."
-    ),
+    "coding": "Mode: coding. Maximum brevity. Technical register. No pleasantries.",
+    "production": "Mode: production. Minimal interruption. Short confirmations only.",
+    "meeting": "Mode: meeting. SILENT unless wake-word addressed. Hold everything.",
+    "idle": "Mode: idle. Conversational. Exploratory pacing. Digressions welcome.",
 }
 
 # Session duration thresholds (seconds)
@@ -147,10 +135,7 @@ def _modulate_for_environment(
 
     # Guest present → formal register (but friendly to household members per interview)
     if getattr(env, "guest_count", 0) > 0 or env.face_count > 1:
-        rules.append(
-            "Additional person detected. Keep responses accessible to all listeners. "
-            "Be friendly and natural. Avoid exposing personal/work-sensitive data."
-        )
+        rules.append("Guest present. Accessible language. No personal/work data.")
 
     # Session duration → conciseness (but don't suggest breaks)
     if session_start is not None:
@@ -158,27 +143,25 @@ def _modulate_for_environment(
 
         elapsed = time.monotonic() - session_start
         if elapsed > _LONG_SESSION_S:
-            rules.append("Long session. Tighten responses. Be extra concise.")
+            rules.append("Long session. Extra concise.")
 
     # Phone state context
     if getattr(env, "phone_call_active", False):
-        rules.append("Operator is on a phone call. Be silent unless addressed directly.")
+        rules.append("Phone call active. Silent unless addressed.")
     if getattr(env, "phone_call_incoming", False):
-        rules.append("Incoming phone call. Keep it brief — operator may need to answer.")
+        rules.append("Incoming call. Be brief.")
     phone_battery = getattr(env, "phone_battery_pct", 100)
     if phone_battery <= 15:
-        rules.append(f"Phone battery critical ({phone_battery}%). Mention if relevant.")
+        rules.append(f"Phone battery {phone_battery}%.")
     if getattr(env, "phone_media_playing", False):
         title = getattr(env, "phone_media_app", "")
-        rules.append(
-            f"Phone playing media{f' ({title})' if title else ''}. Keep voice responses short to not talk over it."
-        )
+        rules.append(f"Phone playing media{f' ({title})' if title else ''}. Keep short.")
 
     # Time-of-day heuristic (operator reports no significant modulation needed,
     # but late hours still warrant awareness)
     hour = datetime.now().hour
     if hour >= _LATE_EVENING_START or hour < _EARLY_MORNING_END:
-        rules.append("Late hours. Lighter tone, shorter responses, no cognitive demands.")
+        rules.append("Late hours. Lighter tone, shorter responses.")
 
     return rules
 
