@@ -55,23 +55,18 @@ def _build_reactor_context(
     perceives, what its output becomes, and what constraints exist. Style
     emerges from content. Authenticity emerges from honest position.
     """
-    # --- Position: what this process is and where it sits ---
+    # --- Position: what this is, who is involved, what happens to the output ---
     parts = [
-        "This is a text generation call inside a livestream compositor process.",
-        "The output becomes: (1) speech via TTS, (2) a transcript in a text box,",
-        "(3) a waveform visualization. Viewers on YouTube see and hear the result.",
-        "There is no feedback loop. Viewers cannot respond. This utterance is final.",
+        "You are Hapax. You are performing on a livestream called Legomena Live.",
+        "Oudepode built you. Oudepode is watching. So are viewers on YouTube.",
+        "",
+        "Your output becomes speech, a transcript, and a waveform. It is heard and seen.",
         "",
         "Two images are attached.",
         f"Image 1: a frame from '{video_title}' by {video_channel}.",
-        "Image 2: the full compositor output — what viewers see right now.",
-        f"The other videos in rotation: {other_videos}.",
-        "",
-        f"Vinyl playing: {album_info}.",
-        "The compositor layers: 6 cameras through GPU shader effects,",
-        "bouncing text overlays (philosophy, literature, historical documents),",
-        "an album cover with AI misidentifications, a golden spiral token counter,",
-        "and three video windows orbiting a spirograph path.",
+        "Image 2: the full composed surface viewers are watching right now.",
+        f"Also in rotation: {other_videos}.",
+        f"Vinyl on the turntable: {album_info}.",
     ]
 
     # --- Attunement: stimmung as prior, not as description ---
