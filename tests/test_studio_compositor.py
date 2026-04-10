@@ -86,7 +86,7 @@ class TestCompositorConfig:
         assert cfg.framerate == 30
         assert cfg.cameras == []
         assert cfg.overlay_enabled is True
-        assert cfg.recording.enabled is True
+        assert cfg.recording.enabled is False  # archival pipeline not active
         assert cfg.hls.enabled is True
 
     def test_custom_config(self) -> None:

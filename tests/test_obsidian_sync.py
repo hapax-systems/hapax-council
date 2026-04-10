@@ -31,22 +31,14 @@ def test_obsidian_sync_state_empty():
 def test_should_include_path():
     from agents.obsidian_sync import _should_include
 
-    # Included directories
+    # Included directories (kebab-case INCLUDE_DIRS)
     assert _should_include("00-inbox/quick-note.md") is True
+    assert _should_include("10-meta/fileclass.md") is True
     assert _should_include("20-personal/journal.md") is True
-    assert _should_include("20 Projects/my-project.md") is True
-    assert _should_include("30 Areas/some-area.md") is True
-    assert _should_include("31 Fleeting notes/idea.md") is True
-    assert _should_include("32 Literature notes/book.md") is True
-    assert _should_include("33 Permanent notes/concept.md") is True
-    assert _should_include("34 MOCs/index.md") is True
-    assert _should_include("35 Contacts/person.md") is True
-    assert _should_include("36 People/colleague.md") is True
-    assert _should_include("37 Meeting notes/standup.md") is True
-    assert _should_include("38 Bookmarks/link.md") is True
-    assert _should_include("50 Resources/tool.md") is True
-    assert _should_include("Periodic Notes/2026-03-01.md") is True
-    assert _should_include("Day Planners/plan.md") is True
+    assert _should_include("20-projects/my-project.md") is True
+    assert _should_include("30-areas/some-area.md") is True
+    assert _should_include("40-calendar/schedule.md") is True
+    assert _should_include("50-resources/tool.md") is True
 
     # Root-level .md files always included
     assert _should_include("readme.md") is True

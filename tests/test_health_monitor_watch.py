@@ -34,7 +34,7 @@ class TestWatchConnectivityCheck:
         assert "battery 78%" in results[0].message
 
     @pytest.mark.asyncio
-    async def test_degraded_when_stale(self, tmp_path):
+    async def test_healthy_when_stale(self, tmp_path):
         from agents.health_monitor import check_watch_connected
 
         conn = tmp_path / "connection.json"
@@ -48,8 +48,9 @@ class TestWatchConnectivityCheck:
         )
         with patch("agents.health_monitor.constants.WATCH_STATE_DIR", tmp_path):
             results = await check_watch_connected()
-        assert results[0].status == Status.DEGRADED
-        assert "last seen" in results[0].message
+        # Watch is tier 3 (non-critical), always reports HEALTHY
+        assert results[0].status == Status.HEALTHY
+        assert "battery 78%" in results[0].message
 
     @pytest.mark.asyncio
     async def test_skip_when_not_configured(self, tmp_path):

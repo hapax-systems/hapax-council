@@ -25,7 +25,9 @@ def _make_ctx(**overrides) -> SystemContext:
 class TestVisualGovernance(unittest.TestCase):
     def test_nominal_delegates_to_atmospheric(self):
         gov = VisualGovernance()
-        result = gov.evaluate(_make_ctx(), "nominal", "medium", ["ambient", "trails"])
+        # Available presets must include at least one from the nominal/medium family
+        # (vhs_preset, ghost, nightvision) for the atmospheric selector to match
+        result = gov.evaluate(_make_ctx(), "nominal", "medium", ["ghost", "ambient", "trails"])
         assert result is not None  # atmospheric selector picks something
 
     def test_consent_pending_suppresses(self):

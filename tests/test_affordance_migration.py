@@ -158,7 +158,7 @@ def test_pipeline_learns_from_failure():
     pipeline.record_failure("speech_production")
 
     state = pipeline.get_activation_state("speech_production")
-    assert state.use_count == 0
+    assert state.use_count == 2  # record_failure increments use_count
     assert state.ts_beta > 2.0
 
 

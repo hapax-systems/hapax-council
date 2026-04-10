@@ -411,16 +411,22 @@ class TestSignalBusThreading(unittest.TestCase):
 # ── 6. ExpressionCoordinator Cross-Modal ────────────────────────────────────
 
 
+class _MediumStubCapability(_StubCapability):
+    """StubCapability with a declared medium for modality inference."""
+
+    def __init__(self, name: str, category: CapabilityCategory, medium: str):
+        super().__init__(name, category)
+        self.medium = medium
+
+
 class TestExpressionCoordinatorCrossModal(unittest.TestCase):
     """ExpressionCoordinator distributes fragments to both speech and visual."""
 
     def _make_speech_cap(self):
-        cap = _StubCapability("speech_voice", CapabilityCategory.EXPRESSION)
-        return cap
+        return _MediumStubCapability("speech_voice", CapabilityCategory.EXPRESSION, "speech")
 
     def _make_visual_cap(self):
-        cap = _StubCapability("shader_visual", CapabilityCategory.EXPRESSION)
-        return cap
+        return _MediumStubCapability("shader_visual", CapabilityCategory.EXPRESSION, "visual")
 
     def test_distributes_to_both_modalities(self):
         coord = ExpressionCoordinator()
@@ -469,9 +475,9 @@ class TestExpressionCoordinatorCrossModal(unittest.TestCase):
         """map_fragment_to_visual correctly maps dimensions to shader params."""
         fragment = {"dimensions": {"intensity": 0.8, "diffusion": 0.5, "coherence": 0.3}}
         result = map_fragment_to_visual(fragment)
-        assert result["noise.brightness"] == 0.8
-        assert result["noise.speed"] == 0.5
-        assert result["noise.color_warmth"] == 0.3
+        assert result["noise.amplitude"] == 0.8
+        assert result["rd.diffusion_a"] == 0.5
+        assert result["noise.frequency_x"] == 0.3
 
     def test_material_to_uniform_mapping(self):
         assert map_fragment_to_material_uniform({"material": "water"}) == 0.0

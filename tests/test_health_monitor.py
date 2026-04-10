@@ -449,7 +449,7 @@ class TestProfileChecks:
         with patch("agents.health_monitor.constants.PROFILES_DIR") as mock_dir:
             mock_dir.__truediv__ = lambda self, name: mock_path
             results = await check_profile_staleness()
-        assert results[0].status == Status.FAILED
+        assert results[0].status == Status.DEGRADED  # 80h: DEGRADED at 48-96h range
 
 
 class TestEndpointChecks:

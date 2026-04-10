@@ -392,8 +392,8 @@ class TestRegistryShaderContent:
     def test_processing_nodes_have_shaders(self, registry: ShaderRegistry):
         for nt in registry.node_types:
             d = registry.get(nt)
-            if nt in ("output", "stutter"):
-                # These have no GLSL — Python-driven or sink
+            if nt in ("output",):
+                # output is a sink with no GLSL
                 assert d.glsl_source is None or d.glsl_source == "", f"{nt} shouldn't have shader"
             elif d.inputs:  # Not generative
                 assert d.glsl_source, f"{nt} missing GLSL source"
