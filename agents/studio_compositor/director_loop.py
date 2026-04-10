@@ -23,11 +23,12 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 SHM_DIR = Path("/dev/shm/hapax-compositor")
-OBSIDIAN_LOG = Path(
-    os.path.expanduser("~/Documents/Personal/30-areas/legomena-live/reactor-log.md")
-)
+LEGOMENA_DIR = Path(os.path.expanduser("~/Documents/Personal/30-areas/legomena-live"))
+OBSIDIAN_LOG = LEGOMENA_DIR / "reactor-log.md"
+JSONL_LOG = LEGOMENA_DIR / "reactor-log.jsonl"
 ALBUM_STATE_FILE = SHM_DIR / "album-state.json"
 FX_SNAPSHOT = SHM_DIR / "fx-snapshot.jpg"
+MEMORY_SNAPSHOT = SHM_DIR / "memory-snapshot.json"
 
 LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 LITELLM_KEY = ""
@@ -223,11 +224,68 @@ class DirectorLoop:
         self._last_perception = 0.0
         self._accumulated_reacts: list[str] = []
         self._reaction_history: list[str] = []  # persists across turns
+        self._reaction_count: int = 0
         self._last_album_track = ""  # for vinyl track-change detection
         self._tts_manager = None
         self._tts_lock = threading.Lock()
         self._running = False
         self._thread = None
+        self._load_memory()
+
+    def _load_memory(self) -> None:
+        """Load reaction history from SHM snapshot or Qdrant on startup."""
+        # Try SHM warm-start first (fast)
+        try:
+            if MEMORY_SNAPSHOT.exists():
+                data = json.loads(MEMORY_SNAPSHOT.read_text())
+                if time.time() - data.get("timestamp", 0) < 3600:  # < 1 hour old
+                    self._reaction_history = data.get("reaction_history", [])
+                    self._reaction_count = data.get("reaction_count", 0)
+                    log.info("Loaded %d reactions from SHM snapshot", len(self._reaction_history))
+                    return
+        except Exception:
+            pass
+
+        # Fall back to Qdrant (slower but survives reboots)
+        try:
+            from shared.config import get_qdrant
+
+            client = get_qdrant()
+            collections = [c.name for c in client.get_collections().collections]
+            if "stream-reactions" in collections:
+                results = client.scroll(
+                    collection_name="stream-reactions",
+                    limit=20,
+                    with_payload=True,
+                    with_vectors=False,
+                )[0]
+                # Sort by timestamp descending, take last 20
+                results.sort(key=lambda r: r.payload.get("timestamp", 0), reverse=True)
+                self._reaction_history = [
+                    f"[{r.payload.get('ts_str', '?')}] {r.payload.get('activity', 'react')}: "
+                    f'"{r.payload.get("text", "")}"'
+                    for r in results[:20]
+                ]
+                self._reaction_history.reverse()  # chronological order
+                self._reaction_count = len(results)
+                log.info("Loaded %d reactions from Qdrant", len(self._reaction_history))
+        except Exception:
+            log.debug("No Qdrant memory available (first run or Qdrant down)")
+
+    def _save_memory_snapshot(self) -> None:
+        """Snapshot reaction history to SHM for fast restart."""
+        try:
+            MEMORY_SNAPSHOT.write_text(
+                json.dumps(
+                    {
+                        "timestamp": time.time(),
+                        "reaction_history": self._reaction_history[-20:],
+                        "reaction_count": self._reaction_count,
+                    }
+                )
+            )
+        except OSError:
+            pass
 
     def start(self) -> None:
         self._running = True
@@ -672,6 +730,20 @@ class DirectorLoop:
             if not raw_content:
                 return ""
             react, _ = self._parse_llm_response(raw_content.strip())
+
+            # Langfuse scoring (non-blocking)
+            try:
+                from shared.telemetry import hapax_score
+
+                usage = data.get("usage", {})
+                hapax_score(
+                    name="reaction_tokens",
+                    value=usage.get("completion_tokens", 0),
+                    comment=f"activity={self._activity}",
+                )
+            except Exception:
+                pass
+
             return react
         except Exception:
             log.exception("Activity LLM call failed")
@@ -901,17 +973,99 @@ class DirectorLoop:
             return (text.strip(), False)
 
     def _log_to_obsidian(self, text: str, activity: str = "react") -> None:
+        now = datetime.now()
+        ts = now.strftime("%H:%M")
+        album = _read_album_info()
+        slot = self._slots[self._active_slot]
+        video_title = slot._title or ""
+        video_channel = slot._channel or ""
+
+        # Markdown log
         try:
             OBSIDIAN_LOG.parent.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%H:%M")
-            album = _read_album_info()
             if activity == "react":
-                slot = self._slots[self._active_slot]
-                label = f"Reacting to: *{slot._title}* by {slot._channel}"
+                label = f"Reacting to: *{video_title}* by {video_channel}"
             else:
                 label = activity
             entry = f"- **{ts}** | {label}\n  > {text}\n  Album: {album}\n\n"
             with open(OBSIDIAN_LOG, "a") as f:
                 f.write(entry)
         except OSError:
-            log.debug("Failed to write reactor log")
+            pass
+
+        # JSONL structured log
+        self._reaction_count += 1
+        record = {
+            "ts": now.isoformat(),
+            "ts_str": ts,
+            "reaction_index": self._reaction_count,
+            "activity": activity,
+            "text": text,
+            "tokens": len(text.split()),
+            "video_title": video_title,
+            "video_channel": video_channel,
+            "album": album,
+            "stimmung": "nominal",
+        }
+        try:
+            stimmung_path = Path("/dev/shm/hapax-stimmung/state.json")
+            if stimmung_path.exists():
+                st = json.loads(stimmung_path.read_text())
+                record["stimmung"] = st.get("overall_stance", "nominal")
+        except Exception:
+            pass
+        try:
+            cs_path = SHM_DIR / "chat-state.json"
+            if cs_path.exists():
+                cs = json.loads(cs_path.read_text())
+                record["chat_authors"] = cs.get("unique_authors", 0)
+                record["chat_messages"] = cs.get("total_messages", 0)
+        except Exception:
+            pass
+
+        try:
+            with open(JSONL_LOG, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except OSError:
+            pass
+
+        # Qdrant persistence (async — don't block the reactor)
+        def _persist_to_qdrant():
+            try:
+                from qdrant_client.models import Distance, PointStruct, VectorParams
+
+                from shared.config import embed, get_qdrant
+
+                client = get_qdrant()
+                # Ensure collection exists
+                collections = [c.name for c in client.get_collections().collections]
+                if "stream-reactions" not in collections:
+                    client.create_collection(
+                        collection_name="stream-reactions",
+                        vectors_config=VectorParams(size=768, distance=Distance.COSINE),
+                    )
+                    log.info("Created stream-reactions Qdrant collection")
+
+                embed_text = f"{activity}: {text[:200]} | {video_title} | {album}"
+                vector = embed(embed_text)
+                if vector:
+                    import uuid
+
+                    client.upsert(
+                        collection_name="stream-reactions",
+                        points=[
+                            PointStruct(
+                                id=str(uuid.uuid4()),
+                                vector=vector,
+                                payload=record,
+                            )
+                        ],
+                    )
+            except Exception:
+                log.debug("Qdrant persistence failed (non-fatal)", exc_info=True)
+
+        threading.Thread(target=_persist_to_qdrant, daemon=True, name="qdrant-persist").start()
+
+        # SHM memory snapshot (periodic — every 5 reactions)
+        if self._reaction_count % 5 == 0:
+            self._save_memory_snapshot()

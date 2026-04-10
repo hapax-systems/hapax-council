@@ -20,6 +20,7 @@ EXPECTED_COLLECTIONS: dict[str, dict[str, object]] = {
     "studio-moments": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "operator-corrections": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "affordances": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
+    "stream-reactions": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
 }
 
 
