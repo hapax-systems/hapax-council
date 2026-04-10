@@ -189,7 +189,7 @@ Destructive command detection strips quoted strings before matching to prevent f
 - `agents/hapax_daimonion/backends/ir_presence.py` — Perception backend (multi-Pi fusion, 14 signals)
 - `agents/hapax_daimonion/backends/contact_mic_ir.py` — Cross-modal fusion (IR hand zone + contact mic DSP)
 - `agents/hapax_daimonion/ir_signals.py` — State file reader
-- `agents/health_monitor.py` — `PI_FLEET` dict defines expected services per Pi
+- `agents/health_monitor/constants.py` — `PI_FLEET` dict defines expected services per Pi
 
 **Inference:** ONNX Runtime preferred (130ms, preserves fine-tuned precision), TFLite fallback. Model: YOLOv8n fine-tuned on 30 NIR studio frames (`best.onnx`). **Person detection currently non-functional** — 30-frame training dataset insufficient for NIR domain. Retraining planned (500+ frames, two-stage COCO→FLIR→NIR transfer). See `docs/superpowers/specs/2026-03-31-ir-perception-remediation-design.md`.
 
@@ -201,7 +201,7 @@ Destructive command detection strips quoted strings before matching to prevent f
 
 **Fusion logic:** Person detection = any() across Pis. Gaze/biometrics prefer desk Pi (face-on). Hand activity + hand zone prefer overhead Pi. Staleness cutoff: 10s. **Person detection currently non-functional** (30-frame training set) — `ir_person_detected` set to `None` (neutral) to prevent false-negative Bayesian poisoning. `ir_hand_activity` is reliable and wired into presence engine as a strong positive-only signal.
 
-**14 signals:** ir_person_detected, ir_person_count, ir_motion_delta, ir_gaze_zone, ir_head_pose_yaw, ir_posture, ir_hand_activity, ir_hand_zone, ir_screen_looking, ir_drowsiness_score, ir_blink_rate, ir_heart_rate_bpm, ir_heart_rate_conf, ir_brightness. All 14 flow to perception-state.json.
+**15 signals:** ir_person_detected, ir_person_count, ir_motion_delta, ir_gaze_zone, ir_head_pose_yaw, ir_posture, ir_hand_activity, ir_hand_zone, ir_screen_looking, ir_drowsiness_score, ir_blink_rate, ir_heart_rate_bpm, ir_heart_rate_conf, ir_brightness, ir_brightness_delta. All 15 flow to perception-state.json.
 
 **Cross-modal fusion:** `contact_mic_ir.py` provides `_classify_activity_with_ir()` — turntable+sliding=scratching, mpc-pads+tapping=pad-work. Function tested but not yet wired into contact mic capture loop.
 
