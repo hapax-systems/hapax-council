@@ -127,6 +127,49 @@ class VideoSlot:
             self.process.pid,
             snapshot_path,
         )
+        # Drain stderr to prevent buffer overflow stall (critical for 24/7)
+        threading.Thread(
+            target=self._drain_stderr,
+            daemon=True,
+            name=f"ffmpeg-stderr-{self.slot_id}",
+        ).start()
+        # Watchdog: restart ffmpeg if snapshots go stale
+        threading.Thread(
+            target=self._snapshot_watchdog,
+            args=(snapshot_path,),
+            daemon=True,
+            name=f"snapshot-watchdog-{self.slot_id}",
+        ).start()
+
+    def _drain_stderr(self) -> None:
+        """Drain ffmpeg stderr to prevent buffer overflow stall."""
+        proc = self.process
+        if proc is None or proc.stderr is None:
+            return
+        while proc.poll() is None:
+            try:
+                proc.stderr.readline()
+            except Exception:
+                break
+
+    def _snapshot_watchdog(self, snapshot_path) -> None:
+        """Restart ffmpeg if JPEG snapshots go stale (>30s old)."""
+        while self.process is not None and self.process.poll() is None:
+            time.sleep(15)
+            try:
+                if snapshot_path.exists():
+                    age = time.time() - snapshot_path.stat().st_mtime
+                    if age > 30 and self.url:
+                        log.warning(
+                            "Slot %d: snapshot stale %.0fs, restarting ffmpeg",
+                            self.slot_id,
+                            age,
+                        )
+                        with self.lock:
+                            self.play(self.url)
+                        return  # new watchdog starts in new play()
+            except Exception:
+                pass
 
     def stop(self) -> None:
         for f in [

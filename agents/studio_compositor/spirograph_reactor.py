@@ -264,6 +264,7 @@ class VideoSlot:
         log.info("VideoSlot %d polling %s", self.slot_id, snapshot_path)
         frame_count = 0
         last_mtime = 0.0
+        self._last_good_frame_time = time.monotonic()
         while self._capturing:
             try:
                 if snapshot_path.exists():
@@ -271,14 +272,14 @@ class VideoSlot:
                     if mtime > last_mtime:
                         last_mtime = mtime
                         jpeg_data = snapshot_path.read_bytes()
-                        if jpeg_data:
+                        if jpeg_data and len(jpeg_data) > 100:
                             from PIL import Image
 
                             img = Image.open(io.BytesIO(jpeg_data))
                             img = img.resize((self.WIDTH, self.HEIGHT))
                             img = img.convert("RGBA")
-                            # Convert PIL RGBA to cairo ARGB32
                             raw = img.tobytes("raw", "BGRa")
+                            img.close()  # explicit close prevents FD leak
                             surface = cairo.ImageSurface.create_for_data(
                                 bytearray(raw),
                                 cairo.FORMAT_ARGB32,
@@ -288,6 +289,7 @@ class VideoSlot:
                             with self._surface_lock:
                                 self._surface = surface
                             frame_count += 1
+                            self._last_good_frame_time = time.monotonic()
                             if frame_count == 1:
                                 log.info("VideoSlot %d: first frame received", self.slot_id)
                             elif frame_count % 100 == 0:
