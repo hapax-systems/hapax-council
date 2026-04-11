@@ -196,6 +196,37 @@ def _capture_snapshot_b64() -> str | None:
     return None
 
 
+_MIXER_NODE_ID: str | None = None
+
+
+def _find_mixer_node() -> str | None:
+    """Find mixer_master PipeWire node ID."""
+    global _MIXER_NODE_ID
+    if _MIXER_NODE_ID:
+        return _MIXER_NODE_ID
+    try:
+        result = subprocess.run(["wpctl", "status"], capture_output=True, text=True, timeout=5)
+        for line in result.stdout.splitlines():
+            if "mixer_master" in line:
+                # Extract node ID: "│      44. mixer_master"
+                parts = line.strip().strip("│").strip().split(".")
+                if parts:
+                    _MIXER_NODE_ID = parts[0].strip()
+                    return _MIXER_NODE_ID
+    except Exception:
+        pass
+    return "44"  # fallback
+
+
+def _duck_music(level: float) -> None:
+    """Set mixer_master volume. 1.0=full, 0.3=ducked."""
+    node = _find_mixer_node()
+    try:
+        subprocess.run(["wpctl", "set-volume", node, str(level)], timeout=2, capture_output=True)
+    except Exception:
+        pass
+
+
 ACTIVITY_CAPABILITIES = (
     "\n"
     "Activities available to you. Choose the one this moment calls for.\n"
@@ -760,10 +791,14 @@ class DirectorLoop:
             try:
                 pcm = self._synthesize(text)
                 if pcm:
+                    _duck_music(0.3)  # duck to 30% before speaking
                     self._reactor.feed_pcm(pcm)
                     self._play_audio(pcm)
-                time.sleep(1.0)
+                    time.sleep(0.5)
+                    _duck_music(1.0)  # restore after speaking
+                time.sleep(0.5)
             except Exception:
+                _duck_music(1.0)  # always restore on error
                 log.exception("TTS error")
 
             self._log_to_obsidian(text, activity)
