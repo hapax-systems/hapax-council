@@ -502,6 +502,7 @@ class DirectorLoop:
             "Every utterance is practice toward mutual understanding.",
             "",
             f"Current video: '{slot._title}' by {slot._channel}.",
+            f"Also in rotation: {', '.join(s._title[:30] for s in self._slots if s.slot_id != self._active_slot and s._title)}.",
             f"On the turntable: {album_info}.",
             f"Time: {datetime.now().strftime('%H:%M')}.",
         ]
