@@ -479,7 +479,6 @@ class ReactorOverlay:
 
             gi.require_version("Pango", "1.0")
             gi.require_version("PangoCairo", "1.0")
-            from gi.repository import Pango, PangoCairo
         except Exception:
             return
 
@@ -487,39 +486,7 @@ class ReactorOverlay:
         by = self._y
         wave_y = by - self.WAVE_H - 10
 
-        # Background card
-        cr.set_source_rgba(0.05, 0.04, 0.08, 0.85)
-        _rounded_rect(cr, bx, by, self.BOX_W, self.BOX_H, 8)
-        cr.fill()
-
-        # Border
-        pulse_alpha = 0.3 + 0.5 * self._border_pulse
-        cr.set_source_rgba(0.7, 0.5, 1.0, pulse_alpha)
-        cr.set_line_width(1.0)
-        _rounded_rect(cr, bx, by, self.BOX_W, self.BOX_H, 8)
-        cr.stroke()
-
-        # Header
-        cr.set_source_rgba(0.7, 0.5, 1.0, 0.9)
-        layout = PangoCairo.create_layout(cr)
-        layout.set_font_description(Pango.FontDescription.from_string("JetBrains Mono Bold 10"))
-        layout.set_text(self._header, -1)
-        cr.move_to(bx + 12, by + 8)
-        PangoCairo.show_layout(cr, layout)
-
-        # Transcript
-        if self._text and self._visible_chars > 0:
-            visible = self._text[: self._visible_chars]
-            cr.set_source_rgba(0.95, 0.92, 0.85, 0.9)
-            layout = PangoCairo.create_layout(cr)
-            layout.set_font_description(Pango.FontDescription.from_string("JetBrains Mono 16"))
-            layout.set_width((self.BOX_W - 24) * Pango.SCALE)
-            layout.set_wrap(Pango.WrapMode.WORD_CHAR)
-            layout.set_text(visible, -1)
-            cr.move_to(bx + 12, by + 30)
-            PangoCairo.show_layout(cr, layout)
-
-        # Waveform (above the box)
+        # Waveform only — no box, no transcript, just the voice visualization
         if self._pcm_samples:
             cr.set_source_rgba(0.7, 0.5, 1.0, 0.8)
             cr.set_line_width(1.5)
