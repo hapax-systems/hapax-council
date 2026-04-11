@@ -236,7 +236,13 @@ def add_camera_branch(
     if compositor.config.recording.enabled:
         add_recording_branch(compositor, pipeline, camera_tee, cam, fps)
 
-    add_camera_snapshot_branch(compositor, pipeline, camera_tee, cam)
+    if not getattr(compositor, "_use_nvjpeg", False):
+        # CPU path: per-camera snapshots work directly from jpegdec output
+        add_camera_snapshot_branch(compositor, pipeline, camera_tee, cam)
+    else:
+        # GPU path: per-camera snapshots skipped (CUDA tee→CPU snapshot pipeline
+        # has caps negotiation issues; FX snapshots from compositor output still work)
+        log.debug("Camera %s: per-camera snapshot skipped (GPU decode path)", cam.role)
 
     if not hasattr(compositor, "_camera_elements"):
         compositor._camera_elements = {}
