@@ -27,9 +27,12 @@ class PwAudioOutput:
     to its stdin. Thread-safe. Auto-restarts on subprocess death.
     """
 
-    def __init__(self, sample_rate: int = 24000, channels: int = 1) -> None:
+    def __init__(
+        self, sample_rate: int = 24000, channels: int = 1, target: str | None = None
+    ) -> None:
         self._rate = sample_rate
         self._channels = channels
+        self._target = target
         self._process: subprocess.Popen | None = None
         self._lock = threading.Lock()
 
@@ -38,19 +41,22 @@ class PwAudioOutput:
         if self._process is not None and self._process.poll() is None:
             return self._process
         try:
+            cmd = [
+                "pw-cat",
+                "--playback",
+                "--raw",
+                "--format",
+                "s16",
+                "--rate",
+                str(self._rate),
+                "--channels",
+                str(self._channels),
+            ]
+            if self._target:
+                cmd.extend(["--target", self._target])
+            cmd.append("-")
             self._process = subprocess.Popen(
-                [
-                    "pw-cat",
-                    "--playback",
-                    "--raw",
-                    "--format",
-                    "s16",
-                    "--rate",
-                    str(self._rate),
-                    "--channels",
-                    str(self._channels),
-                    "-",
-                ],
+                cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -119,7 +125,7 @@ class PwAudioOutput:
                 self._process = None
 
 
-def play_pcm(pcm: bytes, rate: int = 24000, channels: int = 1) -> None:
+def play_pcm(pcm: bytes, rate: int = 24000, channels: int = 1, target: str | None = None) -> None:
     """One-shot blocking PCM playback via pw-cat.
 
     Spawns a pw-cat process, writes all PCM, waits for completion.
@@ -127,19 +133,22 @@ def play_pcm(pcm: bytes, rate: int = 24000, channels: int = 1) -> None:
     writes, use PwAudioOutput instead.
     """
     try:
+        cmd = [
+            "pw-cat",
+            "--playback",
+            "--raw",
+            "--format",
+            "s16",
+            "--rate",
+            str(rate),
+            "--channels",
+            str(channels),
+        ]
+        if target:
+            cmd.extend(["--target", target])
+        cmd.append("-")
         subprocess.run(
-            [
-                "pw-cat",
-                "--playback",
-                "--raw",
-                "--format",
-                "s16",
-                "--rate",
-                str(rate),
-                "--channels",
-                str(channels),
-                "-",
-            ],
+            cmd,
             input=pcm,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

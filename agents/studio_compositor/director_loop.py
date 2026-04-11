@@ -919,12 +919,16 @@ class DirectorLoop:
             return self._tts_manager.synthesize(text, "conversation")
 
     def _play_audio(self, pcm: bytes) -> None:
-        """Play PCM using persistent pw-cat subprocess. No temp files."""
+        """Play PCM using persistent pw-cat subprocess targeting assistant sink."""
         try:
             if not hasattr(self, "_audio_output") or self._audio_output is None:
                 from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
 
-                self._audio_output = PwAudioOutput(sample_rate=24000, channels=1)
+                self._audio_output = PwAudioOutput(
+                    sample_rate=24000,
+                    channels=1,
+                    target="input.loopback.sink.role.assistant",
+                )
             self._audio_output.write(pcm)
         except Exception:
             log.exception("Audio playback error")
