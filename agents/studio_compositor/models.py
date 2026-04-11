@@ -70,7 +70,7 @@ class CompositorConfig(BaseModel):
     output_device: str = "/dev/video42"
     output_width: int = 1920
     output_height: int = 1080
-    framerate: int = 15  # 15fps — halves MJPEG decode CPU (6 cameras × CPU jpegdec)
+    framerate: int = 30  # 30fps — all cameras at 720p keeps decode manageable
     bitrate: int = 8_000_000
     watchdog_timeout_ms: int = 5000
     status_interval_s: float = 5.0
