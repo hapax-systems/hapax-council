@@ -365,6 +365,16 @@ class DirectorLoop:
                     time.sleep(0.5)
                     continue
 
+                # Check for finished videos — reload from playlist
+                for s in self._slots:
+                    if s.check_finished():
+                        log.info("Slot %d finished, reloading from playlist", s.slot_id)
+                        threading.Thread(
+                            target=self._reload_slot_from_playlist,
+                            args=(s.slot_id,),
+                            daemon=True,
+                        ).start()
+
                 now = time.monotonic()
                 if now - self._last_perception < PERCEPTION_INTERVAL:
                     time.sleep(0.5)
