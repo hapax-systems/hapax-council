@@ -54,7 +54,6 @@ class VideoSlot:
         self.url: str = ""
         self.title: str = ""
         self.channel: str = ""
-        self.paused: bool = False
         self.lock = threading.Lock()
 
     def play(self, youtube_url: str) -> None:
@@ -69,7 +68,6 @@ class VideoSlot:
         self.url = youtube_url
         self.title = title
         self.channel = channel
-        self.paused = False
 
         attr_file = SHM_DIR / f"yt-attribution-{self.slot_id}.txt"
         try:
@@ -190,21 +188,9 @@ class VideoSlot:
             self.url = ""
             self.title = ""
             self.channel = ""
-            self.paused = False
-
-    def toggle_pause(self) -> bool:
-        if self.process is None:
-            return False
-        if self.paused:
-            self.process.send_signal(signal.SIGCONT)
-            self.paused = False
-        else:
-            self.process.send_signal(signal.SIGSTOP)
-            self.paused = True
-        return self.paused
 
     def is_playing(self) -> bool:
-        return self.process is not None and self.process.poll() is None and not self.paused
+        return self.process is not None and self.process.poll() is None
 
     def is_finished(self) -> bool:
         return self.process is not None and self.process.poll() is not None
@@ -213,8 +199,7 @@ class VideoSlot:
         running = self.process is not None and self.process.poll() is None
         return {
             "slot": self.slot_id,
-            "playing": running and not self.paused,
-            "paused": self.paused,
+            "playing": running,
             "url": self.url,
             "title": self.title,
             "channel": self.channel,
@@ -230,7 +215,6 @@ current_url = ""
 current_title = ""
 current_channel: str = ""
 queue: deque[dict] = deque()
-paused = False
 
 
 def get_all_slots_status() -> list[dict]:
@@ -512,7 +496,7 @@ _yt_updater: LivestreamDescriptionUpdater | None = None
 
 def play_video(youtube_url: str) -> None:
     """Start ffmpeg decoding video to v4l2loopback + audio to PipeWire."""
-    global current_process, current_url, current_title, current_channel, paused
+    global current_process, current_url, current_title, current_channel
 
     stop_current()
 
@@ -526,7 +510,6 @@ def play_video(youtube_url: str) -> None:
     current_url = youtube_url
     current_title = title
     current_channel = channel
-    paused = False
 
     # Write attribution for Pango overlay
     try:
@@ -593,7 +576,7 @@ def play_video(youtube_url: str) -> None:
 
 def stop_current() -> None:
     """Stop the currently playing video."""
-    global current_process, current_url, current_title, current_channel, paused
+    global current_process, current_url, current_title, current_channel
     ATTRIBUTION_FILE.unlink(missing_ok=True)
     if current_process is not None:
         try:
@@ -608,24 +591,7 @@ def stop_current() -> None:
         current_url = ""
         current_title = ""
         current_channel = ""
-        paused = False
         log.info("Playback stopped")
-
-
-def toggle_pause() -> bool:
-    """Pause/resume ffmpeg via SIGSTOP/SIGCONT."""
-    global paused
-    if current_process is None:
-        return False
-    if paused:
-        current_process.send_signal(signal.SIGCONT)
-        paused = False
-        log.info("Resumed")
-    else:
-        current_process.send_signal(signal.SIGSTOP)
-        paused = True
-        log.info("Paused")
-    return paused
 
 
 def skip_to_next() -> None:
@@ -650,8 +616,7 @@ def get_status() -> dict:
     """Current player status."""
     running = current_process is not None and current_process.poll() is None
     return {
-        "playing": running and not paused,
-        "paused": paused,
+        "playing": running,
         "url": current_url,
         "title": current_title,
         "channel": current_channel,
@@ -749,10 +714,6 @@ class Handler(BaseHTTPRequestHandler):
                     with slot.lock:
                         slot.play(url)
                     self._json({"status": "playing", "slot": slot_id})
-                elif action == "pause":
-                    with slot.lock:
-                        p = slot.toggle_pause()
-                    self._json({"paused": p, "slot": slot_id})
                 elif action == "stop":
                     with slot.lock:
                         slot.stop()
@@ -770,10 +731,6 @@ class Handler(BaseHTTPRequestHandler):
             with slots[0].lock:
                 slots[0].play(url)
             self._json({"status": "playing", "url": url})
-        elif self.path == "/pause":
-            with slots[0].lock:
-                p = slots[0].toggle_pause()
-            self._json({"paused": p})
         elif self.path == "/skip":
             self._json({"status": "use /slot/N/stop"})
         elif self.path == "/stop":
