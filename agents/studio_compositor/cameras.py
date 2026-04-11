@@ -20,58 +20,30 @@ def add_camera_snapshot_branch(
     Gst = compositor._Gst
     role = cam.role.replace("-", "_")
 
-    use_nvjpeg = getattr(compositor, "_use_nvjpeg", False)
+    queue = Gst.ElementFactory.make("queue", f"queue-camsnap-{role}")
+    queue.set_property("leaky", 2)
+    queue.set_property("max-size-buffers", 2)
+    convert = Gst.ElementFactory.make("videoconvert", f"camsnap-convert-{role}")
+    convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
+    rate = Gst.ElementFactory.make("videorate", f"camsnap-rate-{role}")
+    rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
+    rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=1/5"))
+    scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
+    scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
     snap_w = min(cam.width, 640)
     snap_h = min(cam.height, 360)
+    scale_caps.set_property(
+        "caps", Gst.Caps.from_string(f"video/x-raw,width={snap_w},height={snap_h}")
+    )
+    encoder = Gst.ElementFactory.make("jpegenc", f"camsnap-jpeg-{role}")
+    encoder.set_property("quality", 75)
+    appsink = Gst.ElementFactory.make("appsink", f"camsnap-sink-{role}")
+    appsink.set_property("sync", False)
+    appsink.set_property("async", False)
+    appsink.set_property("drop", True)
+    appsink.set_property("max-buffers", 1)
 
-    if use_nvjpeg:
-        # GPU path: CUDA convert+scale+download in one step, then CPU jpegenc
-        cuda_cvt = Gst.ElementFactory.make("cudaconvertscale", f"camsnap-cudacvt-{role}")
-        cuda_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-cudacaps-{role}")
-        cuda_caps.set_property(
-            "caps",
-            Gst.Caps.from_string(
-                f"video/x-raw(memory:CUDAMemory),format=I420,width={snap_w},height={snap_h}"
-            ),
-        )
-        download = Gst.ElementFactory.make("cudadownload", f"camsnap-download-{role}")
-        queue = Gst.ElementFactory.make("queue", f"queue-camsnap-{role}")
-        queue.set_property("leaky", 2)
-        queue.set_property("max-size-buffers", 2)
-        rate = Gst.ElementFactory.make("videorate", f"camsnap-rate-{role}")
-        rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
-        rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=1/5"))
-        encoder = Gst.ElementFactory.make("jpegenc", f"camsnap-jpeg-{role}")
-        encoder.set_property("quality", 75)
-        appsink = Gst.ElementFactory.make("appsink", f"camsnap-sink-{role}")
-        appsink.set_property("sync", False)
-        appsink.set_property("async", False)
-        appsink.set_property("drop", True)
-        appsink.set_property("max-buffers", 1)
-        chain = [cuda_cvt, cuda_caps, download, queue, rate, rate_caps, encoder, appsink]
-    else:
-        # CPU path: videoconvert + videoscale on CPU
-        queue = Gst.ElementFactory.make("queue", f"queue-camsnap-{role}")
-        queue.set_property("leaky", 2)
-        queue.set_property("max-size-buffers", 2)
-        convert = Gst.ElementFactory.make("videoconvert", f"camsnap-convert-{role}")
-        convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
-        rate = Gst.ElementFactory.make("videorate", f"camsnap-rate-{role}")
-        rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
-        rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=1/5"))
-        scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
-        scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
-        scale_caps.set_property(
-            "caps", Gst.Caps.from_string(f"video/x-raw,width={snap_w},height={snap_h}")
-        )
-        encoder = Gst.ElementFactory.make("jpegenc", f"camsnap-jpeg-{role}")
-        encoder.set_property("quality", 75)
-        appsink = Gst.ElementFactory.make("appsink", f"camsnap-sink-{role}")
-        appsink.set_property("sync", False)
-        appsink.set_property("async", False)
-        appsink.set_property("drop", True)
-        appsink.set_property("max-buffers", 1)
-        chain = [queue, convert, rate, rate_caps, scale, scale_caps, encoder, appsink]
+    chain = [queue, convert, rate, rate_caps, scale, scale_caps, encoder, appsink]
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     snap_role = cam.role
@@ -107,8 +79,8 @@ def add_camera_snapshot_branch(
         chain[i].link(chain[i + 1])
 
     tee_pad = camera_tee.request_pad(camera_tee.get_pad_template("src_%u"), None, None)
-    first_sink = chain[0].get_static_pad("sink")
-    tee_pad.link(first_sink)
+    queue_sink = queue.get_static_pad("sink")
+    tee_pad.link(queue_sink)
 
 
 def add_camera_branch(
@@ -136,32 +108,15 @@ def add_camera_branch(
                 f"image/jpeg,width={cam.width},height={cam.height},framerate={fps}/1"
             ),
         )
-        # GPU decode for BRIOs (1080p, high CPU cost). C920s use CPU jpegdec —
-        # nvjpegdec rejects their non-standard MJPEG headers.
-        use_gpu = cam.role.startswith("brio") and Gst.ElementFactory.find("nvjpegdec")
-        if use_gpu:
-            nv_decoder = Gst.ElementFactory.make("nvjpegdec", f"dec_{role}")
-            parser = Gst.ElementFactory.make("jpegparse", f"parse_{role}")
-            for el in [src, src_caps, parser, nv_decoder]:
-                pipeline.add(el)
-            src.link(src_caps)
-            src_caps.link(parser)
-            parser.link(nv_decoder)
-            last = nv_decoder
-            log.info("Camera %s: using nvjpegdec (GPU decode)", cam.role)
-        else:
-            decoder = Gst.ElementFactory.make("jpegdec", f"dec_{role}")
-            for el in [src, src_caps, decoder]:
-                pipeline.add(el)
-            src.link(src_caps)
-            src_caps.link(decoder)
-            last = decoder
-            log.info("Camera %s: using jpegdec (CPU decode)", cam.role)
-        # Track per-camera decode type for snapshot branch
-        if not hasattr(compositor, "_nvjpeg_cameras"):
-            compositor._nvjpeg_cameras = set()
-        if use_gpu:
-            compositor._nvjpeg_cameras.add(cam.role)
+        # CPU decode — nvjpegdec rejects USB camera motion-JPEG headers
+        # ("No valid frames decoded before end of stream") on all cameras.
+        # jpegdec uses libjpeg-turbo (AVX2-accelerated) which handles USB MJPEG.
+        decoder = Gst.ElementFactory.make("jpegdec", f"dec_{role}")
+        for el in [src, src_caps, decoder]:
+            pipeline.add(el)
+        src.link(src_caps)
+        src_caps.link(decoder)
+        last = decoder
     else:
         src_caps = Gst.ElementFactory.make("capsfilter", f"srccaps_{role}")
         pix_fmt = cam.pixel_format or "GRAY8"
@@ -239,14 +194,7 @@ def add_camera_branch(
     if compositor.config.recording.enabled:
         add_recording_branch(compositor, pipeline, camera_tee, cam, fps)
 
-    nvjpeg_cams = getattr(compositor, "_nvjpeg_cameras", set())
-    if cam.role not in nvjpeg_cams:
-        # CPU decode: per-camera snapshots work directly from jpegdec output
-        add_camera_snapshot_branch(compositor, pipeline, camera_tee, cam)
-    else:
-        # GPU decode: per-camera snapshots skipped (CUDA tee→CPU snapshot pipeline
-        # has caps negotiation issues; FX snapshots from compositor output still work)
-        log.debug("Camera %s: per-camera snapshot skipped (GPU decode path)", cam.role)
+    add_camera_snapshot_branch(compositor, pipeline, camera_tee, cam)
 
     if not hasattr(compositor, "_camera_elements"):
         compositor._camera_elements = {}
