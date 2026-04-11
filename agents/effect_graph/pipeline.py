@@ -287,7 +287,7 @@ class SlotPipeline:
         if parts:
             uniform_str = ", ".join(parts)
             node = self._slot_assignments[slot_idx] or "?"
-            log.info("Slot %d (%s) uniforms: %s", slot_idx, node, uniform_str[:200])
+            log.debug("Slot %d (%s) uniforms: %s", slot_idx, node, uniform_str[:200])
             self._slots[slot_idx].set_property("uniforms", uniform_str)
 
     @property
