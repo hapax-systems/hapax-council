@@ -515,11 +515,56 @@ class ReactorOverlay:
 # ---------------------------------------------------------------------------
 
 DEVICES = ["/dev/video50", "/dev/video51", "/dev/video52"]
-INITIAL_URLS = [
-    "https://www.youtube.com/watch?v=ED1fL1YpPEs&list=PL-4nvD1KwuH--sViEAFY2cHVmS6_B4CQ5&index=6",
-    "https://www.youtube.com/watch?v=DbfejwP1d3c&list=PL-4nvD1KwuH--sViEAFY2cHVmS6_B4CQ5&index=5",
-    "https://www.youtube.com/watch?v=KnyERpdX_0g&list=PL-4nvD1KwuH--sViEAFY2cHVmS6_B4CQ5&index=4",
-]
+PLAYLIST_FILE = SHM_DIR / "playlist.json"
+PLAYLIST_URL = "https://youtube.com/playlist?list=PL-4nvD1KwuH--sViEAFY2cHVmS6_B4CQ5"
+
+
+def _load_playlist() -> list[dict]:
+    """Load playlist from shm. Falls back to yt-dlp extraction."""
+    try:
+        if PLAYLIST_FILE.exists():
+            return json.loads(PLAYLIST_FILE.read_text())
+    except Exception:
+        pass
+    # Extract fresh
+    try:
+        import subprocess as _sp
+
+        result = _sp.run(
+            ["yt-dlp", "--dump-json", "--flat-playlist", "--no-warnings", PLAYLIST_URL],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        videos = []
+        for line in result.stdout.strip().split("\n"):
+            if line:
+                try:
+                    d = json.loads(line)
+                    videos.append(
+                        {
+                            "id": d["id"],
+                            "title": d.get("title", "?"),
+                            "url": f"https://www.youtube.com/watch?v={d['id']}",
+                        }
+                    )
+                except Exception:
+                    pass
+        if videos:
+            PLAYLIST_FILE.write_text(json.dumps(videos))
+            log.info("Extracted %d videos from playlist", len(videos))
+        return videos
+    except Exception:
+        log.exception("Playlist extraction failed")
+        return []
+
+
+def _pick_random_videos(playlist: list[dict], n: int = 3) -> list[str]:
+    """Pick n random video URLs from the playlist."""
+    if not playlist:
+        return []
+    picks = random.sample(playlist, min(n, len(playlist)))
+    return [v["url"] for v in picks]
 
 
 class SpirographReactor:
@@ -546,8 +591,10 @@ class SpirographReactor:
             self._initialized = True
 
         def _deferred_init():
-            # Load initial videos — skip slots that already have videos playing
-            for i, url in enumerate(INITIAL_URLS):
+            # Load videos from playlist — skip slots that already have videos playing
+            playlist = _load_playlist()
+            urls = _pick_random_videos(playlist, 3)
+            for i, url in enumerate(urls):
                 try:
                     status_req = urllib.request.urlopen(
                         f"http://127.0.0.1:8055/slot/{i}/status", timeout=5

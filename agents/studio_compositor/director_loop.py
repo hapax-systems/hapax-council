@@ -303,6 +303,30 @@ class DirectorLoop:
         except Exception:
             log.debug("No Qdrant memory available (first run or Qdrant down)")
 
+    def _reload_slot_from_playlist(self, slot_id: int) -> None:
+        """Load a random video from the playlist into the given slot."""
+        try:
+            playlist_path = SHM_DIR / "playlist.json"
+            if not playlist_path.exists():
+                return
+            playlist = json.loads(playlist_path.read_text())
+            if not playlist:
+                return
+            import random
+
+            pick = random.choice(playlist)
+            url = pick["url"]
+            body = json.dumps({"url": url}).encode()
+            req = urllib.request.Request(
+                f"http://127.0.0.1:8055/slot/{slot_id}/play",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=90)
+            log.info("Slot %d reloaded from playlist: %s", slot_id, pick["title"][:40])
+        except Exception:
+            log.debug("Playlist reload failed for slot %d", slot_id)
+
     def _save_memory_snapshot(self) -> None:
         """Snapshot reaction history to SHM for fast restart."""
         try:
@@ -406,11 +430,22 @@ class DirectorLoop:
         now = time.monotonic()
         elapsed = now - self._video_start_time
 
-        # Check if video finished naturally
+        # Check if any video finished — reload from playlist
+        for s in self._slots:
+            if s.check_finished():
+                pos = self.path_position_for_slot(s)
+                s.spawn_confetti(pos[0], pos[1])
+                log.info("Slot %d finished, reloading from playlist", s.slot_id)
+                threading.Thread(
+                    target=self._reload_slot_from_playlist,
+                    args=(s.slot_id,),
+                    daemon=True,
+                ).start()
+
+        # Check if active slot specifically finished
         slot = self._slots[self._active_slot]
-        if slot.check_finished():
-            pos = self.path_position_for_slot(slot)
-            slot.spawn_confetti(pos[0], pos[1])
+        if slot._finished:
+            slot._finished = False
             react = self._accumulated_reacts[-1] if self._accumulated_reacts else "That one's done."
             self._transition_to_reactor(react)
             return
