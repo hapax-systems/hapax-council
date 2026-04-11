@@ -20,6 +20,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from agents.studio_compositor.audio_control import SlotAudioControl
+
 log = logging.getLogger(__name__)
 
 SHM_DIR = Path("/dev/shm/hapax-compositor")
@@ -196,37 +198,6 @@ def _capture_snapshot_b64() -> str | None:
     return None
 
 
-_MIXER_NODE_ID: str | None = None
-
-
-def _find_mixer_node() -> str | None:
-    """Find mixer_master PipeWire node ID."""
-    global _MIXER_NODE_ID
-    if _MIXER_NODE_ID:
-        return _MIXER_NODE_ID
-    try:
-        result = subprocess.run(["wpctl", "status"], capture_output=True, text=True, timeout=5)
-        for line in result.stdout.splitlines():
-            if "mixer_master" in line:
-                # Extract node ID: "│      44. mixer_master"
-                parts = line.strip().strip("│").strip().split(".")
-                if parts:
-                    _MIXER_NODE_ID = parts[0].strip()
-                    return _MIXER_NODE_ID
-    except Exception:
-        pass
-    return "44"  # fallback
-
-
-def _duck_music(level: float) -> None:
-    """Set mixer_master volume. 1.0=full, 0.3=ducked."""
-    node = _find_mixer_node()
-    try:
-        subprocess.run(["wpctl", "set-volume", node, str(level)], timeout=2, capture_output=True)
-    except Exception:
-        pass
-
-
 ACTIVITY_CAPABILITIES = (
     "\n"
     "Activities available to you. Choose the one this moment calls for.\n"
@@ -249,7 +220,7 @@ class DirectorLoop:
         self._reactor = reactor_overlay
         self._activity = "react"  # current activity
         self._activity_start = 0.0
-        self._state = "PLAYING_VIDEO"  # sub-state for react mode
+        self._state = "IDLE"
         self._active_slot = 0
         self._video_start_time = 0.0
         self._last_perception = 0.0
@@ -259,6 +230,8 @@ class DirectorLoop:
         self._last_album_track = ""  # for vinyl track-change detection
         self._tts_manager = None
         self._tts_lock = threading.Lock()
+        self._transition_lock = threading.Lock()
+        self._audio_control: SlotAudioControl | None = None
         self._running = False
         self._thread = None
         self._load_memory()
@@ -345,43 +318,16 @@ class DirectorLoop:
     def start(self) -> None:
         self._running = True
         self._video_start_time = time.monotonic()
+        self._audio_control = SlotAudioControl(slot_count=len(self._slots))
         if self._slots:
             self._slots[self._active_slot].is_active = True
-            self._sync_slot_playback()
+            self._audio_control.mute_all_except(self._active_slot)
         self._thread = threading.Thread(target=self._loop, daemon=True, name="director-loop")
         self._thread.start()
         log.info("Director loop started (slot %d active)", self._active_slot)
 
     def stop(self) -> None:
         self._running = False
-
-    def _next_slot(self) -> None:
-        self._active_slot = (self._active_slot + 1) % len(self._slots)
-        self._sync_slot_playback()
-
-    def _sync_slot_playback(self) -> None:
-        """Pause non-active slots, unpause active slot via youtube-player API."""
-        for s in self._slots:
-            try:
-                status = json.loads(
-                    urllib.request.urlopen(
-                        f"http://127.0.0.1:8055/slot/{s.slot_id}/status", timeout=2
-                    ).read()
-                )
-                is_paused = status.get("paused", False)
-                should_play = s.slot_id == self._active_slot
-
-                if should_play and is_paused or not should_play and not is_paused:
-                    urllib.request.urlopen(
-                        urllib.request.Request(
-                            f"http://127.0.0.1:8055/slot/{s.slot_id}/pause",
-                            b"",
-                            {"Content-Type": "application/json"},
-                        ),
-                        timeout=2,
-                    )
-            except Exception:
-                pass
 
     def _loop(self) -> None:
         """Unified loop: Hapax decides what to do each tick."""
@@ -442,21 +388,8 @@ class DirectorLoop:
                     self._activity = activity
                     self._reactor.set_header(activity.upper())
 
-                # Speak
+                # Speak — speech + slot advance happen in one thread
                 self._speak_activity(text, activity)
-
-                # If react mode, advance video slot after speaking
-                if activity == "react":
-
-                    def _advance():
-                        while self._state == "SPEAKING":
-                            time.sleep(0.3)
-                        self._accumulated_reacts.clear()
-                        self._next_slot()
-                        self._slots[self._active_slot].is_active = True
-                        self._video_start_time = time.monotonic()
-
-                    threading.Thread(target=_advance, daemon=True).start()
 
             except Exception:
                 log.exception("Director loop error")
@@ -483,7 +416,7 @@ class DirectorLoop:
         if slot._finished:
             slot._finished = False
             react = self._accumulated_reacts[-1] if self._accumulated_reacts else "That one's done."
-            self._transition_to_reactor(react)
+            self._speak_activity(react, "react")
             return
 
         # Don't perceive too frequently
@@ -512,7 +445,7 @@ class DirectorLoop:
             # Refresh metadata before transition
             for slot in self._slots:
                 slot.update_metadata()
-            self._transition_to_reactor(final)
+            self._speak_activity(final, "react")
 
     def path_position_for_slot(self, slot) -> tuple[float, float]:
         """Get screen position for confetti spawn."""
@@ -853,61 +786,53 @@ class DirectorLoop:
             return ""
 
     def _speak_activity(self, text: str, activity: str) -> None:
-        """Speak text and log it. Used by all activities."""
+        """Speak text, then advance slot if reacting. Single thread, locked."""
         self._state = "SPEAKING"
         self._reactor.set_text(text)
         self._reactor.set_speaking(True)
         log.info("%s [%s]: %s", activity.upper(), self._activity, text[:80])
 
-        def _do_speak():
-            try:
-                pcm = self._synthesize(text)
-                if pcm:
-                    _duck_music(0.3)  # duck to 30% before speaking
-                    self._reactor.feed_pcm(pcm)
-                    self._play_audio(pcm)
-                    time.sleep(0.5)
-                    _duck_music(1.0)  # restore after speaking
-                time.sleep(0.5)
-            except Exception:
-                _duck_music(1.0)  # always restore on error
-                log.exception("TTS error")
+        def _do_speak_and_advance():
+            with self._transition_lock:
+                try:
+                    pcm = self._synthesize(text)
+                    if pcm:
+                        if self._audio_control:
+                            self._audio_control.mute_all()
+                        self._reactor.feed_pcm(pcm)
+                        self._play_audio(pcm)
+                        time.sleep(0.3)
+                except Exception:
+                    log.exception("TTS error")
 
-            self._log_to_obsidian(text, activity)
-            ts = datetime.now().strftime("%H:%M")
-            label = f'[{ts}] {activity}: "{text}"'
-            self._reaction_history.append(label)
-            if len(self._reaction_history) > 20:
-                self._reaction_history = self._reaction_history[-20:]
-            self._reactor.set_speaking(False)
-            self._reactor.set_text("")
-            self._state = "IDLE"
+                # Advance slot atomically (react mode only)
+                if activity == "react":
+                    self._slots[self._active_slot].is_active = False
+                    self._accumulated_reacts.clear()
+                    self._active_slot = (self._active_slot + 1) % len(self._slots)
+                    self._slots[self._active_slot].is_active = True
+                    self._video_start_time = time.monotonic()
+                    self._last_perception = 0.0
+                    log.info("Now playing slot %d", self._active_slot)
 
-        threading.Thread(target=_do_speak, daemon=True, name=f"speak-{activity}").start()
+                # Restore audio on new active slot
+                if self._audio_control:
+                    self._audio_control.mute_all_except(self._active_slot)
 
-    def _transition_to_reactor(self, react_text: str) -> None:
-        """Transition to speaking for react mode specifically."""
-        if react_text.startswith("{") or react_text.startswith("`"):
-            parsed, _ = self._parse_llm_response(react_text)
-            if parsed:
-                react_text = parsed
-        slot = self._slots[self._active_slot]
-        slot.is_active = False
+                # Bookkeeping
+                self._log_to_obsidian(text, activity)
+                ts = datetime.now().strftime("%H:%M")
+                label = f'[{ts}] {activity}: "{text}"'
+                self._reaction_history.append(label)
+                if len(self._reaction_history) > 20:
+                    self._reaction_history = self._reaction_history[-20:]
+                self._reactor.set_speaking(False)
+                self._reactor.set_text("")
+                self._state = "IDLE"
 
-        self._speak_activity(react_text, "react")
-
-        # After speaking completes, advance to next slot
-        def _advance_after_speak():
-            while self._state == "SPEAKING":
-                time.sleep(0.3)
-            self._accumulated_reacts.clear()
-            self._next_slot()
-            self._slots[self._active_slot].is_active = True
-            self._video_start_time = time.monotonic()
-            self._last_perception = 0.0
-            log.info("Now playing slot %d", self._active_slot)
-
-        threading.Thread(target=_advance_after_speak, daemon=True, name="react-advance").start()
+        threading.Thread(
+            target=_do_speak_and_advance, daemon=True, name=f"speak-{activity}"
+        ).start()
 
     def _synthesize(self, text: str) -> bytes:
         with self._tts_lock:
