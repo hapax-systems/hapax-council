@@ -424,8 +424,9 @@ class AlbumOverlay:
 
     def __init__(self) -> None:
         # Fixed position: lower-left quadrant (opposite token pole at upper-left)
+        # Text goes above cover, cover sits near bottom
         self._x = 20.0
-        self._y = 1080.0 - 300.0 - 100.0 - 20.0  # SIZE + text + margin from bottom
+        self._y = 1080.0 - 300.0 - 20.0  # SIZE + margin from bottom
         self._surface: Any = None
         self._surface_mtime: float = 0
         self._attrib_text: str = ""
@@ -474,8 +475,11 @@ class AlbumOverlay:
         x, y = int(self._x), int(self._y)
         cr.translate(x, y)
 
-        # Paint album cover scaled to SIZE x SIZE
+        # Draw splattribution text ABOVE the cover
+        if self._attrib_text:
+            self._draw_attrib(cr)
 
+        # Paint album cover scaled to SIZE x SIZE
         sw = self._surface.get_width()
         sh = self._surface.get_height()
         if sw > 0 and sh > 0:
@@ -489,10 +493,6 @@ class AlbumOverlay:
             # Apply PiP effect on the cover area
             if self._fx_func is not None:
                 self._fx_func(cr, self.SIZE, self.SIZE)
-
-        # Draw splattribution text below the cover
-        if self._attrib_text:
-            self._draw_attrib(cr)
 
         cr.restore()
 
@@ -528,7 +528,7 @@ class AlbumOverlay:
             self._attrib_layout = layout
 
         _w, _h = self._attrib_layout.get_pixel_size()
-        tx, ty = 0, self.SIZE + 5
+        tx, ty = 0, -_h - 5  # above the cover
 
         # Dark outline
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.85)
