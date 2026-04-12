@@ -248,17 +248,23 @@ class AlbumOverlay:
         cr.restore()
 
     def _load_cover(self) -> None:
-        """Load album cover PNG as a cairo surface."""
-        try:
-            import cairo
+        """Load album cover via the shared ImageLoader.
 
-            self._surface = cairo.ImageSurface.create_from_png(self.COVER_PATH)
+        Phase 3d: delegates to :func:`get_image_loader` so the decoded
+        surface is mtime-cached and shared with any other compositor
+        caller that wants the same image.
+        """
+        from .image_loader import get_image_loader
+
+        self._surface = get_image_loader().load(self.COVER_PATH)
+        if self._surface is not None:
             log.info(
-                "Album cover loaded (%dx%d)", self._surface.get_width(), self._surface.get_height()
+                "Album cover loaded (%dx%d)",
+                self._surface.get_width(),
+                self._surface.get_height(),
             )
-        except Exception:
-            log.warning("Album cover load failed", exc_info=True)
-            self._surface = None
+        else:
+            log.warning("Album cover load failed: %s", self.COVER_PATH)
 
     def _draw_attrib(self, cr: Any) -> None:
         """Draw splattribution text above the album cover.

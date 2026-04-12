@@ -159,35 +159,31 @@ class TokenPole:
             self._particles.append(Particle(cx, cy))
 
     def _load_bg(self, cr: Any) -> None:
-        """Load Vitruvian Man as cairo surface (once)."""
+        """Load Vitruvian Man as cairo surface (once).
+
+        Phase 3d: delegates to the shared ImageLoader, which handles
+        both PNG (native cairo) and JPEG (PIL → premultiplied ARGB)
+        decode paths in one place. Replaces the previous PNG-or-temp-
+        file fallback that wrote a temporary PNG just to call
+        ``create_from_png`` on it.
+        """
+        del cr  # unused; the loader doesn't need a draw context
         if self._bg_loaded:
             return
         self._bg_loaded = True
-        try:
-            if VITRUVIAN_PATH.exists():
-                import cairo
+        if not VITRUVIAN_PATH.exists():
+            return
+        from .image_loader import get_image_loader
 
-                self._bg_surface = cairo.ImageSurface.create_from_png(str(VITRUVIAN_PATH))
-                log.info(
-                    "Vitruvian Man loaded (%dx%d)",
-                    self._bg_surface.get_width(),
-                    self._bg_surface.get_height(),
-                )
-        except Exception:
-            # JPEG fallback via PIL → PNG temp
-            try:
-                from PIL import Image
-
-                img = Image.open(str(VITRUVIAN_PATH)).convert("RGBA")
-                import tempfile
-
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                    img.save(f.name, format="PNG")
-                    import cairo
-
-                    self._bg_surface = cairo.ImageSurface.create_from_png(f.name)
-            except Exception:
-                log.warning("Failed to load Vitruvian Man background")
+        self._bg_surface = get_image_loader().load(VITRUVIAN_PATH)
+        if self._bg_surface is not None:
+            log.info(
+                "Vitruvian Man loaded (%dx%d)",
+                self._bg_surface.get_width(),
+                self._bg_surface.get_height(),
+            )
+        else:
+            log.warning("Failed to load Vitruvian Man background")
 
     def draw(self, cr: Any) -> None:
         self._load_bg(cr)
