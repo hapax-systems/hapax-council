@@ -128,6 +128,38 @@ Everything that appears — visual content, tool invocation, vocal expression, d
 
 **Exploration → SEEKING:** 13 components publish boredom/curiosity signals to `/dev/shm/hapax-exploration/`. VLA reads aggregate boredom (top-k worst third, not mean) and feeds `exploration_deficit` to stimmung. When deficit > 0.35 and all dimensions nominal, stance transitions to SEEKING (3-tick hysteresis). Reverie mixer syncs SEEKING to its AffordancePipeline, halving the recruitment threshold (0.05 → 0.025) for dormant capabilities. Deficit formula uses boredom alone (per PCT: reorganization pressure ∝ intrinsic error); curiosity modulates exploration MODE via `evaluate_control_law()`, not deficit magnitude. SEEKING is correctly suppressed by biometric dimensions (operator_energy, physiological_coherence) during late night.
 
+## Studio Compositor
+
+GStreamer-based livestream pipeline. Distinct from Reverie (the wgpu visual surface) — they are two separate render paths. The compositor reads USB cameras, composites them into a single 1920x1080 frame, applies a 24-slot GL shader chain, draws Cairo overlays (Sierpinski triangle with YouTube frames, token pole, album cover, content zones), and writes to `/dev/video42` (OBS V4L2 source) and an HLS playlist.
+
+**Compositor unification epic complete (Phases 2–7 + Phase 5b + followups + audit + polish):** typed Source/Surface/Assignment/Layout data model, CairoSource protocol driving all Python Cairo content on background threads, multi-target render loop, transient texture pool, per-frame budget enforcement with degraded-signal publishing, and every direct-Cairo class migrated (Sierpinski, AlbumOverlay, OverlayZoneManager, TokenPole). After Phase 3b-final there is **no Cairo rendering on the GStreamer streaming thread** — every source feeds through `CairoSourceRunner` with its own background render cadence and a cached output surface the cairooverlay callback blits synchronously.
+
+**Key modules:**
+- `agents/studio_compositor/compositor.py` — `StudioCompositor` orchestration shell
+- `agents/studio_compositor/cairo_source.py` — `CairoSource` protocol + `CairoSourceRunner` (background thread + output-surface cache + budget enforcement)
+- `agents/studio_compositor/sierpinski_renderer.py` — Sierpinski triangle with YT video frames in corners, 10 fps
+- `agents/studio_compositor/album_overlay.py` — Floating album cover + splattribution text + PiP effects, 10 fps
+- `agents/studio_compositor/overlay_zones.py` — Obsidian markdown/ANSI zones with Pango rendering + DVD-screensaver bounce, 10 fps
+- `agents/studio_compositor/token_pole.py` — Vitruvian Man + golden-spiral token tracker with particle explosions, 30 fps
+- `agents/studio_compositor/budget.py` — `BudgetTracker` + `publish_costs` (envelope: `{schema_version, timestamp_ms, wall_clock, sources}`)
+- `agents/studio_compositor/budget_signal.py` — `publish_degraded_signal` for VLA consumption
+- `shared/compositor_model.py` — `SourceSchema`/`SurfaceSchema`/`Assignment`/`Layout` pydantic models with difflib "did you mean" hints in validation errors
+
+**Spec + audit:**
+- `docs/superpowers/plans/2026-04-12-compositor-unification-epic.md` — full epic plan
+- `docs/superpowers/audits/2026-04-12-compositor-unification-audit.md` — multi-phase audit + action items (all HIGH/MEDIUM/LOW items shipped in PRs #673–#676)
+- `docs/superpowers/handoff/2026-04-12-session-handoff.md` — Apr 12 session handoff
+
+**YouTube player bootstrap gap (known):** `agents/studio_compositor/director_loop.py` only advances slots on `yt-finished-N` marker files and never does a cold-start `/slot/N/play`. After any `youtube-player.service` restart, the Sierpinski corners stay empty until a human POSTs initial URLs. Workaround documented in the Apr 12 handoff; defensive PR deferred.
+
+**Camera USB robustness (known hardware problem):** The three Logitech BRIO cameras keep getting kicked off the bus with kernel `device descriptor read/64, error -71` (EPROTO). Almost certainly a TS4 USB3.2 Gen2 hub / cable / power issue, not software. Investigation note: `docs/research/2026-04-12-brio-usb-robustness.md`. Reboot is the current workaround; `try_reconnect_camera` in `state.py` retries every ~10s but cannot fix signal-level USB errors.
+
+## Reverie Vocabulary Integrity
+
+The reverie mixer caches the vocabulary preset (`presets/reverie_vocabulary.json`) in-memory once at startup via `SatelliteManager._core_vocab`. If that dict is ever mutated at runtime by a since-deleted code path, or the preset file was different when the process booted, the mixer will keep compiling graphs from the stale cache for as long as the service runs — even after the on-disk preset is fixed. Recovery: `systemctl --user restart hapax-reverie.service`. Symptom: `plan.json` in `/dev/shm/hapax-imagination/pipeline/` contains node types that don't match the git-tracked preset.
+
+Any Sierpinski or other satellite shader nodes in Reverie MUST be recruited dynamically via the affordance pipeline (prefix `sat_<node_type>`), NOT wired into the core vocabulary. If you see core-prefix nodes like `content: sierpinski_content` (instead of `sat_sierpinski_content`), restart the service.
+
 ## Council-Specific Conventions
 
 - Hypothesis for property-based algebraic proofs.
