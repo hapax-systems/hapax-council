@@ -7,6 +7,7 @@ the future executor will consume.
 
 Phase 4a tests cover scaffolding + dead-source culling.
 Phase 4b tests cover version-cache boundary decisions.
+Phase 4c tests cover transient texture pool reasoning.
 
 This phase is purely additive: no rendering code yet reads CompiledFrame.
 Tests verify the compile reasoning is correct on synthetic and canonical
@@ -21,7 +22,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from agents.studio_compositor.compile import CompiledFrame, compile_frame
+from agents.studio_compositor.compile import (
+    CompiledFrame,
+    TextureDescriptor,
+    TransientTexture,
+    compile_frame,
+)
 from agents.studio_compositor.extract import extract_frame_description
 from shared.compositor_model import (
     Assignment,
@@ -482,3 +488,194 @@ def test_compile_garage_door_with_previous():
     # No versions populated → nothing cached, but compile is well-formed.
     assert curr.cached_sources == frozenset()
     assert curr.layout_name == layout.name
+
+
+# ---------------------------------------------------------------------------
+# Phase 4c: transient texture pool reasoning
+# ---------------------------------------------------------------------------
+
+
+def _surf_with_chain(
+    id_: str,
+    chain: list[str],
+    w: int = 1280,
+    h: int = 720,
+    z_order: int = 0,
+) -> SurfaceSchema:
+    return SurfaceSchema(
+        id=id_,
+        geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=w, h=h),  # type: ignore[arg-type]
+        effect_chain=chain,
+        z_order=z_order,
+    )
+
+
+def test_texture_descriptor_is_frozen_and_hashable():
+    """TextureDescriptor must be usable as a dict key + frozen."""
+    d = TextureDescriptor(width=1920, height=1080)
+    assert hash(d) == hash(TextureDescriptor(width=1920, height=1080))
+    with pytest.raises(Exception):  # FrozenInstanceError
+        d.width = 64  # type: ignore[misc]
+
+
+def test_transient_texture_for_descriptor_computes_pool_key():
+    """TransientTexture.for_descriptor() sets pool_key = hash(descriptor)."""
+    desc = TextureDescriptor(width=64, height=32)
+    tex = TransientTexture.for_descriptor(name="surf.bloom", descriptor=desc)
+    assert tex.name == "surf.bloom"
+    assert tex.descriptor == desc
+    assert tex.pool_key == hash(desc)
+
+
+def test_no_effect_chains_no_transients():
+    """A surface with an empty effect chain emits no transients."""
+    layout = Layout(
+        name="bare",
+        sources=[_src("a")],
+        surfaces=[_surf_with_chain("s", chain=[])],
+        assignments=[Assignment(source="a", surface="s")],
+    )
+    compiled = compile_frame(_frame(layout))
+    assert compiled.transient_textures == ()
+    assert compiled.transient_count == 0
+
+
+def test_single_stage_chain_no_transients():
+    """A 1-stage effect chain has zero non-final stages → zero transients."""
+    layout = Layout(
+        name="single",
+        sources=[_src("a")],
+        surfaces=[_surf_with_chain("s", chain=["bloom"])],
+        assignments=[Assignment(source="a", surface="s")],
+    )
+    compiled = compile_frame(_frame(layout))
+    assert compiled.transient_count == 0
+
+
+def test_two_stage_chain_one_transient():
+    """A 2-stage chain emits exactly one transient (for the first stage)."""
+    layout = Layout(
+        name="two-stage",
+        sources=[_src("a")],
+        surfaces=[_surf_with_chain("s", chain=["bloom", "halftone"], w=640, h=360)],
+        assignments=[Assignment(source="a", surface="s")],
+    )
+    compiled = compile_frame(_frame(layout))
+    assert compiled.transient_count == 1
+    t = compiled.transient_textures[0]
+    assert t.name == "s.bloom"
+    assert t.descriptor.width == 640
+    assert t.descriptor.height == 360
+
+
+def test_three_stage_chain_two_transients():
+    """An N-stage chain emits N - 1 transients in chain order."""
+    layout = Layout(
+        name="three-stage",
+        sources=[_src("a")],
+        surfaces=[_surf_with_chain("s", chain=["bloom", "halftone", "vignette"], w=320, h=240)],
+        assignments=[Assignment(source="a", surface="s")],
+    )
+    compiled = compile_frame(_frame(layout))
+    assert compiled.transient_count == 2
+    names = [t.name for t in compiled.transient_textures]
+    assert names == ["s.bloom", "s.halftone"]
+
+
+def test_pool_key_stable_for_same_descriptor():
+    """Two transients with the same descriptor share a pool key."""
+    layout = Layout(
+        name="shared-bucket",
+        sources=[_src("a"), _src("b")],
+        surfaces=[
+            _surf_with_chain("s1", chain=["bloom", "halftone"], w=640, h=360),
+            _surf_with_chain("s2", chain=["scanlines", "vignette"], w=640, h=360),
+        ],
+        assignments=[
+            Assignment(source="a", surface="s1"),
+            Assignment(source="b", surface="s2"),
+        ],
+    )
+    compiled = compile_frame(_frame(layout))
+    assert compiled.transient_count == 2
+    # Both surfaces have w=640 h=360 → identical descriptors → identical
+    # pool keys.
+    keys = {t.pool_key for t in compiled.transient_textures}
+    assert len(keys) == 1
+
+
+def test_pool_key_distinct_for_different_descriptors():
+    """Transients with different dimensions get distinct pool keys."""
+    layout = Layout(
+        name="distinct-buckets",
+        sources=[_src("a"), _src("b")],
+        surfaces=[
+            _surf_with_chain("hi", chain=["bloom", "halftone"], w=1920, h=1080),
+            _surf_with_chain("lo", chain=["scanlines", "vignette"], w=320, h=240),
+        ],
+        assignments=[
+            Assignment(source="a", surface="hi"),
+            Assignment(source="b", surface="lo"),
+        ],
+    )
+    compiled = compile_frame(_frame(layout))
+    assert compiled.transient_count == 2
+    keys = {t.pool_key for t in compiled.transient_textures}
+    assert len(keys) == 2
+
+
+def test_surface_without_geometry_emits_no_transients():
+    """Tiles, masked regions, video_outs have no explicit (w, h) — skip them."""
+    layout = Layout(
+        name="no-dims",
+        sources=[_src("a")],
+        surfaces=[
+            SurfaceSchema(
+                id="tile",
+                geometry=SurfaceGeometry(kind="tile"),  # type: ignore[arg-type]
+                effect_chain=["bloom", "halftone"],
+            ),
+        ],
+        assignments=[Assignment(source="a", surface="tile")],
+    )
+    compiled = compile_frame(_frame(layout))
+    assert compiled.transient_count == 0
+
+
+def test_unreferenced_surface_emits_no_transients():
+    """A surface with no assignment is not active and emits no transients."""
+    layout = Layout(
+        name="orphan-surf",
+        sources=[_src("a")],
+        surfaces=[
+            _surf_with_chain("active", chain=["bloom", "halftone"]),
+            _surf_with_chain("orphan", chain=["scanlines", "vignette"]),
+        ],
+        assignments=[Assignment(source="a", surface="active")],
+    )
+    compiled = compile_frame(_frame(layout))
+    assert compiled.transient_count == 1
+    assert compiled.transient_textures[0].name == "active.bloom"
+
+
+def test_transient_pool_keys_property():
+    """transient_pool_keys returns the distinct set of pool keys."""
+    layout = Layout(
+        name="pool-keys",
+        sources=[_src("a"), _src("b"), _src("c")],
+        surfaces=[
+            _surf_with_chain("s1", chain=["bloom", "halftone"], w=64, h=64),
+            _surf_with_chain("s2", chain=["bloom", "halftone"], w=64, h=64),
+            _surf_with_chain("s3", chain=["bloom", "halftone"], w=128, h=128),
+        ],
+        assignments=[
+            Assignment(source="a", surface="s1"),
+            Assignment(source="b", surface="s2"),
+            Assignment(source="c", surface="s3"),
+        ],
+    )
+    compiled = compile_frame(_frame(layout))
+    # 3 transients (one per 2-stage chain), 2 distinct pool keys (64x64
+    # shared between s1+s2; 128x128 unique to s3).
+    assert compiled.transient_count == 3
+    assert len(compiled.transient_pool_keys) == 2

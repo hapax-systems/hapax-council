@@ -18,6 +18,14 @@ re-rendering. The version contract: source backends bump their
 version when their output would change. Sources that never change
 (static images, idle text overlays) trivially stay cached.
 
+Phase 4c adds the transient texture pool reasoning (Python side). For
+every active surface with an effect chain, the compile phase generates
+a TransientTexture descriptor for each non-final stage. Two transients
+with the same descriptor share a pool_key, so the executor (Rust) can
+allocate from a shared bucket and recycle textures across frames
+without thrashing GPU memory. The Rust allocator itself is a follow-up
+PR — Phase 4c only ships the Python-side data plumbing.
+
 The compile phase is pure: it produces an immutable CompiledFrame from
 an immutable FrameDescription. No I/O, no thread state, no side effects.
 Safe to call from any thread.
@@ -37,6 +45,57 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agents.studio_compositor.extract import FrameDescription
     from shared.compositor_model import Assignment
+
+
+# Canonical RGBA format for intermediate textures. Phase 4c keeps this
+# as a single string constant; future format selection (HDR, sRGB,
+# float buckets) extends ``TextureDescriptor.format`` without breaking
+# the existing pool_key contract.
+DEFAULT_TRANSIENT_FORMAT = "rgba8unorm"
+
+
+@dataclass(frozen=True)
+class TextureDescriptor:
+    """Compact pool key for an intermediate texture allocation.
+
+    Two intermediates with the same TextureDescriptor are considered
+    interchangeable by the (future) Rust pool: they can share the same
+    GPU memory bucket and recycle across frames. ``(width, height,
+    format)`` is the canonical key matching every render-graph
+    implementation we surveyed (Bevy, Frostbite, Unity SRP).
+
+    The dataclass is frozen and hashable so callers can use it as a
+    dict key without copying.
+    """
+
+    width: int
+    height: int
+    format: str = DEFAULT_TRANSIENT_FORMAT
+
+
+@dataclass(frozen=True)
+class TransientTexture:
+    """One intermediate texture in a frame's render plan.
+
+    Has a stable name (``{surface_id}.{effect_node}``) so log output
+    and debug overlays can identify the producing stage, a descriptor
+    for pool key matching, and a precomputed ``pool_key`` the executor
+    uses to look up a reusable allocation. ``pool_key = hash(descriptor)``
+    by definition, so two transients with the same dimensions and
+    format always share a key.
+
+    Phase 4c lands this type as the data plumbing. The Rust allocator
+    that consumes ``pool_key`` to bucket GPU memory is a follow-up PR.
+    """
+
+    name: str
+    descriptor: TextureDescriptor
+    pool_key: int
+
+    @classmethod
+    def for_descriptor(cls, name: str, descriptor: TextureDescriptor) -> TransientTexture:
+        """Construct a TransientTexture, computing the pool_key from the descriptor."""
+        return cls(name=name, descriptor=descriptor, pool_key=hash(descriptor))
 
 
 @dataclass(frozen=True)
@@ -74,9 +133,17 @@ class CompiledFrame:
             FrameDescription. Carried forward so the next compile
             (which receives this CompiledFrame as ``previous``) can
             diff against it without needing the original FrameDescription.
+        transient_textures: Phase 4c. Tuple of TransientTexture
+            descriptors, one per non-final stage in each active surface's
+            effect chain. Two transients with the same descriptor share
+            a pool_key so the executor can recycle GPU memory across
+            frames. Surfaces without explicit (w, h) geometry (tile,
+            masked_region, video_out, ndi_out) emit no transients —
+            their dimensions are determined at execute time.
         cull_reason: Per-culled-source reason string for observability.
             Today the reasons are ``"no_assignment_references_source"``
-            (4a) and may grow in 4c with pool-eligibility annotations.
+            (4a) and may grow in future sub-phases with pool-eligibility
+            annotations.
     """
 
     frame_index: int
@@ -87,6 +154,7 @@ class CompiledFrame:
     active_assignments: tuple[Assignment, ...]
     source_versions: dict[str, int] = field(default_factory=dict)
     cached_sources: frozenset[str] = frozenset()
+    transient_textures: tuple[TransientTexture, ...] = ()
     cull_reason: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -108,6 +176,21 @@ class CompiledFrame:
     def render_count(self) -> int:
         """Number of active sources that need a fresh render this frame."""
         return len(self.active_sources) - len(self.cached_sources)
+
+    @property
+    def transient_count(self) -> int:
+        """Number of intermediate textures the executor will need to allocate."""
+        return len(self.transient_textures)
+
+    @property
+    def transient_pool_keys(self) -> frozenset[int]:
+        """Distinct pool keys across all transients this frame.
+
+        ``len(transient_textures) - len(transient_pool_keys)`` is the
+        number of transients that share a bucket — the upper bound on
+        what the future Rust pool can recycle.
+        """
+        return frozenset(t.pool_key for t in self.transient_textures)
 
 
 def compile_frame(
@@ -197,6 +280,40 @@ def compile_frame(
             if prev_v == curr_v:
                 cached_ids.add(source_id)
 
+    # Phase 4c: transient texture pool reasoning. For every active
+    # surface with an effect chain of length N >= 2, emit (N - 1)
+    # TransientTextures. The final stage's output goes directly to the
+    # surface output (no intermediate needed). Surfaces without explicit
+    # (w, h) geometry — tile, masked_region, video_out, ndi_out — are
+    # skipped because their dimensions are determined at execute time.
+    #
+    # The transient name is "{surface_id}.{effect_node_id}" so debug
+    # overlays and pool diagnostics can identify the producing stage.
+    # The pool_key is hash(descriptor); two transients with the same
+    # (w, h, format) share a key and become candidates for recycling.
+    referenced_surfaces: set[str] = {a.surface for a in active_assignments}
+    transients: list[TransientTexture] = []
+    for surface in layout.surfaces:
+        if surface.id not in referenced_surfaces:
+            continue
+        if len(surface.effect_chain) < 2:
+            # 0 or 1 stages → no intermediates needed.
+            continue
+        geom = surface.geometry
+        if geom.w is None or geom.h is None:
+            # Geometry is not pixel-explicit; pool sizing happens at
+            # execute time. Skip these for now.
+            continue
+        descriptor = TextureDescriptor(width=geom.w, height=geom.h)
+        # Emit one transient per non-final stage.
+        for stage in surface.effect_chain[:-1]:
+            transients.append(
+                TransientTexture.for_descriptor(
+                    name=f"{surface.id}.{stage}",
+                    descriptor=descriptor,
+                )
+            )
+
     return CompiledFrame(
         frame_index=frame.frame_index,
         timestamp=frame.timestamp,
@@ -206,5 +323,6 @@ def compile_frame(
         active_assignments=active_assignments,
         source_versions=dict(frame.source_versions),
         cached_sources=frozenset(cached_ids),
+        transient_textures=tuple(transients),
         cull_reason=cull_reason,
     )
