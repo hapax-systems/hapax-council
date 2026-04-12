@@ -19,9 +19,12 @@ import logging
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cairo
+
+if TYPE_CHECKING:
+    from agents.studio_compositor.budget import BudgetTracker
 
 log = logging.getLogger(__name__)
 
@@ -88,9 +91,13 @@ class CairoSourceRunner:
         canvas_h: int = 1080,
         target_fps: float = 10.0,
         publish_to_source_protocol: bool = False,
+        budget_tracker: BudgetTracker | None = None,
+        budget_ms: float | None = None,
     ) -> None:
         if target_fps <= 0:
             raise ValueError(f"target_fps must be > 0, got {target_fps}")
+        if budget_ms is not None and budget_ms <= 0:
+            raise ValueError(f"budget_ms must be > 0 when set, got {budget_ms}")
         self._source_id = source_id
         self._source = source
         self._canvas_w = canvas_w
@@ -103,6 +110,11 @@ class CairoSourceRunner:
         self._output_lock = threading.Lock()
         self._frame_count = 0
         self._last_render_ms = 0.0
+        # Phase 7: budget enforcement. Defaults preserve pre-Phase-7
+        # behavior — no tracker, no budget, no skips.
+        self._budget_tracker = budget_tracker
+        self._budget_ms = budget_ms
+        self._consecutive_skips = 0
 
     @property
     def source_id(self) -> str:
@@ -115,6 +127,26 @@ class CairoSourceRunner:
     @property
     def last_render_ms(self) -> float:
         return self._last_render_ms
+
+    @property
+    def consecutive_skips(self) -> int:
+        """Number of consecutive ticks skipped due to over-budget previous frame.
+
+        Reset to zero on the first successful render after a skip
+        run. The operator can read this for the source-cost JSON or
+        for stimmung gating ("is the stream running degraded?").
+        """
+        return self._consecutive_skips
+
+    @property
+    def degraded(self) -> bool:
+        """True iff at least one tick has been skipped in a row.
+
+        Useful as a coarse "is this source struggling" signal for
+        operator UIs. The threshold is intentionally low (>= 1) so
+        any over-budget event surfaces immediately.
+        """
+        return self._consecutive_skips > 0
 
     def set_canvas_size(self, w: int, h: int) -> None:
         """Update the canvas size. Picked up on the next tick."""
@@ -178,6 +210,28 @@ class CairoSourceRunner:
             self._render_one_frame()
 
     def _render_one_frame(self) -> None:
+        # Phase 7b: skip-if-over-budget. If a budget is configured AND
+        # we have a tracker AND the most recent recorded frame for
+        # this source exceeded budget, skip this tick. The cached
+        # surface from the previous successful render stays in place
+        # so synchronous consumers (cairooverlay) keep blitting
+        # something valid.
+        if (
+            self._budget_ms is not None
+            and self._budget_tracker is not None
+            and self._budget_tracker.over_budget(self._source_id, self._budget_ms)
+        ):
+            self._budget_tracker.record_skip(self._source_id)
+            self._consecutive_skips += 1
+            log.debug(
+                "CairoSource %s over budget (%.2fms > %.2fms); skipping tick (run=%d)",
+                self._source_id,
+                self._budget_tracker.last_frame_ms(self._source_id),
+                self._budget_ms,
+                self._consecutive_skips,
+            )
+            return
+
         t0 = time.monotonic()
         try:
             surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, self._canvas_w, self._canvas_h)
@@ -198,6 +252,14 @@ class CairoSourceRunner:
             self._output_surface = surface
         self._frame_count += 1
         self._last_render_ms = (time.monotonic() - t0) * 1000.0
+        # Phase 7a: report this frame's elapsed time to the budget
+        # tracker if one is wired up. The tracker is the rolling
+        # source of truth for cross-frame stats; _last_render_ms is
+        # this thread's instant snapshot.
+        if self._budget_tracker is not None:
+            self._budget_tracker.record(self._source_id, self._last_render_ms)
+        # A successful render clears the consecutive-skip run.
+        self._consecutive_skips = 0
 
         if self._publish:
             self._publish_to_source_protocol(surface)
