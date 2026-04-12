@@ -240,6 +240,78 @@ class TestTileLayout:
             assert tile.h > 0, f"{role} has zero height"
 
 
+class TestLayoutModes:
+    """Dynamic layout modes: balanced / hero/{role} / sierpinski."""
+
+    def _six_cameras(self) -> list[CameraSpec]:
+        return [
+            CameraSpec(role="brio-operator", device="/dev/video0"),
+            CameraSpec(role="brio-room", device="/dev/video2"),
+            CameraSpec(role="brio-synths", device="/dev/video4"),
+            CameraSpec(role="c920-desk", device="/dev/video6"),
+            CameraSpec(role="c920-room", device="/dev/video8"),
+            CameraSpec(role="c920-overhead", device="/dev/video10"),
+        ]
+
+    def test_balanced_mode_is_default(self) -> None:
+        cams = self._six_cameras()
+        default = compute_tile_layout(cams, 1920, 1080)
+        balanced = compute_tile_layout(cams, 1920, 1080, mode="balanced")
+        assert default == balanced
+
+    def test_hero_mode_named_camera(self) -> None:
+        cams = self._six_cameras()
+        layout = compute_tile_layout(cams, 1920, 1080, mode="hero/brio-room")
+        # Hero camera gets the largest tile
+        hero_area = layout["brio-room"].w * layout["brio-room"].h
+        for role, tile in layout.items():
+            if role != "brio-room":
+                assert tile.w * tile.h < hero_area, f"{role} larger than hero"
+
+    def test_hero_mode_missing_role_falls_back(self) -> None:
+        cams = self._six_cameras()
+        layout = compute_tile_layout(cams, 1920, 1080, mode="hero/nonexistent")
+        balanced = compute_tile_layout(cams, 1920, 1080, mode="balanced")
+        # Missing hero → fall back to balanced
+        assert layout == balanced
+
+    def test_sierpinski_mode_three_cameras_visible(self) -> None:
+        cams = self._six_cameras()
+        layout = compute_tile_layout(cams, 1920, 1080, mode="sierpinski")
+        # First 3 cameras get triangle corners (positive dimensions)
+        visible = [tile for tile in layout.values() if tile.w > 10 and tile.h > 10]
+        assert len(visible) == 3
+
+    def test_sierpinski_mode_hides_extras(self) -> None:
+        cams = self._six_cameras()
+        layout = compute_tile_layout(cams, 1920, 1080, mode="sierpinski")
+        # Cameras 4-6 should be hidden (negative x, 1x1 size)
+        hidden = [tile for tile in layout.values() if tile.w <= 10 or tile.h <= 10]
+        assert len(hidden) == 3
+        for tile in hidden:
+            assert tile.x < 0 or tile.w <= 10
+
+    def test_sierpinski_mode_corners_within_canvas(self) -> None:
+        cams = self._six_cameras()
+        layout = compute_tile_layout(cams, 1920, 1080, mode="sierpinski")
+        visible = [t for t in layout.values() if t.w > 10]
+        for tile in visible:
+            assert 0 <= tile.x < 1920
+            assert 0 <= tile.y < 1080
+            assert tile.x + tile.w <= 1920
+            assert tile.y + tile.h <= 1080
+
+    def test_sierpinski_empty_cameras(self) -> None:
+        layout = compute_tile_layout([], 1920, 1080, mode="sierpinski")
+        assert layout == {}
+
+    def test_unknown_mode_falls_back_to_balanced(self) -> None:
+        cams = self._six_cameras()
+        unknown = compute_tile_layout(cams, 1920, 1080, mode="nonsense")
+        balanced = compute_tile_layout(cams, 1920, 1080, mode="balanced")
+        assert unknown == balanced
+
+
 # ---------------------------------------------------------------------------
 # Overlay state tests
 # ---------------------------------------------------------------------------

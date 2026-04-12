@@ -10,6 +10,7 @@ from typing import Any
 
 from .config import PERCEPTION_STATE_PATH, SNAPSHOT_DIR, VISUAL_LAYER_STATE_PATH
 from .effects import try_graph_preset
+from .layout import compute_tile_layout
 from .models import OverlayData
 from .profiles import apply_camera_profile, evaluate_active_profile
 
@@ -33,6 +34,40 @@ def evaluate_camera_profile(compositor: Any) -> None:
         )
         compositor._active_profile_name = profile.name
         apply_camera_profile(profile)
+
+
+def apply_layout_mode(compositor: Any, mode: str) -> None:
+    """Recompute the tile layout and update compositor sink pad properties.
+
+    Runtime layout switch: no pipeline rebuild, no caps renegotiation.
+    GStreamer compositor scales each camera input to fit its pad's
+    width/height automatically.
+    """
+    cameras = list(getattr(compositor, "_camera_specs", {}).values())
+    if not cameras:
+        return
+
+    canvas_w = compositor.config.output_width
+    canvas_h = compositor.config.output_height
+    new_layout = compute_tile_layout(cameras, canvas_w, canvas_h, mode=mode)
+
+    applied = 0
+    for role, tile in new_layout.items():
+        elements = compositor._camera_elements.get(role, {})
+        pad = elements.get("comp_pad")
+        if pad is None:
+            continue
+        try:
+            pad.set_property("xpos", int(tile.x))
+            pad.set_property("ypos", int(tile.y))
+            pad.set_property("width", int(tile.w))
+            pad.set_property("height", int(tile.h))
+            applied += 1
+        except Exception:
+            log.debug("Failed to update pad for camera %s", role, exc_info=True)
+
+    compositor._layout_mode = mode
+    log.info("Layout mode: %s (applied to %d cameras)", mode, applied)
 
 
 def try_reconnect_camera(compositor: Any, role: str) -> bool:
@@ -185,6 +220,22 @@ def state_reader_loop(compositor: Any) -> None:
             except Exception as exc:
                 log.debug("Failed to process FX request: %s", exc)
                 fx_request_path.unlink(missing_ok=True)
+        # Layout mode switch (balanced / hero/{role} / sierpinski)
+        layout_path = SNAPSHOT_DIR / "layout-mode.txt"
+        if layout_path.exists():
+            try:
+                requested = layout_path.read_text().strip() or "balanced"
+                layout_path.unlink(missing_ok=True)
+                current = getattr(compositor, "_layout_mode", "balanced")
+                if requested != current:
+                    GLib = compositor._GLib
+                    if GLib:
+                        GLib.idle_add(lambda m=requested: apply_layout_mode(compositor, m) or False)
+                    else:
+                        apply_layout_mode(compositor, requested)
+            except Exception:
+                log.debug("Layout mode switch failed", exc_info=True)
+
         # Vinyl mode toggle (Stream Deck / API)
         vinyl_path = SNAPSHOT_DIR / "vinyl-mode.txt"
         if vinyl_path.exists():

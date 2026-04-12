@@ -199,5 +199,9 @@ def add_camera_branch(
     if not hasattr(compositor, "_camera_elements"):
         compositor._camera_elements = {}
         compositor._camera_specs = {}
-    compositor._camera_elements[cam.role] = {"src": src, "tee": camera_tee}
+    compositor._camera_elements[cam.role] = {
+        "src": src,
+        "tee": camera_tee,
+        "comp_pad": pad,
+    }
     compositor._camera_specs[cam.role] = cam

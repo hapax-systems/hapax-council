@@ -1,4 +1,11 @@
-"""Tile layout computation for the compositor canvas."""
+"""Tile layout computation for the compositor canvas.
+
+Layout modes:
+- "balanced" (default): grid layout, all cameras equal-sized, honoring any hero flag
+- "hero/{role}": one camera takes left 2/3 (or 1/2 if many cameras), others stack right
+- "sierpinski": 3 specific cameras fitted to the inscribed rectangles of a Sierpinski
+  triangle's 3 corners; other cameras hidden (width=0, height=0, off-canvas).
+"""
 
 from __future__ import annotations
 
@@ -22,16 +29,20 @@ def _fit_16x9(w: int, h: int) -> tuple[int, int, int, int]:
     return x_off, y_off, fit_w, fit_h
 
 
-def compute_tile_layout(
-    cameras: list[CameraSpec],
-    canvas_w: int = OUTPUT_WIDTH,
-    canvas_h: int = OUTPUT_HEIGHT,
-) -> dict[str, TileRect]:
-    """Compute tile positions for each camera on the output canvas.
+def _hidden_tile() -> TileRect:
+    """Tile rect for a camera that should not appear in the output.
 
-    Hero camera (if any) gets the left portion, others stack vertically on the right.
-    All tiles are 16:9 fitted and centered within their allocated slots.
+    Width 1 + negative x position — GStreamer compositor accepts this and
+    effectively removes the camera from view without triggering pad
+    renegotiation.
     """
+    return TileRect(x=-10, y=-10, w=1, h=1)
+
+
+def _balanced_layout(
+    cameras: list[CameraSpec], canvas_w: int, canvas_h: int
+) -> dict[str, TileRect]:
+    """Grid layout with optional hero (honors CameraSpec.hero flag)."""
     n = len(cameras)
     if n == 0:
         return {}
@@ -43,10 +54,7 @@ def compute_tile_layout(
 
     if heroes and len(others) >= 1:
         hero = heroes[0]
-        if len(others) <= 4:
-            hero_slot_w = (canvas_w * 2) // 3
-        else:
-            hero_slot_w = canvas_w // 2
+        hero_slot_w = (canvas_w * 2) // 3 if len(others) <= 4 else canvas_w // 2
         hero_slot_h = canvas_h
 
         hx, hy, hw, hh = _fit_16x9(hero_slot_w, hero_slot_h)
@@ -58,12 +66,7 @@ def compute_tile_layout(
 
         for i, cam in enumerate(others):
             sx, sy, sw, sh = _fit_16x9(right_w, slot_h)
-            layout[cam.role] = TileRect(
-                x=right_x + sx,
-                y=i * slot_h + sy,
-                w=sw,
-                h=sh,
-            )
+            layout[cam.role] = TileRect(x=right_x + sx, y=i * slot_h + sy, w=sw, h=sh)
     else:
         cols = math.ceil(math.sqrt(n))
         rows = math.ceil(n / cols)
@@ -73,11 +76,156 @@ def compute_tile_layout(
             col = i % cols
             row = i // cols
             sx, sy, sw, sh = _fit_16x9(slot_w, slot_h)
-            layout[cam.role] = TileRect(
-                x=col * slot_w + sx,
-                y=row * slot_h + sy,
-                w=sw,
-                h=sh,
-            )
+            layout[cam.role] = TileRect(x=col * slot_w + sx, y=row * slot_h + sy, w=sw, h=sh)
 
     return layout
+
+
+def _hero_layout(
+    cameras: list[CameraSpec], hero_role: str, canvas_w: int, canvas_h: int
+) -> dict[str, TileRect]:
+    """One named camera takes the left 2/3; others stack on the right."""
+    hero = next((c for c in cameras if c.role == hero_role), None)
+    others = [c for c in cameras if c.role != hero_role]
+    if hero is None or not others:
+        # Fallback to balanced if the requested hero is missing
+        return _balanced_layout(cameras, canvas_w, canvas_h)
+
+    layout: dict[str, TileRect] = {}
+    hero_slot_w = (canvas_w * 2) // 3 if len(others) <= 4 else canvas_w // 2
+
+    hx, hy, hw, hh = _fit_16x9(hero_slot_w, canvas_h)
+    layout[hero.role] = TileRect(x=hx, y=hy, w=hw, h=hh)
+
+    right_x = hero_slot_w
+    right_w = canvas_w - hero_slot_w
+    slot_h = canvas_h // len(others)
+    for i, cam in enumerate(others):
+        sx, sy, sw, sh = _fit_16x9(right_w, slot_h)
+        layout[cam.role] = TileRect(x=right_x + sx, y=i * slot_h + sy, w=sw, h=sh)
+
+    return layout
+
+
+def _sierpinski_layout(
+    cameras: list[CameraSpec], canvas_w: int, canvas_h: int
+) -> dict[str, TileRect]:
+    """Three cameras fitted into the 3 corner inscribed rectangles.
+
+    Uses the same geometry as SierpinskiRenderer._inscribed_rect(). Cameras
+    beyond the first 3 are hidden. The triangle scale is 0.75 of canvas
+    height, centered slightly above center (same as the renderer).
+    """
+    layout: dict[str, TileRect] = {}
+    if not cameras:
+        return layout
+
+    # Triangle vertices (matches sierpinski_renderer._get_triangle(scale=0.75, y_off=-0.02))
+    scale = 0.75
+    y_offset = -0.02
+    tri_h = scale * canvas_h * 0.866
+    cx = canvas_w * 0.5
+    cy = canvas_h * 0.5 + y_offset * canvas_h
+    half_base = scale * canvas_h * 0.5
+    tri = [
+        (cx, cy - tri_h * 0.667),  # top
+        (cx - half_base, cy + tri_h * 0.333),  # bottom-left
+        (cx + half_base, cy + tri_h * 0.333),  # bottom-right
+    ]
+
+    def midpoint(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+        return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
+
+    m01 = midpoint(tri[0], tri[1])
+    m12 = midpoint(tri[1], tri[2])
+    m02 = midpoint(tri[0], tri[2])
+
+    corners = [
+        [tri[0], m01, m02],  # top
+        [m01, tri[1], m12],  # bottom-left
+        [m02, m12, tri[2]],  # bottom-right
+    ]
+
+    def inscribed_rect(
+        tri_pts: list[tuple[float, float]],
+    ) -> tuple[int, int, int, int]:
+        """Largest 16:9 rect inscribed in the triangle (same math as renderer)."""
+        edges = [
+            (math.dist(tri_pts[0], tri_pts[1]), 0, 1, 2),
+            (math.dist(tri_pts[1], tri_pts[2]), 1, 2, 0),
+            (math.dist(tri_pts[2], tri_pts[0]), 2, 0, 1),
+        ]
+        edges.sort(key=lambda e: e[0], reverse=True)
+        _, bi, bj, apex_idx = edges[0]
+        base_a = tri_pts[bi]
+        base_b = tri_pts[bj]
+        apex = tri_pts[apex_idx]
+
+        bx = base_b[0] - base_a[0]
+        by = base_b[1] - base_a[1]
+        base_len = math.sqrt(bx * bx + by * by)
+        if base_len < 1.0:
+            return (0, 0, 0, 0)
+
+        ux, uy = bx / base_len, by / base_len
+        nx, ny = -uy, ux
+        apex_dot = (apex[0] - base_a[0]) * nx + (apex[1] - base_a[1]) * ny
+        if apex_dot < 0:
+            nx, ny = -nx, -ny
+            apex_dot = -apex_dot
+        tri_height = apex_dot
+
+        aspect = 16.0 / 9.0
+        rect_h = base_len / (aspect + base_len / tri_height)
+        rect_w = aspect * rect_h
+
+        if rect_w > base_len * 0.95:
+            rect_w = base_len * 0.95
+            rect_h = rect_w / aspect
+        if rect_h > tri_height * 0.95:
+            rect_h = tri_height * 0.95
+            rect_w = rect_h * aspect
+
+        base_mid_x = (base_a[0] + base_b[0]) * 0.5
+        base_mid_y = (base_a[1] + base_b[1]) * 0.5
+        inward = rect_h * 0.35
+        center_x = base_mid_x + nx * inward
+        center_y = base_mid_y + ny * inward
+        rx = center_x - rect_w * 0.5
+        ry = center_y - rect_h * 0.5
+        return (int(rx), int(ry), int(rect_w), int(rect_h))
+
+    # First 3 cameras → 3 corners. Remaining → hidden.
+    for i, cam in enumerate(cameras):
+        if i < 3:
+            x, y, w, h = inscribed_rect(corners[i])
+            layout[cam.role] = TileRect(x=x, y=y, w=w, h=h)
+        else:
+            layout[cam.role] = _hidden_tile()
+
+    return layout
+
+
+def compute_tile_layout(
+    cameras: list[CameraSpec],
+    canvas_w: int = OUTPUT_WIDTH,
+    canvas_h: int = OUTPUT_HEIGHT,
+    mode: str = "balanced",
+) -> dict[str, TileRect]:
+    """Compute tile positions for each camera on the output canvas.
+
+    Args:
+        cameras: Camera specs to lay out.
+        canvas_w, canvas_h: Output canvas dimensions.
+        mode: Layout mode. One of:
+            - "balanced" — grid layout, honors CameraSpec.hero flag (default)
+            - "hero/{role}" — named camera dominant, others stacked right
+            - "sierpinski" — 3 cameras in triangle corners, rest hidden
+    """
+    if mode == "sierpinski":
+        return _sierpinski_layout(cameras, canvas_w, canvas_h)
+    if mode.startswith("hero/"):
+        hero_role = mode[len("hero/") :]
+        return _hero_layout(cameras, hero_role, canvas_w, canvas_h)
+    # Default: balanced
+    return _balanced_layout(cameras, canvas_w, canvas_h)

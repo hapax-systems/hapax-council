@@ -475,6 +475,40 @@ async def get_vinyl_mode():
     return {"vinyl_mode": enabled}
 
 
+class LayoutModeRequest(BaseModel):
+    mode: str  # "balanced" | "hero/{role}" | "sierpinski"
+
+
+@router.post("/studio/layout")
+async def set_layout_mode(req: LayoutModeRequest):
+    """Switch compositor camera layout mode.
+
+    Valid modes:
+    - "balanced": default grid layout
+    - "hero/{role}": one camera dominant (e.g. "hero/brio-room")
+    - "sierpinski": 3 cameras in Sierpinski triangle corners, rest hidden
+
+    Writes to /dev/shm/hapax-compositor/layout-mode.txt. The compositor's
+    state_reader_loop picks up the change within 100ms and applies it
+    via runtime pad property updates.
+    """
+    mode = req.mode.strip()
+    if not mode:
+        return JSONResponse({"error": "mode is required"}, status_code=400)
+    if mode != "balanced" and mode != "sierpinski" and not mode.startswith("hero/"):
+        return JSONResponse(
+            {"error": "mode must be 'balanced', 'sierpinski', or 'hero/{role}'"},
+            status_code=400,
+        )
+    layout_path = Path("/dev/shm/hapax-compositor/layout-mode.txt")
+    try:
+        layout_path.parent.mkdir(parents=True, exist_ok=True)
+        layout_path.write_text(mode)
+        return {"mode": mode}
+    except OSError as e:
+        return JSONResponse({"error": f"write failed: {e}"}, status_code=503)
+
+
 @router.post("/studio/visual-layer/toggle")
 async def toggle_visual_layer():
     """Toggle the visual layer overlay on/off in the compositor."""
