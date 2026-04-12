@@ -178,7 +178,45 @@ struct DynamicPass {
     /// Backend dispatcher key. Phase 3a wires only "wgsl_render" — future
     /// sub-phases (3b/3c/3d) add "cairo", "text", "image_file" branches.
     backend: String,
+    /// Render target this pass belongs to. Phase 5b1: every pass is
+    /// tagged with the target it serves so the executor can group them
+    /// for output binding. Texture names in `inputs` and `output` are
+    /// already namespaced by `namespace_texture_name(name, target)`
+    /// at build time. Stored for diagnostics + Phase 5b3 host wiring;
+    /// the render hot path reads namespaced texture names directly.
+    #[allow(dead_code)]
+    target: String,
 }
+
+/// Rewrite a texture name to be target-namespaced when appropriate.
+///
+/// Phase 5b1: per-target intermediate textures (`layer_N`, `final`)
+/// must be unique across targets. Global pseudo-textures (`@live`,
+/// `@accum_*`, `content_slot_*`) and already-namespaced names
+/// (anything containing ":") are returned unchanged.
+fn namespace_texture_name(name: &str, target: &str) -> String {
+    if name.contains(':') {
+        return name.to_string();
+    }
+    if name.starts_with('@') {
+        // @live, @smooth, @hls, @accum_* — global pseudo-textures.
+        return name.to_string();
+    }
+    if name.starts_with("content_slot_") {
+        // Content slot textures are global; populated by the
+        // ContentSourceManager and shared across every target.
+        return name.to_string();
+    }
+    format!("{}:{}", target, name)
+}
+
+/// Texture name used for the primary target's final output.
+///
+/// Phase 5b1: ShmOutput, the surface blit, and most fallback lookups
+/// previously read `"final"` directly. With multi-target rendering
+/// they read `MAIN_FINAL_TEXTURE` instead. v1 plans synthesize a
+/// `"main"` target so legacy plans produce this same key.
+const MAIN_FINAL_TEXTURE: &str = "main:final";
 
 /// Named texture in the texture pool.
 struct PoolTexture {
@@ -370,8 +408,9 @@ impl DynamicPipeline {
             pipeline.try_reload(device);
         }
 
-        // Ensure "final" texture exists even with no plan
-        pipeline.ensure_texture(device, "final");
+        // Phase 5b1: ensure the main target's final texture exists even
+        // with no plan loaded. The blit + ShmOutput paths read this name.
+        pipeline.ensure_texture(device, MAIN_FINAL_TEXTURE);
 
         pipeline
     }
@@ -398,20 +437,47 @@ impl DynamicPipeline {
             }
         };
 
-        // Phase 5a: collapse v1 (flat `passes`) and v2 (`targets` map)
-        // shapes into the canonical pass list. The executor today only
-        // renders one target — Phase 5b will iterate every target.
-        let active_passes = plan.main_passes();
+        // Phase 5b1: walk every target in the v2 plan. The
+        // passes_by_target() helper collapses v1 (flat passes) into
+        // a synthetic "main" target, so legacy plans hit this path
+        // unchanged. Each target's passes are tagged with the target
+        // name and have their texture references namespaced
+        // (`layer_N` → `{target}:layer_N`, `final` → `{target}:final`).
+        let by_target = plan.passes_by_target();
 
-        if active_passes.is_empty() {
+        if by_target.values().all(|v| v.is_empty()) {
             self.passes.clear();
             log::info!("dynamic_pipeline: loaded empty plan (renders black)");
             return true;
         }
 
-        // Collect all texture names referenced in the plan
+        // Build a flat list of (target, pass-with-rewritten-textures) tuples
+        // so the build phase below can iterate uniformly. The render loop
+        // walks the resulting flat list — texture naming carries the per-
+        // target separation.
+        let mut active_passes: Vec<(String, PlanPass)> = Vec::new();
+        // Iterate target keys in deterministic (sorted) order so the build
+        // order is reproducible across runs and matches Python's stable
+        // target iteration in Phase 5a.
+        let mut target_keys: Vec<String> = by_target.keys().cloned().collect();
+        target_keys.sort();
+        for target_name in &target_keys {
+            for plan_pass in by_target.get(target_name).unwrap_or(&Vec::new()) {
+                let mut rewritten = plan_pass.clone();
+                rewritten.inputs = rewritten
+                    .inputs
+                    .into_iter()
+                    .map(|n| namespace_texture_name(&n, target_name))
+                    .collect();
+                rewritten.output = namespace_texture_name(&rewritten.output, target_name);
+                active_passes.push((target_name.clone(), rewritten));
+            }
+        }
+
+        // Collect all texture names referenced in the plan (already
+        // namespaced).
         let mut texture_names: Vec<String> = Vec::new();
-        for pass in &active_passes {
+        for (_target, pass) in &active_passes {
             for input in &pass.inputs {
                 if !texture_names.contains(input) {
                     texture_names.push(input.clone());
@@ -427,8 +493,13 @@ impl DynamicPipeline {
             self.ensure_texture(device, name);
         }
 
-        // Ensure temporal textures for feedback nodes (@accum_ inputs)
-        for pass in &active_passes {
+        // Ensure temporal textures for feedback nodes (@accum_ inputs).
+        // Temporal textures are NOT namespaced — they're keyed by node_id
+        // alone, which matches the @accum_{node_id} reference convention
+        // emitted by the Python compiler. Cross-target sharing of the
+        // same temporal node is a known limitation; the current
+        // vocabulary is single-target so this is a non-issue today.
+        for (_target, pass) in &active_passes {
             if pass.inputs.iter().any(|n| n.starts_with("@accum_")) {
                 self.ensure_temporal_texture(device, &pass.node_id);
             }
@@ -438,7 +509,7 @@ impl DynamicPipeline {
         let mut new_passes = Vec::new();
         let mut input_layouts = HashMap::new();
 
-        for plan_pass in &active_passes {
+        for (target_name, plan_pass) in &active_passes {
             let shader_path = self.plan_dir.join(&plan_pass.shader);
             let fragment_source = match std::fs::read_to_string(&shader_path) {
                 Ok(src) => src,
@@ -509,6 +580,7 @@ impl DynamicPipeline {
                     steps_per_frame: plan_pass.steps_per_frame,
                     requires_content_slots: plan_pass.requires_content_slots,
                     backend: plan_pass.backend.clone(),
+                    target: target_name.clone(),
                 });
             } else {
                 // Render pass
@@ -623,6 +695,7 @@ impl DynamicPipeline {
                     steps_per_frame: plan_pass.steps_per_frame,
                     requires_content_slots: plan_pass.requires_content_slots,
                     backend: plan_pass.backend.clone(),
+                    target: target_name.clone(),
                 });
             }
         }
@@ -955,8 +1028,11 @@ impl DynamicPipeline {
             }
         }
 
-        // Blit final texture to surface
-        if let Some(final_tex) = self.textures.get("final") {
+        // Blit the main target's final texture to the surface.
+        // Phase 5b1: with multi-target rendering, the surface always
+        // shows the "main" target. Other targets render their own
+        // outputs accessible via get_target_output_view().
+        if let Some(final_tex) = self.textures.get(MAIN_FINAL_TEXTURE) {
             let blit_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("blit bind group"),
                 layout: &self.blit_bind_group_layout,
@@ -996,9 +1072,12 @@ impl DynamicPipeline {
             rpass.draw(0..3, 0..1);
         }
 
-        // Copy final texture to SHM output (every other frame to save bandwidth)
+        // Copy the main target's final texture to SHM output every
+        // other frame to save bandwidth. Phase 5b1: SHM consumers
+        // (the visual surface frame.jpg path) always read the main
+        // target — additional targets aren't routed through SHM.
         if self.frame_count % 2 == 0 {
-            if let Some(final_tex) = self.textures.get("final") {
+            if let Some(final_tex) = self.textures.get(MAIN_FINAL_TEXTURE) {
                 self.shm_output
                     .copy_to_staging(&mut encoder, &final_tex.texture);
             }
@@ -1012,6 +1091,31 @@ impl DynamicPipeline {
         }
 
         self.frame_count += 1;
+    }
+
+    /// Return the texture view for a given target's final output, if any.
+    ///
+    /// Phase 5b1: future host wiring (5b3 OutputRouter) calls this to
+    /// route the appropriate render target to the appropriate sink
+    /// (v4l2, NDI, winit window, etc.). Returns None if the target
+    /// doesn't exist in the current plan or hasn't rendered yet.
+    pub fn get_target_output_view(&self, target: &str) -> Option<&wgpu::TextureView> {
+        let key = format!("{}:final", target);
+        self.textures.get(&key).map(|t| &t.view)
+    }
+
+    /// Return the list of target names currently present in the plan.
+    ///
+    /// Walks the texture pool for `*:final` keys, which are the
+    /// canonical "this target is live" indicator.
+    pub fn target_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .textures
+            .keys()
+            .filter_map(|k| k.strip_suffix(":final").map(str::to_string))
+            .collect();
+        names.sort();
+        names
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
@@ -1242,7 +1346,7 @@ impl DynamicPipeline {
             // Binding 0: pipeline input texture
             let view = if let Some(name) = pipeline_inputs.first() {
                 self.textures.get(name.as_str())
-                    .or_else(|| self.textures.get("final"))
+                    .or_else(|| self.textures.get(MAIN_FINAL_TEXTURE))
                     .map(|t| &t.view)
                     .unwrap()
             } else {
@@ -1264,7 +1368,12 @@ impl DynamicPipeline {
                     .unwrap_or(0);
                 let slot_view = content_sources
                     .map(|cs| cs.slot_view(idx))
-                    .unwrap_or_else(|| self.textures.get("final").map(|t| &t.view).unwrap());
+                    .unwrap_or_else(|| {
+                        self.textures
+                            .get(MAIN_FINAL_TEXTURE)
+                            .map(|t| &t.view)
+                            .unwrap()
+                    });
                 entries.push(wgpu::BindGroupEntry {
                     binding: (2 + i) as u32,
                     resource: wgpu::BindingResource::TextureView(slot_view),
@@ -1276,7 +1385,7 @@ impl DynamicPipeline {
                 let view = if let Some(node_id) = name.strip_prefix("@accum_") {
                     // Temporal accumulation input — use feedback buffer
                     self.temporal_textures.get(node_id)
-                        .or_else(|| self.textures.get("final"))
+                        .or_else(|| self.textures.get(MAIN_FINAL_TEXTURE))
                         .map(|t| &t.view)
                         .unwrap()
                 } else {
@@ -1326,7 +1435,7 @@ impl DynamicPipeline {
         let view = if let Some(tex) = self.textures.get(output_name) {
             &tex.view
         } else {
-            &self.textures.get("final").unwrap().view
+            &self.textures.get(MAIN_FINAL_TEXTURE).unwrap().view
         };
 
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1470,6 +1579,53 @@ mod tests {
         let json = r#"{"version": 1, "passes": []}"#;
         let plan: PlanFile = serde_json::from_str(json).expect("empty v1 plan parses");
         assert!(plan.main_passes().is_empty());
+    }
+
+    // ----- Phase 5b1: namespace_texture_name + multi-target plumbing -----
+
+    #[test]
+    fn namespace_layer_names_get_target_prefix() {
+        assert_eq!(namespace_texture_name("layer_0", "main"), "main:layer_0");
+        assert_eq!(namespace_texture_name("layer_5", "hud"), "hud:layer_5");
+    }
+
+    #[test]
+    fn namespace_final_gets_target_prefix() {
+        assert_eq!(namespace_texture_name("final", "main"), "main:final");
+        assert_eq!(namespace_texture_name("final", "preview"), "preview:final");
+    }
+
+    #[test]
+    fn namespace_already_namespaced_unchanged() {
+        // Idempotent: a name that already contains ":" is left alone.
+        assert_eq!(namespace_texture_name("main:final", "hud"), "main:final");
+        assert_eq!(namespace_texture_name("main:layer_3", "hud"), "main:layer_3");
+    }
+
+    #[test]
+    fn namespace_layer_source_pseudo_textures_unchanged() {
+        // @live, @smooth, @hls and @accum_* are global pseudo-textures
+        // and must NOT be namespaced.
+        assert_eq!(namespace_texture_name("@live", "main"), "@live");
+        assert_eq!(namespace_texture_name("@smooth", "hud"), "@smooth");
+        assert_eq!(namespace_texture_name("@hls", "main"), "@hls");
+        assert_eq!(namespace_texture_name("@accum_rd", "main"), "@accum_rd");
+        assert_eq!(namespace_texture_name("@accum_feedback", "preview"), "@accum_feedback");
+    }
+
+    #[test]
+    fn namespace_content_slots_unchanged() {
+        // Content slots are global, populated by ContentSourceManager.
+        assert_eq!(namespace_texture_name("content_slot_0", "main"), "content_slot_0");
+        assert_eq!(namespace_texture_name("content_slot_3", "hud"), "content_slot_3");
+    }
+
+    #[test]
+    fn main_final_constant_matches_namespacing() {
+        // Sanity: the constant ShmOutput / surface blit reads from
+        // matches what namespace_texture_name produces for the main
+        // target's final output.
+        assert_eq!(MAIN_FINAL_TEXTURE, &namespace_texture_name("final", "main"));
     }
 
     #[test]
