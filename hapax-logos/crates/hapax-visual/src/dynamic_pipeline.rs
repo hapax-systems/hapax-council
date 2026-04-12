@@ -4,6 +4,8 @@
 //! that reads execution plans from `/dev/shm/hapax-imagination/pipeline/plan.json`.
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -15,7 +17,23 @@ use wgpu::util::DeviceExt;
 use crate::content_sources::ContentSourceManager;
 use crate::output::ShmOutput;
 use crate::state::StateReader;
+use crate::transient_pool::TransientTexturePool;
 use crate::uniform_buffer::UniformBuffer;
+
+/// Compute a stable bucket key for the transient texture pool from the
+/// triple `(width, height, format)`. All intermediates that share the
+/// same descriptor land in the same bucket and recycle GPU memory across
+/// frames. The current executor uses one descriptor for every
+/// intermediate, so this resolves to a single bucket per pool today.
+/// When the Python compile phase emits per-stage `pool_key` values, this
+/// helper can be replaced by a plan-driven lookup.
+fn compute_pool_key(width: u32, height: u32, format: wgpu::TextureFormat) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    width.hash(&mut hasher);
+    height.hash(&mut hasher);
+    format.hash(&mut hasher);
+    hasher.finish()
+}
 
 const PLAN_DIR: &str = "/dev/shm/hapax-imagination/pipeline";
 const PLAN_FILE: &str = "/dev/shm/hapax-imagination/pipeline/plan.json";
@@ -226,7 +244,27 @@ struct PoolTexture {
 
 pub struct DynamicPipeline {
     passes: Vec<DynamicPass>,
-    textures: HashMap<String, PoolTexture>,
+    /// Bucketed allocator for non-temporal intermediate textures. F1 of the
+    /// compositor unification epic landed this pool standalone (PR #670);
+    /// B4 wires it into the executor. Today every intermediate shares one
+    /// descriptor, so the pool resolves to a single bucket per
+    /// `intermediate_pool_key`.
+    intermediate_pool: TransientTexturePool<PoolTexture>,
+    /// Single bucket key derived from `(width, height, TEXTURE_FORMAT)` at
+    /// `new()` and `resize()` time. When the Python compile phase emits
+    /// per-stage `pool_key` values, this collapses to a per-call lookup.
+    intermediate_pool_key: u64,
+    /// Name → slot index map. Replaces the old
+    /// `textures: HashMap<String, PoolTexture>` lookup; the pool owns the
+    /// textures themselves now and `intermediate()` resolves through this
+    /// map. Names are still meaningful (e.g. `"@live"`, `"main:final"`,
+    /// `"@accum_*"` callers) — the slot indirection is purely an
+    /// allocation strategy.
+    intermediate_slots: HashMap<String, usize>,
+    /// Temporal feedback textures. Intentionally NOT pooled — they
+    /// persist across frames and are cleared, not recycled. Keyed by
+    /// `node_id` because `@accum_{node_id}` is the reference convention
+    /// the Python compiler emits.
     temporal_textures: HashMap<String, PoolTexture>,
     uniform_buffer: UniformBuffer,
     shm_output: ShmOutput,
@@ -380,9 +418,13 @@ impl DynamicPipeline {
             }],
         });
 
+        let intermediate_pool_key = compute_pool_key(width, height, TEXTURE_FORMAT);
+
         let mut pipeline = Self {
             passes: Vec::new(),
-            textures: HashMap::new(),
+            intermediate_pool: TransientTexturePool::new(),
+            intermediate_pool_key,
+            intermediate_slots: HashMap::new(),
             temporal_textures: HashMap::new(),
             uniform_buffer,
             shm_output,
@@ -822,7 +864,7 @@ impl DynamicPipeline {
         let needs_live = self.passes.iter().any(|p| p.inputs.iter().any(|i| i == "@live"));
         if needs_live {
             self.ensure_texture(device, "@live");
-            if let Some(live_tex) = self.textures.get("@live") {
+            if let Some(live_tex) = self.intermediate("@live") {
                 let w = self.width as usize;
                 let h = self.height as usize;
                 let mut pixels = vec![0u8; w * h * 4];
@@ -958,7 +1000,7 @@ impl DynamicPipeline {
                 );
 
                 // Resolve output texture view
-                let output_view = match self.textures.get(&pass.output) {
+                let output_view = match self.intermediate(&pass.output) {
                     Some(tex) => &tex.view,
                     None => continue,
                 };
@@ -990,7 +1032,7 @@ impl DynamicPipeline {
                 // Copy output to temporal buffer for next frame's feedback
                 if is_temporal {
                     if let (Some(src), Some(dst)) = (
-                        self.textures.get(&pass.output),
+                        self.intermediate(&pass.output),
                         self.temporal_textures.get(&pass.node_id),
                     ) {
                         let copy_size = wgpu::Extent3d {
@@ -1038,7 +1080,7 @@ impl DynamicPipeline {
         // Phase 5b1: with multi-target rendering, the surface always
         // shows the "main" target. Other targets render their own
         // outputs accessible via get_target_output_view().
-        if let Some(final_tex) = self.textures.get(MAIN_FINAL_TEXTURE) {
+        if let Some(final_tex) = self.intermediate(MAIN_FINAL_TEXTURE) {
             let blit_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("blit bind group"),
                 layout: &self.blit_bind_group_layout,
@@ -1083,7 +1125,7 @@ impl DynamicPipeline {
         // (the visual surface frame.jpg path) always read the main
         // target — additional targets aren't routed through SHM.
         if self.frame_count % 2 == 0 {
-            if let Some(final_tex) = self.textures.get(MAIN_FINAL_TEXTURE) {
+            if let Some(final_tex) = self.intermediate(MAIN_FINAL_TEXTURE) {
                 self.shm_output
                     .copy_to_staging(&mut encoder, &final_tex.texture);
             }
@@ -1107,17 +1149,16 @@ impl DynamicPipeline {
     /// doesn't exist in the current plan or hasn't rendered yet.
     pub fn get_target_output_view(&self, target: &str) -> Option<&wgpu::TextureView> {
         let key = format!("{}:final", target);
-        self.textures.get(&key).map(|t| &t.view)
+        self.intermediate(&key).map(|t| &t.view)
     }
 
     /// Return the list of target names currently present in the plan.
     ///
-    /// Walks the texture pool for `*:final` keys, which are the
-    /// canonical "this target is live" indicator.
+    /// Walks the slot map for `*:final` keys, which are the canonical
+    /// "this target is live" indicator.
     pub fn target_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
-            .textures
-            .keys()
+            .intermediate_names()
             .filter_map(|k| k.strip_suffix(":final").map(str::to_string))
             .collect();
         names.sort();
@@ -1128,14 +1169,24 @@ impl DynamicPipeline {
         self.width = width;
         self.height = height;
 
-        // Recreate all pool textures at new size
-        let names: Vec<String> = self.textures.keys().cloned().collect();
-        for name in names {
-            self.textures.remove(&name);
-            self.ensure_texture(device, &name);
+        // Recreate the bucket key for the new dimensions — the old key
+        // hashed the previous (width, height) and would now miss.
+        self.intermediate_pool_key = compute_pool_key(width, height, TEXTURE_FORMAT);
+
+        // Snapshot the names before clearing the slot map, then re-acquire
+        // through the pool. The pool's `clear()` drops every cached
+        // texture so the new `ensure_texture` calls allocate fresh slots
+        // sized for the new viewport.
+        let names: Vec<String> = self.intermediate_slots.keys().cloned().collect();
+        self.intermediate_pool.clear();
+        self.intermediate_slots.clear();
+        for name in &names {
+            self.ensure_texture(device, name);
         }
 
-        // Recreate temporal textures at new size
+        // Recreate temporal textures at new size. They are explicitly NOT
+        // pooled (different lifetime semantics — persist across frames
+        // and clear, not recycle).
         let temporal_names: Vec<String> = self.temporal_textures.keys().cloned().collect();
         for name in temporal_names {
             self.temporal_textures.remove(&name);
@@ -1147,31 +1198,69 @@ impl DynamicPipeline {
 
     // --- Internal helpers ---
 
+    /// Borrow the `PoolTexture` allocated for `name`, if any. Reads
+    /// through the slot indirection: `name` → slot index → pool bucket.
+    /// Returns `None` if the name was never `ensure_texture`'d.
+    fn intermediate(&self, name: &str) -> Option<&PoolTexture> {
+        let slot = *self.intermediate_slots.get(name)?;
+        self.intermediate_pool.get(self.intermediate_pool_key, slot)
+    }
+
+    /// Iterator over the names of every intermediate currently in the
+    /// slot map. Order is unspecified (HashMap iteration). Used by
+    /// `target_names()` and `resize()`.
+    fn intermediate_names(&self) -> impl Iterator<Item = &String> + '_ {
+        self.intermediate_slots.keys()
+    }
+
+    /// Return *some* intermediate texture, used as a last-resort fallback
+    /// in the bind-group-construction paths when the requested name is
+    /// missing and `MAIN_FINAL_TEXTURE` is also unavailable. Returns
+    /// `None` if the slot map is empty (rare — happens before the first
+    /// `ensure_texture` call).
+    fn any_intermediate(&self) -> Option<&PoolTexture> {
+        self.intermediate_slots
+            .values()
+            .next()
+            .copied()
+            .and_then(|slot| self.intermediate_pool.get(self.intermediate_pool_key, slot))
+    }
+
     fn ensure_texture(&mut self, device: &wgpu::Device, name: &str) {
-        if self.textures.contains_key(name) {
+        if self.intermediate_slots.contains_key(name) {
             return;
         }
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(name),
-            size: wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: TEXTURE_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
+        let key = self.intermediate_pool_key;
+        let width = self.width;
+        let height = self.height;
+
+        // The factory closure runs synchronously inside `acquire_tracked`
+        // and is dropped before the call returns, so capturing `device`
+        // and `name` by reference is sound.
+        let slot = self.intermediate_pool.acquire_tracked(key, || {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(name),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: TEXTURE_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::STORAGE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            PoolTexture { texture, view }
         });
-        let view = texture.create_view(&Default::default());
-        self.textures.insert(name.to_string(), PoolTexture { texture, view });
+        self.intermediate_slots.insert(name.to_string(), slot);
     }
 
     fn ensure_temporal_texture(&mut self, device: &wgpu::Device, node_id: &str) {
@@ -1351,12 +1440,12 @@ impl DynamicPipeline {
 
             // Binding 0: pipeline input texture
             let view = if let Some(name) = pipeline_inputs.first() {
-                self.textures.get(name.as_str())
-                    .or_else(|| self.textures.get(MAIN_FINAL_TEXTURE))
+                self.intermediate(name.as_str())
+                    .or_else(|| self.intermediate(MAIN_FINAL_TEXTURE))
                     .map(|t| &t.view)
                     .unwrap()
             } else {
-                self.textures.values().next().map(|t| &t.view).unwrap()
+                self.any_intermediate().map(|t| &t.view).unwrap()
             };
             entries.push(wgpu::BindGroupEntry {
                 binding: 0,
@@ -1375,8 +1464,7 @@ impl DynamicPipeline {
                 let slot_view = content_sources
                     .map(|cs| cs.slot_view(idx))
                     .unwrap_or_else(|| {
-                        self.textures
-                            .get(MAIN_FINAL_TEXTURE)
+                        self.intermediate(MAIN_FINAL_TEXTURE)
                             .map(|t| &t.view)
                             .unwrap()
                     });
@@ -1391,7 +1479,7 @@ impl DynamicPipeline {
                 let view = if let Some(node_id) = name.strip_prefix("@accum_") {
                     // Temporal accumulation input — use feedback buffer
                     self.temporal_textures.get(node_id)
-                        .or_else(|| self.textures.get(MAIN_FINAL_TEXTURE))
+                        .or_else(|| self.intermediate(MAIN_FINAL_TEXTURE))
                         .map(|t| &t.view)
                         .unwrap()
                 } else {
@@ -1399,8 +1487,8 @@ impl DynamicPipeline {
                     // the rest of the file was migrated to MAIN_FINAL_TEXTURE.
                     // The bare "final" key no longer exists in the texture
                     // pool — every final texture is target-namespaced.
-                    self.textures.get(name.as_str())
-                        .or_else(|| self.textures.get(MAIN_FINAL_TEXTURE))
+                    self.intermediate(name.as_str())
+                        .or_else(|| self.intermediate(MAIN_FINAL_TEXTURE))
                         .map(|t| &t.view)
                         .unwrap()
                 };
@@ -1416,7 +1504,7 @@ impl DynamicPipeline {
         }
         // If no inputs, still provide a default texture+sampler (shaders expect at least one)
         if inputs.is_empty() {
-            if let Some(tex) = self.textures.values().next() {
+            if let Some(tex) = self.any_intermediate() {
                 entries.push(wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&tex.view),
@@ -1442,10 +1530,10 @@ impl DynamicPipeline {
     ) -> wgpu::BindGroup {
         let layout = Self::create_storage_texture_layout(device);
 
-        let view = if let Some(tex) = self.textures.get(output_name) {
+        let view = if let Some(tex) = self.intermediate(output_name) {
             &tex.view
         } else {
-            &self.textures.get(MAIN_FINAL_TEXTURE).unwrap().view
+            &self.intermediate(MAIN_FINAL_TEXTURE).unwrap().view
         };
 
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1671,5 +1759,50 @@ mod tests {
         assert_eq!(p.uniforms.get("amplitude").copied(), Some(0.5));
         assert_eq!(p.param_order, vec!["amplitude"]);
         assert!(!p.requires_content_slots);
+    }
+
+    // ----- B4: TransientTexturePool wiring — pool-key bookkeeping -----
+
+    #[test]
+    fn pool_key_is_deterministic_for_same_inputs() {
+        let k1 = compute_pool_key(1920, 1080, TEXTURE_FORMAT);
+        let k2 = compute_pool_key(1920, 1080, TEXTURE_FORMAT);
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn pool_key_distinguishes_dimensions() {
+        // Different (width, height) must hash to different buckets so
+        // resize() does not accidentally reuse stale slots from the prior
+        // viewport size.
+        let a = compute_pool_key(1920, 1080, TEXTURE_FORMAT);
+        let b = compute_pool_key(1280, 720, TEXTURE_FORMAT);
+        let c = compute_pool_key(1080, 1920, TEXTURE_FORMAT);
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+    }
+
+    #[test]
+    fn pool_key_distinguishes_formats() {
+        // The bucket strategy is keyed by (width, height, format). Two
+        // intermediates with the same dimensions but different formats
+        // must land in different buckets.
+        let rgba8 = compute_pool_key(1920, 1080, wgpu::TextureFormat::Rgba8Unorm);
+        let rgba16 = compute_pool_key(1920, 1080, wgpu::TextureFormat::Rgba16Float);
+        assert_ne!(rgba8, rgba16);
+    }
+
+    #[test]
+    fn pool_key_changes_when_only_one_dimension_changes() {
+        // Bucket key changes if only width changes, only height changes,
+        // or both change. Guards against a hashing strategy that
+        // accidentally collapses related descriptors.
+        let base = compute_pool_key(1920, 1080, TEXTURE_FORMAT);
+        let wider = compute_pool_key(1921, 1080, TEXTURE_FORMAT);
+        let taller = compute_pool_key(1920, 1081, TEXTURE_FORMAT);
+        assert_ne!(base, wider);
+        assert_ne!(base, taller);
+        assert_ne!(wider, taller);
     }
 }
