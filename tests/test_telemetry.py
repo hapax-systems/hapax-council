@@ -42,6 +42,69 @@ class TestHapaxSpan:
             with hapax_span("stimmung", "update", metadata={"stance": "nominal"}) as _span:
                 pass  # no crash
 
+    def test_span_propagates_caller_exception_cleanly(self):
+        """Exception raised inside the yielded block must propagate as itself,
+        not as 'generator didn't stop after throw()'.
+
+        This regressed on 2026-04-12 and silently killed the director loop's
+        activity thread for 48 minutes — every urlopen failure turned into a
+        masked RuntimeError via the telemetry context manager.
+        """
+        import sys
+        import types
+
+        fake_langfuse = types.ModuleType("langfuse")
+
+        class _NullCtx:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        fake_langfuse.propagate_attributes = lambda **_kw: _NullCtx()  # type: ignore[attr-defined]
+
+        class _FakeClient:
+            def start_as_current_observation(self, **_kw):
+                return _NullCtx()
+
+        with patch.dict(sys.modules, {"langfuse": fake_langfuse}):
+            with patch("shared.telemetry._get_langfuse", return_value=_FakeClient()):
+                import pytest
+
+                with pytest.raises(ValueError, match="caller boom"):
+                    with hapax_span("perception", "tick") as _span:
+                        raise ValueError("caller boom")
+
+    def test_span_degrades_when_setup_raises(self):
+        """If Langfuse setup itself raises, yield None instead of crashing."""
+
+        class _BrokenClient:
+            def start_as_current_observation(self, **_kw):
+                raise RuntimeError("langfuse internal error")
+
+        import sys
+        import types
+
+        fake_langfuse = types.ModuleType("langfuse")
+
+        class _NullCtx:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        fake_langfuse.propagate_attributes = lambda **_kw: _NullCtx()  # type: ignore[attr-defined]
+
+        ran = False
+        with patch.dict(sys.modules, {"langfuse": fake_langfuse}):
+            with patch("shared.telemetry._get_langfuse", return_value=_BrokenClient()):
+                with hapax_span("perception", "tick") as span:
+                    assert span is None
+                    ran = True
+        assert ran
+
 
 class TestHapaxEvent:
     def test_event_doesnt_crash_when_unavailable(self):

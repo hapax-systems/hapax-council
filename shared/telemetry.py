@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -135,24 +135,40 @@ def hapax_span(
     full_name = f"{system}.{name}"
     all_tags = _system_tags(system, tags)
 
+    # Enter Langfuse contexts in a stack so we can distinguish setup failures
+    # (degrade to a no-op span) from caller-block failures (propagate cleanly).
+    # Previously the whole thing was wrapped in one try/except with a second
+    # yield in the except branch — which yielded AFTER a throw() and triggered
+    # "generator didn't stop after throw()", masking every caller exception
+    # and silently killing long-lived threads that used hapax_span.
+    stack = ExitStack()
+    span: Any = None
     try:
         from langfuse import propagate_attributes
 
-        with propagate_attributes(
-            tags=all_tags,
-            session_id=session_id,
-            metadata=metadata or {},
-        ):
-            with client.start_as_current_observation(
+        stack.enter_context(
+            propagate_attributes(
+                tags=all_tags,
+                session_id=session_id,
+                metadata=metadata or {},
+            )
+        )
+        span = stack.enter_context(
+            client.start_as_current_observation(
                 as_type="span",
                 name=full_name,
                 input=input_data,
                 metadata=metadata or {},
-            ) as span:
-                yield span
+            )
+        )
     except Exception:
-        log.debug("Langfuse span failed: %s", full_name, exc_info=True)
+        log.debug("Langfuse span setup failed: %s", full_name, exc_info=True)
+        stack.close()
         yield None
+        return
+
+    with stack:
+        yield span
 
 
 def hapax_event(
