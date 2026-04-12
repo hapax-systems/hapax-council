@@ -20,6 +20,7 @@ SuccessExitStatus=SIGTERM
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+EnvironmentFile=/run/user/1000/hapax-secrets.env
 MemoryMax=4G
 SyslogIdentifier=studio-compositor
 

@@ -29,6 +29,62 @@ LEGOMENA_DIR = Path(os.path.expanduser("~/Documents/Personal/30-areas/legomena-l
 ALBUM_STATE_FILE = SHM_DIR / "album-state.json"
 FX_SNAPSHOT = SHM_DIR / "fx-snapshot.jpg"
 MEMORY_SNAPSHOT = SHM_DIR / "memory-snapshot.json"
+PLAYLIST_FILE = SHM_DIR / "playlist.json"
+PLAYLIST_URL = "https://youtube.com/playlist?list=PL-4nvD1KwuH--sViEAFY2cHVmS6_B4CQ5"
+
+
+def _load_playlist() -> list[dict]:
+    """Load playlist from SHM cache, or extract fresh from YouTube via yt-dlp.
+
+    Restored after spirograph_reactor.py (the original owner of this helper)
+    was deleted in PR #644. Without it, _reload_slot_from_playlist silently
+    no-ops and the director loop never gets a URL to load.
+    """
+    try:
+        if PLAYLIST_FILE.exists():
+            cached = json.loads(PLAYLIST_FILE.read_text())
+            if cached:
+                return cached
+    except (OSError, json.JSONDecodeError):
+        log.debug("Cached playlist unreadable — extracting fresh", exc_info=True)
+
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "--dump-json", "--flat-playlist", "--no-warnings", PLAYLIST_URL],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        log.warning("Playlist extraction via yt-dlp failed: %s", exc)
+        return []
+
+    videos: list[dict] = []
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        video_id = d.get("id")
+        if not video_id:
+            continue
+        videos.append(
+            {
+                "id": video_id,
+                "title": d.get("title", "?"),
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+            }
+        )
+    if videos:
+        try:
+            PLAYLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+            PLAYLIST_FILE.write_text(json.dumps(videos))
+        except OSError:
+            log.debug("Playlist cache write failed", exc_info=True)
+        log.info("Extracted %d videos from playlist", len(videos))
+    return videos
 
 
 def _obsidian_log_path(now: datetime | None = None) -> Path:
@@ -173,11 +229,9 @@ class DirectorLoop:
     def _reload_slot_from_playlist(self, slot_id: int) -> None:
         """Load a random video from the playlist into the given slot."""
         try:
-            playlist_path = SHM_DIR / "playlist.json"
-            if not playlist_path.exists():
-                return
-            playlist = json.loads(playlist_path.read_text())
+            playlist = _load_playlist()
             if not playlist:
+                log.warning("Slot %d reload skipped: playlist empty", slot_id)
                 return
             import random
 
@@ -192,7 +246,7 @@ class DirectorLoop:
             urllib.request.urlopen(req, timeout=90)
             log.info("Slot %d reloaded from playlist: %s", slot_id, pick["title"][:40])
         except Exception:
-            log.debug("Playlist reload failed for slot %d", slot_id)
+            log.warning("Playlist reload failed for slot %d", slot_id, exc_info=True)
 
     def _save_memory_snapshot(self) -> None:
         """Snapshot reaction history to SHM for fast restart."""

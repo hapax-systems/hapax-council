@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agents.studio_compositor import director_loop as dl_module
-from agents.studio_compositor.director_loop import DirectorLoop
+from agents.studio_compositor.director_loop import DirectorLoop, _load_playlist
 
 
 class _FakeSlot:
@@ -112,3 +114,74 @@ def test_dispatch_cold_starts_partial_missing(tmp_path, monkeypatch):
 
     assert dispatched == [1]
     assert reloaded == [1]
+
+
+# ---------------------------------------------------------------------------
+# _load_playlist — restored after spirograph_reactor deletion (PR #644)
+# ---------------------------------------------------------------------------
+
+
+def test_load_playlist_returns_cached_when_available(tmp_path, monkeypatch):
+    """If playlist.json exists, return its contents without running yt-dlp."""
+    cached = [
+        {"id": "abc", "title": "First", "url": "https://www.youtube.com/watch?v=abc"},
+        {"id": "xyz", "title": "Second", "url": "https://www.youtube.com/watch?v=xyz"},
+    ]
+    playlist_file = tmp_path / "playlist.json"
+    playlist_file.write_text(json.dumps(cached))
+    monkeypatch.setattr(dl_module, "PLAYLIST_FILE", playlist_file)
+
+    with patch("subprocess.run") as sp_mock:
+        result = _load_playlist()
+
+    assert result == cached
+    sp_mock.assert_not_called()
+
+
+def test_load_playlist_extracts_via_ytdlp_when_cache_missing(tmp_path, monkeypatch):
+    """Missing cache triggers yt-dlp extraction and writes the cache."""
+    playlist_file = tmp_path / "playlist.json"
+    monkeypatch.setattr(dl_module, "PLAYLIST_FILE", playlist_file)
+    fake_stdout = "\n".join(
+        [
+            json.dumps({"id": "aaa", "title": "A"}),
+            json.dumps({"id": "bbb", "title": "B"}),
+        ]
+    )
+
+    with patch(
+        "subprocess.run",
+        return_value=MagicMock(stdout=fake_stdout, returncode=0),
+    ) as sp_mock:
+        result = _load_playlist()
+
+    assert len(result) == 2
+    assert result[0]["id"] == "aaa"
+    assert result[0]["url"] == "https://www.youtube.com/watch?v=aaa"
+    sp_mock.assert_called_once()
+    # Cache should have been written
+    assert playlist_file.exists()
+    assert json.loads(playlist_file.read_text()) == result
+
+
+def test_load_playlist_returns_empty_on_ytdlp_timeout(tmp_path, monkeypatch):
+    """A yt-dlp timeout must degrade to an empty list, not crash."""
+    monkeypatch.setattr(dl_module, "PLAYLIST_FILE", tmp_path / "missing.json")
+
+    with patch(
+        "subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="yt-dlp", timeout=60),
+    ):
+        result = _load_playlist()
+
+    assert result == []
+
+
+def test_load_playlist_returns_empty_when_ytdlp_not_installed(tmp_path, monkeypatch):
+    """Missing yt-dlp binary must degrade to an empty list, not crash."""
+    monkeypatch.setattr(dl_module, "PLAYLIST_FILE", tmp_path / "missing.json")
+
+    with patch("subprocess.run", side_effect=FileNotFoundError()):
+        result = _load_playlist()
+
+    assert result == []
