@@ -1,0 +1,30 @@
+{
+  "name": "clock",
+  "version": "0.1.0",
+  "kind": "text",
+  "backend": "text",
+  "description": "Renders the current time as a text overlay using strftime formatting.",
+  "author": "hapax-council",
+  "license": "MIT",
+  "params": {
+    "format": {
+      "type": "string",
+      "default": "%H:%M:%S",
+      "description": "strftime format string. Default 24h HH:MM:SS."
+    },
+    "font_family": {
+      "type": "string",
+      "default": "JetBrains Mono",
+      "description": "Pango font family name."
+    },
+    "font_size_pt": {
+      "type": "float",
+      "default": 24.0,
+      "min": 6.0,
+      "max": 144.0,
+      "description": "Font size in points."
+    }
+  },
+  "source_module": "plugins.clock.source",
+  "tags": ["text", "widget", "time", "reference"]
+}
