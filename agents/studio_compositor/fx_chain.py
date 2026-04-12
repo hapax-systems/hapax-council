@@ -543,9 +543,6 @@ class AlbumOverlay:
 
 def _pip_draw(compositor: Any, cr: Any) -> None:
     """Post-FX cairooverlay callback: draws all overlays."""
-    spiro = getattr(compositor, "_spirograph_reactor", None)
-    if spiro is not None:
-        spiro.draw(cr)
     album = getattr(compositor, "_album_overlay", None)
     if album is not None:
         album.draw(cr)
@@ -777,16 +774,15 @@ def build_inline_fx_chain(
 
     compositor._token_pole = TokenPole()
 
-    try:
-        from .spirograph_reactor import SpirographReactor
+    from .sierpinski_loader import SierpinskiLoader
+    from .sierpinski_renderer import SierpinskiRenderer
 
-        compositor._spirograph_reactor = SpirographReactor()
-        compositor._yt_overlay = None
-        log.info("SpirographReactor created")
-    except Exception:
-        log.exception("SpirographReactor failed, falling back to YouTubeOverlay")
-        compositor._spirograph_reactor = None
-        compositor._yt_overlay = YouTubeOverlay()
+    compositor._sierpinski_loader = SierpinskiLoader()
+    compositor._sierpinski_loader.start()
+    compositor._sierpinski_renderer = SierpinskiRenderer()
+    compositor._spirograph_reactor = None
+    compositor._yt_overlay = None
+    log.info("SierpinskiLoader + SierpinskiRenderer created")
 
     log.info(
         "FX chain: %d shader slots, glvideomixer (camera base + live flash 60%%)",
@@ -1026,8 +1022,4 @@ def fx_tick_callback(compositor: Any) -> bool:
         token_pole.tick()
 
     # Spirograph reactor
-    spiro = getattr(compositor, "_spirograph_reactor", None)
-    if spiro:
-        spiro.tick()
-
     return True

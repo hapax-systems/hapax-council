@@ -202,12 +202,12 @@ ACTIVITY_CAPABILITIES = (
     "\n"
     "Activities available to you. Choose the one this moment calls for.\n"
     "\n"
-    "- react: respond to the video content in the spirograph. What caught you?\n"
+    "- react: respond to the video content in the triangle display. What caught you?\n"
     "- chat: engage viewers in the livestream chat. Answer, respond, explain.\n"
     "- vinyl: comment on the music. The record, the track, the production.\n"
     "- study: reflect on your own research. Clark & Brennan, phenomenology,\n"
     "  grounding theory. Think out loud about what you're learning.\n"
-    "- observe: notice the composed surface. Shaders, spirograph, text overlays.\n"
+    "- observe: notice the composed surface. Shaders, triangle layout, visual effects.\n"
     '- silence: say nothing. Let the music carry. Return {"activity": "silence"}.\n'
 )
 
@@ -448,12 +448,8 @@ class DirectorLoop:
             self._speak_activity(final, "react")
 
     def path_position_for_slot(self, slot) -> tuple[float, float]:
-        """Get screen position for confetti spawn."""
-        # Import here to avoid circular
-        from agents.studio_compositor.spirograph_reactor import SpirographPath
-
-        path = SpirographPath()
-        return path.position_at(slot.orbit_t)
+        """Get screen position for confetti spawn (center of viewport)."""
+        return (960.0, 540.0)
 
     # --- Unified prompt ---
 

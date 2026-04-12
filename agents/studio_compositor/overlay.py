@@ -16,11 +16,19 @@ def on_overlay_caps_changed(compositor: Any, overlay: Any, caps: Any) -> None:
 
 
 def on_draw(compositor: Any, overlay: Any, cr: Any, timestamp: int, duration: int) -> None:
-    """Cairo draw callback -- renders Pango zone overlays only."""
+    """Cairo draw callback -- renders Sierpinski triangle + Pango zone overlays."""
     if not compositor.config.overlay_enabled:
         return
 
     canvas_w, canvas_h = compositor._overlay_canvas_size
+
+    # Sierpinski triangle with video content (drawn BEFORE GL effects apply)
+    sierpinski = getattr(compositor, "_sierpinski_renderer", None)
+    if sierpinski is not None:
+        # Feed audio energy for reactive line width
+        if hasattr(compositor, "_cached_audio"):
+            sierpinski.set_audio_energy(compositor._cached_audio.get("mixer_energy", 0.0))
+        sierpinski.draw(cr, canvas_w, canvas_h)
 
     # Render content overlay zones (markdown/ANSI from Obsidian via Pango)
     if hasattr(compositor, "_overlay_zone_manager"):
