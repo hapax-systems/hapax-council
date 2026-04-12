@@ -454,57 +454,38 @@ class DirectorLoop:
     # --- Unified prompt ---
 
     def _build_unified_prompt(self) -> str:
-        """Single prompt with all signals + activity capabilities. Hapax decides."""
+        """Assemble 4-layer reactor context per enrichment spec.
+
+        Layers: situation block, phenomenal context (FAST tier ~200 tok),
+        system state (TOON ~150 tok), recent reactions (last 8 ~120 tok).
+        Total budget ~1,020 tokens. Spec:
+        docs/superpowers/specs/2026-04-10-reactor-context-enrichment-design.md
+        """
         live = (SHM_DIR / "stream-live").exists()
         album_info = _read_album_info()
         slot = self._slots[self._active_slot]
 
-        parts = [
-            "You are Hapax. This is Legomena Live. Oudepode is spinning vinyl.",
-            "This is a live performance." if live else "This is practice.",
-            "",
-            "What you are: a system learning to achieve grounding.",
-            "Every utterance is practice toward mutual understanding.",
-            "",
-            f"Current video: '{slot._title}' by {slot._channel}.",
-            f"Also in rotation: {', '.join(s._title[:30] for s in self._slots if s.slot_id != self._active_slot and s._title)}.",
-            f"On the turntable: {album_info}.",
-            f"Time: {datetime.now().strftime('%H:%M')}.",
-        ]
+        parts: list[str] = ["<reactor_context>"]
 
-        # Enrichment via ContextAssembler (TTL-cached, thread-safe)
-        try:
-            from shared.context import ContextAssembler
+        # ─── Identity + situation ─────────────────────────────────
+        parts.append(
+            "You are the daimonion — the persistent cognitive substrate of the Hapax system."
+        )
+        parts.append("This is Legomena Live. Oudepode is spinning vinyl.")
+        parts.append("This is a live performance." if live else "This is practice.")
+        parts.append("What you are: a system learning to achieve grounding.")
+        parts.append("Every utterance is practice toward mutual understanding.")
+        parts.append("")
+        parts.append(f"Current video: '{slot._title}' by {slot._channel}.")
+        other_titles = ", ".join(
+            s._title[:30] for s in self._slots if s.slot_id != self._active_slot and s._title
+        )
+        if other_titles:
+            parts.append(f"Also in rotation: {other_titles}.")
+        parts.append(f"On the turntable: {album_info}.")
+        parts.append(f"Time: {datetime.now().strftime('%H:%M')}.")
 
-            ctx = ContextAssembler().snapshot()
-            if ctx.stimmung_stance != "nominal":
-                parts.append(f"\nSystem stance: {ctx.stimmung_stance}.")
-            if ctx.dmn_observations:
-                parts.append(f"DMN: {ctx.dmn_observations[0][:150]}")
-            if ctx.imagination_fragments:
-                frag = ctx.imagination_fragments[0]
-                dims = frag.get("dimensions", {})
-                active = [f"{k}={v:.1f}" for k, v in dims.items() if v > 0.1]
-                if active:
-                    parts.append(f"Imagination: {', '.join(active)}")
-                mat = frag.get("material")
-                if mat:
-                    parts.append(f"Material: {mat}")
-        except Exception:
-            pass
-
-        # Phenomenal context (temporal bands, situation coupling)
-        try:
-            from agents.hapax_daimonion.phenomenal_context import render as render_phenomenal
-
-            phenom = render_phenomenal(tier="LOCAL")  # LOCAL = layers 1-3 only, ~60 tokens
-            if phenom and phenom.strip():
-                parts.append("")
-                parts.append(phenom.strip())
-        except Exception:
-            pass
-
-        # Chat
+        # ─── Chat state ───────────────────────────────────────────
         try:
             chat_recent_path = SHM_DIR / "chat-recent.json"
             chat_state_path = SHM_DIR / "chat-state.json"
@@ -513,11 +494,11 @@ class DirectorLoop:
                 total = cs.get("total_messages", 0)
                 authors = cs.get("unique_authors", 0)
                 if total == 0:
-                    parts.append("\nChat is silent.")
+                    parts.append("Chat is silent.")
                 elif authors <= 2:
-                    parts.append("\nChat is quiet.")
+                    parts.append("Chat is quiet.")
                 else:
-                    parts.append(f"\nChat is active ({authors} people).")
+                    parts.append(f"Chat is active ({authors} people).")
             if chat_recent_path.exists():
                 recent = json.loads(chat_recent_path.read_text())
                 for m in recent[-3:]:
@@ -531,22 +512,52 @@ class DirectorLoop:
         except Exception:
             pass
 
-        # Images available
-        parts.append("\nTwo images attached. First: the current video frame.")
-        parts.append("Second: the full composed surface viewers see.")
+        # ─── Layer 1: Phenomenal context (FAST tier ~200 tokens) ──
+        try:
+            from agents.hapax_daimonion.phenomenal_context import render as render_phenomenal
 
-        # Activity capabilities
-        parts.append(ACTIVITY_CAPABILITIES)
+            phenom = render_phenomenal(tier="FAST")
+            if phenom and phenom.strip():
+                parts.append("")
+                parts.append("## Phenomenal Context")
+                parts.append(phenom.strip())
+        except Exception:
+            pass
 
-        # History
+        # ─── Layer 2: System state (TOON ~150 tokens, 40% savings) ─
+        try:
+            from shared.context import ContextAssembler
+            from shared.context_compression import to_toon
+
+            ctx = ContextAssembler().snapshot()
+            toon_block = to_toon(ctx)
+            if toon_block and toon_block != "null":
+                parts.append("")
+                parts.append("## System State")
+                parts.append(toon_block)
+        except Exception:
+            pass
+
+        # ─── Layer 3: Recent reactions (last 8, timestamped thread) ─
         if self._reaction_history:
-            parts.append("\nYour recent utterances:")
-            for entry in self._reaction_history[-5:]:
-                parts.append(f"  {entry}")
+            parts.append("")
+            parts.append("## Recent Reactions")
+            for entry in self._reaction_history[-8:]:
+                parts.append(f"- {entry}")
 
-        # Format
-        parts.append('\nFormat: {"activity": "chosen_activity", "react": "your words"}')
+        # ─── Role + response format ───────────────────────────────
+        parts.append("")
+        parts.append("## Your Role")
+        parts.append(ACTIVITY_CAPABILITIES)
+        parts.append("")
+        parts.append("## Images")
+        parts.append("Two images attached. First: the current video frame.")
+        parts.append("Second: the full composed surface viewers see.")
+        parts.append("")
+        parts.append("## Response Format")
+        parts.append('{"activity": "chosen_activity", "react": "your words"}')
         parts.append("Complete your sentences. Say as much or as little as the moment requires.")
+        parts.append("</reactor_context>")
 
         return "\n".join(parts)
 
@@ -733,7 +744,12 @@ class DirectorLoop:
         ]
 
         body = json.dumps(
-            {"model": "gemini-flash", "messages": messages, "max_tokens": 2048, "temperature": 0.7}
+            {
+                "model": "claude-opus",
+                "messages": messages,
+                "max_tokens": 300,
+                "temperature": 0.7,
+            }
         ).encode()
 
         try:
@@ -906,9 +922,9 @@ class DirectorLoop:
 
         body = json.dumps(
             {
-                "model": "gemini-flash",
+                "model": "claude-opus",
                 "messages": messages,
-                "max_tokens": 2048,
+                "max_tokens": 300,
                 "temperature": 0.7,
             }
         ).encode()
