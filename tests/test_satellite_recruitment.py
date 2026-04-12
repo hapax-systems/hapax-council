@@ -134,3 +134,31 @@ class TestSatelliteManager:
             rebuilt = mgr.maybe_rebuild()
             assert rebuilt is False
             assert mgr.active_count == 1  # satellite still tracked
+
+    def test_maybe_rebuild_reloads_vocab_on_validation_error(self):
+        """On GraphValidationError, reload the preset from disk so next tick sees a
+        fresh vocab. Prevents the 18h-frozen-plan recurrence from in-memory corruption.
+        """
+        from unittest.mock import patch
+
+        from agents.effect_graph.compiler import GraphValidationError
+
+        corrupted = {"name": "corrupted", "nodes": {}, "edges": []}
+        mgr = SatelliteManager(corrupted)
+        mgr.begin_tick()
+        mgr.recruit("bloom", 0.5)
+
+        fresh_vocab = _core_vocab()
+        with (
+            patch(
+                "agents.reverie._satellites.compile_to_wgsl_plan",
+                side_effect=GraphValidationError("invalid graph"),
+            ),
+            patch(
+                "agents.reverie._satellites.load_vocabulary", return_value=fresh_vocab
+            ) as mock_load,
+        ):
+            rebuilt = mgr.maybe_rebuild()
+            assert rebuilt is False
+            assert mock_load.called, "load_vocabulary should be called on GraphValidationError"
+            assert mgr._core_vocab is fresh_vocab, "vocab should be replaced with fresh preset"
