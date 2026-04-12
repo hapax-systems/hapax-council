@@ -588,7 +588,7 @@ class DirectorLoop:
                 "stream",
                 "reaction",
                 tags=["stream-experiment"],
-                metadata={"activity": self._activity, "slot": self._active_slot},
+                metadata={"activity": self._activity, "slot": str(self._active_slot)},
             )
             if hapax_span is not None
             else nullcontext(None)
@@ -623,8 +623,18 @@ class DirectorLoop:
 
                 raw_content = data["choices"][0]["message"].get("content")
                 if not raw_content:
+                    log.warning(
+                        "LLM returned empty content field (finish_reason=%s)",
+                        data["choices"][0].get("finish_reason", "?"),
+                    )
                     return ""
+                log.info(
+                    "LLM raw content (%d chars): %r",
+                    len(raw_content),
+                    raw_content[:200],
+                )
                 react, _ = self._parse_llm_response(raw_content.strip())
+                log.info("Parsed react (%d chars): %r", len(react), react[:80])
 
                 # Langfuse per-reaction scoring (spec: stream research infra).
                 if hapax_score is not None and span is not None:
