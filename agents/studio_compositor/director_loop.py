@@ -26,11 +26,22 @@ log = logging.getLogger(__name__)
 
 SHM_DIR = Path("/dev/shm/hapax-compositor")
 LEGOMENA_DIR = Path(os.path.expanduser("~/Documents/Personal/30-areas/legomena-live"))
-OBSIDIAN_LOG = LEGOMENA_DIR / "reactor-log.md"
-JSONL_LOG = LEGOMENA_DIR / "reactor-log.jsonl"
 ALBUM_STATE_FILE = SHM_DIR / "album-state.json"
 FX_SNAPSHOT = SHM_DIR / "fx-snapshot.jpg"
 MEMORY_SNAPSHOT = SHM_DIR / "memory-snapshot.json"
+
+
+def _obsidian_log_path(now: datetime | None = None) -> Path:
+    """Monthly-rotated markdown log: reactor-log-YYYY-MM.md."""
+    now = now or datetime.now()
+    return LEGOMENA_DIR / f"reactor-log-{now.strftime('%Y-%m')}.md"
+
+
+def _jsonl_log_path(now: datetime | None = None) -> Path:
+    """Monthly-rotated JSONL log: reactor-log-YYYY-MM.jsonl."""
+    now = now or datetime.now()
+    return LEGOMENA_DIR / f"reactor-log-{now.strftime('%Y-%m')}.jsonl"
+
 
 LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 LITELLM_KEY = ""
@@ -714,8 +725,54 @@ class DirectorLoop:
 
         return "\n".join(parts)
 
+    def _compute_coherence(self, react_text: str) -> float | None:
+        """Cosine similarity of reaction against (video_title + album + chat context).
+
+        Returns None if embedding fails. Higher = reaction tracks its context.
+        """
+        try:
+            import math
+
+            from shared.config import embed
+
+            slot = self._slots[self._active_slot]
+            album = _read_album_info()
+            chat_snippet = ""
+            try:
+                chat_path = SHM_DIR / "chat-recent.json"
+                if chat_path.exists():
+                    recent = json.loads(chat_path.read_text())
+                    chat_snippet = " ".join(m.get("text", "") for m in recent[-3:])
+            except Exception:
+                pass
+
+            context_text = " | ".join(
+                p for p in [slot._title or "", slot._channel or "", album, chat_snippet] if p
+            )
+            if not context_text or not react_text:
+                return None
+
+            v_react = embed(react_text)
+            v_context = embed(context_text)
+            if not v_react or not v_context:
+                return None
+
+            dot = sum(a * b for a, b in zip(v_react, v_context, strict=False))
+            norm_r = math.sqrt(sum(a * a for a in v_react))
+            norm_c = math.sqrt(sum(a * a for a in v_context))
+            if norm_r == 0 or norm_c == 0:
+                return None
+            return dot / (norm_r * norm_c)
+        except Exception:
+            log.debug("Coherence computation failed", exc_info=True)
+            return None
+
     def _call_activity_llm(self, prompt: str, images: list | None = None) -> str:
-        """Call LLM with activity prompt. Returns parsed text or empty string."""
+        """Call LLM with activity prompt. Returns parsed text or empty string.
+
+        Wrapped in hapax_span("stream", "reaction") so per-reaction scores
+        (tokens, coherence, activity) are tagged with stream-experiment.
+        """
         key = _get_litellm_key()
         if not key:
             return ""
@@ -753,46 +810,83 @@ class DirectorLoop:
         ).encode()
 
         try:
-            req = urllib.request.Request(
-                LITELLM_URL,
-                body,
-                {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            from shared.telemetry import hapax_score, hapax_span
+        except ImportError:
+            hapax_span = None  # type: ignore[assignment]
+            hapax_score = None  # type: ignore[assignment]
+
+        # Context manager for Langfuse span — yields None if telemetry unavailable.
+        from contextlib import nullcontext
+
+        span_ctx = (
+            hapax_span(
+                "stream",
+                "reaction",
+                tags=["stream-experiment"],
+                metadata={"activity": self._activity, "slot": self._active_slot},
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read())
+            if hapax_span is not None
+            else nullcontext(None)
+        )
 
-            try:
-                import sys
-
-                sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
-                from token_ledger import record_spend
-
-                usage = data.get("usage", {})
-                record_spend(
-                    "hapax", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        try:
+            with span_ctx as span:
+                req = urllib.request.Request(
+                    LITELLM_URL,
+                    body,
+                    {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
                 )
-            except Exception:
-                pass
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read())
 
-            raw_content = data["choices"][0]["message"].get("content")
-            if not raw_content:
-                return ""
-            react, _ = self._parse_llm_response(raw_content.strip())
+                try:
+                    import sys
 
-            # Langfuse scoring (non-blocking)
-            try:
-                from shared.telemetry import hapax_score
+                    sys.path.insert(
+                        0, str(Path(__file__).resolve().parent.parent.parent / "scripts")
+                    )
+                    from token_ledger import record_spend
 
-                usage = data.get("usage", {})
-                hapax_score(
-                    name="reaction_tokens",
-                    value=usage.get("completion_tokens", 0),
-                    comment=f"activity={self._activity}",
-                )
-            except Exception:
-                pass
+                    usage = data.get("usage", {})
+                    record_spend(
+                        "hapax",
+                        usage.get("prompt_tokens", 0),
+                        usage.get("completion_tokens", 0),
+                    )
+                except Exception:
+                    pass
 
-            return react
+                raw_content = data["choices"][0]["message"].get("content")
+                if not raw_content:
+                    return ""
+                react, _ = self._parse_llm_response(raw_content.strip())
+
+                # Langfuse per-reaction scoring (spec: stream research infra).
+                if hapax_score is not None and span is not None:
+                    usage = data.get("usage", {})
+                    hapax_score(
+                        span,
+                        "reaction_tokens",
+                        float(usage.get("completion_tokens", 0)),
+                        comment=f"activity={self._activity}",
+                    )
+                    coherence = self._compute_coherence(react)
+                    if coherence is not None:
+                        hapax_score(
+                            span,
+                            "reaction_coherence",
+                            coherence,
+                            comment=f"activity={self._activity}",
+                        )
+                    # Activity as a categorical score: map to {0,1} per activity
+                    hapax_score(
+                        span,
+                        "reaction_activity",
+                        1.0,
+                        comment=self._activity,
+                    )
+
+                return react
         except Exception:
             log.exception("Activity LLM call failed")
             return ""
@@ -1004,15 +1098,16 @@ class DirectorLoop:
         video_title = slot._title or ""
         video_channel = slot._channel or ""
 
-        # Markdown log
+        # Markdown log (monthly rotation)
+        obsidian_log = _obsidian_log_path(now)
         try:
-            OBSIDIAN_LOG.parent.mkdir(parents=True, exist_ok=True)
+            obsidian_log.parent.mkdir(parents=True, exist_ok=True)
             if activity == "react":
                 label = f"Reacting to: *{video_title}* by {video_channel}"
             else:
                 label = activity
             entry = f"- **{ts}** | {label}\n  > {text}\n  Album: {album}\n\n"
-            with open(OBSIDIAN_LOG, "a") as f:
+            with open(obsidian_log, "a") as f:
                 f.write(entry)
         except OSError:
             pass
@@ -1048,7 +1143,7 @@ class DirectorLoop:
             pass
 
         try:
-            with open(JSONL_LOG, "a") as f:
+            with open(_jsonl_log_path(now), "a") as f:
                 f.write(json.dumps(record) + "\n")
         except OSError:
             pass
