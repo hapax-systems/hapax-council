@@ -62,6 +62,7 @@ class VideoSlot:
             video_url, audio_url, title, channel = extract_urls(youtube_url)
         except Exception as e:
             log.error("Slot %d URL extraction failed: %s", self.slot_id, e)
+            self._signal_finished(rc=-1)
             return
 
         log.info("Slot %d playing: %s by %s", self.slot_id, title, channel)
@@ -169,6 +170,21 @@ class VideoSlot:
             except Exception:
                 pass
 
+    def _signal_finished(self, rc: int) -> None:
+        """Write yt-finished-N marker so the director loop re-dispatches.
+
+        Used when URL extraction fails before ffmpeg even starts — without this
+        the slot sits idle forever because ``auto_advance_loop`` only notices
+        ffmpeg-level exits. The director's ``VideoSlotStub.check_finished`` will
+        read (and unlink) the marker, triggering ``_reload_slot_from_playlist``
+        which picks a different random entry from the playlist.
+        """
+        marker = SHM_DIR / f"yt-finished-{self.slot_id}"
+        try:
+            marker.write_text(str(rc))
+        except OSError:
+            log.debug("Slot %d: failed to write finished marker", self.slot_id)
+
     def stop(self) -> None:
         for f in [
             SHM_DIR / f"yt-attribution-{self.slot_id}.txt",
@@ -222,14 +238,19 @@ def get_all_slots_status() -> list[dict]:
 
 
 def extract_urls(youtube_url: str) -> tuple[str, str, str, str]:
-    """Extract direct video URL, audio URL, title, and channel via yt-dlp."""
+    """Extract direct video URL, audio URL, title, and channel via yt-dlp.
+
+    Each yt-dlp subprocess gets 45s. The previous 15s ceiling caused 2026-04-12
+    16:19/16:20 slot stalls where metadata or -g extraction legitimately needed
+    more time; on TimeoutExpired the slot was wedged until service restart.
+    """
     log.info("Extracting URLs for: %s", youtube_url)
     # Get metadata (title + channel) — use --print for both to get deterministic output order
     meta_proc = subprocess.run(
         ["yt-dlp", "--print", "%(title)s", "--print", "%(channel)s", youtube_url],
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=45,
     )
     lines = meta_proc.stdout.strip().split("\n")
     title = lines[0] if lines else "Unknown"
@@ -246,7 +267,7 @@ def extract_urls(youtube_url: str) -> tuple[str, str, str, str]:
         ],
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=45,
     )
     video_url = video_proc.stdout.strip()
 
@@ -255,7 +276,7 @@ def extract_urls(youtube_url: str) -> tuple[str, str, str, str]:
         ["yt-dlp", "-f", "bestaudio[ext=m4a]/bestaudio", "-g", youtube_url],
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=45,
     )
     audio_url = audio_proc.stdout.strip()
 
