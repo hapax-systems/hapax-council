@@ -1,9 +1,12 @@
 """Tests for the compile phase.
 
-Phase 4a of the compositor unification epic — the second of three
+Phase 4 of the compositor unification epic — the second of three
 render-time stages (Extract → Compile → Execute). The compile phase
 turns FrameDescription into CompiledFrame, a frozen execution plan
 the future executor will consume.
+
+Phase 4a tests cover scaffolding + dead-source culling.
+Phase 4b tests cover version-cache boundary decisions.
 
 This phase is purely additive: no rendering code yet reads CompiledFrame.
 Tests verify the compile reasoning is correct on synthetic and canonical
@@ -45,8 +48,18 @@ def _surf(id_: str, z_order: int = 0, kind: str = "rect") -> SurfaceSchema:
     )
 
 
-def _frame(layout: Layout, frame_index: int = 0):
-    return extract_frame_description(layout, frame_index=frame_index, timestamp=1.0)
+def _frame(
+    layout: Layout,
+    frame_index: int = 0,
+    versions: dict[str, int] | None = None,
+    timestamp: float = 1.0,
+):
+    return extract_frame_description(
+        layout,
+        frame_index=frame_index,
+        timestamp=timestamp,
+        source_versions=versions,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -279,3 +292,193 @@ def test_compile_garage_door_layout():
     assert compiled.layout_name == layout.name
     # Active + culled cover all declared sources.
     assert compiled.total_sources == len(layout.sources)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4b: version-cache boundary
+# ---------------------------------------------------------------------------
+
+
+def _two_source_layout() -> Layout:
+    return Layout(
+        name="versioned",
+        sources=[_src("a"), _src("b")],
+        surfaces=[_surf("s")],
+        assignments=[
+            Assignment(source="a", surface="s"),
+            Assignment(source="b", surface="s"),
+        ],
+    )
+
+
+def test_no_previous_frame_no_caching():
+    """The first frame after startup has no cached sources."""
+    layout = _two_source_layout()
+    compiled = compile_frame(_frame(layout, versions={"a": 1, "b": 1}))
+    assert compiled.cached_sources == frozenset()
+    assert compiled.cache_count == 0
+    assert compiled.render_count == len(compiled.active_sources)
+
+
+def test_unchanged_versions_mark_sources_cached():
+    """Sources whose version equals the previous compile's version
+    are marked as cacheable."""
+    layout = _two_source_layout()
+    prev = compile_frame(_frame(layout, versions={"a": 1, "b": 5}))
+    curr = compile_frame(
+        _frame(layout, frame_index=1, versions={"a": 1, "b": 5}),
+        previous=prev,
+    )
+    assert curr.cached_sources == frozenset({"a", "b"})
+    assert curr.cache_count == 2
+    assert curr.render_count == 0
+
+
+def test_changed_version_marks_source_for_re_render():
+    """A source whose version bumped is *not* in cached_sources."""
+    layout = _two_source_layout()
+    prev = compile_frame(_frame(layout, versions={"a": 1, "b": 1}))
+    curr = compile_frame(
+        _frame(layout, frame_index=1, versions={"a": 2, "b": 1}),
+        previous=prev,
+    )
+    assert "a" not in curr.cached_sources  # bumped → re-render
+    assert "b" in curr.cached_sources  # unchanged → cache
+    assert curr.cache_count == 1
+    assert curr.render_count == 1
+
+
+def test_culled_sources_not_cached():
+    """A source that's culled this frame is never in cached_sources,
+    even if its version is unchanged from the previous compile."""
+    full = Layout(
+        name="cull-then-cache",
+        sources=[_src("a"), _src("b")],
+        surfaces=[_surf("s")],
+        assignments=[
+            Assignment(source="a", surface="s"),
+            Assignment(source="b", surface="s"),
+        ],
+    )
+    # Previous frame: both sources active.
+    prev = compile_frame(_frame(full, versions={"a": 1, "b": 1}))
+    # Next frame: drop the assignment for "b" → b is culled.
+    dropped = Layout(
+        name="cull-then-cache",
+        sources=[_src("a"), _src("b")],
+        surfaces=[_surf("s")],
+        assignments=[Assignment(source="a", surface="s")],
+    )
+    curr = compile_frame(
+        _frame(dropped, frame_index=1, versions={"a": 1, "b": 1}),
+        previous=prev,
+    )
+    assert "b" in curr.culled_sources
+    assert "b" not in curr.cached_sources
+    # "a" is still active and unchanged → cached.
+    assert "a" in curr.cached_sources
+
+
+def test_new_source_not_cached():
+    """A source that wasn't active in the previous compile is never
+    in cached_sources — there's no previous output to reuse."""
+    initial = Layout(
+        name="growing",
+        sources=[_src("a")],
+        surfaces=[_surf("s")],
+        assignments=[Assignment(source="a", surface="s")],
+    )
+    prev = compile_frame(_frame(initial, versions={"a": 1}))
+    grown = Layout(
+        name="growing",
+        sources=[_src("a"), _src("b")],
+        surfaces=[_surf("s")],
+        assignments=[
+            Assignment(source="a", surface="s"),
+            Assignment(source="b", surface="s"),
+        ],
+    )
+    curr = compile_frame(
+        _frame(grown, frame_index=1, versions={"a": 1, "b": 1}),
+        previous=prev,
+    )
+    assert "a" in curr.cached_sources  # carried over, unchanged
+    assert "b" not in curr.cached_sources  # newly added
+    assert curr.cache_count == 1
+    assert curr.render_count == 1
+
+
+def test_missing_current_version_treated_as_changed():
+    """A source whose current version is missing (no entry in
+    source_versions) is conservatively treated as changed."""
+    layout = _two_source_layout()
+    prev = compile_frame(_frame(layout, versions={"a": 1, "b": 1}))
+    # Drop "b" from the version dict in the current frame.
+    curr = compile_frame(
+        _frame(layout, frame_index=1, versions={"a": 1}),
+        previous=prev,
+    )
+    assert "a" in curr.cached_sources
+    assert "b" not in curr.cached_sources
+
+
+def test_missing_previous_version_treated_as_changed():
+    """A source whose previous version is missing is treated as new."""
+    layout = _two_source_layout()
+    # Previous compile has no version for "b".
+    prev_frame = _frame(layout, versions={"a": 1})
+    prev = compile_frame(prev_frame)
+    curr = compile_frame(
+        _frame(layout, frame_index=1, versions={"a": 1, "b": 1}),
+        previous=prev,
+    )
+    assert "a" in curr.cached_sources
+    assert "b" not in curr.cached_sources
+
+
+def test_compiled_frame_carries_source_versions_forward():
+    """source_versions is preserved in the CompiledFrame so the next
+    compile can diff against it."""
+    layout = _two_source_layout()
+    compiled = compile_frame(_frame(layout, versions={"a": 7, "b": 12}))
+    assert compiled.source_versions == {"a": 7, "b": 12}
+
+
+def test_cache_count_render_count_sum_to_active_count():
+    """cache_count + render_count == len(active_sources)."""
+    layout = Layout(
+        name="counts",
+        sources=[_src("a"), _src("b"), _src("c"), _src("d")],
+        surfaces=[_surf("s")],
+        assignments=[
+            Assignment(source="a", surface="s"),
+            Assignment(source="b", surface="s"),
+            Assignment(source="c", surface="s"),
+            Assignment(source="d", surface="s"),
+        ],
+    )
+    prev = compile_frame(_frame(layout, versions={"a": 1, "b": 1, "c": 1, "d": 1}))
+    # Bump a and c → those re-render; b and d cache.
+    curr = compile_frame(
+        _frame(layout, frame_index=1, versions={"a": 2, "b": 1, "c": 2, "d": 1}),
+        previous=prev,
+    )
+    assert curr.cache_count == 2
+    assert curr.render_count == 2
+    assert curr.cache_count + curr.render_count == len(curr.active_sources)
+
+
+def test_compile_garage_door_with_previous():
+    """Round-trip: garage-door layout compiles cleanly with a previous
+    frame supplied. Without versions populated by backends, no source
+    is cached — but the compile must not raise."""
+    layout_path = Path("config/layouts/garage-door.json")
+    if not layout_path.exists():
+        pytest.skip("garage-door.json not present in this checkout")
+    raw = json.loads(layout_path.read_text())
+    layout = Layout.model_validate(raw)
+    prev = compile_frame(_frame(layout))
+    curr = compile_frame(_frame(layout, frame_index=1), previous=prev)
+    # No versions populated → nothing cached, but compile is well-formed.
+    assert curr.cached_sources == frozenset()
+    assert curr.layout_name == layout.name
