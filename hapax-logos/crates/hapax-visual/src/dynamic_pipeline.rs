@@ -49,6 +49,14 @@ struct PlanPass {
     uniforms: HashMap<String, f64>,
     #[serde(default)]
     param_order: Vec<String>,
+    /// Whether this pass declares content slot inputs (declarative opt-in
+    /// from the node manifest's requires_content_slots field). When true,
+    /// the bind group layout uses the content_layer style: binding 0 = tex,
+    /// binding 1 = sampler, bindings 2..N = bare content slot textures.
+    /// Falls back to name-based detection (`content_slot_*` prefix) for
+    /// plans written by older compilers that don't emit this field.
+    #[serde(default)]
+    requires_content_slots: bool,
 }
 
 fn default_output() -> String {
@@ -92,6 +100,7 @@ struct DynamicPass {
     inputs: Vec<String>,
     output: String,
     steps_per_frame: u32,
+    requires_content_slots: bool,
 }
 
 /// Named texture in the texture pool.
@@ -416,6 +425,7 @@ impl DynamicPipeline {
                     inputs: plan_pass.inputs.clone(),
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
+                    requires_content_slots: plan_pass.requires_content_slots,
                 });
             } else {
                 // Render pass
@@ -528,6 +538,7 @@ impl DynamicPipeline {
                     inputs: plan_pass.inputs.clone(),
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
+                    requires_content_slots: plan_pass.requires_content_slots,
                 });
             }
         }
@@ -741,7 +752,12 @@ impl DynamicPipeline {
             let is_temporal = pass.inputs.iter().any(|n| n.starts_with("@accum_"));
 
             if let Some(ref render_pipeline) = pass.render_pipeline {
-                let input_bind_group = self.create_input_bind_group(device, &pass.inputs, content_sources);
+                let input_bind_group = self.create_input_bind_group(
+                    device,
+                    &pass.inputs,
+                    pass.requires_content_slots,
+                    content_sources,
+                );
 
                 // Resolve output texture view
                 let output_view = match self.textures.get(&pass.output) {
@@ -792,7 +808,12 @@ impl DynamicPipeline {
                     }
                 }
             } else if let Some(ref compute_pipeline) = pass.compute_pipeline {
-                let input_bind_group = self.create_input_bind_group(device, &pass.inputs, content_sources);
+                let input_bind_group = self.create_input_bind_group(
+                    device,
+                    &pass.inputs,
+                    pass.requires_content_slots,
+                    content_sources,
+                );
                 let storage_bind_group =
                     self.create_storage_bind_group(device, &pass.output);
 
@@ -1067,10 +1088,14 @@ impl DynamicPipeline {
         &self,
         device: &wgpu::Device,
         inputs: &[String],
+        requires_content_slots: bool,
         content_sources: Option<&ContentSourceManager>,
     ) -> wgpu::BindGroup {
         let input_count = inputs.len();
-        let has_content_slots = inputs.iter().any(|n| n.starts_with("content_slot_"));
+        // Prefer the explicit declarative flag from the plan; fall back to
+        // name-based detection for backward compatibility with older plans.
+        let has_content_slots = requires_content_slots
+            || inputs.iter().any(|n| n.starts_with("content_slot_"));
 
         // Use cached layout from reload — fall back to fresh creation if uncached
         let owned_layout;

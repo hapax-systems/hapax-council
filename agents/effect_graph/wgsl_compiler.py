@@ -123,8 +123,11 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, object]:
                 uniforms[key] = float(enum_vals.index(value)) if value in enum_vals else 0.0
             # Skip non-numeric values without a known enum mapping
 
-        # Content compositing nodes need 4 content texture slot inputs
-        if step.node_type in ("content_layer", "sierpinski_content"):
+        # Content compositing nodes need 4 content texture slot inputs.
+        # Opt-in via the requires_content_slots flag in the node manifest JSON
+        # (declarative — no hardcoded node type tuple).
+        requires_content_slots = bool(node_def and node_def.requires_content_slots)
+        if requires_content_slots:
             inputs.extend(f"content_slot_{j}" for j in range(4))
 
         # Temporal nodes need their previous output as an accumulation input
@@ -141,6 +144,9 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, object]:
             "uniforms": uniforms,
             "param_order": param_order,
         }
+
+        if requires_content_slots:
+            descriptor["requires_content_slots"] = True
 
         if is_temporal:
             descriptor["temporal"] = True
