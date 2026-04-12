@@ -156,9 +156,15 @@ GStreamer-based livestream pipeline. Distinct from Reverie (the wgpu visual surf
 
 ## Reverie Vocabulary Integrity
 
-The reverie mixer caches the vocabulary preset (`presets/reverie_vocabulary.json`) in-memory once at startup via `SatelliteManager._core_vocab`. If that dict is ever mutated at runtime by a since-deleted code path, or the preset file was different when the process booted, the mixer will keep compiling graphs from the stale cache for as long as the service runs — even after the on-disk preset is fixed. Recovery: `systemctl --user restart hapax-reverie.service`. Symptom: `plan.json` in `/dev/shm/hapax-imagination/pipeline/` contains node types that don't match the git-tracked preset.
+The reverie mixer caches the vocabulary preset (`presets/reverie_vocabulary.json`) in-memory once at startup via `SatelliteManager._core_vocab`. If that dict is ever mutated at runtime by a since-deleted code path, or the preset file was different when the process booted, the mixer would historically keep compiling graphs from the stale cache for as long as the service ran — even after the on-disk preset was fixed. Observed as an 18h frozen `plan.json` on 2026-04-12 (`presets/reverie_vocabulary.json` pristine, SHM plan held a stale sierpinski-corrupted state).
+
+`SatelliteManager.maybe_rebuild()` now reloads the preset from disk on `GraphValidationError` (PR #678), so recovery is automatic at the next rebuild tick after any validation failure — the 2 s rebuild cooldown bounds the outage to at most one frozen frame. Manual recovery via `systemctl --user restart hapax-reverie.service` remains available; it is no longer the only path. Symptom if it ever recurs: `plan.json` in `/dev/shm/hapax-imagination/pipeline/` contains node types that don't match the git-tracked preset AND the reverie log shows `Graph validation failed — reloading vocabulary preset` on each tick. The defensive reload is resilience, not diagnosis — the root cause of the original corruption is still unknown.
 
 Any Sierpinski or other satellite shader nodes in Reverie MUST be recruited dynamically via the affordance pipeline (prefix `sat_<node_type>`), NOT wired into the core vocabulary. If you see core-prefix nodes like `content: sierpinski_content` (instead of `sat_sierpinski_content`), restart the service.
+
+## Voice FX Chain
+
+Hapax TTS output (Kokoro 82M CPU) can be routed through a user-configurable PipeWire `filter-chain` before hitting the Studio 24c analog output. Presets live at `config/pipewire/voice-fx-*.conf`; install one of them into `~/.config/pipewire/pipewire.conf.d/`, restart pipewire, and export `HAPAX_TTS_TARGET=hapax-voice-fx-capture` before starting `hapax-daimonion.service`. The conversation pipeline reads the env var at audio-output-open time and forwards it to `pw-cat --target`. Unset or empty falls through to default role-based wireplumber routing — the chain is fully opt-in. All presets share the same sink name so swapping presets does not require restarting daimonion. Preset inventory + install flow + troubleshooting live at `config/pipewire/README.md`.
 
 ## Council-Specific Conventions
 
