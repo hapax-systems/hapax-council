@@ -89,6 +89,67 @@ def test_registry_trail_temporal(real_registry):
     assert d is not None and d.temporal
 
 
+def test_registry_backend_default(real_registry):
+    """Phase 3a: every shipped manifest declares backend=wgsl_render."""
+    # All node manifests committed in Phase 3a have an explicit backend.
+    # The default ("wgsl_render") is preserved when the field is missing.
+    d = real_registry.get("colorgrade")
+    assert d is not None and d.backend == "wgsl_render"
+
+
+def test_registry_backend_default_when_field_missing(tmp_path: Path):
+    """A manifest without a backend field defaults to wgsl_render."""
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "noback.json").write_text(
+        json.dumps(
+            {
+                "node_type": "noback",
+                "glsl_fragment": "noback.frag",
+                "inputs": {"in": "frame"},
+                "outputs": {"out": "frame"},
+                "params": {},
+                "temporal": False,
+                "temporal_buffers": 0,
+            }
+        )
+    )
+    reg = ShaderRegistry(nodes)
+    d = reg.get("noback")
+    assert d is not None
+    assert d.backend == "wgsl_render"
+
+
+def test_registry_backend_explicit_value_preserved(tmp_path: Path):
+    """A manifest with backend=cairo round-trips to the loaded def."""
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "fakeworm.json").write_text(
+        json.dumps(
+            {
+                "node_type": "fakeworm",
+                "backend": "cairo",
+                "inputs": {},
+                "outputs": {"out": "frame"},
+                "params": {},
+                "temporal": False,
+                "temporal_buffers": 0,
+            }
+        )
+    )
+    reg = ShaderRegistry(nodes)
+    d = reg.get("fakeworm")
+    assert d is not None
+    assert d.backend == "cairo"
+
+
+def test_registry_schema_includes_backend(real_registry):
+    """ShaderRegistry.schema(node_type) exposes backend for UI/API consumers."""
+    schema = real_registry.schema("colorgrade")
+    assert schema is not None
+    assert schema["backend"] == "wgsl_render"
+
+
 # --- Compiler ---
 
 
