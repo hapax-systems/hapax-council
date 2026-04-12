@@ -57,6 +57,13 @@ struct PlanPass {
     /// plans written by older compilers that don't emit this field.
     #[serde(default)]
     requires_content_slots: bool,
+    /// Backend dispatcher key from the node manifest. Defaults to
+    /// "wgsl_render" so plans written by older compilers that don't emit
+    /// this field continue to dispatch through the existing render path.
+    /// Phase 3 of the compositor unification epic — see
+    /// docs/superpowers/specs/2026-04-12-phase-3-executor-polymorphism-design.md
+    #[serde(default = "default_backend")]
+    backend: String,
 }
 
 fn default_output() -> String {
@@ -65,6 +72,10 @@ fn default_output() -> String {
 
 fn default_steps() -> u32 {
     1
+}
+
+fn default_backend() -> String {
+    "wgsl_render".into()
 }
 
 /// Deserialize a JSON object into HashMap<String, f64>, silently skipping non-numeric values.
@@ -101,6 +112,9 @@ struct DynamicPass {
     output: String,
     steps_per_frame: u32,
     requires_content_slots: bool,
+    /// Backend dispatcher key. Phase 3a wires only "wgsl_render" — future
+    /// sub-phases (3b/3c/3d) add "cairo", "text", "image_file" branches.
+    backend: String,
 }
 
 /// Named texture in the texture pool.
@@ -426,6 +440,7 @@ impl DynamicPipeline {
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
                     requires_content_slots: plan_pass.requires_content_slots,
+                    backend: plan_pass.backend.clone(),
                 });
             } else {
                 // Render pass
@@ -539,6 +554,7 @@ impl DynamicPipeline {
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
                     requires_content_slots: plan_pass.requires_content_slots,
+                    backend: plan_pass.backend.clone(),
                 });
             }
         }
@@ -749,6 +765,26 @@ impl DynamicPipeline {
 
         // Execute each pass
         for pass in &self.passes {
+            // Backend dispatch (Phase 3a). Today only "wgsl_render" is wired
+            // to the existing render/compute path below. Future sub-phases
+            // (3b cairo, 3c text, 3d image_file) add branches here. Unknown
+            // backends are logged once and skipped — they will not crash the
+            // pipeline if a manifest is misconfigured.
+            match pass.backend.as_str() {
+                "wgsl_render" => {
+                    // Existing path — falls through to the render/compute
+                    // dispatch below.
+                }
+                other => {
+                    log::debug!(
+                        "dynamic_pipeline: skipping pass '{}' with unknown backend '{}'",
+                        pass.node_id,
+                        other,
+                    );
+                    continue;
+                }
+            }
+
             let is_temporal = pass.inputs.iter().any(|n| n.starts_with("@accum_"));
 
             if let Some(ref render_pipeline) = pass.render_pipeline {

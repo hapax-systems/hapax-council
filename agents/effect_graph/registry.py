@@ -23,6 +23,7 @@ class LoadedShaderDef:
     compute: bool
     glsl_source: str | None
     requires_content_slots: bool = False
+    backend: str = "wgsl_render"
 
 
 class ShaderRegistry:
@@ -56,6 +57,7 @@ class ShaderRegistry:
             compute=raw.get("compute", False),
             glsl_source=glsl,
             requires_content_slots=raw.get("requires_content_slots", False),
+            backend=raw.get("backend", "wgsl_render"),
         )
 
     @property
@@ -78,6 +80,7 @@ class ShaderRegistry:
             "temporal_buffers": d.temporal_buffers,
             "compute": d.compute,
             "requires_content_slots": d.requires_content_slots,
+            "backend": d.backend,
         }
 
     def all_schemas(self) -> dict[str, object]:

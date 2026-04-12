@@ -122,6 +122,36 @@ class TestCompileToWgslPlan:
         assert p.get("temporal") is True
         assert "@accum_rd" in p["inputs"]
 
+    def test_single_node_emits_backend_field(self):
+        """Phase 3a: every pass descriptor must include a backend key.
+
+        Defaults to ``wgsl_render`` for shader nodes — the only backend
+        wired in Phase 3a. Future sub-phases add cairo/text/image_file.
+        """
+        plan = compile_to_wgsl_plan(_single_node_graph())
+        assert plan["passes"][0]["backend"] == "wgsl_render"
+
+    def test_chain_all_passes_emit_backend(self):
+        """Every pass in a multi-node chain must carry the backend key."""
+        plan = compile_to_wgsl_plan(_chain_graph())
+        for pass_desc in plan["passes"]:
+            assert pass_desc["backend"] == "wgsl_render", (
+                f"pass {pass_desc.get('node_id')} missing backend"
+            )
+
+    def test_temporal_node_emits_backend(self):
+        """Temporal passes (like reaction_diffusion) also carry the backend."""
+        graph = EffectGraph(
+            name="test-rd-backend",
+            nodes={
+                "rd": {"type": "reaction_diffusion", "params": {}},
+                "out": {"type": "output"},
+            },
+            edges=[["@live", "rd"], ["rd", "out"]],
+        )
+        plan = compile_to_wgsl_plan(graph)
+        assert plan["passes"][0]["backend"] == "wgsl_render"
+
     def test_reaction_diffusion_params(self):
         """R-D pass should include feed_rate and kill_rate in uniforms."""
         graph = EffectGraph(

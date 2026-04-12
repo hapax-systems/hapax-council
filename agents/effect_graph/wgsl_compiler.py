@@ -135,10 +135,15 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, object]:
         if is_temporal:
             inputs.append(f"@accum_{step.node_id}")
 
+        # Backend dispatcher key from the node manifest. Defaults to
+        # "wgsl_render" so older manifests continue to compile correctly.
+        backend = node_def.backend if node_def else "wgsl_render"
+
         descriptor: dict[str, object] = {
             "node_id": step.node_id,
             "shader": f"{step.node_type}.wgsl",
             "type": pass_type,
+            "backend": backend,
             "inputs": inputs,
             "output": output,
             "uniforms": uniforms,
