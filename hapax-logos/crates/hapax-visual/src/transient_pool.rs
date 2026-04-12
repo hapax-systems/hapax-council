@@ -162,8 +162,10 @@ impl<T> TransientTexturePool<T> {
     }
 
     /// Reuse ratio in [0.0, 1.0]: 1.0 means every acquire was a reuse,
-    /// 0.0 means every acquire allocated fresh. NaN when total_acquires
-    /// is zero.
+    /// 0.0 means every acquire allocated fresh. Returns 0.0 (not NaN)
+    /// for an empty pool — metric collectors typically prefer a numeric
+    /// zero over NaN for "no data yet". Audit fix: previous docstring
+    /// claimed NaN, which the implementation never produced.
     pub fn reuse_ratio(&self) -> f64 {
         if self.total_acquires == 0 {
             return 0.0;
@@ -251,10 +253,6 @@ mod tests {
 
     /// Test texture: a simple integer handle so we don't need wgpu.
     type TestTex = u32;
-
-    fn fresh<T: Default>() -> T {
-        T::default()
-    }
 
     // ----- begin_frame + acquire basics -----
 
@@ -481,9 +479,4 @@ mod tests {
         assert_eq!(a.total_acquires(), b.total_acquires());
     }
 
-    #[test]
-    fn fresh_helper_compiles() {
-        // Sanity: the test uses fresh<T>() in some places.
-        let _: TestTex = fresh();
-    }
 }

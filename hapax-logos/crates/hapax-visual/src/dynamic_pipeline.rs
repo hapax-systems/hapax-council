@@ -1389,8 +1389,12 @@ impl DynamicPipeline {
                         .map(|t| &t.view)
                         .unwrap()
                 } else {
+                    // Phase 5b1 audit fix: this fallback was missed when
+                    // the rest of the file was migrated to MAIN_FINAL_TEXTURE.
+                    // The bare "final" key no longer exists in the texture
+                    // pool — every final texture is target-namespaced.
                     self.textures.get(name.as_str())
-                        .or_else(|| self.textures.get("final"))
+                        .or_else(|| self.textures.get(MAIN_FINAL_TEXTURE))
                         .map(|t| &t.view)
                         .unwrap()
                 };

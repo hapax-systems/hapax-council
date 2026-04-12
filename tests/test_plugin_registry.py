@@ -308,3 +308,45 @@ def test_clock_source_can_be_constructed_with_defaults():
     # Constructor stored the default font/format.
     assert source._format == "%H:%M:%S"  # noqa: SLF001 — test boundary
     assert "JetBrains Mono" in source._font_description  # noqa: SLF001
+
+
+def _has_pango() -> bool:
+    """Match the gating used in test_text_render.py — Pango is only
+    available on hosts with the GI typelibs installed (CI runs in a
+    minimal container without GTK)."""
+    try:
+        import gi  # noqa: PLC0415
+
+        gi.require_version("Pango", "1.0")
+        gi.require_version("PangoCairo", "1.0")
+        from gi.repository import Pango, PangoCairo  # noqa: F401, PLC0415
+    except (ImportError, ValueError):
+        return False
+    return True
+
+
+@pytest.mark.skipif(not _has_pango(), reason="GI Pango/PangoCairo typelibs not installed")
+def test_clock_source_renders_into_canvas():
+    """Phase 6 audit fix: the spec required this test alongside the
+    constructor smoke check. ClockSource.render() must produce non-zero
+    pixel output for the documented default params.
+
+    Verifies the lazy-import + render path end-to-end:
+    - text_render.render_text imports Pango at draw time
+    - ClockSource builds a TextStyle with the default font
+    - time.strftime produces a renderable string
+    - Cairo writes pixels into the supplied surface
+    """
+    import cairo  # noqa: PLC0415
+
+    from plugins.clock.source import ClockSource
+
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 60)
+    cr = cairo.Context(surface)
+    source = ClockSource()
+    source.render(cr, 200, 60, t=0.0, state={})
+    surface.flush()
+    data = bytes(surface.get_data())
+    # At least one non-zero pixel was drawn — the text outline + body
+    # should produce hundreds, but we only need a positive sanity check.
+    assert any(b != 0 for b in data), "ClockSource.render() produced an empty surface"
