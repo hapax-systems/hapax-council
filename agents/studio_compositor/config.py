@@ -22,7 +22,6 @@ CONSENT_AUDIT_PATH = CACHE_DIR / "consent-audit.jsonl"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "hapax-compositor" / "config.yaml"
 SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
 PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
-VISUAL_LAYER_STATE_PATH = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
 PROFILES_CONFIG_PATH = Path.home() / ".config" / "hapax-compositor" / "profiles.yaml"
 
 OUTPUT_WIDTH = 1920

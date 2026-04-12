@@ -95,12 +95,6 @@ def build_pipeline(compositor: Any) -> Any:
 
     fx_ok = build_inline_fx_chain(compositor, pipeline, pre_fx_tee, output_tee, fps)
 
-    # TODO: Individual camera FX sources cause caps negotiation deadlock
-    # at pipeline startup. The input-selector can't resolve BGRA vs I420
-    # across 7 pads simultaneously. Needs a different approach — either
-    # dynamic relinking or a separate pipeline per source.
-    # For now, the tiled composite is the only FX source.
-
     if not fx_ok:
         log.warning("FX chain failed to initialize — bypassing effects")
         bypass_queue = Gst.ElementFactory.make("queue", "queue-fx-bypass")
@@ -178,53 +172,3 @@ def build_pipeline(compositor: Any) -> Any:
     add_smooth_delay_branch(compositor, pipeline, output_tee)
 
     return pipeline
-
-
-def _add_camera_fx_sources(compositor: Any, pipeline: Any, Gst: Any, fps: int) -> None:
-    """Wire each camera's tee to the FX input-selector as a selectable source.
-
-    Each camera feed is scaled to output resolution and linked as a separate
-    input-selector pad. The source field on PresetChain controls which pad
-    is active during playback.
-    """
-    input_sel = compositor._fx_input_selector
-
-    for cam in compositor.config.cameras:
-        role = cam.role.replace("-", "_")
-        cam_tee = pipeline.get_by_name(f"tee_{role}")
-        if cam_tee is None:
-            log.debug("FX source: camera tee for %s not found, skipping", role)
-            continue
-
-        # Branch: camera_tee → queue → videoconvert(BGRA) → input-selector
-        # Cameras are already 1080p from jpegdec — no scale needed.
-        q = Gst.ElementFactory.make("queue", f"queue-fxsrc-{role}")
-        q.set_property("leaky", 2)
-        q.set_property("max-size-buffers", 1)
-        convert = Gst.ElementFactory.make("videoconvert", f"fxsrc-convert-{role}")
-        convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
-        caps = Gst.ElementFactory.make("capsfilter", f"fxsrc-caps-{role}")
-        caps.set_property(
-            "caps",
-            Gst.Caps.from_string("video/x-raw,format=BGRA"),
-        )
-
-        for el in [q, convert, caps]:
-            pipeline.add(el)
-        q.link(convert)
-        convert.link(caps)
-
-        # Connect camera tee → queue
-        tee_pad = cam_tee.request_pad(cam_tee.get_pad_template("src_%u"), None, None)
-        q_sink = q.get_static_pad("sink")
-        tee_pad.link(q_sink)
-
-        # Connect caps → input-selector
-        sel_pad = input_sel.request_pad(input_sel.get_pad_template("sink_%u"), None, None)
-        caps.link_pads("src", input_sel, sel_pad.get_name())
-
-        # Store the pad using the camera's original role name (with dashes)
-        compositor._fx_input_pads[cam.role] = sel_pad
-        log.info("FX source: %s connected to input-selector", cam.role)
-
-    log.info("FX sources available: %s", ", ".join(sorted(compositor._fx_input_pads.keys())))

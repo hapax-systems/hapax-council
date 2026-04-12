@@ -52,13 +52,6 @@ class StudioCompositor:
         self._overlay_cache_cam_hash: str = ""
         self._overlay_zone_manager = OverlayZoneManager()
         self._audio_capture = CompositorAudioCapture()
-        self._vl_state: dict | None = None
-        self._vl_state_lock = threading.Lock()
-        self._vl_state_timestamp: float = 0.0
-        self._vl_zone_opacities: dict[str, float] = {}
-        self._vl_cache_surface: Any = None
-        self._vl_cache_timestamp: float = 0.0
-        self._VL_LAST_FRAME_TIME: float = 0.0
 
         self._graph_runtime = init_graph_runtime(self)
 
@@ -115,8 +108,8 @@ class StudioCompositor:
                 log.warning("FX v4l2sink error (non-fatal): %s", err.message)
             elif src_name == "output" and "busy" in err.message:
                 log.warning("v4l2sink format renegotiation failed (non-fatal): %s", err.message)
-            elif src_name.startswith("fxsrc-") or src_name.startswith("yt-overlay"):
-                # FX source / YouTube overlay error — non-fatal
+            elif src_name.startswith("fxsrc-"):
+                # FX source branch error — non-fatal
                 log.warning("FX source branch error (non-fatal): %s", err.message)
                 try:
                     from .fx_chain import switch_fx_source

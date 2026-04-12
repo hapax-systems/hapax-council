@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import PERCEPTION_STATE_PATH, SNAPSHOT_DIR, VISUAL_LAYER_STATE_PATH
+from .config import PERCEPTION_STATE_PATH, SNAPSHOT_DIR
 from .effects import try_graph_preset
 from .layout import compute_tile_layout
 from .models import OverlayData
@@ -117,16 +117,6 @@ def state_reader_loop(compositor: Any) -> None:
         except (json.JSONDecodeError, OSError, ValueError) as exc:
             log.debug("Failed to read perception state: %s", exc)
             compositor._overlay_state.mark_stale()
-
-        try:
-            if VISUAL_LAYER_STATE_PATH.exists():
-                vl_raw = VISUAL_LAYER_STATE_PATH.read_text()
-                vl_data = json.loads(vl_raw)
-                with compositor._vl_state_lock:
-                    compositor._vl_state = vl_data
-                    compositor._vl_state_timestamp = vl_data.get("timestamp", 0.0)
-        except (json.JSONDecodeError, OSError):
-            pass
 
         # Consent enforcement
         with compositor._overlay_state._lock:
