@@ -276,10 +276,22 @@ class DirectorLoop:
         log.info("Director loop started (slot %d active)", self._active_slot)
 
     def _slots_needing_cold_start(self) -> list[int]:
-        """Slot IDs whose yt-frame-N.jpg is absent — candidates for bootstrapping."""
-        return [
-            s.slot_id for s in self._slots if not (SHM_DIR / f"yt-frame-{s.slot_id}.jpg").exists()
-        ]
+        """Slot IDs whose yt-frame-N.jpg is absent *or* zero-byte.
+
+        The existence-only check used to miss the case where a prior yt-player
+        restart left a stale 0-byte file behind — that file would defeat the
+        cold-start dispatch AND then get sent to the LLM as an invalid image
+        (HTTP 400). Observed during A12 deploy on 2026-04-12.
+        """
+        missing: list[int] = []
+        for s in self._slots:
+            path = SHM_DIR / f"yt-frame-{s.slot_id}.jpg"
+            try:
+                if not path.exists() or path.stat().st_size == 0:
+                    missing.append(s.slot_id)
+            except OSError:
+                missing.append(s.slot_id)
+        return missing
 
     def _dispatch_cold_starts(self) -> list[int]:
         """Kick off playlist reloads for slots missing a frame file.
@@ -477,15 +489,20 @@ class DirectorLoop:
         return "\n".join(parts)
 
     def _gather_images(self) -> list[str]:
-        """Collect image paths for the LLM call."""
-        images = []
-        # Video frame
-        vf = SHM_DIR / f"yt-frame-{self._active_slot}.jpg"
-        if vf.exists():
-            images.append(str(vf))
-        # Compositor snapshot
-        if FX_SNAPSHOT.exists():
-            images.append(str(FX_SNAPSHOT))
+        """Collect image paths for the LLM call. Skips empty/missing files.
+
+        A 0-byte or unreadable JPEG sent to Claude produces a HTTP 400 Bad
+        Request and drops the whole reaction tick. Stale 0-byte frame files
+        are a real failure mode after a yt-player restart (observed
+        2026-04-12 post-A12 deploy), so the filter is load-bearing.
+        """
+        images: list[str] = []
+        for path in (SHM_DIR / f"yt-frame-{self._active_slot}.jpg", FX_SNAPSHOT):
+            try:
+                if path.exists() and path.stat().st_size > 0:
+                    images.append(str(path))
+            except OSError:
+                continue
         return images
 
     # --- Legacy activity tick methods (kept for reference, not called) ---

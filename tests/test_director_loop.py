@@ -116,6 +116,54 @@ def test_dispatch_cold_starts_partial_missing(tmp_path, monkeypatch):
     assert reloaded == [1]
 
 
+def test_slots_needing_cold_start_treats_zero_byte_as_missing(tmp_path, monkeypatch):
+    """A stale 0-byte yt-frame file must still count as missing (FU-5).
+
+    Regression: yt-player restart used to leave 0-byte files behind, which
+    passed the old .exists()-only check AND then got sent to Claude as
+    invalid images (HTTP 400). Observed 2026-04-12 post-A12 deploy.
+    """
+    monkeypatch.setattr(dl_module, "SHM_DIR", tmp_path)
+    (tmp_path / "yt-frame-0.jpg").write_bytes(b"\xff\xd8\xff")
+    (tmp_path / "yt-frame-1.jpg").write_bytes(b"")  # stale 0-byte
+    # slot 2 has no file at all
+    director = _director([_FakeSlot(i) for i in range(3)])
+
+    assert director._slots_needing_cold_start() == [1, 2]
+
+
+def test_gather_images_skips_zero_byte_frame(tmp_path, monkeypatch):
+    """_gather_images must not pass 0-byte frame files to the LLM."""
+    monkeypatch.setattr(dl_module, "SHM_DIR", tmp_path)
+    # stale 0-byte active slot frame
+    (tmp_path / "yt-frame-0.jpg").write_bytes(b"")
+    # valid fx snapshot
+    fx = tmp_path / "fx-snapshot.jpg"
+    fx.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+    monkeypatch.setattr(dl_module, "FX_SNAPSHOT", fx)
+    director = _director([_FakeSlot(i) for i in range(3)])
+
+    images = director._gather_images()
+
+    assert str(fx) in images
+    assert str(tmp_path / "yt-frame-0.jpg") not in images
+
+
+def test_gather_images_includes_valid_frame(tmp_path, monkeypatch):
+    """_gather_images includes a frame file with non-zero size."""
+    monkeypatch.setattr(dl_module, "SHM_DIR", tmp_path)
+    valid = tmp_path / "yt-frame-0.jpg"
+    valid.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+    fx = tmp_path / "fx-snapshot.jpg"
+    fx.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+    monkeypatch.setattr(dl_module, "FX_SNAPSHOT", fx)
+    director = _director([_FakeSlot(i) for i in range(3)])
+
+    images = director._gather_images()
+
+    assert images == [str(valid), str(fx)]
+
+
 # ---------------------------------------------------------------------------
 # _load_playlist — restored after spirograph_reactor deletion (PR #644)
 # ---------------------------------------------------------------------------
