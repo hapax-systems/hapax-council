@@ -22,6 +22,7 @@ class LoadedShaderDef:
     temporal_buffers: int
     compute: bool
     glsl_source: str | None
+    requires_content_slots: bool = False
 
 
 class ShaderRegistry:
@@ -54,6 +55,7 @@ class ShaderRegistry:
             temporal_buffers=raw.get("temporal_buffers", 0),
             compute=raw.get("compute", False),
             glsl_source=glsl,
+            requires_content_slots=raw.get("requires_content_slots", False),
         )
 
     @property
@@ -75,6 +77,7 @@ class ShaderRegistry:
             "temporal": d.temporal,
             "temporal_buffers": d.temporal_buffers,
             "compute": d.compute,
+            "requires_content_slots": d.requires_content_slots,
         }
 
     def all_schemas(self) -> dict[str, object]:

@@ -297,6 +297,29 @@ class TestRegistryLoading:
         types = registry.node_types
         assert types == sorted(types)
 
+    def test_content_layer_requires_content_slots(self, registry: ShaderRegistry):
+        """content_layer node opts into the content slot binding via the manifest flag."""
+        d = registry.get("content_layer")
+        assert d is not None
+        assert d.requires_content_slots is True
+
+    def test_sierpinski_content_requires_content_slots(self, registry: ShaderRegistry):
+        """sierpinski_content also opts in."""
+        d = registry.get("sierpinski_content")
+        assert d is not None
+        assert d.requires_content_slots is True
+
+    def test_other_nodes_default_no_content_slots(self, registry: ShaderRegistry):
+        """All other nodes should default to requires_content_slots=False."""
+        for nt in registry.node_types:
+            if nt in ("content_layer", "sierpinski_content"):
+                continue
+            d = registry.get(nt)
+            assert d is not None
+            assert d.requires_content_slots is False, (
+                f"{nt} unexpectedly has requires_content_slots=True"
+            )
+
     def test_unknown_returns_none(self, registry: ShaderRegistry):
         assert registry.get("nonexistent_xyz") is None
 
