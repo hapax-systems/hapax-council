@@ -1946,8 +1946,21 @@ async def run_auto() -> None:
         len(new_facts),
     )
 
-    # Synthesize
-    synthesis = await synthesize_profile(all_facts)
+    # Synthesize. Upstream LLMs occasionally return an empty `choices` array
+    # on large fact sets (~10k facts); pydantic_ai then crashes in
+    # _process_response with IndexError. Catch broadly so a transient LLM
+    # failure does not invalidate the run — the timer will retry.
+    try:
+        synthesis = await synthesize_profile(all_facts)
+    except Exception as e:
+        log.error(
+            "Synthesis failed (%s: %s) — aborting update; existing profile preserved",
+            type(e).__name__,
+            e,
+        )
+        mtimes = get_source_mtimes(sources)
+        save_state(mtimes, list_source_ids(sources))
+        return
 
     # Track sources
     new_source_ids = {c.source_id for c in chunks}
@@ -1968,15 +1981,26 @@ async def run_auto() -> None:
     curated, flagged = await curate_profile(profile)
     save_profile(curated)
 
-    # Re-synthesize after curation
+    # Re-synthesize after curation. Same failure mode as above — if the LLM
+    # returns an empty response, fall back to the already-saved curated
+    # profile rather than crashing. The existing dimension summaries are
+    # still correct at this point.
     curated_facts = [f for dim in curated.dimensions for f in dim.facts]
-    synthesis = await synthesize_profile(curated_facts)
-    final_dims = []
-    for dim in curated.dimensions:
-        new_summary = synthesis.dimension_summaries.get(dim.name, dim.summary)
-        final_dims.append(ProfileDimension(name=dim.name, summary=new_summary, facts=dim.facts))
-    final = curated.model_copy(update={"summary": synthesis.summary, "dimensions": final_dims})
-    save_profile(final)
+    try:
+        synthesis = await synthesize_profile(curated_facts)
+        final_dims = []
+        for dim in curated.dimensions:
+            new_summary = synthesis.dimension_summaries.get(dim.name, dim.summary)
+            final_dims.append(ProfileDimension(name=dim.name, summary=new_summary, facts=dim.facts))
+        final = curated.model_copy(update={"summary": synthesis.summary, "dimensions": final_dims})
+        save_profile(final)
+    except Exception as e:
+        log.error(
+            "Post-curation re-synthesis failed (%s: %s) — keeping curated profile as-is",
+            type(e).__name__,
+            e,
+        )
+        final = curated
 
     if flagged:
         log.warning("Flagged %d items for human review", len(flagged))
