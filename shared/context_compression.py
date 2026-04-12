@@ -7,6 +7,7 @@ Two orthogonal compression layers for LLM context:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 from pydantic import BaseModel
@@ -31,13 +32,15 @@ def compressor_available() -> bool:
 def to_toon(data: dict | BaseModel | list) -> str:
     """Serialize structured data to TOON format for LLM context injection.
 
-    Accepts dicts, Pydantic models, or lists. Returns a compact TOON string
-    that uses ~40-60% fewer tokens than equivalent JSON.
+    Accepts dicts, Pydantic models, dataclasses, or lists. Returns a compact
+    TOON string that uses ~40-60% fewer tokens than equivalent JSON.
     """
     import toon
 
     if isinstance(data, BaseModel):
         data = data.model_dump()
+    elif dataclasses.is_dataclass(data) and not isinstance(data, type):
+        data = dataclasses.asdict(data)
     return toon.encode(data)
 
 
