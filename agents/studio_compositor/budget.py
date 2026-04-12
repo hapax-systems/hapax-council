@@ -160,6 +160,83 @@ class BudgetTracker:
         return self.last_frame_ms(source_id) > budget_ms
 
     # ------------------------------------------------------------------
+    # Followup F2: per-frame layout budgets
+    # ------------------------------------------------------------------
+
+    def total_last_frame_ms(self, source_ids: list[str] | None = None) -> float:
+        """Sum of the most recent frame times across the given sources.
+
+        When ``source_ids`` is None, sums every recorded source. The
+        operator's compositor code passes the active source list from
+        the current CompiledFrame to get the per-frame total against
+        the layout's overall frame budget.
+
+        Sources with no recorded samples contribute 0.0.
+        """
+        with self._lock:
+            if source_ids is None:
+                ids = list(self._states.keys())
+            else:
+                ids = source_ids
+            total = 0.0
+            for source_id in ids:
+                state = self._states.get(source_id)
+                if state is None or not state.samples:
+                    continue
+                total += state.samples[-1]
+            return total
+
+    def total_avg_frame_ms(self, source_ids: list[str] | None = None) -> float:
+        """Sum of the rolling-window averages across the given sources.
+
+        Used for budget decisions that look at sustained cost rather
+        than the most recent frame. Smoother than ``total_last_frame_ms``
+        — appropriate when the executor wants to react to trends, not
+        spikes.
+        """
+        with self._lock:
+            if source_ids is None:
+                ids = list(self._states.keys())
+            else:
+                ids = source_ids
+            total = 0.0
+            for source_id in ids:
+                state = self._states.get(source_id)
+                if state is None or not state.samples:
+                    continue
+                total += sum(state.samples) / len(state.samples)
+            return total
+
+    def over_layout_budget(
+        self,
+        layout_budget_ms: float,
+        source_ids: list[str] | None = None,
+    ) -> bool:
+        """True iff the most recent frame total exceeded the layout budget.
+
+        Used by the host compositor's frame planner to decide whether
+        to drop the lowest-priority sources from the next frame.
+        Returns False when no samples have been recorded yet (the
+        first frame always renders, matching the per-source semantics).
+        """
+        total = self.total_last_frame_ms(source_ids)
+        if total == 0.0:
+            return False
+        return total > layout_budget_ms
+
+    def headroom_ms(
+        self,
+        layout_budget_ms: float,
+        source_ids: list[str] | None = None,
+    ) -> float:
+        """Return remaining budget in ms after the last frame's total.
+
+        Negative when over budget. Used for proportional throttling
+        decisions ("we have X ms left, what can we squeeze in?").
+        """
+        return layout_budget_ms - self.total_last_frame_ms(source_ids)
+
+    # ------------------------------------------------------------------
     # Snapshot + serialization
     # ------------------------------------------------------------------
 

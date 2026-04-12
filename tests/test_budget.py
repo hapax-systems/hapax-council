@@ -408,3 +408,118 @@ def test_runner_rejects_invalid_budget_ms():
             target_fps=10,
             budget_ms=0.0,
         )
+
+
+# ---------------------------------------------------------------------------
+# Followup F2: per-frame layout budgets
+# ---------------------------------------------------------------------------
+
+
+def test_total_last_frame_ms_sums_across_active_sources():
+    tracker = BudgetTracker()
+    tracker.record("a", 2.0)
+    tracker.record("b", 3.5)
+    tracker.record("c", 1.25)
+    assert tracker.total_last_frame_ms() == pytest.approx(6.75)
+
+
+def test_total_last_frame_ms_filters_by_source_ids():
+    """When source_ids is supplied, only those sources contribute."""
+    tracker = BudgetTracker()
+    tracker.record("a", 2.0)
+    tracker.record("b", 3.5)
+    tracker.record("c", 99.0)  # not in the active list
+    total = tracker.total_last_frame_ms(["a", "b"])
+    assert total == pytest.approx(5.5)
+
+
+def test_total_last_frame_ms_unrecorded_source_contributes_zero():
+    tracker = BudgetTracker()
+    tracker.record("a", 4.0)
+    # "ghost" was never recorded; it adds 0.0 instead of raising.
+    total = tracker.total_last_frame_ms(["a", "ghost"])
+    assert total == pytest.approx(4.0)
+
+
+def test_total_last_frame_ms_empty_tracker_returns_zero():
+    tracker = BudgetTracker()
+    assert tracker.total_last_frame_ms() == 0.0
+    assert tracker.total_last_frame_ms(["a", "b"]) == 0.0
+
+
+def test_total_avg_frame_ms_sums_rolling_averages():
+    tracker = BudgetTracker(window_size=4)
+    # a: avg = 2.0
+    for v in (1.0, 2.0, 3.0):
+        tracker.record("a", v)
+    # b: avg = 5.0
+    tracker.record("b", 5.0)
+    total = tracker.total_avg_frame_ms()
+    assert total == pytest.approx(7.0)
+
+
+def test_over_layout_budget_false_when_under():
+    tracker = BudgetTracker()
+    tracker.record("a", 2.0)
+    tracker.record("b", 3.0)
+    assert tracker.over_layout_budget(layout_budget_ms=10.0) is False
+
+
+def test_over_layout_budget_true_when_total_exceeds():
+    tracker = BudgetTracker()
+    tracker.record("a", 5.0)
+    tracker.record("b", 6.0)
+    assert tracker.over_layout_budget(layout_budget_ms=10.0) is True
+
+
+def test_over_layout_budget_false_when_no_samples():
+    """First frame after init never trips the budget — operator gets at
+    least one image regardless of layout cost."""
+    tracker = BudgetTracker()
+    assert tracker.over_layout_budget(layout_budget_ms=0.001) is False
+
+
+def test_over_layout_budget_filters_by_source_ids():
+    tracker = BudgetTracker()
+    tracker.record("active1", 4.0)
+    tracker.record("active2", 4.0)
+    tracker.record("hidden", 100.0)  # culled this frame
+    # When we only count active sources, total = 8.0 < budget 10.0.
+    assert tracker.over_layout_budget(10.0, ["active1", "active2"]) is False
+    # If we naively summed every recorded source, total = 108.0 > 10.
+    assert tracker.over_layout_budget(10.0) is True
+
+
+def test_headroom_ms_positive_when_under_budget():
+    tracker = BudgetTracker()
+    tracker.record("a", 2.0)
+    tracker.record("b", 3.0)
+    assert tracker.headroom_ms(layout_budget_ms=10.0) == pytest.approx(5.0)
+
+
+def test_headroom_ms_negative_when_over_budget():
+    tracker = BudgetTracker()
+    tracker.record("a", 8.0)
+    tracker.record("b", 8.0)
+    headroom = tracker.headroom_ms(layout_budget_ms=10.0)
+    assert headroom == pytest.approx(-6.0)
+
+
+def test_headroom_ms_equals_full_budget_when_no_samples():
+    """An empty tracker has full headroom available — every ms of the
+    budget is available for the first frame."""
+    tracker = BudgetTracker()
+    assert tracker.headroom_ms(layout_budget_ms=16.7) == pytest.approx(16.7)
+
+
+def test_layout_budget_uses_last_not_avg_for_spike_detection():
+    """Spike detection: a single bad frame trips the layout budget
+    even when the rolling avg would not."""
+    tracker = BudgetTracker(window_size=10)
+    for _ in range(9):
+        tracker.record("a", 1.0)
+    tracker.record("a", 50.0)  # spike on the most recent frame
+    # avg = (9*1.0 + 50.0) / 10 = 5.9, well under 10ms budget
+    assert tracker.total_avg_frame_ms() < 10.0
+    # But the most recent frame is 50ms, way over budget
+    assert tracker.over_layout_budget(layout_budget_ms=10.0) is True
