@@ -267,3 +267,103 @@ def test_sierpinski_cairo_source_render_into_small_canvas():
     # Surface bytes should contain non-zero pixels (we drew triangle lines).
     data = bytes(surface.get_data())
     assert any(b != 0 for b in data)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b-final: AlbumOverlay / OverlayZones / TokenPole facades
+# ---------------------------------------------------------------------------
+
+
+def test_album_overlay_cairo_source_render_does_not_raise_without_cover():
+    """Cover file may be absent; render should be a safe no-op that still
+    exits cleanly so the runner's output surface is populated with a
+    transparent image (no crash).
+    """
+    from agents.studio_compositor.album_overlay import (
+        CANVAS_H,
+        CANVAS_W,
+        AlbumOverlayCairoSource,
+    )
+
+    source = AlbumOverlayCairoSource()
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, CANVAS_W, CANVAS_H)
+    cr = cairo.Context(surface)
+    # No /dev/shm/hapax-compositor/album-cover.png → self._surface stays None
+    # and render returns early without drawing.
+    source.render(cr, CANVAS_W, CANVAS_H, t=0.0, state={})
+    surface.flush()  # must not raise
+
+
+def test_album_overlay_facade_draw_blits_cached_surface():
+    """AlbumOverlay.draw(cr) must consult the runner and blit when ready."""
+    from agents.studio_compositor.album_overlay import AlbumOverlay
+
+    album = AlbumOverlay()
+    try:
+        album._runner.tick_once()  # noqa: SLF001 — test boundary
+        target = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1920, 1080)
+        cr = cairo.Context(target)
+        album.draw(cr)  # must not raise whether the cover loaded or not
+    finally:
+        album.stop()
+
+
+def test_overlay_zones_cairo_source_render_into_empty_canvas():
+    """Zones source renders into a small canvas without crashing, even
+    when the per-zone file/folder sources are missing.
+    """
+    from agents.studio_compositor.overlay_zones import OverlayZonesCairoSource
+
+    source = OverlayZonesCairoSource()
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 640, 360)
+    cr = cairo.Context(surface)
+    source.render(cr, 640, 360, t=0.0, state={})
+    surface.flush()  # must not raise
+    # Default configs yield two zones (main + lyrics).
+    assert len(source.zones) == 2
+
+
+def test_overlay_zone_manager_facade_render_is_a_noop_when_surface_missing():
+    """Facade render(cr, w, h) must tolerate the runner having no surface
+    cached yet (initial frame before the background thread ticks).
+    """
+    from agents.studio_compositor.overlay_zones import OverlayZoneManager
+
+    manager = OverlayZoneManager()
+    try:
+        target = cairo.ImageSurface(cairo.FORMAT_ARGB32, 640, 360)
+        cr = cairo.Context(target)
+        # Do not pre-tick — runner surface may still be None on first frame.
+        manager.render(cr, 640, 360)  # must not raise
+    finally:
+        manager.stop()
+
+
+def test_token_pole_cairo_source_render_advances_animation_state():
+    """TokenPoleCairoSource.render() must call _tick_state on every frame
+    so the pulse phase and position-easing actually progress at the
+    runner's cadence.
+    """
+    from agents.studio_compositor.token_pole import TokenPoleCairoSource
+
+    source = TokenPoleCairoSource()
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1920, 1080)
+    cr = cairo.Context(surface)
+    for _ in range(5):
+        source.render(cr, 1920, 1080, t=0.0, state={})
+    # Pulse advances by 0.1 per tick (see TokenPoleCairoSource._tick_state).
+    assert source._pulse == pytest.approx(0.5)  # noqa: SLF001 — test boundary
+
+
+def test_token_pole_facade_draw_does_not_raise():
+    """TokenPole facade's draw(cr) blits whatever the runner has."""
+    from agents.studio_compositor.token_pole import TokenPole
+
+    pole = TokenPole()
+    try:
+        pole._runner.tick_once()  # noqa: SLF001 — test boundary
+        target = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1920, 1080)
+        cr = cairo.Context(target)
+        pole.draw(cr)
+    finally:
+        pole.stop()
