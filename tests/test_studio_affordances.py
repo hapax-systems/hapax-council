@@ -42,3 +42,29 @@ def test_no_duplicate_names_after_additions():
     names = [r.name for r in ALL_AFFORDANCES]
     dupes = [n for n in names if names.count(n) > 1]
     assert len(names) == len(set(names)), f"Duplicate affordance names: {set(dupes)}"
+
+
+def test_toggle_livestream_affordance_registered():
+    """CC1 — stream-as-affordance.
+
+    Beta-side registration; the compositor-side RTMP handler is alpha's
+    A7 prerequisite per the 2026-04-12 work-stream split. The capability
+    must require consent because broadcasting room imagery to a public
+    destination is materially different from local-only routing — axiom
+    interpersonal_transparency.
+    """
+    studio = AFFORDANCE_DOMAINS.get("studio", [])
+    livestream = [r for r in studio if r.name == "studio.toggle_livestream"]
+    assert len(livestream) == 1, "studio.toggle_livestream should be registered exactly once"
+    cap = livestream[0]
+    assert cap.daemon == "compositor", "handler lives in studio_compositor (alpha owns the trigger)"
+    assert cap.operational.consent_required is True, (
+        "livestream affordance must require consent — axiom interpersonal_transparency"
+    )
+    assert cap.operational.latency_class == "slow", (
+        "RTMP handshake takes seconds, not milliseconds — keeps the recruiter from "
+        "starvation-cycling start/stop on a fast tier"
+    )
+    assert "broadcast" in cap.description.lower() or "stream" in cap.description.lower(), (
+        "description should make the streaming intent obvious to the embedding model"
+    )

@@ -242,6 +242,21 @@ STUDIO_AFFORDANCES = [
         daemon="compositor",
         operational=OperationalProperties(latency_class="fast"),
     ),
+    # CC1: stream-as-affordance. Beta-side registration; the compositor-side
+    # RTMP handler is alpha's A7 prerequisite per the 2026-04-12 work-stream
+    # split (~/.cache/hapax/relay/context/2026-04-12-work-stream-split.md).
+    # consent_required because broadcasting the composed studio visual to a
+    # public destination is materially different from local-only routing —
+    # axiom interpersonal_transparency requires explicit consent before any
+    # outbound transmission of room/operator imagery.
+    CapabilityRecord(
+        name="studio.toggle_livestream",
+        description=(
+            "Begin or end broadcasting the composed studio visual to a live streaming destination"
+        ),
+        daemon="compositor",
+        operational=OperationalProperties(latency_class="slow", consent_required=True),
+    ),
     # --- Output Destinations ---
     CapabilityRecord(
         name="studio.output_snapshot",
