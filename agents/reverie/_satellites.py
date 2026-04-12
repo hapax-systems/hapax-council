@@ -9,8 +9,10 @@ from __future__ import annotations
 import logging
 import time
 
+from agents.effect_graph.compiler import GraphValidationError
 from agents.effect_graph.wgsl_compiler import compile_to_wgsl_plan, write_wgsl_pipeline
 from agents.reverie._graph_builder import build_graph
+from agents.reverie.bootstrap import load_vocabulary
 
 log = logging.getLogger("reverie.satellites")
 
@@ -111,6 +113,12 @@ class SatelliteManager:
             graph = build_graph(self._core_vocab, self._recruited)
             plan = compile_to_wgsl_plan(graph)
             write_wgsl_pipeline(plan)
+        except GraphValidationError:
+            # In-memory vocab may be corrupted — reload from preset and let the
+            # next tick retry with a fresh cache. Prevents 18h-frozen-plan outages.
+            log.exception("Graph validation failed — reloading vocabulary preset")
+            self._core_vocab = load_vocabulary()
+            return False
         except Exception:
             log.exception("Graph rebuild failed — keeping previous graph")
             return False
