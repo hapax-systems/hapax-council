@@ -1749,11 +1749,23 @@ class ConversationPipeline:
             log.debug("LLM prewarm failed (non-fatal)", exc_info=True)
 
     def _open_audio_output(self) -> None:
-        """Open PipeWire audio output for TTS playback."""
+        """Open PipeWire audio output for TTS playback.
+
+        Respects ``HAPAX_TTS_TARGET`` — if set, pw-cat routes the TTS stream
+        to that PipeWire node. The installed voice FX chain
+        (``config/pipewire/voice-fx-chain.conf``) provides a ready sink
+        named ``hapax-voice-fx-capture``. Unset or empty falls through to
+        the default sink (role-based wireplumber routing, unchanged).
+        """
         try:
+            import os
+
             from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
 
-            self._audio_output = PwAudioOutput(sample_rate=24000, channels=1)
+            target = os.environ.get("HAPAX_TTS_TARGET") or None
+            self._audio_output = PwAudioOutput(sample_rate=24000, channels=1, target=target)
+            if target:
+                log.info("TTS routing through PipeWire target: %s", target)
         except Exception:
             log.exception("Failed to open audio output")
 
