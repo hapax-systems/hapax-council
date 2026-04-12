@@ -62,7 +62,6 @@ class OverlayZone:
         self._scroll_offset = 0.0
         self._is_image = False
         self._image_surface: Any = None
-        self._layout: Any = None
         self._pango_markup: str = ""
         self._content_hash: int = 0
         self._cached_surface: Any = None
@@ -161,7 +160,6 @@ class OverlayZone:
         path = Path(self.file)
         if not path.exists():
             if self._content_hash != 0:
-                self._layout = None
                 self._content_hash = 0
                 self._pango_markup = ""
                 self._is_image = False
@@ -197,7 +195,6 @@ class OverlayZone:
             self._content_hash = content_hash
             self._cached_surface = None
             self._pango_markup = ""
-            self._layout = None
             self._cached_surface_size = (surface.get_width(), surface.get_height())
             log.debug(
                 "Overlay zone '%s' loaded image %s (%dx%d)",
@@ -240,7 +237,6 @@ class OverlayZone:
             is_ansi = path.suffix == ".ansi"
             self._pango_markup = parse_overlay_content(raw, is_ansi=is_ansi)
         self._content_hash = content_hash
-        self._layout = None
         self._cached_surface = None
         self._is_image = False
         self._image_surface = None
@@ -285,45 +281,33 @@ class OverlayZone:
         cr.restore()
 
     def _rebuild_surface(self, cr: Any) -> None:
-        """Pre-render outlined text to a cairo image surface (cached)."""
-        import cairo
-        import gi
+        """Pre-render outlined text to a cairo image surface (cached).
 
-        gi.require_version("Pango", "1.0")
-        gi.require_version("PangoCairo", "1.0")
-        from gi.repository import Pango, PangoCairo
+        Phase 3c: delegates to the shared text_render helper. The
+        ``cr`` parameter is unused now (the helper allocates its own
+        measurement surface) but kept for API compatibility with the
+        single existing call site in :meth:`render`.
 
-        # Create layout on the live context to get correct font metrics
-        layout = PangoCairo.create_layout(cr)
-        font = Pango.FontDescription.from_string(self.font_desc)
-        layout.set_font_description(font)
-        layout.set_width(int(self.max_width * Pango.SCALE))
-        layout.set_wrap(Pango.WrapMode.WORD_CHAR)
-        layout.set_markup(self._pango_markup, -1)
-        self._layout = layout
+        No background rectangle — it would create visible edge
+        artifacts when processed through shaders (thermal, halftone,
+        mirror produce vertical stripe patterns from the rectangle
+        borders). Text legibility comes from the thick 3px dark
+        outline supplied via OUTLINE_OFFSETS_8.
+        """
+        del cr  # unused since the helper measures on its own surface
+        from .text_render import OUTLINE_OFFSETS_8, TextStyle, render_text_to_surface
 
-        _w, _h = layout.get_pixel_size()
-        pad = 4  # room for outline offsets
-        sw, sh = _w + pad * 2, _h + pad * 2
-
-        # Render outlined text to an offscreen ARGB surface
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, sw, sh)
-        scr = cairo.Context(surface)
-
-        # No background rectangle — it creates visible edge artifacts when
-        # processed through shaders (thermal, halftone, mirror produce
-        # vertical stripe patterns from the rectangle borders).
-        # Text legibility comes from the thick 3px dark outline below.
-        # Dark outline: 8 offsets at 3px for thick readable border
-        scr.set_source_rgba(0.0, 0.0, 0.0, 0.9)
-        for dx, dy in ((-3, 0), (3, 0), (0, -3), (0, 3), (-2, -2), (2, -2), (-2, 2), (2, 2)):
-            scr.move_to(pad + dx, pad + dy)
-            PangoCairo.show_layout(scr, layout)
-        # Foreground
-        scr.move_to(pad, pad)
-        scr.set_source_rgba(*self.color)
-        PangoCairo.show_layout(scr, layout)
-
+        style = TextStyle(
+            text=self._pango_markup,
+            font_description=self.font_desc,
+            color_rgba=self.color,
+            outline_color_rgba=(0.0, 0.0, 0.0, 0.9),
+            outline_offsets=OUTLINE_OFFSETS_8,
+            max_width_px=self.max_width,
+            wrap="word_char",
+            markup_mode=True,
+        )
+        surface, sw, sh = render_text_to_surface(style, padding_px=4)
         self._cached_surface = surface
         self._cached_surface_size = (sw, sh)
 

@@ -184,7 +184,6 @@ class AlbumOverlay:
         self._surface_mtime: float = 0
         self._attrib_text: str = ""
         self._attrib_mtime: float = 0
-        self._attrib_layout: Any = None
         self._fx_func: Any = None
         self._fx_name: str = ""
 
@@ -217,7 +216,6 @@ class AlbumOverlay:
 
                     self._attrib_text = Path(self.ATTRIB_PATH).read_text().strip()
                     self._attrib_mtime = mtime
-                    self._attrib_layout = None
         except OSError:
             pass
 
@@ -263,35 +261,28 @@ class AlbumOverlay:
             self._surface = None
 
     def _draw_attrib(self, cr: Any) -> None:
-        """Draw splattribution text below the album cover."""
-        import gi
+        """Draw splattribution text above the album cover.
 
-        gi.require_version("Pango", "1.0")
-        gi.require_version("PangoCairo", "1.0")
-        from gi.repository import Pango, PangoCairo
+        Phase 3c: delegates to the shared text_render helper. The text
+        is measured first so we can position it above the cover.
+        """
+        from .text_render import OUTLINE_OFFSETS_4, TextStyle, measure_text, render_text
 
-        if self._attrib_layout is None:
-            layout = PangoCairo.create_layout(cr)
-            font = Pango.FontDescription.from_string("JetBrains Mono Bold 10")
-            layout.set_font_description(font)
-            layout.set_width(int(self.SIZE * Pango.SCALE))
-            layout.set_wrap(Pango.WrapMode.WORD_CHAR)
-            text = self._attrib_text.replace("&", "&amp;").replace("<", "&lt;")
-            layout.set_markup(text, -1)
-            self._attrib_layout = layout
-
-        _w, _h = self._attrib_layout.get_pixel_size()
-        tx, ty = 0, -_h - 5  # above the cover
-
-        # Dark outline
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.85)
-        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
-            cr.move_to(tx + dx, ty + dy)
-            PangoCairo.show_layout(cr, self._attrib_layout)
-        # Foreground
-        cr.set_source_rgba(1.0, 0.97, 0.90, 1.0)
-        cr.move_to(tx, ty)
-        PangoCairo.show_layout(cr, self._attrib_layout)
+        # Build the style once per draw — TextStyle is frozen so this is
+        # cheap and the inner Pango layout cache lives in render_text.
+        escaped = self._attrib_text.replace("&", "&amp;").replace("<", "&lt;")
+        style = TextStyle(
+            text=escaped,
+            font_description="JetBrains Mono Bold 10",
+            color_rgba=(1.0, 0.97, 0.90, 1.0),
+            outline_color_rgba=(0.0, 0.0, 0.0, 0.85),
+            outline_offsets=OUTLINE_OFFSETS_4,
+            max_width_px=self.SIZE,
+            wrap="word_char",
+            markup_mode=True,
+        )
+        _w, h = measure_text(cr, style)
+        render_text(cr, style, x=0, y=-h - 5)
 
 
 def _pip_draw(compositor: Any, cr: Any) -> None:
