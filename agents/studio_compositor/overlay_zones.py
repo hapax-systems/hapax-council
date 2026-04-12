@@ -181,30 +181,35 @@ class OverlayZone:
             self._load_text(path)
 
     def _load_image(self, path: Path) -> None:
-        """Load a PNG file as a cairo image surface."""
-        import cairo
+        """Load a PNG/JPEG file via the shared ImageLoader.
+
+        Phase 3d: delegates to :func:`get_image_loader`. The content
+        hash is still computed locally for the on_change skip — the
+        loader's own mtime cache is the second-level dedupe.
+        """
+        from .image_loader import get_image_loader
 
         path_str = str(path)
         content_hash = hash((path_str, os.path.getmtime(path)))
         if content_hash == self._content_hash:
             return
-        try:
-            surface = cairo.ImageSurface.create_from_png(path_str)
-            self._image_surface = surface
-            self._is_image = True
-            self._content_hash = content_hash
-            self._cached_surface = None
-            self._pango_markup = ""
-            self._cached_surface_size = (surface.get_width(), surface.get_height())
-            log.debug(
-                "Overlay zone '%s' loaded image %s (%dx%d)",
-                self.id,
-                path.name,
-                surface.get_width(),
-                surface.get_height(),
-            )
-        except Exception:
+        surface = get_image_loader().load(path)
+        if surface is None:
             log.warning("Overlay zone '%s' failed to load image %s", self.id, path.name)
+            return
+        self._image_surface = surface
+        self._is_image = True
+        self._content_hash = content_hash
+        self._cached_surface = None
+        self._pango_markup = ""
+        self._cached_surface_size = (surface.get_width(), surface.get_height())
+        log.debug(
+            "Overlay zone '%s' loaded image %s (%dx%d)",
+            self.id,
+            path.name,
+            surface.get_width(),
+            surface.get_height(),
+        )
 
     def _format_attribution(self, raw: str) -> str:
         """Format yt-attribution.txt (title\\nchannel\\nurl) as Pango markup."""
