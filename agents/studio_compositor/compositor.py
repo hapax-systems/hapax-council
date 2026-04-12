@@ -13,6 +13,7 @@ from typing import Any
 from .audio_capture import CompositorAudioCapture
 from .config import CACHE_DIR, SNAPSHOT_DIR, STATUS_FILE
 from .effects import init_graph_runtime
+from .layout_loader import LayoutStore
 from .models import CompositorConfig, OverlayState, TileRect
 from .overlay_zones import OverlayZoneManager
 from .profiles import load_camera_profiles
@@ -54,6 +55,13 @@ class StudioCompositor:
         self._audio_capture = CompositorAudioCapture()
 
         self._graph_runtime = init_graph_runtime(self)
+
+        # Phase 2c: LayoutStore — loads Source/Surface/Assignment layouts.
+        # Currently advisory only — no rendering code consumes this yet.
+        # Phase 3 will wire the active Layout into the executor.
+        self._layout_store = LayoutStore()
+        if "garage-door" in self._layout_store.list_available():
+            self._layout_store.set_active("garage-door")
 
         from agents.effect_graph.visual_governance import AtmosphericSelector
 

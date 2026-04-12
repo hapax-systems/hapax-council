@@ -103,6 +103,7 @@ def state_reader_loop(compositor: Any) -> None:
 
     profile_check_counter = 0
     reconnect_counter = 0
+    layout_check_counter = 0
     while compositor._running:
         try:
             if PERCEPTION_STATE_PATH.exists():
@@ -131,6 +132,19 @@ def state_reader_loop(compositor: Any) -> None:
                     GLib.idle_add(lambda: enable_persistence(compositor))
                 else:
                     GLib.idle_add(lambda: disable_persistence(compositor))
+
+        # Layout hot-reload every ~1s (Phase 2c — currently advisory only;
+        # no rendering code consumes the active Layout yet)
+        layout_check_counter += 1
+        if layout_check_counter >= 10:
+            layout_check_counter = 0
+            try:
+                if hasattr(compositor, "_layout_store"):
+                    changed = compositor._layout_store.reload_changed()
+                    if changed:
+                        log.info("Layouts reloaded: %s", changed)
+            except Exception as exc:
+                log.debug("Layout reload failed: %s", exc)
 
         # Camera profiles every ~10s
         profile_check_counter += 1
