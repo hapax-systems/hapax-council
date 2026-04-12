@@ -1,4 +1,12 @@
-"""Overlay zone manager — reads content files, cycles folders, caches Pango layouts."""
+"""Overlay zone manager — reads content files, cycles folders, caches Pango layouts.
+
+Phase 3b-final of the compositor unification epic. The per-tick logic for
+all zones lives in :class:`OverlayZonesCairoSource`, which conforms to the
+:class:`CairoSource` protocol and is driven by a :class:`CairoSourceRunner`
+on a background thread. The :class:`OverlayZoneManager` facade preserves
+the original public API (``tick``/``render``) so the existing call sites
+in :mod:`state` and :mod:`overlay` keep working.
+"""
 
 from __future__ import annotations
 
@@ -6,13 +14,18 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from .cairo_source import CairoSource, CairoSourceRunner
 from .overlay_parser import parse_overlay_content
+
+if TYPE_CHECKING:
+    import cairo
 
 log = logging.getLogger(__name__)
 
 SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
+RENDER_FPS = 10
 
 ZONES: list[dict[str, Any]] = [
     {
@@ -317,15 +330,82 @@ class OverlayZone:
         self._cached_surface_size = (sw, sh)
 
 
-class OverlayZoneManager:
+class OverlayZonesCairoSource(CairoSource):
+    """Phase 3b CairoSource implementation for the content overlay zones.
+
+    Owns the list of :class:`OverlayZone` instances. Every tick ticks each
+    zone (cycling folders, reloading files, advancing scroll offsets,
+    bouncing floating positions) then renders them into the runner's
+    output surface. Synchronous consumers (cairooverlay on_draw) read the
+    cached surface via the runner.
+    """
+
     def __init__(self, zone_configs: list[dict[str, Any]] | None = None) -> None:
         configs = zone_configs or ZONES
         self.zones = [OverlayZone(cfg) for cfg in configs]
 
-    def tick(self) -> None:
+    def render(
+        self,
+        cr: cairo.Context,
+        canvas_w: int,
+        canvas_h: int,
+        t: float,
+        state: dict[str, Any],
+    ) -> None:
         for zone in self.zones:
             zone.tick()
-
-    def render(self, cr: Any, canvas_w: int, canvas_h: int) -> None:
         for zone in self.zones:
             zone.render(cr, canvas_w, canvas_h)
+
+
+class OverlayZoneManager:
+    """Compositor-side facade around the polymorphic Cairo source pipeline.
+
+    Preserves the original public API (``tick``/``render``) so the call
+    sites in :func:`state_reader_loop` and :func:`on_draw` keep working.
+    Owns a :class:`CairoSourceRunner` driving
+    :class:`OverlayZonesCairoSource` on a background thread at
+    :data:`RENDER_FPS`.
+    """
+
+    def __init__(self, zone_configs: list[dict[str, Any]] | None = None) -> None:
+        self._source = OverlayZonesCairoSource(zone_configs)
+        self._runner = CairoSourceRunner(
+            source_id="overlay-zones",
+            source=self._source,
+            canvas_w=1920,
+            canvas_h=1080,
+            target_fps=RENDER_FPS,
+        )
+        self._runner.start()
+        log.info("OverlayZoneManager background thread started at %dfps", RENDER_FPS)
+
+    @property
+    def zones(self) -> list[OverlayZone]:
+        """Expose the underlying zone list for tests and diagnostics."""
+        return self._source.zones
+
+    def tick(self) -> None:
+        """No-op; the runner owns the tick cadence.
+
+        Kept for API compatibility with :func:`state_reader_loop`, which
+        calls ``tick()`` once per ~100ms polling cycle.
+        """
+
+    def stop(self) -> None:
+        """Stop the background render thread. Idempotent."""
+        self._runner.stop()
+
+    def render(self, cr: cairo.Context, canvas_w: int, canvas_h: int) -> None:
+        """Blit the pre-rendered output surface.
+
+        This method runs on the GStreamer streaming thread and must stay
+        under ~2ms. All content loading, Pango layout, and outlined-text
+        rendering happens on the background runner thread.
+        """
+        self._runner.set_canvas_size(canvas_w, canvas_h)
+        surface = self._runner.get_output_surface()
+        if surface is None:
+            return
+        cr.set_source_surface(surface, 0, 0)
+        cr.paint()
