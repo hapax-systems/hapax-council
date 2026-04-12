@@ -218,7 +218,32 @@ class DirectorLoop:
             self._audio_control.mute_all_except(self._active_slot)
         self._thread = threading.Thread(target=self._loop, daemon=True, name="director-loop")
         self._thread.start()
+        self._dispatch_cold_starts()
         log.info("Director loop started (slot %d active)", self._active_slot)
+
+    def _slots_needing_cold_start(self) -> list[int]:
+        """Slot IDs whose yt-frame-N.jpg is absent — candidates for bootstrapping."""
+        return [
+            s.slot_id for s in self._slots if not (SHM_DIR / f"yt-frame-{s.slot_id}.jpg").exists()
+        ]
+
+    def _dispatch_cold_starts(self) -> list[int]:
+        """Kick off playlist reloads for slots missing a frame file.
+
+        Without this, restarting youtube-player.service leaves the Sierpinski
+        corners blank until a human manually POSTs /slot/N/play — observed
+        2026-04-12 as a 13h outage. Returns the dispatched slot IDs.
+        """
+        missing = self._slots_needing_cold_start()
+        for slot_id in missing:
+            log.warning("Cold-starting slot %d (no frame file)", slot_id)
+            threading.Thread(
+                target=self._reload_slot_from_playlist,
+                args=(slot_id,),
+                daemon=True,
+                name=f"cold-start-slot-{slot_id}",
+            ).start()
+        return missing
 
     def stop(self) -> None:
         self._running = False
