@@ -152,6 +152,9 @@ export function AmbientShader({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const glRef = useRef<WebGLRenderingContext | null>(null);
   const programRef = useRef<WebGLProgram | null>(null);
+  const vsRef = useRef<WebGLShader | null>(null);
+  const fsRef = useRef<WebGLShader | null>(null);
+  const bufferRef = useRef<WebGLBuffer | null>(null);
   const uniformsRef = useRef<Record<string, WebGLUniformLocation | null>>({});
   const rafRef = useRef<number>(0);
   const startTimeRef = useRef<number>(performance.now());
@@ -173,10 +176,12 @@ export function AmbientShader({
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
     gl.shaderSource(vs, VERTEX_SHADER);
     gl.compileShader(vs);
+    vsRef.current = vs;
 
     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
     gl.shaderSource(fs, FRAGMENT_SHADER);
     gl.compileShader(fs);
+    fsRef.current = fs;
 
     const program = gl.createProgram()!;
     gl.attachShader(program, vs);
@@ -190,6 +195,7 @@ export function AmbientShader({
     const buffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+    bufferRef.current = buffer;
 
     const posLoc = gl.getAttribLocation(program, "a_position");
     gl.enableVertexAttribArray(posLoc);
@@ -212,6 +218,21 @@ export function AmbientShader({
     initGL();
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      // Release GPU resources so remounts don't leak WebGL contexts.
+      const gl = glRef.current;
+      if (gl) {
+        if (programRef.current) gl.deleteProgram(programRef.current);
+        if (vsRef.current) gl.deleteShader(vsRef.current);
+        if (fsRef.current) gl.deleteShader(fsRef.current);
+        if (bufferRef.current) gl.deleteBuffer(bufferRef.current);
+        const loseExt = gl.getExtension("WEBGL_lose_context");
+        loseExt?.loseContext();
+      }
+      programRef.current = null;
+      vsRef.current = null;
+      fsRef.current = null;
+      bufferRef.current = null;
+      glRef.current = null;
     };
   }, [initGL]);
 

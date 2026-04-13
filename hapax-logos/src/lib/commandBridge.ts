@@ -27,13 +27,24 @@ export function connectCommandBridge(registry: CommandRegistry): () => void {
     }
   }
 
+  // If any listen() promise resolves after dispose() has run, we must call
+  // the resolved unlisten immediately — otherwise the listener stays
+  // installed forever.
+  const track = (u: UnlistenFn) => {
+    if (disposed) {
+      u();
+    } else {
+      unlisten.push(u);
+    }
+  };
+
   // Handle execute commands from external clients (via Rust relay)
   listen<RelayMessage>("command:execute", async (event) => {
     const msg = event.payload;
     if (!msg.id || !msg.path) return;
     const result = await registry.execute(msg.path, msg.args ?? {}, "relay");
     sendResult(msg.id, result);
-  }).then((u) => unlisten.push(u));
+  }).then(track);
 
   // Handle query commands
   listen<RelayMessage>("command:query", async (event) => {
@@ -41,7 +52,7 @@ export function connectCommandBridge(registry: CommandRegistry): () => void {
     if (!msg.id || !msg.path) return;
     const value = registry.query(msg.path);
     sendResult(msg.id, { ok: true, state: value });
-  }).then((u) => unlisten.push(u));
+  }).then(track);
 
   // Handle list commands
   listen<RelayMessage>("command:list", async (event) => {
@@ -54,7 +65,7 @@ export function connectCommandBridge(registry: CommandRegistry): () => void {
       args: c.args,
     }));
     sendResult(msg.id, { ok: true, state: serializable });
-  }).then((u) => unlisten.push(u));
+  }).then(track);
 
   // Forward all registry events to the Rust relay for external subscribers
   const unsubEvents = registry.subscribe(/./, (event) => {

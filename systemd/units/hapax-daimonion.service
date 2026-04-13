@@ -29,7 +29,23 @@ Environment=OMP_NUM_THREADS=2
 Environment=MKL_NUM_THREADS=2
 Environment=OPENBLAS_NUM_THREADS=2
 Environment=ONNXRUNTIME_INTRA_OP_NUM_THREADS=2
-MemoryMax=8G
+# Cap OpenTelemetry BatchSpanProcessor so Langfuse outages can't fill the
+# Python heap with pending spans. Defaults are 2048 queue and 30s export
+# timeout, which means daimonion holds ~MB of KV-pair-dense span objects
+# plus a 30-second httpx retry window whenever Langfuse is unresponsive.
+Environment=OTEL_BSP_MAX_QUEUE_SIZE=256
+Environment=OTEL_BSP_MAX_EXPORT_BATCH_SIZE=64
+Environment=OTEL_BSP_EXPORT_TIMEOUT=2000
+Environment=OTEL_BSP_SCHEDULE_DELAY=1000
+# Working set (STT distil-large-v3, Kokoro, 7+ vision models lazy-loaded
+# by the vision backend, libtorch, cudnn/cublas/cufft) plateaus at
+# ~5 GB once warmed up but spikes to ~7.5 GB during the first-camera-pass
+# lazy-load ramp. 8 GB was tight enough that a single pressure tick or
+# Langfuse-outage span burst could knock us into cgroup OOM. MemoryHigh
+# gives the kernel a soft ceiling to reclaim against before MemoryMax
+# turns into a kill.
+MemoryMax=12G
+MemoryHigh=10G
 OOMScoreAdjust=-500
 Nice=-10
 LimitNOFILE=1048576

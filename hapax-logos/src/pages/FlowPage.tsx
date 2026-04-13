@@ -423,6 +423,17 @@ export function FlowPage() {
   const prevPos = useRef<Record<string, { x: number; y: number }>>({});
   const ss = useSystemSummary();
 
+  // Stable refs for the flow-event handler. The handler closure lives for the
+  // whole component lifetime (the subscription effect below runs once) and
+  // reads these each time an event arrives, so it always sees current state
+  // without retriggering the effect.
+  const edgesRef = useRef(edges);
+  const flowStateRef = useRef(flowState);
+  const paletteRef = useRef(p);
+  edgesRef.current = edges;
+  flowStateRef.current = flowState;
+  paletteRef.current = p;
+
   useEffect(() => { let m = true;
     const poll = async () => { try { const st = await api.get<SystemFlowState>("/flow/state"); if (m) setFlowState(st); } catch { try { const st = await invoke<SystemFlowState>("get_system_flow"); if (m) setFlowState(st); } catch { if (m && !flowState) setFlowState(staticTopology()); } } };
     poll(); const iv = setInterval(poll, 3000); return () => { m = false; clearInterval(iv); };
@@ -463,31 +474,57 @@ export function FlowPage() {
   const ac = flowState?.nodes.filter(n => n.status === "active").length ?? 0, tc = flowState?.nodes.length ?? 0;
 
   // ── Flow event SSE subscription ──────────────────────────────────
+  // Runs once for the component lifetime. The Rust `subscribe_flow_events`
+  // command is idempotent (see commands/streaming.rs), so even under
+  // React.StrictMode double-invoke it spawns at most one background task.
+  // The handler reads refs to avoid retriggering the effect when edges /
+  // flowState / palette change — this used to re-run every 3s and spawn a
+  // new orphaned tokio task + JS listener each time.
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | null = null;
 
-    invoke("subscribe_flow_events").catch(() => {});
+    (async () => {
+      try {
+        await invoke("subscribe_flow_events");
+      } catch { /* not in Tauri or Rust command missing */ }
 
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<string>("flow-event", (event) => {
+      let listen: typeof import("@tauri-apps/api/event").listen;
+      try {
+        ({ listen } = await import("@tauri-apps/api/event"));
+      } catch { return; /* not in Tauri */ }
+
+      if (disposed) return;
+
+      const fn = await listen<string>("flow-event", (event) => {
         try {
           const data: FlowEventData = JSON.parse(event.payload);
-          const edgeMatch = edges.find(e => e.source === data.source && e.target === data.target);
+          const edgeMatch = edgesRef.current.find(e => e.source === data.source && e.target === data.target);
           if (!edgeMatch) return;
 
-          const sourceNode = flowState?.nodes.find(n => n.id === data.source);
+          const sourceNode = flowStateRef.current?.nodes.find(n => n.id === data.source);
           const st = sourceNode?.status || "offline";
-          const dotColor = st === "active" ? p["green-400"]
-            : st === "stale" ? p["yellow-400"]
-            : p["zinc-600"];
+          const pal = paletteRef.current;
+          const dotColor = st === "active" ? pal["green-400"]
+            : st === "stale" ? pal["yellow-400"]
+            : pal["zinc-600"];
 
           spawnDot(edgeMatch.id, dotColor);
         } catch { /* malformed event */ }
-      }).then(fn => { unlisten = fn; });
-    }).catch(() => { /* not in Tauri */ });
+      });
 
-    return () => { unlisten?.(); };
-  }, [edges, flowState, p]);
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   return (
     <div style={{ width: "100%", height: "100%", background: p.bg, position: "relative" }}>

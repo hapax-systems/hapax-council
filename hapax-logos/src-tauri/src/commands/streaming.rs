@@ -5,7 +5,7 @@
 //! frontend never makes direct HTTP calls — all traffic goes through IPC.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use futures::StreamExt;
 use serde::Serialize;
@@ -21,12 +21,19 @@ static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
 /// Cancellation senders keyed by stream_id, stored in Tauri managed state.
 pub struct StreamRegistry {
     senders: Mutex<HashMap<u64, oneshot::Sender<()>>>,
+    /// Idempotency flag for `subscribe_flow_events` — once the background SSE
+    /// task has been spawned for the app lifetime, subsequent calls are no-ops.
+    /// Without this, every FlowPage effect re-run spawns a fresh tokio task +
+    /// HTTP connection to /api/events/stream, accumulating into hundreds of
+    /// orphan tasks and gigabytes of retained buffers.
+    flow_events_subscribed: AtomicBool,
 }
 
 impl StreamRegistry {
     pub fn new() -> Self {
         Self {
             senders: Mutex::new(HashMap::new()),
+            flow_events_subscribed: AtomicBool::new(false),
         }
     }
 }
@@ -108,8 +115,19 @@ pub async fn cancel_stream_and_server(app: AppHandle, stream_id: u64) -> Result<
 /// Subscribe to the system flow event stream (/api/events/stream).
 /// Runs in a background task, emitting each SSE data payload as a
 /// Tauri event named "flow-event". Returns immediately.
+///
+/// Idempotent: safe to call from frontend effects that re-run. Only the
+/// first call spawns the background task; subsequent calls are no-ops.
 #[tauri::command]
 pub async fn subscribe_flow_events(app: AppHandle) -> Result<(), String> {
+    let registry = app.state::<StreamRegistry>();
+    if registry
+        .flow_events_subscribed
+        .swap(true, Ordering::AcqRel)
+    {
+        return Ok(());
+    }
+
     let app_handle = app.clone();
 
     tokio::spawn(async move {
