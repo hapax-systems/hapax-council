@@ -43,6 +43,10 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         daemon._resident_stt.load()
     daemon.tts.preload()
 
+    # TTS is now warm — expose it over UDS so the compositor can delegate
+    # synthesis without loading torch. ALPHA-FINDING-1 root cause fix.
+    await daemon.tts_server.start()
+
     # CPAL runner — sole conversation coordinator
     from agents.hapax_daimonion.cpal.runner import CpalRunner
 
@@ -242,6 +246,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         if hasattr(provider, "force_flush"):
             provider.force_flush(timeout_millis=5000)
 
-        # 9. Stop hotkey
+        # 9. Stop hotkey + TTS servers
         await daemon.hotkey.stop()
+        await daemon.tts_server.stop()
         log.info("Hapax Daimonion daemon stopped")

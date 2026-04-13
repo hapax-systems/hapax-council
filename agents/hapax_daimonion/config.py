@@ -37,6 +37,11 @@ def _default_socket_path() -> str:
     return f"{runtime_dir}/hapax-daimonion.sock"
 
 
+def _default_tts_socket_path() -> str:
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    return f"{runtime_dir}/hapax-daimonion-tts.sock"
+
+
 class DaimonionConfig(BaseModel):
     """All tunables for the voice daemon."""
 
@@ -44,6 +49,7 @@ class DaimonionConfig(BaseModel):
     silence_timeout_s: int = 30
     wake_phrases: list[str] = ["hapax", "hey hapax"]
     hotkey_socket: str = ""
+    tts_socket: str = ""
 
     # Presence detection
     presence_window_minutes: int = 5
@@ -233,6 +239,8 @@ class DaimonionConfig(BaseModel):
     def _apply_dynamic_defaults(self) -> DaimonionConfig:
         if not self.hotkey_socket:
             self.hotkey_socket = _default_socket_path()
+        if not self.tts_socket:
+            self.tts_socket = _default_tts_socket_path()
         return self
 
 

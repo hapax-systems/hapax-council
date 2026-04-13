@@ -23,6 +23,7 @@ from agents.hapax_daimonion.presence import PresenceDetector
 from agents.hapax_daimonion.primitives import Event
 from agents.hapax_daimonion.session import SessionManager
 from agents.hapax_daimonion.tts import TTSManager
+from agents.hapax_daimonion.tts_server import TtsServer
 from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
 if TYPE_CHECKING:
@@ -89,6 +90,10 @@ class VoiceDaemon:
         )
         self._audio_input = AudioInputStream(source_name=self.cfg.audio_input_source)
         self.tts = TTSManager(voice_id=self.cfg.tts_voice)
+        self.tts_server = TtsServer(
+            socket_path=Path(self.cfg.tts_socket),
+            tts_manager=self.tts,
+        )
         self.chime_player = ChimePlayer(
             chime_dir=Path(self.cfg.chime_dir).expanduser(),
             auto_generate=True,
