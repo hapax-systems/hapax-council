@@ -90,8 +90,19 @@ if [ "$CURRENT_BRANCH" = "main" ]; then
         exit 0
     }
 else
-    logger -t "$LOG_TAG" "repo not on main (on $CURRENT_BRANCH) — skipping pull, SHA-only update"
-    echo "$CURRENT_SHA" > "$SHA_FILE"
+    # Repo is on a feature branch — we can't auto-deploy without clobbering
+    # the operator's work. Do NOT update SHA_FILE; the next cycle must keep
+    # flagging this as stale until the operator rebases/merges. Notify once
+    # per distinct origin/main SHA so the operator isn't spammed.
+    NOTIFIED_FILE="$STATE_DIR/last-notified-${SHA_KEY}-sha"
+    LAST_NOTIFIED=$(cat "$NOTIFIED_FILE" 2>/dev/null || echo "none")
+    logger -t "$LOG_TAG" "repo not on main (on $CURRENT_BRANCH) — deploy skipped; SHA_FILE NOT updated"
+    if [ "$CURRENT_SHA" != "$LAST_NOTIFIED" ]; then
+        ntfy "$SHA_KEY stale on $CURRENT_BRANCH" \
+            "Operator: rebase $CURRENT_BRANCH onto origin/main to deploy ${CURRENT_SHA:0:8}. rebuild-service.sh refuses to auto-advance a feature branch." \
+            "default" "warning"
+        echo "$CURRENT_SHA" > "$NOTIFIED_FILE"
+    fi
     exit 0
 fi
 
