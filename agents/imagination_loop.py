@@ -98,6 +98,19 @@ class ImaginationLoop:
         self._visual_observation_path = visual_observation_path or VISUAL_OBSERVATION_PATH
         self._agent = None  # lazy-init
         self._last_reverberation: float = 0.0
+        # Phase 8 (source-registry completion epic): freshness contract
+        # that closes BETA-FINDING-2026-04-13-C. Every successful tick
+        # calls mark_published(), every failed tick calls mark_failed().
+        # Health monitors read is_stale() / age_seconds() and flag the
+        # loop when imagination_loop_fragments_age_seconds exceeds
+        # 10 × base cadence (12s × 10 = 120s). Complements the P9 file-
+        # based watchdog (PR #737) with an in-process producer self-report.
+        from shared.freshness_gauge import FreshnessGauge
+
+        self.freshness = FreshnessGauge(
+            "hapax_imagination_loop_fragments",
+            expected_cadence_s=12.0,  # matches CadenceController.base_s default
+        )
 
     @property
     def activation_level(self) -> float:
@@ -200,9 +213,11 @@ class ImaginationLoop:
             result = await agent.run(context)
             fragment = result.output
             self._process_fragment(fragment)
+            self.freshness.mark_published()
             return fragment
         except Exception:
             log.warning("Imagination tick failed", exc_info=True)
+            self.freshness.mark_failed()
             return None
 
 
