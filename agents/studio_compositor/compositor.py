@@ -22,9 +22,11 @@ from .audio_capture import CompositorAudioCapture
 from .config import CACHE_DIR, SNAPSHOT_DIR, STATUS_FILE
 from .effects import init_graph_runtime
 from .layout_loader import LayoutStore
+from .layout_state import LayoutState
 from .models import CompositorConfig, OverlayState, TileRect
 from .overlay_zones import OverlayZoneManager
 from .profiles import load_camera_profiles
+from .source_registry import SourceRegistry
 
 log = logging.getLogger(__name__)
 
@@ -157,11 +159,29 @@ def load_layout_or_fallback(path: Path) -> Layout:
         return _FALLBACK_LAYOUT
 
 
+_DEFAULT_LAYOUT_PATH = Path("config/compositor-layouts/default.json")
+
+
 class StudioCompositor:
     """Manages the GStreamer compositing pipeline."""
 
-    def __init__(self, config: CompositorConfig) -> None:
+    def __init__(
+        self,
+        config: CompositorConfig,
+        *,
+        layout_path: Path | None = None,
+    ) -> None:
         self.config = config
+        # Source-registry epic Phase D task 14 — Layout loader + registry.
+        # Resolved relative to the repo root by default so tests and the
+        # real entrypoint both see ``config/compositor-layouts/default.json``
+        # without any extra wiring. ``load_layout_or_fallback`` handles the
+        # missing-file path itself; this attribute only selects the target.
+        self._layout_path: Path = (
+            Path(layout_path) if layout_path is not None else _DEFAULT_LAYOUT_PATH
+        )
+        self.layout_state: LayoutState | None = None
+        self.source_registry: SourceRegistry | None = None
         self.pipeline: Any = None
         self.loop: Any = None
         self._running = False
@@ -385,8 +405,55 @@ class StudioCompositor:
             self._write_status("running")
         return self._running
 
+    def start_layout_only(self) -> None:
+        """Phase D task 14 — load the Layout and populate SourceRegistry.
+
+        This is the first phase of :meth:`start` and a standalone entry
+        point for tests that want to exercise Layout wiring without
+        touching GStreamer. Idempotent: calling twice is a no-op.
+
+        On success, ``self.layout_state`` holds an in-memory authority
+        over the current Layout and ``self.source_registry`` maps every
+        Source from that Layout to a live backend. Per-source backend
+        construction failures are logged and skipped — a broken cairo
+        class or a missing shm path must never take down the compositor.
+        """
+        if self.layout_state is not None and self.source_registry is not None:
+            return
+
+        layout = load_layout_or_fallback(self._layout_path)
+        state = LayoutState(layout)
+        registry = SourceRegistry()
+        for source in layout.sources:
+            try:
+                backend = registry.construct_backend(source)
+            except Exception:
+                log.exception(
+                    "failed to construct backend for source %s (backend=%s)",
+                    source.id,
+                    source.backend,
+                )
+                continue
+            try:
+                registry.register(source.id, backend)
+            except ValueError:
+                log.exception(
+                    "duplicate source_id %s in layout — dropping later registration",
+                    source.id,
+                )
+        self.layout_state = state
+        self.source_registry = registry
+        log.info(
+            "layout loaded: name=%s sources=%d registered=%d",
+            layout.name,
+            len(layout.sources),
+            len(registry.ids()),
+        )
+
     def start(self) -> None:
         """Build and start the pipeline."""
+        self.start_layout_only()
+
         from .lifecycle import start_compositor
 
         start_compositor(self)
