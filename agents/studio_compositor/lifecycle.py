@@ -131,6 +131,31 @@ def start_compositor(compositor: Any) -> None:
 
     GLib.timeout_add(33, lambda: fx_tick_callback(compositor))  # 30fps uniform updates
 
+    # sd_notify integration — see docs/superpowers/plans/2026-04-12-camera-247-resilience-epic.md § 1.6
+    # Once the pipeline is PLAYING and at least one camera is active, signal
+    # systemd Type=notify that we are READY. If no cameras ever came up,
+    # systemd's start timeout will eventually fail the unit via normal means.
+    try:
+        from .__main__ import sd_notify_ready, sd_notify_status, sd_notify_watchdog
+
+        sd_notify_ready()
+        sd_notify_status(f"{cameras_active}/{len(compositor._camera_status)} cameras live")
+
+        def _watchdog_tick() -> bool:
+            # Liveness gate: at least one camera currently flagged active.
+            # The per-camera GStreamer watchdog (2s timeout) marks offline on
+            # stalls, so "any active" = "at least one producer still flowing".
+            with compositor._camera_status_lock:
+                any_active = any(s == "active" for s in compositor._camera_status.values())
+            if any_active and compositor._running:
+                sd_notify_watchdog()
+            return compositor._running  # keep firing while compositor is alive
+
+        # 20s interval keeps us well under the 60s WatchdogSec.
+        GLib.timeout_add(20 * 1000, _watchdog_tick)
+    except Exception:
+        log.exception("sd_notify wiring failed (non-fatal)")
+
     if compositor.config.overlay_enabled:
         compositor._state_reader_thread = threading.Thread(
             target=lambda: state_reader_loop(compositor), daemon=True, name="state-reader"

@@ -1,0 +1,18 @@
+# Studio camera udev rules — Phase 1 of camera 24/7 resilience epic.
+# See docs/superpowers/plans/2026-04-12-camera-247-resilience-epic.md § Phase 1.
+#
+# Disable USB autosuspend for studio cameras (BRIO 046d:085e and C920 046d:08e5).
+# USB autosuspend is a documented contributor to webcam disappearance in
+# 24/7 deployments. These cameras are not power-budget-constrained; there is
+# no benefit to letting the kernel power them down.
+#
+# Phase 3 (recovery state machine + pyudev integration) extends this file with
+# TAG+="systemd" + ENV{SYSTEMD_USER_WANTS} entries to trigger v4l2-ctl
+# reconfiguration on USB re-enumeration. That work does not land until Phase 3
+# and the relevant rules are commented out here until then.
+
+# BRIO 4K (046d:085e)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="085e", ATTR{power/control}="on"
+
+# C920 (046d:08e5)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="08e5", ATTR{power/control}="on"

@@ -98,6 +98,49 @@ class StudioCompositor:
             self._camera_status[role] = "offline"
         log.warning("Camera %s marked offline", role)
         self._write_status("running")
+        self._notify_camera_transition(role, prev or "unknown", "offline")
+
+    def _mark_camera_online(self, role: str) -> None:
+        with self._camera_status_lock:
+            prev = self._camera_status.get(role)
+            if prev == "active":
+                return
+            self._camera_status[role] = "active"
+        log.info("Camera %s marked active", role)
+        self._write_status("running")
+        self._notify_camera_transition(role, prev or "unknown", "active")
+
+    def _notify_camera_transition(self, role: str, prev: str, curr: str) -> None:
+        """Throttled ntfy on camera state transition. Uses /dev/shm tracker file
+        to coalesce duplicate transitions within a 60s window."""
+        try:
+            from shared.notify import send_notification
+
+            tracker = Path("/dev/shm/hapax-compositor") / f"last-ntfy-{role}.txt"
+            tracker.parent.mkdir(parents=True, exist_ok=True)
+            now = time.monotonic()
+            last_payload = ""
+            last_ts = 0.0
+            if tracker.exists():
+                try:
+                    raw = tracker.read_text().strip().split("\n", 1)
+                    last_ts = float(raw[0]) if raw else 0.0
+                    last_payload = raw[1] if len(raw) > 1 else ""
+                except (ValueError, IndexError, OSError):
+                    pass
+            if last_payload == curr and (now - last_ts) < 60.0:
+                return
+            tracker.write_text(f"{now}\n{curr}")
+            priority = "high" if curr == "offline" else "default"
+            tag = "rotating_light" if curr == "offline" else "white_check_mark"
+            send_notification(
+                title=f"Camera {role} → {curr}",
+                message=f"Transitioned from {prev}",
+                priority=priority,
+                tags=[tag],
+            )
+        except Exception:
+            log.exception("ntfy on camera transition failed (role=%s)", role)
 
     def _on_bus_message(self, bus: Any, message: Any) -> bool:
         Gst = self._Gst
@@ -124,7 +167,7 @@ class StudioCompositor:
 
                     switch_fx_source(self, "live")
                 except Exception:
-                    pass
+                    log.exception("FX source fallback switch failed after error")
             else:
                 log.error("Pipeline error from %s: %s (debug: %s)", src_name, err.message, debug)
                 self.stop()

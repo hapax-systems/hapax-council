@@ -3,22 +3,31 @@ Description=Studio Compositor — GPU-accelerated camera tiling, recording, HLS 
 After=hapax-daimonion.service
 Wants=hapax-daimonion.service
 Conflicts=hapax-video-cam@brio.service hapax-video-cam@c920-desk.service hapax-video-cam@c920-room.service hapax-video-cam@c920-overhead.service
-StartLimitBurst=5
-StartLimitIntervalSec=300
+# Raised from 5/300 — the old limit was exhausted in under 3 minutes when
+# reconnect loops went rampant. 20 restarts per hour is enough for genuine
+# infrastructure churn without running away on a stuck camera.
+StartLimitBurst=20
+StartLimitIntervalSec=3600
 OnFailure=notify-failure@%n.service
 
 [Service]
-Type=simple
-WorkingDirectory=/home/hapax/projects/hapax-council
+# Type=notify + WatchdogSec: the compositor sends WATCHDOG=1 every 20s gated
+# on "at least one camera has frames within the last 20s". Liveness means
+# frames are flowing, not just "process is running". See camera epic Phase 1.
+Type=notify
+NotifyAccess=main
+WatchdogSec=60s
+WorkingDirectory=%h/projects/hapax-council
 ExecStartPre=/usr/bin/mkdir -p %h/video-recording %h/.cache/hapax-compositor/hls
 ExecStartPre=/usr/bin/find %h/.cache/hapax-compositor/hls -type f -delete
-ExecStartPre=/home/hapax/projects/hapax-council/systemd/units/studio-camera-setup.sh
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.studio_compositor
+ExecStartPre=%h/projects/hapax-council/scripts/studio-install-udev-rules.sh
+ExecStartPre=%h/projects/hapax-council/systemd/units/studio-camera-setup.sh
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.studio_compositor
 Restart=on-failure
 RestartSec=10
 SuccessExitStatus=SIGTERM
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 EnvironmentFile=/run/user/1000/hapax-secrets.env
 MemoryMax=4G

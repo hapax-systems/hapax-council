@@ -119,7 +119,7 @@ def _get_litellm_key() -> str:
             )
             LITELLM_KEY = result.stdout.strip()
         except Exception:
-            pass
+            log.debug("pass show litellm/master-key failed", exc_info=True)
     return LITELLM_KEY
 
 
@@ -132,7 +132,7 @@ def _read_album_info() -> str:
             track = data.get("current_track", "")
             return f"{title} by {artist}" + (f", track: {track}" if track else "")
     except Exception:
-        pass
+        log.warning("album info read failed — defaulting to 'unknown'", exc_info=True)
     return "unknown"
 
 
@@ -144,7 +144,7 @@ def _capture_snapshot_b64() -> str | None:
         if FX_SNAPSHOT.exists():
             return base64.b64encode(FX_SNAPSHOT.read_bytes()).decode()
     except Exception:
-        pass
+        log.warning("fx-snapshot b64 capture failed", exc_info=True)
     return None
 
 

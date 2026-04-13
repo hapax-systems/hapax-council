@@ -7,6 +7,22 @@ set -euo pipefail
 
 V4L2=/usr/bin/v4l2-ctl
 
+# Log file for v4l2-ctl failures — see Phase 1 of the camera resilience epic.
+# The old `2>/dev/null || true` pattern swallowed errors silently; this routes
+# them to a log the operator can inspect after the fact.
+LOG="${XDG_RUNTIME_DIR:-/tmp}/studio-camera-setup.log"
+: > "$LOG"  # truncate
+
+# Non-fatal v4l2-ctl wrapper: logs failures to $LOG, continues on error.
+# Replaces `|| true` with a traceable failure record.
+v4l2_soft() {
+    local dev="$1"
+    shift
+    if ! "$V4L2" -d "$dev" "$@" 2>>"$LOG"; then
+        echo "[$(date +%H:%M:%S)] WARNING: v4l2-ctl -d $dev $* returned non-zero" >>"$LOG"
+    fi
+}
+
 # Shared: manual exposure, 60Hz flicker filter, manual WB at 4800K, no backlight comp
 SHARED="auto_exposure=1,exposure_dynamic_framerate=0,power_line_frequency=2"
 SHARED="$SHARED,white_balance_automatic=0,white_balance_temperature=4800"
@@ -48,7 +64,7 @@ fi
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0
 if [ -e "$DEV" ]; then
   $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
-  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0 2>/dev/null || true
+  v4l2_soft "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
   echo "brio-room: configured (sharpness=128, exposure=333)"
 fi
 
@@ -56,6 +72,6 @@ fi
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0
 if [ -e "$DEV" ]; then
   $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
-  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0 2>/dev/null || true
+  v4l2_soft "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
   echo "brio-synths: configured (sharpness=128, exposure=333)"
 fi

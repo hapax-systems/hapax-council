@@ -100,6 +100,14 @@ def add_camera_branch(
             compositor._camera_status[cam.role] = "offline"
         return
 
+    # Watchdog element: fires GST_MESSAGE_ERROR on the pipeline bus when no
+    # buffers flow for timeout ms. Bounds the "camera went silent" detection
+    # to 2 seconds. Phase 1 of the camera resilience epic.
+    # Named deterministically so the bus handler can route errors by role.
+    watchdog = Gst.ElementFactory.make("watchdog", f"watchdog_{role}")
+    watchdog.set_property("timeout", 2000)  # ms (not ns — see gst/debugutils/gstwatchdog.c)
+    compositor._element_to_role[f"watchdog_{role}"] = cam.role
+
     if cam.input_format == "mjpeg":
         src_caps = Gst.ElementFactory.make("capsfilter", f"srccaps_{role}")
         src_caps.set_property(
@@ -112,10 +120,11 @@ def add_camera_branch(
         # ("No valid frames decoded before end of stream") on all cameras.
         # jpegdec uses libjpeg-turbo (AVX2-accelerated) which handles USB MJPEG.
         decoder = Gst.ElementFactory.make("jpegdec", f"dec_{role}")
-        for el in [src, src_caps, decoder]:
+        for el in [src, src_caps, watchdog, decoder]:
             pipeline.add(el)
         src.link(src_caps)
-        src_caps.link(decoder)
+        src_caps.link(watchdog)
+        watchdog.link(decoder)
         last = decoder
     else:
         src_caps = Gst.ElementFactory.make("capsfilter", f"srccaps_{role}")
@@ -129,10 +138,11 @@ def add_camera_branch(
         )
         convert = Gst.ElementFactory.make("videoconvert", f"rawconv_{role}")
         convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
-        for el in [src, src_caps, convert]:
+        for el in [src, src_caps, watchdog, convert]:
             pipeline.add(el)
         src.link(src_caps)
-        src_caps.link(convert)
+        src_caps.link(watchdog)
+        watchdog.link(convert)
         last = convert
 
     camera_tee = Gst.ElementFactory.make("tee", f"tee_{role}")

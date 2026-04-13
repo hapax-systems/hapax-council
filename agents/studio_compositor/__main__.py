@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -14,6 +15,45 @@ from .compositor import StudioCompositor
 from .config import _default_config, load_config
 
 log = logging.getLogger(__name__)
+
+
+# systemd sd_notify integration — see camera epic Phase 1 design doc.
+# Bound lazily to avoid import errors when systemd is not available.
+_sd_notifier: Any = None
+
+
+def _get_notifier() -> Any:
+    """Lazy-load sdnotify.SystemdNotifier; None if unavailable."""
+    global _sd_notifier
+    if _sd_notifier is None:
+        try:
+            import sdnotify
+
+            _sd_notifier = sdnotify.SystemdNotifier()
+        except ImportError:
+            _sd_notifier = False  # cache the negative
+    return _sd_notifier if _sd_notifier else None
+
+
+def sd_notify_ready() -> None:
+    """Signal systemd Type=notify that the service is ready to accept work."""
+    n = _get_notifier()
+    if n is not None:
+        n.notify("READY=1")
+
+
+def sd_notify_watchdog() -> None:
+    """Feed the systemd watchdog. Called on a GLib timer."""
+    n = _get_notifier()
+    if n is not None:
+        n.notify("WATCHDOG=1")
+
+
+def sd_notify_status(msg: str) -> None:
+    """Set a short status string visible in `systemctl status`."""
+    n = _get_notifier()
+    if n is not None:
+        n.notify(f"STATUS={msg}")
 
 
 def main() -> None:
