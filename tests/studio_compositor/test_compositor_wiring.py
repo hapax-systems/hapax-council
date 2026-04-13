@@ -60,12 +60,14 @@ class TestStartLayoutOnly:
         assert {s.id for s in layout.sources} == {
             "token_pole",
             "album",
+            "stream_overlay",
             "sierpinski",
             "reverie",
         }
         assert set(compositor.source_registry.ids()) == {
             "token_pole",
             "album",
+            "stream_overlay",
             "sierpinski",
             "reverie",
         }
@@ -81,6 +83,7 @@ class TestStartLayoutOnly:
         assert set(compositor.source_registry.ids()) == {
             "token_pole",
             "album",
+            "stream_overlay",
             "sierpinski",
             "reverie",
         }

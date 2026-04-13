@@ -71,11 +71,18 @@ def list_classes() -> list[str]:
 def _register_builtins() -> None:
     from agents.studio_compositor.album_overlay import AlbumOverlayCairoSource
     from agents.studio_compositor.sierpinski_renderer import SierpinskiCairoSource
+    from agents.studio_compositor.stream_overlay import StreamOverlayCairoSource
     from agents.studio_compositor.token_pole import TokenPoleCairoSource
 
     register("TokenPoleCairoSource", TokenPoleCairoSource)
     register("AlbumOverlayCairoSource", AlbumOverlayCairoSource)
     register("SierpinskiCairoSource", SierpinskiCairoSource)
+    # Post-epic layout fix: StreamOverlayCairoSource renders the
+    # preset/viewers/chat-activity three-line status strip, anchored
+    # to the bottom-right of whatever canvas it is drawn into. It
+    # feeds the ``stream_overlay`` source in the default layout's
+    # ``pip-lr`` quadrant — operator's "chat stats LR" default.
+    register("StreamOverlayCairoSource", StreamOverlayCairoSource)
 
 
 _register_builtins()

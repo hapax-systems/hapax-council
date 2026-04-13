@@ -27,7 +27,13 @@ def test_default_json_exists_and_is_valid_layout() -> None:
     assert layout.name == "default"
 
     source_ids = {s.id for s in layout.sources}
-    assert source_ids == {"token_pole", "album", "sierpinski", "reverie"}
+    assert source_ids == {
+        "token_pole",
+        "album",
+        "stream_overlay",
+        "sierpinski",
+        "reverie",
+    }
 
     surface_ids = {s.id for s in layout.surfaces}
     assert surface_ids == {"pip-ul", "pip-ur", "pip-ll", "pip-lr"}
@@ -37,6 +43,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("token_pole", "pip-ul"),
         ("reverie", "pip-ur"),
         ("album", "pip-ll"),
+        ("stream_overlay", "pip-lr"),
     }
 
 
@@ -49,6 +56,7 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
     assert backend_by_id == {
         "token_pole": "cairo",
         "album": "cairo",
+        "stream_overlay": "cairo",
         "sierpinski": "cairo",
         "reverie": "shm_rgba",
     }
@@ -84,15 +92,43 @@ def test_default_json_reverie_points_at_producer_shm_path() -> None:
     assert reverie.params.get("shm_path") == "/dev/shm/hapax-sources/reverie.rgba"
 
 
-def test_default_json_pip_lr_surface_is_intentionally_unassigned() -> None:
-    """pip-lr is defined but not bound so a recruited source can fill it at runtime."""
+def test_default_json_operator_quadrant_defaults() -> None:
+    """Four-quadrant operator default: reverie UR, token_pole UL, album LL, stream_overlay LR.
+
+    Post-epic operator spec: every quadrant has a default source so the
+    stream output is legible the moment the compositor boots. These
+    assignments are a starting point — Hapax content programming drives
+    runtime re-assignment via the affordance pipeline + command registry.
+    """
     raw = json.loads(DEFAULT_JSON.read_text())
     layout = Layout.model_validate(raw)
 
-    surface_ids = {s.id for s in layout.surfaces}
-    assigned_surface_ids = {a.surface for a in layout.assignments}
-    unassigned = surface_ids - assigned_surface_ids
-    assert unassigned == {"pip-lr"}
+    assignments_by_surface = {a.surface: a.source for a in layout.assignments}
+    assert assignments_by_surface["pip-ul"] == "token_pole"
+    assert assignments_by_surface["pip-ur"] == "reverie"
+    assert assignments_by_surface["pip-ll"] == "album"
+    assert assignments_by_surface["pip-lr"] == "stream_overlay"
+
+
+def test_default_json_stream_overlay_source_is_registered() -> None:
+    """stream_overlay appears in the source list with a registered class_name."""
+    from agents.studio_compositor.cairo_sources import get_cairo_source_class
+
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+
+    stream_overlay = next(
+        (s for s in layout.sources if s.id == "stream_overlay"),
+        None,
+    )
+    assert stream_overlay is not None, "stream_overlay source missing from default.json"
+    assert stream_overlay.backend == "cairo"
+    class_name = stream_overlay.params.get("class_name")
+    assert class_name == "StreamOverlayCairoSource"
+    # Getting the class via the registry must not raise — that's the
+    # `construct_backend` path the compositor hits at startup.
+    cls = get_cairo_source_class(class_name)
+    assert cls.__name__ == "StreamOverlayCairoSource"
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +148,13 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
 
     assert layout.name == "default"
     source_ids = {s.id for s in layout.sources}
-    assert source_ids == {"token_pole", "album", "sierpinski", "reverie"}
+    assert source_ids == {
+        "token_pole",
+        "album",
+        "stream_overlay",
+        "sierpinski",
+        "reverie",
+    }
 
 
 def test_load_layout_or_fallback_uses_fallback_when_file_missing(

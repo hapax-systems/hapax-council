@@ -76,6 +76,16 @@ _FALLBACK_LAYOUT = Layout(
             },
         ),
         SourceSchema(
+            id="stream_overlay",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "StreamOverlayCairoSource",
+                "natural_w": 400,
+                "natural_h": 200,
+            },
+        ),
+        SourceSchema(
             id="sierpinski",
             kind="cairo",
             backend="cairo",
@@ -114,7 +124,7 @@ _FALLBACK_LAYOUT = Layout(
         ),
         SurfaceSchema(
             id="pip-lr",
-            geometry=SurfaceGeometry(kind="rect", x=1260, y=420, w=640, h=640),
+            geometry=SurfaceGeometry(kind="rect", x=1500, y=860, w=400, h=200),
             z_order=10,
         ),
     ],
@@ -122,6 +132,7 @@ _FALLBACK_LAYOUT = Layout(
         Assignment(source="token_pole", surface="pip-ul"),
         Assignment(source="reverie", surface="pip-ur"),
         Assignment(source="album", surface="pip-ll"),
+        Assignment(source="stream_overlay", surface="pip-lr"),
     ],
 )
 

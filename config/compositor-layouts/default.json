@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "description": "Default studio compositor layout — source-registry epic baseline (PR 2). Four sources (TokenPole, AlbumOverlay, Sierpinski, reverie), four PiP surfaces at the canvas corners, three initial assignments. The lower-right PiP is intentionally unassigned per operator spec so a fourth source can be recruited at runtime.",
+  "description": "Default studio compositor layout — post-epic operator defaults. Reverie upper-right, Vitruvian Man (token_pole) upper-left, album lower-left, chat stats (stream_overlay) lower-right. These assignments are a starting point; Hapax content programming ultimately drives which sources feed which quadrants via the affordance pipeline + command registry.",
   "sources": [
     {
       "id": "token_pole",
@@ -13,6 +13,12 @@
       "kind": "cairo",
       "backend": "cairo",
       "params": {"class_name": "AlbumOverlayCairoSource", "natural_w": 400, "natural_h": 520}
+    },
+    {
+      "id": "stream_overlay",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {"class_name": "StreamOverlayCairoSource", "natural_w": 400, "natural_h": 200}
     },
     {
       "id": "sierpinski",
@@ -35,11 +41,12 @@
     {"id": "pip-ul", "geometry": {"kind": "rect", "x":   20, "y":   20, "w": 300, "h": 300}, "z_order": 10},
     {"id": "pip-ur", "geometry": {"kind": "rect", "x": 1260, "y":   20, "w": 640, "h": 360}, "z_order": 10},
     {"id": "pip-ll", "geometry": {"kind": "rect", "x":   20, "y":  540, "w": 400, "h": 520}, "z_order": 10},
-    {"id": "pip-lr", "geometry": {"kind": "rect", "x": 1260, "y":  420, "w": 640, "h": 640}, "z_order": 10}
+    {"id": "pip-lr", "geometry": {"kind": "rect", "x": 1500, "y":  860, "w": 400, "h": 200}, "z_order": 10}
   ],
   "assignments": [
-    {"source": "token_pole", "surface": "pip-ul"},
-    {"source": "reverie",    "surface": "pip-ur"},
-    {"source": "album",      "surface": "pip-ll"}
+    {"source": "token_pole",     "surface": "pip-ul"},
+    {"source": "reverie",        "surface": "pip-ur"},
+    {"source": "album",          "surface": "pip-ll"},
+    {"source": "stream_overlay", "surface": "pip-lr"}
   ]
 }
