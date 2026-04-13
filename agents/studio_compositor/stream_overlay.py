@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .cairo_source import CairoSource, CairoSourceRunner
+from .cairo_source import CairoSource
 
 if TYPE_CHECKING:
     import cairo
@@ -132,37 +132,6 @@ class StreamOverlayCairoSource(CairoSource):
             cur_y += h + LINE_SPACING
 
 
-class StreamOverlay:
-    """Compositor-side facade around the CairoSourceRunner.
-
-    Matches the :class:`TokenPole` / :class:`AlbumOverlay` public API
-    (``tick`` / ``draw`` / ``stop``) so ``fx_chain._pip_draw`` and the
-    tick callback can treat all overlays uniformly.
-    """
-
-    def __init__(self) -> None:
-        self._source = StreamOverlayCairoSource()
-        self._runner = CairoSourceRunner(
-            source_id="stream-overlay",
-            source=self._source,
-            canvas_w=1920,
-            canvas_h=1080,
-            target_fps=RENDER_FPS,
-        )
-        self._runner.start()
-        log.info("StreamOverlay background thread started at %.1ffps", RENDER_FPS)
-
-    def tick(self) -> None:
-        """No-op; the runner owns the tick cadence."""
-
-    def stop(self) -> None:
-        """Stop the background render thread. Idempotent."""
-        self._runner.stop()
-
-    def draw(self, cr: cairo.Context) -> None:
-        """Blit the pre-rendered output surface into the streaming thread's context."""
-        surface = self._runner.get_output_surface()
-        if surface is None:
-            return
-        cr.set_source_surface(surface, 0, 0)
-        cr.paint()
+# The pre-Phase-9 ``StreamOverlay`` facade was removed in Phase 9
+# Task 29. Rendering now flows through ``StreamOverlayCairoSource`` +
+# the SourceRegistry + ``fx_chain.pip_draw_from_layout``.

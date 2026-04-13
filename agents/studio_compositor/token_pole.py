@@ -7,12 +7,11 @@ Renaissance geometry.
 
 Upper-left quadrant of the frame.
 
-Phase 3b-final of the compositor unification epic. The per-tick logic
-lives in :class:`TokenPoleCairoSource`, which conforms to the
-:class:`CairoSource` protocol and is driven by a :class:`CairoSourceRunner`
-at 30fps on a background thread. The :class:`TokenPole` facade preserves
-the original public API (``tick``/``draw``) so the existing call sites
-in :mod:`fx_chain` keep working.
+The per-tick logic lives in :class:`TokenPoleCairoSource`, which
+conforms to the :class:`CairoSource` protocol and is driven by a
+:class:`CairoSourceRunner` at 30fps on a background thread. The
+pre-Phase-9 ``TokenPole`` wrapper was removed alongside the
+``fx_chain._pip_draw`` legacy path in Phase 9 Task 29.
 """
 
 from __future__ import annotations
@@ -25,10 +24,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .cairo_source import CairoSource, CairoSourceRunner
+from .cairo_source import CairoSource
 
 if TYPE_CHECKING:
-    import cairo
+    import cairo  # noqa: F401
 
 log = logging.getLogger(__name__)
 
@@ -358,66 +357,6 @@ class TokenPoleCairoSource(CairoSource):
             cr.fill()
 
 
-class TokenPole:
-    """Compositor-side facade around the polymorphic Cairo source pipeline.
-
-    Preserves the original public API (``tick``/``draw``) so the
-    :func:`_pip_draw` callback in :mod:`fx_chain` keeps working. Owns a
-    :class:`CairoSourceRunner` that drives :class:`TokenPoleCairoSource`
-    on a background thread at :data:`RENDER_FPS`.
-    """
-
-    # Legacy visible position on the 1920x1080 compositor canvas. Phase 2
-    # kept this shim while the source refactored from canvas-absolute to
-    # natural-origin rendering — Phase 3's LayoutState-walking _pip_draw
-    # will walk ``SurfaceSchema.geometry`` instead and this constant will
-    # be deleted along with the facade.
-    _LEGACY_BLIT_X = 20
-    _LEGACY_BLIT_Y = 20
-
-    def __init__(self) -> None:
-        self._source = TokenPoleCairoSource()
-        self._runner = CairoSourceRunner(
-            source_id="token-pole",
-            source=self._source,
-            canvas_w=NATURAL_SIZE,
-            canvas_h=NATURAL_SIZE,
-            target_fps=RENDER_FPS,
-        )
-        self._runner.start()
-        log.info(
-            "TokenPole background thread started at %dfps (natural %dx%d)",
-            RENDER_FPS,
-            NATURAL_SIZE,
-            NATURAL_SIZE,
-        )
-
-    def tick(self) -> None:
-        """No-op; the runner owns the tick cadence.
-
-        Kept for API compatibility with :func:`fx_tick_callback`, which
-        calls ``tick()`` on every overlay at 30fps.
-        """
-
-    def stop(self) -> None:
-        """Stop the background render thread. Idempotent."""
-        self._runner.stop()
-
-    def draw(self, cr: cairo.Context) -> None:
-        """Blit the pre-rendered natural-size surface at the legacy position.
-
-        Blit offset matches the pre-Phase-2 visible position so the
-        legacy :func:`fx_chain._pip_draw` callback keeps rendering the
-        vitruvian in the upper-left quadrant of the canvas until
-        Phase 3 flips the render loop to walk
-        :class:`~agents.studio_compositor.layout_state.LayoutState`.
-
-        This method runs on the GStreamer streaming thread and must stay
-        under ~2ms. All state updates, particle physics, and drawing
-        happen on the background runner thread.
-        """
-        surface = self._runner.get_output_surface()
-        if surface is None:
-            return
-        cr.set_source_surface(surface, self._LEGACY_BLIT_X, self._LEGACY_BLIT_Y)
-        cr.paint()
+# The pre-Phase-9 ``TokenPole`` facade has been removed. Rendering now
+# flows through ``TokenPoleCairoSource`` + the SourceRegistry + the
+# layout walk in ``fx_chain.pip_draw_from_layout``.

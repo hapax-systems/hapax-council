@@ -294,18 +294,11 @@ def test_album_overlay_cairo_source_render_does_not_raise_without_cover():
     surface.flush()  # must not raise
 
 
-def test_album_overlay_facade_draw_blits_cached_surface():
-    """AlbumOverlay.draw(cr) must consult the runner and blit when ready."""
-    from agents.studio_compositor.album_overlay import AlbumOverlay
-
-    album = AlbumOverlay()
-    try:
-        album._runner.tick_once()  # noqa: SLF001 — test boundary
-        target = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1920, 1080)
-        cr = cairo.Context(target)
-        album.draw(cr)  # must not raise whether the cover loaded or not
-    finally:
-        album.stop()
+# ``test_album_overlay_facade_draw_blits_cached_surface`` was removed in
+# Phase 9 Task 29 alongside the ``AlbumOverlay`` facade class. The
+# natural-size rendering path is covered by the SourceRegistry +
+# ``pip_draw_from_layout`` integration tests in
+# ``tests/studio_compositor/test_compositor_wiring.py``.
 
 
 def test_overlay_zones_cairo_source_render_into_empty_canvas():
@@ -355,15 +348,5 @@ def test_token_pole_cairo_source_render_advances_animation_state():
     assert source._pulse == pytest.approx(0.5)  # noqa: SLF001 — test boundary
 
 
-def test_token_pole_facade_draw_does_not_raise():
-    """TokenPole facade's draw(cr) blits whatever the runner has."""
-    from agents.studio_compositor.token_pole import TokenPole
-
-    pole = TokenPole()
-    try:
-        pole._runner.tick_once()  # noqa: SLF001 — test boundary
-        target = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1920, 1080)
-        cr = cairo.Context(target)
-        pole.draw(cr)
-    finally:
-        pole.stop()
+# ``test_token_pole_facade_draw_does_not_raise`` was removed in Phase 9
+# Task 29 alongside the ``TokenPole`` facade class.

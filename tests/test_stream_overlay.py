@@ -14,6 +14,7 @@ import cairo
 import pytest
 
 from agents.studio_compositor import stream_overlay as so
+from agents.studio_compositor.cairo_source import CairoSourceRunner
 
 
 def _pango_available() -> bool:
@@ -138,7 +139,7 @@ def populated_shm(tmp_path: Path, monkeypatch):
 def test_render_tick_draws_into_surface(populated_shm):
     """A single render tick must write visible pixels to the output surface."""
     source = so.StreamOverlayCairoSource()
-    runner = so.CairoSourceRunner(
+    runner = CairoSourceRunner(
         source_id="test-stream-overlay",
         source=source,
         canvas_w=640,
@@ -165,7 +166,7 @@ def test_render_tick_survives_missing_shm_files(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(so, "CHAT_STATE_FILE", tmp_path / "nope.json")
 
     source = so.StreamOverlayCairoSource()
-    runner = so.CairoSourceRunner(
+    runner = CairoSourceRunner(
         source_id="test-stream-overlay-degraded",
         source=source,
         canvas_w=480,
@@ -183,7 +184,7 @@ def test_render_tick_respects_canvas_size(populated_shm):
     """Arbitrary canvas sizes work — text should anchor to bottom-right regardless."""
     source = so.StreamOverlayCairoSource()
     for w, h in [(1920, 1080), (1280, 720), (640, 360)]:
-        runner = so.CairoSourceRunner(
+        runner = CairoSourceRunner(
             source_id=f"test-stream-overlay-{w}x{h}",
             source=source,
             canvas_w=w,

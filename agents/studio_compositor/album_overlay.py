@@ -22,7 +22,7 @@ from typing import Any
 
 import cairo
 
-from .cairo_source import CairoSource, CairoSourceRunner
+from .cairo_source import CairoSource
 
 log = logging.getLogger(__name__)
 
@@ -303,59 +303,6 @@ class AlbumOverlayCairoSource(CairoSource):
         render_text(cr, style, x=0, y=-h - 5)
 
 
-class AlbumOverlay:
-    """Compositor-side facade around the polymorphic Cairo source pipeline.
-
-    Preserves the original public API (``tick`` and ``draw``) so the
-    :func:`_pip_draw` callback in :mod:`fx_chain` keeps working. Owns a
-    :class:`CairoSourceRunner` that drives :class:`AlbumOverlayCairoSource`
-    on a background thread.
-    """
-
-    # Public constants kept for API compatibility with pre-migration callers.
-    SIZE = SIZE
-    ALPHA = ALPHA
-    TEXT_BUFFER = TEXT_BUFFER
-    COVER_PATH = COVER_PATH
-    ATTRIB_PATH = ATTRIB_PATH
-
-    def __init__(self) -> None:
-        # Fixed position: lower-left quadrant (opposite token pole at upper-left).
-        # Text goes above the cover, cover sits near the bottom.
-        self._x = 20.0
-        self._y = 1080.0 - float(SIZE) - 20.0  # SIZE + margin from bottom
-        self._source = AlbumOverlayCairoSource()
-        self._runner = CairoSourceRunner(
-            source_id="album-overlay",
-            source=self._source,
-            canvas_w=CANVAS_W,
-            canvas_h=CANVAS_H,
-            target_fps=RENDER_FPS,
-        )
-        self._runner.start()
-        log.info("AlbumOverlay background thread started at %dfps", RENDER_FPS)
-
-    def tick(self) -> None:
-        """No-op; the runner owns the render cadence.
-
-        Kept for API compatibility with :func:`fx_tick_callback`, which
-        calls ``tick()`` on every overlay at 30fps.
-        """
-
-    def stop(self) -> None:
-        """Stop the background render thread. Idempotent."""
-        self._runner.stop()
-
-    def draw(self, cr: cairo.Context) -> None:
-        """Blit the pre-rendered output surface at the overlay position.
-
-        This method must be fast (<2ms) — it runs in the GStreamer
-        streaming thread. All rendering happens in the background thread.
-        """
-        surface = self._runner.get_output_surface()
-        if surface is None:
-            return
-        blit_x = int(self._x)
-        blit_y = int(self._y) - TEXT_BUFFER
-        cr.set_source_surface(surface, blit_x, blit_y)
-        cr.paint()
+# The pre-Phase-9 ``AlbumOverlay`` facade was removed in Phase 9 Task 29.
+# Rendering now flows through ``AlbumOverlayCairoSource`` + the
+# SourceRegistry + ``fx_chain.pip_draw_from_layout``.

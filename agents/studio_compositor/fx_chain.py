@@ -196,33 +196,18 @@ def build_source_appsrc_branches(
 
 
 def _pip_draw(compositor: Any, cr: Any) -> None:
-    """Post-FX cairooverlay callback.
+    """Post-FX cairooverlay callback — drives pip_draw_from_layout only.
 
-    Prefers ``pip_draw_from_layout`` when the compositor has a populated
-    ``layout_state`` + ``source_registry`` (Phase D wiring landed in PR
-    #735). Falls back to the legacy direct-overlay path when either is
-    missing — that path is covered by the natural-size-migrated facades
-    (Phase 2) and will be removed in Phase 9 of the completion epic.
+    Phase 9 Task 29 of the compositor unification epic removed the
+    pre-Phase-3 legacy fallback and the cross-facade double-draw for
+    ``_stream_overlay``. Layout state + source registry are always
+    populated by ``StudioCompositor.start_layout_only`` (PR #735),
+    so the layout walk is the only render path.
     """
     layout_state = getattr(compositor, "layout_state", None)
     source_registry = getattr(compositor, "source_registry", None)
     if layout_state is not None and source_registry is not None:
         pip_draw_from_layout(cr, layout_state, source_registry)
-        stream_overlay = getattr(compositor, "_stream_overlay", None)
-        if stream_overlay is not None:
-            stream_overlay.draw(cr)
-        return
-
-    # --- Legacy path (pre-Phase-3 compositors without a layout state) ---
-    album = getattr(compositor, "_album_overlay", None)
-    if album is not None:
-        album.draw(cr)
-    token_pole = getattr(compositor, "_token_pole", None)
-    if token_pole is not None:
-        token_pole.draw(cr)
-    stream_overlay = getattr(compositor, "_stream_overlay", None)
-    if stream_overlay is not None:
-        stream_overlay.draw(cr)
 
 
 class FlashScheduler:
@@ -443,18 +428,15 @@ def build_inline_fx_chain(
     compositor._fx_flash_pad = flash_pad
     compositor._fx_flash_scheduler = FlashScheduler()
 
-    from .album_overlay import AlbumOverlay
-
-    compositor._album_overlay = AlbumOverlay()
-
-    from .token_pole import TokenPole
-
-    compositor._token_pole = TokenPole()
-
-    from .stream_overlay import StreamOverlay
-
-    compositor._stream_overlay = StreamOverlay()
-
+    # PiP cairo sources (token_pole, album, stream_overlay) are now
+    # instantiated by the SourceRegistry from default.json — Phase 9 Task 29
+    # removed their legacy facade construction sites.
+    #
+    # SierpinskiLoader + SierpinskiRenderer remain: Sierpinski is a full-
+    # canvas main-layer render (not a PiP) driven by overlay.py::on_draw,
+    # with the renderer holding set_active_slot / set_audio_energy state.
+    # Migrating Sierpinski to the source registry's fx_chain_input surface
+    # is a separate refactor tracked as a follow-up ticket.
     from .sierpinski_loader import SierpinskiLoader
     from .sierpinski_renderer import SierpinskiRenderer
 
@@ -691,20 +673,6 @@ def fx_tick_callback(compositor: Any) -> bool:
         if alpha is not None:
             flash_pad.set_property("alpha", alpha)
 
-    # Album overlay: floating cover + splattribution
-    album_overlay = getattr(compositor, "_album_overlay", None)
-    if album_overlay:
-        album_overlay.tick()
-
-    # Token pole: vertical progress bar + particles
-    token_pole = getattr(compositor, "_token_pole", None)
-    if token_pole:
-        token_pole.tick()
-
-    # Stream status strip (preset / viewers / chat)
-    stream_overlay = getattr(compositor, "_stream_overlay", None)
-    if stream_overlay:
-        stream_overlay.tick()
-
-    # Spirograph reactor
+    # Facade tick() hooks removed in Phase 9 Task 29. Cairo sources now
+    # tick autonomously on their CairoSourceRunner background threads.
     return True
