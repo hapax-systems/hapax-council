@@ -3,7 +3,7 @@
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -199,6 +199,10 @@ def make_stub_daemon(**overrides):
     daemon._engagement = MagicMock()
     daemon._engagement._debounce_s = 2.0
     daemon.tts = MagicMock()
+    # TTS UDS server stub — run_inner starts/stops it after hotkey.
+    daemon.tts_server = MagicMock()
+    daemon.tts_server.start = AsyncMock()
+    daemon.tts_server.stop = AsyncMock()
     daemon.chime_player = MagicMock()
     daemon.workspace_monitor = MagicMock()
     daemon.workspace_monitor.run = MagicMock()

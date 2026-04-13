@@ -21,6 +21,13 @@ from datetime import datetime
 from pathlib import Path
 
 from agents.studio_compositor.audio_control import SlotAudioControl
+from agents.studio_compositor.tts_client import DaimonionTtsClient
+
+
+def _default_tts_socket_path() -> Path:
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    return Path(runtime_dir) / "hapax-daimonion-tts.sock"
+
 
 log = logging.getLogger(__name__)
 
@@ -178,8 +185,7 @@ class DirectorLoop:
         self._reaction_history: list[str] = []  # persists across turns
         self._reaction_count: int = 0
         self._last_album_track = ""  # for vinyl track-change detection
-        self._tts_manager = None
-        self._tts_lock = threading.Lock()
+        self._tts_client = DaimonionTtsClient(socket_path=_default_tts_socket_path())
         self._transition_lock = threading.Lock()
         self._audio_control: SlotAudioControl | None = None
         self._running = False
@@ -733,20 +739,7 @@ class DirectorLoop:
         ).start()
 
     def _synthesize(self, text: str) -> bytes:
-        # ALPHA-FINDING-1: this lazy import pulls libtorch_cuda plus
-        # the full CUDA driver stack into the compositor process,
-        # which is the root cause of the ~49 MB/min RSS leak tracked
-        # under the post-epic audit. Root cause + fix options in
-        # ``docs/superpowers/audits/2026-04-13-alpha-finding-1-root-cause.md``.
-        # Follow-up work should delegate synthesis to hapax-daimonion
-        # via IPC so the compositor never loads torch.
-        with self._tts_lock:
-            if self._tts_manager is None:
-                from agents.hapax_daimonion.tts import TTSManager
-
-                self._tts_manager = TTSManager()
-                self._tts_manager.preload()
-            return self._tts_manager.synthesize(text, "conversation")
+        return self._tts_client.synthesize(text, "conversation")
 
     def _play_audio(self, pcm: bytes) -> None:
         """Play PCM using persistent pw-cat subprocess targeting assistant sink."""
