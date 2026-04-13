@@ -151,6 +151,28 @@ class StudioCompositor:
         elif t == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
             src_name = message.src.get_name() if message.src else "unknown"
+            # Phase 5: scope RTMP bin errors to the bin and rebuild in place.
+            # src-name filtering is reliable because every RTMP bin element is
+            # named with the rtmp_ prefix in rtmp_output.py.
+            if src_name.startswith("rtmp_"):
+                log.error(
+                    "RTMP bin error (element %s): %s (debug=%s)",
+                    src_name,
+                    err.message,
+                    debug,
+                )
+                rtmp_bin = getattr(self, "_rtmp_bin", None)
+                pipeline = self.pipeline
+                if rtmp_bin is not None and pipeline is not None and self._GLib is not None:
+                    self._GLib.idle_add(lambda: (rtmp_bin.rebuild_in_place(pipeline), False)[1])
+                try:
+                    from . import metrics
+
+                    metrics.RTMP_ENCODER_ERRORS_TOTAL.labels(endpoint="youtube").inc()
+                    metrics.RTMP_BIN_REBUILDS_TOTAL.labels(endpoint="youtube").inc()
+                except Exception:
+                    pass
+                return True
             role = self._resolve_camera_role(message.src)
             if role is not None:
                 log.error("Camera %s error (element %s): %s", role, src_name, err.message)
@@ -238,3 +260,58 @@ class StudioCompositor:
         from .lifecycle import stop_compositor
 
         stop_compositor(self)
+
+    def toggle_livestream(self, activate: bool, reason: str = "") -> tuple[bool, str]:
+        """Attach or detach the RTMP output bin. Consent-gated by the
+        unified semantic recruitment pipeline — this method should only be
+        called from the affordance handler which runs after the consent
+        check.
+
+        Phase 5 of the camera 24/7 resilience epic (closes A7).
+        """
+        rtmp_bin = getattr(self, "_rtmp_bin", None)
+        if rtmp_bin is None:
+            return False, "rtmp bin not constructed (compositor not started?)"
+        if self.pipeline is None:
+            return False, "composite pipeline not built"
+
+        if activate:
+            if rtmp_bin.is_attached():
+                return True, "already live"
+            ok = rtmp_bin.build_and_attach(self.pipeline)
+            if not ok:
+                return False, "rtmp bin build_and_attach failed"
+            try:
+                from shared.notify import send_notification
+
+                from . import metrics
+
+                metrics.RTMP_CONNECTED.labels(endpoint="youtube").set(1)
+                send_notification(
+                    title="Livestream started",
+                    message=f"Reason: {reason}",
+                    priority="default",
+                    tags=["rocket"],
+                )
+            except Exception:
+                log.exception("rtmp attach side-effects raised (non-fatal)")
+            return True, "rtmp bin attached"
+        else:
+            if not rtmp_bin.is_attached():
+                return True, "already off"
+            rtmp_bin.detach_and_teardown(self.pipeline)
+            try:
+                from shared.notify import send_notification
+
+                from . import metrics
+
+                metrics.RTMP_CONNECTED.labels(endpoint="youtube").set(0)
+                send_notification(
+                    title="Livestream stopped",
+                    message=f"Reason: {reason}",
+                    priority="default",
+                    tags=["stop_sign"],
+                )
+            except Exception:
+                log.exception("rtmp detach side-effects raised (non-fatal)")
+            return True, "rtmp bin detached"

@@ -190,6 +190,21 @@ def build_pipeline(compositor: Any) -> Any:
     add_fx_snapshot_branch(compositor, pipeline, output_tee)
     add_smooth_delay_branch(compositor, pipeline, output_tee)
 
+    # Phase 5: instantiate the RTMP output bin (detached by default).
+    # It is attached on toggle_livestream affordance activation; consent gate
+    # lives in the affordance pipeline, not here.
+    from .rtmp_output import RtmpOutputBin
+
+    compositor._output_tee = output_tee
+    compositor._rtmp_bin = RtmpOutputBin(
+        gst=Gst,
+        video_tee=output_tee,
+        rtmp_location="rtmp://127.0.0.1:1935/studio",
+        bitrate_kbps=6000,
+        gop_size=2 * fps,
+    )
+    log.info("rtmp output bin constructed (detached until toggle_livestream)")
+
     return pipeline
 
 

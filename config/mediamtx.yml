@@ -1,0 +1,29 @@
+# Studio livestream RTMP relay — feeds YouTube via ffmpeg sidecar.
+# Run via scripts/mediamtx-start.sh which injects HAPAX_YOUTUBE_STREAM_KEY.
+#
+# Phase 5 of the camera 24/7 resilience epic.
+# See docs/superpowers/specs/2026-04-12-native-rtmp-delivery-design.md
+
+rtmp: yes
+rtmpAddress: 127.0.0.1:1935
+
+hls: no
+webrtc: no
+srt: no
+api: no
+
+metrics: yes
+metricsAddress: 127.0.0.1:9998
+
+logLevel: info
+logDestinations: [stdout]
+
+paths:
+  studio:
+    source: publisher
+    runOnReady: >
+      ffmpeg -hide_banner -loglevel warning
+      -re -i rtmp://127.0.0.1:1935/studio
+      -c copy
+      -f flv rtmp://a.rtmp.youtube.com/live2/${HAPAX_YOUTUBE_STREAM_KEY}
+    runOnReadyRestart: yes
