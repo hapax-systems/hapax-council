@@ -42,6 +42,58 @@ class ShmRgbaReader:
         self._sidecar_path = self._path.with_suffix(self._path.suffix + ".json")
         self._cached_surface: cairo.ImageSurface | None = None
         self._cached_frame_id: int | None = None
+        # Phase 6 H23: lazy GStreamer appsrc for the main-layer path.
+        # Built on first ``gst_appsrc()`` call; the sidecar is re-read at
+        # build time to pick up the natural dimensions. Phase 6b will add
+        # a sidecar-watching push thread that feeds the element.
+        self._gst_appsrc: Any = None
+
+    def gst_appsrc(self) -> Any:
+        """Return (or lazily create) a GStreamer appsrc element for this source.
+
+        Phase 6 (parent task H23). Dimensions are read from the sidecar
+        JSON at the time of the first call; if the sidecar is missing
+        the element is built with a fallback 640×360 cap so the pipeline
+        topology stays stable until the shm producer ships its first
+        frame. Caps can be renegotiated later by sending a ``stream-caps``
+        event when the sidecar's dimensions change.
+
+        Returns ``None`` if GStreamer isn't importable in the current
+        environment — the caller treats that as "this source has no
+        main-layer pad in this process".
+        """
+        if self._gst_appsrc is not None:
+            return self._gst_appsrc
+        try:
+            import gi
+
+            gi.require_version("Gst", "1.0")
+            from gi.repository import Gst  # type: ignore[import-not-found]
+        except (ImportError, ValueError):
+            log.debug("ShmRgbaReader %s: gst_appsrc unavailable (no gi)", self._path)
+            return None
+        Gst.init(None)
+        meta = self._read_sidecar() or {}
+        width = int(meta.get("w", 640))
+        height = int(meta.get("h", 360))
+        elem = Gst.ElementFactory.make("appsrc", f"appsrc-{self._path.stem}")
+        if elem is None:
+            return None
+        caps = Gst.Caps.from_string(
+            f"video/x-raw,format=BGRA,width={width},height={height},framerate=0/1"
+        )
+        elem.set_property("caps", caps)
+        elem.set_property("format", Gst.Format.TIME)
+        elem.set_property("is-live", True)
+        elem.set_property("do-timestamp", True)
+        self._gst_appsrc = elem
+        log.info(
+            "ShmRgbaReader %s: gst_appsrc created (%dx%d BGRA)",
+            self._path.name,
+            width,
+            height,
+        )
+        return elem
 
     def _read_sidecar(self) -> dict[str, Any] | None:
         if not self._sidecar_path.exists():

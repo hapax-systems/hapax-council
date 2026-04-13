@@ -129,6 +129,11 @@ class CairoSourceRunner:
         self._budget_tracker = budget_tracker
         self._budget_ms = budget_ms
         self._consecutive_skips = 0
+        # Phase 6 (source-registry epic H23): lazy GStreamer appsrc for
+        # the main-layer path. Built on first ``gst_appsrc()`` call and
+        # reused for every successful render-tick push. Stays None if
+        # GStreamer isn't importable (unit tests without gi).
+        self._gst_appsrc: Any = None
 
     @property
     def source_id(self) -> str:
@@ -196,6 +201,75 @@ class CairoSourceRunner:
     def get_current_surface(self) -> cairo.ImageSurface | None:
         """Alias of :meth:`get_output_surface` for the SourceBackend protocol."""
         return self.get_output_surface()
+
+    def gst_appsrc(self) -> Any:
+        """Return (or lazily create) a GStreamer appsrc element for this source.
+
+        Phase 6 (parent task H23). The element is configured with the
+        source's natural width/height and BGRA caps (cairo FORMAT_ARGB32
+        is little-endian BGRA on every target we care about). Consumers
+        call this once at pipeline construction time; the runner pushes
+        buffers into the element from its render thread on every
+        successful tick.
+
+        Returns ``None`` if GStreamer isn't importable in the current
+        environment (e.g. unit-test sandboxes without ``gi``) — callers
+        should treat ``None`` as "this source has no main-layer pad in
+        this process" and skip main-layer wiring for it.
+        """
+        if self._gst_appsrc is not None:
+            return self._gst_appsrc
+        try:
+            import gi
+
+            gi.require_version("Gst", "1.0")
+            from gi.repository import Gst  # type: ignore[import-not-found]
+        except (ImportError, ValueError):
+            log.debug("CairoSourceRunner %s: gst_appsrc unavailable (no gi)", self._source_id)
+            return None
+        Gst.init(None)
+        elem = Gst.ElementFactory.make("appsrc", f"appsrc-{self._source_id}")
+        if elem is None:
+            return None
+        caps = Gst.Caps.from_string(
+            f"video/x-raw,format=BGRA,width={self._natural_w},"
+            f"height={self._natural_h},framerate=0/1"
+        )
+        elem.set_property("caps", caps)
+        elem.set_property("format", Gst.Format.TIME)
+        elem.set_property("is-live", True)
+        elem.set_property("do-timestamp", True)
+        self._gst_appsrc = elem
+        log.info(
+            "CairoSourceRunner %s: gst_appsrc created (%dx%d BGRA)",
+            self._source_id,
+            self._natural_w,
+            self._natural_h,
+        )
+        return elem
+
+    def _push_buffer_to_appsrc(self, surface: cairo.ImageSurface) -> None:
+        """Push the latest rendered surface into the lazy appsrc, if built."""
+        appsrc = self._gst_appsrc
+        if appsrc is None:
+            return
+        try:
+            import gi
+
+            gi.require_version("Gst", "1.0")
+            from gi.repository import Gst  # type: ignore[import-not-found]
+        except (ImportError, ValueError):
+            return
+        try:
+            data = bytes(surface.get_data())
+            buf = Gst.Buffer.new_wrapped(data)
+            appsrc.emit("push-buffer", buf)
+        except Exception:
+            log.debug(
+                "CairoSourceRunner %s: push-buffer failed",
+                self._source_id,
+                exc_info=True,
+            )
 
     def start(self) -> None:
         """Start the background render thread. Idempotent."""
@@ -288,6 +362,10 @@ class CairoSourceRunner:
             self._output_surface = surface
         self._frame_count += 1
         self._last_render_ms = (time.monotonic() - t0) * 1000.0
+        # Phase 6 H23: push the same rendered surface into the
+        # main-layer appsrc if one has been built. No-op when
+        # ``gst_appsrc()`` was never called.
+        self._push_buffer_to_appsrc(surface)
         # Phase 7a: report this frame's elapsed time to the budget
         # tracker if one is wired up. The tracker is the rolling
         # source of truth for cross-frame stats; _last_render_ms is
