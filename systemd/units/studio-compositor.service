@@ -30,7 +30,26 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 EnvironmentFile=/run/user/1000/hapax-secrets.env
-MemoryMax=4G
+# Cap OpenTelemetry BatchSpanProcessor so Langfuse outages can't fill the
+# Python heap with pending spans — same treatment as hapax-daimonion got
+# in PR #731's OOM-cascade containment. Defaults are 2048 queue and 30 s
+# export timeout; at studio's per-frame span rate a Langfuse stall can
+# backfill the queue faster than the WatchdogSec=60 s tick.
+Environment=OTEL_BSP_MAX_QUEUE_SIZE=256
+Environment=OTEL_BSP_MAX_EXPORT_BATCH_SIZE=64
+Environment=OTEL_BSP_EXPORT_TIMEOUT=2000
+Environment=OTEL_BSP_SCHEDULE_DELAY=1000
+# Working set under 6 live cameras + 24-slot GL shader chain + MJPEG
+# decoders + three Cairo overlay threads + interpipe producer+fallback
+# pipelines plateaus at ~3.7 GB steady-state and spikes to ~3.9 GB
+# during state-machine recovery rebuilds. The old hard 4 GB wall left
+# zero headroom — a single FSM recovery swap or a Langfuse-outage span
+# burst (see OTEL tunings above) was within one allocation of the
+# cgroup kill. Mirror the daimonion pattern from PR #731: raise the
+# hard ceiling and add a MemoryHigh soft ceiling so the kernel reclaims
+# aggressively before MemoryMax turns into a kill.
+MemoryMax=6G
+MemoryHigh=5G
 SyslogIdentifier=studio-compositor
 
 [Install]
