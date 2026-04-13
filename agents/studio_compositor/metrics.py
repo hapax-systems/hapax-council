@@ -220,6 +220,31 @@ def _init_metrics() -> None:
 _init_metrics()
 
 
+# --------------------------- freshness gauge registration ---------------------------
+#
+# ``budget`` and ``budget_signal`` define module-level FreshnessGauge
+# instances that publish the ``compositor_publish_{costs,degraded}_*``
+# series. They need to be imported (module body executed) AFTER
+# ``_init_metrics()`` populates ``REGISTRY`` so their gauges register
+# on the compositor's custom collector. Neither module is otherwise
+# imported at compositor startup — ``cairo_source.py`` only imports
+# ``budget`` under ``TYPE_CHECKING`` — so without this force-import
+# the gauges are never constructed and the dead-path observability
+# stays invisible. Import is best-effort: if either module fails to
+# load the metrics surface is unaffected.
+if _PROMETHEUS_AVAILABLE:
+    try:
+        from agents.studio_compositor import (
+            budget,  # noqa: F401
+            budget_signal,  # noqa: F401
+        )
+    except Exception:  # pragma: no cover
+        log.warning(
+            "freshness-gauge force-import failed — compositor_publish_* series will not be exposed",
+            exc_info=True,
+        )
+
+
 # --------------------------- runtime state ---------------------------
 
 

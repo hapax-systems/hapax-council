@@ -70,12 +70,23 @@ DEFAULT_SIGNAL_PATH = Path("/dev/shm/hapax-compositor/degraded.json")
 # Beta's PR #752 Phase 4 found this publisher has zero live callers —
 # the gauge intentionally stays ``age_seconds=+inf`` in that state so
 # the dead end-to-end path is directly observable instead of invisible.
+#
+# Registry plumbing: uses the compositor's custom REGISTRY (same
+# reasoning as budget.py's _PUBLISH_COSTS_FRESHNESS).
 try:
     from shared.freshness_gauge import FreshnessGauge
+
+    try:
+        from agents.studio_compositor.metrics import (
+            REGISTRY as _COMPOSITOR_METRICS_REGISTRY,
+        )
+    except ImportError:
+        _COMPOSITOR_METRICS_REGISTRY = None  # type: ignore[assignment]
 
     _PUBLISH_DEGRADED_FRESHNESS: FreshnessGauge | None = FreshnessGauge(
         name="compositor_publish_degraded",
         expected_cadence_s=1.0,
+        registry=_COMPOSITOR_METRICS_REGISTRY,
     )
 except Exception:  # pragma: no cover — prometheus_client optional
     log.warning(
