@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PortType(StrEnum):
@@ -77,6 +77,43 @@ class LayerPalette(BaseModel):
     hue_rotate: float = Field(default=0.0, ge=-180.0, le=180.0)
 
 
+class PresetInput(BaseModel):
+    """Preset-level binding from a SourceRegistry source pad to a layer slot.
+
+    Phase 7 of the source-registry completion epic (parent task I26).
+    ``pad`` references a ``SourceRegistry`` ``source_id``. ``as_`` is the
+    internal layer name the shader chain references. The preset loader
+    resolves ``pad`` against the live ``SourceRegistry`` at load-time and
+    raises :class:`~agents.effect_graph.compiler.PresetLoadError` on any
+    unknown pad — no silent fallthrough.
+
+    ``as`` is a Python keyword; the field is stored as ``as_`` and
+    addressed via the ``"as"`` alias in incoming JSON so presets can
+    write the natural key.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    pad: str = Field(..., min_length=1)
+    as_: str = Field(..., min_length=1, alias="as")
+
+    @field_validator("pad")
+    @classmethod
+    def _nonempty_pad(cls, v: str) -> str:
+        if not v.strip():
+            msg = "pad must be non-empty"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("as_")
+    @classmethod
+    def _nonempty_layer(cls, v: str) -> str:
+        if not v.strip():
+            msg = "as must be non-empty"
+            raise ValueError(msg)
+        return v
+
+
 class EffectGraph(BaseModel):
     name: str = ""
     description: str = ""
@@ -85,6 +122,13 @@ class EffectGraph(BaseModel):
     edges: list[list[str]]
     modulations: list[ModulationBinding] = Field(default_factory=list)
     layer_palettes: dict[str, LayerPalette] = Field(default_factory=dict)
+    # Phase 7 of the source-registry completion epic (parent task I26):
+    # optional per-preset source pad bindings. When present, the preset
+    # loader resolves each ``pad`` against the live ``SourceRegistry``
+    # and maps its backend handle to the declared ``as`` layer slot.
+    # Presets that leave ``inputs`` unset preserve current behavior
+    # (no main-layer bindings).
+    inputs: list[PresetInput] | None = None
 
     @property
     def parsed_edges(self) -> list[EdgeDef]:

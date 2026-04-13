@@ -5,9 +5,13 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from .registry import ShaderRegistry
 from .types import EdgeDef, EffectGraph
+
+if TYPE_CHECKING:
+    from agents.studio_compositor.source_registry import SourceRegistry
 
 log = logging.getLogger(__name__)
 VALID_LAYER_SOURCES = {"@live", "@smooth", "@hls"}
@@ -15,6 +19,49 @@ VALID_LAYER_SOURCES = {"@live", "@smooth", "@hls"}
 
 class GraphValidationError(Exception):
     pass
+
+
+class PresetLoadError(RuntimeError):
+    """Raised when a preset cannot be loaded for a structural reason.
+
+    Non-silent by design. Phase 7 of the source-registry completion epic
+    (parent task I27): preset loads that reference missing source pads
+    fail loudly with this exception so operators and the SDLC pipeline
+    see the problem immediately instead of the preset silently degrading
+    to a default.
+    """
+
+
+def resolve_preset_inputs(
+    preset: EffectGraph,
+    registry: SourceRegistry,
+) -> dict[str, Any]:
+    """Resolve ``preset.inputs`` pad names against a live ``SourceRegistry``.
+
+    Returns a dict mapping the ``as`` layer name to the resolved backend
+    handle. Raises :class:`PresetLoadError` on any unknown pad, with a
+    message including the preset name, the offending pad, and the
+    currently-registered pad list for debugging.
+
+    A preset with no ``inputs`` field (or an empty list) returns an empty
+    dict — this is the pre-Phase-7 behavior for every existing preset.
+
+    Part of the compositor source-registry epic. See
+    ``docs/superpowers/specs/2026-04-12-compositor-source-registry-foundation-design.md``
+    § "Preset schema extension" and parent plan task I27.
+    """
+    if not preset.inputs:
+        return {}
+    registered = set(registry.ids())
+    resolved: dict[str, Any] = {}
+    for entry in preset.inputs:
+        if entry.pad not in registered:
+            raise PresetLoadError(
+                f"preset {preset.name!r}: inputs reference unknown source pad "
+                f"{entry.pad!r}; known pads: {sorted(registered)}"
+            )
+        resolved[entry.as_] = registry._backends[entry.pad]  # noqa: SLF001
+    return resolved
 
 
 @dataclass
