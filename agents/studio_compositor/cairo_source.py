@@ -145,12 +145,28 @@ class CairoSourceRunner:
         try:
             from shared.freshness_gauge import FreshnessGauge
 
+            # The compositor's /metrics HTTP server at :9482 uses a
+            # custom CollectorRegistry (``metrics.REGISTRY``). Passing
+            # it through here is what makes the cairo source gauges
+            # scrape-visible — without it the metrics register to the
+            # default prometheus_client REGISTRY and never appear on
+            # the exporter. This fix also extends to the
+            # ``compositor_publish_{costs,degraded}`` gauges in
+            # ``budget.py`` / ``budget_signal.py``.
+            try:
+                from agents.studio_compositor.metrics import (
+                    REGISTRY as _COMPOSITOR_METRICS_REGISTRY,
+                )
+            except ImportError:
+                _COMPOSITOR_METRICS_REGISTRY = None
+
             # Base name is ``compositor_source_frame_{id}`` — FreshnessGauge
             # appends ``_published_total`` / ``_failed_total`` / ``_age_seconds``
             # suffixes, yielding the three metrics the AC requires.
             self._freshness_gauge = FreshnessGauge(
                 name=f"compositor_source_frame_{source_id}",
                 expected_cadence_s=self._period,
+                registry=_COMPOSITOR_METRICS_REGISTRY,
             )
         except Exception:
             log.warning(

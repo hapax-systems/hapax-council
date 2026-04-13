@@ -50,12 +50,28 @@ DEFAULT_WINDOW_SIZE = 120
 # dead path is loud instead of silent. Beta's PR #752 Phase 4 flagged
 # the compositor publish-costs wiring as a candidate dead path; this
 # gauge will make that status directly observable.
+#
+# Registry plumbing: the compositor's /metrics HTTP server at :9482
+# uses a custom ``CollectorRegistry`` (see metrics.REGISTRY), not the
+# default prometheus_client global. FreshnessGauge must register to
+# the custom one or it is scraped-invisible. ``metrics._init_metrics``
+# runs at metrics.py import time, so by the time this module is
+# imported from metrics.py (see the force-import block at the bottom
+# of metrics.py), REGISTRY is populated.
 try:
     from shared.freshness_gauge import FreshnessGauge
+
+    try:
+        from agents.studio_compositor.metrics import (
+            REGISTRY as _COMPOSITOR_METRICS_REGISTRY,
+        )
+    except ImportError:
+        _COMPOSITOR_METRICS_REGISTRY = None  # type: ignore[assignment]
 
     _PUBLISH_COSTS_FRESHNESS: FreshnessGauge | None = FreshnessGauge(
         name="compositor_publish_costs",
         expected_cadence_s=1.0,
+        registry=_COMPOSITOR_METRICS_REGISTRY,
     )
 except Exception:  # pragma: no cover — prometheus_client optional
     log.warning(
