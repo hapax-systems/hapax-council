@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly CLAUDE.md audit schedule
+
+[Timer]
+OnCalendar=monthly
+RandomizedDelaySec=1h
+Persistent=true
+Unit=claude-md-audit.service
+
+[Install]
+WantedBy=timers.target
