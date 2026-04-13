@@ -150,6 +150,17 @@ class ChatMonitor:
         self.author_window: deque = deque(maxlen=WINDOW_SIZE)
         self._last_batch = 0.0
         self._running = False
+        # A5: chat-reactive preset switching. Optional; logs but does not
+        # raise if the compositor package isn't importable from the chat
+        # monitor's sys.path (unit-tested via direct import).
+        try:
+            from agents.studio_compositor.chat_reactor import PresetReactor
+
+            self._preset_reactor = PresetReactor()
+            log.info("PresetReactor enabled — chat keyword → preset switch")
+        except Exception:
+            self._preset_reactor = None
+            log.debug("PresetReactor unavailable", exc_info=True)
 
     def start(self) -> None:
         """Start monitoring chat."""
@@ -235,6 +246,13 @@ class ChatMonitor:
             from token_ledger import record_spend
 
             record_spend("membership", 1000, 0, cost=0.0)
+
+        # A5: chat-reactive preset switching (no per-author state retained)
+        if self._preset_reactor is not None and text:
+            try:
+                self._preset_reactor.process_message(text)
+            except Exception:
+                log.debug("PresetReactor failed on message", exc_info=True)
 
         # Update viewer count
         unique_recent = len(set(self.author_window))
