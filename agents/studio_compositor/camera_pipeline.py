@@ -261,8 +261,15 @@ class CameraPipeline:
             return current == Gst.State.PLAYING
 
     def _on_buffer_probe(self, pad: Any, info: Any) -> Any:
-        """GStreamer pad probe: note frame arrival, passthrough."""
+        """GStreamer pad probe: note frame arrival, update Phase 4 metrics,
+        passthrough."""
         self._last_frame_monotonic = time.monotonic()
+        try:
+            from . import metrics
+
+            metrics.pad_probe_on_buffer(pad, info, self._spec.role)
+        except Exception:
+            log.exception("camera_pipeline %s: metrics pad probe raised", self._spec.role)
         if self._on_frame is not None:
             try:
                 self._on_frame()

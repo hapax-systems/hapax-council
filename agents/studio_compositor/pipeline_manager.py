@@ -21,6 +21,7 @@ import threading
 import time
 from typing import Any
 
+from . import metrics
 from .camera_pipeline import CameraPipeline
 from .camera_state_machine import CameraState, CameraStateMachine, Event, EventKind
 from .fallback_pipeline import FallbackPipeline
@@ -69,6 +70,11 @@ class PipelineManager:
         per-camera state machines."""
         with self._lock:
             for spec in self._specs:
+                # Phase 4: register metrics labels before anything else so
+                # CAM_FRAMES_TOTAL{role=...} appears in scrapes immediately.
+                model = getattr(spec, "camera_class", None) or "unknown"
+                metrics.register_camera(spec.role, model)
+
                 try:
                     fb = FallbackPipeline(spec, gst=self._Gst, fps=self._fps)
                     fb.build()
@@ -135,6 +141,7 @@ class PipelineManager:
         if src is None or fb is None:
             return
         src.set_property("listen-to", fb.sink_name)
+        metrics.on_swap(role, to_fallback=True)
         log.info("swap_to_fallback: role=%s → %s", role, fb.sink_name)
 
     def swap_to_primary(self, role: str) -> None:
@@ -144,6 +151,7 @@ class PipelineManager:
         if src is None or cam is None:
             return
         src.set_property("listen-to", cam.sink_name)
+        metrics.on_swap(role, to_fallback=False)
         log.info("swap_to_primary: role=%s → %s", role, cam.sink_name)
 
     # ------------------------------------------------------------- status api
@@ -260,6 +268,9 @@ class PipelineManager:
             self._GLib.idle_add(self._idle_swap_to_primary, role)
 
         def _notify(old: CameraState, new: CameraState, reason: str) -> None:
+            # Phase 4: update Prometheus state + transition metrics first
+            metrics.on_state_transition(role, old.value, new.value)
+
             # Map CameraState to the compositor's existing active/offline
             # convention so callers that touch compositor._camera_status
             # (director loop, overlays, health monitor) keep working without
@@ -342,6 +353,8 @@ class PipelineManager:
             )
 
         ok = cam.rebuild()
+        metrics.on_reconnect_result(role, ok)
+        metrics.on_pipeline_restart(f"cam_{role}")
         if sm is not None:
             sm.dispatch(
                 Event(
@@ -350,6 +363,7 @@ class PipelineManager:
                     source="supervisor",
                 )
             )
+            metrics.on_consecutive_failures_changed(role, sm.consecutive_failures)
             # The state machine schedules its own next retry via its
             # on_schedule_reconnect callback on failure; no need to
             # schedule again here.
