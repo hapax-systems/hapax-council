@@ -75,6 +75,13 @@ SurfaceKind = Literal[
     "wgpu_binding",  # Named wgpu bind group entry (content_slot_*)
     "video_out",  # /dev/video42, NDI, OBS feed
     "ndi_out",  # NDI source advertisement (Phase 5)
+    "fx_chain_input",  # Named GStreamer appsrc pad feeding glvideomixer.
+    #                    Source-registry epic PR 1: every registered source
+    #                    gets a persistent appsrc pad so preset chain switches
+    #                    can select any source as a main-layer input. The
+    #                    surface's ``id`` is the pad name; geometry fields
+    #                    (x/y/w/h) are not used — alpha is controlled by the
+    #                    glvideomixer sink-pad ``alpha`` property.
 ]
 
 BlendMode = Literal["over", "plus", "in", "out", "atop"]

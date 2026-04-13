@@ -179,6 +179,26 @@ class TestSurfaceSchema:
         )
         assert s.geometry.target == "/dev/video42"
 
+    def test_fx_chain_input_geometry(self):
+        """fx_chain_input is a named appsrc pad feeding glvideomixer.
+
+        The ``id`` is the pad name; ``x/y/w/h`` are not used (the source
+        renders at its natural size and the mixer pad's ``alpha`` property
+        controls visibility). Added in the source-registry epic PR 1.
+        """
+        s = SurfaceSchema(
+            id="reverie-main",
+            geometry=SurfaceGeometry(kind="fx_chain_input"),
+        )
+        assert s.geometry.kind == "fx_chain_input"
+
+    def test_surface_kind_rejects_unknown(self):
+        with pytest.raises(ValidationError):
+            SurfaceSchema(
+                id="bogus",
+                geometry=SurfaceGeometry(kind="not_a_real_kind"),
+            )
+
     def test_blend_mode_options(self):
         for mode in ["over", "plus", "in", "out", "atop"]:
             s = SurfaceSchema(
