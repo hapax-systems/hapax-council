@@ -23,12 +23,25 @@ from pathlib import Path
 
 import pytest
 
-gi = pytest.importorskip("gi")
-gi.require_version("Gst", "1.0")
-from gi.repository import Gst  # type: ignore  # noqa: E402
+# GStreamer availability gate. The previous implementation called
+# ``gi.require_version("Gst", "1.0")`` unguarded at module level, which
+# raises ``ValueError: Namespace Gst not available`` on CI runners without
+# the Gst typelib and aborts pytest collection (blocking every test in
+# the suite, not just this module). Wrapping the require_version +
+# repository import in try/except with ``allow_module_level=True`` lets
+# the module skip cleanly on environments without GStreamer.
+try:
+    import gi
+
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst  # type: ignore  # noqa: E402
+except (ImportError, ValueError) as _gst_exc:
+    pytest.skip(
+        f"GStreamer typelib not available: {_gst_exc}",
+        allow_module_level=True,
+    )
 
 Gst.init(None)
-
 
 # Skip the whole module if GStreamer can't build the elements this phase needs.
 _MISSING_FACTORIES = [
