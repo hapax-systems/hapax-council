@@ -101,3 +101,46 @@ class TestImpingementConsumer:
         with patch.object(Path, "read_text", side_effect=OSError("disk")):
             assert consumer.read_new() == []
         assert consumer.cursor == 0
+
+    def test_start_at_end_skips_backlog(self, tmp_path: Path) -> None:
+        """F6: start_at_end=True skips any accumulated lines on construction."""
+        path = tmp_path / "imp.jsonl"
+        _write_jsonl(path, [_make_imp("backlog.a"), _make_imp("backlog.b"), _make_imp("backlog.c")])
+        consumer = ImpingementConsumer(path, start_at_end=True)
+        # Cursor should already be positioned at the end.
+        assert consumer.cursor == 3
+        # First read yields no impingements — all pre-existing lines skipped.
+        assert consumer.read_new() == []
+
+    def test_start_at_end_yields_new_lines_after_init(self, tmp_path: Path) -> None:
+        """F6: start_at_end=True does not block future lines."""
+        path = tmp_path / "imp.jsonl"
+        _write_jsonl(path, [_make_imp("old")])
+        consumer = ImpingementConsumer(path, start_at_end=True)
+        assert consumer.read_new() == []
+        # Append a new line after construction.
+        _write_jsonl(path, [_make_imp("fresh")])
+        result = consumer.read_new()
+        assert len(result) == 1
+        assert result[0].source == "fresh"
+
+    def test_start_at_end_on_missing_file(self, tmp_path: Path) -> None:
+        """F6: start_at_end=True handles missing file without raising."""
+        path = tmp_path / "not-yet.jsonl"
+        consumer = ImpingementConsumer(path, start_at_end=True)
+        assert consumer.cursor == 0
+        # File appears after construction.
+        _write_jsonl(path, [_make_imp("first")])
+        result = consumer.read_new()
+        assert len(result) == 1
+        assert result[0].source == "first"
+
+    def test_start_at_end_default_is_false(self, tmp_path: Path) -> None:
+        """F6: backward compat — default behavior reads from beginning."""
+        path = tmp_path / "imp.jsonl"
+        _write_jsonl(path, [_make_imp("backlog")])
+        consumer = ImpingementConsumer(path)  # no start_at_end kwarg
+        assert consumer.cursor == 0
+        result = consumer.read_new()
+        assert len(result) == 1
+        assert result[0].source == "backlog"

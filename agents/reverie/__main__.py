@@ -35,7 +35,14 @@ class ReverieDaemon:
         mixer: object | None = None,
         skip_bootstrap: bool = False,
     ) -> None:
-        self._consumer = ImpingementConsumer(impingement_path)
+        # F6 (2026-04-12): skip accumulated JSONL backlog on startup.
+        # Stale impingements accumulated while reverie was restarting cannot
+        # meaningfully modulate the next visual tick, and dispatching them
+        # all through the affordance pipeline takes 5–15 min of Qdrant
+        # round-trips during which write_uniforms is never reached. The
+        # visual chain decays naturally and the next imagination fragment
+        # re-populates state, so crash-resume semantics are not needed here.
+        self._consumer = ImpingementConsumer(impingement_path, start_at_end=True)
         self._running = True
         # Control law state
         self._cl_errors = 0
