@@ -55,6 +55,8 @@ from pathlib import Path
 
 from shared.impingement import Impingement
 
+__all__ = ["ImpingementConsumer"]
+
 log = logging.getLogger(__name__)
 
 
