@@ -17,6 +17,64 @@ from .profiles import apply_camera_profile, evaluate_active_profile
 log = logging.getLogger(__name__)
 
 
+def process_livestream_control(compositor: Any, snapshot_dir: Path | None = None) -> bool:
+    """Consume a pending livestream-control.json from the daimonion.
+
+    Reads ``{activate, reason, requested_at}`` and dispatches
+    ``compositor.toggle_livestream(activate, reason)`` on the GLib main
+    loop, then writes a ``livestream-status.json`` artifact with the
+    result so the daimonion (or an operator) can inspect the outcome
+    asynchronously. The control file is deleted after read regardless
+    of success, to prevent retry storms on a malformed payload.
+
+    Returns True if a control file was consumed, False otherwise.
+    """
+    control_path = (snapshot_dir or SNAPSHOT_DIR) / "livestream-control.json"
+    status_path = (snapshot_dir or SNAPSHOT_DIR) / "livestream-status.json"
+    if not control_path.exists():
+        return False
+
+    try:
+        payload = json.loads(control_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        log.exception("Failed to read livestream-control.json: %s", exc)
+        control_path.unlink(missing_ok=True)
+        return True
+    finally:
+        control_path.unlink(missing_ok=True)
+
+    activate = bool(payload.get("activate", False))
+    reason = str(payload.get("reason") or "").strip() or "unspecified"
+    requested_at = payload.get("requested_at")
+
+    def _dispatch() -> bool:
+        try:
+            success, message = compositor.toggle_livestream(activate, reason)
+        except Exception:
+            log.exception("toggle_livestream raised during livestream control dispatch")
+            success, message = False, "toggle_livestream raised"
+        status = {
+            "activate": activate,
+            "reason": reason,
+            "requested_at": requested_at,
+            "processed_at": time.time(),
+            "success": bool(success),
+            "message": str(message),
+        }
+        try:
+            status_path.write_text(json.dumps(status))
+        except OSError:
+            log.exception("Failed to write livestream-status.json")
+        return False  # GLib.idle_add one-shot
+
+    glib = getattr(compositor, "_GLib", None)
+    if glib is not None:
+        glib.idle_add(_dispatch)
+    else:
+        _dispatch()
+    return True
+
+
 def evaluate_camera_profile(compositor: Any) -> None:
     """Evaluate and apply camera profiles if changed."""
     if not compositor._camera_profiles:
@@ -260,6 +318,12 @@ def state_reader_loop(compositor: Any) -> None:
                         apply_layout_mode(compositor, requested)
             except Exception:
                 log.debug("Layout mode switch failed", exc_info=True)
+
+        # Livestream control (from daimonion affordance dispatch)
+        try:
+            process_livestream_control(compositor)
+        except Exception:
+            log.exception("process_livestream_control raised (non-fatal)")
 
         # Vinyl mode toggle (Stream Deck / API)
         vinyl_path = SNAPSHOT_DIR / "vinyl-mode.txt"

@@ -90,6 +90,15 @@ async def _drive_one_iteration(daemon, candidates, imp) -> None:
                     context={"source": imp.source},
                 )
             continue
+        if c.capability_name == "studio.toggle_livestream":
+            if c.combined >= 0.3:
+                run_loops_aux._write_livestream_control(imp, c)
+                daemon._affordance_pipeline.record_outcome(
+                    c.capability_name,
+                    success=True,
+                    context={"source": imp.source},
+                )
+            continue
         if c.capability_name.startswith("studio.") and c.capability_name not in (
             "studio.midi_beat",
             "studio.midi_tempo",
@@ -285,6 +294,70 @@ class TestDispatchBehaviour:
         daemon._affordance_pipeline.record_outcome.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_toggle_livestream_writes_control_file(self, tmp_path, monkeypatch) -> None:
+        """studio.toggle_livestream dispatches via the compositor control bus."""
+        control_path = tmp_path / "livestream-control.json"
+        monkeypatch.setattr(run_loops_aux, "_LIVESTREAM_CONTROL_PATH", control_path)
+
+        daemon = _make_daemon()
+        imp = _make_impingement(
+            source="imagination",
+            narrative="let's go live for the new set",
+        )
+        candidate = _make_candidate("studio.toggle_livestream", combined=0.7)
+
+        await _drive_one_iteration(daemon, [candidate], imp)
+
+        assert control_path.exists(), "control file must be written"
+        import json as _json
+
+        payload = _json.loads(control_path.read_text())
+        assert payload["activate"] is True  # default when not specified
+        assert "let's go live" in payload["reason"]
+        assert payload["score"] == pytest.approx(0.7)
+        assert payload["source"] == "imagination"
+        daemon._affordance_pipeline.record_outcome.assert_called_once_with(
+            "studio.toggle_livestream",
+            success=True,
+            context={"source": "imagination"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_toggle_livestream_respects_explicit_deactivate(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """imp.content['activate'] == False flips the dispatch to stop."""
+        control_path = tmp_path / "livestream-control.json"
+        monkeypatch.setattr(run_loops_aux, "_LIVESTREAM_CONTROL_PATH", control_path)
+
+        daemon = _make_daemon()
+        imp = _make_impingement(activate=False, narrative="wrap it up")
+        candidate = _make_candidate("studio.toggle_livestream", combined=0.5)
+
+        await _drive_one_iteration(daemon, [candidate], imp)
+
+        import json as _json
+
+        payload = _json.loads(control_path.read_text())
+        assert payload["activate"] is False
+
+    @pytest.mark.asyncio
+    async def test_toggle_livestream_below_score_floor_is_skipped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        control_path = tmp_path / "livestream-control.json"
+        monkeypatch.setattr(run_loops_aux, "_LIVESTREAM_CONTROL_PATH", control_path)
+
+        daemon = _make_daemon()
+        imp = _make_impingement()
+        candidate = _make_candidate("studio.toggle_livestream", combined=0.29)
+
+        await _drive_one_iteration(daemon, [candidate], imp)
+
+        assert not control_path.exists()
+        daemon._affordance_pipeline.record_outcome.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_world_domain_routing_gated_by_flag(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(
             run_loops_aux,
@@ -396,6 +469,8 @@ class TestDispatchBodyLockstep:
         # Key landmarks the test helper mirrors
         for landmark in (
             "system.notify_operator",
+            "studio.toggle_livestream",
+            "_write_livestream_control",
             "studio.midi_beat",
             "_WORLD_DOMAIN_PREFIXES",
             "speech_production",
