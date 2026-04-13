@@ -115,11 +115,25 @@ class ConsentGatedReader:
         operator_ids: frozenset[str] | None = None,
         audit_path: Path | None = None,
     ) -> ConsentGatedReader:
-        """Create a ConsentGatedReader with loaded registry."""
-        from agents._config import OPERATOR_IDS
+        """Create a ConsentGatedReader with loaded registry.
+
+        BETA-FINDING-K follow-up (2026-04-13): the prior version of
+        this method imported ``OPERATOR_IDS`` from ``agents._config``.
+        That symbol does not exist — it was renamed + relocated to
+        ``DEFAULT_OPERATOR_IDS`` in ``agents._governance.qdrant_gate``
+        at some earlier refactor. The broken import raised
+        ``ImportError`` on every call, and the prior silent-catch in
+        ``init_pipeline.precompute_pipeline_deps`` swallowed the
+        error and set ``_precomputed_consent_reader`` to ``None`` —
+        leaving the conversation pipeline running unfiltered.
+        PR #761 made that init path fail-closed, which surfaced this
+        ImportError as a hard daemon-startup crash. This fix uses the
+        live name.
+        """
+        from agents._governance.qdrant_gate import DEFAULT_OPERATOR_IDS
 
         registry = load_contracts()
-        ids = operator_ids or OPERATOR_IDS
+        ids = operator_ids or DEFAULT_OPERATOR_IDS
         return ConsentGatedReader(
             registry=registry,
             operator_ids=ids,
