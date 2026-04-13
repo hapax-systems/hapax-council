@@ -733,6 +733,13 @@ class DirectorLoop:
         ).start()
 
     def _synthesize(self, text: str) -> bytes:
+        # ALPHA-FINDING-1: this lazy import pulls libtorch_cuda plus
+        # the full CUDA driver stack into the compositor process,
+        # which is the root cause of the ~49 MB/min RSS leak tracked
+        # under the post-epic audit. Root cause + fix options in
+        # ``docs/superpowers/audits/2026-04-13-alpha-finding-1-root-cause.md``.
+        # Follow-up work should delegate synthesis to hapax-daimonion
+        # via IPC so the compositor never loads torch.
         with self._tts_lock:
             if self._tts_manager is None:
                 from agents.hapax_daimonion.tts import TTSManager
