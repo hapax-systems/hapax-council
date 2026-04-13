@@ -103,6 +103,8 @@ systemctl --user daemon-reload
 
 **Units are symlinked, not copied.** Edits to `systemd/units/` take effect on `daemon-reload` without re-running the install script. The script covers `.service`, `.timer`, `.target`, and `.path` files.
 
+**Newly installed timers are auto-enabled.** As of the audit-followups-e1 PR, `install-units.sh` runs `systemctl --user enable --now <name>.timer` for every timer file it sees for the first time. Existing timers are left alone (re-running is idempotent). To suppress this for a one-off install, set `SKIP_TIMER_ENABLE=1` before running the script (intentionally not a flag — disabling auto-enable is the rare case).
+
 ## Development
 
 For development, stop systemd services and use process-compose:

@@ -5,11 +5,12 @@
 # Wired into systemd/units/claude-md-audit.{service,timer} for monthly cadence.
 # Operator can run by hand at any time.
 #
-# For council files this script intentionally reads from a known canonical
-# worktree (default: hapax-council--beta) instead of auto-discovering, because
-# the alpha worktree is periodically detached by hapax-rebuild-logos.timer
-# (see hapax-council/feedback_rebuild_logos_worktree_detach memory) and may
-# carry stale working-tree content that does not reflect origin/main.
+# For council files this script reads canonical content from
+# `git -C <council-worktree> show origin/main:<path>` rather than from any
+# worktree's working tree. This avoids the alpha worktree being periodically
+# detached by hapax-rebuild-logos.timer (see operator memory
+# feedback_rebuild_logos_worktree_detach.md). git refs are shared across all
+# council worktrees, so any worktree's `.git` dir resolves origin/main correctly.
 #
 # Reports via ntfy if any check fails; silent on success.
 
@@ -32,17 +33,38 @@ if [[ ! -x "$VSCODE_SCRIPT" ]]; then
     echo "monthly-claude-md-audit: vscode checker missing: $VSCODE_SCRIPT" >&2
     exit 2
 fi
+if [[ ! -d "$COUNCIL_CANONICAL/.git" ]] && [[ ! -f "$COUNCIL_CANONICAL/.git" ]]; then
+    echo "monthly-claude-md-audit: COUNCIL_CANONICAL is not a git worktree: $COUNCIL_CANONICAL" >&2
+    exit 2
+fi
+
+# Stage council canonical files from origin/main into a temp dir so the
+# rot scanner sees authoritative content regardless of working-tree state.
+canonical_dir=$(mktemp -d)
+trap 'rm -rf "$canonical_dir"' EXIT
+
+mkdir -p "$canonical_dir/council/vscode"
+if ! git -C "$COUNCIL_CANONICAL" show origin/main:CLAUDE.md > "$canonical_dir/council/CLAUDE.md" 2>/dev/null; then
+    echo "monthly-claude-md-audit: git show origin/main:CLAUDE.md failed (council main not fetched?)" >&2
+    # Fall back to the working tree.
+    cp "$COUNCIL_CANONICAL/CLAUDE.md" "$canonical_dir/council/CLAUDE.md" 2>/dev/null \
+        || { echo "monthly-claude-md-audit: working-tree fallback also failed" >&2; exit 2; }
+fi
+if ! git -C "$COUNCIL_CANONICAL" show origin/main:vscode/CLAUDE.md > "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null; then
+    cp "$COUNCIL_CANONICAL/vscode/CLAUDE.md" "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null \
+        || { echo "monthly-claude-md-audit: vscode/CLAUDE.md fallback failed" >&2; exit 2; }
+fi
 
 # Build target list:
-#   1. Council canonical (beta worktree) CLAUDE.md + vscode/CLAUDE.md
+#   1. Council canonical files (from origin/main via git show)
 #   2. Sibling repos (officium, watch, phone, mcp, constitution, distro-work, atlas, tabbyAPI)
 #   3. Workspace root CLAUDE.md (resolves dotfiles symlink)
 #
 # Worktree dirs (alpha hapax-council/, delta hapax-council--*) are excluded
-# because their working-tree state is not authoritative.
+# from auto-discovery because their working-tree state is not authoritative.
 targets=(
-    "$COUNCIL_CANONICAL/CLAUDE.md"
-    "$COUNCIL_CANONICAL/vscode/CLAUDE.md"
+    "$canonical_dir/council/CLAUDE.md"
+    "$canonical_dir/council/vscode/CLAUDE.md"
 )
 
 while IFS= read -r f; do
@@ -83,7 +105,8 @@ fi
 
 failed=()
 fail_log=$(mktemp)
-trap 'rm -f "$fail_log"' EXIT
+# Extend the EXIT trap to also clean fail_log without overwriting canonical_dir.
+trap 'rm -rf "$canonical_dir"; rm -f "$fail_log"' EXIT
 
 # Default-mode rot scan — should be clean.
 if ! "$ROT_SCRIPT" "${targets[@]}" >>"$fail_log" 2>&1; then
@@ -95,8 +118,8 @@ if ! "$ROT_SCRIPT" --strict "${targets[@]}" >>"$fail_log" 2>&1; then
     failed+=("rot:strict")
 fi
 
-# Sister vscode CLAUDE.md drift.
-if ! "$VSCODE_SCRIPT" "$COUNCIL_CANONICAL/vscode/CLAUDE.md" "$WORKSPACE/hapax-officium/vscode/CLAUDE.md" >>"$fail_log" 2>&1; then
+# Sister vscode CLAUDE.md drift — uses canonical council file.
+if ! "$VSCODE_SCRIPT" "$canonical_dir/council/vscode/CLAUDE.md" "$WORKSPACE/hapax-officium/vscode/CLAUDE.md" >>"$fail_log" 2>&1; then
     failed+=("vscode-sister")
 fi
 

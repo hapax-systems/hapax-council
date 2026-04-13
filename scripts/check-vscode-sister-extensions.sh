@@ -25,12 +25,18 @@
 set -euo pipefail
 
 WORKSPACE="${WORKSPACE:-$HOME/projects}"
+# Default council vscode CLAUDE.md is read from the beta worktree, NOT the
+# alpha primary worktree. Alpha is periodically detached by
+# hapax-rebuild-logos.timer (see feedback_rebuild_logos_worktree_detach in
+# operator memory) and its working-tree content does not always match HEAD.
+# Beta is operator-stable and always at origin/main.
+COUNCIL_CANONICAL="${COUNCIL_CANONICAL:-$WORKSPACE/hapax-council--beta}"
 
 if [[ $# -eq 2 ]]; then
     a=$1
     b=$2
 elif [[ $# -eq 0 ]]; then
-    a="$WORKSPACE/hapax-council/vscode/CLAUDE.md"
+    a="$COUNCIL_CANONICAL/vscode/CLAUDE.md"
     b="$WORKSPACE/hapax-officium/vscode/CLAUDE.md"
 else
     echo "usage: $0 [path-A path-B]" >&2
@@ -48,8 +54,11 @@ done
 # Lines matching this are tolerated; lines NOT matching are reported.
 allowed_re='(805[01]|hapax-(council|officium)|targets the (council|officium) Logos API)'
 
-# Capture the diff. If files are identical that's also fine.
-if diff_output=$(diff -u "$a" "$b"); then
+# Capture the diff in plain (NOT unified) format. Plain diff prefixes
+# removed lines with `< ` and added lines with `> `, which the case statement
+# below pattern-matches. Unified format would prefix with `-`/`+` and the
+# loop would never match, silently passing every check.
+if diff_output=$(diff "$a" "$b"); then
     printf 'check-vscode-sister-extensions: %s and %s are byte-identical.\n' "$(basename "$(dirname "$a")")" "$(basename "$(dirname "$b")")"
     exit 0
 fi

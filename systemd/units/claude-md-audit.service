@@ -1,10 +1,12 @@
 [Unit]
 Description=Monthly CLAUDE.md rotation policy + sister-extension audit
-Documentation=file:%h/projects/hapax-council/docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md
+Documentation=file:/home/hapax/projects/hapax-council/docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/scripts/monthly-claude-md-audit.sh
+ExecStart=/home/hapax/projects/hapax-council--beta/scripts/monthly-claude-md-audit.sh
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
 StandardOutput=journal
 StandardError=journal
 Nice=10
