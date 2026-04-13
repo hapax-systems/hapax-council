@@ -397,9 +397,10 @@ def test_write_uniforms_end_to_end_produces_expected_keys(tmp_path: Path):
     # content.salience was overwritten by salience × silence (silence=1.0
     # for fresh imagination).
     assert result["content.salience"] == pytest.approx(0.4)
-    # content.intensity was reverted in the audit follow-up — the content
-    # node's plan-default value (0.0) flows through unchanged.
-    assert result["content.intensity"] == pytest.approx(0.0)
+    # content.intensity — F8 restored the passthrough now that Rust routes
+    # content.* into UniformData.custom[0][0..2]. With fresh imagination
+    # (silence=1.0), intensity mirrors salience × silence.
+    assert result["content.intensity"] == pytest.approx(0.4)
 
     # Signal keys present.
     assert result["signal.stance"] == pytest.approx(0.25)  # cautious

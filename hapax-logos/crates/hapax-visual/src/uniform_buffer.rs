@@ -148,7 +148,11 @@ impl UniformBuffer {
             diffusion: *dims.get("diffusion").unwrap_or(&0.0) as f32,
             _align_pad: [0.0; 2],
             slot_opacities: [0.0; 4], // Updated by content layer pass
-            custom: [[0.0; 4]; 8],        // Updated from uniforms.json
+            // custom[0][0..2] are populated from uniforms.json
+            // ``content.material`` / ``content.salience`` / ``content.intensity``
+            // (F8 — see dynamic_pipeline.rs render() for the routing). Other
+            // custom slots are reserved for future per-pass overrides.
+            custom: [[0.0; 4]; 8],
         }
     }
 }

@@ -824,6 +824,24 @@ impl DynamicPipeline {
                                     "diffusion" => uniform_data.diffusion = v,
                                     _ => {}
                                 }
+                            } else if let Some(content) = key.strip_prefix("content.") {
+                                // F8: content_layer.wgsl has no @group(2) Params
+                                // binding (it composites 4 content slots and
+                                // reads its material/salience/intensity knobs
+                                // from uniforms.custom[0]). The per-node
+                                // params_buffer path skips it. Route the three
+                                // content.* keys into custom[0][0..2] so
+                                // Bachelard Amendment 3 (material quality) is
+                                // actually reachable at runtime. Python writes
+                                // these keys as floats already (see
+                                // agents/reverie/_uniforms.py MATERIAL_MAP).
+                                let v = val as f32;
+                                match content {
+                                    "material" => uniform_data.custom[0][0] = v,
+                                    "salience" => uniform_data.custom[0][1] = v,
+                                    "intensity" => uniform_data.custom[0][2] = v,
+                                    _ => {}
+                                }
                             }
                         }
 
