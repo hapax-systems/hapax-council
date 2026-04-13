@@ -233,3 +233,79 @@ def test_load_playlist_returns_empty_when_ytdlp_not_installed(tmp_path, monkeypa
         result = _load_playlist()
 
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# FINDING-G real fix: Kokoro throughput safety cap on react texts
+# ---------------------------------------------------------------------------
+
+
+def test_synthesize_passes_short_text_through() -> None:
+    """Texts under the cap must pass through unchanged."""
+    director = _director([])
+    director._tts_client = MagicMock()
+    director._tts_client.synthesize.return_value = b"\x00\x01" * 100
+    director._synthesize("hello world")
+    director._tts_client.synthesize.assert_called_once_with("hello world", "conversation")
+
+
+def test_synthesize_truncates_long_text_at_word_boundary() -> None:
+    """Texts over _MAX_REACT_TEXT_CHARS must be truncated at the last
+    whitespace before the cap and suffixed with an ellipsis. Beta
+    PR #756 queue-024 Phase 1 measured Kokoro CPU at ~6.6 chars/sec;
+    a 600-char input would need ~90 s synth which blocks the speak-
+    react thread. The cap keeps each synth under ~60 s.
+    """
+    director = _director([])
+    director._tts_client = MagicMock()
+    director._tts_client.synthesize.return_value = b"\x00\x01" * 100
+
+    # Build a 600-char string made of distinct words so we can see
+    # the word-boundary truncation clearly.
+    long_text = " ".join(f"word{i:04d}" for i in range(100))
+    assert len(long_text) > director._MAX_REACT_TEXT_CHARS
+
+    director._synthesize(long_text)
+
+    assert director._tts_client.synthesize.call_count == 1
+    sent_text = director._tts_client.synthesize.call_args[0][0]
+    assert sent_text.endswith("…"), "truncated output must end with an ellipsis"
+    assert len(sent_text) <= director._MAX_REACT_TEXT_CHARS + 1  # +1 for the ellipsis
+    # Word-boundary invariant: the truncated output (minus the ellipsis)
+    # must end at a word boundary from the original text.
+    stem = sent_text[:-1]
+    assert long_text.startswith(stem)
+    assert not stem.endswith("word") or stem[-4:].isdigit() or stem[-1].isalnum(), (
+        "truncation should not slice a word in half"
+    )
+
+
+def test_synthesize_truncation_invokes_tts_client_once() -> None:
+    """The truncation path must not retry synthesis — a single call
+    with the capped text is enough. Prevents an accidental loop
+    that would defeat the throughput guard.
+    """
+    director = _director([])
+    director._tts_client = MagicMock()
+    director._tts_client.synthesize.return_value = b""
+    director._synthesize("x" * 1000)
+    assert director._tts_client.synthesize.call_count == 1
+
+
+def test_max_react_text_chars_is_tuned_to_kokoro_throughput() -> None:
+    """The cap must correspond to a synth time under the client
+    timeout. Beta's measured ~6.6 chars/sec Kokoro throughput means
+    400 chars → ~60 s, which is within the 90 s client timeout from
+    PR #757 follow-up.
+    """
+    from agents.studio_compositor.tts_client import _DEFAULT_TIMEOUT_S
+
+    assert DirectorLoop._MAX_REACT_TEXT_CHARS == 400
+    # Measured throughput ~6.6 chars/sec; 400 chars ≈ 60 s worst-case
+    measured_throughput_chars_per_sec = 6.6
+    worst_case_synth_s = DirectorLoop._MAX_REACT_TEXT_CHARS / measured_throughput_chars_per_sec
+    assert worst_case_synth_s < _DEFAULT_TIMEOUT_S, (
+        f"character cap ({DirectorLoop._MAX_REACT_TEXT_CHARS}) worst-case "
+        f"synth ({worst_case_synth_s:.1f}s) must be under the client "
+        f"timeout ({_DEFAULT_TIMEOUT_S}s)"
+    )

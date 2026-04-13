@@ -19,7 +19,14 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT_S = 30.0  # Kokoro synthesis rarely exceeds a few seconds
+# Beta PR #756 queue-024 Phase 1 measured Kokoro CPU synth at
+# ~6.6 chars/sec (361-char text → 54.6 s synth). Compositor react
+# texts run 200–425 chars, which would time out 82% of long calls
+# under the original 30 s cap. Raise to 90 s, which covers up to
+# ~600 chars at the measured throughput. The complementary fix is
+# a character cap enforced by ``director_loop._synthesize`` so the
+# voice path never waits that long on a single speak-react call.
+_DEFAULT_TIMEOUT_S = 90.0
 
 
 class DaimonionTtsClient:

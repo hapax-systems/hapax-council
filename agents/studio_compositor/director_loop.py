@@ -738,7 +738,30 @@ class DirectorLoop:
             target=_do_speak_and_advance, daemon=True, name=f"speak-{activity}"
         ).start()
 
+    # Beta PR #756 queue-024 Phase 1: Kokoro CPU synth is
+    # ~6.6 chars/sec. With the 90 s client timeout that covers
+    # ~600 chars, but the operator still has to wait for the slow
+    # synth to complete, which blocks the speak-react thread and
+    # delays the next slot advance. Hard-cap react texts at 400
+    # chars (~60 s max synth) so the voice path has a predictable
+    # upper bound. Longer texts get truncated at a word boundary
+    # with an ellipsis marker; the full text still goes to the
+    # reaction_history for display.
+    _MAX_REACT_TEXT_CHARS = 400
+
     def _synthesize(self, text: str) -> bytes:
+        if len(text) > self._MAX_REACT_TEXT_CHARS:
+            cutoff = self._MAX_REACT_TEXT_CHARS
+            # Trim on the last whitespace before the cutoff so the
+            # audible output ends at a word boundary.
+            word_boundary = text.rfind(" ", 0, cutoff)
+            if word_boundary > self._MAX_REACT_TEXT_CHARS - 80:
+                cutoff = word_boundary
+            text = text[:cutoff].rstrip() + "…"
+            log.warning(
+                "speak-react text truncated to %d chars (Kokoro throughput guard)",
+                cutoff,
+            )
         return self._tts_client.synthesize(text, "conversation")
 
     def _play_audio(self, pcm: bytes) -> None:
