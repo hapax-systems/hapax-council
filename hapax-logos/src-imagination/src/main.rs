@@ -4,6 +4,7 @@
 //! Background thread: tokio runtime running a Unix domain socket server
 //! for external control (window management, render commands, status queries).
 
+mod headless;
 mod ipc;
 mod window_state;
 
@@ -479,6 +480,29 @@ fn main() {
     std::fs::create_dir_all("/dev/shm/hapax-imagination/content").ok();
 
     log::info!("hapax-imagination {} (built {})", GIT_SHA, BUILD_TS);
+
+    // Phase 4a scaffold: HAPAX_IMAGINATION_HEADLESS=1 routes to the
+    // headless::Renderer stub instead of creating a winit Window. The
+    // stub is a 60fps tick loop that does not yet own a GPU context —
+    // Phase 4b wires the real offscreen render pipeline. See
+    // `src/headless.rs` for the Phase 4a scope and the Phase 4b to-do.
+    // The systemd unit update that sets this env var by default is
+    // also deliberately held until Phase 4b so production service does
+    // not go dark.
+    if std::env::var("HAPAX_IMAGINATION_HEADLESS")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        rt.block_on(async {
+            let renderer = headless::Renderer::new(1920, 1080).await;
+            // run_forever returns Infallible — it never completes. Match
+            // on the divergent type so the compiler knows we never fall
+            // through. If Phase 4b replaces run_forever with a fallible
+            // loop, swap this for an explicit error log + exit.
+            match renderer.run_forever().await {}
+        });
+    }
 
     // Channels between winit thread (main) and UDS server (background)
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
