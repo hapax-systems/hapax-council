@@ -144,6 +144,16 @@ def start_compositor(compositor: Any) -> None:
         except Exception:
             log.exception("udev camera monitor start failed (non-fatal)")
 
+    # Phase 4: start the Prometheus metrics HTTP server on 127.0.0.1:9482
+    # (bound 0.0.0.0 for docker bridge reachability). Scraped by the
+    # workstation's Docker Prometheus container via host.docker.internal.
+    try:
+        from . import metrics
+
+        metrics.start_metrics_server(port=9482, addr="0.0.0.0")
+    except Exception:
+        log.exception("metrics server start failed (non-fatal)")
+
     # sd_notify integration — see docs/superpowers/plans/2026-04-12-camera-247-resilience-epic.md § 1.6
     # Once the pipeline is PLAYING and at least one camera is active, signal
     # systemd Type=notify that we are READY. If no cameras ever came up,
@@ -162,6 +172,12 @@ def start_compositor(compositor: Any) -> None:
                 any_active = any(s == "active" for s in compositor._camera_status.values())
             if any_active and compositor._running:
                 sd_notify_watchdog()
+                try:
+                    from . import metrics
+
+                    metrics.mark_watchdog_fed()
+                except Exception:
+                    pass
             return compositor._running  # keep firing while compositor is alive
 
         # 20s interval keeps us well under the 60s WatchdogSec.
