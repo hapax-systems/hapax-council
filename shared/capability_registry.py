@@ -158,14 +158,25 @@ class CapabilityRegistry:
             # Cost-weighted effective score
             effective = match_score * (1.0 - cap.activation_cost * 0.5)
 
-            # Consent check — fail-closed: block if consent infra raises
+            # Consent check — fail-closed: block if consent infra raises.
+            #
+            # Surfaced by the 2026-04-12 beta audit: this gate previously
+            # used `registry.contracts.values()`, but `ConsentRegistry`
+            # exposes its contracts via `_contracts` (private) and
+            # `__iter__` (public). The non-existent attribute raised
+            # `AttributeError` on every consent_required capability,
+            # which the bare `except Exception` swallowed and turned
+            # into a fail-closed block — accidentally blocking every
+            # consent_required capability through this code path even
+            # when active contracts existed. Mirror the new gate in
+            # `shared/affordance_pipeline.py::_consent_allows()` and
+            # iterate via `__iter__`.
             if cap.consent_required:
                 try:
                     from shared.governance.consent import load_contracts
 
                     registry = load_contracts()
-                    active = [c for c in registry.contracts.values() if c.active]
-                    if not active:
+                    if not any(c.active for c in registry):
                         log.debug("Capability %s blocked — no active consent contracts", cap.name)
                         continue
                 except Exception:
