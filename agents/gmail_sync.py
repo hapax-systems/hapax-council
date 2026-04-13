@@ -379,8 +379,19 @@ def _log_change(email: EmailMetadata, change_type: str, extra: dict | None = Non
 
 
 def _write_recent_emails(state: GmailSyncState) -> int:
-    """Write recent email metadata as markdown stubs to rag-sources/gmail/."""
-    # Load consent registry for sender/recipient filtering
+    """Write recent email metadata as markdown stubs to rag-sources/gmail/.
+
+    Idempotent: only writes files whose content has actually changed, and
+    only unlinks files that are no longer in the current recency window.
+    The previous implementation wiped the entire directory every 6 h and
+    rewrote ~6 400 files from scratch, generating ~12 000 inotify events
+    per sync cycle, which serialised through the reactive engine's rag
+    ingest rule (2-concurrent semaphore) and starved the logos-api event
+    loop on the shared asyncio runtime (BETA-FINDING-2026-04-13-B).
+
+    Returns the number of emails in the recency window (not the number of
+    files actually written — the log line now reports both).
+    """
     _consent_registry = ConsentRegistry()
     _consent_registry.load()
 
@@ -388,11 +399,15 @@ def _write_recent_emails(state: GmailSyncState) -> int:
 
     now = datetime.now(UTC)
     cutoff = now - timedelta(days=RAG_WINDOW_DAYS)
-    written = 0
+    in_window = 0
+    rewritten = 0
+    unchanged = 0
+    removed = 0
 
-    # Clean old files first
-    for f in GMAIL_DIR.glob("*.md"):
-        f.unlink()
+    # Snapshot existing files so we can diff against the new set without
+    # re-globbing during the write loop.
+    existing_files: dict[str, Path] = {f.name: f for f in GMAIL_DIR.glob("*.md")}
+    kept_names: set[str] = set()
 
     for email in state.messages.values():
         try:
@@ -420,12 +435,48 @@ def _write_recent_emails(state: GmailSyncState) -> int:
         date_prefix = email_dt.strftime("%Y-%m-%d")
         filename = f"{date_prefix}-{safe_subject}-{email.message_id[:8]}.md"
         filepath = GMAIL_DIR / filename
+        kept_names.add(filename)
+        in_window += 1
+
+        # Skip the write entirely if the on-disk content already matches.
+        # This is the key to defusing the reactive engine flood: a steady
+        # mailbox produces zero write events per sync cycle.
+        if filepath.exists():
+            try:
+                if filepath.read_text(encoding="utf-8") == md:
+                    unchanged += 1
+                    email.local_path = str(filepath)
+                    continue
+            except OSError:
+                # Fall through to rewrite — a read failure is a good reason
+                # to replace the file anyway.
+                pass
+
         filepath.write_text(md, encoding="utf-8")
         email.local_path = str(filepath)
-        written += 1
+        rewritten += 1
 
-    log.info("Wrote %d recent emails to %s", written, GMAIL_DIR)
-    return written
+    # Unlink only files that are no longer in the current recency window.
+    # Without this, stale emails that fall outside the window would pin
+    # forever. With it, exactly one unlink per aged-out email per cycle.
+    for name, f in existing_files.items():
+        if name in kept_names:
+            continue
+        try:
+            f.unlink()
+            removed += 1
+        except OSError:
+            log.exception("Failed to unlink stale gmail file %s", f)
+
+    log.info(
+        "Gmail RAG sync: in_window=%d rewritten=%d unchanged=%d removed=%d dir=%s",
+        in_window,
+        rewritten,
+        unchanged,
+        removed,
+        GMAIL_DIR,
+    )
+    return in_window
 
 
 # ── Profiler Integration ─────────────────────────────────────────────────────
