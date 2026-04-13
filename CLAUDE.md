@@ -178,7 +178,43 @@ GStreamer-based livestream pipeline. Distinct from Reverie (the wgpu visual surf
 
 **Studio compositor service env (fixed 2026-04-12):** `studio-compositor.service` now loads `/run/user/1000/hapax-secrets.env` via `EnvironmentFile=` (PR #686), matching `hapax-daimonion` / `logos-api`. Without this the compositor has no `LITELLM_API_KEY` and no `LANGFUSE_PUBLIC_KEY`, so the director loop's LLM calls and all Langfuse telemetry silently fail.
 
-**Camera USB robustness (known hardware problem):** The three Logitech BRIO cameras keep getting kicked off the bus with kernel `device descriptor read/64, error -71` (EPROTO). Almost certainly a TS4 USB3.2 Gen2 hub / cable / power issue, not software. Investigation note: `docs/research/2026-04-12-brio-usb-robustness.md`. Reboot is the current workaround; `try_reconnect_camera` in `state.py` retries every ~10s but cannot fix signal-level USB errors.
+**Camera USB robustness (hardware-level):** The three Logitech BRIO cameras get kicked off the bus with kernel `device descriptor read/64, error -71` (EPROTO). Root cause is the TS4 USB3.2 Gen2 hub / cable / power — hardware, not software. Investigation note: `docs/research/2026-04-12-brio-usb-robustness.md`. Reboot recovers but the failure recurs under load.
+
+**Camera 24/7 resilience epic (2026-04-12 → 2026-04-13, 6 PRs):** Software-layer containment of the hardware fault, shipped as PRs #712, #714, #716, #719, #721, #722. Epic plan: `docs/superpowers/plans/2026-04-12-camera-247-resilience-epic.md`. Full research + design corpus under `docs/superpowers/specs/2026-04-12-camera-247*` + `docs/superpowers/specs/2026-04-12-compositor-hot-swap*` + `docs/superpowers/specs/2026-04-12-camera-recovery*` + `docs/superpowers/specs/2026-04-12-v4l2-prometheus*` + `docs/superpowers/specs/2026-04-12-native-rtmp*`. Retirement handoff: `docs/superpowers/handoff/2026-04-13-alpha-camera-247-epic-handoff.md`.
+
+The epic's architecture:
+
+- **Per-camera sub-pipelines.** Each camera runs in its own `GstPipeline` (`agents/studio_compositor/camera_pipeline.py`) with `v4l2src → capsfilter → watchdog timeout=2000 → jpegdec → videoconvert → capsfilter(NV12) → interpipesink name=cam_<role>`. Bus errors are scoped to that pipeline; the composite pipeline never dies on a camera fault.
+- **Paired fallback producers.** Each camera has a `FallbackPipeline` (`agents/studio_compositor/fallback_pipeline.py`) with `videotestsrc pattern=ball + textoverlay "CAMERA <role> OFFLINE" → videoconvert → capsfilter(NV12) → interpipesink name=fb_<role>`. Always running so hot-swap is instant.
+- **Hot-swap via interpipesrc.listen-to.** The composite pipeline contains one `interpipesrc listen-to=cam_<role>` per slot; `PipelineManager.swap_to_fallback(role)` flips the property to `fb_<role>`. Thread-safe GObject property write, zero state change, zero caps renegotiation. Requires `gst-plugin-interpipe` from AUR.
+- **Recovery state machine.** `agents/studio_compositor/camera_state_machine.py` is a pure-Python 5-state FSM (`HEALTHY → DEGRADED → OFFLINE → RECOVERING → HEALTHY` with escalation to `DEAD` after 10 consecutive failures). Exponential backoff `delay(n) = min(60, 2^n)` reset on `DeviceAdded` / `RecoverySucceeded`. Operator-only exit from `DEAD` via `OperatorRearm`.
+- **pyudev + udev.** `agents/studio_compositor/udev_monitor.py` subscribes to `video4linux` + `usb` via `pyudev.glib.MonitorObserver`. `systemd/udev/70-studio-cameras.rules` disables USB autosuspend for 046d:085e/08e5 AND uses `TAG+=systemd ENV{SYSTEMD_USER_WANTS}` to trigger `studio-camera-reconfigure@%k.service` — a `Type=oneshot` template unit that runs `systemd/units/studio-camera-reconfigure.sh` to re-apply BRIO/C920 specific `v4l2-ctl` controls on re-enumeration.
+- **Prometheus metrics.** `agents/studio_compositor/metrics.py` exposes ~20 metrics on `127.0.0.1:9482` (frame rate, kernel drops from v4l2 sequence gaps, last frame age, state gauge, transitions, reconnect attempts, consecutive failures, in_fallback, compositor uptime/watchdog/restarts, reserved RTMP series). Grafana dashboard at `grafana/dashboards/studio-cameras.json`. Scraped by the Docker Prometheus container via `host.docker.internal:9482` (requires `extra_hosts: [host.docker.internal:host-gateway]`).
+- **Type=notify + WatchdogSec.** `studio-compositor.service` is `Type=notify` with `WatchdogSec=60s`. `lifecycle._watchdog_tick` sends `WATCHDOG=1` every 20s gated on "at least one camera has frames" (liveness = frames flowing, not process alive). Uses `sdnotify` from PyPI. `StartLimitBurst=20/3600` (raised from `5/300` which was exhausted in <3 min under reconnect loops).
+- **Native GStreamer RTMP (closes A7).** `agents/studio_compositor/rtmp_output.py` provides `RtmpOutputBin` — a detachable `GstBin` attached to `output_tee` via a ghost sink pad. Topology: `queue → videoconvert → nvh264enc (p4, low-latency tune, cbr 6000 kbps, gop 2s, zerolatency) → h264parse → flvmux ← voaacenc ← audioconvert ← pipewiresrc → rtmp2sink rtmp://127.0.0.1:1935/studio`. All elements named `rtmp_*` for bus error src-name filtering. NVENC errors → `GLib.idle_add(rebuild_in_place)` with bounded error scope. `compositor.toggle_livestream()` public API is called from the consent-gated `studio.toggle_livestream` affordance handler.
+- **MediaMTX relay.** `mediamtx-bin` (AUR) runs as `mediamtx.service` on `127.0.0.1:1935`; `config/mediamtx.yml`'s `runOnReady` hook spawns `ffmpeg -c copy -f flv rtmp://a.rtmp.youtube.com/live2/$KEY` with the stream key loaded at launch from `pass show streaming/youtube-stream-key` via `scripts/mediamtx-start.sh`. Decouples compositor restarts from YouTube ingest.
+- **Residual silent-failure sweep.** Phase 1 fixed four bare-except-pass sites in `director_loop.py` (lines 121/134/146) and `compositor.py` (126), plus `studio-camera-setup.sh`'s `2>/dev/null || true` patterns. All now log with `exc_info=True` at the appropriate level.
+
+Dependencies introduced by the epic (all installed via pacman / paru / uv add):
+- `gst-plugin-interpipe` (AUR) — cross-pipeline hot-swap
+- `gst-plugin-fallbackswitch` (extra) — filter-level fallback path, kept as belt-and-suspenders
+- `mediamtx-bin` (AUR) — RTMP relay
+- `python-prometheus_client` (extra) — metrics
+- `sdnotify` (pip via `uv add`) — pure-Python systemd notify
+- `python-pyudev` (already installed)
+
+Runtime-affecting knobs (operator tuning surface):
+- Watchdog element timeout: 2000 ms per camera (`camera_pipeline.py`)
+- Exponential backoff: 1s → 60s ceiling, max 10 consecutive failures (`camera_state_machine.py`)
+- `WatchdogSec`: 60s liveness heartbeat (`studio-compositor.service`)
+- `StartLimitBurst`: 20/3600s (`studio-compositor.service`)
+- RTMP bitrate: 6 Mbps CBR 1080p30 (`rtmp_output.py` / `pipeline.py`)
+- Metrics port: `127.0.0.1:9482` (`lifecycle.py`)
+
+Test harness (`scripts/`):
+- `studio-install-udev-rules.sh` — idempotent udev rule install
+- `studio-simulate-usb-disconnect.sh <role>` — USBDEVFS_RESET ioctl via Python
+- `studio-smoke-test.sh` — end-to-end verification: unit state, metrics endpoint, MediaMTX, simulated disconnect + recovery, state-machine log inspection
 
 ## Reverie Vocabulary Integrity
 
