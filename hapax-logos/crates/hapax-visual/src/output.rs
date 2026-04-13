@@ -1,11 +1,22 @@
 use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 const OUTPUT_DIR: &str = "/dev/shm/hapax-visual";
 const OUTPUT_FILE: &str = "/dev/shm/hapax-visual/frame.rgba";
 const JPEG_FILE: &str = "/dev/shm/hapax-visual/frame.jpg";
 const JPEG_TMP_FILE: &str = "/dev/shm/hapax-visual/frame.jpg.tmp";
 const JPEG_QUALITY: i32 = 80;
+
+/// Second RGBA output path, consumed by the studio compositor's
+/// `ShmRgbaReader` as an `external_rgba` source. A sidecar JSON file at
+/// `<path>.json` describes `{ w, h, stride, frame_id }` so the reader can
+/// cache by `frame_id` and skip reprocessing identical frames.
+///
+/// Dormant until Phase D of the source-registry epic wires `ShmRgbaReader`
+/// into `StudioCompositor.start()` — writing to this path is a no-op with
+/// zero consumers until then.
+const SIDE_OUTPUT_FILE: &str = "/dev/shm/hapax-sources/reverie.rgba";
 
 /// Reads back frames from GPU to a staging buffer, then writes RGBA data to /dev/shm.
 pub struct ShmOutput {
@@ -17,6 +28,10 @@ pub struct ShmOutput {
     padded_bytes_per_row: u32,
     enabled: bool,
     jpeg_compressor: Option<turbojpeg::Compressor>,
+    /// Monotonic frame counter — used as `frame_id` in the side-output
+    /// sidecar so the compositor's `ShmRgbaReader` can cache-by-id and
+    /// skip reprocessing duplicate frames.
+    frame_count: u64,
 }
 
 impl ShmOutput {
@@ -47,6 +62,7 @@ impl ShmOutput {
             padded_bytes_per_row,
             enabled: true,
             jpeg_compressor,
+            frame_count: 0,
         }
     }
 
@@ -170,6 +186,20 @@ impl ShmOutput {
 
         // Write JPEG
         self.write_jpeg(&clean_data);
+
+        // Write the source-registry side output. Non-fatal on error —
+        // reverie keeps rendering and the compositor's
+        // compositor_source_frame_age_seconds metric catches chronic
+        // staleness. Dormant in main until Phase D wires ShmRgbaReader.
+        self.frame_count = self.frame_count.wrapping_add(1);
+        let _ = write_side_output(
+            Path::new(SIDE_OUTPUT_FILE),
+            &clean_data,
+            self.width,
+            self.height,
+            self.bytes_per_row,
+            self.frame_count,
+        );
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
@@ -189,4 +219,115 @@ impl ShmOutput {
 
 fn align_up(value: u32, alignment: u32) -> u32 {
     (value + alignment - 1) & !(alignment - 1)
+}
+
+/// Sidecar path for a given RGBA shm output path — appends `.json`, so
+/// `reverie.rgba` → `reverie.rgba.json`. Matches the layout expected by
+/// `agents/studio_compositor/shm_rgba_reader.py::ShmRgbaReader`.
+fn sidecar_path(rgba_path: &Path) -> PathBuf {
+    let mut as_os = rgba_path.as_os_str().to_os_string();
+    as_os.push(".json");
+    PathBuf::from(as_os)
+}
+
+/// Write RGBA pixel data and its metadata sidecar atomically.
+///
+/// Both files are written via `tmp + rename` so a mid-write crash cannot
+/// leave a partial RGBA visible to a reader: the rename is atomic on
+/// tmpfs. The sidecar carries `{ w, h, stride, frame_id }`; the reader
+/// caches by `frame_id` so a stale frame is never reprocessed.
+pub fn write_side_output(
+    path: &Path,
+    pixels: &[u8],
+    w: u32,
+    h: u32,
+    stride: u32,
+    frame_id: u64,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut rgba_tmp_os = path.as_os_str().to_os_string();
+    rgba_tmp_os.push(".tmp");
+    let rgba_tmp = PathBuf::from(rgba_tmp_os);
+    fs::write(&rgba_tmp, pixels)?;
+    fs::rename(&rgba_tmp, path)?;
+
+    let sidecar = sidecar_path(path);
+    let mut sidecar_tmp_os = sidecar.as_os_str().to_os_string();
+    sidecar_tmp_os.push(".tmp");
+    let sidecar_tmp = PathBuf::from(sidecar_tmp_os);
+    let meta = serde_json::json!({
+        "w": w,
+        "h": h,
+        "stride": stride,
+        "frame_id": frame_id,
+    });
+    fs::write(&sidecar_tmp, meta.to_string())?;
+    fs::rename(&sidecar_tmp, &sidecar)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn write_side_output_creates_rgba_and_sidecar() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("reverie.rgba");
+        let pixels = vec![0xFFu8; 4 * 4 * 4];
+
+        write_side_output(&path, &pixels, 4, 4, 16, 42).unwrap();
+
+        assert!(path.exists(), "rgba file should exist");
+        let written = fs::read(&path).unwrap();
+        assert_eq!(written, pixels);
+
+        let sidecar = sidecar_path(&path);
+        assert!(sidecar.exists(), "sidecar should exist at {:?}", sidecar);
+        let meta: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(meta["w"], 4);
+        assert_eq!(meta["h"], 4);
+        assert_eq!(meta["stride"], 16);
+        assert_eq!(meta["frame_id"], 42);
+    }
+
+    #[test]
+    fn write_side_output_is_atomic_via_rename() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("reverie.rgba");
+        let pixels = vec![0x11u8; 64];
+
+        write_side_output(&path, &pixels, 4, 4, 16, 1).unwrap();
+        let pixels_b = vec![0x22u8; 64];
+        write_side_output(&path, &pixels_b, 4, 4, 16, 2).unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), pixels_b);
+        let meta: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(sidecar_path(&path)).unwrap()).unwrap();
+        assert_eq!(meta["frame_id"], 2);
+
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "tmp files should be renamed: {:?}", leftovers);
+    }
+
+    #[test]
+    fn write_side_output_creates_parent_dir() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("nested").join("deeper").join("reverie.rgba");
+        let pixels = vec![0u8; 16];
+
+        write_side_output(&nested, &pixels, 2, 2, 8, 7).unwrap();
+
+        assert!(nested.exists());
+        assert!(sidecar_path(&nested).exists());
+    }
 }
