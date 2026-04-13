@@ -58,7 +58,7 @@ class TestSourceRegistryLookup:
 
 
 class TestSourceRegistryDispatch:
-    """Dispatch stubs — actual backends wired in Task 6."""
+    """Backend dispatch — cairo via cairo_sources.class_name, shm_rgba via path."""
 
     def test_dispatch_raises_for_unknown_backend(self):
         registry = SourceRegistry()
@@ -66,20 +66,58 @@ class TestSourceRegistryDispatch:
         with pytest.raises(UnknownBackendError, match="not_a_backend"):
             registry.construct_backend(src)
 
-    def test_dispatch_cairo_stub_raises_not_yet_wired(self):
-        """Task 3 ships the stub; Task 6 wires the real dispatcher."""
+    def test_dispatch_cairo_resolves_to_cairo_source_runner(self):
+        from agents.studio_compositor.cairo_source import CairoSourceRunner
+
         registry = SourceRegistry()
-        src = _make_source("src1", "cairo", {"class_name": "X"})
-        with pytest.raises(UnknownBackendError, match="not wired"):
+        src = _make_source(
+            "token_pole",
+            "cairo",
+            {
+                "class_name": "TokenPoleCairoSource",
+                "natural_w": 300,
+                "natural_h": 300,
+            },
+        )
+        backend = registry.construct_backend(src)
+        assert isinstance(backend, CairoSourceRunner)
+
+    def test_dispatch_cairo_missing_class_name_raises(self):
+        registry = SourceRegistry()
+        src = _make_source("src1", "cairo", {})
+        with pytest.raises(UnknownBackendError, match="class_name"):
             registry.construct_backend(src)
 
-    def test_dispatch_shm_rgba_stub_raises_not_yet_wired(self):
+    def test_dispatch_cairo_unknown_class_name_raises(self):
+        registry = SourceRegistry()
+        src = _make_source("src1", "cairo", {"class_name": "NotARealClass"})
+        with pytest.raises(KeyError, match="NotARealClass"):
+            registry.construct_backend(src)
+
+    def test_dispatch_shm_rgba_resolves_to_shm_rgba_reader(self):
+        from agents.studio_compositor.shm_rgba_reader import ShmRgbaReader
+
         registry = SourceRegistry()
         src = SourceSchema(
-            id="src1",
+            id="reverie",
             kind="external_rgba",
             backend="shm_rgba",
-            params={"natural_w": 100, "natural_h": 100, "shm_path": "/tmp/x.rgba"},
+            params={
+                "natural_w": 640,
+                "natural_h": 360,
+                "shm_path": "/tmp/reverie.rgba",
+            },
         )
-        with pytest.raises(UnknownBackendError, match="not wired"):
+        backend = registry.construct_backend(src)
+        assert isinstance(backend, ShmRgbaReader)
+
+    def test_dispatch_shm_rgba_missing_path_raises(self):
+        registry = SourceRegistry()
+        src = SourceSchema(
+            id="reverie",
+            kind="external_rgba",
+            backend="shm_rgba",
+            params={"natural_w": 640, "natural_h": 360},
+        )
+        with pytest.raises(UnknownBackendError, match="shm_path"):
             registry.construct_backend(src)

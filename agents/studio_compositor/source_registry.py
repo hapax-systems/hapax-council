@@ -71,16 +71,49 @@ class SourceRegistry:
     def construct_backend(self, source: SourceSchema) -> SourceBackend:
         """Instantiate a backend for ``source`` using its ``backend`` dispatcher.
 
-        Stub for Phase A. Task 6 replaces the body with the real dispatcher
-        table for ``cairo`` + ``shm_rgba``. The stub raises a specific error
-        shape so tests can assert the dispatch path is covered.
+        ``cairo`` backends are looked up in
+        :mod:`agents.studio_compositor.cairo_sources` by ``params.class_name``
+        and wrapped in a
+        :class:`~agents.studio_compositor.cairo_source.CairoSourceRunner`
+        configured at the source's natural dimensions.
+
+        ``shm_rgba`` backends resolve directly to a
+        :class:`~agents.studio_compositor.shm_rgba_reader.ShmRgbaReader`
+        pointing at ``params.shm_path``.
+
+        Raises :class:`UnknownBackendError` for any other backend string,
+        missing ``class_name`` on cairo, or missing ``shm_path`` on shm_rgba.
+        Raises :class:`KeyError` (from the cairo_sources lookup) if
+        ``class_name`` is not registered.
         """
+        from pathlib import Path
+
         if source.backend == "cairo":
-            raise UnknownBackendError(
-                f"cairo backend dispatcher not wired yet (source: {source.id})"
+            from agents.studio_compositor.cairo_source import CairoSourceRunner
+            from agents.studio_compositor.cairo_sources import get_cairo_source_class
+
+            class_name = source.params.get("class_name")
+            if not class_name:
+                raise UnknownBackendError(f"cairo source {source.id}: missing params.class_name")
+            source_cls = get_cairo_source_class(class_name)
+            source_obj = source_cls()
+            natural_w = int(source.params.get("natural_w", 1920))
+            natural_h = int(source.params.get("natural_h", 1080))
+            target_fps = float(source.params.get("fps", 10.0))
+            return CairoSourceRunner(
+                source_id=source.id,
+                source=source_obj,
+                canvas_w=natural_w,
+                canvas_h=natural_h,
+                target_fps=target_fps,
+                natural_w=natural_w,
+                natural_h=natural_h,
             )
         if source.backend == "shm_rgba":
-            raise UnknownBackendError(
-                f"shm_rgba backend dispatcher not wired yet (source: {source.id})"
-            )
+            from agents.studio_compositor.shm_rgba_reader import ShmRgbaReader
+
+            shm_path = source.params.get("shm_path")
+            if not shm_path:
+                raise UnknownBackendError(f"shm_rgba source {source.id}: missing params.shm_path")
+            return ShmRgbaReader(Path(shm_path))
         raise UnknownBackendError(f"unknown backend: {source.backend}")
