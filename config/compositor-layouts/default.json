@@ -1,0 +1,45 @@
+{
+  "name": "default",
+  "description": "Default studio compositor layout — source-registry epic baseline (PR 2). Four sources (TokenPole, AlbumOverlay, Sierpinski, reverie), four PiP surfaces at the canvas corners, three initial assignments. The lower-right PiP is intentionally unassigned per operator spec so a fourth source can be recruited at runtime.",
+  "sources": [
+    {
+      "id": "token_pole",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {"class_name": "TokenPoleCairoSource", "natural_w": 300, "natural_h": 300}
+    },
+    {
+      "id": "album",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {"class_name": "AlbumOverlayCairoSource", "natural_w": 400, "natural_h": 520}
+    },
+    {
+      "id": "sierpinski",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {"class_name": "SierpinskiCairoSource", "natural_w": 640, "natural_h": 640}
+    },
+    {
+      "id": "reverie",
+      "kind": "external_rgba",
+      "backend": "shm_rgba",
+      "params": {
+        "natural_w": 640,
+        "natural_h": 360,
+        "shm_path": "/dev/shm/hapax-sources/reverie.rgba"
+      }
+    }
+  ],
+  "surfaces": [
+    {"id": "pip-ul", "geometry": {"kind": "rect", "x":   20, "y":   20, "w": 300, "h": 300}, "z_order": 10},
+    {"id": "pip-ur", "geometry": {"kind": "rect", "x": 1260, "y":   20, "w": 640, "h": 360}, "z_order": 10},
+    {"id": "pip-ll", "geometry": {"kind": "rect", "x":   20, "y":  540, "w": 400, "h": 520}, "z_order": 10},
+    {"id": "pip-lr", "geometry": {"kind": "rect", "x": 1260, "y":  420, "w": 640, "h": 640}, "z_order": 10}
+  ],
+  "assignments": [
+    {"source": "token_pole", "surface": "pip-ul"},
+    {"source": "reverie",    "surface": "pip-ur"},
+    {"source": "album",      "surface": "pip-ll"}
+  ]
+}
