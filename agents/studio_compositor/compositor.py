@@ -137,19 +137,47 @@ _FALLBACK_LAYOUT = Layout(
 )
 
 
+def _notify_fallback(target: Path, reason: str) -> None:
+    """Send a throttled ntfy when the compositor falls back to _FALLBACK_LAYOUT.
+
+    Post-epic audit Phase 1 finding #6: AC-8 ("deleting default.json →
+    fallback layout + ntfy") only had the fallback half wired.
+    Non-fatal — notification failures must never mask the fallback
+    itself. The notification path mirrors the camera-transition
+    pattern in ``_notify_camera_transition`` but without the
+    per-role throttle (layout fallback is rare enough that one
+    notification per event is the right cadence).
+    """
+    try:
+        from shared.notify import send_notification
+
+        send_notification(
+            title="Compositor layout fallback",
+            body=(
+                f"{target}: {reason}. Booting with hardcoded _FALLBACK_LAYOUT. "
+                "Check the file or restore from git."
+            ),
+            tag="compositor-layout-fallback",
+            priority="default",
+        )
+    except Exception:
+        log.debug("fallback layout ntfy failed", exc_info=True)
+
+
 def load_layout_or_fallback(path: Path) -> Layout:
     """Load a compositor Layout from JSON, falling back to the hardcoded rescue.
 
     Any failure mode — file missing, malformed JSON, pydantic validation
-    error — logs a WARNING with the offending path and returns
-    ``_FALLBACK_LAYOUT``. The compositor boots with a working source
-    registry unconditionally.
+    error — logs a WARNING with the offending path, fires a one-shot
+    ntfy via :func:`_notify_fallback`, and returns ``_FALLBACK_LAYOUT``.
+    The compositor boots with a working source registry unconditionally.
     """
     target = Path(path)
     try:
         raw = json.loads(target.read_text())
     except FileNotFoundError:
         log.warning("compositor layout %s missing — using fallback", target)
+        _notify_fallback(target, "file missing")
         return _FALLBACK_LAYOUT
     except (OSError, json.JSONDecodeError) as exc:
         log.warning(
@@ -157,6 +185,7 @@ def load_layout_or_fallback(path: Path) -> Layout:
             target,
             exc,
         )
+        _notify_fallback(target, f"read error: {exc}")
         return _FALLBACK_LAYOUT
 
     try:
@@ -167,6 +196,7 @@ def load_layout_or_fallback(path: Path) -> Layout:
             target,
             exc,
         )
+        _notify_fallback(target, f"schema validation failed: {exc}")
         return _FALLBACK_LAYOUT
 
 

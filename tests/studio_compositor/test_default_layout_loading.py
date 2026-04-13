@@ -210,6 +210,36 @@ def test_load_layout_or_fallback_uses_fallback_on_schema_violation(
     assert any("fallback" in rec.message.lower() for rec in caplog.records)
 
 
+def test_load_layout_or_fallback_fires_ntfy_on_missing_file(tmp_path: Path, monkeypatch) -> None:
+    """Post-epic audit Phase 1 finding #6 regression pin.
+
+    AC-8 ("deleting default.json → fallback layout + ntfy") only had
+    the fallback half wired. ``load_layout_or_fallback`` must also
+    fire a one-shot notification so operators see the fallback event
+    without grepping logs.
+    """
+    from agents.studio_compositor import compositor as compositor_module
+
+    sent: list[dict] = []
+
+    def _fake_send(**kwargs) -> None:
+        sent.append(kwargs)
+
+    # Patch ``shared.notify.send_notification`` at the module level —
+    # ``_notify_fallback`` imports it lazily inside its body, so the
+    # monkeypatch lands on the shared module, not a local alias.
+    import shared.notify as notify_mod
+
+    monkeypatch.setattr(notify_mod, "send_notification", _fake_send)
+
+    _ = compositor_module.load_layout_or_fallback(tmp_path / "does-not-exist.json")
+
+    assert len(sent) == 1, "exactly one ntfy should fire on fallback"
+    body = sent[0].get("body", "")
+    assert "does-not-exist.json" in body
+    assert "file missing" in body
+
+
 def test_fallback_layout_parses_to_same_shape_as_default_json() -> None:
     """The hardcoded _FALLBACK_LAYOUT is structurally identical to default.json.
 
