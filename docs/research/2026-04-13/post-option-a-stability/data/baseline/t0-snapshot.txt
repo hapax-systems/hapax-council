@@ -1,0 +1,54 @@
+=== baseline capture 2026-04-13T16:51:16-05:00, PID 2913194 ===
+--- systemctl show ---
+ActiveState=active
+SubState=running
+MainPID=2913194
+NRestarts=0
+ExecMainStartTimestamp=Mon 2026-04-13 16:39:37 CDT
+MemoryCurrent=914874368
+MemoryPeak=921038848
+TasksCurrent=99
+MemoryHigh=infinity
+MemoryMax=6442450944
+--- /proc/2913194/status (selected) ---
+Name:	python
+VmPeak:	15135888 kB
+VmSize:	15066208 kB
+VmHWM:	 1155452 kB
+VmRSS:	 1144448 kB
+RssAnon:	  703248 kB
+RssFile:	  384376 kB
+RssShmem:	   56824 kB
+VmData:	 3643660 kB
+VmSwap:	       0 kB
+Threads:	92
+--- /proc/2913194/smaps_rollup ---
+003ff000-7fff0140a000 ---p 00000000 00:00 0                              [rollup]
+Rss:             1144460 kB
+Pss:             1043130 kB
+Pss_Dirty:        947500 kB
+Pss_Anon:         703260 kB
+Pss_File:         283058 kB
+Pss_Shmem:         56812 kB
+Shared_Clean:     118240 kB
+Shared_Dirty:         24 kB
+Private_Clean:     78708 kB
+Private_Dirty:    947488 kB
+Referenced:      1143892 kB
+Anonymous:        703260 kB
+KSM:                   0 kB
+LazyFree:              0 kB
+AnonHugePages:         0 kB
+ShmemPmdMapped:        0 kB
+FilePmdMapped:     12288 kB
+Shared_Hugetlb:        0 kB
+Private_Hugetlb:       0 kB
+Swap:                  0 kB
+SwapPss:               0 kB
+Locked:                0 kB
+--- library mapping counts ---
+203
+unique .so mappings above
+torch-family mappings:
+0
+0
