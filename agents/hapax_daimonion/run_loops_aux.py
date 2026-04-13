@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agents._apperception import impingement_to_cascade_event
 from agents._impingement_consumer import ImpingementConsumer
 from agents.hapax_daimonion.persona import format_notification  # noqa: F401 (patched in tests)
 
@@ -139,7 +138,34 @@ def _world_routing_enabled() -> bool:
 
 
 async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
-    """Poll DMN impingements and route through affordance pipeline."""
+    """Poll DMN impingements and dispatch recruited affordances.
+
+    Owns everything the affordance pipeline recruits EXCEPT spontaneous
+    speech — speech surfacing belongs to ``CpalRunner.process_impingement``
+    (gated by the adapter's ``should_surface``). Both loops read the same
+    JSONL file through independent cursor paths so each impingement is
+    seen by both without racing.
+
+    Dispatched effects:
+
+    - ``system.notify_operator`` → ``activate_notification(...)`` and
+      Thompson outcome recording.
+    - ``studio.*`` control affordances (excluding the always-streaming
+      perception feeds) → Thompson outcome recording. Actual invocation
+      is deferred to whoever consumes the learned priors.
+    - World-domain affordances (``env.``, ``body.``, ``studio.``,
+      ``digital.``, ``social.``, ``system.``, ``knowledge.``, ``space.``,
+      ``world.``) → feature-flagged Thompson outcome recording.
+    - ``system_awareness`` → ``can_resolve()`` gate + ``activate()``.
+    - ``capability_discovery`` → discovery handler extract/search/propose.
+    - Cross-modal coordination via ``ExpressionCoordinator.coordinate``
+      when more than one non-speech capability is recruited.
+
+    Apperception cascade is NOT handled here — it is owned by
+    ``shared.apperception_tick.ApperceptionTick`` inside the visual
+    layer aggregator. ``speech_production`` recruitment is skipped here
+    to avoid double-firing with CPAL's spontaneous speech path.
+    """
     consumer = ImpingementConsumer(
         Path("/dev/shm/hapax-dmn/impingements.jsonl"),
         cursor_path=Path.home()
@@ -188,10 +214,6 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                             "studio.audio_events",
                             "studio.ambient_noise",
                         ):
-                            # Studio control affordances recruited by imagination or intent.
-                            # Records recruitment for Thompson learning. Actual invocation
-                            # requires context (which preset, which param, which camera) that
-                            # the impingement narrative would need to specify.
                             if c.combined >= 0.3:
                                 log.info(
                                     "Studio control recruited: %s (score=%.2f, source=%s)",
@@ -223,36 +245,20 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     success=True,
                                     context={"source": imp.source},
                                 )
-                            continue  # don't break — let other capabilities also activate
+                            continue
 
+                        # speech_production is owned by CPAL. Skipping here avoids
+                        # double-firing spontaneous speech when the adapter has
+                        # already set should_surface on the same impingement.
                         if c.capability_name == "speech_production":
-                            # Block speech recruitment when no conversation session is active
-                            # or when operator hasn't spoken yet (turn_count == 0).
-                            # Stimmung_critical spam was firing spontaneous speech
-                            # into empty sessions.
-                            pipeline = daemon._conversation_pipeline
-                            if not daemon.session.is_active or (
-                                pipeline is not None and pipeline.turn_count < 1
-                            ):
-                                log.debug(
-                                    "Speech recruitment blocked (no active session): %s",
-                                    imp.content.get("metric", imp.source),
-                                )
-                                continue
-                            daemon._speech_capability.activate(imp, c.combined)
-                            log.info(
-                                "Speech recruited via affordance: %s (score=%.2f)",
-                                imp.content.get("metric", imp.source),
-                                c.combined,
-                            )
-                        elif c.capability_name == "system_awareness":
+                            continue
+
+                        if c.capability_name == "system_awareness":
                             if hasattr(daemon, "_system_awareness"):
-                                # can_resolve() is an intentional secondary gate here, NOT a
-                                # pipeline bypass. The pipeline selected this affordance by
-                                # embedding similarity; can_resolve() checks live stimmung
-                                # stance (degraded/critical) + 300s cooldown that the pipeline
-                                # cannot encode. Removing it would fire on any impingement
-                                # that semantically resembles "system health."
+                                # can_resolve() is an intentional secondary gate, NOT a
+                                # pipeline bypass. The pipeline selected by embedding
+                                # similarity; can_resolve() checks stimmung stance + 300s
+                                # cooldown that the pipeline cannot encode.
                                 score = daemon._system_awareness.can_resolve(imp)
                                 if score > 0:
                                     daemon._system_awareness.activate(imp, score)
@@ -262,7 +268,10 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 results = daemon._discovery_handler.search(intent)
                                 if results:
                                     daemon._discovery_handler.propose(results)
-                    # Cross-modal coordination: distribute fragment to all recruited modalities
+
+                    # Cross-modal coordination: distribute fragment to recruited
+                    # non-speech capabilities. CPAL owns the auditory modality, so
+                    # we also exclude it when dispatching activations.
                     if len(candidates) > 1 and hasattr(daemon, "_expression_coordinator"):
                         recruited_pairs = [
                             (
@@ -270,6 +279,7 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 getattr(daemon, f"_{c.capability_name}", None),
                             )
                             for c in candidates
+                            if c.capability_name != "speech_production"
                         ]
                         recruited_pairs = [
                             (n, cap) for n, cap in recruited_pairs if cap is not None
@@ -281,9 +291,7 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                             for act in activations:
                                 modality = act.get("modality", "unknown")
                                 cap_name = act.get("capability")
-                                # Dispatch to capabilities the daimonion owns.
-                                # Visual modalities are handled by Reverie's own consumer.
-                                if modality in ("auditory", "textual", "notification"):
+                                if modality in ("textual", "notification"):
                                     cap_obj = getattr(daemon, f"_{cap_name}", None)
                                     if cap_obj is not None and hasattr(cap_obj, "activate"):
                                         try:
@@ -305,71 +313,12 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     len(activations),
                                     imp.content.get("narrative", "")[:40],
                                 )
-                    # Apperception cascade: map perception impingements to cascade events
-                    cascade_event = impingement_to_cascade_event(imp)
-                    if cascade_event is not None:
-                        if (
-                            hasattr(daemon, "_apperception_cascade")
-                            and daemon._apperception_cascade is not None
-                        ):
-                            try:
-                                apperception = daemon._apperception_cascade.process(
-                                    cascade_event,
-                                )
-                                if apperception is not None and hasattr(
-                                    daemon, "_apperception_store"
-                                ):
-                                    daemon._apperception_store.add(apperception)
-                                    log.debug(
-                                        "Apperception cascade: %s → %s",
-                                        imp.content.get("metric", imp.source),
-                                        apperception.theme,
-                                    )
-                            except Exception:
-                                log.debug("Apperception cascade error (non-fatal)", exc_info=True)
-                        else:
-                            log.debug(
-                                "Apperception cascade event generated but no cascade on daemon: %s",
-                                cascade_event.source,
-                            )
-                    # Proactive utterance
-                    if imp.source == "imagination" and imp.strength >= 0.65:
-                        _handle_proactive_impingement(daemon, imp)
                 except Exception:
-                    pass
+                    log.debug("Impingement dispatch error (non-fatal)", exc_info=True)
         except Exception:
             log.debug("Impingement consumer error (non-fatal)", exc_info=True)
 
         await asyncio.sleep(0.5)
-
-
-def _handle_proactive_impingement(daemon: VoiceDaemon, imp) -> None:
-    """Handle imagination-sourced impingement for proactive speech."""
-    gate_state = {
-        "perception_activity": (
-            daemon.perception.latest.activity if daemon.perception.latest else "unknown"
-        ),
-        "vad_active": daemon.session.is_active,
-        "last_utterance_time": daemon._last_utterance_time,
-        "tpn_active": False,
-    }
-    from agents.imagination import ImaginationFragment
-
-    try:
-        proxy_frag = ImaginationFragment(
-            dimensions=imp.context.get("dimensions", {}),
-            salience=imp.strength,
-            continuation=imp.content.get("continuation", False),
-            narrative=imp.content.get("narrative", ""),
-        )
-        if daemon._proactive_gate.should_speak(proxy_frag, gate_state):
-            daemon._proactive_gate.record_utterance()
-            daemon._last_utterance_time = time.monotonic()
-            log.info("Proactive utterance triggered: %s", imp.content.get("narrative", "")[:60])
-            if daemon._conversation_pipeline:
-                asyncio.create_task(daemon._conversation_pipeline.generate_spontaneous_speech(imp))
-    except Exception:
-        log.debug("Proactive gate check failed (non-fatal)", exc_info=True)
 
 
 def signal_tpn_active(active: bool) -> None:

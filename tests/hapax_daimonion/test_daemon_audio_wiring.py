@@ -129,7 +129,10 @@ class TestAudioLoopBackgroundTask:
         with patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
-        # Should have 7 tasks (proactive delivery, ntfy, workspace monitor,
-        # perception, ambient_refresh, cpal_runner, cpal_impingement)
-        # but NOT 8 (no audio loop since inactive)
-        assert tracking.total_appended == 7
+        # Should have 8 tasks (proactive delivery, ntfy, workspace monitor,
+        # perception, ambient_refresh, cpal_runner, cpal_impingement,
+        # affordance_impingement) but NOT 9 (no audio loop since inactive).
+        # The affordance_impingement loop owns notification/studio/world
+        # Thompson learning + cross-modal + system awareness + capability
+        # discovery; see run_loops_aux.impingement_consumer_loop.
+        assert tracking.total_appended == 8

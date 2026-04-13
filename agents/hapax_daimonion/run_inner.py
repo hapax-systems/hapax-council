@@ -27,6 +27,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         _NTFY_BASE_URL,
         _NTFY_TOPICS,
         ambient_refresh_loop,
+        impingement_consumer_loop,
         ntfy_callback,
         proactive_delivery_loop,
     )
@@ -162,7 +163,14 @@ async def run_inner(daemon: VoiceDaemon) -> None:
     from pathlib import Path
 
     daemon._background_tasks.append(asyncio.create_task(_cpal_impingement_loop()))
-    log.info("CPAL runner + impingement consumer started")
+    # Affordance-dispatch loop: owns everything recruited EXCEPT spontaneous speech
+    # (Thompson learning, notification dispatch, cross-modal coordination,
+    # system awareness, capability discovery). Uses its own cursor file
+    # (impingement-cursor-daimonion-affordance.txt) so it sees every impingement
+    # independently of the CPAL loop. See run_loops_aux.impingement_consumer_loop
+    # for the dispatch semantics; see cpal/impingement_adapter.py for CPAL's scope.
+    daemon._background_tasks.append(asyncio.create_task(impingement_consumer_loop(daemon)))
+    log.info("CPAL runner + impingement consumers (CPAL + affordance) started")
 
     if daemon.cfg.mc_enabled or daemon.cfg.obs_enabled:
         daemon._background_tasks.append(asyncio.create_task(actuation_loop(daemon)))

@@ -5,8 +5,20 @@ control loop by adjusting gain and contributing error. A critical
 system alert raises gain and produces high error. A mild imagination
 fragment gently nudges gain and produces low error.
 
-Replaces: SpeechProductionCapability, impingement_consumer_loop routing,
-_handle_proactive_impingement, deliver_notification, generate_spontaneous_speech.
+Scope: this adapter owns only gain/error modulation and the
+``should_surface`` gate that triggers ``generate_spontaneous_speech``
+from ``CpalRunner.process_impingement``. Other recruited-affordance
+dispatch (notification delivery, Thompson learning for studio/world
+recruitment, cross-modal ``ExpressionCoordinator`` coordination,
+``_system_awareness`` and ``_discovery_handler`` activation) lives in
+``agents.hapax_daimonion.run_loops_aux.impingement_consumer_loop``,
+which is spawned as a separate background task next to the CPAL
+impingement loop in ``run_inner.py``. Apperception cascade is owned by
+``shared.apperception_tick.ApperceptionTick`` inside the visual-layer
+aggregator. An earlier version of this docstring claimed this adapter
+"Replaces: SpeechProductionCapability, impingement_consumer_loop
+routing, ..." — that claim was incorrect and caused those downstream
+effects to go silently dead after PR #555.
 """
 
 from __future__ import annotations
