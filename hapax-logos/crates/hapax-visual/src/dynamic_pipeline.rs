@@ -805,6 +805,22 @@ impl DynamicPipeline {
             Ok(data) => {
                 match serde_json::from_str::<UniformsOverride>(&data) {
                     Ok(overrides) => {
+                        // F7 — signal.{9dim} is a dormant override hook.
+                        // ``signal.color_warmth`` is the only key Python
+                        // currently writes (``agents/reverie/_uniforms.py``);
+                        // the other 12 arms exist so the visual chain *could*
+                        // override DMN-state-sourced dimensions when the
+                        // reverie mixer has an opinion. The primary path for
+                        // the 9 dimensions is alive via
+                        // ``UniformBuffer::from_state`` reading from
+                        // ``StateReader.imagination.dimensions`` — these arms
+                        // would override that read on a per-frame basis if
+                        // anything wrote them. They are kept rather than
+                        // pruned because the override capability is part of
+                        // the chain → GPU contract; pruning would require
+                        // re-adding them when the visual chain wants to drive
+                        // a dimension directly. See F7 in the 2026-04-12
+                        // beta session 3 retirement handoff.
                         for (key, &val) in &overrides {
                             if let Some(signal) = key.strip_prefix("signal.") {
                                 let v = val as f32;
@@ -1511,9 +1527,27 @@ impl DynamicPipeline {
                 self.intermediate(name.as_str())
                     .or_else(|| self.intermediate(MAIN_FINAL_TEXTURE))
                     .map(|t| &t.view)
-                    .unwrap()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "BUG: bind group input '{}' missing from intermediate pool \
+                             AND '{}' fallback also missing — \
+                             render() must ensure_texture() before create_bind_group(). \
+                             Pool slots: {:?}",
+                            name,
+                            MAIN_FINAL_TEXTURE,
+                            self.intermediate_names().collect::<Vec<_>>(),
+                        )
+                    })
             } else {
-                self.any_intermediate().map(|t| &t.view).unwrap()
+                self.any_intermediate()
+                    .map(|t| &t.view)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "BUG: bind group has no inputs and intermediate pool is empty — \
+                             every render path must pre-allocate at least one intermediate \
+                             texture before binding. Check ensure_texture() call sites in render()."
+                        )
+                    })
             };
             entries.push(wgpu::BindGroupEntry {
                 binding: 0,
@@ -1534,7 +1568,16 @@ impl DynamicPipeline {
                     .unwrap_or_else(|| {
                         self.intermediate(MAIN_FINAL_TEXTURE)
                             .map(|t| &t.view)
-                            .unwrap()
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "BUG: content_slot_{} requested with no ContentSourceManager \
+                                     and '{}' is also missing from the pool. \
+                                     Pool slots: {:?}",
+                                    idx,
+                                    MAIN_FINAL_TEXTURE,
+                                    self.intermediate_names().collect::<Vec<_>>(),
+                                )
+                            })
                     });
                 entries.push(wgpu::BindGroupEntry {
                     binding: (2 + i) as u32,
@@ -1546,10 +1589,21 @@ impl DynamicPipeline {
             for (i, name) in inputs.iter().enumerate() {
                 let view = if let Some(node_id) = name.strip_prefix("@accum_") {
                     // Temporal accumulation input — use feedback buffer
-                    self.temporal_textures.get(node_id)
+                    self.temporal_textures
+                        .get(node_id)
                         .or_else(|| self.intermediate(MAIN_FINAL_TEXTURE))
                         .map(|t| &t.view)
-                        .unwrap()
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "BUG: temporal accumulator '{}' missing from temporal_textures \
+                                 AND '{}' is also missing from the intermediate pool. \
+                                 Temporal textures: {:?}, pool: {:?}",
+                                node_id,
+                                MAIN_FINAL_TEXTURE,
+                                self.temporal_textures.keys().collect::<Vec<_>>(),
+                                self.intermediate_names().collect::<Vec<_>>(),
+                            )
+                        })
                 } else {
                     // Phase 5b1 audit fix: this fallback was missed when
                     // the rest of the file was migrated to MAIN_FINAL_TEXTURE.
@@ -1558,7 +1612,15 @@ impl DynamicPipeline {
                     self.intermediate(name.as_str())
                         .or_else(|| self.intermediate(MAIN_FINAL_TEXTURE))
                         .map(|t| &t.view)
-                        .unwrap()
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "BUG: pipeline input '{}' missing from intermediate pool \
+                                 AND '{}' fallback also missing. Pool slots: {:?}",
+                                name,
+                                MAIN_FINAL_TEXTURE,
+                                self.intermediate_names().collect::<Vec<_>>(),
+                            )
+                        })
                 };
                 entries.push(wgpu::BindGroupEntry {
                     binding: (i * 2) as u32,
