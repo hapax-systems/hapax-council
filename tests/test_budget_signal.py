@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from agents.studio_compositor.budget import BudgetTracker
 from agents.studio_compositor.budget_signal import (
@@ -170,6 +173,41 @@ def test_publish_replaces_existing_file(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # End-to-end smoke
 # ---------------------------------------------------------------------------
+
+
+def test_publish_degraded_marks_freshness_gauge_on_success(tmp_path: Path):
+    """Follow-up #6: a successful publish_degraded_signal call marks
+    the module-level FreshnessGauge so the health monitor can see the
+    heartbeat.
+    """
+    from agents.studio_compositor import budget_signal as signal_mod
+
+    gauge = signal_mod._PUBLISH_DEGRADED_FRESHNESS
+    assert gauge is not None, "module-level freshness gauge should be constructed at import"
+    tracker = BudgetTracker()
+    tracker.record("alpha", 1.0)
+    publish_degraded_signal(tracker, tmp_path / "degraded.json")
+    assert not gauge.is_stale(tolerance_mult=60), (
+        "publish_degraded_signal should have marked the freshness gauge fresh"
+    )
+
+
+def test_publish_degraded_marks_freshness_failed_on_write_error(tmp_path: Path):
+    """Follow-up #6: a failing publish_degraded_signal marks the gauge
+    as failed before re-raising so the failure counter increments.
+    """
+    from agents.studio_compositor import budget_signal as signal_mod
+
+    gauge = signal_mod._PUBLISH_DEGRADED_FRESHNESS
+    assert gauge is not None
+    tracker = BudgetTracker()
+    tracker.record("alpha", 1.0)
+    with patch(
+        "agents.studio_compositor.budget_signal.atomic_write_json",
+        side_effect=OSError("disk full"),
+    ):
+        with pytest.raises(OSError, match="disk full"):
+            publish_degraded_signal(tracker, tmp_path / "degraded.json")
 
 
 def test_realistic_compositor_signal(tmp_path: Path):

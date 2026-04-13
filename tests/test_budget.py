@@ -263,6 +263,45 @@ def test_publish_costs_wall_clock_close_to_system_time(tmp_path: Path):
     assert before - 0.1 <= data["wall_clock"] <= after + 0.1
 
 
+def test_publish_costs_marks_freshness_gauge_on_success(tmp_path: Path):
+    """Follow-up #6: a successful publish_costs marks the module-level
+    FreshnessGauge so the health monitor can see the heartbeat.
+    """
+    from agents.studio_compositor import budget as budget_mod
+
+    gauge = budget_mod._PUBLISH_COSTS_FRESHNESS
+    assert gauge is not None, "module-level freshness gauge should be constructed at import"
+    tracker = BudgetTracker()
+    tracker.record("alpha", 1.0)
+    publish_costs(tracker, tmp_path / "costs.json")
+    # The gauge is not stale — tolerance of 10x the 1.0s expected cadence
+    # is well within the test runtime.
+    assert not gauge.is_stale(tolerance_mult=60), (
+        "publish_costs should have marked the freshness gauge fresh"
+    )
+
+
+def test_publish_costs_marks_freshness_failed_on_write_error(tmp_path: Path):
+    """Follow-up #6: a failing publish_costs marks the gauge as failed
+    before re-raising so the failure counter increments and the gauge
+    stays stale.
+    """
+    from unittest.mock import patch
+
+    from agents.studio_compositor import budget as budget_mod
+
+    gauge = budget_mod._PUBLISH_COSTS_FRESHNESS
+    assert gauge is not None
+    tracker = BudgetTracker()
+    tracker.record("alpha", 1.0)
+    with patch(
+        "agents.studio_compositor.budget.atomic_write_json",
+        side_effect=OSError("disk full"),
+    ):
+        with pytest.raises(OSError, match="disk full"):
+            publish_costs(tracker, tmp_path / "costs.json")
+
+
 # ---------------------------------------------------------------------------
 # CairoSourceRunner integration
 # ---------------------------------------------------------------------------

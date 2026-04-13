@@ -62,6 +62,8 @@ agents/hapax_daimonion/proofs/**/data/
 
 # Screenshots (smoke tests, stress tests, explorations)
 *.png
+# Committed test golden images (cairo render regression pins)
+!tests/studio_compositor/golden_images/*.png
 .claude/settings.json
 /plugins/gst-crossfade/target/
 /plugins/gst-smooth-delay/target/

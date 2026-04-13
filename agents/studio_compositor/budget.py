@@ -42,6 +42,29 @@ DEFAULT_WINDOW_SIZE = 120
 """Default rolling window depth (~4 seconds at 30 fps)."""
 
 
+# Follow-up ticket #6 from the post-epic audit retirement handoff:
+# gauge publish_costs with a FreshnessGauge so a silent stop of the
+# publish-costs path becomes visible on the compositor's Prometheus
+# exporter. The gauge is constructed at import time — if no caller
+# ever invokes publish_costs the age metric stays ``+inf`` and the
+# dead path is loud instead of silent. Beta's PR #752 Phase 4 flagged
+# the compositor publish-costs wiring as a candidate dead path; this
+# gauge will make that status directly observable.
+try:
+    from shared.freshness_gauge import FreshnessGauge
+
+    _PUBLISH_COSTS_FRESHNESS: FreshnessGauge | None = FreshnessGauge(
+        name="compositor_publish_costs",
+        expected_cadence_s=1.0,
+    )
+except Exception:  # pragma: no cover — prometheus_client optional
+    log.warning(
+        "FreshnessGauge unavailable for publish_costs; continuing without metric",
+        exc_info=True,
+    )
+    _PUBLISH_COSTS_FRESHNESS = None
+
+
 @dataclass(frozen=True)
 class SourceCost:
     """Aggregated per-source cost metrics.
@@ -353,7 +376,14 @@ def publish_costs(tracker: BudgetTracker, path: Path) -> None:
         "wall_clock": round(time.time(), 3),
         "sources": sources,
     }
-    atomic_write_json(payload, path)
+    try:
+        atomic_write_json(payload, path)
+    except Exception:
+        if _PUBLISH_COSTS_FRESHNESS is not None:
+            _PUBLISH_COSTS_FRESHNESS.mark_failed()
+        raise
+    if _PUBLISH_COSTS_FRESHNESS is not None:
+        _PUBLISH_COSTS_FRESHNESS.mark_published()
 
 
 def _percentile(sorted_samples: list[float], q: float) -> float:

@@ -64,6 +64,27 @@ DEFAULT_SIGNAL_PATH = Path("/dev/shm/hapax-compositor/degraded.json")
 """Canonical shared-memory path for the compositor degraded signal."""
 
 
+# Follow-up ticket #6 from the post-epic audit retirement handoff:
+# gauge publish_degraded_signal with a FreshnessGauge so the silent-
+# stop failure mode is visible on the compositor's Prometheus exporter.
+# Beta's PR #752 Phase 4 found this publisher has zero live callers —
+# the gauge intentionally stays ``age_seconds=+inf`` in that state so
+# the dead end-to-end path is directly observable instead of invisible.
+try:
+    from shared.freshness_gauge import FreshnessGauge
+
+    _PUBLISH_DEGRADED_FRESHNESS: FreshnessGauge | None = FreshnessGauge(
+        name="compositor_publish_degraded",
+        expected_cadence_s=1.0,
+    )
+except Exception:  # pragma: no cover — prometheus_client optional
+    log.warning(
+        "FreshnessGauge unavailable for publish_degraded_signal; continuing without metric",
+        exc_info=True,
+    )
+    _PUBLISH_DEGRADED_FRESHNESS = None
+
+
 def build_degraded_signal(tracker: BudgetTracker) -> dict[str, object]:
     """Construct the JSON-serializable degraded-signal dict.
 
@@ -126,7 +147,14 @@ def publish_degraded_signal(
     """
     target = path or DEFAULT_SIGNAL_PATH
     payload = build_degraded_signal(tracker)
-    atomic_write_json(payload, target)
+    try:
+        atomic_write_json(payload, target)
+    except Exception:
+        if _PUBLISH_DEGRADED_FRESHNESS is not None:
+            _PUBLISH_DEGRADED_FRESHNESS.mark_failed()
+        raise
+    if _PUBLISH_DEGRADED_FRESHNESS is not None:
+        _PUBLISH_DEGRADED_FRESHNESS.mark_published()
     log.debug(
         "compositor degraded signal published: %d sources degraded, %d total skips",
         int(payload.get("degraded_source_count", 0)),  # type: ignore[arg-type]
