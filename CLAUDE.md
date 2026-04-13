@@ -155,6 +155,7 @@ GStreamer-based livestream pipeline. Distinct from Reverie (the wgpu visual surf
 
 **Spec + audit:**
 - `docs/superpowers/plans/2026-04-12-compositor-unification-epic.md` — full epic plan
+- `docs/superpowers/specs/2026-04-12-compositor-source-registry-foundation-design.md` — PR 1 of the follow-up source-registry epic: make the `Layout`/`SourceSchema`/`SurfaceSchema`/`Assignment` framework authoritative, register reverie as an `external_rgba` source, migrate the three cairo overlays to natural-size + layout-driven placement, support mid-stream PiP geometry mutation via `compositor.surface.set_geometry`, lay `appsrc` pads for every source so preset chains can reference any of them.
 - `docs/superpowers/audits/2026-04-12-compositor-unification-audit.md` — multi-phase audit + action items (all HIGH/MEDIUM/LOW items shipped in PRs #673–#676)
 - `docs/superpowers/handoff/2026-04-12-session-handoff.md` — Apr 12 session handoff
 - `docs/superpowers/handoff/2026-04-12-alpha-stream-handoff.md` — Apr 12 alpha Stream A handoff (A1/A2/A10/A11)
