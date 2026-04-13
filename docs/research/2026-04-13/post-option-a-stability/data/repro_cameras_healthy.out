@@ -1,0 +1,15 @@
+=== Reproduction: studio_compositor_cameras_healthy accumulator bug ===
+  t0 empty: cameras_total=0.0 cameras_healthy=0.0
+  after register_camera x2 (both HEALTHY): cameras_total=2.0 cameras_healthy=0.0
+  after 1 healthy->degraded: cameras_total=2.0 cameras_healthy=0.0
+  after degraded->healthy: cameras_total=2.0 cameras_healthy=0.0
+  after 1 healthy->offline: cameras_total=2.0 cameras_healthy=0.0
+  after shutdown: cameras_total=2.0 cameras_healthy=0.0
+
+EXPECTED (if fix were applied):
+  t0 empty: 0/0
+  after register x2: 2/2
+  after 1 healthy->degraded: 1/2
+  after degraded->healthy: 2/2
+  after 1 healthy->offline: 1/2
+  after shutdown: 0/0
