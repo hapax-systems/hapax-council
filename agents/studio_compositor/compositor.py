@@ -159,7 +159,15 @@ def load_layout_or_fallback(path: Path) -> Layout:
         return _FALLBACK_LAYOUT
 
 
-_DEFAULT_LAYOUT_PATH = Path("config/compositor-layouts/default.json")
+# Repo-root-anchored default layout path. Resolved from this file's
+# location at import time rather than from the process CWD so the
+# compositor can be invoked from any working directory without silently
+# falling through to ``_FALLBACK_LAYOUT``. File layout: this file lives at
+# ``agents/studio_compositor/compositor.py`` → ``parents[2]`` is the repo
+# root → append ``config/compositor-layouts/default.json``.
+_DEFAULT_LAYOUT_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "compositor-layouts" / "default.json"
+)
 
 
 class StudioCompositor:
@@ -173,10 +181,10 @@ class StudioCompositor:
     ) -> None:
         self.config = config
         # Source-registry epic Phase D task 14 — Layout loader + registry.
-        # Resolved relative to the repo root by default so tests and the
-        # real entrypoint both see ``config/compositor-layouts/default.json``
-        # without any extra wiring. ``load_layout_or_fallback`` handles the
-        # missing-file path itself; this attribute only selects the target.
+        # ``_DEFAULT_LAYOUT_PATH`` is computed from ``__file__`` at import
+        # time, so the default resolves to the repo's baseline layout JSON
+        # regardless of the process CWD. ``load_layout_or_fallback`` still
+        # handles the missing-file path itself for the rescue case.
         self._layout_path: Path = (
             Path(layout_path) if layout_path is not None else _DEFAULT_LAYOUT_PATH
         )

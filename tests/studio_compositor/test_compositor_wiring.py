@@ -111,10 +111,28 @@ class TestStartLayoutOnly:
         assert compositor.layout_state is first_state
         assert compositor.source_registry is first_registry
 
-    def test_default_layout_path_is_repo_relative(self, tmp_path: Path) -> None:
-        """Unconstructed compositor resolves ``config/compositor-layouts/default.json``."""
+    def test_default_layout_path_is_absolute_and_resolvable(self) -> None:
+        """Default layout path is computed from __file__ and points at the real file.
+
+        Regression pin for the PR #735 audit finding: the previous default
+        was a CWD-relative ``Path("config/compositor-layouts/default.json")``,
+        which silently fell through to ``_FALLBACK_LAYOUT`` when the
+        compositor was invoked from any directory other than the repo root.
+        The new default resolves from ``__file__.resolve().parents[2]`` so
+        the path is stable regardless of process CWD, and the file it points
+        at must actually exist in the repo (``test_default_json_exists_and_is_valid_layout``
+        in ``test_default_layout_loading.py`` pins the file's existence from
+        the other side).
+        """
         compositor = _make_compositor()
-        assert compositor._layout_path == Path("config/compositor-layouts/default.json")
+        assert compositor._layout_path.is_absolute(), (
+            "default layout path must be absolute so it works from any CWD"
+        )
+        assert compositor._layout_path.name == "default.json"
+        assert compositor._layout_path.parent.name == "compositor-layouts"
+        assert compositor._layout_path.exists(), (
+            f"default layout file must resolve on disk at {compositor._layout_path}"
+        )
 
     def test_continues_past_broken_source_backend(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
