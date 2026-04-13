@@ -16,6 +16,29 @@ import pytest
 from agents.studio_compositor import stream_overlay as so
 
 
+def _pango_available() -> bool:
+    """True iff the GI Pango/PangoCairo typelibs are importable.
+
+    CI containers without GTK skip the render-path tests. Same pattern as
+    tests/test_text_render.py.
+    """
+    try:
+        import gi
+
+        gi.require_version("Pango", "1.0")
+        gi.require_version("PangoCairo", "1.0")
+        from gi.repository import Pango, PangoCairo  # noqa: F401
+    except (ImportError, ValueError):
+        return False
+    return True
+
+
+_HAS_PANGO = _pango_available()
+requires_pango = pytest.mark.skipif(
+    not _HAS_PANGO, reason="GI Pango/PangoCairo typelibs not installed"
+)
+
+
 def test_format_preset_known_value():
     assert so._format_preset("chain") == "FX: chain"
 
@@ -111,6 +134,7 @@ def populated_shm(tmp_path: Path, monkeypatch):
     return tmp_path
 
 
+@requires_pango
 def test_render_tick_draws_into_surface(populated_shm):
     """A single render tick must write visible pixels to the output surface."""
     source = so.StreamOverlayCairoSource()
@@ -132,6 +156,7 @@ def test_render_tick_draws_into_surface(populated_shm):
     assert any(b != 0 for b in data), "render produced an empty surface"
 
 
+@requires_pango
 def test_render_tick_survives_missing_shm_files(tmp_path: Path, monkeypatch):
     """Missing SHM files must not break rendering — all three fall back."""
     # Nothing populated in tmp_path.
@@ -153,6 +178,7 @@ def test_render_tick_survives_missing_shm_files(tmp_path: Path, monkeypatch):
     assert surface is not None
 
 
+@requires_pango
 def test_render_tick_respects_canvas_size(populated_shm):
     """Arbitrary canvas sizes work — text should anchor to bottom-right regardless."""
     source = so.StreamOverlayCairoSource()
