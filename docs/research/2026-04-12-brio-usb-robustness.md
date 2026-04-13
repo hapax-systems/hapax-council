@@ -87,10 +87,10 @@ In rough order of likelihood:
 Ordered from cheap to expensive:
 
 **Cheap — takes 5 minutes, worth doing first:**
-- [ ] Record `lsusb -t` and physical port-to-camera mapping immediately after reboot
-- [ ] Check TS4 hub is on a dedicated 2.4A+ power supply (not bus-powered)
-- [ ] Swap the two offline BRIOs to the bus-8 Renesas port that `brio-synths` uses today — confirms whether the problem is the camera or the hub branch
-- [ ] Feel the TS4 hub housing after 30 min of streaming (thermal check)
+- [x] Record `lsusb -t` and physical port-to-camera mapping immediately after reboot — see §"Live topology survey (2026-04-13)" below
+- [ ] Check TS4 hub is on a dedicated 2.4A+ power supply (not bus-powered) — physical inspection, still operator-only
+- [x] ~~Swap the two offline BRIOs to the bus-8 Renesas port that `brio-synths` uses today~~ **Superseded:** live survey identified bus 2 (4-port 10 Gb SS+ root, currently all empty) as a better relocation target than bus 8. See §"Recommended action" for specifics.
+- [ ] Feel the TS4 hub housing after 30 min of streaming (thermal check) — physical only
 
 **Moderate — requires operator time but no hardware:**
 - [ ] Run `usbmon` for a few hours and see if `error -71` appears during steady-state streaming or only during device state changes
@@ -114,9 +114,66 @@ Ordered from cheap to expensive:
 - **Manual USB rebind** (`echo "$DEVICE" > /sys/bus/usb/drivers/uvcvideo/bind`) sometimes works if the device is half-present, not needed if it's fully gone.
 - **Use fewer cameras during intensive work** reduces USB bus contention.
 
+## Live topology survey (2026-04-13, post camera-247 epic)
+
+Empirical USB topology captured after the epic's software layer shipped and the workstation had been up for ~5 h with all six cameras streaming. Sampled via `lsusb -t` + sysfs attribute walk on every `/dev/v4l/by-id/usb-046d_*` node.
+
+**Camera → bus / port / negotiated speed:**
+
+| Camera         | sysfs path          | Negotiated speed | Root-hub capability | Controller             |
+|----------------|---------------------|------------------|----------------------|------------------------|
+| brio-operator  | `usb6/6-2`          | **5000 Mb (SS)** | 10000 Mb (SS+)       | Motherboard xhci_hcd   |
+| brio-room      | `usb5/5-4`          | **480 Mb (HS)**  | **480 Mb (HS only)** | Motherboard xhci_hcd   |
+| brio-synths    | `usb8/8-3`          | **5000 Mb (SS)** | 5000 Mb (SS)         | Renesas xhci-pci       |
+| c920-desk      | `usb7/7-4`          | 480 Mb (HS)      | 480 Mb (HS)          | Renesas xhci-pci (2.0) |
+| c920-room      | `usb1/1-1`          | 480 Mb (HS)      | 480 Mb (HS)          | Motherboard xhci_hcd   |
+| c920-overhead  | `usb3/3-2`          | 480 Mb (HS)      | 480 Mb (HS)          | Motherboard xhci_hcd   |
+
+**Finding 1 — brio-room is on a USB 2.0-only root port.** Bus 5's root hub (`/sys/bus/usb/devices/usb5`) advertises `speed=480` and `version=2.10`. The device `5-4` reports `speed=480` and `version=2.10` — BRIO is not being *downgraded* from SuperSpeed, the port it's plugged into has no SuperSpeed lane at all. At USB 2.0, effective bandwidth is ~40 MB/s, which is marginal for 1080p@30 MJPEG at the MJPEG quality level BRIO emits. The C920s run happily on USB 2.0 because they are USB 2.0 devices natively; BRIO is a USB 3.0 device being forced onto a 2.0 port.
+
+**Finding 2 — the TS4 hub is still in the chain, and it's the USB 2.0 variant.** Bus 3 port 1 enumerates as `TS4 USB2.0 Hub` (`lsusb -t` output). `c920-overhead` is attached to bus 3 *port 2* (not through the TS4), so the TS4 hub is *dormant on the camera path* in the current boot. It is still present on the bus but no camera is currently routed through it.
+
+**Finding 3 — 8 empty USB 3.0 ports available for relocation:**
+
+| Bus | Root-hub speed | Empty ports |
+|----:|----------------|:-----------:|
+| 2   | 10000 Mb (SS+) | 4           |
+| 4   | 10000 Mb (SS+) | 1           |
+| 6   | 10000 Mb (SS+) | 3           |
+| 8   | 5000 Mb (SS)   | 3           |
+
+Bus 2 has all four of its SuperSpeed+ ports empty. It is the prime relocation target for brio-room.
+
+**Finding 4 — no USB errors since last reboot.** `journalctl --dmesg --since today | grep -iE 'error -71|device descriptor|usb.*disconnect|xhci.*error'` returns zero matches for the current boot (~5 h of uptime). The `error -71` symptoms documented in the root-cause section predate this boot. This does NOT refute the root-cause analysis — it just confirms the system is quiescent right now, which is the expected state post-reboot.
+
+**Finding 5 — the disconnect-recovery loop works end-to-end on real hardware.** `scripts/studio-simulate-usb-disconnect.sh brio-synths` under `sudo` fired a real `USBDEVFS_RESET` ioctl on the BRIO USB device. The 5-state FSM transitioned `healthy → degraded → offline → recovering → healthy` in ~2 s, swapping the composite slot to the bouncing-ball fallback at offline and back to the primary at healthy. The camera re-enumerated on a *different* `/dev/videoN` node (video13 → video14) after recovery and the sysfs walk in the simulate script still resolved it correctly. This was the first real end-to-end smoke test of the epic; it gated on PR #733 which fixed a bus-resolution bug in the simulate script.
+
+## Recommended action (cheap, operator-time only)
+
+**Relocate brio-room from `/sys/bus/usb/devices/5-4` to any free port on bus 2.**
+
+- **Bus 2** is a 4-port 10 Gb SS+ root hub with all four ports currently empty. Moving brio-room there would:
+  - Negotiate at 5000 Mb/s (verify with `cat /sys/bus/usb/devices/2-*/speed` after replug).
+  - Put it on a *different xhci controller* than the other BRIOs, distributing load across the PCIe bus.
+  - Cost zero hardware, ~30 s of operator time, and one service restart (`systemctl --user restart studio-compositor.service`) to pick up the new `/dev/v4l/by-id/` stable symlink (or a udev rebind, which the `camera_state_machine` now handles automatically).
+
+Physical port identification: bus 2 is the "USB 3.2 Gen 2 (10 Gbps)" row on the motherboard I/O shield — typically the blue or teal ports, often the top row. Confirm post-move via:
+
+```bash
+udevadm info --query=path --name=/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0 \
+  | grep -oE 'usb[0-9]+/[0-9]+-[0-9]+' | head -1
+```
+
+This should return `usb2/2-<N>` instead of the current `usb5/5-4`.
+
+**No relocation needed for brio-operator or brio-synths** — both are already on SuperSpeed ports. brio-synths shares a Renesas controller which the design doc originally flagged as the suspected weak link; the epic's software layer contains any transient Renesas issues to a <2 s recovery, so the hardware-fix ladder can stay deferred.
+
 ## Cross-references
 
 - Handoff document 2026-04-12 flags this as a follow-up (§"Hardware / physical")
 - Original audit + polish PRs (#673, #674, #675, #676) did not touch camera hardware paths
 - `agents/studio_compositor/cameras.py:98` is the compositor-side detection site
 - `agents/studio_compositor/state.py::try_reconnect_camera` is the software-level recovery attempt
+- Camera 24/7 resilience epic retirement handoff: `docs/superpowers/handoff/2026-04-13-alpha-camera-247-epic-handoff.md`
+- Disconnect-sim bus-resolution fix: PR #733
+- End-to-end smoke test script: `scripts/studio-smoke-test.sh`

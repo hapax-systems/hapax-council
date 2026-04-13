@@ -100,7 +100,7 @@ fi
 # ------------------------ 5. log inspection ------------------------
 
 RECENT_TRANSITIONS=$(journalctl --user -u studio-compositor.service --since "5 minutes ago" 2>/dev/null \
-    | grep -c "camera state:" || echo 0)
+    | awk '/camera state:/ {n++} END {print n+0}')
 info "state machine transitions in the last 5 min: $RECENT_TRANSITIONS"
 
 echo ""
