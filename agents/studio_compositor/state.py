@@ -71,7 +71,28 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
 
 
 def try_reconnect_camera(compositor: Any, role: str) -> bool:
-    """Attempt to reconnect an offline camera."""
+    """Attempt to reconnect an offline camera.
+
+    Phase 2 (hot-swap architecture): the per-camera supervisor thread in
+    PipelineManager owns reconnection via exponential-backoff rebuild of the
+    producer sub-pipeline. When this function is called from the state reader
+    loop, we simply ask the manager to schedule an immediate attempt — it is
+    a no-op if one is already in flight. The old in-place set_state NULL/PLAYING
+    dance doesn't apply to interpipesrc consumers.
+
+    Phase 3 replaces this function with direct CameraStateMachine dispatch.
+    """
+    pm = getattr(compositor, "_pipeline_manager", None)
+    if pm is not None:
+        try:
+            pm._schedule_reconnect(role, 0.0)
+        except Exception:
+            log.exception("Phase 2 reconnect schedule raised for %s", role)
+            return False
+        return True
+
+    # Legacy path (pre-Phase 2). Should never execute once Phase 2 ships,
+    # but kept briefly as a safety net during the overlap window.
     spec = compositor._camera_specs.get(role) if hasattr(compositor, "_camera_specs") else None
     if not spec or not Path(spec.device).exists():
         return False

@@ -193,6 +193,15 @@ def stop_compositor(compositor: Any) -> None:
     if compositor.pipeline and Gst is not None:
         compositor.pipeline.set_state(Gst.State.NULL)
 
+    # --- ALPHA PHASE 2: tear down per-camera producer + fallback pipelines ---
+    pm = getattr(compositor, "_pipeline_manager", None)
+    if pm is not None:
+        try:
+            pm.stop()
+        except Exception:
+            log.exception("PipelineManager stop raised during shutdown")
+    # --- END ALPHA PHASE 2 ---
+
     if compositor.loop and compositor.loop.is_running():
         compositor.loop.quit()
 

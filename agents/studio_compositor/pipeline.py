@@ -7,6 +7,7 @@ from typing import Any
 
 from .cameras import add_camera_branch
 from .layout import compute_tile_layout
+from .pipeline_manager import PipelineManager
 from .recording import add_hls_branch
 from .smooth_delay import add_smooth_delay_branch
 from .snapshots import add_fx_snapshot_branch, add_snapshot_branch
@@ -47,6 +48,24 @@ def build_pipeline(compositor: Any) -> Any:
     pipeline.add(comp_element)
 
     fps = compositor.config.framerate
+
+    # --- ALPHA PHASE 2: per-camera producer pipelines ---
+    # Build all producer + fallback sub-pipelines before the composite camera
+    # branches are wired. Each producer pipeline runs independently; their
+    # errors are scoped to their own pipeline bus and never reach the composite.
+    compositor._pipeline_manager = PipelineManager(
+        specs=list(compositor.config.cameras),
+        gst=Gst,
+        glib=compositor._GLib,
+        fps=fps,
+        on_transition=_on_pipeline_manager_transition_factory(compositor),
+    )
+    compositor._pipeline_manager.build()
+    # Seed the compositor's visible _camera_status from the PM's current view
+    with compositor._camera_status_lock:
+        for role, status in compositor._pipeline_manager.status_all().items():
+            compositor._camera_status[role] = status
+    # --- END ALPHA PHASE 2 ---
 
     for cam in compositor.config.cameras:
         tile = layout.get(cam.role)
@@ -172,3 +191,19 @@ def build_pipeline(compositor: Any) -> Any:
     add_smooth_delay_branch(compositor, pipeline, output_tee)
 
     return pipeline
+
+
+def _on_pipeline_manager_transition_factory(compositor: Any) -> Any:
+    """Build a callback that bridges PipelineManager transitions back into
+    the compositor's visible _camera_status dict + ntfy notifier."""
+
+    def _cb(role: str, from_state: str, to_state: str, reason: str) -> None:
+        with compositor._camera_status_lock:
+            compositor._camera_status[role] = to_state
+        if to_state == "offline":
+            compositor._notify_camera_transition(role, from_state, "offline")
+        elif to_state == "active":
+            compositor._notify_camera_transition(role, from_state, "active")
+        compositor._write_status("running")
+
+    return _cb
