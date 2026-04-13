@@ -7,6 +7,10 @@
 # primary alpha/beta worktrees are never mutated mid-session. The scratch
 # worktree lives outside ~/projects/ and is not subject to the three-slot
 # discipline enforced on the project root.
+#
+# History: see FU-6 (PR #703) for the scratch-worktree rewrite and the
+# retirement handoff at docs/superpowers/handoff/2026-04-12-alpha-fu6-handoff.md
+# for the scope split and architectural follow-up.
 set -euo pipefail
 
 REPO="$HOME/projects/hapax-council"
