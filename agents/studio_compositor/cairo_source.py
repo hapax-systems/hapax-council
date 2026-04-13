@@ -188,6 +188,15 @@ class CairoSourceRunner:
         with self._output_lock:
             return self._output_surface
 
+    # ``get_current_surface`` is the ``SourceBackend`` protocol contract
+    # that :class:`~agents.studio_compositor.source_registry.SourceRegistry`
+    # depends on. Alias the existing ``get_output_surface`` so cairo
+    # backends satisfy the protocol without requiring callers of the
+    # legacy facade method to change.
+    def get_current_surface(self) -> cairo.ImageSurface | None:
+        """Alias of :meth:`get_output_surface` for the SourceBackend protocol."""
+        return self.get_output_surface()
+
     def start(self) -> None:
         """Start the background render thread. Idempotent."""
         if self._thread is not None:

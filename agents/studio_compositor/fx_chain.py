@@ -5,13 +5,125 @@ from __future__ import annotations
 import logging
 import random
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import cairo
+
+from shared.compositor_model import SurfaceGeometry
+
+if TYPE_CHECKING:
+    from agents.studio_compositor.layout_state import LayoutState
+    from agents.studio_compositor.source_registry import SourceRegistry
 
 log = logging.getLogger(__name__)
 
 
+def blit_scaled(
+    cr: cairo.Context,
+    src: cairo.ImageSurface,
+    geom: SurfaceGeometry,
+    opacity: float,
+    blend_mode: str,
+) -> None:
+    """Place a natural-size source surface at ``geom``'s rect with scaling.
+
+    Matches the scale-on-blit design from Phase E of the source-registry
+    spec: each source renders once at its natural resolution on its own
+    render thread, and the GStreamer cairooverlay draw callback scales
+    on blit to the assigned surface geometry. Non-rect surfaces (main-
+    layer ``fx_chain_input`` pads, ``wgpu_binding``, ``video_out``) are
+    silently skipped — those are handled by the glvideomixer appsrc
+    path, not the cairooverlay path.
+    """
+    if geom.kind != "rect":
+        return
+    cr.save()
+    cr.translate(geom.x or 0, geom.y or 0)
+    src_w = max(src.get_width(), 1)
+    src_h = max(src.get_height(), 1)
+    sx = (geom.w or src_w) / src_w
+    sy = (geom.h or src_h) / src_h
+    cr.scale(sx, sy)
+    cr.set_source_surface(src, 0, 0)
+    pattern = cr.get_source()
+    try:
+        pattern.set_filter(cairo.FILTER_BILINEAR)
+    except Exception:
+        log.debug("cairo FILTER_BILINEAR unavailable on this pattern", exc_info=True)
+    if blend_mode == "plus":
+        cr.set_operator(cairo.OPERATOR_ADD)
+    else:
+        cr.set_operator(cairo.OPERATOR_OVER)
+    cr.paint_with_alpha(opacity)
+    cr.restore()
+
+
+def pip_draw_from_layout(
+    cr: cairo.Context,
+    layout_state: LayoutState,
+    source_registry: SourceRegistry,
+) -> None:
+    """Walk the current layout's assignments by z_order and blit each one.
+
+    Called from the GStreamer cairooverlay draw callback on the
+    streaming thread. Must stay cheap — no allocation in the hot path
+    beyond sorting the assignment list. Surfaces whose geometry is not
+    ``kind="rect"`` are skipped; they land on the glvideomixer appsrc
+    path set up by Phase H.
+
+    When a source's ``get_current_surface()`` returns ``None``, the blit
+    is simply skipped for this frame — there is no fallback to the
+    legacy ``compositor._token_pole.draw(cr)`` path. The legacy facades
+    stay instantiated (backward compat during transition) but their
+    ``draw()`` methods are only called by deprecated code paths that
+    this callback has replaced.
+    """
+    layout = layout_state.get()
+    pairs: list[tuple[Any, Any]] = []
+    for assignment in layout.assignments:
+        surface_schema = layout.surface_by_id(assignment.surface)
+        if surface_schema is None:
+            continue
+        if surface_schema.geometry.kind != "rect":
+            continue
+        pairs.append((assignment, surface_schema))
+    pairs.sort(key=lambda p: p[1].z_order)
+
+    for assignment, surface_schema in pairs:
+        try:
+            src = source_registry.get_current_surface(assignment.source)
+        except KeyError:
+            continue
+        if src is None:
+            continue
+        blit_scaled(
+            cr,
+            src,
+            surface_schema.geometry,
+            opacity=assignment.opacity,
+            blend_mode=surface_schema.blend_mode,
+        )
+
+
 def _pip_draw(compositor: Any, cr: Any) -> None:
-    """Post-FX cairooverlay callback: draws all overlays."""
+    """Post-FX cairooverlay callback.
+
+    Prefers ``pip_draw_from_layout`` when the compositor has a populated
+    ``layout_state`` + ``source_registry`` (Phase D wiring landed in PR
+    #735). Falls back to the legacy direct-overlay path when either is
+    missing — that path is covered by the natural-size-migrated facades
+    (Phase 2) and will be removed in Phase 9 of the completion epic.
+    """
+    layout_state = getattr(compositor, "layout_state", None)
+    source_registry = getattr(compositor, "source_registry", None)
+    if layout_state is not None and source_registry is not None:
+        pip_draw_from_layout(cr, layout_state, source_registry)
+        stream_overlay = getattr(compositor, "_stream_overlay", None)
+        if stream_overlay is not None:
+            stream_overlay.draw(cr)
+        return
+
+    # --- Legacy path (pre-Phase-3 compositors without a layout state) ---
     album = getattr(compositor, "_album_overlay", None)
     if album is not None:
         album.draw(cr)
