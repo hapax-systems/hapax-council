@@ -180,6 +180,7 @@ Hapax TTS output (Kokoro 82M CPU) can be routed through a user-configurable Pipe
 - Hypothesis for property-based algebraic proofs.
 - Working mode file: `~/.cache/hapax/working-mode` (research/rnd). CLI: `hapax-working-mode`.
 - Safety: LLMs prepare, humans deliver. Never generate feedback language or coaching recommendations about individual team members.
+- **Session handoffs** live at `docs/superpowers/handoff/{date}-{session}-handoff.md` (or `{date}-{session}-{pass}-handoff.md` for multi-pass sessions). Each retiring session writes one before stopping; the next session of the same role reads it as the first thing after the relay onboarding. Bundle a non-`docs/**` change into the handoff PR (e.g., a CLAUDE.md note like this one) so CI's `paths-ignore: docs/**` filter does not deadlock the PR against branch protection.
 
 ## Axiom Governance
 
