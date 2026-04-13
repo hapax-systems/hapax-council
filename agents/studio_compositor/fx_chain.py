@@ -18,6 +18,9 @@ def _pip_draw(compositor: Any, cr: Any) -> None:
     token_pole = getattr(compositor, "_token_pole", None)
     if token_pole is not None:
         token_pole.draw(cr)
+    stream_overlay = getattr(compositor, "_stream_overlay", None)
+    if stream_overlay is not None:
+        stream_overlay.draw(cr)
 
 
 class FlashScheduler:
@@ -245,6 +248,10 @@ def build_inline_fx_chain(
     from .token_pole import TokenPole
 
     compositor._token_pole = TokenPole()
+
+    from .stream_overlay import StreamOverlay
+
+    compositor._stream_overlay = StreamOverlay()
 
     from .sierpinski_loader import SierpinskiLoader
     from .sierpinski_renderer import SierpinskiRenderer
@@ -491,6 +498,11 @@ def fx_tick_callback(compositor: Any) -> bool:
     token_pole = getattr(compositor, "_token_pole", None)
     if token_pole:
         token_pole.tick()
+
+    # Stream status strip (preset / viewers / chat)
+    stream_overlay = getattr(compositor, "_stream_overlay", None)
+    if stream_overlay:
+        stream_overlay.tick()
 
     # Spirograph reactor
     return True
