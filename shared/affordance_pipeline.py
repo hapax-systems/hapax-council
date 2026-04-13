@@ -31,6 +31,10 @@ W_SIMILARITY = 0.50
 W_BASE_LEVEL = 0.20
 W_CONTEXT = 0.10
 W_THOMPSON = 0.20
+# Consent contract registry refresh window. Cheap to refresh (4 yaml files)
+# but pipeline.select() is hot-pathed (per-frame in reverie mixer, per-impingement
+# in run_loops_aux), so we cache for 60s instead of reading every call.
+_CONSENT_CACHE_TTL_S = 60.0
 
 
 def _apply_exploration_noise(
@@ -147,6 +151,12 @@ class AffordancePipeline:
             sigma_explore=0.10,
         )
         self._prev_source_hash: float = 0.0
+        # Consent gate cache (see _consent_allows): True iff at least one
+        # active consent contract exists. Refreshed every _CONSENT_CACHE_TTL_S
+        # seconds. Starts as None so the first consent_required candidate
+        # forces an immediate load.
+        self._consent_has_active: bool | None = None
+        self._consent_loaded_at: float = 0.0
 
     def _ensure_collection(self, client: object, vector_size: int) -> None:
         """Create the affordances collection if it doesn't exist."""
@@ -298,6 +308,57 @@ class AffordancePipeline:
         """SEEKING stance: widen retrieval (more candidates, lower threshold)."""
         self._seeking = seeking
 
+    def _consent_allows(self, candidate: SelectionCandidate) -> bool:
+        """Gate ``consent_required`` candidates on the active contract registry.
+
+        Closes a systemic axiom-enforcement gap surfaced by the 2026-04-12
+        beta audit: ``shared/affordance_registry.py`` declares
+        ``consent_required=True`` on 7 capabilities (knowledge search, web
+        search, send message, livestream toggle, etc.), and the recruitment
+        pipeline propagates that flag into the Qdrant payload, but until
+        this method existed nothing actually read it back. Result: every
+        capability marked "needs consent" was being recruited as if no
+        consent gate existed.
+
+        Behaviour:
+
+        - Candidates without ``consent_required`` in the payload always
+          pass — no contract load incurred.
+        - Candidates with ``consent_required=True`` pass iff
+          :func:`shared.governance.consent.load_contracts` reports at least
+          one active contract. The result is cached for
+          ``_CONSENT_CACHE_TTL_S`` seconds because select() is hot-pathed
+          (per-frame in the reverie mixer, per-impingement in the run
+          loops).
+        - Any exception during contract loading **fails closed** —
+          consent_required candidates are blocked and a warning is logged.
+          This matches the legacy gate's safety stance and the wider
+          consent-engine fail-closed control law in
+          :class:`shared.governance.consent.ConsentRegistry`.
+        """
+        if not candidate.payload.get("consent_required"):
+            return True
+        now = time.time()
+        if self._consent_has_active is None or now - self._consent_loaded_at > _CONSENT_CACHE_TTL_S:
+            try:
+                from shared.governance.consent import load_contracts
+
+                registry = load_contracts()
+                # Iterate via __iter__ — the legacy gate in
+                # shared/capability_registry.py:162 reaches for a
+                # non-existent .contracts attribute and accidentally
+                # AttributeError-blocks every consent_required capability.
+                self._consent_has_active = any(c.active for c in registry)
+                self._consent_loaded_at = now
+            except Exception:
+                log.warning(
+                    "Consent gate failed for %s — blocking (fail-closed)",
+                    candidate.capability_name,
+                )
+                self._consent_has_active = False
+                self._consent_loaded_at = now
+        return bool(self._consent_has_active)
+
     def register_interrupt(self, token: str, capability_name: str, daemon: str) -> None:
         self._interrupt_handlers.setdefault(token, []).append(
             InterruptHandler(capability_name=capability_name, daemon=daemon)
@@ -342,6 +403,11 @@ class AffordancePipeline:
         if embedding is None:
             return self._fallback_keyword_match(impingement)
         candidates = self._retrieve(embedding, top_k)
+        if not candidates:
+            return []
+        # Consent gate — closes the audit-surfaced enforcement gap. See
+        # _consent_allows() for the rationale and fail-closed semantics.
+        candidates = [c for c in candidates if self._consent_allows(c)]
         if not candidates:
             return []
         now = time.time()

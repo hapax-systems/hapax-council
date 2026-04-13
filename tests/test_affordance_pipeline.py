@@ -355,3 +355,120 @@ class TestEmbeddingCacheTextKey:
         cache.put_by_text("c", [3.0])  # evicts "a"
         assert cache.get_by_text("a") is None
         assert cache.get_by_text("b") == [2.0]
+
+
+# ----- Consent gate (2026-04-12 audit follow-up) -----
+#
+# Closes a systemic axiom-enforcement gap surfaced by the beta audit:
+# every capability declaring `consent_required=True` in
+# shared/affordance_registry.py was being recruited as if no consent
+# contract gate existed. The gate now lives in
+# AffordancePipeline._consent_allows and is exercised by select() before
+# scoring.
+
+
+class TestConsentGate:
+    def _candidate(self, *, consent_required: bool):
+        from shared.affordance import SelectionCandidate
+
+        name = "studio.toggle_livestream" if consent_required else "studio.activate_preset"
+        return SelectionCandidate(
+            capability_name=name,
+            similarity=0.9,
+            payload={"consent_required": consent_required},
+        )
+
+    def _pipeline(self):
+        from shared.affordance_pipeline import AffordancePipeline
+
+        return AffordancePipeline()
+
+    def test_candidate_without_consent_flag_passes_unconditionally(self):
+        # Fast path: consent_required absent or False short-circuits
+        # before any contract load.
+        from unittest.mock import patch
+
+        p = self._pipeline()
+        cand = self._candidate(consent_required=False)
+        with patch("shared.governance.consent.load_contracts") as mock_load:
+            assert p._consent_allows(cand) is True
+            mock_load.assert_not_called()
+
+    def test_consent_required_blocked_when_no_active_contracts(self):
+        # The case the audit surfaced — the pipeline previously failed
+        # OPEN here, recruiting consent_required capabilities even with
+        # no active contracts.
+        from unittest.mock import MagicMock, patch
+
+        p = self._pipeline()
+        cand = self._candidate(consent_required=True)
+        empty_registry = MagicMock()
+        empty_registry.__iter__ = lambda self: iter([])
+        with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
+            assert p._consent_allows(cand) is False
+
+    def test_consent_required_allowed_when_at_least_one_active_contract(self):
+        # Happy path: with active contracts, consent_required candidates
+        # flow through. Verifies the gate is not over-eager.
+        from unittest.mock import MagicMock, patch
+
+        p = self._pipeline()
+        cand = self._candidate(consent_required=True)
+        active_contract = MagicMock()
+        active_contract.active = True
+        registry = MagicMock()
+        registry.__iter__ = lambda self: iter([active_contract])
+        with patch("shared.governance.consent.load_contracts", return_value=registry):
+            assert p._consent_allows(cand) is True
+
+    def test_consent_load_failure_fails_closed(self):
+        # If contract loading raises (consent infra broken), the gate
+        # blocks consent_required candidates. Matches the wider
+        # consent-engine fail-closed control law.
+        from unittest.mock import patch
+
+        p = self._pipeline()
+        cand = self._candidate(consent_required=True)
+        with patch(
+            "shared.governance.consent.load_contracts", side_effect=RuntimeError("bad yaml")
+        ):
+            assert p._consent_allows(cand) is False
+
+    def test_consent_decision_is_cached(self):
+        # The cache is the reason this gate can run per-frame in the
+        # reverie mixer. Two consecutive consent-required checks within
+        # the TTL window must trigger only one contract load.
+        from unittest.mock import MagicMock, patch
+
+        p = self._pipeline()
+        cand = self._candidate(consent_required=True)
+        active_contract = MagicMock()
+        active_contract.active = True
+        registry = MagicMock()
+        registry.__iter__ = lambda self: iter([active_contract])
+        with patch("shared.governance.consent.load_contracts", return_value=registry) as mock_load:
+            assert p._consent_allows(cand) is True
+            assert p._consent_allows(cand) is True
+            assert mock_load.call_count == 1
+
+    def test_consent_cache_refreshes_after_ttl(self):
+        # After the TTL window expires, the next consent-required check
+        # must reload — otherwise newly-revoked contracts would not take
+        # effect until daemon restart.
+        from unittest.mock import MagicMock, patch
+
+        from shared import affordance_pipeline as ap_mod
+
+        p = self._pipeline()
+        cand = self._candidate(consent_required=True)
+        active_contract = MagicMock()
+        active_contract.active = True
+        registry = MagicMock()
+        registry.__iter__ = lambda self: iter([active_contract])
+        with patch("shared.governance.consent.load_contracts", return_value=registry) as mock_load:
+            assert p._consent_allows(cand) is True
+            # Force the cache stamp into the past so the next call
+            # exceeds _CONSENT_CACHE_TTL_S regardless of wall-clock.
+            p._consent_loaded_at -= ap_mod._CONSENT_CACHE_TTL_S + 1.0
+            assert p._consent_allows(cand) is True
+            assert mock_load.call_count == 2

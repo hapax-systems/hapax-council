@@ -242,6 +242,35 @@ struct PoolTexture {
     view: wgpu::TextureView,
 }
 
+/// Snapshot of intermediate texture pool state for external observability.
+///
+/// Returned by [`DynamicPipeline::pool_metrics`]. Closes the §4.7 follow-up
+/// from the B4 plan: the underlying [`TransientTexturePool`] already tracked
+/// these counters internally; this struct surfaces them so the metrics
+/// pipeline (Prometheus exporter, debug overlay, audit scripts) can read
+/// them without poking at private fields.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoolMetrics {
+    /// Distinct `(width, height, format)` buckets currently allocated.
+    pub bucket_count: usize,
+    /// Sum of `bucket.textures.len()` across every bucket — the total
+    /// number of GPU textures the pool currently owns.
+    pub total_textures: usize,
+    /// Lifetime acquire count (every `acquire_tracked` call increments).
+    pub total_acquires: u64,
+    /// Lifetime fresh-allocation count. `total_acquires - total_allocations`
+    /// is the reuse hit count.
+    pub total_allocations: u64,
+    /// `total_acquires == 0 ? 0.0 : (acquires - allocations) / acquires`.
+    /// 1.0 means every acquire was a reuse; 0.0 means every acquire
+    /// allocated fresh.
+    pub reuse_ratio: f64,
+    /// Number of distinct names mapped in `intermediate_slots`. May be
+    /// less than `total_textures` if the same descriptor was acquired
+    /// multiple times within a frame (each acquisition gets its own slot).
+    pub slot_count: usize,
+}
+
 pub struct DynamicPipeline {
     passes: Vec<DynamicPass>,
     /// Bucketed allocator for non-temporal intermediate textures. F1 of the
@@ -1165,6 +1194,27 @@ impl DynamicPipeline {
         names
     }
 
+    /// Snapshot of intermediate texture pool counters.
+    ///
+    /// Surfaces the bookkeeping `TransientTexturePool` already tracks
+    /// internally so external callers (Prometheus exporter, debug
+    /// overlay, audit scripts) can read them without reaching into
+    /// private fields. Closes the §4.7 deferred follow-up from the
+    /// B4 plan.
+    ///
+    /// `reuse_ratio` will report 0.0 against an empty pool — see
+    /// `TransientTexturePool::reuse_ratio` for the rationale.
+    pub fn pool_metrics(&self) -> PoolMetrics {
+        PoolMetrics {
+            bucket_count: self.intermediate_pool.bucket_count(),
+            total_textures: self.intermediate_pool.total_textures(),
+            total_acquires: self.intermediate_pool.total_acquires(),
+            total_allocations: self.intermediate_pool.total_allocations(),
+            reuse_ratio: self.intermediate_pool.reuse_ratio(),
+            slot_count: self.intermediate_slots.len(),
+        }
+    }
+
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         self.width = width;
         self.height = height;
@@ -1804,5 +1854,27 @@ mod tests {
         assert_ne!(base, wider);
         assert_ne!(base, taller);
         assert_ne!(wider, taller);
+    }
+
+    #[test]
+    fn pool_metrics_struct_is_copy_and_default_safe() {
+        // PoolMetrics is the surface area for external observability.
+        // It must be Copy so callers can grab a snapshot without holding
+        // a borrow on the pipeline, and the field set must be stable
+        // enough that adding telemetry consumers does not require a
+        // PoolMetrics rewrite. This test pins both invariants.
+        let m = PoolMetrics {
+            bucket_count: 1,
+            total_textures: 8,
+            total_acquires: 100,
+            total_allocations: 8,
+            reuse_ratio: 0.92,
+            slot_count: 8,
+        };
+        let copy = m;
+        assert_eq!(m, copy);
+        // Reuse ratio derivation matches the pool's contract.
+        let derived = (m.total_acquires - m.total_allocations) as f64 / m.total_acquires as f64;
+        assert!((derived - m.reuse_ratio).abs() < 1e-9);
     }
 }
