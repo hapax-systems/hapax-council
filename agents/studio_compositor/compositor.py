@@ -201,6 +201,8 @@ class StudioCompositor:
         )
         self.layout_state: LayoutState | None = None
         self.source_registry: SourceRegistry | None = None
+        self._layout_autosaver: Any = None
+        self._layout_file_watcher: Any = None
         self.pipeline: Any = None
         self.loop: Any = None
         self._running = False
@@ -469,6 +471,31 @@ class StudioCompositor:
             len(registry.ids()),
         )
 
+        # Post-epic audit finding #1: LayoutAutoSaver + LayoutFileWatcher
+        # exist in layout_persistence.py but were never instantiated by
+        # StudioCompositor, leaving AC-5 ("file-watch reload within ≤2s")
+        # unwired. Start both here so runtime layout edits round-trip
+        # through the in-memory state.
+        try:
+            from agents.studio_compositor.layout_persistence import (
+                LayoutAutoSaver,
+                LayoutFileWatcher,
+            )
+
+            self._layout_autosaver = LayoutAutoSaver(state, self._layout_path)
+            self._layout_autosaver.start()
+            self._layout_file_watcher = LayoutFileWatcher(state, self._layout_path)
+            self._layout_file_watcher.start()
+            log.info(
+                "layout persistence threads started: autosave + file-watch on %s",
+                self._layout_path,
+            )
+        except Exception:
+            log.exception(
+                "failed to start layout persistence threads — "
+                "compositor continues without auto-save or hot-reload"
+            )
+
     def start(self) -> None:
         """Build and start the pipeline."""
         self.start_layout_only()
@@ -479,6 +506,19 @@ class StudioCompositor:
 
     def stop(self) -> None:
         """Stop the pipeline cleanly."""
+        if self._layout_file_watcher is not None:
+            try:
+                self._layout_file_watcher.stop()
+            except Exception:
+                log.exception("LayoutFileWatcher.stop failed")
+            self._layout_file_watcher = None
+        if self._layout_autosaver is not None:
+            try:
+                self._layout_autosaver.stop()
+            except Exception:
+                log.exception("LayoutAutoSaver.stop failed")
+            self._layout_autosaver = None
+
         from .lifecycle import stop_compositor
 
         stop_compositor(self)

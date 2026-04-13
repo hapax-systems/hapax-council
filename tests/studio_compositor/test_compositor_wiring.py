@@ -166,6 +166,52 @@ class TestStartLayoutOnly:
         )
         assert any("failed to construct backend" in rec.message for rec in caplog.records)
 
+    def test_start_layout_only_wires_autosaver_and_file_watcher(self, tmp_path: Path) -> None:
+        """Post-epic audit finding #1 regression pin.
+
+        ``LayoutAutoSaver`` and ``LayoutFileWatcher`` existed in
+        ``layout_persistence.py`` after Phase 5 of the completion epic
+        but were never instantiated by ``StudioCompositor``, leaving
+        AC-5 (file-watch reload) unwired. This test pins that both
+        persistence threads are started on ``start_layout_only()`` and
+        stopped on ``stop()`` so the finding cannot silently regress.
+        """
+        layout_file = tmp_path / "default.json"
+        layout_file.write_text(DEFAULT_JSON.read_text())
+
+        compositor = _make_compositor(layout_path=layout_file)
+        assert compositor._layout_autosaver is None
+        assert compositor._layout_file_watcher is None
+
+        compositor.start_layout_only()
+
+        assert compositor._layout_autosaver is not None, (
+            "LayoutAutoSaver must be wired into start_layout_only"
+        )
+        assert compositor._layout_file_watcher is not None, (
+            "LayoutFileWatcher must be wired into start_layout_only"
+        )
+        # Threads should be running.
+        assert compositor._layout_autosaver._thread is not None
+        assert compositor._layout_autosaver._thread.is_alive()
+        assert compositor._layout_file_watcher._thread is not None
+        assert compositor._layout_file_watcher._thread.is_alive()
+
+        # Stopping without the full lifecycle attached still has to
+        # tear down the persistence threads cleanly. The lifecycle
+        # import inside ``stop()`` will no-op on an unbuilt pipeline.
+        try:
+            compositor.stop()
+        except Exception:
+            # lifecycle.stop_compositor may require a built pipeline —
+            # the persistence teardown runs BEFORE that call, so the
+            # threads should already be stopped by the time we get
+            # here regardless of whether the lifecycle call succeeds.
+            pass
+
+        assert compositor._layout_autosaver is None
+        assert compositor._layout_file_watcher is None
+
 
 class TestStartDelegatesThroughStartLayoutOnly:
     """The full ``start()`` path must invoke ``start_layout_only()`` before GStreamer."""
