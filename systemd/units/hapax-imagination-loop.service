@@ -2,7 +2,6 @@
 Description=Hapax Imagination Loop Daemon
 After=hapax-secrets.service hapax-dmn.service
 Wants=hapax-dmn.service
-Requires=hapax-dmn.service
 PartOf=hapax-visual-stack.target
 StartLimitBurst=5
 StartLimitIntervalSec=300

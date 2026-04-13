@@ -1,7 +1,7 @@
 ---
 title: Reverie bridge repair — implementation plan
 date: 2026-04-12
-status: in_progress
+status: PR-1 merged; audit follow-up PR in flight; PR-2/PR-3 unassigned
 author: delta
 spec: docs/superpowers/specs/2026-04-12-reverie-bridge-repair-design.md
 ---
@@ -10,15 +10,24 @@ spec: docs/superpowers/specs/2026-04-12-reverie-bridge-repair-design.md
 
 Execution plan for
 [`2026-04-12-reverie-bridge-repair-design.md`](../specs/2026-04-12-reverie-bridge-repair-design.md).
-Three PRs, sequenced so each is shippable on its own and the critical
-visual-chain fix is not blocked on any of the others.
+Originally three PRs, now four after the audit follow-up.
 
-## PR-1 — Core bridge fix (URGENT, this PR)
+## Execution state (2026-04-12T20:10)
+
+| PR | Title | State |
+|---|---|---|
+| **PR-1** | Core bridge fix | ✅ Merged as `991cfbe03` |
+| **PR-1b** | Audit follow-up (this PR) | 🟡 In flight — reverts Requires=, drops content.intensity, adds 6 tests, corrects design doc |
+| **PR-2** | Reverie monitor extension (watchdog hapax-imagination-loop) | ⚪ Unassigned |
+| **PR-3** | Observability CLI + Prometheus metric | ⚪ Unassigned (now composable with beta's `pool_metrics()` from #697) |
+
+## PR-1 — Core bridge fix (MERGED as `991cfbe03`)
 
 **Branch:** `fix/reverie-bridge-v2`
 **Owner:** delta
-**Scope:** core Finding A + Finding B unit hygiene + design/plan docs +
-memory + CLAUDE.md. Everything deterministic and mergeable in one pass.
+**Scope:** core Finding A + Finding B unit hygiene + design/plan docs.
+**Post-merge audit found three issues that required a follow-up PR — see
+PR-1b below.**
 
 ### Files
 
@@ -72,6 +81,53 @@ Commands listed in design § 5. Operator can copy-paste.
 
 `git revert <merge SHA>` is safe. The change is purely additive on the read
 path. No data migration, no state change.
+
+## PR-1b — Audit follow-up (this PR)
+
+**Branch:** `fix/reverie-audit-followup`
+**Owner:** delta
+**Scope:** Corrections surfaced by the 2026-04-12 post-merge self-audit.
+See design § 7 for the full finding list.
+
+### Files
+
+| Path | Change |
+|---|---|
+| `agents/reverie/_uniforms.py` | Revert `content.intensity` passthrough; add code comment explaining the dead `content.*` routing (F8) |
+| `systemd/units/hapax-imagination-loop.service` | Revert `Requires=hapax-dmn.service` (cascade-death regression); keep the `[Unit]`-section fixes |
+| `tests/test_reverie_uniforms_plan_schema.py` | +6 new tests: None-target edges, last-wins collision, file-deletion cache, direct write_uniforms, silence attenuation, silence floor |
+| `docs/superpowers/specs/2026-04-12-reverie-bridge-repair-design.md` | Inline ⚠ audit corrections + new § 7 audit-findings section; add follow-ups F6–F10 |
+| `docs/superpowers/plans/2026-04-12-reverie-bridge-repair-plan.md` | This file — execution-state update, DoD corrections, PR-1b block |
+
+### What does NOT change in this PR
+
+- `_iter_passes` helper — remains unchanged, it is correct.
+- `_load_plan_defaults` body — unchanged, correct.
+- The core v1/v2 schema fix from PR-1 — unchanged, verified in production.
+- Memory files — updated locally by the author, not in the repo diff.
+
+### Steps
+
+1. ✅ Read current _uniforms.py / unit file / test file / design / plan.
+2. ✅ Revert Requires= from unit file.
+3. ✅ Revert content.intensity passthrough; add explanatory comment.
+4. ✅ Add 6 new test cases.
+5. ✅ Update design doc inline + add § 7.
+6. ✅ Update plan doc (this edit).
+7. `uv run pytest tests/test_reverie_uniforms_plan_schema.py -q` → expect 17 passing.
+8. `uv run ruff check` + `ruff format` on changed files.
+9. `uv run pyright agents/reverie/_uniforms.py`.
+10. Conventional commit:
+    `fix(reverie): audit follow-up — revert Requires=, drop content.intensity, docs + tests`
+11. Push + `gh pr create`.
+12. Monitor CI, merge, verify.
+13. Update memory files locally.
+14. Close delta session.
+
+### Rollback
+
+`git revert <merge SHA>` is safe. Changes are purely removals (Requires=,
+content.intensity) plus doc edits plus new tests. No data migration.
 
 ## PR-2 — Reverie monitor extension (can ship after PR-1)
 
@@ -148,15 +204,33 @@ once PR-1 is merged so that a restart actually produces correct output.
 
 ## Definition of done
 
-PR-1:
+PR-1 (merged as `991cfbe03`):
 
-- [ ] `_uniforms.py` patch lands
-- [ ] New test file passes
+- [x] `_uniforms.py` patch lands
+- [x] New test file passes (11 cases)
+- [x] ruff + pyright green
+- [x] Unit file patch lands
+- [~] ~~CLAUDE.md updated~~ ⚠ audit: not needed. CLAUDE.md never carried the
+      stale "DMN-hosted" claim — the original design doc misremembered
+      this. The Tauri-Only Runtime § Visual surface paragraph already
+      described reverie as a standalone systemd daemon. No edit needed.
+- [x] PR merged as `991cfbe03`
+- [x] Post-merge verification commands run on host and output captured
+      (44 keys live, frame_time 9.54-16.21ms, warmth varying)
+- [~] ~~Memory files updated (local; no commit needed)~~ ⚠ audit: not
+      actually done as part of PR-1. Moved to PR-1b scope.
+- [x] Relay status files (`alpha.yaml`, `beta.yaml`, `delta.yaml`) updated
+      with completion note + convergence entry + context artifact
+
+PR-1b (audit follow-up, this PR):
+
+- [ ] `Requires=hapax-dmn.service` reverted
+- [ ] `content.intensity` passthrough reverted + comment added
+- [ ] 6 new test cases added and passing (17 total)
+- [ ] Design doc § 1, § 2.2, § 2.3, § 2.5, § 3, § 6, + new § 7 updates
+- [ ] Plan doc execution-state header + PR-1b block + DoD corrections
 - [ ] ruff + pyright green
-- [ ] Unit file patch lands
-- [ ] CLAUDE.md updated
 - [ ] PR merged
-- [ ] Post-merge verification commands run on host and output captured
-- [ ] Memory files updated (local; no commit needed)
-- [ ] Relay status files (`alpha.yaml`, `beta.yaml`) updated with
-      completion note
+- [ ] Memory files updated locally: `project_reverie.md`,
+      `project_reverie_autonomy.md`
+- [ ] Relay `delta.yaml` updated with audit closure note

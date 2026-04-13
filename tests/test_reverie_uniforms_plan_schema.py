@@ -82,6 +82,22 @@ def test_iter_passes_empty_and_malformed():
     assert list(_uniforms._iter_passes({"targets": "not-a-dict"})) == []
 
 
+def test_iter_passes_handles_none_targets():
+    # targets key present but None — fall through to v1 "passes" branch.
+    assert list(_uniforms._iter_passes({"targets": None})) == []
+    # targets dict contains None target — skip that target, continue.
+    plan = {
+        "version": 2,
+        "targets": {
+            "main": None,
+            "aux": {"passes": [{"node_id": "noise", "uniforms": {"amplitude": 0.7}}]},
+        },
+    }
+    result = list(_uniforms._iter_passes(plan))
+    assert len(result) == 1
+    assert result[0]["node_id"] == "noise"
+
+
 # -- _load_plan_defaults -----------------------------------------------------
 
 
@@ -242,3 +258,234 @@ def test_load_plan_defaults_caches_until_mtime_changes(tmp_path: Path):
 
         second = _uniforms._load_plan_defaults()
         assert second["noise.amplitude"] == 0.9
+
+
+def test_load_plan_defaults_v2_multi_target_last_wins_on_key_collision(tmp_path: Path):
+    # Two targets writing the same {node_id}.{param} key. _load_plan_defaults
+    # iterates via _iter_passes and dict-assigns, so the later target in
+    # iteration order wins. This test pins that behavior so future readers
+    # aren't surprised by the design doc's "later target wins on key
+    # collision" claim.
+    plan = {
+        "version": 2,
+        "targets": {
+            "main": {"passes": [{"node_id": "noise", "uniforms": {"amplitude": 0.5}}]},
+            "aux": {"passes": [{"node_id": "noise", "uniforms": {"amplitude": 0.9}}]},
+        },
+    }
+    plan_file = _write_plan(tmp_path, plan)
+    with mock.patch.object(_uniforms, "PLAN_FILE", plan_file):
+        defaults = _uniforms._load_plan_defaults()
+    # "aux" comes after "main" in Python dict iteration order (insertion-
+    # ordered since 3.7), so aux's 0.9 wins.
+    assert defaults["noise.amplitude"] == 0.9
+
+
+def test_load_plan_defaults_file_deletion_caches_empty(tmp_path: Path):
+    # Pins the F9 cache-on-file-deletion behavior described in the audit
+    # follow-up design doc. When PLAN_FILE is missing, the OSError branch
+    # sets current_mtime=0.0, the try/except for json.loads fails silently,
+    # and an empty dict is cached against mtime=0.0. Subsequent calls with
+    # the file still missing return the empty cached dict without retrying.
+    # Once the file reappears with a real mtime, the cache invalidates.
+    missing = tmp_path / "not-yet-written.json"
+    with mock.patch.object(_uniforms, "PLAN_FILE", missing):
+        first = _uniforms._load_plan_defaults()
+        assert first == {}
+        # Second call: file still missing, cache hit (both mtimes are 0.0).
+        second = _uniforms._load_plan_defaults()
+        assert second == {}
+        # Now create the file — cache should invalidate on new mtime.
+        missing.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "targets": {
+                        "main": {"passes": [{"node_id": "noise", "uniforms": {"amplitude": 0.7}}]}
+                    },
+                }
+            )
+        )
+        third = _uniforms._load_plan_defaults()
+        assert third == {"noise.amplitude": 0.7}
+
+
+# -- write_uniforms integration-level coverage -------------------------------
+
+
+class _FakeVisualChain:
+    """Minimal VisualChainCapability stand-in for write_uniforms tests."""
+
+    def __init__(self, deltas: dict[str, float]) -> None:
+        self._deltas = dict(deltas)
+
+    def compute_param_deltas(self) -> dict[str, float]:
+        return dict(self._deltas)
+
+
+def test_write_uniforms_end_to_end_produces_expected_keys(tmp_path: Path):
+    """First direct test of write_uniforms. Asserts every plan-default key is
+    written, chain deltas are merged correctly, content.material is overwritten
+    from the imagination fragment, and content.intensity stays at the plan
+    default (0.0) after the audit follow-up reverted the passthrough."""
+    plan = {
+        "version": 2,
+        "targets": {
+            "main": {
+                "passes": [
+                    {"node_id": "noise", "uniforms": {"amplitude": 0.7, "frequency_x": 1.5}},
+                    {"node_id": "rd", "uniforms": {"feed_rate": 0.055, "kill_rate": 0.062}},
+                    {"node_id": "color", "uniforms": {"saturation": 1.0, "brightness": 1.0}},
+                    {"node_id": "fb", "uniforms": {"decay": 0.12}},
+                    {
+                        "node_id": "content",
+                        "uniforms": {"salience": 0.0, "intensity": 0.0, "material": 0.0},
+                    },
+                    {"node_id": "post", "uniforms": {"vignette_strength": 0.4}},
+                ]
+            }
+        },
+    }
+    plan_file = _write_plan(tmp_path, plan)
+    uniforms_file = tmp_path / "uniforms.json"
+
+    fake_chain = _FakeVisualChain(
+        {
+            "noise.amplitude": 0.1,
+            "color.saturation": 0.2,
+            "rd.feed_rate": -0.005,
+        }
+    )
+
+    # Fake "now" — use the same value for imagination timestamp so silence = 1.0.
+    FAKE_NOW = 1776041528.0
+
+    fake_imagination = {
+        "salience": 0.4,
+        "material": "fire",
+        "timestamp": FAKE_NOW,
+    }
+    fake_stimmung = {
+        "overall_stance": "cautious",
+        "health": {"value": 0.2},
+    }
+
+    with (
+        mock.patch.object(_uniforms, "PLAN_FILE", plan_file),
+        mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
+        mock.patch.object(_uniforms.time, "time", return_value=FAKE_NOW),
+    ):
+        _uniforms.write_uniforms(
+            fake_imagination,
+            fake_stimmung,
+            fake_chain,
+            trace_strength=0.0,
+            trace_center=(0.5, 0.5),
+            trace_radius=0.0,
+        )
+
+    result = json.loads(uniforms_file.read_text())
+
+    # Every plan-default key is present with base + delta applied.
+    assert result["noise.amplitude"] == pytest.approx(0.7 + 0.1)
+    assert result["noise.frequency_x"] == pytest.approx(1.5)  # no delta
+    assert result["rd.feed_rate"] == pytest.approx(0.055 + -0.005)
+    assert result["color.saturation"] == pytest.approx(1.0 + 0.2)
+
+    # content.material was overwritten by the imagination branch ("fire" = 1).
+    assert result["content.material"] == pytest.approx(1.0)
+    # content.salience was overwritten by salience × silence (silence=1.0
+    # for fresh imagination).
+    assert result["content.salience"] == pytest.approx(0.4)
+    # content.intensity was reverted in the audit follow-up — the content
+    # node's plan-default value (0.0) flows through unchanged.
+    assert result["content.intensity"] == pytest.approx(0.0)
+
+    # Signal keys present.
+    assert result["signal.stance"] == pytest.approx(0.25)  # cautious
+    assert result["signal.color_warmth"] == pytest.approx(0.2)  # max of health
+
+    # Trace keys present (fb.trace_* overlaps with plan default in fb node, but
+    # here fb node only declared `decay` so the trace keys are written fresh).
+    assert result["fb.trace_strength"] == pytest.approx(0.0)
+    assert result["fb.trace_center_x"] == pytest.approx(0.5)
+
+    # Plan defaults: noise(2) + rd(2) + color(2) + fb(1) + content(3) + post(1) = 11
+    # Plus signal.stance + signal.color_warmth + fb.trace_* (4 new since fb
+    # node only had decay) = 11 + 2 + 4 = 17.
+    assert len(result) == 17
+
+
+def test_write_uniforms_silence_attenuation_when_imagination_stale(tmp_path: Path):
+    """When imagination is stale, silence attenuates chain deltas toward plan defaults."""
+    plan = {
+        "version": 2,
+        "targets": {
+            "main": {
+                "passes": [
+                    {"node_id": "noise", "uniforms": {"amplitude": 0.7}},
+                ]
+            }
+        },
+    }
+    plan_file = _write_plan(tmp_path, plan)
+    uniforms_file = tmp_path / "uniforms.json"
+
+    fake_chain = _FakeVisualChain({"noise.amplitude": 0.5})
+
+    # Very stale imagination — age = 120s, STALE_S = 60s.
+    # raw = 1.0 - (120 - 60)/60 = 0.0, clamped to SILENCE_FLOOR (0.15).
+    FAKE_NOW = 1776041528.0
+    stale_imagination = {"salience": 0.4, "material": "water", "timestamp": FAKE_NOW - 120.0}
+
+    with (
+        mock.patch.object(_uniforms, "PLAN_FILE", plan_file),
+        mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
+        mock.patch.object(_uniforms.time, "time", return_value=FAKE_NOW),
+    ):
+        _uniforms.write_uniforms(
+            stale_imagination,
+            None,
+            fake_chain,
+            trace_strength=0.0,
+            trace_center=(0.5, 0.5),
+            trace_radius=0.0,
+        )
+
+    result = json.loads(uniforms_file.read_text())
+    # silence = max(0.15, 0.0) = 0.15
+    # noise.amplitude = 0.7 + 0.5 * 1.0 * 0.15 = 0.775
+    assert result["noise.amplitude"] == pytest.approx(0.7 + 0.5 * 0.15)
+
+
+def test_write_uniforms_silence_floor_when_imagination_missing(tmp_path: Path):
+    """When imagination is None, silence = SILENCE_FLOOR (0.15)."""
+    plan = {
+        "version": 2,
+        "targets": {"main": {"passes": [{"node_id": "noise", "uniforms": {"amplitude": 0.7}}]}},
+    }
+    plan_file = _write_plan(tmp_path, plan)
+    uniforms_file = tmp_path / "uniforms.json"
+
+    fake_chain = _FakeVisualChain({"noise.amplitude": 0.5})
+
+    with (
+        mock.patch.object(_uniforms, "PLAN_FILE", plan_file),
+        mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
+    ):
+        _uniforms.write_uniforms(
+            None,
+            None,
+            fake_chain,
+            trace_strength=0.0,
+            trace_center=(0.5, 0.5),
+            trace_radius=0.0,
+        )
+
+    result = json.loads(uniforms_file.read_text())
+    # silence = 0.15 (SILENCE_FLOOR, imagination is None)
+    assert result["noise.amplitude"] == pytest.approx(0.7 + 0.5 * 0.15)
+    # imagination is None, so content.* keys should NOT be written by the
+    # imagination branch. The minimal fixture has no content node in plan,
+    # so no content.* keys should be in the result.
+    assert not any(k.startswith("content.") for k in result)

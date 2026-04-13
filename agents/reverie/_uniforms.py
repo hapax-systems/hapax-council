@@ -143,13 +143,26 @@ def write_uniforms(
             uniforms[key] = base
 
     # Content layer: material and salience come from imagination, not chain deltas.
+    #
+    # NOTE (2026-04-12 audit): these keys are **currently dead on the Rust side**.
+    # content_layer.wgsl has no `@group(2) Params` binding, so the Rust per-node
+    # loop at dynamic_pipeline.rs:835 skips it (params_buffer.is_none()). The
+    # WGSL reads `uniforms.custom[0][0]` for material_id, but UniformData.custom
+    # is initialized to zero and is never populated from uniforms.json (see
+    # uniform_buffer.rs:151 — the "Updated from uniforms.json" comment there is
+    # stale, not accurate). So material_id on the GPU is effectively hardcoded
+    # to water.
+    #
+    # The writes are preserved for now for two reasons: (1) they're cheap and
+    # harmless, and (2) the correct fix is to wire content_layer.wgsl to read
+    # per-node params (or to populate UniformData.custom on the Rust side),
+    # either of which is a deliberate follow-up. Do not add more dead keys —
+    # see F8 in docs/superpowers/plans/2026-04-12-reverie-bridge-repair-plan.md.
     if imagination:
-        salience_scaled = float(imagination.get("salience", 0.0)) * silence
         uniforms["content.material"] = float(
             MATERIAL_MAP.get(str(imagination.get("material", "water")), 0)
         )
-        uniforms["content.salience"] = salience_scaled
-        uniforms["content.intensity"] = salience_scaled
+        uniforms["content.salience"] = float(imagination.get("salience", 0.0)) * silence
 
     # Trace params (Amendment 2): always written, zero when inactive.
     uniforms["fb.trace_center_x"] = trace_center[0] if trace_strength > 0 else 0.5
