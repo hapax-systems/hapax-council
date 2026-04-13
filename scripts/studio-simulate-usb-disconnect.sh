@@ -45,16 +45,42 @@ fi
 VIDEO_NODE=$(readlink -f "$DEV")
 echo "device node: $VIDEO_NODE"
 
-# Find the USB bus/dev via udevadm — more reliable than walking sysfs.
-BUSNUM=$(udevadm info --query=property --name="$VIDEO_NODE" 2>/dev/null | awk -F= '/^BUSNUM=/ {print $2}')
-DEVNUM=$(udevadm info --query=property --name="$VIDEO_NODE" 2>/dev/null | awk -F= '/^DEVNUM=/ {print $2}')
-
-if [[ -z "$BUSNUM" || -z "$DEVNUM" ]]; then
-    echo "ERROR: could not resolve USB bus/dev for $VIDEO_NODE" >&2
+# Find the USB bus/dev via sysfs parent walk.
+#
+# `udevadm info --query=property --name=/dev/videoN` does NOT expose
+# BUSNUM / DEVNUM on a video4linux node — those live on the parent USB
+# device (.../usbN/N-P/), not on the child v4l interface
+# (.../usbN/N-P/N-P:1.0/video4linux/videoN/). Walk up the sysfs path
+# until we hit the first directory carrying busnum + devnum files —
+# that's the USB device node the USBDEVFS_RESET ioctl targets.
+SYSFS_SUBPATH=$(udevadm info --query=path --name="$VIDEO_NODE" 2>/dev/null)
+if [[ -z "$SYSFS_SUBPATH" ]]; then
+    echo "ERROR: could not resolve sysfs path for $VIDEO_NODE" >&2
     exit 1
 fi
 
-USB_NODE="/dev/bus/usb/$BUSNUM/$DEVNUM"
+BUSNUM=""
+DEVNUM=""
+usb_sysfs="/sys$SYSFS_SUBPATH"
+while [[ -n "$usb_sysfs" && "$usb_sysfs" != "/sys" && "$usb_sysfs" != "/" ]]; do
+    if [[ -f "$usb_sysfs/busnum" && -f "$usb_sysfs/devnum" ]]; then
+        BUSNUM=$(cat "$usb_sysfs/busnum")
+        DEVNUM=$(cat "$usb_sysfs/devnum")
+        break
+    fi
+    usb_sysfs=$(dirname "$usb_sysfs")
+done
+
+if [[ -z "$BUSNUM" || -z "$DEVNUM" ]]; then
+    echo "ERROR: could not locate parent USB device in sysfs for $VIDEO_NODE" >&2
+    exit 1
+fi
+echo "usb sysfs: $usb_sysfs"
+
+# /dev/bus/usb/ uses zero-padded 3-digit bus + device numbers
+# (e.g. /dev/bus/usb/008/002), but the sysfs `busnum` / `devnum`
+# files carry the raw integers. Pad explicitly.
+USB_NODE=$(printf "/dev/bus/usb/%03d/%03d" "$BUSNUM" "$DEVNUM")
 echo "USB node: $USB_NODE"
 
 if [[ ! -e "$USB_NODE" ]]; then
