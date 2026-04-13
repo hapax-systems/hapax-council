@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from agents._impingement import Impingement
 from agents._impingement_consumer import ImpingementConsumer
 from agents.hapax_daimonion.persona import format_notification  # noqa: F401 (patched in tests)
 
@@ -19,6 +21,51 @@ log = logging.getLogger("hapax_daimonion")
 _PROACTIVE_CHECK_INTERVAL_S = 30
 _NTFY_BASE_URL = "http://127.0.0.1:8090"
 _NTFY_TOPICS = ["hapax"]
+
+_LIVESTREAM_CONTROL_PATH = Path("/dev/shm/hapax-compositor/livestream-control.json")
+
+
+def _write_livestream_control(imp: Impingement, candidate: Any) -> bool:
+    """Write a livestream toggle request to the compositor's control bus.
+
+    The compositor runs in a separate process, so dispatch crosses a
+    process boundary via the ``/dev/shm/hapax-compositor/`` tmpfs
+    mailbox that ``state_reader_loop`` polls at 10 Hz. The affordance
+    pipeline's consent gate has already filtered this recruitment
+    upstream; the file write is the transport, not the policy.
+
+    Activation direction is taken from ``imp.content['activate']`` if
+    present; otherwise defaults to ``True`` (start) because
+    ``compositor.toggle_livestream`` is idempotent and a mis-guessed
+    start resolves to ``already live``.
+
+    Returns True if the file was written.
+    """
+    activate = bool(imp.content.get("activate", True))
+    narrative = str(imp.content.get("narrative", imp.source))
+    reason = f"affordance recruitment: {narrative[:120]}"
+    payload = {
+        "activate": activate,
+        "reason": reason,
+        "requested_at": time.time(),
+        "score": float(getattr(candidate, "combined", 0.0)),
+        "source": imp.source,
+    }
+    try:
+        _LIVESTREAM_CONTROL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _LIVESTREAM_CONTROL_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload))
+        tmp.replace(_LIVESTREAM_CONTROL_PATH)
+    except OSError:
+        log.exception("Failed to write livestream control file")
+        return False
+    log.info(
+        "Livestream control written: activate=%s score=%.2f reason=%s",
+        activate,
+        payload["score"],
+        reason[:60],
+    )
+    return True
 
 
 async def proactive_delivery_loop(daemon: VoiceDaemon) -> None:
@@ -191,6 +238,21 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 narrative = imp.content.get("narrative", imp.source)
                                 material = imp.content.get("material", "void")
                                 activate_notification(narrative, c.combined, material)
+                                daemon._affordance_pipeline.record_outcome(
+                                    c.capability_name,
+                                    success=True,
+                                    context={"source": imp.source},
+                                )
+                            continue
+
+                        # --- Livestream toggle (cross-process to compositor) ---
+                        # Special-cased before the generic studio.* branch:
+                        # daimonion runs separately from the compositor, so
+                        # dispatch writes the control file the compositor
+                        # polls. Consent gating is upstream in the pipeline.
+                        if c.capability_name == "studio.toggle_livestream":
+                            if c.combined >= 0.3:
+                                _write_livestream_control(imp, c)
                                 daemon._affordance_pipeline.record_outcome(
                                     c.capability_name,
                                     success=True,

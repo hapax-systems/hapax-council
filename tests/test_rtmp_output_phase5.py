@@ -150,3 +150,139 @@ class TestToggleLivestreamApi:
         ok, msg = StudioCompositor.toggle_livestream(fake, activate=False, reason="already off")
         assert ok is True
         assert "already off" in msg
+
+
+class TestLivestreamControlPoll:
+    """process_livestream_control is the cross-process bridge between the
+    daimonion's affordance dispatch loop and the compositor's toggle API.
+
+    It runs inside the compositor's state_reader_loop at 10 Hz and is
+    the ONLY path through which studio.toggle_livestream reaches the
+    GStreamer pipeline after consent gating. These tests verify the
+    control-file → toggle_livestream → status-file roundtrip.
+    """
+
+    def test_no_control_file_is_noop(self, tmp_path) -> None:
+        from agents.studio_compositor.state import process_livestream_control
+
+        fake = mock.Mock()
+        fake._GLib = None
+        fake.toggle_livestream = mock.Mock()
+
+        result = process_livestream_control(fake, snapshot_dir=tmp_path)
+
+        assert result is False
+        fake.toggle_livestream.assert_not_called()
+
+    def test_activate_dispatches_and_writes_status(self, tmp_path) -> None:
+        import json as _json
+
+        from agents.studio_compositor.state import process_livestream_control
+
+        control = tmp_path / "livestream-control.json"
+        control.write_text(
+            _json.dumps(
+                {
+                    "activate": True,
+                    "reason": "test recruitment",
+                    "requested_at": 1700000000.0,
+                }
+            )
+        )
+
+        fake = mock.Mock()
+        fake._GLib = None
+        fake.toggle_livestream.return_value = (True, "rtmp bin attached")
+
+        result = process_livestream_control(fake, snapshot_dir=tmp_path)
+
+        assert result is True
+        fake.toggle_livestream.assert_called_once_with(True, "test recruitment")
+        assert not control.exists(), "control file must be consumed"
+
+        status = _json.loads((tmp_path / "livestream-status.json").read_text())
+        assert status["activate"] is True
+        assert status["success"] is True
+        assert status["message"] == "rtmp bin attached"
+        assert status["requested_at"] == 1700000000.0
+        assert "processed_at" in status
+
+    def test_deactivate_dispatches_via_glib_idle_add(self, tmp_path) -> None:
+        import json as _json
+
+        from agents.studio_compositor.state import process_livestream_control
+
+        control = tmp_path / "livestream-control.json"
+        control.write_text(_json.dumps({"activate": False, "reason": "wrap"}))
+
+        fake = mock.Mock()
+        fake.toggle_livestream.return_value = (True, "rtmp bin detached")
+
+        glib = mock.Mock()
+
+        def _immediate(fn):
+            fn()
+
+        glib.idle_add.side_effect = _immediate
+        fake._GLib = glib
+
+        result = process_livestream_control(fake, snapshot_dir=tmp_path)
+
+        assert result is True
+        glib.idle_add.assert_called_once()
+        fake.toggle_livestream.assert_called_once_with(False, "wrap")
+        status = _json.loads((tmp_path / "livestream-status.json").read_text())
+        assert status["activate"] is False
+        assert status["success"] is True
+
+    def test_toggle_exception_lands_in_status_as_failure(self, tmp_path) -> None:
+        import json as _json
+
+        from agents.studio_compositor.state import process_livestream_control
+
+        control = tmp_path / "livestream-control.json"
+        control.write_text(_json.dumps({"activate": True, "reason": "boom"}))
+
+        fake = mock.Mock()
+        fake._GLib = None
+        fake.toggle_livestream.side_effect = RuntimeError("nvenc missing")
+
+        result = process_livestream_control(fake, snapshot_dir=tmp_path)
+
+        assert result is True
+        assert not control.exists()
+        status = _json.loads((tmp_path / "livestream-status.json").read_text())
+        assert status["success"] is False
+        assert "raised" in status["message"]
+
+    def test_malformed_control_file_is_deleted_and_no_dispatch(self, tmp_path) -> None:
+        from agents.studio_compositor.state import process_livestream_control
+
+        control = tmp_path / "livestream-control.json"
+        control.write_text("{not json")
+
+        fake = mock.Mock()
+        fake._GLib = None
+
+        result = process_livestream_control(fake, snapshot_dir=tmp_path)
+
+        assert result is True
+        assert not control.exists(), "malformed control file must be deleted to avoid retry storm"
+        fake.toggle_livestream.assert_not_called()
+
+    def test_missing_activate_defaults_to_false(self, tmp_path) -> None:
+        """The compositor side is strict: missing activate means don't start."""
+        import json as _json
+
+        from agents.studio_compositor.state import process_livestream_control
+
+        control = tmp_path / "livestream-control.json"
+        control.write_text(_json.dumps({"reason": "ambiguous"}))
+
+        fake = mock.Mock()
+        fake._GLib = None
+        fake.toggle_livestream.return_value = (True, "already off")
+
+        process_livestream_control(fake, snapshot_dir=tmp_path)
+
+        fake.toggle_livestream.assert_called_once_with(False, "ambiguous")
