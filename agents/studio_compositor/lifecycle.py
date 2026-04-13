@@ -131,6 +131,19 @@ def start_compositor(compositor: Any) -> None:
 
     GLib.timeout_add(33, lambda: fx_tick_callback(compositor))  # 30fps uniform updates
 
+    # Phase 3: start the udev monitor so USB add/remove events drive the
+    # per-camera state machine. Runs in-process via pyudev.glib bridged to
+    # the GLib main loop.
+    pm = getattr(compositor, "_pipeline_manager", None)
+    if pm is not None:
+        try:
+            from .udev_monitor import UdevCameraMonitor
+
+            compositor._udev_monitor = UdevCameraMonitor(pipeline_manager=pm)
+            compositor._udev_monitor.start()
+        except Exception:
+            log.exception("udev camera monitor start failed (non-fatal)")
+
     # sd_notify integration — see docs/superpowers/plans/2026-04-12-camera-247-resilience-epic.md § 1.6
     # Once the pipeline is PLAYING and at least one camera is active, signal
     # systemd Type=notify that we are READY. If no cameras ever came up,
@@ -194,6 +207,15 @@ def stop_compositor(compositor: Any) -> None:
         compositor.pipeline.set_state(Gst.State.NULL)
 
     # --- ALPHA PHASE 2: tear down per-camera producer + fallback pipelines ---
+    # Phase 3 extension: stop the udev monitor first so no more events flow
+    # through the state machine after we start tearing it down.
+    udev_mon = getattr(compositor, "_udev_monitor", None)
+    if udev_mon is not None:
+        try:
+            udev_mon.stop()
+        except Exception:
+            log.exception("UdevCameraMonitor stop raised during shutdown")
+
     pm = getattr(compositor, "_pipeline_manager", None)
     if pm is not None:
         try:

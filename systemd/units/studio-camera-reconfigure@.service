@@ -1,0 +1,14 @@
+[Unit]
+Description=Reconfigure studio camera %i after USB re-enumeration
+# Bind the unit's lifetime to the /dev/<instance> device node — if the device
+# disappears again before we finish, systemd tears this unit down cleanly.
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+# %h resolves to the user's home directory; %i is the template instance
+# (the kernel device name, e.g. video0).
+ExecStart=%h/projects/hapax-council/systemd/units/studio-camera-reconfigure.sh %i
+StandardOutput=journal
+StandardError=journal

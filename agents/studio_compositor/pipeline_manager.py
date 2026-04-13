@@ -22,6 +22,7 @@ import time
 from typing import Any
 
 from .camera_pipeline import CameraPipeline
+from .camera_state_machine import CameraState, CameraStateMachine, Event, EventKind
 from .fallback_pipeline import FallbackPipeline
 from .models import CameraSpec
 
@@ -53,6 +54,7 @@ class PipelineManager:
         self._fallbacks: dict[str, FallbackPipeline] = {}
         self._interpipe_srcs: dict[str, Any] = {}
         self._status: dict[str, str] = {}
+        self._state_machines: dict[str, CameraStateMachine] = {}
         self._lock = threading.RLock()
 
         self._supervisor_stop = threading.Event()
@@ -63,7 +65,8 @@ class PipelineManager:
     # ------------------------------------------------------------------ build
 
     def build(self) -> None:
-        """Instantiate + start all producer + fallback pipelines."""
+        """Instantiate + start all producer + fallback pipelines and
+        per-camera state machines."""
         with self._lock:
             for spec in self._specs:
                 try:
@@ -73,6 +76,10 @@ class PipelineManager:
                     self._fallbacks[spec.role] = fb
                 except Exception:
                     log.exception("fallback pipeline for %s: build failed", spec.role)
+
+                # Phase 3: construct the state machine before the camera
+                # pipeline so error callbacks route through the FSM.
+                self._state_machines[spec.role] = self._make_state_machine(spec.role)
 
                 try:
                     cam = CameraPipeline(
@@ -86,7 +93,15 @@ class PipelineManager:
                     self._cameras[spec.role] = cam
                     self._status[spec.role] = "active" if started else "offline"
                     if not started:
-                        self._schedule_reconnect(spec.role, _REBUILD_DELAY_S)
+                        # Force the FSM into OFFLINE via a synthetic error event
+                        sm = self._state_machines[spec.role]
+                        sm.dispatch(
+                            Event(
+                                EventKind.PIPELINE_ERROR,
+                                reason="start failed at build",
+                                source="build",
+                            )
+                        )
                 except Exception:
                     log.exception("camera pipeline for %s: build failed", spec.role)
                     self._status[spec.role] = "offline"
@@ -157,6 +172,18 @@ class PipelineManager:
     def _handle_camera_error(self, role: str, err_message: str) -> None:
         """Called from a CameraPipeline's bus watch thread on error."""
         log.warning("camera_error: role=%s message=%s", role, err_message)
+        sm = self._state_machines.get(role)
+        if sm is not None:
+            sm.dispatch(
+                Event(
+                    EventKind.PIPELINE_ERROR,
+                    reason=err_message,
+                    source="bus",
+                )
+            )
+            return
+
+        # Legacy path — only if no state machine is installed (shouldn't happen)
         prev = self.status(role)
         with self._lock:
             self._status[role] = "offline"
@@ -165,10 +192,95 @@ class PipelineManager:
                 self._on_transition(role, prev, "offline", f"pipeline error: {err_message}")
             except Exception:
                 log.exception("on_transition callback raised for role=%s", role)
-        # Swap on the main loop (thread-safe dispatch)
         self._GLib.idle_add(self._idle_swap_to_fallback, role)
-        # Schedule a reconnect attempt
         self._schedule_reconnect(role, _REBUILD_DELAY_S)
+
+    def on_device_added(self, role: str, dev_node: str) -> None:
+        """Called from UdevCameraMonitor on a video4linux add event."""
+        sm = self._state_machines.get(role)
+        if sm is None:
+            return
+        sm.dispatch(
+            Event(
+                EventKind.DEVICE_ADDED,
+                reason=f"udev add: {dev_node}",
+                source="udev",
+            )
+        )
+
+    def on_device_removed(self, role: str, reason: str) -> None:
+        """Called from UdevCameraMonitor on a video4linux/usb remove event."""
+        sm = self._state_machines.get(role)
+        if sm is None:
+            return
+        sm.dispatch(
+            Event(
+                EventKind.DEVICE_REMOVED,
+                reason=reason,
+                source="udev",
+            )
+        )
+
+    def role_for_device_node(self, dev_node: str) -> str | None:
+        """Map /dev/videoN or /dev/v4l/by-id/... to a camera role."""
+        for spec in self._specs:
+            if spec.device == dev_node:
+                return spec.role
+            # Match the by-id path to the kernel device node via readlink
+            try:
+                from pathlib import Path
+
+                if (
+                    Path(spec.device).exists()
+                    and Path(spec.device).resolve() == Path(dev_node).resolve()
+                ):
+                    return spec.role
+            except Exception:
+                pass
+        return None
+
+    def role_for_serial(self, serial: str) -> str | None:
+        """Map a USB serial to a camera role by substring in the by-id path."""
+        for spec in self._specs:
+            if serial and serial in spec.device:
+                return spec.role
+        return None
+
+    def _make_state_machine(self, role: str) -> CameraStateMachine:
+        """Construct a state machine for a given camera role with callbacks
+        wired to the pipeline manager's side-effect surface."""
+
+        def _schedule(delay: float) -> None:
+            self._schedule_reconnect(role, delay)
+
+        def _swap_fb() -> None:
+            self._GLib.idle_add(self._idle_swap_to_fallback, role)
+
+        def _swap_primary() -> None:
+            self._GLib.idle_add(self._idle_swap_to_primary, role)
+
+        def _notify(old: CameraState, new: CameraState, reason: str) -> None:
+            # Map CameraState to the compositor's existing active/offline
+            # convention so callers that touch compositor._camera_status
+            # (director loop, overlays, health monitor) keep working without
+            # a separate change.
+            legacy_old = "active" if old == CameraState.HEALTHY else "offline"
+            legacy_new = "active" if new == CameraState.HEALTHY else "offline"
+            with self._lock:
+                self._status[role] = legacy_new
+            if self._on_transition is not None and legacy_old != legacy_new:
+                try:
+                    self._on_transition(role, legacy_old, legacy_new, reason)
+                except Exception:
+                    log.exception("on_transition callback raised for role=%s", role)
+
+        return CameraStateMachine(
+            role=role,
+            on_schedule_reconnect=_schedule,
+            on_swap_to_fallback=_swap_fb,
+            on_swap_to_primary=_swap_primary,
+            on_notify_transition=_notify,
+        )
 
     def _idle_swap_to_fallback(self, role: str) -> bool:
         self.swap_to_fallback(role)
@@ -214,21 +326,40 @@ class PipelineManager:
     def _attempt_reconnect(self, role: str) -> None:
         with self._lock:
             cam = self._cameras.get(role)
+            sm = self._state_machines.get(role)
         if cam is None:
             return
         log.info("supervisor: attempting reconnect for role=%s", role)
+
+        # Phase 3: dispatch BACKOFF_ELAPSED which transitions OFFLINE → RECOVERING
+        if sm is not None:
+            sm.dispatch(
+                Event(
+                    EventKind.BACKOFF_ELAPSED,
+                    reason="supervisor timer",
+                    source="supervisor",
+                )
+            )
+
         ok = cam.rebuild()
+        if sm is not None:
+            sm.dispatch(
+                Event(
+                    EventKind.RECOVERY_SUCCEEDED if ok else EventKind.RECOVERY_FAILED,
+                    reason="rebuild ok" if ok else "rebuild failed",
+                    source="supervisor",
+                )
+            )
+            # The state machine schedules its own next retry via its
+            # on_schedule_reconnect callback on failure; no need to
+            # schedule again here.
+            return
+
+        # Legacy path if no state machine is present
         if ok:
-            prev = self.status(role)
             with self._lock:
                 self._status[role] = "active"
             self._GLib.idle_add(self._idle_swap_to_primary, role)
-            if self._on_transition is not None and prev != "active":
-                try:
-                    self._on_transition(role, prev, "active", "reconnect succeeded")
-                except Exception:
-                    log.exception("on_transition callback raised for role=%s", role)
-            log.info("supervisor: reconnect succeeded for role=%s", role)
         else:
             log.warning("supervisor: reconnect failed for role=%s, rescheduling", role)
             self._schedule_reconnect(role, _REBUILD_DELAY_S)
