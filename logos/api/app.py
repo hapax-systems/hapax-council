@@ -179,6 +179,7 @@ from logos.api.routes.scout import router as scout_router
 from logos.api.routes.sprint import router as sprint_router
 from logos.api.routes.stimmung import router as stimmung_router
 from logos.api.routes.studio import router as studio_router
+from logos.api.routes.studio_compositor import router as studio_compositor_router
 from logos.api.routes.studio_effects import router as studio_effects_router
 from logos.api.routes.vault import router as vault_router
 from logos.api.routes.working_mode import router as working_mode_router
@@ -199,6 +200,7 @@ app.include_router(consent_router)
 app.include_router(governance_router)
 app.include_router(studio_router)
 app.include_router(studio_effects_router)
+app.include_router(studio_compositor_router)
 app.include_router(logos_router)
 app.include_router(flow_router)
 app.include_router(fortress_router)

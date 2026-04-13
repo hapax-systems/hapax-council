@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -233,6 +234,7 @@ class StudioCompositor:
         self.source_registry: SourceRegistry | None = None
         self._layout_autosaver: Any = None
         self._layout_file_watcher: Any = None
+        self._command_server: Any = None
         self.pipeline: Any = None
         self.loop: Any = None
         self._running = False
@@ -526,6 +528,36 @@ class StudioCompositor:
                 "compositor continues without auto-save or hot-reload"
             )
 
+        # Delta post-epic retirement handoff item #5: start the compositor
+        # command server so runtime layout mutations from window.__logos /
+        # MCP / voice can round-trip through the in-memory LayoutState.
+        # The ``flush_callback`` hooks ``compositor.layout.save`` to the
+        # autosaver's immediate-flush path. ``reload_callback`` stays None —
+        # the ``LayoutFileWatcher`` polling loop already picks up external
+        # edits within ≤2 s, so a manual reload nudge isn't needed yet.
+        try:
+            import os
+
+            from agents.studio_compositor.command_server import CommandServer
+
+            runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+            command_sock = Path(runtime_dir) / "hapax-compositor-commands.sock"
+            flush_cb: Callable[[], None] | None = None
+            if self._layout_autosaver is not None:
+                flush_cb = self._layout_autosaver.flush_now
+            self._command_server = CommandServer(
+                state,
+                command_sock,
+                flush_callback=flush_cb,
+                reload_callback=None,
+            )
+            self._command_server.start()
+        except Exception:
+            log.exception(
+                "failed to start compositor command server — "
+                "runtime layout mutation via window.__logos / MCP is unavailable"
+            )
+
     def start(self) -> None:
         """Build and start the pipeline."""
         self.start_layout_only()
@@ -536,6 +568,12 @@ class StudioCompositor:
 
     def stop(self) -> None:
         """Stop the pipeline cleanly."""
+        if self._command_server is not None:
+            try:
+                self._command_server.stop()
+            except Exception:
+                log.exception("CommandServer.stop failed")
+            self._command_server = None
         if self._layout_file_watcher is not None:
             try:
                 self._layout_file_watcher.stop()
