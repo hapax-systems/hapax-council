@@ -1277,12 +1277,33 @@ class ConversationPipeline:
                 except Exception as e:
                     result = json.dumps({"error": str(e)})
 
-            # Consent gate: filter tool results before they reach the LLM
-            if self._consent_reader is not None:
+            # Consent gate: filter tool results before they reach the LLM.
+            #
+            # BETA-FINDING-K fail-closed behavior: if the reader is
+            # missing (should be impossible now that init_pipeline
+            # raises on construction failure, but belt-and-suspenders)
+            # or if filtering itself raises, the tool result is
+            # REDACTED instead of passed through unfiltered. The
+            # interpersonal_transparency axiom (weight 88) is the
+            # single most load-bearing governance rule in the
+            # daemonion — it fails closed by construction, always.
+            if self._consent_reader is None:
+                log.error(
+                    "Consent reader missing at tool-call time for %s — "
+                    "redacting tool result (interpersonal_transparency axiom fail-closed)",
+                    tc["name"],
+                )
+                result = json.dumps({"error": "consent_gate_unavailable", "tool": tc["name"]})
+            else:
                 try:
                     result = self._consent_reader.filter_tool_result(tc["name"], result)
                 except Exception:
-                    log.warning("Consent filtering failed for %s", tc["name"], exc_info=True)
+                    log.warning(
+                        "Consent filtering raised for %s — redacting tool result",
+                        tc["name"],
+                        exc_info=True,
+                    )
+                    result = json.dumps({"error": "consent_filter_failed", "tool": tc["name"]})
 
             # Record outcome for Thompson sampling in recruitment gate
             if self._tool_recruitment_gate:

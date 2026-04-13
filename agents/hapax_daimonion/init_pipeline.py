@@ -36,14 +36,29 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
         else build_registry(guest_mode=True)
     )
 
-    # Consent reader (stable, reloads contracts on session start)
-    daemon._precomputed_consent_reader = None
-    try:
-        from agents._consent_reader import ConsentGatedReader
+    # Consent reader (stable, reloads contracts on session start).
+    #
+    # BETA-FINDING-K (queue 024 Phase 0): the prior version of this
+    # block silently caught any exception raised by
+    # ``ConsentGatedReader.create()`` (which fans out to
+    # ``ConsentRegistry.load_all()``), logged a warning, and left
+    # ``_precomputed_consent_reader`` at ``None``. The downstream
+    # ``conversation_pipeline._handle_tool_calls`` then fell through
+    # unfiltered, delivering tool results to the LLM *without* the
+    # consent gate — a direct violation of the
+    # ``interpersonal_transparency`` axiom (weight 88).
+    #
+    # A malformed contract file on disk tripped this in production
+    # on 2026-04-13 (beta caught the live violation in queue 024).
+    # The fix is fail-closed: if the reader cannot be constructed,
+    # raise so the daemon refuses to start, forcing operator
+    # attention to the malformed contract rather than degrading
+    # silently. The operator can still boot the daemon by fixing or
+    # removing the offending contract; silent fall-through is no
+    # longer an option.
+    from agents._consent_reader import ConsentGatedReader
 
-        daemon._precomputed_consent_reader = ConsentGatedReader.create()
-    except Exception:
-        log.warning("ConsentGatedReader unavailable, proceeding without consent filtering")
+    daemon._precomputed_consent_reader = ConsentGatedReader.create()
 
     # Callbacks (closures over daemon — stable)
     daemon._env_context_fn = lambda: serialize_environment(
