@@ -1,30 +1,58 @@
 {
   "name": "default",
-  "description": "Default studio compositor layout — post-epic operator defaults. Reverie upper-right, Vitruvian Man (token_pole) upper-left, album lower-left, chat stats (stream_overlay) lower-right. These assignments are a starting point; Hapax content programming ultimately drives which sources feed which quadrants via the affordance pipeline + command registry.",
+  "description": "Default studio compositor layout \u2014 post-epic operator defaults. Reverie upper-right, Vitruvian Man (token_pole) upper-left, album lower-left, chat stats (stream_overlay) lower-right. These assignments are a starting point; Hapax content programming ultimately drives which sources feed which quadrants via the affordance pipeline + command registry.",
   "sources": [
     {
       "id": "token_pole",
       "kind": "cairo",
       "backend": "cairo",
-      "params": {"class_name": "TokenPoleCairoSource", "natural_w": 300, "natural_h": 300}
+      "params": {
+        "class_name": "TokenPoleCairoSource",
+        "natural_w": 300,
+        "natural_h": 300
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": []
     },
     {
       "id": "album",
       "kind": "cairo",
       "backend": "cairo",
-      "params": {"class_name": "AlbumOverlayCairoSource", "natural_w": 400, "natural_h": 520}
+      "params": {
+        "class_name": "AlbumOverlayCairoSource",
+        "natural_w": 400,
+        "natural_h": 520
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": []
     },
     {
       "id": "stream_overlay",
       "kind": "cairo",
       "backend": "cairo",
-      "params": {"class_name": "StreamOverlayCairoSource", "natural_w": 400, "natural_h": 200}
+      "params": {
+        "class_name": "StreamOverlayCairoSource",
+        "natural_w": 400,
+        "natural_h": 200
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": []
     },
     {
       "id": "sierpinski",
       "kind": "cairo",
       "backend": "cairo",
-      "params": {"class_name": "SierpinskiCairoSource", "natural_w": 640, "natural_h": 640}
+      "params": {
+        "class_name": "SierpinskiCairoSource",
+        "natural_w": 640,
+        "natural_h": 640
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": []
     },
     {
       "id": "reverie",
@@ -34,19 +62,114 @@
         "natural_w": 640,
         "natural_h": 360,
         "shm_path": "/dev/shm/hapax-sources/reverie.rgba"
-      }
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": []
     }
   ],
   "surfaces": [
-    {"id": "pip-ul", "geometry": {"kind": "rect", "x":   20, "y":   20, "w": 300, "h": 300}, "z_order": 10},
-    {"id": "pip-ur", "geometry": {"kind": "rect", "x": 1260, "y":   20, "w": 640, "h": 360}, "z_order": 10},
-    {"id": "pip-ll", "geometry": {"kind": "rect", "x":   20, "y":  540, "w": 400, "h": 520}, "z_order": 10},
-    {"id": "pip-lr", "geometry": {"kind": "rect", "x": 1500, "y":  860, "w": 400, "h": 200}, "z_order": 10}
+    {
+      "id": "pip-ul",
+      "geometry": {
+        "kind": "rect",
+        "x": 20,
+        "y": 20,
+        "w": 300,
+        "h": 300,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 10,
+      "update_cadence": "always"
+    },
+    {
+      "id": "pip-ur",
+      "geometry": {
+        "kind": "rect",
+        "x": 1260,
+        "y": 20,
+        "w": 640,
+        "h": 360,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 10,
+      "update_cadence": "always"
+    },
+    {
+      "id": "pip-ll",
+      "geometry": {
+        "kind": "rect",
+        "x": 20,
+        "y": 540,
+        "w": 400,
+        "h": 520,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 10,
+      "update_cadence": "always"
+    },
+    {
+      "id": "pip-lr",
+      "geometry": {
+        "kind": "rect",
+        "x": 1500,
+        "y": 860,
+        "w": 400,
+        "h": 200,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 10,
+      "update_cadence": "always"
+    }
   ],
   "assignments": [
-    {"source": "token_pole",     "surface": "pip-ul"},
-    {"source": "reverie",        "surface": "pip-ur"},
-    {"source": "album",          "surface": "pip-ll"},
-    {"source": "stream_overlay", "surface": "pip-lr"}
+    {
+      "source": "token_pole",
+      "surface": "pip-ul",
+      "transform": {},
+      "opacity": 1.0,
+      "per_assignment_effects": []
+    },
+    {
+      "source": "reverie",
+      "surface": "pip-ur",
+      "transform": {},
+      "opacity": 1.0,
+      "per_assignment_effects": []
+    },
+    {
+      "source": "album",
+      "surface": "pip-ll",
+      "transform": {},
+      "opacity": 1.0,
+      "per_assignment_effects": []
+    },
+    {
+      "source": "stream_overlay",
+      "surface": "pip-lr",
+      "transform": {},
+      "opacity": 1.0,
+      "per_assignment_effects": []
+    }
   ]
 }
