@@ -500,8 +500,91 @@ def p7_uniforms_freshness(now: float | None = None) -> PredictionResult:
     )
 
 
+# P8 uniforms-coverage threshold. ``uniforms_key_count`` must stay within
+# ``ALLOWED_DEFICIT`` keys of the plan defaults count. A deficit above the
+# threshold is the tripwire the dimensional-drought regression fixed by
+# PR #696 would have triggered — and that delta PR-3 was queued for.
+_P8_ALLOWED_DEFICIT = 5
+
+
+def p8_uniforms_coverage() -> PredictionResult:
+    """P8: uniforms.json key count stays within ``ALLOWED_DEFICIT`` of plan defaults.
+
+    Catches the bridge-drought class of failure: ``plan.json`` declares
+    42 default uniforms and the mixer writes them to ``uniforms.json``
+    on each tick. A drop of more than 5 keys means the Python → Rust
+    bridge is emitting a subset of what the plan declares — exactly the
+    failure mode PR #696 fixed (v1/v2 plan schema drift emptied the
+    defaults cache, only 6 of 42 keys reached the GPU).
+
+    Uses the same ``snapshot`` helper that backs the
+    ``debug_uniforms`` CLI so the CLI and this prediction report the
+    same numbers.
+    """
+    # Import lazily to keep this module import-side-effect-free.
+    from agents.reverie.debug_uniforms import snapshot
+
+    snap = snapshot()
+
+    if not snap.uniforms_exists:
+        return PredictionResult(
+            name="P8_uniforms_coverage",
+            expected=f"deficit ≤ {_P8_ALLOWED_DEFICIT}",
+            actual=-1.0,
+            healthy=False,
+            alert=(
+                f"uniforms.json missing at {snap.uniforms_path} — "
+                "reverie mixer has not written uniforms yet or the "
+                "reverie service is down"
+            ),
+            detail=json.dumps({"uniforms_exists": False}),
+        )
+    if not snap.plan_exists:
+        return PredictionResult(
+            name="P8_uniforms_coverage",
+            expected=f"deficit ≤ {_P8_ALLOWED_DEFICIT}",
+            actual=-1.0,
+            healthy=False,
+            alert=(
+                f"plan.json missing at {snap.plan_path} — "
+                "hapax-imagination has not emitted a plan yet"
+            ),
+            detail=json.dumps({"plan_exists": False}),
+        )
+
+    deficit = snap.deficit
+    healthy = deficit <= _P8_ALLOWED_DEFICIT
+    alert = None
+    if not healthy:
+        alert = (
+            f"uniforms.json holds {snap.uniforms_key_count} keys vs "
+            f"{snap.plan_defaults_count} plan defaults "
+            f"(deficit {deficit} > allowed {_P8_ALLOWED_DEFICIT}) — "
+            "the Python → Rust uniforms bridge is dropping keys; "
+            "run `python -m agents.reverie.debug_uniforms` for missing "
+            "key detail"
+        )
+
+    return PredictionResult(
+        name="P8_uniforms_coverage",
+        expected=f"deficit ≤ {_P8_ALLOWED_DEFICIT}",
+        actual=float(deficit),
+        healthy=healthy,
+        alert=alert,
+        detail=json.dumps(
+            {
+                "uniforms_key_count": snap.uniforms_key_count,
+                "plan_defaults_count": snap.plan_defaults_count,
+                "deficit": deficit,
+                "allowed_deficit": _P8_ALLOWED_DEFICIT,
+                "missing_sample": snap.missing_defaults[:5],
+            }
+        ),
+    )
+
+
 def sample() -> MonitorSample:
-    """Take one complete sample of all 7 predictions."""
+    """Take one complete sample of all 8 predictions."""
     now = time.time()
     deploy_ts = _get_deploy_ts()
     hours = (now - deploy_ts) / 3600
@@ -519,6 +602,7 @@ def sample() -> MonitorSample:
         p5_content_vocabulary_balance(chronicle),
         p6_presence_differentiation(perception),
         p7_uniforms_freshness(now),
+        p8_uniforms_coverage(),
     ]
 
     result = MonitorSample(

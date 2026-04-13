@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api/predictions", tags=["predictions"])
 
 PREDICTIONS_SHM = Path("/dev/shm/hapax-reverie/predictions.json")
 UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
+PLAN_FILE = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
 PERCEPTION_STATE = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 CHRONICLE_DIR = Path("/dev/shm/hapax-chronicle")
 
@@ -169,24 +170,52 @@ async def predictions_metrics() -> Response:
         pass
 
     # --- ALL shader uniforms (replacing 7-param subset) ---
+    # Also surfaces the coverage gauges used by delta PR-3:
+    #   ``reverie_uniforms_key_count`` — live keys in uniforms.json
+    #   ``reverie_uniforms_plan_defaults_count`` — keys the plan declares
+    #   ``reverie_uniforms_key_deficit`` — max(0, plan - live), the
+    #     drought tripwire (alert on ``> 5``).
     lines.append("# HELP hapax_uniform_value Current shader uniform value")
     lines.append("# TYPE hapax_uniform_value gauge")
     lines.append("# HELP hapax_uniform_deviation Deviation from plan default")
     lines.append("# TYPE hapax_uniform_deviation gauge")
+    lines.append("# HELP reverie_uniforms_key_count Total numeric keys in uniforms.json")
+    lines.append("# TYPE reverie_uniforms_key_count gauge")
+    lines.append(
+        "# HELP reverie_uniforms_plan_defaults_count Numeric keys declared by the current plan"
+    )
+    lines.append("# TYPE reverie_uniforms_plan_defaults_count gauge")
+    lines.append(
+        "# HELP reverie_uniforms_key_deficit"
+        " max(0, plan_defaults - uniforms) — drought tripwire (> 5 = broken bridge)"
+    )
+    lines.append("# TYPE reverie_uniforms_key_deficit gauge")
     try:
+        # Use the canonical walker so v1 and v2 plan schemas are both
+        # honoured. The old flat ``plan.get("passes", [])`` silently
+        # returned 0 on v2 plans — the exact drift that caused PR #696.
+        from agents.reverie._uniforms import _iter_passes
+
         uniforms = json.loads(UNIFORMS_FILE.read_text())
-        # Load plan defaults for deviation calculation
         plan_defaults: dict[str, float] = {}
-        plan_path = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
         try:
-            plan = json.loads(plan_path.read_text())
-            for p in plan.get("passes", []):
+            plan = json.loads(PLAN_FILE.read_text())
+            for p in _iter_passes(plan):
                 nid = p.get("node_id", "")
                 for k, v in p.get("uniforms", {}).items():
                     if isinstance(v, (int, float)):
                         plan_defaults[f"{nid}.{k}"] = float(v)
         except Exception:
             pass
+
+        numeric_keys = [k for k, v in uniforms.items() if isinstance(v, (int, float))]
+        key_count = len(numeric_keys)
+        plan_count = len(plan_defaults)
+        deficit = max(0, plan_count - key_count)
+        lines.append(f"reverie_uniforms_key_count {key_count}")
+        lines.append(f"reverie_uniforms_plan_defaults_count {plan_count}")
+        lines.append(f"reverie_uniforms_key_deficit {deficit}")
+
         for param, val in sorted(uniforms.items()):
             if isinstance(val, (int, float)):
                 lines.append(f'hapax_uniform_value{{param="{param}"}} {val}')
