@@ -10,6 +10,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from shared.compositor_model import (
+    Assignment,
+    Layout,
+    SourceSchema,
+    SurfaceGeometry,
+    SurfaceSchema,
+)
+
 from .audio_capture import CompositorAudioCapture
 from .config import CACHE_DIR, SNAPSHOT_DIR, STATUS_FILE
 from .effects import init_graph_runtime
@@ -19,6 +27,134 @@ from .overlay_zones import OverlayZoneManager
 from .profiles import load_camera_profiles
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Source-registry epic Phase D task 13 — Layout loader + hardcoded rescue
+#
+# ``load_layout_or_fallback`` reads the canonical baseline JSON from disk
+# and returns the parsed ``Layout``; any failure (missing file, malformed
+# JSON, schema violation) logs a WARNING and resolves to
+# ``_FALLBACK_LAYOUT`` — a hardcoded mirror of ``config/compositor-layouts/
+# default.json`` so the compositor always boots with a working source
+# registry even if the on-disk config is absent or corrupted.
+#
+# Dormant in main: the function is a standalone helper with no caller
+# yet. Task 14 will call it from ``StudioCompositor.start()`` and feed
+# the result into ``LayoutState`` + ``SourceRegistry``.
+# ---------------------------------------------------------------------------
+
+
+_FALLBACK_LAYOUT = Layout(
+    name="default",
+    description=(
+        "Hardcoded fallback layout — rescue path when default.json is missing "
+        "or cannot be parsed. Structurally identical to "
+        "config/compositor-layouts/default.json (Phase D task 12)."
+    ),
+    sources=[
+        SourceSchema(
+            id="token_pole",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "TokenPoleCairoSource",
+                "natural_w": 300,
+                "natural_h": 300,
+            },
+        ),
+        SourceSchema(
+            id="album",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "AlbumOverlayCairoSource",
+                "natural_w": 400,
+                "natural_h": 520,
+            },
+        ),
+        SourceSchema(
+            id="sierpinski",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "SierpinskiCairoSource",
+                "natural_w": 640,
+                "natural_h": 640,
+            },
+        ),
+        SourceSchema(
+            id="reverie",
+            kind="external_rgba",
+            backend="shm_rgba",
+            params={
+                "natural_w": 640,
+                "natural_h": 360,
+                "shm_path": "/dev/shm/hapax-sources/reverie.rgba",
+            },
+        ),
+    ],
+    surfaces=[
+        SurfaceSchema(
+            id="pip-ul",
+            geometry=SurfaceGeometry(kind="rect", x=20, y=20, w=300, h=300),
+            z_order=10,
+        ),
+        SurfaceSchema(
+            id="pip-ur",
+            geometry=SurfaceGeometry(kind="rect", x=1260, y=20, w=640, h=360),
+            z_order=10,
+        ),
+        SurfaceSchema(
+            id="pip-ll",
+            geometry=SurfaceGeometry(kind="rect", x=20, y=540, w=400, h=520),
+            z_order=10,
+        ),
+        SurfaceSchema(
+            id="pip-lr",
+            geometry=SurfaceGeometry(kind="rect", x=1260, y=420, w=640, h=640),
+            z_order=10,
+        ),
+    ],
+    assignments=[
+        Assignment(source="token_pole", surface="pip-ul"),
+        Assignment(source="reverie", surface="pip-ur"),
+        Assignment(source="album", surface="pip-ll"),
+    ],
+)
+
+
+def load_layout_or_fallback(path: Path) -> Layout:
+    """Load a compositor Layout from JSON, falling back to the hardcoded rescue.
+
+    Any failure mode — file missing, malformed JSON, pydantic validation
+    error — logs a WARNING with the offending path and returns
+    ``_FALLBACK_LAYOUT``. The compositor boots with a working source
+    registry unconditionally.
+    """
+    target = Path(path)
+    try:
+        raw = json.loads(target.read_text())
+    except FileNotFoundError:
+        log.warning("compositor layout %s missing — using fallback", target)
+        return _FALLBACK_LAYOUT
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning(
+            "compositor layout %s could not be read (%s) — using fallback",
+            target,
+            exc,
+        )
+        return _FALLBACK_LAYOUT
+
+    try:
+        return Layout.model_validate(raw)
+    except ValueError as exc:
+        log.warning(
+            "compositor layout %s failed schema validation (%s) — using fallback",
+            target,
+            exc,
+        )
+        return _FALLBACK_LAYOUT
 
 
 class StudioCompositor:

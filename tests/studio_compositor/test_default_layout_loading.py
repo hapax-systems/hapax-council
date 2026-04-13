@@ -93,3 +93,96 @@ def test_default_json_pip_lr_surface_is_intentionally_unassigned() -> None:
     assigned_surface_ids = {a.surface for a in layout.assignments}
     unassigned = surface_ids - assigned_surface_ids
     assert unassigned == {"pip-lr"}
+
+
+# ---------------------------------------------------------------------------
+# Phase D task 13 — load_layout_or_fallback
+# ---------------------------------------------------------------------------
+
+
+def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
+    """Reads a Layout JSON file from disk and returns the parsed model."""
+    from agents.studio_compositor.compositor import load_layout_or_fallback
+
+    src = DEFAULT_JSON.read_text()
+    target = tmp_path / "default.json"
+    target.write_text(src)
+
+    layout = load_layout_or_fallback(target)
+
+    assert layout.name == "default"
+    source_ids = {s.id for s in layout.sources}
+    assert source_ids == {"token_pole", "album", "sierpinski", "reverie"}
+
+
+def test_load_layout_or_fallback_uses_fallback_when_file_missing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Missing file path resolves to the hardcoded fallback without raising."""
+    import logging
+
+    from agents.studio_compositor.compositor import load_layout_or_fallback
+
+    caplog.set_level(logging.WARNING, logger="agents.studio_compositor.compositor")
+    layout = load_layout_or_fallback(tmp_path / "does-not-exist.json")
+
+    assert layout.name == "default"
+    assert any("fallback" in rec.message.lower() for rec in caplog.records), (
+        "missing-file path should log a fallback warning"
+    )
+
+
+def test_load_layout_or_fallback_uses_fallback_on_invalid_json(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Malformed JSON resolves to fallback without raising."""
+    import logging
+
+    from agents.studio_compositor.compositor import load_layout_or_fallback
+
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json")
+    caplog.set_level(logging.WARNING, logger="agents.studio_compositor.compositor")
+
+    layout = load_layout_or_fallback(broken)
+
+    assert layout.name == "default"
+    assert any("fallback" in rec.message.lower() for rec in caplog.records)
+
+
+def test_load_layout_or_fallback_uses_fallback_on_schema_violation(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Valid JSON that fails pydantic validation also resolves to fallback."""
+    import logging
+
+    from agents.studio_compositor.compositor import load_layout_or_fallback
+
+    bad_schema = tmp_path / "bad-schema.json"
+    bad_schema.write_text(json.dumps({"not_a_layout": True}))
+    caplog.set_level(logging.WARNING, logger="agents.studio_compositor.compositor")
+
+    layout = load_layout_or_fallback(bad_schema)
+
+    assert layout.name == "default"
+    assert any("fallback" in rec.message.lower() for rec in caplog.records)
+
+
+def test_fallback_layout_parses_to_same_shape_as_default_json() -> None:
+    """The hardcoded _FALLBACK_LAYOUT is structurally identical to default.json.
+
+    Regression pin: if someone edits one side without the other, this
+    fires. The fallback is the rescue path when the JSON cannot be
+    loaded — it should produce the same runtime layout.
+    """
+    from agents.studio_compositor.compositor import _FALLBACK_LAYOUT
+
+    raw = json.loads(DEFAULT_JSON.read_text())
+    disk = Layout.model_validate(raw)
+
+    assert _FALLBACK_LAYOUT.name == disk.name
+    assert {s.id for s in _FALLBACK_LAYOUT.sources} == {s.id for s in disk.sources}
+    assert {s.id for s in _FALLBACK_LAYOUT.surfaces} == {s.id for s in disk.surfaces}
+    assert {(a.source, a.surface) for a in _FALLBACK_LAYOUT.assignments} == {
+        (a.source, a.surface) for a in disk.assignments
+    }
