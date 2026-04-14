@@ -1,0 +1,204 @@
+"""Tests for agents/studio_compositor/hls_archive.py — LRR Phase 2 item 2."""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+
+import pytest
+
+from agents.studio_compositor import hls_archive
+from shared.stream_archive import SegmentSidecar, sidecar_path_for
+
+
+@pytest.fixture
+def archive_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Point archive root + condition pointer + stimmung at tmp_path."""
+    archive_root_dir = tmp_path / "archive"
+    monkeypatch.setenv("HAPAX_ARCHIVE_ROOT", str(archive_root_dir))
+    return tmp_path
+
+
+def _touch_segment(path: Path, *, age_seconds: float = 0.0) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"fake ts segment")
+    if age_seconds > 0:
+        mtime = time.time() - age_seconds
+        os.utime(path, (mtime, mtime))
+
+
+class TestIsSegmentStable:
+    def test_fresh_segment_not_stable(self, tmp_path: Path) -> None:
+        seg = tmp_path / "segment00001.ts"
+        _touch_segment(seg, age_seconds=0.0)
+        now = time.time()
+        assert not hls_archive.is_segment_stable(seg, now_ts=now, window_seconds=10.0)
+
+    def test_old_segment_stable(self, tmp_path: Path) -> None:
+        seg = tmp_path / "segment00001.ts"
+        _touch_segment(seg, age_seconds=30.0)
+        now = time.time()
+        assert hls_archive.is_segment_stable(seg, now_ts=now, window_seconds=10.0)
+
+    def test_missing_segment_not_stable(self, tmp_path: Path) -> None:
+        seg = tmp_path / "does-not-exist.ts"
+        now = time.time()
+        assert not hls_archive.is_segment_stable(seg, now_ts=now, window_seconds=10.0)
+
+
+class TestRotateSegment:
+    def test_move_and_sidecar(self, archive_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        source = archive_env / "src"
+        source.mkdir()
+        seg = source / "segment00001.ts"
+        _touch_segment(seg, age_seconds=30.0)
+
+        target = archive_env / "archive" / "hls" / "2026-04-14"
+        new_path = hls_archive.rotate_segment(
+            seg,
+            target_dir=target,
+            condition_id="cond-phase-a-baseline-qwen-001",
+            stimmung={"stance": "READY"},
+        )
+
+        assert new_path == target / "segment00001.ts"
+        assert new_path.exists()
+        assert not seg.exists()  # moved, not copied
+        sidecar_p = sidecar_path_for(new_path)
+        assert sidecar_p.exists()
+
+        sidecar = SegmentSidecar.from_path(sidecar_p)
+        assert sidecar.segment_id == "segment00001"
+        assert sidecar.condition_id == "cond-phase-a-baseline-qwen-001"
+        assert sidecar.stimmung_snapshot == {"stance": "READY"}
+        assert sidecar.archive_kind == "hls"
+
+    def test_rotate_segment_refuses_overwrite(
+        self, archive_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = archive_env / "src"
+        source.mkdir()
+        seg = source / "segment00001.ts"
+        _touch_segment(seg, age_seconds=30.0)
+
+        target = archive_env / "archive" / "hls" / "2026-04-14"
+        target.mkdir(parents=True)
+        (target / "segment00001.ts").write_bytes(b"existing")
+
+        with pytest.raises(FileExistsError):
+            hls_archive.rotate_segment(
+                seg,
+                target_dir=target,
+                condition_id=None,
+                stimmung={},
+            )
+
+
+class TestRotatePass:
+    def test_rotates_only_stable_segments(
+        self, archive_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = archive_env / "hls"
+        source.mkdir()
+        _touch_segment(source / "segment00001.ts", age_seconds=30.0)  # stable
+        _touch_segment(source / "segment00002.ts", age_seconds=30.0)  # stable
+        _touch_segment(source / "segment00003.ts", age_seconds=0.0)  # fresh
+
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_CONDITION_POINTER",
+            archive_env / "nonexistent-condition.txt",
+        )
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_STIMMUNG_PATH",
+            archive_env / "nonexistent-stimmung.json",
+        )
+
+        result = hls_archive.rotate_pass(source_dir=source, window_seconds=10.0)
+        assert result.scanned == 3
+        assert result.rotated == 2
+        assert result.skipped_unstable == 1
+        assert result.skipped_already_rotated == 0
+        assert result.errors == []
+
+        # Verify files moved
+        assert not (source / "segment00001.ts").exists()
+        assert not (source / "segment00002.ts").exists()
+        assert (source / "segment00003.ts").exists()
+
+    def test_missing_source_dir_is_noop(self, archive_env: Path) -> None:
+        result = hls_archive.rotate_pass(source_dir=archive_env / "nonexistent")
+        assert result.scanned == 0
+        assert result.rotated == 0
+        assert result.errors == []
+
+    def test_condition_id_from_pointer(
+        self, archive_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = archive_env / "hls"
+        source.mkdir()
+        _touch_segment(source / "segment00001.ts", age_seconds=30.0)
+
+        pointer = archive_env / "current.txt"
+        pointer.write_text("cond-phase-a-baseline-qwen-001\n")
+        monkeypatch.setattr(hls_archive, "DEFAULT_CONDITION_POINTER", pointer)
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_STIMMUNG_PATH",
+            archive_env / "nonexistent-stimmung.json",
+        )
+
+        hls_archive.rotate_pass(source_dir=source, window_seconds=10.0)
+
+        target_dir = archive_env / "archive" / "hls"
+        matches = list(target_dir.glob("*/segment00001.ts.json"))
+        assert len(matches) == 1
+        sidecar = SegmentSidecar.from_path(matches[0])
+        assert sidecar.condition_id == "cond-phase-a-baseline-qwen-001"
+
+    def test_stimmung_best_effort(self, archive_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        source = archive_env / "hls"
+        source.mkdir()
+        _touch_segment(source / "segment00001.ts", age_seconds=30.0)
+
+        stimmung_file = archive_env / "stimmung.json"
+        stimmung_file.write_text(
+            json.dumps({"stance": "SEEKING", "dimensions": {"intensity": 0.6}})
+        )
+        monkeypatch.setattr(hls_archive, "DEFAULT_STIMMUNG_PATH", stimmung_file)
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_CONDITION_POINTER",
+            archive_env / "nonexistent-condition.txt",
+        )
+
+        hls_archive.rotate_pass(source_dir=source, window_seconds=10.0)
+
+        target_dir = archive_env / "archive" / "hls"
+        matches = list(target_dir.glob("*/segment00001.ts.json"))
+        assert len(matches) == 1
+        sidecar = SegmentSidecar.from_path(matches[0])
+        assert sidecar.stimmung_snapshot.get("stance") == "SEEKING"
+
+    def test_corrupt_stimmung_is_tolerated(
+        self, archive_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = archive_env / "hls"
+        source.mkdir()
+        _touch_segment(source / "segment00001.ts", age_seconds=30.0)
+
+        stimmung_file = archive_env / "stimmung.json"
+        stimmung_file.write_text("not json {{{")
+        monkeypatch.setattr(hls_archive, "DEFAULT_STIMMUNG_PATH", stimmung_file)
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_CONDITION_POINTER",
+            archive_env / "nonexistent.txt",
+        )
+
+        result = hls_archive.rotate_pass(source_dir=source, window_seconds=10.0)
+        assert result.rotated == 1
+        assert result.errors == []

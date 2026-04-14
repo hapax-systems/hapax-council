@@ -1,0 +1,11 @@
+[Unit]
+Description=LRR Phase 2 HLS archive rotation — every 60s
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=hls-archive-rotate.service
+
+[Install]
+WantedBy=timers.target
