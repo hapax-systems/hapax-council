@@ -6,19 +6,23 @@
 set -euo pipefail
 
 V4L2=/usr/bin/v4l2-ctl
+# Per-call timeout: a USB device in a bad state (kernel -110 / device
+# descriptor read errors) can make v4l2-ctl block on the ioctl
+# indefinitely, which hangs ExecStartPre and forces systemd to kill
+# the entire compositor service after TimeoutStartSec. 5s is generous
+# for a normally-responding camera.
+V4L2_TIMEOUT=5
 
-# Log file for v4l2-ctl failures — see Phase 1 of the camera resilience epic.
-# The old `2>/dev/null || true` pattern swallowed errors silently; this routes
-# them to a log the operator can inspect after the fact.
 LOG="${XDG_RUNTIME_DIR:-/tmp}/studio-camera-setup.log"
 : > "$LOG"  # truncate
 
-# Non-fatal v4l2-ctl wrapper: logs failures to $LOG, continues on error.
-# Replaces `|| true` with a traceable failure record.
+# Non-fatal v4l2-ctl wrapper: logs failures to $LOG, continues on error,
+# and bounds the call with a hard timeout so a wedged USB device cannot
+# block compositor startup.
 v4l2_soft() {
     local dev="$1"
     shift
-    if ! "$V4L2" -d "$dev" "$@" 2>>"$LOG"; then
+    if ! timeout "$V4L2_TIMEOUT" "$V4L2" -d "$dev" "$@" 2>>"$LOG"; then
         echo "[$(date +%H:%M:%S)] WARNING: v4l2-ctl -d $dev $* returned non-zero" >>"$LOG"
     fi
 }
@@ -31,39 +35,39 @@ SHARED="$SHARED,backlight_compensation=0,brightness=128,contrast=128,saturation=
 # --- BRIO (hero/operator) — 1080p, larger sensor, low gain ---
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index0
 if [ -e "$DEV" ]; then
-  $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
-  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
+  v4l2_soft "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
+  v4l2_soft "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
   echo "brio-operator: configured (sharpness=128, exposure=333)"
 fi
 
 # --- C920-desk (high angle monitors/desk) — lower gain, infinity focus ---
 DEV=/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_2657DFCF-video-index0
 if [ -e "$DEV" ]; then
-  $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=140,exposure_time_absolute=333,sharpness=110"
-  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
+  v4l2_soft "$DEV" --set-ctrl="$SHARED,gain=140,exposure_time_absolute=333,sharpness=110"
+  v4l2_soft "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
   echo "c920-desk: configured (gain=140, exposure=333, sharpness=110)"
 fi
 
 # --- C920-room (wide room view) ---
 DEV=/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_86B6B75F-video-index0
 if [ -e "$DEV" ]; then
-  $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=140,exposure_time_absolute=333,sharpness=110"
-  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=30
+  v4l2_soft "$DEV" --set-ctrl="$SHARED,gain=140,exposure_time_absolute=333,sharpness=110"
+  v4l2_soft "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=30
   echo "c920-room: configured (gain=140, exposure=333, sharpness=110)"
 fi
 
 # --- C920-overhead (top-down over operator) ---
 DEV=/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_7B88C71F-video-index0
 if [ -e "$DEV" ]; then
-  $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=140,exposure_time_absolute=333,sharpness=110"
-  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=30
+  v4l2_soft "$DEV" --set-ctrl="$SHARED,gain=140,exposure_time_absolute=333,sharpness=110"
+  v4l2_soft "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=30
   echo "c920-overhead: configured (gain=140, exposure=333, sharpness=110)"
 fi
 
 # --- BRIO-room (full room view, 1080p) ---
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0
 if [ -e "$DEV" ]; then
-  $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
+  v4l2_soft "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
   v4l2_soft "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
   echo "brio-room: configured (sharpness=128, exposure=333)"
 fi
@@ -71,7 +75,7 @@ fi
 # --- BRIO-synths (overhead synth corner, 1080p) ---
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0
 if [ -e "$DEV" ]; then
-  $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
+  v4l2_soft "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
   v4l2_soft "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
   echo "brio-synths: configured (sharpness=128, exposure=333)"
 fi
