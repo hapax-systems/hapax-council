@@ -138,7 +138,16 @@ class CameraPipeline:
                 decode_queue = Gst.ElementFactory.make("queue", f"decq_{self._role_safe}")
                 if decode_queue is None:
                     raise RuntimeError(f"{self._spec.role}: queue factory failed")
-                decode_queue.set_property("max-size-buffers", 1)
+                # Drop #31 cam-stability rollup Ring 2 fix C: bump from 1 to
+                # 5 buffers. The original 1-buffer queue could only absorb
+                # a single stalled jpegdec frame; brio-operator's drop #2
+                # H6 (CPU jpegdec back-pressure) needed more cushion.
+                # 5 buffers × 33 ms = 165 ms of decode-stall absorption,
+                # still well under the 2 s STALENESS_THRESHOLD_S window.
+                # leaky=downstream keeps the queue fresh — old frames are
+                # dropped first so the queue never grows unbounded under
+                # sustained back-pressure.
+                decode_queue.set_property("max-size-buffers", 5)
                 decode_queue.set_property("max-size-bytes", 0)
                 decode_queue.set_property("max-size-time", 0)
                 decode_queue.set_property("leaky", 2)  # downstream

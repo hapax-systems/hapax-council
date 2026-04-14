@@ -186,6 +186,66 @@ class TestPipelineManagerSwap:
             pm.stop()
 
 
+class TestDecodeQueueCapacity:
+    """Delta drop #31 cam-stability rollup Ring 2 Fix C regression pin.
+
+    The MJPEG producer path has a ``queue`` element between ``v4l2src``
+    and ``jpegdec`` to decouple decode latency from USB capture (drop
+    #28 Finding 1, shipped in PR #807). The queue's original
+    ``max-size-buffers=1`` could only absorb a single stalled jpegdec
+    frame — brio-operator's drop #2 H6 (CPU jpegdec back-pressure)
+    needed more cushion. Fix bumps to 5 buffers (~165 ms at 30 fps),
+    still well under the 2 s STALENESS_THRESHOLD_S window.
+
+    This test pins the capacity so any future refactor that touches
+    the queue size is caught in CI.
+    """
+
+    def _mjpeg_spec(self, role: str = "decqtest") -> mock.Mock:
+        spec = mock.Mock()
+        spec.role = role
+        spec.device = "/dev/null"
+        spec.width = 1280
+        spec.height = 720
+        spec.input_format = "mjpeg"
+        spec.pixel_format = None
+        return spec
+
+    def test_decode_queue_max_size_buffers_is_5(self, gst) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        spec = self._mjpeg_spec()
+        cam = CameraPipeline(spec=spec, gst=Gst, fps=30)
+        # build() constructs every element before attempting to link;
+        # even if link fails downstream the decode_queue is already
+        # on self._pipeline with its properties set.
+        try:
+            cam.build()
+        except Exception:
+            pass
+        pipeline = cam._pipeline
+        assert pipeline is not None, "build() must construct the pipeline object"
+        decode_queue = pipeline.get_by_name(f"decq_{spec.role}")
+        assert decode_queue is not None, (
+            "MJPEG decode_queue must be present in the pipeline (drop #28 F1 shipped in PR #807)"
+        )
+        max_buffers = decode_queue.get_property("max-size-buffers")
+        assert max_buffers == 5, (
+            f"decode_queue max-size-buffers must be 5 for 165 ms decode-stall "
+            f"cushion (drop #31 Ring 2 Fix C); got {max_buffers}"
+        )
+        # leaky=downstream (2) is the pre-existing property and must
+        # survive — sustained back-pressure must drop oldest frames at
+        # the queue, not backpressure into v4l2src.
+        leaky = decode_queue.get_property("leaky")
+        assert int(leaky) == 2, (
+            f"decode_queue must remain leaky=downstream (2) so jpegdec "
+            f"stalls never backpressure into v4l2src; got {leaky}"
+        )
+        cam.teardown()
+
+
 class TestColdStartFrameFlowGrace:
     """Delta 2026-04-14-brio-operator-startup-stall-reproducible regression pins.
 
