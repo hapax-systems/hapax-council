@@ -132,8 +132,15 @@ class TestServiceDropInInstall:
     ignored, so the existing ``audio-recorder.service.d/archive-path.conf``
     and ``contact-mic-recorder.service.d/archive-path.conf`` entries
     were never installed. Phase 3 adds ``tabbyapi.service.d/gpu-pin.conf``
-    and ``hapax-dmn.service.d/gpu-pin.conf`` and MUST install them for
-    the Option α → γ partition reconciliation to take effect.
+    and ``hapax-daimonion.service.d/gpu-pin.conf`` and MUST install them
+    for the Option α → γ partition reconciliation to take effect.
+
+    Historical note: the hapax-daimonion drop-in was originally mis-
+    placed on ``hapax-dmn.service.d/`` in PR #811 because beta's
+    supplement labeled the GPU-holding service as "hapax-dmn" while
+    the actual unit holding the GPU memory is ``hapax-daimonion.service``
+    (``-m agents.hapax_daimonion``). ``hapax-dmn.service`` runs
+    ``agents.dmn`` which is CPU-only. PR #814 corrected the target.
 
     These pins lock the drop-in walk in so any future refactor that
     drops it is caught in CI.
@@ -175,7 +182,12 @@ class TestPhase3DropInsPresent:
     """
 
     TABBYAPI_DROPIN = REPO_ROOT / "systemd" / "units" / "tabbyapi.service.d" / "gpu-pin.conf"
-    HAPAX_DMN_DROPIN = REPO_ROOT / "systemd" / "units" / "hapax-dmn.service.d" / "gpu-pin.conf"
+    HAPAX_DAIMONION_DROPIN = (
+        REPO_ROOT / "systemd" / "units" / "hapax-daimonion.service.d" / "gpu-pin.conf"
+    )
+    HAPAX_DMN_DROPIN_WRONG = (
+        REPO_ROOT / "systemd" / "units" / "hapax-dmn.service.d" / "gpu-pin.conf"
+    )
 
     def test_tabbyapi_dropin_exists(self) -> None:
         assert self.TABBYAPI_DROPIN.is_file(), (
@@ -183,10 +195,20 @@ class TestPhase3DropInsPresent:
             "Phase 3 partition reconciliation requires it"
         )
 
-    def test_hapax_dmn_dropin_exists(self) -> None:
-        assert self.HAPAX_DMN_DROPIN.is_file(), (
-            f"hapax-dmn gpu-pin drop-in missing at {self.HAPAX_DMN_DROPIN} — "
+    def test_hapax_daimonion_dropin_exists(self) -> None:
+        assert self.HAPAX_DAIMONION_DROPIN.is_file(), (
+            f"hapax-daimonion gpu-pin drop-in missing at {self.HAPAX_DAIMONION_DROPIN} — "
             "Phase 3 partition reconciliation requires it"
+        )
+
+    def test_hapax_dmn_dropin_not_present(self) -> None:
+        """PR #814 regression pin: the old mis-placed drop-in must not
+        come back. ``hapax-dmn.service`` is CPU-only and any GPU-pin
+        drop-in here is a no-op that misleads future readers."""
+        assert not self.HAPAX_DMN_DROPIN_WRONG.exists(), (
+            f"Stale hapax-dmn drop-in found at {self.HAPAX_DMN_DROPIN_WRONG}. "
+            "hapax-dmn.service (agents.dmn) is CPU-only; the GPU-pin drop-in "
+            "belongs on hapax-daimonion.service.d/ instead."
         )
 
     def test_tabbyapi_dropin_declares_option_gamma(self) -> None:
@@ -201,15 +223,15 @@ class TestPhase3DropInsPresent:
             "tabbyapi drop-in must expose both GPUs under Option γ"
         )
 
-    def test_hapax_dmn_dropin_pinned_to_gpu_0(self) -> None:
-        body = self.HAPAX_DMN_DROPIN.read_text(encoding="utf-8")
+    def test_hapax_daimonion_dropin_pinned_to_gpu_0(self) -> None:
+        body = self.HAPAX_DAIMONION_DROPIN.read_text(encoding="utf-8")
         assert "[Service]" in body
         assert "CUDA_DEVICE_ORDER=PCI_BUS_ID" in body, (
-            "hapax-dmn drop-in must pin CUDA_DEVICE_ORDER=PCI_BUS_ID for the "
+            "hapax-daimonion drop-in must pin CUDA_DEVICE_ORDER=PCI_BUS_ID for the "
             "same reason as tabbyapi (see Phase 3 spec §1.1)"
         )
         assert "CUDA_VISIBLE_DEVICES=0" in body, (
-            "hapax-dmn drop-in must pin to GPU 0 (5060 Ti) under Option γ"
+            "hapax-daimonion drop-in must pin to GPU 0 (5060 Ti) under Option γ"
         )
 
     def test_tabbyapi_service_timeout_180(self) -> None:
