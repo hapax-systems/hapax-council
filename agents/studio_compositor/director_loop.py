@@ -640,12 +640,20 @@ class DirectorLoop:
         # Context manager for Langfuse span — yields None if telemetry unavailable.
         from contextlib import nullcontext
 
+        # LRR Phase 1 item 5: tag the Langfuse span with the active research
+        # condition_id so traces in `stream-experiment` are filterable per
+        # condition. Read via the same cached helper as the reaction record.
+        _condition_id = _read_research_marker() or "none"
         span_ctx = (
             hapax_span(
                 "stream",
                 "reaction",
                 tags=["stream-experiment"],
-                metadata={"activity": self._activity, "slot": str(self._active_slot)},
+                metadata={
+                    "activity": self._activity,
+                    "slot": str(self._active_slot),
+                    "condition_id": _condition_id,
+                },
             )
             if hapax_span is not None
             else nullcontext(None)
