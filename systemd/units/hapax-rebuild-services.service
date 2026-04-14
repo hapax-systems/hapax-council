@@ -23,3 +23,12 @@ ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/project
 
 # hapax-mcp: pull-only (MCP server restarts on Claude Code reconnect)
 ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-mcp --sha-key hapax-mcp --pull-only
+
+# studio-compositor: restart if compositor, effect-graph, shader nodes, or
+# preset code changed. BETA-FINDING-P (queue 025 Phase 6) — migrates the
+# compositor off the local ``studio-compositor-reload.path`` unit, which
+# fired on any file-system change without a branch check and caused three
+# unexplained restarts during queue 023 research while alpha was editing
+# the compositor on a feature branch. rebuild-service.sh runs the
+# branch-check and skips the deploy on feature branches instead.
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-compositor.service --watch "agents/studio_compositor/ agents/effect_graph/ shared/" --sha-key compositor
