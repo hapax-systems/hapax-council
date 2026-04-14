@@ -94,9 +94,26 @@ else
     # the operator's work. Do NOT update SHA_FILE; the next cycle must keep
     # flagging this as stale until the operator rebases/merges. Notify once
     # per distinct origin/main SHA so the operator isn't spammed.
+    #
+    # Queue 025 round-4 Phase 6 Gap 3: upgrade visibility. Previously the
+    # "deploy skipped" line was only emitted via ``logger -t`` at default
+    # priority (user.notice) and the single-shot ntfy only fired once per
+    # new origin/main SHA. After alpha's queue 023 incident where two
+    # consecutive rebuild cycles silently skipped a voice-critical fix
+    # on a feature branch, we want the skip to be loud at every cycle.
+    # Changes:
+    #
+    #   1. upgrade ``logger`` to ``user.warning`` so the journal filters
+    #      it above informational messages
+    #   2. echo a ``[WARN] rebuild-service: ...`` line to stderr so
+    #      systemd captures it in the per-run status output
+    #   3. keep the throttled per-SHA ntfy so the phone still gets a
+    #      single actionable alert per advance (no spam)
     NOTIFIED_FILE="$STATE_DIR/last-notified-${SHA_KEY}-sha"
     LAST_NOTIFIED=$(cat "$NOTIFIED_FILE" 2>/dev/null || echo "none")
-    logger -t "$LOG_TAG" "repo not on main (on $CURRENT_BRANCH) — deploy skipped; SHA_FILE NOT updated"
+    skip_msg="repo not on main (on $CURRENT_BRANCH) — deploy skipped for ${SHA_KEY}; SHA_FILE NOT updated"
+    echo "[WARN] rebuild-service: $skip_msg" >&2
+    logger -t "$LOG_TAG" -p user.warning "$skip_msg"
     if [ "$CURRENT_SHA" != "$LAST_NOTIFIED" ]; then
         ntfy "$SHA_KEY stale on $CURRENT_BRANCH" \
             "Operator: rebase $CURRENT_BRANCH onto origin/main to deploy ${CURRENT_SHA:0:8}. rebuild-service.sh refuses to auto-advance a feature branch." \

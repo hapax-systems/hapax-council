@@ -32,3 +32,38 @@ ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/project
 # the compositor on a feature branch. rebuild-service.sh runs the
 # branch-check and skips the deploy on feature branches instead.
 ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-compositor.service --watch "agents/studio_compositor/ agents/effect_graph/ shared/" --sha-key compositor
+
+# ── Gap 2 (round-4 Phase 6 coverage expansion): 8 daemons that previously
+# had no rebuild coverage. The editing-then-restart pattern was manual for
+# all of them; now they are picked up by the 5-minute
+# hapax-rebuild-services.timer with the same branch-check discipline as
+# the services above. Watch lists are minimised to the subdirectories
+# each daemon actually imports so an unrelated edit to another module
+# under ``shared/`` still triggers every service — that is intentional
+# because the shared layer is cross-cutting.
+
+# visual-layer-aggregator: perception fusion feeding stimmung
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service visual-layer-aggregator.service --watch "agents/visual_layer_aggregator/ shared/" --sha-key vla
+
+# hapax-content-resolver: content scheduling / ground-surface enrichment
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-content-resolver.service --watch "agents/content_resolver/ shared/" --sha-key content-resolver
+
+# hapax-watch-receiver: biometric ingestion (watch_receiver is a single module, not a package)
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-watch-receiver.service --watch "agents/watch_receiver.py shared/" --sha-key watch-receiver
+
+# hapax-reverie: visual expression Python daemon (distinct from the Rust wgpu binary)
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-reverie.service --watch "agents/reverie/ shared/" --sha-key reverie
+
+# hapax-imagination-loop: imagination daemon loop (single-file modules)
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-imagination-loop.service --watch "agents/imagination.py agents/imagination_loop.py agents/imagination_resolver.py agents/imagination_context.py shared/" --sha-key imagination-loop
+
+# studio-fx: effect chain
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-fx.service --watch "agents/studio_fx/ agents/effect_graph/ shared/" --sha-key studio-fx
+
+# studio-fx-output: shell-launcher driving the GStreamer output bin; the
+# ExecStart IS the shell script, so its own source is the watch path.
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-fx-output.service --watch "systemd/units/studio-fx-output.sh" --sha-key studio-fx-output
+
+# studio-person-detector: camera-side person detection
+# (agents/studio_person_detector.py is the single-file module)
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-person-detector.service --watch "agents/studio_person_detector.py shared/" --sha-key studio-person-detector
