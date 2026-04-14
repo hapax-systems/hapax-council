@@ -1,0 +1,647 @@
+Process 2902187: /home/hapax/projects/hapax-council/.venv/bin/python -m agents.hapax_daimonion
+Python v3.12.13 (/home/hapax/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/bin/python3.12)
+
+Thread 2902187 (active): "MainThread"
+    main (agents/hapax_daimonion/__main__.py:117)
+        Locals:
+            parser: <ArgumentParser at 0x7ff28ad33bf0>
+            args: <Namespace at 0x7ff14c4b04a0>
+            configure_logging: <function at 0x7ff14c4ae5c0>
+            cfg: <DaimonionConfig at 0x7ff14c4a70c0>
+            cleanup_all_wavs: <function at 0x7ff14c4d4cc0>
+            _glob: <module at 0x7ff289b66cf0>
+            stale_wav: "/tmp/tmpppfdbqog.wav"
+            gc: <module at 0x7ff2790af790>
+            uvloop: <module at 0x7ff14c4d8360>
+            daemon: <VoiceDaemon at 0x7ff14c4b2600>
+            loop: <Loop at 0x4dd777b0>
+            sig: 2
+    <module> (agents/hapax_daimonion/__main__.py:124)
+    _run_code (<frozen runpy>:88)
+        Arguments:
+            code: <code at 0x393c24d0>
+            run_globals: {"__name__": "__main__", "__doc__": "Entry point for hapax-daimonion daemon.", "__package__": "agents.hapax_daimonion", ...}
+            init_globals: None
+            mod_name: "__main__"
+            mod_spec: <ModuleSpec at 0x7ff28ad33da0>
+            pkg_name: "agents.hapax_daimonion"
+            script_name: None
+        Locals:
+            loader: <SourceFileLoader at 0x7ff28ad33dd0>
+            fname: "/home/hapax/projects/hapax-council/agents/hapax_daimonion/__main__.py"
+            cached: "/home/hapax/projects/hapax-council/agents/hapax_daimonion/__pycache__/__main__.cpython-312.pyc"
+    _run_module_as_main (<frozen runpy>:198)
+        Arguments:
+            mod_name: "agents.hapax_daimonion.__main__"
+            alter_argv: True
+        Locals:
+            mod_spec: <ModuleSpec at 0x7ff28ad33da0>
+            code: <code at 0x393c24d0>
+            main_globals: {"__name__": "__main__", "__doc__": "Entry point for hapax-daimonion daemon.", "__package__": "agents.hapax_daimonion", ...}
+Thread 2903332 (idle): "OtelBatchSpanRecordProcessor"
+    wait (threading.py:359)
+        Arguments:
+            self: <Condition at 0x7ff14cdc7230>
+            timeout: 1
+        Locals:
+            waiter: <_thread.lock at 0x7fee6146b400>
+            saved_state: None
+            gotit: False
+    wait (threading.py:655)
+        Arguments:
+            self: <Event at 0x7ff14cdc7200>
+            timeout: 1
+        Locals:
+            signaled: False
+    worker (_shared_internal/__init__.py:159)
+        Arguments:
+            self: <BatchProcessor at 0x7ff14cdc6f90>
+        Locals:
+            sleep_interrupted: False
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff14cdc7020>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff14cdc7020>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff14cdc7020>
+Thread 2903360 (idle): "studio-ingestion-inference"
+    _wait (subprocess.py:2047)
+        Arguments:
+            self: <Popen at 0x7fee79666000>
+            timeout: 10.999993440000253
+        Locals:
+            endtime: 20183.107748515
+            delay: 0.05
+            pid: 0
+            sts: 0
+            remaining: 8.970908734001569
+    wait (subprocess.py:1264)
+        Arguments:
+            self: <Popen at 0x7fee79666000>
+            timeout: 10.999993440000253
+        Locals:
+            endtime: 20183.107748005
+    _communicate (subprocess.py:2141)
+        Arguments:
+            self: <Popen at 0x7fee79666000>
+            input: None
+            endtime: 20183.107747805
+            orig_timeout: 11
+        Locals:
+            stdout: None
+            stderr: None
+            selector: <PollSelector at 0x7fee796671a0>
+    communicate (subprocess.py:1209)
+        Arguments:
+            self: <Popen at 0x7fee79666000>
+            input: None
+            timeout: 11
+        Locals:
+            endtime: 20183.107747805
+    run (subprocess.py:550)
+        Locals:
+            input: None
+            capture_output: False
+            timeout: 11
+            check: False
+            popenargs: (["pacat", "--record", "--format=float32le", "--channels=1", "--rate=48000", "--file-format=wav"])
+            kwargs: {"stdout": <_io.BufferedWriter at 0x7fee7bf01fe0>}
+            process: <Popen at 0x7fee79666000>
+    _capture_audio (agents/hapax_daimonion/backends/studio_ingestion.py:156)
+        Arguments:
+            duration_s: 10
+            sample_rate: 48000
+        Locals:
+            tmp_path: "/home/hapax/.cache/hapax/tmp-wav/tmp89o13zq8.wav"
+            subprocess: <module at 0x7ff28acee1b0>
+            sf: <module at 0x7ff14c51b740>
+            tmp_wav_path: <function at 0x7ff14c4d4a40>
+            out_fh: <_io.BufferedWriter at 0x7fee7bf01fe0>
+    _run_inference_step (agents/hapax_daimonion/backends/studio_ingestion.py:287)
+        Arguments:
+            self: <StudioIngestionBackend at 0x7ff14c52e4e0>
+    _inference_loop (agents/hapax_daimonion/backends/studio_ingestion.py:280)
+        Arguments:
+            self: <StudioIngestionBackend at 0x7ff14c52e4e0>
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff14c52f830>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff14c52f830>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff14c52f830>
+Thread 2903387 (idle): "vision-yolo-inference"
+    wait (threading.py:359)
+        Arguments:
+            self: <Condition at 0x7ff14b9bcd10>
+            timeout: 3
+        Locals:
+            waiter: <_thread.lock at 0x7fee5a58eb00>
+            saved_state: None
+            gotit: False
+    wait (threading.py:655)
+        Arguments:
+            self: <Event at 0x7ff14c552930>
+            timeout: 3
+        Locals:
+            signaled: False
+    _inference_loop (agents/hapax_daimonion/backends/vision.py:1864)
+        Arguments:
+            self: <cell at 0x7ff14822bee0>
+        Locals:
+            gc: <module at 0x7ff2790af790>
+            model: <YOLOWorld at 0x7ff148194590>
+            camera_idx: 1193
+            _gpu_released: False
+            role: "operator"
+            _P: 0
+            _role_to_shm2: {"operator": "brio-operator", "desk": "c920-desk", "room": "c920-room", "overhead": "c920-overhead", ...}
+            _shm2: <PosixPath at 0x7fee5a5b09e0>
+            Path: 0
+            _role_to_shm: {"operator": "brio-operator", "desk": "c920-desk", "room": "c920-room", "overhead": "c920-overhead", ...}
+            shm_name: "brio-operator"
+            shm_path: <PosixPath at 0x7fee5a6c73e0>
+            frame: <numpy.ndarray at 0x7fee5a4af630>
+            data: <bytes at 0x7fef9725e360>
+            arr: <numpy.ndarray at 0x7fee5a5e1a10>
+            frame_b64: None
+            raw: <bytes at 0x7ff0b86db4a0>
+            _motion: 0.006968698937908497
+            prev: <numpy.ndarray at 0x7fee58f1cab0>
+            diff: <numpy.ndarray at 0x7fee5a5e19b0>
+            YOLO: 0
+            VocabularyManager: 0
+            vocab: ["person", "face", "hand", "computer monitor", "keyboard", "mouse", "synthesizer", "drum machine", "turntable", "mixer", ...]
+            _OpYOLO: 0
+            results: [<Results at 0x7fee796bf4d0>]
+            active_model: <YOLO at 0x7ff104edf020>
+            objects: [{"label": "chair", "confidence": 0.799, "box": [182.8, 157.6, 346.3, 356.1], "track_id": 1}, {"label": "book", ...}, ...]
+            person_count: 0
+            labels: <set at 0x7fee7b6b4120>
+            pose_summary: "unknown"
+            posture_from_yolo: "unknown"
+            boxes: <Boxes at 0x7fee5a447ad0>
+            i: 2
+            cls_id: 66
+            label: "keyboard"
+            conf: 0.30644434690475464
+            xyxy: [590.3082885742188, 217.97219848632813, 639.645263671875, 267.3940734863281]
+            track_id: 3583
+            face_result: None
+            _face_emb: None
+            SceneInventory: 0
+            obj: {"label": "keyboard", "confidence": 0.306, "box": [590.3, 218, 639.6, 267.4], "track_id": 3583}
+            _YOLO: 0
+            scene_type: "unknown"
+            scene_state_clip: None
+            threading: <module at 0x7ff28acc2750>
+            CLIPSceneClassifier: 0
+            _bg_load_clip: <function at 0x7ff09d1b0680>
+            nearest_person_distance: None
+            person_boxes: [[137.4, 100.4, 409.5, 356]]
+            gaze_direction: None
+            hand_gesture: "none"
+            ambient_brightness: 0.46471163534858384
+            color_temperature: "warm"
+            posture: "unknown"
+            detected_action: "unknown"
+            top_emotion: None
+            operator_confirmed: None
+            _action_lock: True
+            _thr: <module at 0x7ff28acc2750>
+            MoViNetA2: 0
+            _bg_load_movinet: <function at 0x7ff05c0ce8e0>
+            yolo_kpts: None
+            heuristic: "unknown"
+            hand_zones: []
+            per_cam: {"person_count": 1, "gaze_direction": "unknown", "top_emotion": "neutral", "hand_gesture": "none", "posture": "unknown", ...}
+            _can_enrich: <function at 0x7ff05c0cfa60>
+            person_dets: []
+            best: {"label": "person", "confidence": 0.934, "box": [137.4, 100.4, 409.5, 356], "track_id": 1}
+            eid: "f637559f-086"
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff14b9bd220>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff14b9bd220>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff14b9bd220>
+Thread 2903448 (idle): "evdev-input"
+    _monitor_loop (agents/hapax_daimonion/backends/evdev_input.py:126)
+        Arguments:
+            self: <EvdevInputBackend at 0x7ff14cea6360>
+        Locals:
+            fds: {24: <InputDevice at 0x7ff114f41250>, 26: <InputDevice at 0x7ff114f417d0>, 27: <InputDevice at 0x7ff114f41850>, ...}
+            r: []
+            _: []
+            fd: 26
+            device: <InputDevice at 0x7ff114f417d0>
+            _event: <InputEvent at 0x7fee613a8c70>
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff11579f830>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff11579f830>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff11579f830>
+Thread 2903452 (idle): "contact-mic-capture"
+    _capture_loop (agents/hapax_daimonion/backends/contact_mic.py:403)
+        Arguments:
+            self: <ContactMicBackend at 0x7ff11428aba0>
+        Locals:
+            retry_delay: 2
+            proc: <Popen at 0x7ff114203bf0>
+            cmd: ["pw-cat", "--record", "--target", "Contact Microphone", "--format", "s16", "--rate", "16000", "--channels", "1", "-"]
+            smoothed_energy: 0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005
+            prev_energy: 0
+            onset_times: <collections.deque at 0x7ff1066655d0>
+            gesture_onset_burst: []
+            last_onset_time: 0
+            last_gesture_check: 16421.39047812
+            frame_count: 117260
+            centroid: 0
+            current_gesture: "none"
+            energy_buffer: <collections.deque at 0x7ff1066656c0>
+            autocorr_peak: 0
+            data: <bytes at 0x7ff100004150>
+            now: 20174.158087548
+            raw_energy: 0
+            cutoff: 20173.158087548
+            recent_onsets: []
+            onset_rate: 0
+            activity: "idle"
+            _cm_err: 0
+            _cm_ok: 117260
+            _cm_deg: False
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff1144e5970>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff1144e5970>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff1144e5970>
+Thread 2903466 (idle): "ambient-audio"
+    _capture_loop (agents/hapax_daimonion/backends/ambient_audio.py:109)
+        Arguments:
+            self: <AmbientAudioBackend at 0x7ff106734830>
+        Locals:
+            retry_delay: 2
+            proc: <Popen at 0x7ff1065317f0>
+            cmd: ["pw-cat", "--record", "--target", "Yeti Stereo Microphone", "--format", "s16", "--rate", "16000", "--channels", "1", ...]
+            data: <bytes at 0x7ff0f8001ea0>
+            rms: 0
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff106735040>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff106735040>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff106735040>
+Thread 2903480 (idle): "mixer-input-capture"
+    _capture_loop (agents/hapax_daimonion/backends/mixer_input.py:295)
+        Arguments:
+            self: <MixerInputBackend at 0x7ff10679c7a0>
+        Locals:
+            proc: <Popen at 0x7ff105843bf0>
+            smoothed_energy: 0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005
+            beat_baseline: 0.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000012
+            beat_val: 0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000015
+            bass_peak: 0.00000000000000000000000000000000000000000000000000000000000000000000000000000007574191042198667
+            mid_peak: 0.0000000000000000000000000000000000000000000000000000000000000000000000000000004697615650244461
+            high_peak: 0.000000000000000000000000000000000000000000000000000000000000000000000000000001633678480727126
+            data: <bytes at 0x7ff0fc0035a0>
+            raw_rms: 0
+            raw_bass: 0
+            raw_mid: 0
+            raw_high: 0
+            norm_bass: 0
+            norm_mid: 0
+            norm_high: 0
+            active: False
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff106575820>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff106575820>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff106575820>
+Thread 2904396 (idle): "OtelPeriodicExportingMetricReader"
+    wait (threading.py:359)
+        Arguments:
+            self: <Condition at 0x7ff0abfa93d0>
+            timeout: 60
+        Locals:
+            waiter: <_thread.lock at 0x7ff09d3f7e80>
+            saved_state: None
+            gotit: False
+    wait (threading.py:655)
+        Arguments:
+            self: <Event at 0x7ff0abfa8680>
+            timeout: 60
+        Locals:
+            signaled: False
+    _ticker (metrics/_internal/export/__init__.py:520)
+        Arguments:
+            self: <PeriodicExportingMetricReader at 0x7ff0abfa9310>
+        Locals:
+            interval_secs: 60
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff0d4ccd370>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff0d4ccd370>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff0d4ccd370>
+Thread 2904461 (idle): "Thread-1"
+    wait (threading.py:359)
+        Arguments:
+            self: <Condition at 0x7ff09d3e7e30>
+            timeout: 10
+        Locals:
+            waiter: <_thread.lock at 0x7ff0b20f3400>
+            saved_state: None
+            gotit: False
+    wait (threading.py:655)
+        Arguments:
+            self: <Event at 0x7ff09d3e7e60>
+            timeout: 10
+        Locals:
+            signaled: False
+    run (tqdm/_monitor.py:60)
+        Arguments:
+            self: <TMonitor at 0x7ff0ab7732c0>
+        Locals:
+            cur_t: 1776120070.3636482
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <TMonitor at 0x7ff0ab7732c0>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <TMonitor at 0x7ff0ab7732c0>
+Thread 2905218 (idle): "ThreadPoolExecutor-4_0"
+    _worker (concurrent/futures/thread.py:90)
+        Arguments:
+            executor_reference: <weakref.ReferenceType at 0x7ff05c0cabb0>
+            work_queue: <_queue.SimpleQueue at 0x7ff080186660>
+            initializer: None
+            initargs: ()
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff05c0af560>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff05c0af560>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff05c0af560>
+Thread 2905255 (idle): "ThreadPoolExecutor-5_0"
+    _worker (concurrent/futures/thread.py:90)
+        Arguments:
+            executor_reference: <weakref.ReferenceType at 0x7ff05c0d5120>
+            work_queue: <_queue.SimpleQueue at 0x7ff05c0d4040>
+            initializer: None
+            initargs: ()
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff05c0d8470>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff05c0d8470>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff05c0d8470>
+Thread 2906328 (idle): "ThreadPoolExecutor-6_0"
+    _worker (concurrent/futures/thread.py:90)
+        Arguments:
+            executor_reference: <weakref.ReferenceType at 0x7fef846ef0b0>
+            work_queue: <_queue.SimpleQueue at 0x7fef846eecf0>
+            initializer: None
+            initargs: ()
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7fef845cede0>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7fef845cede0>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7fef845cede0>
+Thread 2912585 (active): "ThreadPoolExecutor-6_1"
+    _worker (concurrent/futures/thread.py:90)
+        Arguments:
+            executor_reference: <weakref.ReferenceType at 0x7feec86f1e40>
+            work_queue: <_queue.SimpleQueue at 0x7fef846eecf0>
+            initializer: None
+            initargs: ()
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7feec865e150>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7feec865e150>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7feec865e150>
+Thread 2926796 (active): "ThreadPoolExecutor-6_2"
+    forward (kokoro/istftnet.py:74)
+        Arguments:
+            self: <AdaINResBlock1 at 0x7fefc5bd4980>
+            x: <Tensor at 0x7fee613ed3b0>
+            s: <Tensor at 0x7fee7961aad0>
+        Locals:
+            c1: <Conv1d at 0x7fefc5bd4bc0>
+            c2: <Conv1d at 0x7fefc5bd5070>
+            n1: <AdaIN1d at 0x7fefc5bd53a0>
+            n2: <AdaIN1d at 0x7fefc5bd5610>
+            a1: <Parameter at 0x7fefc5ab5180>
+            a2: <Parameter at 0x7fefc5ab5270>
+            xt: <Tensor at 0x7fee5a56e260>
+    _call_impl (torch/nn/modules/module.py:1787)
+        Arguments:
+            self: <cell at 0x7fee78a7eb90>
+        Locals:
+            args: <cell at 0x7fee5a4ab610>
+            kwargs: <cell at 0x7fee7bfcf820>
+    _wrapped_call_impl (torch/nn/modules/module.py:1776)
+        Arguments:
+            self: <AdaINResBlock1 at 0x7fefc5bd4980>
+        Locals:
+            args: (<Tensor at 0x7fee7bf31fe0>, <Tensor at 0x7fee7961aad0>)
+            kwargs: {}
+    forward (kokoro/istftnet.py:309)
+        Arguments:
+            self: <Generator at 0x7fefc5e9a390>
+            x: <Tensor at 0x7feec98fd680>
+            s: <Tensor at 0x7fee7961aad0>
+            f0: <Tensor at 0x7fee7b687570>
+        Locals:
+            har_source: <Tensor at 0x7fee5a56ec60>
+            noi_source: <Tensor at 0x7fee63f147d0>
+            uv: <Tensor at 0x7fee58ae8a00>
+            har_spec: <Tensor at 0x7fee796aa620>
+            har_phase: <Tensor at 0x7fee79629fe0>
+            har: <Tensor at 0x7fee58ae8dc0>
+            i: 1
+            x_source: <Tensor at 0x7fee7bf31fe0>
+            xs: <Tensor at 0x7fee63fa40a0>
+            j: 2
+    _call_impl (torch/nn/modules/module.py:1787)
+        Arguments:
+            self: <cell at 0x7fee7bfc6aa0>
+        Locals:
+            args: <cell at 0x7fee78a5ce50>
+            kwargs: <cell at 0x7ff0b2386b90>
+    _wrapped_call_impl (torch/nn/modules/module.py:1776)
+        Arguments:
+            self: <Generator at 0x7fefc5e9a390>
+        Locals:
+            args: (<Tensor at 0x7ff0b2177890>, <Tensor at 0x7fee7961aad0>, <Tensor at 0x7fee79629630>)
+            kwargs: {}
+    forward (kokoro/istftnet.py:420)
+        Arguments:
+            self: <Decoder at 0x7fefc5b6d250>
+            asr: <Tensor at 0x7fee7b685180>
+            F0_curve: <Tensor at 0x7fee79629630>
+            N: <Tensor at 0x7fee79628230>
+            s: <Tensor at 0x7fee7961aad0>
+        Locals:
+            F0: <Tensor at 0x7fee7962a8f0>
+            x: <Tensor at 0x7ff0b2177890>
+            asr_res: <Tensor at 0x7fee7bf302d0>
+            res: False
+            block: <AdainResBlk1d at 0x7fefc5ec4950>
+    _call_impl (torch/nn/modules/module.py:1787)
+        Arguments:
+            self: <cell at 0x7fee78a64d60>
+        Locals:
+            args: <cell at 0x7fee78a64c70>
+            kwargs: <cell at 0x7ff09d14bdc0>
+    _wrapped_call_impl (torch/nn/modules/module.py:1776)
+        Arguments:
+            self: <Decoder at 0x7fefc5b6d250>
+        Locals:
+            args: (<Tensor at 0x7fee7b685180>, <Tensor at 0x7fee79629630>, <Tensor at 0x7fee79629450>, <Tensor at 0x7fee7961aad0>)
+            kwargs: {}
+    forward_with_tokens (kokoro/model.py:118)
+        Arguments:
+            self: <KModel at 0x7ff080157080>
+            input_ids: <Tensor at 0x7fee63f14230>
+            ref_s: <Tensor at 0x7fee704659a0>
+            speed: 1
+        Locals:
+            input_lengths: <Tensor at 0x7fee63f14140>
+            text_mask: <Tensor at 0x7ff0b2323660>
+            bert_dur: <Tensor at 0x7fee63f930c0>
+            d_en: <Tensor at 0x7fee7bf4c820>
+            s: <Tensor at 0x7fee613aad50>
+            d: <Tensor at 0x7ff0b2320c80>
+            x: <Tensor at 0x7fee608594f0>
+            _: (<Tensor at 0x7fee704dfc50>, <Tensor at 0x7fee7bf73110>)
+            duration: <Tensor at 0x7fee5a42dbd0>
+            pred_dur: <Tensor at 0x7fee7bf72440>
+            indices: <Tensor at 0x7fee7bf724e0>
+            pred_aln_trg: <Tensor at 0x7fee7bf73700>
+            en: <Tensor at 0x7fee7bf4e8a0>
+            F0_pred: <Tensor at 0x7fee79629630>
+            N_pred: <Tensor at 0x7fee79629450>
+            t_en: <Tensor at 0x7fee7962a0d0>
+            asr: <Tensor at 0x7fee7b685180>
+    decorate_context (torch/utils/_contextlib.py:124)
+        Locals:
+            args: (<KModel at 0x7ff080157080>, <Tensor at 0x7fee63f14230>, <Tensor at 0x7fee704659a0>, 1)
+            kwargs: {}
+    forward (kokoro/model.py:133)
+        Arguments:
+            self: <cell at 0x7fee78a65840>
+            phonemes: "ðə skɹˈin ɡˈɪvz ˌʌs ɐ ɹəpˈɔɹt ˌɔn ðə stˈAts kəmpˈOʒəɹ: ɐ mˈɛltdˌWn æt θˈɜɹTi θˈWzᵊnd fˈit. ðə ʃˈAdəɹz ʃˈO ˌʌs ðə stˈAt ʌv ð..."
+            ref_s: <Tensor at 0x7fee704659a0>
+            speed: 1
+            return_output: True
+        Locals:
+            input_ids: <Tensor at 0x7fee63f14230>
+    _call_impl (torch/nn/modules/module.py:1787)
+        Arguments:
+            self: <cell at 0x7fee78a66f80>
+        Locals:
+            args: <cell at 0x7fee78a65db0>
+            kwargs: <cell at 0x7fee78a66c50>
+    _wrapped_call_impl (torch/nn/modules/module.py:1776)
+        Arguments:
+            self: <KModel at 0x7ff080157080>
+        Locals:
+            args: (...)
+            kwargs: {"return_output": True}
+    infer (kokoro/pipeline.py:232)
+        Arguments:
+            model: <KModel at 0x7ff080157080>
+            ps: "ðə skɹˈin ɡˈɪvz ˌʌs ɐ ɹəpˈɔɹt ˌɔn ðə stˈAts kəmpˈOʒəɹ: ɐ mˈɛltdˌWn æt θˈɜɹTi θˈWzᵊnd fˈit. ðə ʃˈAdəɹz ʃˈO ˌʌs ðə stˈAt ʌv ð..."
+            pack: <Tensor at 0x7ff0b2e56c10>
+            speed: 1
+    __call__ (kokoro/pipeline.py:383)
+        Arguments:
+            self: <KPipeline at 0x7ff0aaf66c60>
+            text: [...]
+            voice: "af_heart"
+            speed: 1
+            split_pattern: "\n+"
+            model: <KModel at 0x7ff080157080>
+        Locals:
+            pack: <Tensor at 0x7ff0b2e56c10>
+            graphemes_index: 0
+            graphemes: "The screen gives us a report on the state\"s composure: a meltdown at 30,000 feet. The shaders show us the state of the uni..."
+            _: "ðə skɹˈin ɡˈɪvz ˌʌs ɐ ɹəpˈɔɹt ˌɔn ðə stˈAts kəmpˈOʒəɹ: ɐ mˈɛltdˌWn æt θˈɜɹTi θˈWzᵊnd fˈit. ðə ʃˈAdəɹz ʃˈO ˌʌs ðə stˈAt ʌv ð..."
+            tokens: [<MToken at 0x7fee5a43bbf0>, <MToken at 0x7fee5a439a30>, <MToken at 0x7fee796bcf50>, <MToken at 0x7fee796bd280>, ...]
+            gs: "The screen gives us a report on the state\"s composure: a meltdown at 30,000 feet. The shaders show us the state of the uni..."
+            ps: "ðə skɹˈin ɡˈɪvz ˌʌs ɐ ɹəpˈɔɹt ˌɔn ðə stˈAts kəmpˈOʒəɹ: ɐ mˈɛltdˌWn æt θˈɜɹTi θˈWzᵊnd fˈit. ðə ʃˈAdəɹz ʃˈO ˌʌs ðə stˈAt ʌv ð..."
+            tks: [<MToken at 0x7fee5a43bbf0>, <MToken at 0x7fee5a439a30>, <MToken at 0x7fee796bcf50>, <MToken at 0x7fee796bd280>, ...]
+    _synthesize_kokoro (agents/hapax_daimonion/tts.py:58)
+        Arguments:
+            self: <TTSManager at 0x7ff14c52c560>
+            text: "The screen gives us a report on the state\"s composure: a meltdown at 30,000 feet. The shaders show us the state of the uni..."
+        Locals:
+            pipeline: <KPipeline at 0x7ff0aaf66c60>
+            chunks: []
+    synthesize (agents/hapax_daimonion/tts.py:52)
+        Arguments:
+            self: <TTSManager at 0x7ff14c52c560>
+            text: "The screen gives us a report on the state\"s composure: a meltdown at 30,000 feet. The shaders show us the state of the uni..."
+            use_case: "conversation"
+        Locals:
+            tier: "kokoro"
+    run (concurrent/futures/thread.py:59)
+        Arguments:
+            self: <_WorkItem at 0x7fee5a438a70>
+    _worker (concurrent/futures/thread.py:93)
+        Arguments:
+            executor_reference: <weakref.ReferenceType at 0x7ff0b2391170>
+            work_queue: <_queue.SimpleQueue at 0x7fef846eecf0>
+            initializer: None
+            initargs: ()
+        Locals:
+            work_item: <_WorkItem at 0x7fee5a438a70>
+    run (threading.py:1012)
+        Arguments:
+            self: <Thread at 0x7ff0b22ebc20>
+    _bootstrap_inner (threading.py:1075)
+        Arguments:
+            self: <Thread at 0x7ff0b22ebc20>
+    _bootstrap (threading.py:1032)
+        Arguments:
+            self: <Thread at 0x7ff0b22ebc20>
