@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agents.hapax_daimonion.ntfy_listener import subscribe_ntfy  # noqa: F401 (patched in tests)
@@ -12,6 +14,237 @@ if TYPE_CHECKING:
     from agents.hapax_daimonion.daemon import VoiceDaemon
 
 log = logging.getLogger("hapax_daimonion")
+
+
+# BETA-FINDING-L (queue 025 Phase 2, queue 026 Phase 1): background-task
+# supervisor. Prior behaviour was fire-and-forget create_task — exceptions
+# were held in the Task object and only observed at shutdown, so crashes
+# during normal operation were invisible. The supervisor walks the daemon's
+# named task map every main-loop tick, observes crashes, and applies the
+# per-task policy below.
+#
+# Day-1 rollout (this PR): all tasks live in RECREATE_TASKS. Recreation is
+# always a strictly better signal than silent death. After a 24-hour
+# observation window we can promote the three structurally critical tasks
+# (audio_loop, cpal_runner, cpal_impingement_loop) into CRITICAL_TASKS so
+# their crashes trigger SystemExit(1) and let systemd restart the whole
+# daemon. Rationale for delaying the promotion: if the supervisor itself
+# has a latent bug, RECREATE + log is strictly better than fail-hard with
+# a ~2–3 min cold-start cost (STT + TTS preload + CPAL signal cache +
+# bridge phrase presynthesis).
+CRITICAL_TASKS: frozenset[str] = frozenset()
+RECREATE_TASKS: frozenset[str] = frozenset(
+    {
+        "proactive_delivery_loop",
+        "ntfy_subscribe",
+        "workspace_monitor",
+        "audio_loop",
+        "perception_loop",
+        "ambient_refresh_loop",
+        "cpal_runner",
+        "cpal_impingement_loop",
+        "impingement_consumer_loop",
+        "actuation_loop",
+    }
+)
+LOG_AND_CONTINUE_TASKS: frozenset[str] = frozenset()
+
+# Maximum recreations before a RECREATE task escalates to SystemExit.
+# Chosen so a transient network blip (ntfy, litellm) survives but a
+# permanent code bug is escalated quickly enough that the operator sees it.
+_RECREATE_RETRY_BUDGET = 10
+
+# Exponential backoff ceiling when recreating a RECREATE task, seconds.
+_RECREATE_BACKOFF_MAX_S = 30.0
+
+
+def _make_task(
+    daemon: VoiceDaemon,
+    name: str,
+    factory: Callable[[], Awaitable[None]],
+) -> asyncio.Task:
+    """Create a supervised background task.
+
+    Populates both ``daemon._background_tasks`` (legacy list used by the
+    shutdown path) and ``daemon._supervised_tasks`` (name→(task, factory)
+    dict walked by the supervisor loop).
+    """
+    task = asyncio.create_task(factory(), name=name)
+    daemon._background_tasks.append(task)
+    daemon._supervised_tasks[name] = (task, factory)
+    return task
+
+
+def _supervise_background_tasks(daemon: VoiceDaemon) -> None:
+    """Observe crashes in supervised background tasks and apply per-task policy.
+
+    Called as the first action of every main-loop iteration. Walks
+    ``daemon._supervised_tasks`` once per tick, so a crash is visible at
+    most one tick (~1s) after it happens.
+
+    Policy by task name:
+
+    * ``CRITICAL_TASKS``: log the exception, emit a structured event, and
+      raise ``SystemExit(1)`` so systemd restarts the whole daemon. These
+      are tasks whose silent death yields the "alive but silent" failure
+      mode that motivated this supervisor.
+    * ``RECREATE_TASKS``: log the exception and schedule a delayed
+      recreation via ``_relaunch_with_delay``. Exponential backoff capped
+      at ``_RECREATE_BACKOFF_MAX_S``. After ``_RECREATE_RETRY_BUDGET``
+      consecutive crashes the task escalates to ``SystemExit(1)`` so a
+      permanent code bug does not hide in an infinite retry loop.
+    * ``LOG_AND_CONTINUE_TASKS``: log the exception and drop the task
+      from the supervisor map. These are strictly decorative subsystems.
+
+    Tasks that are cancelled (shutdown path) are skipped. Tasks that
+    complete normally are recreated if they belong to RECREATE_TASKS or
+    CRITICAL_TASKS (all 10 daimonion background tasks are infinite
+    loops, so normal return is itself unexpected and worth relaunching).
+    """
+    for name, (task, factory) in list(daemon._supervised_tasks.items()):
+        if not task.done():
+            continue
+        if task.cancelled():
+            # Shutdown path cancelled us — do not recreate or raise.
+            continue
+
+        exc = task.exception()
+        if exc is None:
+            if name in RECREATE_TASKS or name in CRITICAL_TASKS:
+                log.warning(
+                    "background task %s returned without exception; recreating "
+                    "(infinite-loop tasks should not terminate normally)",
+                    name,
+                )
+                daemon._background_tasks.append(asyncio.create_task(factory(), name=name))
+                daemon._supervised_tasks[name] = (
+                    daemon._background_tasks[-1],
+                    factory,
+                )
+            else:
+                del daemon._supervised_tasks[name]
+            continue
+
+        log.exception(
+            "background task %s crashed: %s",
+            name,
+            exc,
+            exc_info=exc,
+        )
+
+        if name in CRITICAL_TASKS:
+            log.critical(
+                "critical task %s crashed — daemon entering fail-closed state "
+                "(systemd will restart)",
+                name,
+            )
+            _emit_crash_event(daemon, name, exc, policy="systemexit")
+            raise SystemExit(1)
+
+        if name in RECREATE_TASKS:
+            retries = int(getattr(task, "_hapax_retry_count", 0)) + 1
+            if retries > _RECREATE_RETRY_BUDGET:
+                log.error(
+                    "background task %s exceeded retry budget (%d); escalating to SystemExit",
+                    name,
+                    _RECREATE_RETRY_BUDGET,
+                )
+                _emit_crash_event(daemon, name, exc, policy="retry_exhausted_systemexit")
+                raise SystemExit(1)
+
+            delay = min(_RECREATE_BACKOFF_MAX_S, 2.0 ** (retries - 1))
+            log.info(
+                "recreating %s after %.1fs (retry %d/%d)",
+                name,
+                delay,
+                retries,
+                _RECREATE_RETRY_BUDGET,
+            )
+            _emit_crash_event(
+                daemon,
+                name,
+                exc,
+                policy="recreate",
+                retry_count=retries,
+            )
+
+            relaunch_task = asyncio.create_task(
+                _relaunch_with_delay(daemon, name, factory, delay, retries),
+                name=f"_relaunch_{name}",
+            )
+            daemon._background_tasks.append(relaunch_task)
+            # Remove the dead entry; _relaunch_with_delay will repopulate it.
+            del daemon._supervised_tasks[name]
+            continue
+
+        if name in LOG_AND_CONTINUE_TASKS:
+            log.warning("non-critical task %s dropped after crash", name)
+            _emit_crash_event(daemon, name, exc, policy="drop")
+            del daemon._supervised_tasks[name]
+            continue
+
+        # Unknown task name — default to SystemExit so silent drift cannot
+        # hide a new unsupervised task.
+        log.critical(
+            "unknown background task %s crashed — defaulting to SystemExit",
+            name,
+        )
+        _emit_crash_event(daemon, name, exc, policy="unknown_task_systemexit")
+        raise SystemExit(1)
+
+
+async def _relaunch_with_delay(
+    daemon: VoiceDaemon,
+    name: str,
+    factory: Callable[[], Awaitable[None]],
+    delay: float,
+    retry_count: int,
+) -> None:
+    """Sleep ``delay`` seconds then install a fresh task under ``name``.
+
+    Carries the retry counter forward on the new task via a mangled
+    attribute so the supervisor can observe repeated crashes against the
+    budget.
+    """
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        return
+    if not getattr(daemon, "_running", False):
+        return
+    inner = asyncio.create_task(factory(), name=name)
+    inner._hapax_retry_count = retry_count  # type: ignore[attr-defined]
+    daemon._background_tasks.append(inner)
+    daemon._supervised_tasks[name] = (inner, factory)
+
+
+def _emit_crash_event(
+    daemon: VoiceDaemon,
+    name: str,
+    exc: BaseException,
+    policy: str,
+    retry_count: int | None = None,
+) -> None:
+    """Emit a structured ``background_task_crash`` event for Langfuse/telemetry.
+
+    Swallows its own exceptions — the supervisor is the last line of
+    defence and must never crash the daemon because of a telemetry bug.
+    """
+    try:
+        event_log = getattr(daemon, "event_log", None)
+        if event_log is None or not hasattr(event_log, "emit"):
+            return
+        payload = {
+            "task_name": name,
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+            "policy": policy,
+        }
+        if retry_count is not None:
+            payload["retry_count"] = retry_count
+        event_log.emit("background_task_crash", **payload)
+    except Exception:
+        log.debug("background_task_crash event emission failed", exc_info=True)
 
 
 async def run_inner(daemon: VoiceDaemon) -> None:
@@ -131,22 +364,28 @@ async def run_inner(daemon: VoiceDaemon) -> None:
 
     daemon.event_log.cleanup()
 
-    # Start background tasks
-    daemon._background_tasks.append(asyncio.create_task(proactive_delivery_loop(daemon)))
-    daemon._background_tasks.append(
-        asyncio.create_task(
-            subscribe_ntfy(_NTFY_BASE_URL, _NTFY_TOPICS, lambda n: ntfy_callback(daemon, n))
-        )
+    # Start background tasks via the supervised-task helper. Each task is
+    # registered with a name and a zero-arg factory so the supervisor can
+    # recreate it from scratch on crash. Factory closures capture `daemon`.
+    _make_task(
+        daemon,
+        "proactive_delivery_loop",
+        lambda: proactive_delivery_loop(daemon),
     )
-    daemon._background_tasks.append(asyncio.create_task(daemon.workspace_monitor.run()))
+    _make_task(
+        daemon,
+        "ntfy_subscribe",
+        lambda: subscribe_ntfy(_NTFY_BASE_URL, _NTFY_TOPICS, lambda n: ntfy_callback(daemon, n)),
+    )
+    _make_task(daemon, "workspace_monitor", daemon.workspace_monitor.run)
     if daemon._audio_input.is_active:
-        daemon._background_tasks.append(asyncio.create_task(audio_loop(daemon)))
+        _make_task(daemon, "audio_loop", lambda: audio_loop(daemon))
 
-    daemon._background_tasks.append(asyncio.create_task(perception_loop(daemon)))
-    daemon._background_tasks.append(asyncio.create_task(ambient_refresh_loop(daemon)))
+    _make_task(daemon, "perception_loop", lambda: perception_loop(daemon))
+    _make_task(daemon, "ambient_refresh_loop", lambda: ambient_refresh_loop(daemon))
 
     # CPAL runner + impingement consumer
-    daemon._background_tasks.append(asyncio.create_task(daemon._cpal_runner.run()))
+    _make_task(daemon, "cpal_runner", daemon._cpal_runner.run)
 
     async def _cpal_impingement_loop() -> None:
         """Poll impingements and route through CPAL control loop."""
@@ -164,23 +403,30 @@ async def run_inner(daemon: VoiceDaemon) -> None:
                 log.debug("CPAL impingement consumer error", exc_info=True)
             await asyncio.sleep(0.5)
 
-    from pathlib import Path
-
-    daemon._background_tasks.append(asyncio.create_task(_cpal_impingement_loop()))
+    _make_task(daemon, "cpal_impingement_loop", _cpal_impingement_loop)
     # Affordance-dispatch loop: owns everything recruited EXCEPT spontaneous speech
     # (Thompson learning, notification dispatch, cross-modal coordination,
     # system awareness, capability discovery). Uses its own cursor file
     # (impingement-cursor-daimonion-affordance.txt) so it sees every impingement
     # independently of the CPAL loop. See run_loops_aux.impingement_consumer_loop
     # for the dispatch semantics; see cpal/impingement_adapter.py for CPAL's scope.
-    daemon._background_tasks.append(asyncio.create_task(impingement_consumer_loop(daemon)))
+    _make_task(
+        daemon,
+        "impingement_consumer_loop",
+        lambda: impingement_consumer_loop(daemon),
+    )
     log.info("CPAL runner + impingement consumers (CPAL + affordance) started")
 
     if daemon.cfg.mc_enabled or daemon.cfg.obs_enabled:
-        daemon._background_tasks.append(asyncio.create_task(actuation_loop(daemon)))
+        _make_task(daemon, "actuation_loop", lambda: actuation_loop(daemon))
 
     try:
         while daemon._running:
+            # BETA-FINDING-L: observe crashes in supervised background tasks
+            # before touching any other state. Crashes surface here at most
+            # one tick late (~1s) rather than invisibly at shutdown.
+            _supervise_background_tasks(daemon)
+
             # Session timeout is handled by CPAL runner (_tick session lifecycle)
             daemon.notifications.prune_expired()
 
@@ -227,6 +473,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
             task.cancel()
         await asyncio.gather(*daemon._background_tasks, return_exceptions=True)
         daemon._background_tasks.clear()
+        daemon._supervised_tasks.clear()
 
         # 6. Stop managed resources (thread pools, etc.)
         if hasattr(daemon, "resource_registry"):

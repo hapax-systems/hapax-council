@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable  # noqa: F401 (used in string-quoted annotation)
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -160,6 +161,11 @@ class VoiceDaemon:
 
         self._running = True
         self._background_tasks: list[asyncio.Task] = []
+        # BETA-FINDING-L (queue 025 Phase 2 / queue 026 Phase 1): named
+        # task → (task, factory) map for the supervisor loop in run_inner.
+        # Legacy _background_tasks is still populated for shutdown-time
+        # cancellation; supervisor walks this dict to observe crashes.
+        self._supervised_tasks: dict[str, tuple[asyncio.Task, Callable[[], Awaitable[None]]]] = {}
         self._pipeline_task: asyncio.Task | None = None
         self._gemini_session = None
         events_dir = Path.home() / ".local" / "share" / "hapax-daimonion"

@@ -162,6 +162,7 @@ def make_stub_daemon(**overrides):
     # Core state
     daemon._running = False
     daemon._background_tasks = []
+    daemon._supervised_tasks = {}
     daemon._pipeline_task = None
     daemon._gemini_session = None
     daemon._loop = None

@@ -176,9 +176,21 @@ class TestSpawnRegressionPin:
         from agents.hapax_daimonion import run_inner
 
         src = inspect.getsource(run_inner)
-        assert "asyncio.create_task(impingement_consumer_loop(daemon))" in src, (
+        # BETA-FINDING-L: the loop is now spawned through the
+        # supervised-task helper (_make_task), not legacy
+        # asyncio.create_task. Either form satisfies the regression
+        # pin — the thing we must NEVER do is silently drop the call
+        # (the failure mode PR #555 introduced). Both forms land the
+        # same literal "impingement_consumer_loop(daemon)" callsite.
+        assert "impingement_consumer_loop(daemon)" in src, (
             "run_inner.py must spawn impingement_consumer_loop as a "
             "background task next to _cpal_impingement_loop."
+        )
+        # And the task must be registered under the literal name so the
+        # supervisor can observe crashes.
+        assert '"impingement_consumer_loop"' in src, (
+            "impingement_consumer_loop task must be registered by name "
+            "with the supervisor (_make_task daemon, 'impingement_consumer_loop', ...)"
         )
 
     def test_impingement_consumer_loop_uses_affordance_cursor_path(self) -> None:
