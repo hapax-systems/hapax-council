@@ -42,12 +42,35 @@ try:
         CollectorRegistry,
         Counter,
         Gauge,
+        Histogram,
         start_http_server,
     )
 
     _PROMETHEUS_AVAILABLE = True
 except ImportError:
     log.warning("prometheus_client not available — metrics disabled")
+
+
+# Livestream-performance-map Sprint 6 F4 / W1.3: frame-interval histogram
+# bucket edges (in seconds). Beta's research calls out ``p99 ≤ 34 ms`` as
+# the headline target, so the buckets are dense around the 30 fps ideal
+# (33 ms) and spread out for the long tail.
+_FRAME_INTERVAL_BUCKETS: tuple[float, ...] = (
+    0.005,  # 5 ms   — absurdly fast (rare; a frame gap that short is probably
+    #                  a measurement artifact)
+    0.010,  # 10 ms  — 100 fps, only a burst
+    0.016,  # 16 ms  — 60 fps
+    0.020,  # 20 ms  — 50 fps
+    0.025,  # 25 ms  — 40 fps
+    0.030,  # 30 ms  — 33 fps, just above target
+    0.033,  # 33 ms  — target (30 fps nominal period)
+    0.040,  # 40 ms  — 25 fps, noticeable
+    0.050,  # 50 ms  — 20 fps, very noticeable
+    0.067,  # 67 ms  — 15 fps, stuttering
+    0.100,  # 100 ms — visible freeze
+    0.200,  # 200 ms
+    0.500,  # 500 ms — long stall
+)
 
 
 # --------------------------- metric definitions ---------------------------
@@ -58,6 +81,7 @@ CAM_FRAMES_TOTAL: Any = None
 CAM_KERNEL_DROPS_TOTAL: Any = None
 CAM_BYTES_TOTAL: Any = None
 CAM_LAST_FRAME_AGE: Any = None
+CAM_FRAME_INTERVAL: Any = None
 CAM_STATE: Any = None
 CAM_TRANSITIONS_TOTAL: Any = None
 CAM_RECONNECT_ATTEMPTS_TOTAL: Any = None
@@ -69,6 +93,7 @@ COMP_WATCHDOG_LAST_FED: Any = None
 COMP_CAMERAS_TOTAL: Any = None
 COMP_CAMERAS_HEALTHY: Any = None
 COMP_PIPELINE_RESTARTS_TOTAL: Any = None
+COMP_GPU_VRAM_BYTES: Any = None
 RTMP_BYTES_TOTAL: Any = None
 RTMP_CONNECTED: Any = None
 RTMP_ENCODER_ERRORS_TOTAL: Any = None
@@ -91,6 +116,7 @@ def _init_metrics() -> None:
     global CAM_KERNEL_DROPS_TOTAL
     global CAM_BYTES_TOTAL
     global CAM_LAST_FRAME_AGE
+    global CAM_FRAME_INTERVAL
     global CAM_STATE
     global CAM_TRANSITIONS_TOTAL
     global CAM_RECONNECT_ATTEMPTS_TOTAL
@@ -102,6 +128,7 @@ def _init_metrics() -> None:
     global COMP_CAMERAS_TOTAL
     global COMP_CAMERAS_HEALTHY
     global COMP_PIPELINE_RESTARTS_TOTAL
+    global COMP_GPU_VRAM_BYTES
     global RTMP_BYTES_TOTAL
     global RTMP_CONNECTED
     global RTMP_ENCODER_ERRORS_TOTAL
@@ -145,6 +172,24 @@ def _init_metrics() -> None:
         "studio_camera_last_frame_age_seconds",
         "Monotonic seconds since the last buffer observed",
         ["role", "model"],
+        registry=REGISTRY,
+    )
+    # Livestream-performance-map Sprint 6 F4 / W1.3: frame-interval
+    # histogram. Beta's Sprint 6 audit identified that
+    # ``studio_camera_frames_total`` + ``studio_camera_last_frame_age_seconds``
+    # (counter + gauge) are not enough to measure the research map's
+    # headline target ``p99 ≤ 34 ms frame time`` — a long tail of 100 ms
+    # frames hides inside a 30 fps counter-derived mean. This histogram
+    # exposes the per-camera frame-interval distribution so a Prometheus
+    # ``histogram_quantile(0.99, ...)`` query returns the actual p99.
+    # Updated from ``pad_probe_on_buffer`` on every v4l2src-observed
+    # buffer, which already has the monotonic timestamp bookkeeping.
+    CAM_FRAME_INTERVAL = Histogram(
+        "studio_camera_frame_interval_seconds",
+        "Per-camera inter-frame interval distribution (seconds between "
+        "consecutive buffers at the producer pad probe)",
+        ["role", "model"],
+        buckets=_FRAME_INTERVAL_BUCKETS,
         registry=REGISTRY,
     )
     CAM_STATE = Gauge(
@@ -207,6 +252,21 @@ def _init_metrics() -> None:
         "studio_compositor_pipeline_restarts_total",
         "Pipeline teardown + rebuild events",
         ["pipeline"],
+        registry=REGISTRY,
+    )
+
+    # Livestream-performance-map Sprint 1 F4 / W1.9: compositor VRAM
+    # self-report. The poll loop reads ``nvidia-smi --query-compute-apps``
+    # filtered by this process's PID and publishes the observed VRAM.
+    # Sprint 1 noted a 3 GB VRAM footprint for the GStreamer-only
+    # compositor (post PR #751's libtorch removal) and flagged it as
+    # worth investigating. Without this gauge, the compositor's VRAM
+    # footprint is invisible to Grafana — it only shows up on host
+    # ``nvidia-smi`` snapshots. Cross-ref queue 026 P3 (texture pool
+    # ``reuse_ratio=0``, still open).
+    COMP_GPU_VRAM_BYTES = Gauge(
+        "studio_compositor_gpu_vram_bytes",
+        "VRAM used by the compositor process, in bytes (0 if unavailable)",
         registry=REGISTRY,
     )
 
@@ -422,11 +482,13 @@ def pad_probe_on_buffer(pad: Any, info: Any, role: str) -> int:
     except Exception:
         return 0
 
+    now = time.monotonic()
     with _lock:
         model = _cam_models.get(role, "unknown")
         last = _last_seq.get(role, -1)
+        prev_mono = _last_frame_monotonic.get(role, 0.0)
         _last_seq[role] = seq
-        _last_frame_monotonic[role] = time.monotonic()
+        _last_frame_monotonic[role] = now
 
     if CAM_FRAMES_TOTAL is None:
         return 0
@@ -435,6 +497,16 @@ def pad_probe_on_buffer(pad: Any, info: Any, role: str) -> int:
     CAM_BYTES_TOTAL.labels(role=role, model=model).inc(size)
     if last >= 0 and seq > last + 1:
         CAM_KERNEL_DROPS_TOTAL.labels(role=role, model=model).inc(seq - last - 1)
+
+    # W1.3: observe the per-camera frame interval for the p99 histogram.
+    # Skip the first observation (prev_mono == 0.0 before any frames) and
+    # any negative / zero delta (shouldn't happen — monotonic clock — but
+    # defensive against wraparounds on exotic platforms).
+    if CAM_FRAME_INTERVAL is not None and prev_mono > 0.0:
+        interval_s = now - prev_mono
+        if interval_s > 0.0:
+            CAM_FRAME_INTERVAL.labels(role=role, model=model).observe(interval_s)
+
     return 0
 
 
@@ -536,6 +608,7 @@ def _poll_loop() -> None:
             COMP_WATCHDOG_LAST_FED.set(wd_age)
 
         _update_memory_footprint()
+        _update_gpu_vram()
         _mirror_reverie_pool_metrics()
 
 
@@ -565,6 +638,69 @@ def record_tts_client_timeout() -> None:
     if COMP_TTS_CLIENT_TIMEOUT_TOTAL is None:
         return
     COMP_TTS_CLIENT_TIMEOUT_TOTAL.inc()
+
+
+# Lazy-initialised subprocess command cache for the VRAM poll so we only
+# build the argv list once per process. ``nvidia-smi`` is invoked at most
+# once per second from ``_poll_loop``.
+_NVIDIA_SMI_CMD: tuple[str, ...] = (
+    "nvidia-smi",
+    "--query-compute-apps=pid,used_memory",
+    "--format=csv,noheader,nounits",
+)
+
+
+def _update_gpu_vram() -> None:
+    """Publish the compositor's VRAM footprint to ``studio_compositor_gpu_vram_bytes``.
+
+    Calls ``nvidia-smi --query-compute-apps=pid,used_memory --format=csv``
+    and filters for the current process's PID. Falls back to 0 when
+    nvidia-smi is missing (headless test environment), when the
+    subprocess fails, or when the process has no GPU context yet.
+
+    Sprint 1 F4 / W1.9: the compositor was observed at 3 GB VRAM
+    post-libtorch-removal and flagged for attribution investigation. This
+    gauge makes the ongoing footprint visible to Grafana + alertable.
+    """
+    if COMP_GPU_VRAM_BYTES is None:
+        return
+    try:
+        import os
+        import subprocess
+
+        my_pid = os.getpid()
+        result = subprocess.run(
+            _NVIDIA_SMI_CMD,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if result.returncode != 0:
+            return
+        # Format: "pid, used_memory" — used_memory is MiB (--nounits strips the suffix).
+        for line in result.stdout.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid != my_pid:
+                continue
+            try:
+                mib = int(parts[1])
+            except ValueError:
+                return
+            COMP_GPU_VRAM_BYTES.set(mib * 1024 * 1024)
+            return
+        # PID not in the output — no GPU context held yet. Set 0 so
+        # Grafana sees a real ``0`` instead of stale values from a prior tick.
+        COMP_GPU_VRAM_BYTES.set(0)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # nvidia-smi missing (test environments), or subprocess hung.
+        return
 
 
 def _mirror_reverie_pool_metrics() -> None:

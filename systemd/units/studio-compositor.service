@@ -23,6 +23,12 @@ ExecStartPre=/usr/bin/find %h/.cache/hapax-compositor/hls -type f -delete
 ExecStartPre=%h/projects/hapax-council/scripts/studio-install-udev-rules.sh
 ExecStartPre=%h/projects/hapax-council/systemd/units/studio-camera-setup.sh
 ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.studio_compositor
+# Livestream-performance-map Sprint 6 F7 / W1.5: postmortem capture.
+# Fires on every watchdog timeout, segfault, restart, or manual stop.
+# Saves nvidia-smi dump + journal tail + /dev/shm state + last metrics
+# scrape to ~/hapax-state/postmortem/studio-compositor/{ts}/. Never
+# exits non-zero — a broken hook must not block the shutdown cascade.
+ExecStopPost=%h/projects/hapax-council/scripts/studio-compositor-postmortem.sh
 Restart=on-failure
 RestartSec=10
 SuccessExitStatus=SIGTERM

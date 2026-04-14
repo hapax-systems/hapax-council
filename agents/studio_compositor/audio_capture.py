@@ -43,6 +43,62 @@ MEL_BAND_NAMES = [
 ]
 
 
+# W1.7: per-chunk DSP timing histogram. Registered lazily on the
+# compositor's custom ``REGISTRY`` (``agents.studio_compositor.metrics``)
+# so it surfaces on ``:9482`` alongside the other compositor metrics.
+# Bucket edges are in milliseconds spanning from ``far under budget``
+# (1 ms) to ``frame-dropping`` (20+ ms — a single chunk taking 20 ms out
+# of its 10.7 ms period means DSP is falling behind real-time).
+_DSP_MS_BUCKETS: tuple[float, ...] = (
+    0.5,
+    1.0,
+    2.0,
+    3.0,
+    5.0,
+    7.5,
+    10.0,
+    12.5,
+    15.0,
+    20.0,
+    30.0,
+    50.0,
+)
+_AUDIO_DSP_MS_HISTOGRAM: object | None = None
+
+
+def _observe_dsp_ms(dsp_ms: float) -> None:
+    """Lazy-init + observe the audio-DSP timing histogram.
+
+    Swallows construction errors so audio capture never crashes on
+    metrics failures. The import lives inside the function so that
+    headless test environments without ``prometheus_client`` don't
+    break audio_capture's module import.
+    """
+    global _AUDIO_DSP_MS_HISTOGRAM
+    if _AUDIO_DSP_MS_HISTOGRAM is None:
+        try:
+            from prometheus_client import Histogram
+
+            from agents.studio_compositor.metrics import (
+                REGISTRY as _COMPOSITOR_METRICS_REGISTRY,
+            )
+
+            _AUDIO_DSP_MS_HISTOGRAM = Histogram(
+                "compositor_audio_dsp_ms",
+                "Per-chunk DSP duration for audio_capture._process_chunk "
+                "(Hann FFT + onset classify + AGC). 93 fps target.",
+                buckets=_DSP_MS_BUCKETS,
+                registry=_COMPOSITOR_METRICS_REGISTRY,
+            )
+        except Exception:
+            log.debug("audio DSP histogram unavailable", exc_info=True)
+            return
+    try:
+        _AUDIO_DSP_MS_HISTOGRAM.observe(dsp_ms)  # type: ignore[union-attr]
+    except Exception:
+        pass
+
+
 def _hz_to_mel(hz: float) -> float:
     return 2595.0 * np.log10(1.0 + hz / 700.0)
 
@@ -202,7 +258,17 @@ class CompositorAudioCapture:
                     data = self._proc.stdout.read(CHUNK_BYTES)  # type: ignore[union-attr]
                     if not data or len(data) < CHUNK_BYTES:
                         break
+                    # W1.7: per-chunk DSP timing observation. Beta's
+                    # Sprint 3 F5 noted audio_capture runs at 93 fps but
+                    # the per-chunk DSP cost is unmetered, so there's no
+                    # way to tell whether the FFT + onset classifier +
+                    # AGC update is keeping up. A Prometheus histogram
+                    # exposes the distribution so sustained runs above
+                    # the 10.7 ms chunk period become alertable.
+                    dsp_start = time.perf_counter()
                     self._process_chunk(data)
+                    dsp_ms = (time.perf_counter() - dsp_start) * 1000.0
+                    _observe_dsp_ms(dsp_ms)
 
             except Exception:
                 log.debug("Audio capture error, reconnecting in 2s", exc_info=True)

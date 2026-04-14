@@ -224,6 +224,125 @@ class TestTtsClientTimeoutCounter:
         assert after == before + 2
 
 
+class TestCameraFrameIntervalHistogram:
+    """Livestream-performance-map Sprint 6 F4 / W1.3: per-camera frame
+    interval histogram. The research map's headline target is
+    ``p99 ≤ 34 ms``; prior to this, the compositor published
+    frames_total (counter) + last_frame_age_seconds (gauge) which can
+    compute mean fps but cannot produce p99 — a long tail of 100 ms
+    frames hides inside the 30 fps counter-derived mean."""
+
+    def test_frame_interval_histogram_exists_with_expected_buckets(self) -> None:
+        assert metrics.CAM_FRAME_INTERVAL is not None
+        # Force bucket sample emission by observing once.
+        metrics.CAM_FRAME_INTERVAL.labels(role="hist-test", model="brio").observe(0.033)
+        expected = (
+            0.005,
+            0.010,
+            0.016,
+            0.020,
+            0.025,
+            0.030,
+            0.033,
+            0.040,
+            0.050,
+            0.067,
+            0.100,
+            0.200,
+            0.500,
+        )
+        # Use the parent metric's .collect(); the labeled child's
+        # .collect() emits samples without the ``role``/``model`` labels.
+        samples = [
+            s
+            for metric in metrics.CAM_FRAME_INTERVAL.collect()
+            for s in metric.samples
+            if s.name.endswith("_bucket") and s.labels.get("role") == "hist-test"
+        ]
+        observed = sorted({float(s.labels["le"]) for s in samples if s.labels.get("le") != "+Inf"})
+        assert observed == sorted(expected), (
+            f"bucket edges drifted: {observed} != {sorted(expected)}"
+        )
+
+    def test_pad_probe_observes_frame_interval(self) -> None:
+        metrics.register_camera("interval-probe", "brio")
+        fake_buf = mock.Mock()
+        fake_buf.offset = 100
+        fake_buf.get_size.return_value = 1024
+        fake_info = mock.Mock()
+        fake_info.get_buffer.return_value = fake_buf
+
+        # First probe: no prior timestamp, so no histogram observation.
+        before_count = _histogram_total_count(metrics.CAM_FRAME_INTERVAL, role="interval-probe")
+        metrics.pad_probe_on_buffer(mock.Mock(), fake_info, "interval-probe")
+        after_first = _histogram_total_count(metrics.CAM_FRAME_INTERVAL, role="interval-probe")
+        assert after_first == before_count, "first probe must not observe (prev_mono == 0)"
+
+        # Second probe: now there is a prior timestamp, so one observation.
+        fake_buf.offset = 101
+        metrics.pad_probe_on_buffer(mock.Mock(), fake_info, "interval-probe")
+        after_second = _histogram_total_count(metrics.CAM_FRAME_INTERVAL, role="interval-probe")
+        assert after_second == after_first + 1, (
+            f"second probe expected +1 observation, got {after_second - after_first}"
+        )
+
+
+class TestCompositorVramGauge:
+    """Sprint 1 F4 / W1.9: compositor self-reports its GPU VRAM footprint
+    via nvidia-smi --query-compute-apps. On CI / test environments without
+    nvidia-smi the gauge stays at 0 (no crash)."""
+
+    def test_update_gpu_vram_does_not_crash_without_nvidia_smi(self) -> None:
+        # Don't patch anything — on CI nvidia-smi is missing, so this
+        # exercises the FileNotFoundError path. On the dev rig it
+        # exercises the happy path. Either way the call must not raise.
+        metrics._update_gpu_vram()
+        v = metrics.COMP_GPU_VRAM_BYTES._value.get()
+        # VRAM is bytes; valid values are 0 (no context / missing
+        # nvidia-smi) or a positive integer up to ~100 GB.
+        assert v >= 0
+        assert v < 100 * 1024 * 1024 * 1024
+
+
+class TestAudioDspHistogram:
+    """Sprint 3 F5 / W1.7: audio DSP timing histogram surfaces whether the
+    93 fps DSP loop is keeping up with its 10.7 ms chunk period."""
+
+    def test_observe_dsp_ms_registers_histogram_and_records(self) -> None:
+        from agents.studio_compositor import audio_capture
+
+        # Reset module-level handle so we exercise the registration path.
+        # Use a local fresh value to avoid cross-test interference.
+        before = 0
+        if audio_capture._AUDIO_DSP_MS_HISTOGRAM is not None:
+            samples = list(audio_capture._AUDIO_DSP_MS_HISTOGRAM.collect())
+            for metric in samples:
+                for s in metric.samples:
+                    if s.name.endswith("_count"):
+                        before = int(s.value)
+
+        audio_capture._observe_dsp_ms(3.5)
+        audio_capture._observe_dsp_ms(11.2)
+
+        assert audio_capture._AUDIO_DSP_MS_HISTOGRAM is not None
+        after = 0
+        for metric in audio_capture._AUDIO_DSP_MS_HISTOGRAM.collect():
+            for s in metric.samples:
+                if s.name.endswith("_count"):
+                    after = int(s.value)
+        assert after == before + 2
+
+
+def _histogram_total_count(hist: object, role: str) -> int:
+    """Helper — sum the per-labelset ``_count`` of a labeled Histogram."""
+    total = 0
+    for metric in hist.collect():  # type: ignore[attr-defined]
+        for s in metric.samples:
+            if s.name.endswith("_count") and s.labels.get("role") == role:
+                total += int(s.value)
+    return total
+
+
 class TestConcurrentUpdates:
     def test_concurrent_pad_probes_no_drift(self) -> None:
         import threading
