@@ -185,6 +185,132 @@ class TestPipelineManagerSwap:
         finally:
             pm.stop()
 
+
+class TestColdStartFrameFlowGrace:
+    """Delta 2026-04-14-brio-operator-startup-stall-reproducible regression pins.
+
+    The frame-flow watchdog consults ``_last_recovery_at[role]`` to skip
+    its staleness check within ``_FRAME_FLOW_GRACE_S``. Before this fix
+    the dict was only populated by the ``on_recovery`` callback after a
+    camera had already recovered from a prior failure. On the very first
+    HEALTHY transition after cold start, the dict entry was missing, the
+    grace branch no-oped, the watchdog fired ``FRAME_FLOW_STALE`` ~1s
+    after build() because the first frame hadn't arrived, and
+    brio-operator lost ~3s of data per compositor restart on 4/4 cold
+    starts observed.
+
+    Fix: prime ``_last_recovery_at[role]`` to ``time.monotonic()`` at
+    state-machine construction in ``build()``.
+    """
+
+    def test_build_primes_last_recovery_at_for_every_role(self, gst):
+        from agents.studio_compositor.pipeline_manager import PipelineManager
+
+        Gst, GLib = gst
+        specs = [_make_spec("cam1"), _make_spec("cam2"), _make_spec("brio-operator")]
+        pm = PipelineManager(specs=specs, gst=Gst, glib=GLib, fps=30)
+        before = time.monotonic()
+        pm.build()
+        after = time.monotonic()
+        try:
+            for role in ("cam1", "cam2", "brio-operator"):
+                assert role in pm._last_recovery_at, (
+                    f"{role} missing from _last_recovery_at after build() — "
+                    f"cold-start grace won't apply and FRAME_FLOW_STALE will "
+                    f"fire before the first frame arrives"
+                )
+                primed_at = pm._last_recovery_at[role]
+                assert before <= primed_at <= after, (
+                    f"{role} primed_at={primed_at} outside build() window "
+                    f"[{before}, {after}] — clock source mismatch with watchdog?"
+                )
+        finally:
+            pm.stop()
+
+    def test_watchdog_grace_window_absorbs_cold_start(self, gst):
+        """After build(), ``_frame_flow_tick_once`` must NOT dispatch
+        FRAME_FLOW_STALE for any role within _FRAME_FLOW_GRACE_S, even
+        though no frames have arrived yet (all ages are +inf).
+        """
+        from agents.studio_compositor import pipeline_manager as pm_mod
+        from agents.studio_compositor.camera_state_machine import CameraState
+        from agents.studio_compositor.pipeline_manager import PipelineManager
+
+        Gst, GLib = gst
+        specs = [_make_spec("c1"), _make_spec("c2")]
+        pm = PipelineManager(specs=specs, gst=Gst, glib=GLib, fps=30)
+        pm.build()
+        try:
+            # Force every state machine into HEALTHY so the watchdog tick
+            # reaches the staleness branch.
+            with pm._lock:
+                for sm in pm._state_machines.values():
+                    sm._state = CameraState.HEALTHY
+
+            dispatched: list[tuple[str, str]] = []
+
+            # Record any dispatches during the tick.
+            with mock.patch.object(pm_mod, "Event", wraps=pm_mod.Event):
+                # Tag each SM with its role so the recorder can attribute
+                # dispatches.
+                for role, sm in pm._state_machines.items():
+                    sm._role = role  # type: ignore[attr-defined]
+                    # Monkeypatch only this instance's dispatch.
+                    original = sm.dispatch
+
+                    def make_recording(orig, r):
+                        def _rec(event):
+                            dispatched.append((r, event.kind.name))
+
+                        return _rec
+
+                    sm.dispatch = make_recording(original, role)  # type: ignore[method-assign]
+
+                pm._frame_flow_tick_once()
+
+            # Within the grace window, zero FRAME_FLOW_STALE dispatches.
+            stale_events = [e for e in dispatched if e[1] == "FRAME_FLOW_STALE"]
+            assert stale_events == [], (
+                f"cold-start grace must absorb zero frames; got {stale_events}"
+            )
+        finally:
+            pm.stop()
+
+    def test_watchdog_fires_stale_after_grace_expires(self, gst):
+        """Once the grace window passes, normal staleness checking resumes."""
+        from agents.studio_compositor import pipeline_manager as pm_mod
+        from agents.studio_compositor.camera_state_machine import CameraState
+        from agents.studio_compositor.pipeline_manager import PipelineManager
+
+        Gst, GLib = gst
+        specs = [_make_spec("stale-cam")]
+        pm = PipelineManager(specs=specs, gst=Gst, glib=GLib, fps=30)
+        pm.build()
+        try:
+            # Age the primed _last_recovery_at beyond _FRAME_FLOW_GRACE_S.
+            grace = pm_mod._FRAME_FLOW_GRACE_S
+            with pm._lock:
+                pm._last_recovery_at["stale-cam"] = time.monotonic() - grace - 1.0
+                sm = pm._state_machines["stale-cam"]
+                sm._state = CameraState.HEALTHY
+
+            dispatched: list[str] = []
+
+            def record(event):
+                dispatched.append(event.kind.name)
+
+            sm.dispatch = record  # type: ignore[method-assign]
+
+            pm._frame_flow_tick_once()
+
+            stale = [d for d in dispatched if d == "FRAME_FLOW_STALE"]
+            assert len(stale) == 1, (
+                f"after grace expires, watchdog MUST dispatch FRAME_FLOW_STALE "
+                f"on the +inf-age first-frame state; got {dispatched}"
+            )
+        finally:
+            pm.stop()
+
     def test_on_transition_callback_fires_on_error(self, gst):
         from agents.studio_compositor.pipeline_manager import PipelineManager
 

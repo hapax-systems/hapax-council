@@ -110,6 +110,22 @@ class PipelineManager:
                 # pipeline so error callbacks route through the FSM.
                 self._state_machines[spec.role] = self._make_state_machine(spec.role)
 
+                # Delta 2026-04-14-brio-operator-startup-stall-reproducible:
+                # prime ``_last_recovery_at[role]`` at build time so the
+                # frame-flow watchdog's ``_FRAME_FLOW_GRACE_S`` (5 s)
+                # window ALSO covers cold-start first-frame latency, not
+                # just post-recovery latency. Without this prime, the
+                # first camera (typically brio-operator) takes the
+                # grace-bypass branch in ``_frame_flow_tick_once``
+                # (``recovered_at is not None and …``) and fires
+                # ``FRAME_FLOW_STALE`` ~1 s after ``swap_to_primary``
+                # because its first frame hasn't arrived yet. Measured:
+                # ~3.3 s of lost data per compositor restart on
+                # brio-operator, reproducible across 4/4 cold starts
+                # sampled 2026-04-14. ``time.monotonic()`` matches the
+                # watchdog's own clock.
+                self._last_recovery_at[spec.role] = time.monotonic()
+
                 try:
                     cam = CameraPipeline(
                         spec,
