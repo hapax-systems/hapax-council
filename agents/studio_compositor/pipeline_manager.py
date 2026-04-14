@@ -23,7 +23,13 @@ from typing import Any
 
 from . import metrics
 from .camera_pipeline import CameraPipeline
-from .camera_state_machine import CameraState, CameraStateMachine, Event, EventKind
+from .camera_state_machine import (
+    STALENESS_THRESHOLD_S,
+    CameraState,
+    CameraStateMachine,
+    Event,
+    EventKind,
+)
 from .fallback_pipeline import FallbackPipeline
 from .models import CameraSpec
 
@@ -31,6 +37,18 @@ log = logging.getLogger(__name__)
 
 
 _REBUILD_DELAY_S = 5.0
+
+# Livestream-performance-map W5 NEW (silent-failure class): how often
+# the frame-flow watchdog wakes to verify each HEALTHY camera is still
+# delivering frames at the pad probe.
+_FRAME_FLOW_TICK_S = 1.0
+# Post-recovery grace window: after RECOVERY_SUCCEEDED dispatches and
+# the FSM lands back in HEALTHY, give the rebuilt pipeline this many
+# seconds to start producing frames before the watchdog can mark it
+# stale. CameraPipeline state transition to PLAYING is async — the
+# first buffer typically arrives within a frame or two but a tight
+# threshold creates a false-fire window. Five seconds is generous.
+_FRAME_FLOW_GRACE_S = 5.0
 
 
 class PipelineManager:
@@ -62,6 +80,11 @@ class PipelineManager:
         self._supervisor_cv = threading.Condition(threading.Lock())
         self._reconnect_queue: list[tuple[float, str]] = []
         self._supervisor_thread: threading.Thread | None = None
+
+        # W5 NEW frame-flow watchdog state.
+        self._frame_flow_stop = threading.Event()
+        self._frame_flow_thread: threading.Thread | None = None
+        self._last_recovery_at: dict[str, float] = {}
 
     # ------------------------------------------------------------------ build
 
@@ -138,11 +161,26 @@ class PipelineManager:
         with self._lock:
             src = self._interpipe_srcs.get(role)
             fb = self._fallbacks.get(role)
+            sm = self._state_machines.get(role)
         if src is None or fb is None:
             return
         src.set_property("listen-to", fb.sink_name)
         metrics.on_swap(role, to_fallback=True)
         log.info("swap_to_fallback: role=%s → %s", role, fb.sink_name)
+        # W5 NEW: dispatch SWAP_COMPLETED back into the FSM so DEGRADED
+        # advances to OFFLINE and the supervisor schedules a rebuild.
+        # Without this, DEGRADED is a sink — there's no other dispatcher
+        # of SWAP_COMPLETED in the system. Only fire when the FSM is
+        # actually waiting on it (DEGRADED), otherwise this is a no-op
+        # at registration-time swaps.
+        if sm is not None and sm.state == CameraState.DEGRADED:
+            sm.dispatch(
+                Event(
+                    EventKind.SWAP_COMPLETED,
+                    reason="fallback active",
+                    source="pipeline_manager",
+                )
+            )
 
     def swap_to_primary(self, role: str) -> None:
         with self._lock:
@@ -311,6 +349,16 @@ class PipelineManager:
             target=self._supervisor_loop, daemon=True, name="camera-supervisor"
         )
         self._supervisor_thread.start()
+        self._start_frame_flow_watchdog()
+
+    def _start_frame_flow_watchdog(self) -> None:
+        if self._frame_flow_thread is not None and self._frame_flow_thread.is_alive():
+            return
+        self._frame_flow_stop.clear()
+        self._frame_flow_thread = threading.Thread(
+            target=self._frame_flow_loop, daemon=True, name="camera-frame-flow-watchdog"
+        )
+        self._frame_flow_thread.start()
 
     def _schedule_reconnect(self, role: str, delay_s: float) -> None:
         wake_at = time.monotonic() + delay_s
@@ -333,6 +381,51 @@ class PipelineManager:
                 heapq.heappop(self._reconnect_queue)
 
             self._attempt_reconnect(role)
+
+    def _frame_flow_loop(self) -> None:
+        """Periodic per-camera frame-flow staleness check.
+
+        For every HEALTHY camera, dispatch FRAME_FLOW_STALE if the
+        pad-probe-observed last_frame_age has exceeded the threshold,
+        unless the camera is still in its post-recovery grace window.
+        """
+        while not self._frame_flow_stop.wait(_FRAME_FLOW_TICK_S):
+            try:
+                self._frame_flow_tick_once()
+            except Exception:
+                log.exception("frame-flow watchdog tick raised")
+
+    def _frame_flow_tick_once(self) -> None:
+        """Single sweep over all cameras. Public for tests."""
+        now = time.monotonic()
+        with self._lock:
+            roles = list(self._state_machines.keys())
+            recovery_snapshot = dict(self._last_recovery_at)
+
+        for role in roles:
+            sm = self._state_machines.get(role)
+            if sm is None or sm.state != CameraState.HEALTHY:
+                continue
+            recovered_at = recovery_snapshot.get(role)
+            if recovered_at is not None and (now - recovered_at) < _FRAME_FLOW_GRACE_S:
+                continue
+            age = self.get_last_frame_age(role)
+            if age <= STALENESS_THRESHOLD_S:
+                continue
+            log.warning(
+                "frame-flow watchdog: role=%s last_frame_age=%.2fs > %.2fs — dispatching FRAME_FLOW_STALE",
+                role,
+                age,
+                STALENESS_THRESHOLD_S,
+            )
+            metrics.on_frame_flow_stale(role)
+            sm.dispatch(
+                Event(
+                    EventKind.FRAME_FLOW_STALE,
+                    reason=f"pad-probe age {age:.2f}s",
+                    source="watchdog",
+                )
+            )
 
     def _attempt_reconnect(self, role: str) -> None:
         with self._lock:
@@ -364,6 +457,12 @@ class PipelineManager:
                 )
             )
             metrics.on_consecutive_failures_changed(role, sm.consecutive_failures)
+            if ok:
+                # W5 NEW: timestamp the recovery so the frame-flow
+                # watchdog gives the rebuilt pipeline a grace window
+                # before checking pad-probe staleness.
+                with self._lock:
+                    self._last_recovery_at[role] = time.monotonic()
             # The state machine schedules its own next retry via its
             # on_schedule_reconnect callback on failure; no need to
             # schedule again here.
@@ -384,8 +483,11 @@ class PipelineManager:
         self._supervisor_stop.set()
         with self._supervisor_cv:
             self._supervisor_cv.notify_all()
+        self._frame_flow_stop.set()
         if self._supervisor_thread is not None:
             self._supervisor_thread.join(timeout=2.0)
+        if self._frame_flow_thread is not None:
+            self._frame_flow_thread.join(timeout=2.0)
         with self._lock:
             for cam in self._cameras.values():
                 cam.teardown()

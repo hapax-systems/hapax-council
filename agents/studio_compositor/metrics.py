@@ -107,6 +107,7 @@ REVERIE_POOL_REUSE_RATIO: Any = None
 REVERIE_POOL_SLOT_COUNT: Any = None
 COMP_MEMORY_FOOTPRINT: Any = None
 COMP_TTS_CLIENT_TIMEOUT_TOTAL: Any = None
+CAM_FRAME_FLOW_STALE_TOTAL: Any = None
 
 
 def _init_metrics() -> None:
@@ -142,6 +143,7 @@ def _init_metrics() -> None:
     global REVERIE_POOL_SLOT_COUNT
     global COMP_MEMORY_FOOTPRINT
     global COMP_TTS_CLIENT_TIMEOUT_TOTAL
+    global CAM_FRAME_FLOW_STALE_TOTAL
 
     if not _PROMETHEUS_AVAILABLE:
         return
@@ -219,6 +221,18 @@ def _init_metrics() -> None:
     CAM_IN_FALLBACK = Gauge(
         "studio_camera_in_fallback",
         "1 if the consumer is listening to fb_<role>, 0 if cam_<role>",
+        ["role"],
+        registry=REGISTRY,
+    )
+    # Livestream-performance-map W5 NEW (silent-failure class): the
+    # frame-flow watchdog dispatches FRAME_FLOW_STALE when a HEALTHY
+    # camera's pad-probe last_frame_age exceeds the staleness threshold.
+    # Counts per role so a Grafana alert can fire on rising rate.
+    # Discovered 2026-04-14 from a brio-synths post-reboot incident
+    # where the FSM reported HEALTHY but no frames had flowed for 77 s.
+    CAM_FRAME_FLOW_STALE_TOTAL = Counter(
+        "studio_camera_frame_flow_stale_total",
+        "Frame-flow watchdog FRAME_FLOW_STALE dispatches",
         ["role"],
         registry=REGISTRY,
     )
@@ -539,6 +553,12 @@ def on_swap(role: str, to_fallback: bool) -> None:
     if CAM_IN_FALLBACK is None:
         return
     CAM_IN_FALLBACK.labels(role=role).set(1 if to_fallback else 0)
+
+
+def on_frame_flow_stale(role: str) -> None:
+    if CAM_FRAME_FLOW_STALE_TOTAL is None:
+        return
+    CAM_FRAME_FLOW_STALE_TOTAL.labels(role=role).inc()
 
 
 def on_pipeline_restart(pipeline_name: str) -> None:
