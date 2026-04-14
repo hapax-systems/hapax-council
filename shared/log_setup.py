@@ -8,6 +8,7 @@ Call once at process startup, before any logger is used:
 import logging
 import os
 import sys
+from datetime import UTC, datetime
 
 SERVICE_NAME = os.environ.get("HAPAX_SERVICE", "hapax-council")
 
@@ -53,6 +54,16 @@ def configure_logging(
         from pythonjsonlogger.json import JsonFormatter
 
         class _OTelJsonFormatter(JsonFormatter):
+            # W1.8: override formatTime so %f (microseconds) actually expands.
+            # logging.Formatter.formatTime uses time.strftime, which is C
+            # strftime and does not understand %f — leaving the literal in
+            # the timestamp. datetime.strftime does, so route through that.
+            def formatTime(self, record, datefmt=None):  # noqa: N802 — overrides stdlib
+                dt = datetime.fromtimestamp(record.created, tz=UTC)
+                if datefmt:
+                    return dt.strftime(datefmt)
+                return dt.isoformat()
+
             def add_fields(self, log_record, record, message_dict):
                 super().add_fields(log_record, record, message_dict)
                 # Rename OTel-injected fields and suppress zero trace IDs
