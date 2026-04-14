@@ -350,3 +350,52 @@ def test_token_pole_cairo_source_render_advances_animation_state():
 
 # ``test_token_pole_facade_draw_does_not_raise`` was removed in Phase 9
 # Task 29 alongside the ``TokenPole`` facade class.
+
+
+# ---------------------------------------------------------------------------
+# Regression — livestream-performance-map Sprint 2 F5
+# ---------------------------------------------------------------------------
+
+
+def test_runner_freshness_gauge_built_for_hyphenated_source_id():
+    """Construction MUST succeed for a source_id containing hyphens.
+
+    Beta's Sprint 2 F5 finding: ``overlay-zones`` and ``sierpinski-lines``
+    (both hardcoded in their respective renderer modules) fail the
+    ``FreshnessGauge`` regex ``[a-z_][a-z0-9_]*`` at metric-name
+    construction time, raising ``ValueError`` that is caught by the
+    runner's outer ``except`` and silently leaves
+    ``self._freshness_gauge = None``. The compositor's
+    ``compositor_source_frame_{source_id}_age_seconds`` metric never
+    appears on ``:9482`` for those sources, and stale / dead renders
+    cannot be detected.
+
+    Fix: substitute ``-`` with ``_`` in the metric suffix so the
+    Prometheus name constraint is satisfied. This test pins the fix
+    by asserting the gauge is live after construction with a
+    hyphenated id.
+    """
+    # Force a reload of ``shared.freshness_gauge`` against a fresh
+    # CollectorRegistry so this test does not race with any other test
+    # that already registered a gauge under the same name.
+    src = _RecordingSource()
+    runner = CairoSourceRunner(
+        source_id="overlay-zones",
+        source=src,
+        canvas_w=64,
+        canvas_h=64,
+        target_fps=10,
+    )
+    assert runner._freshness_gauge is not None, (  # noqa: SLF001 — test boundary
+        "FreshnessGauge must be built successfully even when the "
+        "source_id contains hyphens; the bug at cairo_source.py:167 "
+        "previously caught the ValueError and left the gauge as None"
+    )
+    # And the public name on the gauge should contain the sanitized
+    # metric suffix — with underscore, not hyphen.
+    assert runner._freshness_gauge.name == "compositor_source_frame_overlay_zones"  # noqa: SLF001
+
+    # Also verify the publish + fail counter paths still work after
+    # construction (no ``AttributeError`` from a dangling None).
+    runner.tick_once()
+    assert runner._freshness_gauge.published_count >= 1  # noqa: SLF001

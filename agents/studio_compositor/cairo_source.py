@@ -163,8 +163,20 @@ class CairoSourceRunner:
             # Base name is ``compositor_source_frame_{id}`` — FreshnessGauge
             # appends ``_published_total`` / ``_failed_total`` / ``_age_seconds``
             # suffixes, yielding the three metrics the AC requires.
+            #
+            # Livestream-performance-map Sprint 2 F5: Prometheus metric names
+            # must match ``[a-z_][a-z0-9_]*``. Source ids with hyphens
+            # (``overlay-zones``, ``sierpinski-lines``, and any future
+            # ``brio-operator`` / ``c920-desk`` style camera source) would
+            # otherwise raise ``ValueError`` at FreshnessGauge construction
+            # and silently disable observability for the affected source —
+            # the failure would be caught by the outer ``except`` below and
+            # only log a warning at startup. Substitute ``-`` → ``_`` so
+            # every registered source gets a live gauge. The raw source id
+            # is preserved on ``self._source_id`` for logging and lookups.
+            _metric_suffix = source_id.replace("-", "_")
             self._freshness_gauge = FreshnessGauge(
-                name=f"compositor_source_frame_{source_id}",
+                name=f"compositor_source_frame_{_metric_suffix}",
                 expected_cadence_s=self._period,
                 registry=_COMPOSITOR_METRICS_REGISTRY,
             )
