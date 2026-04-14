@@ -284,11 +284,26 @@ class CameraPipeline:
         if t == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
             src = message.src.get_name() if message.src else "unknown"
+            # Queue 023 item #35: the v4l2src element surfaces
+            # ``-ENODEV`` (USB bus-kick / device vanished mid-read) as the
+            # GStreamer-generic "Failed to allocate a buffer" message,
+            # which reads as an OOM and is actively misleading. Rewrite
+            # the log line to name the underlying condition so the
+            # operator does not hunt for a memory leak. The upstream
+            # message is preserved in the debug field for forensics.
+            message_text = err.message
+            if "Failed to allocate a buffer" in message_text:
+                message_text = (
+                    "v4l2 device vanished mid-read (kernel -ENODEV; "
+                    "GStreamer surfaced this as 'Failed to allocate a buffer' — "
+                    "not an OOM). USB bus-kick or cable disconnect — reconnect "
+                    "supervisor will retry."
+                )
             log.error(
                 "camera_pipeline %s error (element=%s): %s (debug=%s)",
                 self._spec.role,
                 src,
-                err.message,
+                message_text,
                 debug,
             )
             if self._on_error is not None:

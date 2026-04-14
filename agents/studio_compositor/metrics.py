@@ -80,6 +80,8 @@ REVERIE_POOL_TOTAL_ACQUIRES: Any = None
 REVERIE_POOL_TOTAL_ALLOCATIONS: Any = None
 REVERIE_POOL_REUSE_RATIO: Any = None
 REVERIE_POOL_SLOT_COUNT: Any = None
+COMP_MEMORY_FOOTPRINT: Any = None
+COMP_TTS_CLIENT_TIMEOUT_TOTAL: Any = None
 
 
 def _init_metrics() -> None:
@@ -111,6 +113,8 @@ def _init_metrics() -> None:
     global REVERIE_POOL_TOTAL_ALLOCATIONS
     global REVERIE_POOL_REUSE_RATIO
     global REVERIE_POOL_SLOT_COUNT
+    global COMP_MEMORY_FOOTPRINT
+    global COMP_TTS_CLIENT_TIMEOUT_TOTAL
 
     if not _PROMETHEUS_AVAILABLE:
         return
@@ -276,6 +280,24 @@ def _init_metrics() -> None:
         registry=REGISTRY,
     )
 
+    # Queue 022 item #6 / queue 023 item #25: compositor self-report
+    # of RSS so the grafana memory panel does not have to cross-reference
+    # the system-wide Prometheus node_exporter cgroup series.
+    COMP_MEMORY_FOOTPRINT = Gauge(
+        "studio_compositor_memory_footprint_bytes",
+        "Resident set size of the compositor process (bytes). Updated by the metrics poll loop.",
+        registry=REGISTRY,
+    )
+    # Queue 023 item #32: surface the 90s TtsClient timeout so
+    # repeated compositor→daimonion UDS failures become visible without
+    # greping the journal. Incremented from
+    # ``DaimonionTtsClient.synthesize`` on ``socket.timeout``.
+    COMP_TTS_CLIENT_TIMEOUT_TOTAL = Counter(
+        "compositor_tts_client_timeout_total",
+        "Times the compositor's daimonion TTS UDS client hit its readall timeout.",
+        registry=REGISTRY,
+    )
+
 
 _init_metrics()
 
@@ -311,6 +333,10 @@ if _PROMETHEUS_AVAILABLE:
 _last_seq: dict[str, int] = {}
 _last_frame_monotonic: dict[str, float] = {}
 _cam_models: dict[str, str] = {}
+# Role → current state name. Mirrors CAM_STATE label values so
+# _refresh_counts can compute studio_compositor_cameras_healthy
+# without reading back from the Prometheus registry.
+_cam_states: dict[str, str] = {}
 _last_watchdog_monotonic: float = 0.0
 _boot_monotonic: float = 0.0
 _lock = threading.Lock()
@@ -360,6 +386,7 @@ def register_camera(role: str, model: str) -> None:
         _cam_models[role] = model
         _last_seq[role] = -1
         _last_frame_monotonic[role] = 0.0
+        _cam_states[role] = "healthy"
 
     if not _PROMETHEUS_AVAILABLE or CAM_FRAMES_TOTAL is None:
         return
@@ -413,6 +440,8 @@ def pad_probe_on_buffer(pad: Any, info: Any, role: str) -> int:
 
 def on_state_transition(role: str, from_state: str, to_state: str) -> None:
     """Called by the state machine on transition (via PipelineManager)."""
+    with _lock:
+        _cam_states[role] = to_state
     if CAM_TRANSITIONS_TOTAL is None:
         return
     CAM_TRANSITIONS_TOTAL.labels(role=role, from_state=from_state, to_state=to_state).inc()
@@ -459,6 +488,7 @@ def shutdown() -> None:
         _last_seq.clear()
         _last_frame_monotonic.clear()
         _cam_models.clear()
+        _cam_states.clear()
 
 
 # --------------------------- internal helpers ---------------------------
@@ -466,17 +496,13 @@ def shutdown() -> None:
 
 def _refresh_counts() -> None:
     """Recompute studio_compositor_cameras_total / _healthy gauges."""
-    if COMP_CAMERAS_TOTAL is None or CAM_STATE is None:
+    if COMP_CAMERAS_TOTAL is None or COMP_CAMERAS_HEALTHY is None:
         return
     with _lock:
         total = len(_cam_models)
+        healthy = sum(1 for st in _cam_states.values() if st == "healthy")
     COMP_CAMERAS_TOTAL.set(total)
-    # _healthy is derived from CAM_STATE.value — can't read label values
-    # back cleanly, so increment via callers when they know a camera reached
-    # HEALTHY. Cheap sum using the internal registry is not exposed —
-    # instead, store healthy count separately via on_state_transition.
-    # For simplicity we just set total here; _healthy is updated lazily
-    # from on_state_transition's count accumulator.
+    COMP_CAMERAS_HEALTHY.set(healthy)
 
 
 def _poll_loop() -> None:
@@ -509,7 +535,36 @@ def _poll_loop() -> None:
         if COMP_WATCHDOG_LAST_FED is not None and wd_age >= 0:
             COMP_WATCHDOG_LAST_FED.set(wd_age)
 
+        _update_memory_footprint()
         _mirror_reverie_pool_metrics()
+
+
+def _update_memory_footprint() -> None:
+    """Publish the compositor process RSS onto studio_compositor_memory_footprint_bytes.
+
+    Reads ``/proc/self/status`` to avoid pulling psutil into the
+    compositor's dependency set. VmRSS is reported in kB with an
+    ``kB`` suffix; we convert to bytes. Swallows IO errors because the
+    metrics poll loop must not crash on a transient /proc glitch.
+    """
+    if COMP_MEMORY_FOOTPRINT is None:
+        return
+    try:
+        with open("/proc/self/status", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    kb_str = line.split()[1]
+                    COMP_MEMORY_FOOTPRINT.set(int(kb_str) * 1024)
+                    return
+    except (OSError, ValueError, IndexError):
+        pass
+
+
+def record_tts_client_timeout() -> None:
+    """Called by DaimonionTtsClient on readall timeout (queue 023 item #32)."""
+    if COMP_TTS_CLIENT_TIMEOUT_TOTAL is None:
+        return
+    COMP_TTS_CLIENT_TIMEOUT_TOTAL.inc()
 
 
 def _mirror_reverie_pool_metrics() -> None:
