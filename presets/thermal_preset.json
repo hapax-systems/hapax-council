@@ -6,8 +6,7 @@
     "thermal": {
       "type": "thermal",
       "params": {
-        "edge_glow": 0.6,
-        "color_mode": 1
+        "edge_glow": 0.6
       }
     },
     "colorgrade": {
