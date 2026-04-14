@@ -60,6 +60,15 @@ class SlotPipeline:
             if has_glfeedback:
                 slot = Gst.ElementFactory.make("glfeedback", f"effect-slot-{i}")
                 slot.set_property("fragment", PASSTHROUGH_SHADER)
+                # Beta audit pass 2 L-01 fix: keep the Python memo in
+                # sync with the actual GStreamer element state. Without
+                # this, the first ``activate_plan`` after startup sees
+                # ``frag=PASSTHROUGH_SHADER != _slot_last_frag[i]=None``
+                # and over-counts ``COMP_GLFEEDBACK_RECOMPILE_TOTAL`` by
+                # one per slot (up to 24 at num_slots=24). The Rust side
+                # correctly no-ops via its own diff check, so no real
+                # work happens — this is metric hygiene only.
+                self._slot_last_frag[i] = PASSTHROUGH_SHADER
                 self._slot_is_temporal[i] = True
             else:
                 slot = Gst.ElementFactory.make("glshader", f"effect-slot-{i}")

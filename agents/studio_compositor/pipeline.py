@@ -45,6 +45,19 @@ def build_pipeline(compositor: Any) -> Any:
         comp_element = Gst.ElementFactory.make("compositor", "compositor")
         if comp_element is None:
             raise RuntimeError("Neither cudacompositor nor compositor plugin available")
+    else:
+        # Delta 2026-04-14-sprint-5-delta-audit finding C2/C3 + 2026-04-14-
+        # camera-pipeline-systematic-walk finding F7: explicitly pin the
+        # compositor to CUDA device 0. Phase 10 PR #801 already set
+        # ``Environment=CUDA_VISIBLE_DEVICES=0`` on the systemd unit so
+        # from this process's perspective device 0 is the only visible
+        # GPU, but declaring the pin in code too makes the intent durable
+        # and survives any future env change. Prevents silent drift if
+        # CUDA enumeration order or the systemd override ever changes.
+        try:
+            comp_element.set_property("cuda-device-id", 0)
+        except Exception:
+            log.debug("cudacompositor: cuda-device-id property not supported", exc_info=True)
     pipeline.add(comp_element)
 
     fps = compositor.config.framerate
@@ -128,7 +141,17 @@ def build_pipeline(compositor: Any) -> Any:
     # v4l2sink branch — with caps dedup probe to prevent renegotiation on source switch
     queue_v4l2 = Gst.ElementFactory.make("queue", "queue-v4l2")
     queue_v4l2.set_property("leaky", 2)
-    queue_v4l2.set_property("max-size-buffers", 1)
+    # Delta 2026-04-14-camera-pipeline-systematic-walk finding F9: bump
+    # the v4l2sink branch's buffer cushion from 1 to 5 frames. A 1-buffer
+    # queue drops the frame on any 33 ms hiccup — a tight window for OBS
+    # reads that can stall briefly under GPU contention. 5 frames at
+    # 30fps is ~167 ms of cushion, still well within the 2-second
+    # watchdog timeout, and v4l2loopback's kernel-side max_buffers=2
+    # (operator-gated modprobe reload per drop follow-ups) remains the
+    # hard ceiling upstream of this queue. ``leaky=downstream`` is
+    # preserved so back-pressure still results in frame drops at the
+    # queue rather than upstream.
+    queue_v4l2.set_property("max-size-buffers", 5)
     convert_out = Gst.ElementFactory.make("videoconvert", "convert-out")
     convert_out.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     sink_caps = Gst.ElementFactory.make("capsfilter", "sink-caps")

@@ -202,8 +202,41 @@ class TestGlfeedbackDiffCheck:
         factory.find.return_value = None
         Gst.ElementFactory = factory
         pipe.create_slots(Gst)
+        # glshader branch (fallback): memo entries start as None since
+        # the compile happens later via the ``create-shader`` signal.
         assert all(f is None for f in pipe._slot_last_frag), (
-            "create_slots must reset _slot_last_frag so new slot instances start fresh"
+            "create_slots(glshader fallback) must reset _slot_last_frag to None"
+        )
+
+    def test_create_slots_glfeedback_path_primes_memo_with_passthrough(self, registry, compiler):
+        """Beta audit pass 2 L-01 regression pin.
+
+        When ``glfeedback`` is available, ``create_slots`` calls
+        ``set_property("fragment", PASSTHROUGH_SHADER)`` on every slot.
+        The Python memo ``_slot_last_frag[i]`` MUST be primed to
+        ``PASSTHROUGH_SHADER`` at the same time so that the first
+        ``activate_plan`` after startup doesn't over-count the
+        ``COMP_GLFEEDBACK_RECOMPILE_TOTAL`` metric by one per slot
+        (up to 24) when the passthrough fragment is "unchanged" from
+        the constructor's own call.
+        """
+        from agents.effect_graph.pipeline import PASSTHROUGH_SHADER, SlotPipeline
+
+        pipe = SlotPipeline(registry, num_slots=8)
+        Gst = MagicMock()
+        factory = MagicMock()
+        # Force the glfeedback branch.
+        factory.find.return_value = MagicMock()
+        Gst.ElementFactory = factory
+        pipe.create_slots(Gst)
+
+        assert pipe._slot_is_temporal == [True] * 8, (
+            "glfeedback branch must mark every slot as temporal"
+        )
+        assert pipe._slot_last_frag == [PASSTHROUGH_SHADER] * 8, (
+            "glfeedback create_slots must prime memo to PASSTHROUGH_SHADER "
+            "to match the set_property call — otherwise the first "
+            "activate_plan over-counts the recompile metric"
         )
 
     def test_recompile_and_accum_clear_counters_increment(self, registry, compiler):

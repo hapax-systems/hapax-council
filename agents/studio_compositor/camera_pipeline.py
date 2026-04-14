@@ -121,7 +121,28 @@ class CameraPipeline:
             watchdog.set_property("timeout", 2000)  # ms
 
             decoder: Any = None
+            # Delta 2026-04-14-camera-pipeline-systematic-walk finding F1:
+            # decouple JPEG decode latency from v4l2 capture via a small
+            # upstream queue. Without this, a decode stall backpressures
+            # directly into v4l2src and the kernel's uvcvideo buffer queue
+            # exhausts, silently dropping frames at the kernel layer
+            # (``studio_camera_kernel_drops_total`` is the drop #2 false-zero
+            # for MJPG and won't surface the loss). A 1-element leaky queue
+            # absorbs short decode stalls without adding perceptible
+            # latency: 1 frame at 30fps is 33 ms, well under the
+            # STALENESS_THRESHOLD_S=2.0 window. ``leaky=downstream`` so
+            # back-pressure on the decoder still drops frames at the
+            # queue, not at v4l2.
+            decode_queue: Any = None
             if self._spec.input_format == "mjpeg":
+                decode_queue = Gst.ElementFactory.make("queue", f"decq_{self._role_safe}")
+                if decode_queue is None:
+                    raise RuntimeError(f"{self._spec.role}: queue factory failed")
+                decode_queue.set_property("max-size-buffers", 1)
+                decode_queue.set_property("max-size-bytes", 0)
+                decode_queue.set_property("max-size-time", 0)
+                decode_queue.set_property("leaky", 2)  # downstream
+
                 decoder = Gst.ElementFactory.make("jpegdec", f"dec_{self._role_safe}")
                 if decoder is None:
                     raise RuntimeError(f"{self._spec.role}: jpegdec factory failed")
@@ -150,6 +171,8 @@ class CameraPipeline:
             sink.set_property("forward-eos", False)
 
             elements = [src, src_caps, watchdog]
+            if decode_queue is not None:
+                elements.append(decode_queue)
             if decoder is not None:
                 elements.append(decoder)
             elements.extend([convert, out_caps, sink])
