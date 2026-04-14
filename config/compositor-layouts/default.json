@@ -169,7 +169,7 @@
       "id": "video_out_hls_playlist",
       "geometry": {
         "kind": "video_out",
-        "target": "hls:///home/hapax/.cache/hapax-compositor/hls/stream.m3u8",
+        "target": "hls://local",
         "render_target": "main"
       },
       "effect_chain": [],

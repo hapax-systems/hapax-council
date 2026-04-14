@@ -49,7 +49,7 @@ class TestDefaultLayoutVideoOutSurfaces:
         targets = {s.geometry.target for s in video_outs}
         assert "/dev/video42" in targets
         assert "rtmp://127.0.0.1:1935/studio" in targets
-        assert any(t.endswith(".m3u8") for t in targets if t is not None)
+        assert any(t is not None and t.startswith("hls://") for t in targets)
 
     def test_output_router_from_default_layout(self) -> None:
         payload = json.loads(DEFAULT_LAYOUT_PATH.read_text(encoding="utf-8"))
