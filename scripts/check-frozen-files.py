@@ -90,22 +90,45 @@ def _file_is_frozen(staged_path: str, frozen_list: list[str]) -> bool:
     return any(entry.endswith("/") and staged_path.startswith(entry) for entry in frozen_list)
 
 
-def _find_covering_deviation(frozen_files_touched: list[str]) -> str | None:
-    """Search research/protocols/deviations/*.md for one that mentions
-    every file in ``frozen_files_touched``. Returns the first matching
-    deviation's filename, or None.
+def _find_covering_deviations(
+    frozen_files_touched: list[str],
+) -> dict[str, str] | None:
+    """Find deviation coverage for each touched file.
 
-    Heuristic: grep the deviation body for the file path verbatim.
+    Returns a mapping ``{touched_file: deviation_filename}`` iff every
+    file in ``frozen_files_touched`` has at least one covering deviation,
+    or ``None`` if even one file has no coverage.
+
+    Phase 1 audit finding H3 fix: the previous ``_find_covering_deviation``
+    required a SINGLE deviation to mention every touched file. That was
+    correct for the Phase 1 bootstrap (only one deviation could ever
+    exist at a time) but breaks the moment two independent deviations
+    legitimately cover two different frozen files in the same commit.
+    This version walks every deviation and records the FIRST one that
+    mentions each file, returning the aggregated coverage map. A single
+    deviation covering all files still works (it lands in the map on
+    first iteration); a multi-deviation scenario also works because
+    every file gets picked up independently.
+
+    Heuristic: grep each deviation body for the file path verbatim. The
+    substring-match weakness (Phase 1 audit M2) is a separate issue and
+    out of scope for this fix.
     """
     if not DEVIATIONS_DIR.exists():
         return None
+    coverage: dict[str, str] = {}
     for deviation_path in sorted(DEVIATIONS_DIR.glob("DEVIATION-*.md")):
         try:
             body = deviation_path.read_text()
         except OSError:
             continue
-        if all(touched in body for touched in frozen_files_touched):
-            return deviation_path.name
+        for touched in frozen_files_touched:
+            if touched in coverage:
+                continue
+            if touched in body:
+                coverage[touched] = deviation_path.name
+    if set(coverage.keys()) == set(frozen_files_touched):
+        return coverage
     return None
 
 
@@ -129,13 +152,22 @@ def main() -> int:
     if not violations:
         return 0
 
-    # There IS overlap. Look for a covering deviation.
-    deviation = _find_covering_deviation(violations)
-    if deviation:
-        print(
-            f"check-frozen-files: {len(violations)} frozen file(s) touched but "
-            f"covered by {deviation}: {', '.join(violations)}"
-        )
+    # There IS overlap. Look for covering deviations — per H3 fix, each
+    # touched file can be covered by a different deviation.
+    coverage = _find_covering_deviations(violations)
+    if coverage is not None:
+        deviations_used = sorted(set(coverage.values()))
+        if len(deviations_used) == 1:
+            print(
+                f"check-frozen-files: {len(violations)} frozen file(s) touched but "
+                f"covered by {deviations_used[0]}: {', '.join(violations)}"
+            )
+        else:
+            coverage_lines = [f"  {f} → {d}" for f, d in sorted(coverage.items())]
+            print(
+                f"check-frozen-files: {len(violations)} frozen file(s) touched, "
+                f"covered by {len(deviations_used)} deviation(s):\n" + "\n".join(coverage_lines)
+            )
         return 0
 
     # No deviation. Reject the commit with a structured error.

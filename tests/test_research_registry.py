@@ -183,6 +183,87 @@ class TestOpenAndCloseRoundTrip:
         assert result == 1
 
 
+class TestCloseClearsCurrentPointer:
+    """Phase 1 audit H1 fix regression pins.
+
+    Before the fix, ``cmd_close`` updated the condition YAML + wrote the
+    SHM marker to None but left ``current.txt`` pointing at the closed
+    condition. Downstream consumers (archive-purge, check-frozen-files)
+    continued to treat the closed condition as active.
+    """
+
+    def test_close_active_clears_current_pointer(self, isolated_registry):
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        assert cli._read_current() == "cond-phase-a-baseline-qwen-001"
+
+        cli.cmd_close(_args(condition_id="cond-phase-a-baseline-qwen-001"))
+
+        # The pointer must read as "no active condition" after close.
+        assert cli._read_current() is None
+
+    def test_close_idempotent_does_not_clobber_other_condition(self, isolated_registry):
+        """Closing an already-closed condition must not touch the pointer."""
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        # First close clears the pointer.
+        cli.cmd_close(_args(condition_id="cond-phase-a-baseline-qwen-001"))
+        assert cli._read_current() is None
+
+        # Operator opens a new condition (pointer advances to it).
+        cli.cmd_open(_args(slug="phase-a-prime-hermes"))
+        current_new = cli._read_current()
+        assert current_new == "cond-phase-a-prime-hermes-001"
+
+        # Second close of the ORIGINAL (already-closed) condition must
+        # NOT clear the pointer — it would clobber the new current
+        # condition. The _clear_current_if_matches helper protects this
+        # by only clearing when the pointer still equals the closing id.
+        cli.cmd_close(_args(condition_id="cond-phase-a-baseline-qwen-001"))
+        assert cli._read_current() == "cond-phase-a-prime-hermes-001"
+
+    def test_close_non_active_condition_leaves_pointer_untouched(self, isolated_registry):
+        """Closing a condition that isn't currently active leaves the pointer."""
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        # Open a second condition; pointer advances.
+        cli.cmd_open(_args(slug="phase-a-prime-hermes"))
+        assert cli._read_current() == "cond-phase-a-prime-hermes-001"
+
+        # Close the ORIGINAL, non-active condition. The pointer must
+        # remain on the currently-active second condition.
+        cli.cmd_close(_args(condition_id="cond-phase-a-baseline-qwen-001"))
+        assert cli._read_current() == "cond-phase-a-prime-hermes-001"
+
+
+class TestClearCurrentIfMatchesHelper:
+    """Direct unit tests for the H1 fix helper."""
+
+    def test_clears_when_value_matches(self, isolated_registry):
+        cli = isolated_registry
+        cli.REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
+        cli.CURRENT_FILE.write_text("cond-matches\n")
+        result = cli._clear_current_if_matches("cond-matches")
+        assert result is True
+        assert cli._read_current() is None
+
+    def test_noop_when_value_differs(self, isolated_registry):
+        cli = isolated_registry
+        cli.REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
+        cli.CURRENT_FILE.write_text("cond-other\n")
+        result = cli._clear_current_if_matches("cond-not-this")
+        assert result is False
+        assert cli._read_current() == "cond-other"
+
+    def test_noop_when_file_missing(self, isolated_registry):
+        cli = isolated_registry
+        # Registry dir may or may not exist; the helper must handle both.
+        if cli.CURRENT_FILE.exists():
+            cli.CURRENT_FILE.unlink()
+        result = cli._clear_current_if_matches("anything")
+        assert result is False
+
+
 class TestOpenSlugValidation:
     def test_open_rejects_slug_with_special_chars(self, isolated_registry):
         cli = isolated_registry
