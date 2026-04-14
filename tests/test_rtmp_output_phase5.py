@@ -76,6 +76,104 @@ class TestRtmpOutputBinConstruction:
         pipeline.set_state(Gst.State.NULL)
 
 
+class TestEncoderWalkQueueIsolation:
+    """Delta 2026-04-14-encoder-output-path-walk findings #4 + #5 pins.
+
+    Before the fix, the RTMP bin had:
+    - Zero queues in the audio path (pipewiresrc → convert → resample →
+      caps → voaacenc → aacparse → flvmux). Any voaacenc stall
+      backpressured directly into pipewiresrc, risking PipeWire xruns.
+    - No queue between videoconvert and nvh264enc. An NVENC stall
+      blocked videoconvert, which backpressured the input queue and
+      dropped oldest frames (leaky=downstream).
+
+    These pins assert that three new thread-isolation queues are
+    present by name: one between videoconvert and the video encoder,
+    one after pipewiresrc, one before voaacenc.
+    """
+
+    def test_audio_and_video_queues_present_in_bin(self, gst) -> None:
+        from agents.studio_compositor.rtmp_output import RtmpOutputBin
+
+        Gst = gst
+        pipeline = Gst.Pipeline.new("rtmp-queue-test-pipeline")
+        src = Gst.ElementFactory.make("videotestsrc", "qtest_src")
+        src.set_property("is-live", True)
+        src_caps = Gst.ElementFactory.make("capsfilter", "qtest_caps")
+        src_caps.set_property(
+            "caps",
+            Gst.Caps.from_string("video/x-raw,format=NV12,width=320,height=240,framerate=30/1"),
+        )
+        tee = Gst.ElementFactory.make("tee", "qtest_tee")
+        sink = Gst.ElementFactory.make("fakesink", "qtest_sink")
+        sink.set_property("sync", False)
+        for el in [src, src_caps, tee, sink]:
+            pipeline.add(el)
+        src.link(src_caps)
+        src_caps.link(tee)
+        fake_queue = Gst.ElementFactory.make("queue", "qtest_fake_queue")
+        pipeline.add(fake_queue)
+        tee.link(fake_queue)
+        fake_queue.link(sink)
+
+        bin_obj = RtmpOutputBin(
+            gst=Gst,
+            video_tee=tee,
+            rtmp_location="rtmp://127.0.0.1:19999/qtest",
+            bitrate_kbps=1000,
+            gop_size=60,
+        )
+
+        attached = bin_obj.build_and_attach(pipeline)
+        try:
+            if not attached:
+                # Test env without nvh264enc / voaacenc / pipewiresrc —
+                # we can still skip cleanly.
+                import pytest as _pt
+
+                _pt.skip("RTMP bin attach failed — GStreamer deps missing in CI")
+
+            inner_bin = bin_obj._bin  # type: ignore[attr-defined]
+            assert inner_bin is not None
+
+            # Finding #5: video encoder-isolation queue between
+            # videoconvert and nvh264enc.
+            video_encoder_queue = inner_bin.get_by_name("rtmp_video_encoder_queue")
+            assert video_encoder_queue is not None, (
+                "rtmp_video_encoder_queue missing — videoconvert + nvh264enc "
+                "must not share a thread (delta drop #28/#30 walk finding #5)"
+            )
+
+            # Finding #4: audio source-side queue after pipewiresrc.
+            audio_src_queue = inner_bin.get_by_name("rtmp_audio_src_queue")
+            assert audio_src_queue is not None, (
+                "rtmp_audio_src_queue missing — pipewiresrc must not "
+                "backpressure directly into audioconvert (finding #4)"
+            )
+
+            # Finding #4 continued: audio encoder-isolation queue before
+            # voaacenc.
+            audio_encoder_queue = inner_bin.get_by_name("rtmp_audio_encoder_queue")
+            assert audio_encoder_queue is not None, (
+                "rtmp_audio_encoder_queue missing — voaacenc must not "
+                "share a thread with audioresample (finding #4)"
+            )
+
+            # Basic configuration sanity — all three should be
+            # leaky=downstream so they drop at the queue instead of
+            # propagating backpressure upstream.
+            for q in (video_encoder_queue, audio_src_queue, audio_encoder_queue):
+                leaky = q.get_property("leaky")
+                assert int(leaky) == 2, (
+                    f"queue {q.get_name()} must be leaky=downstream (2) "
+                    f"to match the existing bin's buffering strategy; got {leaky}"
+                )
+        finally:
+            if attached:
+                bin_obj.detach_and_teardown(pipeline)
+            pipeline.set_state(Gst.State.NULL)
+
+
 class TestRebuildRoundtrip:
     def test_rebuild_count_increments(self, gst) -> None:
         from agents.studio_compositor.rtmp_output import RtmpOutputBin

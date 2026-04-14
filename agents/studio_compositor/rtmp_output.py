@@ -87,6 +87,21 @@ class RtmpOutputBin:
                 log.error("rtmp bin: videoconvert factory failed")
                 return False
 
+            # Delta 2026-04-14-encoder-output-path-walk finding #5: queue
+            # between videoconvert and nvh264enc. Without it, colorspace
+            # conversion and the encoder share a thread so an NVENC stall
+            # backpressures videoconvert → input queue drops oldest. With
+            # this queue the two elements are thread-isolated and
+            # videoconvert keeps draining the input even if NVENC briefly
+            # stalls.
+            video_encoder_queue = Gst.ElementFactory.make("queue", "rtmp_video_encoder_queue")
+            if video_encoder_queue is None:
+                log.error("rtmp bin: video_encoder_queue factory failed")
+                return False
+            video_encoder_queue.set_property("max-size-buffers", 10)
+            video_encoder_queue.set_property("max-size-time", 500 * Gst.MSECOND)
+            video_encoder_queue.set_property("leaky", 2)  # downstream
+
             encoder = Gst.ElementFactory.make("nvh264enc", "rtmp_nvh264enc")
             if encoder is None:
                 log.error("rtmp bin: nvh264enc factory failed")
@@ -119,6 +134,22 @@ class RtmpOutputBin:
                 log.error("rtmp bin: no audio source element available")
                 return False
 
+            # Delta 2026-04-14-encoder-output-path-walk finding #4: the
+            # audio path previously had ZERO queues, so voaacenc stalls
+            # backpressured directly into pipewiresrc → xruns upstream.
+            # With flvmux.latency=100ms the A/V alignment window was
+            # tight enough that any audio jitter exceeding 100 ms caused
+            # the mux to drop video waiting for audio. Two queues: one
+            # after the source to decouple from the PipeWire thread, one
+            # before the encoder to decouple audioresample from voaacenc.
+            audio_src_queue = Gst.ElementFactory.make("queue", "rtmp_audio_src_queue")
+            if audio_src_queue is None:
+                log.error("rtmp bin: audio_src_queue factory failed")
+                return False
+            audio_src_queue.set_property("max-size-buffers", 20)
+            audio_src_queue.set_property("max-size-time", 500 * Gst.MSECOND)
+            audio_src_queue.set_property("leaky", 2)  # downstream
+
             audio_convert = Gst.ElementFactory.make("audioconvert", "rtmp_audio_convert")
             audio_resample = Gst.ElementFactory.make("audioresample", "rtmp_audio_resample")
             audio_caps = Gst.ElementFactory.make("capsfilter", "rtmp_audio_caps")
@@ -126,6 +157,18 @@ class RtmpOutputBin:
                 "caps",
                 Gst.Caps.from_string("audio/x-raw,rate=48000,channels=2,format=S16LE"),
             )
+
+            # Finding #4 continued: second queue in front of voaacenc so
+            # the encoder runs on its own thread, not the audioresample/
+            # pipewiresrc thread. Brief encoder stalls now park frames
+            # in the queue instead of propagating back to PipeWire.
+            audio_encoder_queue = Gst.ElementFactory.make("queue", "rtmp_audio_encoder_queue")
+            if audio_encoder_queue is None:
+                log.error("rtmp bin: audio_encoder_queue factory failed")
+                return False
+            audio_encoder_queue.set_property("max-size-buffers", 20)
+            audio_encoder_queue.set_property("max-size-time", 500 * Gst.MSECOND)
+            audio_encoder_queue.set_property("leaky", 2)  # downstream
 
             audio_encoder = Gst.ElementFactory.make("voaacenc", "rtmp_voaacenc")
             if audio_encoder is None:
@@ -161,12 +204,15 @@ class RtmpOutputBin:
             elements = [
                 video_queue,
                 video_convert,
+                video_encoder_queue,
                 encoder,
                 h264_parse,
                 audio_src,
+                audio_src_queue,
                 audio_convert,
                 audio_resample,
                 audio_caps,
+                audio_encoder_queue,
                 audio_encoder,
                 aac_parse,
                 mux,
@@ -179,8 +225,11 @@ class RtmpOutputBin:
             if not video_queue.link(video_convert):
                 log.error("rtmp bin: video_queue -> video_convert link failed")
                 return False
-            if not video_convert.link(encoder):
-                log.error("rtmp bin: video_convert -> encoder link failed")
+            if not video_convert.link(video_encoder_queue):
+                log.error("rtmp bin: video_convert -> video_encoder_queue link failed")
+                return False
+            if not video_encoder_queue.link(encoder):
+                log.error("rtmp bin: video_encoder_queue -> encoder link failed")
                 return False
             if not encoder.link(h264_parse):
                 log.error("rtmp bin: encoder -> h264parse link failed")
@@ -190,8 +239,11 @@ class RtmpOutputBin:
                 return False
 
             # Link audio branch into flvmux audio pad
-            if not audio_src.link(audio_convert):
-                log.error("rtmp bin: audio_src -> audio_convert link failed")
+            if not audio_src.link(audio_src_queue):
+                log.error("rtmp bin: audio_src -> audio_src_queue link failed")
+                return False
+            if not audio_src_queue.link(audio_convert):
+                log.error("rtmp bin: audio_src_queue -> audio_convert link failed")
                 return False
             if not audio_convert.link(audio_resample):
                 log.error("rtmp bin: audio_convert -> audio_resample link failed")
@@ -199,8 +251,11 @@ class RtmpOutputBin:
             if not audio_resample.link(audio_caps):
                 log.error("rtmp bin: audio_resample -> audio_caps link failed")
                 return False
-            if not audio_caps.link(audio_encoder):
-                log.error("rtmp bin: audio_caps -> audio_encoder link failed")
+            if not audio_caps.link(audio_encoder_queue):
+                log.error("rtmp bin: audio_caps -> audio_encoder_queue link failed")
+                return False
+            if not audio_encoder_queue.link(audio_encoder):
+                log.error("rtmp bin: audio_encoder_queue -> audio_encoder link failed")
                 return False
             if not audio_encoder.link(aac_parse):
                 log.error("rtmp bin: audio_encoder -> aac_parse link failed")

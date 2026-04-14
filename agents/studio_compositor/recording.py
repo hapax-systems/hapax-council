@@ -89,8 +89,15 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     valve.set_property("drop", not compositor._consent_recording_allowed)
     encoder = Gst.ElementFactory.make("nvh264enc", "hls-enc")
     encoder.set_property("preset", 2)
-    encoder.set_property("rc-mode", 3)
-    encoder.set_property("qp-const", 26)
+    # Delta 2026-04-14-encoder-output-path-walk finding #2: the previous
+    # config set ``rc-mode=3`` (VBR) but then overrode it with
+    # ``qp-const=26``, which is constant-QP mode. The ``HlsConfig.bitrate``
+    # field was never read — dead config. Honor it by switching to CBR
+    # (matches the RTMP bin) and wiring the configured ``hls_cfg.bitrate``
+    # value through, so operators tuning HLS bandwidth get the expected
+    # behaviour instead of a silently-ignored number.
+    encoder.set_property("rc-mode", 2)  # 2 = cbr
+    encoder.set_property("bitrate", hls_cfg.bitrate)
     encoder.set_property("gop-size", fps * hls_cfg.target_duration)
     parser = Gst.ElementFactory.make("h264parse", "hls-parse")
 
