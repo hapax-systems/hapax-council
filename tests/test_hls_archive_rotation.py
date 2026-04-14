@@ -202,3 +202,176 @@ class TestRotatePass:
         result = hls_archive.rotate_pass(source_dir=source, window_seconds=10.0)
         assert result.rotated == 1
         assert result.errors == []
+
+
+class TestSegmentStartEndTimestamps:
+    """Phase 1 audit H4 regression pins.
+
+    ``hlssink2`` finalizes segments on close, so ``segment.stat().st_mtime``
+    is the segment END time. The sidecar's ``segment_start_ts`` must be
+    derived as ``mtime - target_duration_seconds``, not set to mtime
+    (which would put start equal to end). ``segment_end_ts`` must be the
+    mtime itself, not the rotator's run time (which is ``close_time +
+    stable_window``, ~10-15s late).
+
+    Without these pins, ``archive-search.py by-timerange`` queries
+    silently miss condition-boundary segments because their reported
+    start times are several seconds later than their actual start times.
+    """
+
+    def _read_sidecar(self, archive_env: Path) -> SegmentSidecar:
+        target_dir = archive_env / "archive" / "hls"
+        matches = list(target_dir.glob("*/segment00001.ts.json"))
+        assert len(matches) == 1
+        return SegmentSidecar.from_path(matches[0])
+
+    def test_segment_end_ts_equals_mtime(
+        self, archive_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``segment_end_ts`` must be the segment file's mtime (close time),
+        not the rotator's run time."""
+        import datetime as _dt
+
+        source = archive_env / "hls"
+        source.mkdir()
+        seg = source / "segment00001.ts"
+        _touch_segment(seg, age_seconds=30.0)
+
+        # Pin mtime to a known value so we can assert against it.
+        mtime_seconds = 1_744_656_789.0
+        os.utime(seg, (mtime_seconds, mtime_seconds))
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_CONDITION_POINTER",
+            archive_env / "nonexistent-cond.txt",
+        )
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_STIMMUNG_PATH",
+            archive_env / "nonexistent-stimmung.json",
+        )
+
+        # Rotator runs 12s after the segment close.
+        now_ts = mtime_seconds + 12.0
+        hls_archive.rotate_pass(source_dir=source, window_seconds=10.0, now_ts=now_ts)
+
+        sidecar = self._read_sidecar(archive_env)
+        end_dt = _dt.datetime.fromisoformat(sidecar.segment_end_ts.replace("Z", "+00:00"))
+        expected_end = _dt.datetime.fromtimestamp(mtime_seconds, tz=_dt.UTC)
+        assert end_dt == expected_end, (
+            f"segment_end_ts must equal mtime (close time), got {end_dt} vs {expected_end}"
+        )
+
+    def test_segment_start_ts_is_target_duration_before_end(
+        self, archive_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``segment_start_ts`` = ``segment_end_ts - target_duration_seconds``."""
+        import datetime as _dt
+
+        source = archive_env / "hls"
+        source.mkdir()
+        seg = source / "segment00001.ts"
+        _touch_segment(seg, age_seconds=30.0)
+        mtime_seconds = 1_744_656_789.0
+        os.utime(seg, (mtime_seconds, mtime_seconds))
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_CONDITION_POINTER",
+            archive_env / "nonexistent-cond.txt",
+        )
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_STIMMUNG_PATH",
+            archive_env / "nonexistent-stimmung.json",
+        )
+
+        hls_archive.rotate_pass(
+            source_dir=source,
+            window_seconds=10.0,
+            now_ts=mtime_seconds + 12.0,
+            target_duration_seconds=2.0,
+        )
+
+        sidecar = self._read_sidecar(archive_env)
+        start_dt = _dt.datetime.fromisoformat(sidecar.segment_start_ts.replace("Z", "+00:00"))
+        end_dt = _dt.datetime.fromisoformat(sidecar.segment_end_ts.replace("Z", "+00:00"))
+        delta = (end_dt - start_dt).total_seconds()
+        assert delta == 2.0, (
+            f"segment_end_ts - segment_start_ts must equal target_duration_seconds (2.0), "
+            f"got {delta}"
+        )
+
+    def test_custom_target_duration_honored(
+        self, archive_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A caller that passes target_duration_seconds=4.0 (e.g. 4s HLS config)
+        must get a 4s-wide sidecar window."""
+        import datetime as _dt
+
+        source = archive_env / "hls"
+        source.mkdir()
+        seg = source / "segment00001.ts"
+        _touch_segment(seg, age_seconds=30.0)
+        mtime_seconds = 1_744_656_789.0
+        os.utime(seg, (mtime_seconds, mtime_seconds))
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_CONDITION_POINTER",
+            archive_env / "nonexistent-cond.txt",
+        )
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_STIMMUNG_PATH",
+            archive_env / "nonexistent-stimmung.json",
+        )
+
+        hls_archive.rotate_pass(
+            source_dir=source,
+            window_seconds=10.0,
+            now_ts=mtime_seconds + 12.0,
+            target_duration_seconds=4.0,
+        )
+
+        sidecar = self._read_sidecar(archive_env)
+        start_dt = _dt.datetime.fromisoformat(sidecar.segment_start_ts.replace("Z", "+00:00"))
+        end_dt = _dt.datetime.fromisoformat(sidecar.segment_end_ts.replace("Z", "+00:00"))
+        assert (end_dt - start_dt).total_seconds() == 4.0
+
+    def test_start_before_mtime_before_end_rotator_time(
+        self, archive_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Invariant from beta audit: start_ts < file_mtime <= end_ts,
+        and end_ts < rotator_run_time."""
+        import datetime as _dt
+
+        source = archive_env / "hls"
+        source.mkdir()
+        seg = source / "segment00001.ts"
+        _touch_segment(seg, age_seconds=30.0)
+        mtime_seconds = 1_744_656_789.0
+        os.utime(seg, (mtime_seconds, mtime_seconds))
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_CONDITION_POINTER",
+            archive_env / "nonexistent-cond.txt",
+        )
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_STIMMUNG_PATH",
+            archive_env / "nonexistent-stimmung.json",
+        )
+
+        rotator_ts = mtime_seconds + 12.0
+        hls_archive.rotate_pass(source_dir=source, window_seconds=10.0, now_ts=rotator_ts)
+
+        sidecar = self._read_sidecar(archive_env)
+        start_dt = _dt.datetime.fromisoformat(sidecar.segment_start_ts.replace("Z", "+00:00"))
+        end_dt = _dt.datetime.fromisoformat(sidecar.segment_end_ts.replace("Z", "+00:00"))
+        mtime_dt = _dt.datetime.fromtimestamp(mtime_seconds, tz=_dt.UTC)
+        rotator_dt = _dt.datetime.fromtimestamp(rotator_ts, tz=_dt.UTC)
+
+        assert start_dt < mtime_dt, "start_ts must be strictly before file mtime"
+        assert end_dt == mtime_dt, "end_ts must equal file mtime"
+        assert end_dt < rotator_dt, (
+            "end_ts must be before rotator run time (close happened earlier)"
+        )

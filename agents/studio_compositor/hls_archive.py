@@ -8,8 +8,21 @@ sidecar JSON. Invoked periodically (systemd timer or operator CLI).
 "Closed" = a segment whose mtime has been stable for at least
 ``STABLE_MTIME_WINDOW_SECONDS`` (default 10 s). This avoids racing the
 ``hlssink2`` writer — the element rotates segments every
-``target-duration`` seconds (default 4 s in ``hls.config``), so the 10 s
-window gives a 2.5× safety margin.
+``target-duration`` seconds (``HlsConfig.target_duration`` default 2 s),
+so the 10 s window gives a 5× safety margin.
+
+**Segment wall-clock semantics.** ``hlssink2`` writes segment contents
+incrementally and finalizes each file on close, so ``segment_path.stat().
+st_mtime`` is the segment's CLOSE (end) time. The rotator derives the
+START time by subtracting ``target_duration_seconds`` from the close
+time — the same ``#EXT-X-TARGETDURATION`` value the playlist
+advertises. This is the Phase 1 audit H4 fix: before this change,
+``rotate_segment`` set ``segment_start_ts = mtime`` (the END time)
+and ``segment_end_ts = now`` (the rotator's run time, which is
+close_time + stable_window ≈ 10-15s late), inverting both fields.
+``archive-search.py by-timerange`` queries consequently missed every
+segment whose actual start fell inside the query window but whose
+sidecar-reported start was several seconds later.
 
 Metadata is assembled from:
 - ``~/hapax-state/research-registry/current.txt`` → active condition_id
@@ -23,7 +36,7 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +49,12 @@ from shared.stream_archive import (
 
 DEFAULT_STABLE_MTIME_WINDOW_SECONDS = 10.0
 """Minimum mtime-stable age before a segment is considered closed + rotatable."""
+
+DEFAULT_TARGET_DURATION_SECONDS = 2.0
+"""Assumed segment duration used to derive ``segment_start_ts`` from the
+close-time mtime. Matches ``shared.compositor_model.HlsConfig.target_duration``
+default (2 s). Call sites with access to the live config should pass the
+actual value through ``rotate_segment`` / ``rotate_pass``."""
 
 DEFAULT_HLS_SOURCE_DIR = Path.home() / ".cache" / "hapax-compositor" / "hls"
 """Compositor HLS output directory — matches ``hls_cfg.output_dir`` default."""
@@ -135,6 +154,7 @@ def rotate_segment(
     condition_id: str | None,
     stimmung: dict[str, Any],
     now: datetime | None = None,
+    target_duration_seconds: float = DEFAULT_TARGET_DURATION_SECONDS,
 ) -> Path:
     """Move a single segment to the archive + write its sidecar.
 
@@ -142,27 +162,41 @@ def rotate_segment(
     ``sidecar_path_for(new_path)``. The move is atomic enough for our
     purposes (same filesystem) — ``shutil.move`` uses ``os.rename`` when
     possible and falls back to copy+unlink across filesystems.
+
+    Phase 1 audit H4 fix: ``hlssink2`` finalizes segments on close, so
+    ``segment_path.stat().st_mtime`` is the segment's END time. The
+    sidecar's ``segment_end_ts`` is therefore the mtime; the
+    ``segment_start_ts`` is ``mtime - target_duration_seconds``. The
+    rotator's own run time (``now``) is retained only as a fallback
+    when the stat call fails. ``archive-search.py by-timerange``
+    queries against segments produced before this fix shipped will
+    still see the old (inverted) timestamps — the rewrite is a
+    separate backfill job.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
     new_path = target_dir / segment_path.name
     if new_path.exists():
         raise FileExistsError(f"archive destination already occupied: {new_path}")
 
-    end_ts = now or datetime.now(UTC)
+    fallback_now = now or datetime.now(UTC)
     try:
         mtime_utc = datetime.fromtimestamp(segment_path.stat().st_mtime, tz=UTC)
     except OSError:
-        mtime_utc = end_ts
-    # Assume segment duration ~4s if we can't infer it otherwise; the
-    # sidecar will be refined by downstream tools that parse the .ts.
-    segment_start = mtime_utc
+        # Best-effort fallback: stat failed (unlinked mid-rotation?),
+        # use the rotator's run time for both ends, duration-zero. The
+        # subsequent shutil.move will also fail and raise, so this path
+        # is only observable in races.
+        mtime_utc = fallback_now
+
+    segment_end = mtime_utc
+    segment_start = mtime_utc - timedelta(seconds=target_duration_seconds)
 
     shutil.move(str(segment_path), str(new_path))
 
     sidecar = build_sidecar(
         segment_path=new_path,
         segment_start_ts=segment_start,
-        segment_end_ts=end_ts,
+        segment_end_ts=segment_end,
         condition_id=condition_id,
         stimmung=stimmung,
     )
@@ -177,12 +211,19 @@ def rotate_pass(
     window_seconds: float = DEFAULT_STABLE_MTIME_WINDOW_SECONDS,
     condition_pointer: Path | None = None,
     stimmung_path: Path | None = None,
+    target_duration_seconds: float = DEFAULT_TARGET_DURATION_SECONDS,
 ) -> RotationResult:
     """Walk the HLS source dir, rotate stable segments, return a summary.
 
     Caller is responsible for scheduling (systemd timer, operator CLI).
     Defaults resolve at call time so test monkeypatching against the
     module-level constants takes effect.
+
+    ``target_duration_seconds`` is forwarded to every ``rotate_segment``
+    call for the H4 sidecar-timestamp derivation. Callers that have
+    access to the live ``HlsConfig`` should pass
+    ``hls_cfg.target_duration`` explicitly; the default matches the
+    shipping config.
     """
     import time as _time
 
@@ -224,6 +265,7 @@ def rotate_pass(
                 condition_id=condition_id,
                 stimmung=stimmung,
                 now=now_dt,
+                target_duration_seconds=target_duration_seconds,
             )
             rotated += 1
         except Exception as exc:  # pragma: no cover — defensive log-and-continue
@@ -240,6 +282,7 @@ def rotate_pass(
 
 __all__ = [
     "DEFAULT_STABLE_MTIME_WINDOW_SECONDS",
+    "DEFAULT_TARGET_DURATION_SECONDS",
     "DEFAULT_HLS_SOURCE_DIR",
     "DEFAULT_STIMMUNG_PATH",
     "DEFAULT_CONDITION_POINTER",
