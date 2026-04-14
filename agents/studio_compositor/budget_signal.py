@@ -53,7 +53,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agents.studio_compositor.budget import atomic_write_json
+from agents.studio_compositor.atomic_io import atomic_write_json
 
 if TYPE_CHECKING:
     from agents.studio_compositor.budget import BudgetTracker

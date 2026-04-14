@@ -20,14 +20,20 @@ See: docs/superpowers/specs/2026-04-12-phase-7-budget-enforcement-design.md
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+
+# Re-exported from atomic_io so legacy callers (and the test mocks at
+# `agents.studio_compositor.budget.atomic_write_json`) keep working.
+# See drop #41 finding 2: this symbol previously lived here and
+# ``budget_signal`` imported it from ``budget``, creating a cycle with
+# ``metrics.py``'s force-import of ``budget_signal``. Moving the
+# helper to a standalone module breaks the cycle.
+from agents.studio_compositor.atomic_io import atomic_write_json  # noqa: F401
 
 log = logging.getLogger(__name__)
 
@@ -325,26 +331,6 @@ class BudgetTracker:
                 self._states.clear()
                 return
             self._states.pop(source_id, None)
-
-
-def atomic_write_json(payload: object, path: Path) -> None:
-    """Write ``payload`` as JSON to ``path`` atomically.
-
-    Shared helper factored out of :func:`publish_costs` and
-    :func:`publish_degraded_signal` so both publishers use identical
-    write semantics. Steps:
-
-    1. Ensure the parent directory exists.
-    2. Serialize ``payload`` to ``path.tmp``.
-    3. ``os.replace`` the tmp file onto the final path.
-
-    External readers either see the previous file or the new one —
-    never a partial write.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2))
-    os.replace(tmp_path, path)
 
 
 def publish_costs(tracker: BudgetTracker, path: Path) -> None:
