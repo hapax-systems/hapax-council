@@ -48,8 +48,8 @@ _GENRE_BIAS: dict[str, list[str]] = {
     "lo-fi": ["vhs_preset", "dither_retro", "ambient"],
     "jazz": ["vhs_preset", "dither_retro", "ambient"],
     "soul": ["vhs_preset", "ambient"],
-    "electronic": ["voronoi_crystal", "tunnel_vision", "kaleidodream"],
-    "ambient": ["voronoi_crystal", "tunnel_vision", "kaleidodream"],
+    "electronic": ["voronoi_crystal", "tunnelvision", "kaleidodream"],
+    "ambient": ["voronoi_crystal", "tunnelvision", "kaleidodream"],
 }
 
 _DWELL_MIN_S = 30.0  # minimum seconds before atmospheric transition

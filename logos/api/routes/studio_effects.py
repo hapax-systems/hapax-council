@@ -225,7 +225,29 @@ async def replace_modulations(bindings: list[dict[str, object]]):
     rt = _get_runtime()
     if not rt:
         raise HTTPException(503, "Compositor not available")
-    rt.modulator.replace_all([ModulationBinding(**b) for b in bindings])
+    # Drop #48 API-7: dispatch the mutation onto the GLib main loop so it
+    # serializes with tick_modulator's per-frame iteration of
+    # modulator.bindings. Previously this ran on the FastAPI worker thread
+    # and races with the main-loop reader; CPython GIL makes list
+    # assignment atomic but iteration semantics are fragile. GLib.idle_add
+    # returns False so the callback fires once and drops.
+    parsed = [ModulationBinding(**b) for b in bindings]
+    try:
+        import gi
+
+        gi.require_version("GLib", "2.0")
+        from gi.repository import GLib  # type: ignore[attr-defined]
+
+        def _apply() -> bool:
+            rt.modulator.replace_all(parsed)
+            return False
+
+        GLib.idle_add(_apply)
+    except (ImportError, ValueError):
+        # GLib unavailable (test environment, etc.) — fall back to direct
+        # apply. Accepts the latent race under the same terms as before
+        # this fix.
+        rt.modulator.replace_all(parsed)
     return {"status": "ok"}
 
 

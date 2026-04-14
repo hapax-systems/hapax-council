@@ -11,7 +11,11 @@ CONTROL_FILE = SHM / "random-mode.txt"
 MUTATION_FILE = SHM / "graph-mutation.json"
 
 TRANSITION_STEPS = 12  # frames for fade
-TRANSITION_STEP_MS = 80  # ~1 second total
+# Drop #46 MB-1: 10 Hz write rate aligns 1:1 with state_reader_loop's 10 Hz
+# poll. Previously 80 ms (12.5 Hz) undersampled against the 10 Hz reader,
+# collapsing the 12-step fade to ~5-6 effective brightness steps per the
+# perceptual side.
+TRANSITION_STEP_MS = 100  # 12 steps × 100 ms ≈ 1.2 s total
 
 
 def get_preset_names() -> list[str]:

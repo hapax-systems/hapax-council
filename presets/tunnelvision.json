@@ -8,8 +8,7 @@
       "params": {
         "speed": 1.5,
         "twist": 0.4,
-        "radius": 0.5,
-        "zoom_speed": 0.5
+        "radius": 0.5
       }
     },
     "bloom": {
