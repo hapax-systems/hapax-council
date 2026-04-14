@@ -222,6 +222,136 @@ class TestDeviationOverride:
             assert script.main() == 1
 
 
+class TestMultiDeviationCoverage:
+    """Phase 1 audit H3 fix regression pins.
+
+    Before the fix, ``_find_covering_deviation`` required a SINGLE
+    deviation to mention all touched frozen files. A legitimate
+    multi-deviation scenario (two independent deviations each covering
+    one file, a commit that touches both files) would be rejected. The
+    fix walks every deviation and records the first that mentions each
+    file, accepting iff every file has at least one covering deviation.
+    """
+
+    def test_two_files_covered_by_two_deviations_allows_commit(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        script = _load_script()
+        registry = tmp_path / "registry"
+        registry.mkdir()
+        (registry / "current.txt").write_text("cond-test-001\n")
+        cond_dir = registry / "cond-test-001"
+        cond_dir.mkdir()
+        (cond_dir / "condition.yaml").write_text(
+            "condition_id: cond-test-001\n"
+            "frozen_files:\n"
+            "  - agents/hapax_daimonion/persona.py\n"
+            "  - agents/hapax_daimonion/conversational_policy.py\n"
+        )
+        deviations = tmp_path / "research/protocols/deviations"
+        deviations.mkdir(parents=True)
+        (deviations / "DEVIATION-001.md").write_text(
+            "# Deviation 001\n\nTouches `agents/hapax_daimonion/persona.py` only.\n"
+        )
+        (deviations / "DEVIATION-002.md").write_text(
+            "# Deviation 002\n\nTouches `agents/hapax_daimonion/conversational_policy.py` only.\n"
+        )
+        _init_git_repo(tmp_path)
+        _stage_file(tmp_path, "agents/hapax_daimonion/persona.py", "# change\n")
+        _stage_file(
+            tmp_path,
+            "agents/hapax_daimonion/conversational_policy.py",
+            "# change\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script.main() == 0
+        out = capsys.readouterr().out
+        assert "DEVIATION-001" in out and "DEVIATION-002" in out
+        # Multi-deviation summary must report both deviation filenames.
+        assert "2 deviation(s)" in out or "2 deviations" in out
+
+    def test_single_deviation_covering_all_files_still_works(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """The single-deviation case must not regress on the H3 fix."""
+        script = _load_script()
+        registry = tmp_path / "registry"
+        registry.mkdir()
+        (registry / "current.txt").write_text("cond-test-001\n")
+        cond_dir = registry / "cond-test-001"
+        cond_dir.mkdir()
+        (cond_dir / "condition.yaml").write_text(
+            "condition_id: cond-test-001\n"
+            "frozen_files:\n"
+            "  - agents/hapax_daimonion/persona.py\n"
+            "  - agents/hapax_daimonion/conversational_policy.py\n"
+        )
+        deviations = tmp_path / "research/protocols/deviations"
+        deviations.mkdir(parents=True)
+        (deviations / "DEVIATION-100.md").write_text(
+            "# Deviation 100\n\n"
+            "Coordinated change to `agents/hapax_daimonion/persona.py` and "
+            "`agents/hapax_daimonion/conversational_policy.py` for a linked "
+            "refactor.\n"
+        )
+        _init_git_repo(tmp_path)
+        _stage_file(tmp_path, "agents/hapax_daimonion/persona.py", "# change\n")
+        _stage_file(
+            tmp_path,
+            "agents/hapax_daimonion/conversational_policy.py",
+            "# change\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script.main() == 0
+        out = capsys.readouterr().out
+        assert "DEVIATION-100" in out
+
+    def test_one_file_uncovered_rejects_even_with_other_covered(self, tmp_path: Path, monkeypatch):
+        """If any touched file lacks coverage, the commit must still be blocked."""
+        script = _load_script()
+        registry = tmp_path / "registry"
+        registry.mkdir()
+        (registry / "current.txt").write_text("cond-test-001\n")
+        cond_dir = registry / "cond-test-001"
+        cond_dir.mkdir()
+        (cond_dir / "condition.yaml").write_text(
+            "condition_id: cond-test-001\n"
+            "frozen_files:\n"
+            "  - agents/hapax_daimonion/persona.py\n"
+            "  - agents/hapax_daimonion/conversational_policy.py\n"
+        )
+        deviations = tmp_path / "research/protocols/deviations"
+        deviations.mkdir(parents=True)
+        # Only persona.py has a covering deviation; the policy file does not.
+        (deviations / "DEVIATION-001.md").write_text(
+            "# Deviation 001\n\nTouches `agents/hapax_daimonion/persona.py`.\n"
+        )
+        _init_git_repo(tmp_path)
+        _stage_file(tmp_path, "agents/hapax_daimonion/persona.py", "# change\n")
+        _stage_file(
+            tmp_path,
+            "agents/hapax_daimonion/conversational_policy.py",
+            "# change\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script.main() == 1
+
+
 class TestPathPrefixMatching:
     """Frozen entries ending in `/` match all files under that directory."""
 

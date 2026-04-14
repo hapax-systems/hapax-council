@@ -128,6 +128,28 @@ def _set_current(condition_id: str) -> None:
     _atomic_write(CURRENT_FILE, condition_id + "\n")
 
 
+def _clear_current_if_matches(condition_id: str) -> bool:
+    """Atomically clear CURRENT_FILE iff it still points at ``condition_id``.
+
+    Phase 1 audit finding H1 — ``cmd_close`` did not clear ``current.txt``
+    when closing the active condition, so downstream callers that read the
+    pointer file (``archive-purge.py``, ``check-frozen-files.py``) continued
+    to see the closed condition as active. The fix clears the pointer only
+    when it still matches the just-closed condition — so a concurrent
+    ``open`` that advances the pointer to a new condition between close and
+    clear is not clobbered.
+
+    Returns True iff the file was cleared by this call.
+    """
+    if not CURRENT_FILE.exists():
+        return False
+    before = CURRENT_FILE.read_text().strip()
+    if before != condition_id:
+        return False
+    _atomic_write(CURRENT_FILE, "")
+    return True
+
+
 def _write_marker(condition_id: str | None) -> None:
     """LRR Phase 1 item 3: write the research marker for the compositor to read.
 
@@ -355,6 +377,11 @@ def cmd_close(args: argparse.Namespace) -> int:
     if closed_now and previous_current == condition_id:
         _write_marker(None)
         _append_marker_change(before=condition_id, after=None)
+        # H1 fix: also clear the persistent pointer file so downstream
+        # callers (archive-purge, check-frozen-files) stop seeing the
+        # closed condition as "current." Uses the match-and-clear helper
+        # so a concurrent open that advanced the pointer is not clobbered.
+        _clear_current_if_matches(condition_id)
     print(f"research-registry: closed {condition_id}")
     return 0
 
@@ -451,6 +478,18 @@ def cmd_tag_reactions(args: argparse.Namespace) -> int:
         if next_offset is None:
             break
     # Verification: count points now carrying the target condition_id
+    # plus a cross-check that every non-target point is accounted for.
+    #
+    # H2 fix (Phase 1 audit): ``IsNullCondition`` only catches points where
+    # the key exists and has a literal null value. Qdrant distinguishes
+    # three payload states — field absent, field present with null, field
+    # present with a non-null value. Points in the "field absent" state
+    # would slip past the IsNullCondition filter and be silently excluded
+    # from Phase 4 BEST analysis even though the CLI reported
+    # ``still_untagged=0``. Cross-check by deriving ``still_untagged`` from
+    # the total-collection count minus ``tagged_count``; if the two
+    # numbers disagree, the IsNullCondition path is hiding untagged points
+    # and the verification must escalate a warning.
     try:
         tagged_count = client.count(
             collection_name=collection,
@@ -459,8 +498,7 @@ def cmd_tag_reactions(args: argparse.Namespace) -> int:
             ),
             exact=True,
         ).count
-        # And points still missing it (should be 0 after a successful backfill)
-        untagged_count = client.count(
+        null_count = client.count(
             collection_name=collection,
             count_filter=Filter(
                 must=[
@@ -469,15 +507,34 @@ def cmd_tag_reactions(args: argparse.Namespace) -> int:
             ),
             exact=True,
         ).count
+        total_count = client.count(collection_name=collection, exact=True).count
     except Exception as exc:
         print(f"research-registry: verification count failed: {exc}", file=sys.stderr)
-        tagged_count = "?"
-        untagged_count = "?"
+        print(
+            f"research-registry: backfill complete. "
+            f"scanned={total_scanned} updated={total_updated} "
+            f"now_tagged_with_{condition_id}=? still_untagged=?"
+        )
+        return 0
+
+    derived_untagged = total_count - tagged_count
+    still_untagged = derived_untagged  # canonical source of truth
     print(
         f"research-registry: backfill complete. "
         f"scanned={total_scanned} updated={total_updated} "
-        f"now_tagged_with_{condition_id}={tagged_count} still_untagged={untagged_count}"
+        f"now_tagged_with_{condition_id}={tagged_count} "
+        f"still_untagged={still_untagged} "
+        f"(derived=total-tagged; is_null_reported={null_count}; total={total_count})"
     )
+    if derived_untagged != null_count:
+        print(
+            f"research-registry: WARNING — derived_untagged ({derived_untagged}) does not "
+            f"match IsNullCondition count ({null_count}); some points likely lack the "
+            f"condition_id key entirely (field absent, not null). Re-run tag-reactions "
+            f"to guarantee every point is covered.",
+            file=sys.stderr,
+        )
+        return 5
     return 0
 
 
