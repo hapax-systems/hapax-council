@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from shared.compositor_model import Layout
 
 
-SinkKind = Literal["v4l2", "winit", "ndi", "shm"]
+SinkKind = Literal["v4l2", "winit", "ndi", "shm", "rtmp", "hls"]
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,10 @@ def _infer_sink_kind(target: str) -> SinkKind:
         return "ndi"
     if target.startswith("shm://"):
         return "shm"
+    if target.startswith("rtmp://") or target.startswith("rtmps://"):
+        return "rtmp"
+    if target.startswith("hls://") or target.endswith(".m3u8"):
+        return "hls"
     return "shm"
 
 

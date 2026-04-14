@@ -140,6 +140,42 @@
       "blend_mode": "over",
       "z_order": 10,
       "update_cadence": "always"
+    },
+    {
+      "id": "video_out_v4l2_loopback",
+      "geometry": {
+        "kind": "video_out",
+        "target": "/dev/video42",
+        "render_target": "main"
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 100,
+      "update_cadence": "always"
+    },
+    {
+      "id": "video_out_rtmp_mediamtx",
+      "geometry": {
+        "kind": "video_out",
+        "target": "rtmp://127.0.0.1:1935/studio",
+        "render_target": "main"
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 101,
+      "update_cadence": "always"
+    },
+    {
+      "id": "video_out_hls_playlist",
+      "geometry": {
+        "kind": "video_out",
+        "target": "hls:///home/hapax/.cache/hapax-compositor/hls/stream.m3u8",
+        "render_target": "main"
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 102,
+      "update_cadence": "always"
     }
   ],
   "assignments": [
