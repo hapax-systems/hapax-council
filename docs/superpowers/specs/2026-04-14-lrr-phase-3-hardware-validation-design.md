@@ -33,16 +33,16 @@ The original Phase 3 design (`livestream-research-ready-epic-design.md` §"Phase
 
 **Current (Option α):**
 - `tabbyapi.service`: no explicit CUDA env vars. CUDA default `FASTEST_FIRST` ranks the 3090 (~17.8 TFLOPS FP32) as cuda:0, config.yml has no `gpu_split` so exllamav3 loads single-GPU on cuda:0 → Qwen3.5-9B resident on the 3090 alone.
-- `hapax-dmn.service`: no explicit CUDA env vars. Same FASTEST_FIRST ordering → cuda:0 = 3090 → faster-whisper STT + embedding co-tenant on the 3090.
+- `hapax-daimonion.service`: no explicit CUDA env vars. Same FASTEST_FIRST ordering → cuda:0 = 3090 → faster-whisper STT + embedding co-tenant on the 3090.
 
 **Target (Option γ):**
 - `tabbyapi.service`: `CUDA_DEVICE_ORDER=PCI_BUS_ID`, `CUDA_VISIBLE_DEVICES=0,1` — both GPUs visible for layer-split
-- `hapax-dmn.service`: `CUDA_DEVICE_ORDER=PCI_BUS_ID`, `CUDA_VISIBLE_DEVICES=0` — pinned to 5060 Ti
+- `hapax-daimonion.service`: `CUDA_DEVICE_ORDER=PCI_BUS_ID`, `CUDA_VISIBLE_DEVICES=0` — pinned to 5060 Ti
 
 Both unit files are shipped in this PR as repo-tracked drop-ins at:
 
 - `systemd/units/tabbyapi.service.d/gpu-pin.conf`
-- `systemd/units/hapax-dmn.service.d/gpu-pin.conf`
+- `systemd/units/hapax-daimonion.service.d/gpu-pin.conf`
 
 `install-units.sh` is extended in this PR to symlink `*.service.d/` directories into `~/.config/systemd/user/` (previously the script only handled top-level unit files). See § 2 for the install-units.sh extension.
 
@@ -50,7 +50,7 @@ Both unit files are shipped in this PR as repo-tracked drop-ins at:
 
 | GPU | Residents | Total | Headroom |
 |---|---|---|---|
-| 5060 Ti (sm_120, 16 GiB) | compositor 3.3 + imagination 0.3 + hapax-dmn 3.4 + Hermes overflow 2.75 + faster-whisper STT 2.5 | 12.25 GiB | 3.25 GiB |
+| 5060 Ti (sm_120, 16 GiB) | compositor 3.3 + imagination 0.3 + hapax-daimonion 3.4 + Hermes overflow 2.75 + faster-whisper STT 2.5 | 12.25 GiB | 3.25 GiB |
 | 3090 (sm_86, 24 GiB) | Hermes 3 layers 0-76 23.5 + activations + KV cache | ~24 GiB | ~0.1 GiB |
 
 **The 3090 is tight.** If Hermes 3's actual VRAM overshoots the spec's 23.5 GB, there is no room. Contingency: drop to 2.5 bpw (tighter quant) or `max_seq_len=2048`. Mitigation plan: the `config.yml.hermes-draft` shipped in this PR uses `max_seq_len=4096` (not 8192 as the original Hermes 3 plan specified) to leave ~0.3 GiB of slack.
@@ -96,7 +96,7 @@ See §5 for the full rollback procedure.
 
 Previously the script iterated `*.service *.timer *.target *.path` under `systemd/units/` and symlinked each into `~/.config/systemd/user/`. It did NOT handle `*.service.d/` drop-in directories. Existing drop-ins under `systemd/units/audio-recorder.service.d/` and `systemd/units/contact-mic-recorder.service.d/` were silently not installed — a latent gap.
 
-Phase 3 adds `tabbyapi.service.d/` and `hapax-dmn.service.d/`, both of which MUST be active for the partition reconciliation to take effect. Extending the script now fixes both the new drop-ins and the latent existing ones as a single change.
+Phase 3 adds `tabbyapi.service.d/` and `hapax-daimonion.service.d/`, both of which MUST be active for the partition reconciliation to take effect. Extending the script now fixes both the new drop-ins and the latent existing ones as a single change.
 
 The extension:
 
@@ -116,15 +116,15 @@ If Hermes 3 fails to load or benchmarks below threshold, remove the two Phase 3 
 ```bash
 # 1. Remove both drop-ins from the live systemd directory
 rm ~/.config/systemd/user/tabbyapi.service.d/gpu-pin.conf
-rm ~/.config/systemd/user/hapax-dmn.service.d/gpu-pin.conf
+rm ~/.config/systemd/user/hapax-daimonion.service.d/gpu-pin.conf
 
 # 2. Reload + restart
 systemctl --user daemon-reload
 systemctl --user restart tabbyapi.service
-systemctl --user restart hapax-dmn.service
+systemctl --user restart hapax-daimonion.service
 
 # 3. Verify rollback
-nvidia-smi  # confirm: 3090 has tabbyapi + hapax-dmn; 5060 Ti has compositor only
+nvidia-smi  # confirm: 3090 has tabbyapi + hapax-daimonion; 5060 Ti has compositor only
 ```
 
 The repo-tracked drop-in files under `systemd/units/*.service.d/` can be left in place — a subsequent `install-units.sh` run will re-link them and bring Option γ back. To lock in the reversion across install-units.sh runs, revert the PR on main and re-run `install-units.sh`.
@@ -159,7 +159,7 @@ The `TimeoutStartSec=180` value is forward-compatible with smaller models — no
 
 ## 4. Exit criteria
 
-- [x] Partition drop-ins at `systemd/units/tabbyapi.service.d/gpu-pin.conf` and `systemd/units/hapax-dmn.service.d/gpu-pin.conf` present and correct
+- [x] Partition drop-ins at `systemd/units/tabbyapi.service.d/gpu-pin.conf` and `systemd/units/hapax-daimonion.service.d/gpu-pin.conf` present and correct
 - [x] `install-units.sh` extended to install drop-in directories
 - [x] `tabbyapi.service` `TimeoutStartSec` raised to 180
 - [x] `config.yml.hermes-draft` staged at `~/projects/tabbyAPI/` (local-only commit, not pushed to upstream)
@@ -173,7 +173,7 @@ The `TimeoutStartSec=180` value is forward-compatible with smaller models — no
 ## 5. Risks
 
 - **3090 headroom is tight.** GPU 1 has ~0.1 GiB free after Hermes 3 + activations + KV cache. Any overshoot on actual VRAM vs the 23.5 GB spec number forces fallback to 2.5 bpw or `max_seq_len=2048`. Contingency documented in §1.3.
-- **Partition activation requires a service restart.** Activating Option γ means restarting both `tabbyapi.service` and `hapax-dmn.service`. The restart window briefly kills local LLM routing (`local-fast`/`coding`/`reasoning`) and voice STT. Schedule during an idle window.
+- **Partition activation requires a service restart.** Activating Option γ means restarting both `tabbyapi.service` and `hapax-daimonion.service`. The restart window briefly kills local LLM routing (`local-fast`/`coding`/`reasoning`) and voice STT. Schedule during an idle window.
 - **Self-quantization (Phase 3 PR #2) is multi-hour.** The 6-12 hour window blocks TabbyAPI from handling simultaneous inference (the 3090 is busy with quant compute). Plan for overnight.
 - **X670E install (Phase 3 PR #3) is a separate operator window** (~2026-04-16). Items 4, 10, 11 ship there.
 
@@ -202,7 +202,7 @@ $ sudo lspci -vvs 07:00.0 | grep -E 'LnkCap|LnkSta'   # RTX 3090
 
 ### 6.2 Item 5 — Thermal baseline (2026-04-14, pre-partition)
 
-Snapshot under nominal compositor + Qwen3.5-9B + hapax-dmn load:
+Snapshot under nominal compositor + Qwen3.5-9B + hapax-daimonion load:
 
 | GPU | Temp | Power | VRAM | Clocks |
 |---|---|---|---|---|
@@ -222,7 +222,9 @@ Deferred to post-mobo install window when the BRIO replacement lands.
 
 ## 7. Handoff implications
 
-Phase 3 PR #1 (this PR) ships the non-runtime-destructive bits. After merge, the operator decides when to apply the partition via `systemctl --user daemon-reload && restart tabbyapi && restart hapax-dmn`. Phase 5 (Hermes 3 actual substrate swap) is unblocked from this PR + the Phase 3 PR #2 self-quantization.
+Phase 3 PR #1 (this PR) ships the non-runtime-destructive bits. After merge, the operator decides when to apply the partition via `systemctl --user daemon-reload && restart tabbyapi && restart hapax-daimonion`. Phase 5 (Hermes 3 actual substrate swap) is unblocked from this PR + the Phase 3 PR #2 self-quantization.
+
+**2026-04-14 correction (PR #814):** PR #811 originally placed the Option γ drop-in on `hapax-dmn.service.d/` by mistake. `hapax-dmn.service` runs `-m agents.dmn` (cognitive substrate, CPU-only, `MemoryMax=1G`, no GPU use). The actual GPU-holding voice stack is `hapax-daimonion.service` (`-m agents.hapax_daimonion`, loads faster-whisper STT + NeMo embeddings on CUDA). Beta's supplement labeled the 3.4 GiB GPU footprint as "hapax-dmn" but the systemd unit name is `hapax-daimonion`. PR #814 corrected the drop-in target; all `hapax-dmn` references in this spec have been updated in place.
 
 Phase 4 (Condition A collection) can run in parallel with Phase 3's pre-mobo work under the original epic design's time-gating rule — Phase 4 runs on Qwen (current substrate) while Phase 3 prepares Hermes (next substrate).
 
