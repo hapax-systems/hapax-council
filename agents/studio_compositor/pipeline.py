@@ -190,6 +190,26 @@ def build_pipeline(compositor: Any) -> Any:
     sink = Gst.ElementFactory.make("v4l2sink", "output")
     sink.set_property("device", compositor.config.output_device)
     sink.set_property("sync", False)
+    # Drop #50 OBS-N1: disable last-sample caching. v4l2sink's default
+    # `enable-last-sample=true` holds a ref to the most recently pushed
+    # buffer so `get-last-sample` queries can read it back. The compositor
+    # never calls `get-last-sample` on the output sink, so the cache is
+    # just dead pinning ~4 MB of BGRA memory per frame indefinitely.
+    try:
+        sink.set_property("enable-last-sample", False)
+    except Exception:
+        log.debug("v4l2sink: enable-last-sample property not supported", exc_info=True)
+    # Drop #50 OBS-N3: disable QoS back-pressure. v4l2loopback's kernel
+    # buffering is small (max_buffers=2 default) and with an absent or
+    # slow consumer the sink emits QoS events upstream, which propagate
+    # through the fx chain and can back-pressure cudacompositor. The
+    # compositor should be OBS-agnostic: frames are produced at the
+    # pipeline's natural rate and drop at the v4l2sink boundary if OBS
+    # can't keep up, rather than stalling the whole upstream chain.
+    try:
+        sink.set_property("qos", False)
+    except Exception:
+        log.debug("v4l2sink: qos property not supported", exc_info=True)
 
     for el in [queue_v4l2, convert_out, sink_caps, identity, sink]:
         pipeline.add(el)
