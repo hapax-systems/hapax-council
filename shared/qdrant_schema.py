@@ -21,6 +21,18 @@ EXPECTED_COLLECTIONS: dict[str, dict[str, object]] = {
     "operator-corrections": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "affordances": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "stream-reactions": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
+    # Queue 026 Phase 4 Finding 1: schema drift. The live Qdrant has 10
+    # collections; ``hapax-apperceptions`` and ``operator-patterns`` were
+    # not in this map, so ``verify_collections`` reported them as missing
+    # (they are present) and the health check had no visibility into
+    # them. Writers at ``agents/_apperception.py`` and
+    # ``agents/_pattern_consolidation.py`` expect these collections to
+    # exist; include them so the schema drift closes.
+    # ``operator-patterns`` is currently empty — the writer is
+    # de-scheduled; that is Q026 Phase 4 Finding 2 and is inherited as
+    # a separate work item in the alpha close-out handoff.
+    "hapax-apperceptions": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
+    "operator-patterns": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
 }
 
 
