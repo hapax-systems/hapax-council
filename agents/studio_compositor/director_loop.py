@@ -698,16 +698,26 @@ class DirectorLoop:
 
         def _do_speak_and_advance():
             with self._transition_lock:
+                # W3.1+W3.2: smooth attack/release envelope replaces the
+                # binary mute_all() cliff. Beta's Sprint 4 F2 noted the
+                # old binary mute sounded like silence-then-voice-then-
+                # silence punching through the music — we want a musical
+                # 30 ms attack / 350 ms release ducking envelope.
+                ducked = False
                 try:
                     pcm = self._synthesize(text)
                     if pcm:
                         if self._audio_control:
-                            self._audio_control.mute_all()
+                            self._audio_control.duck()
+                            ducked = True
                         self._reactor.feed_pcm(pcm)
                         self._play_audio(pcm)
                         time.sleep(0.3)
                 except Exception:
                     log.exception("TTS error")
+                finally:
+                    if ducked and self._audio_control:
+                        self._audio_control.restore()
 
                 # Advance slot atomically (react mode only)
                 if activity == "react":
@@ -719,7 +729,10 @@ class DirectorLoop:
                     self._last_perception = 0.0
                     log.info("Now playing slot %d", self._active_slot)
 
-                # Restore audio on new active slot
+                # Slot-rotation routing: hard cliff (which slot plays
+                # is a discrete state, not an envelope-able quantity).
+                # Runs AFTER restore() so the active-slot mute_all_except
+                # call writes the final state on top of any envelope tail.
                 if self._audio_control:
                     self._audio_control.mute_all_except(self._active_slot)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from unittest.mock import MagicMock, call, patch
 
 from agents.studio_compositor.audio_control import SlotAudioControl
@@ -106,3 +107,117 @@ class TestMuteAll:
         wpctl_calls = [c for c in mock_run.call_args_list if "wpctl" in str(c)]
         for c in wpctl_calls:
             assert c.args[0][3] == "0.0"
+
+
+def _wpctl_calls(mock_run: MagicMock) -> list:
+    return [c for c in mock_run.call_args_list if "wpctl" in str(c)]
+
+
+class TestDuckRestore:
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_initial_state_is_idle(self, mock_run: MagicMock, _sleep: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        assert ctrl._ramp_state == "idle"
+        assert ctrl._pre_duck_volumes == {}
+        assert ctrl._ramp_thread is None
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_duck_attenuates_to_target(self, mock_run: MagicMock, _sleep: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.duck()
+        assert ctrl._ramp_thread is not None
+        ctrl._ramp_thread.join(timeout=2)
+        assert ctrl._ramp_state == "ducked"
+        # Default pre-duck 1.0 × 0.4 attenuation = 0.4 final.
+        for slot in range(3):
+            assert math.isclose(ctrl._volume_cache[slot], 0.4, abs_tol=1e-6)
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_duck_idempotent_when_already_ducked(
+        self, mock_run: MagicMock, _sleep: MagicMock
+    ) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.duck()
+        ctrl._ramp_thread.join(timeout=2)
+        first_count = len(_wpctl_calls(mock_run))
+        ctrl.duck()
+        # Second duck while already ducked is a no-op — no new ramp, no new wpctl.
+        assert len(_wpctl_calls(mock_run)) == first_count
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_restore_idempotent_when_idle(self, mock_run: MagicMock, _sleep: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.restore()
+        # No ramp spawned at idle, no wpctl traffic.
+        assert ctrl._ramp_thread is None
+        assert ctrl._ramp_state == "idle"
+        assert _wpctl_calls(mock_run) == []
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_round_trip_returns_to_pre_duck_volumes(
+        self, mock_run: MagicMock, _sleep: MagicMock
+    ) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.set_volume(0, 0.8)
+        ctrl.set_volume(1, 0.6)
+        ctrl.set_volume(2, 0.9)
+        ctrl.duck()
+        ctrl._ramp_thread.join(timeout=2)
+        assert ctrl._ramp_state == "ducked"
+        assert math.isclose(ctrl._volume_cache[0], 0.8 * 0.4, abs_tol=1e-6)
+
+        ctrl.restore()
+        ctrl._ramp_thread.join(timeout=2)
+        assert ctrl._ramp_state == "idle"
+        assert ctrl._pre_duck_volumes == {}
+        assert math.isclose(ctrl._volume_cache[0], 0.8, abs_tol=1e-6)
+        assert math.isclose(ctrl._volume_cache[1], 0.6, abs_tol=1e-6)
+        assert math.isclose(ctrl._volume_cache[2], 0.9, abs_tol=1e-6)
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_ramp_thread_is_daemon(self, mock_run: MagicMock, _sleep: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.duck()
+        assert ctrl._ramp_thread.daemon is True
+        ctrl._ramp_thread.join(timeout=2)
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_ramp_executes_eight_steps_per_slot(
+        self, mock_run: MagicMock, _sleep: MagicMock
+    ) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.duck()
+        ctrl._ramp_thread.join(timeout=2)
+        # 8 ramp steps × 3 slots = 24 set_volume calls → 24 wpctl invocations.
+        assert len(_wpctl_calls(mock_run)) == 24
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_duck_snapshots_pre_duck_state_once(
+        self, mock_run: MagicMock, _sleep: MagicMock
+    ) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.set_volume(0, 0.7)
+        ctrl.duck()
+        ctrl._ramp_thread.join(timeout=2)
+        # Pre-duck snapshot survives until restore() clears it.
+        assert math.isclose(ctrl._pre_duck_volumes[0], 0.7, abs_tol=1e-6)
+        # Calling duck() again must not clobber the snapshot with the
+        # ducked-state cache.
+        ctrl.duck()
+        assert math.isclose(ctrl._pre_duck_volumes[0], 0.7, abs_tol=1e-6)
