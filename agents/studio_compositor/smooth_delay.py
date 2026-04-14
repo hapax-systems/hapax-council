@@ -4,11 +4,35 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 from .config import SNAPSHOT_DIR
 
 log = logging.getLogger(__name__)
+
+OUTPUT_FPS = 2.0
+"""Smooth-snapshot output rate. Matches ``smooth-rate-caps`` downstream.
+
+Any rate advertised to the downstream ``videorate`` element is the target;
+the upstream ``_gldownload_drop_probe`` uses this same value to drop
+buffers BEFORE the CPU download so ~28/30 frames per second do not get
+transferred across the PCIe bus. Delta drop #29 finding 3 measured
+~250 MB/s of wasted GPU→CPU bandwidth before this fix."""
+
+
+def should_pass_gldownload(now_ts: float, last_pass_ts: float, fps: float = OUTPUT_FPS) -> bool:
+    """Return True iff a buffer at ``now_ts`` should pass the gldownload
+    probe given the last successful pass at ``last_pass_ts``.
+
+    Pure function so the pad-probe throttling logic can be unit-tested
+    without a live GStreamer pipeline. Returns True when at least
+    ``1/fps`` seconds have elapsed since ``last_pass_ts``.
+    """
+    if fps <= 0:
+        return True
+    min_interval = 1.0 / fps
+    return (now_ts - last_pass_ts) >= min_interval
 
 
 def add_smooth_delay_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
@@ -37,6 +61,29 @@ def add_smooth_delay_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
 
     glcc_out = Gst.ElementFactory.make("glcolorconvert", "smooth-glcc-out")
     gldownload = Gst.ElementFactory.make("gldownload", "smooth-gldownload")
+
+    # Delta 2026-04-14-camera-pipeline-walk-followups finding 3
+    # (cam-stability rollup Ring 1 item F): the downstream ``videorate``
+    # drops 28/30 frames per second anyway, but currently runs AFTER
+    # ``gldownload``, so every frame pays the full 1920×1080×4 =
+    # 8.3 MB PCIe transfer. Measured waste: ~250 MB/s of GPU→CPU
+    # bandwidth. This pad probe samples at ``OUTPUT_FPS`` (2 Hz) BEFORE
+    # the download so only the frames that will actually survive
+    # videorate make it across the bus. Idempotent monotonic check —
+    # no global state, no locks required (GStreamer pad probes run
+    # single-threaded per pad).
+    _gldownload_last_pass_ts: list[float] = [0.0]  # mutable cell for closure
+
+    def _gldownload_drop_probe(pad: Any, info: Any) -> Any:
+        now = time.monotonic()
+        if should_pass_gldownload(now, _gldownload_last_pass_ts[0], OUTPUT_FPS):
+            _gldownload_last_pass_ts[0] = now
+            return Gst.PadProbeReturn.OK
+        return Gst.PadProbeReturn.DROP
+
+    gldownload_sink_pad = gldownload.get_static_pad("sink")
+    if gldownload_sink_pad is not None:
+        gldownload_sink_pad.add_probe(Gst.PadProbeType.BUFFER, _gldownload_drop_probe)
     out_convert = Gst.ElementFactory.make("videoconvert", "smooth-out-convert")
     out_convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     scale = Gst.ElementFactory.make("videoscale", "smooth-scale")
