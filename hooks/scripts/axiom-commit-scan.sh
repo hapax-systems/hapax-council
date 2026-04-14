@@ -6,9 +6,25 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/axiom-patterns.sh"
 
+# Queue 025 #92: fail LOUD when ``jq`` is missing. Previously the
+# invocation below piped through ``2>/dev/null || true`` which meant
+# that on a system without jq (or where jq was temporarily unavailable)
+# the hook silently extracted an empty COMMAND and exited 0 — pretending
+# every command passed the axiom scan. A governance hook that silently
+# no-ops is worse than a failing one because it pretends to be
+# enforcing constraints it isn't. Exit non-zero so the tool call is
+# blocked and the operator notices the missing dependency.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "axiom-commit-scan: BLOCKED — 'jq' is not installed." >&2
+  echo "The commit/push axiom gate requires jq to parse the Claude Code" >&2
+  echo "hook input. Install with 'paru -S jq' (Arch) or 'apt install jq'" >&2
+  echo "(Debian). This gate fails loud rather than silently passing." >&2
+  exit 2
+fi
+
 INPUT="$(cat)"
 
-COMMAND="$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+COMMAND="$(echo "$INPUT" | jq -r '.tool_input.command // empty')"
 
 # Only interested in monitored commands
 if [ -z "$COMMAND" ]; then
