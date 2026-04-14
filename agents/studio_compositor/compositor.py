@@ -128,6 +128,30 @@ _FALLBACK_LAYOUT = Layout(
             geometry=SurfaceGeometry(kind="rect", x=1500, y=860, w=400, h=200),
             z_order=10,
         ),
+        # LRR Phase 2 item 10 — video_out surfaces enumerated by
+        # OutputRouter.from_layout() for the three current sinks.
+        # Legacy hardcoded paths remain authoritative for sink
+        # construction; full migration to router-driven sinks is a
+        # Phase 10 polish item.
+        SurfaceSchema(
+            id="video_out_v4l2_loopback",
+            geometry=SurfaceGeometry(kind="video_out", target="/dev/video42", render_target="main"),
+            z_order=100,
+        ),
+        SurfaceSchema(
+            id="video_out_rtmp_mediamtx",
+            geometry=SurfaceGeometry(
+                kind="video_out",
+                target="rtmp://127.0.0.1:1935/studio",
+                render_target="main",
+            ),
+            z_order=101,
+        ),
+        SurfaceSchema(
+            id="video_out_hls_playlist",
+            geometry=SurfaceGeometry(kind="video_out", target="hls://local", render_target="main"),
+            z_order=102,
+        ),
     ],
     assignments=[
         Assignment(source="token_pole", surface="pip-ul"),

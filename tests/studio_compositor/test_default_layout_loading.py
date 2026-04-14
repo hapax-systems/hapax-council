@@ -35,8 +35,19 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "reverie",
     }
 
+    # LRR Phase 2 item 10: video_out surfaces declared for OutputRouter.from_layout()
+    # enumeration. The 4 pip-* quadrants are the input surfaces; the 3 video_out_*
+    # surfaces are the output sinks (v4l2 loopback, RTMP, HLS).
     surface_ids = {s.id for s in layout.surfaces}
-    assert surface_ids == {"pip-ul", "pip-ur", "pip-ll", "pip-lr"}
+    assert surface_ids == {
+        "pip-ul",
+        "pip-ur",
+        "pip-ll",
+        "pip-lr",
+        "video_out_v4l2_loopback",
+        "video_out_rtmp_mediamtx",
+        "video_out_hls_playlist",
+    }
 
     assignment_pairs = {(a.source, a.surface) for a in layout.assignments}
     assert assignment_pairs == {
