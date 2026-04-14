@@ -23,7 +23,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import threading
 import time
 import urllib.request
@@ -356,19 +355,63 @@ class ChatMonitor:
             log.warning("Batch analysis failed", exc_info=True)
 
 
-def main() -> None:
-    video_id = os.environ.get("YOUTUBE_VIDEO_ID", "")
-    if not video_id:
-        # Try to read from a file
-        vid_path = SHM_DIR / "youtube-video-id.txt"
-        if vid_path.exists():
-            video_id = vid_path.read_text().strip()
+def _read_video_id() -> str:
+    """Resolve a YouTube video ID from env var or shm file. Returns empty
+    string when neither source has it."""
+    env_id = os.environ.get("YOUTUBE_VIDEO_ID", "").strip()
+    if env_id:
+        return env_id
+    vid_path = SHM_DIR / "youtube-video-id.txt"
+    if vid_path.exists():
+        return vid_path.read_text().strip()
+    return ""
 
+
+# LRR Phase 0 item 1: chat-monitor must NOT crash when no video ID is set.
+# The service should sit idle in a polling loop until an ID appears, then
+# start monitoring. Crash-loop behavior (sys.exit(1)) caused 660+ restart
+# counter and journal spam between 2026-04-13 and 2026-04-14. Fix shape =
+# wait-loop with a 30 s poll cadence + 5 min log throttle so the journal
+# doesn't fill up while idle.
+_WAIT_POLL_INTERVAL_S = 30.0
+_WAIT_LOG_INTERVAL_S = 300.0
+
+
+def _wait_for_video_id() -> str:
+    """Block until a video ID becomes available. Returns the resolved ID.
+
+    Polls every ``_WAIT_POLL_INTERVAL_S`` seconds. Logs a warning every
+    ``_WAIT_LOG_INTERVAL_S`` seconds (not every poll) so the journal stays
+    quiet while the service is idle. Exits cleanly on SIGTERM via the
+    standard interpreter shutdown path; the sleep is short enough that
+    systemd's stop signal is honored within the poll window.
+    """
+    log.info("chat-monitor: starting; waiting for video ID")
+    # Initialize to -inf so the first warning fires immediately, then the
+    # throttle takes over for subsequent polls within _WAIT_LOG_INTERVAL_S.
+    last_log_at = float("-inf")
+    while True:
+        video_id = _read_video_id()
+        if video_id:
+            log.info("chat-monitor: video ID resolved: %s", video_id)
+            return video_id
+        now = time.monotonic()
+        if now - last_log_at >= _WAIT_LOG_INTERVAL_S:
+            log.warning(
+                "chat-monitor: no video ID. Set YOUTUBE_VIDEO_ID or write to %s. "
+                "Polling every %.0fs; this warning repeats every %.0fs.",
+                SHM_DIR / "youtube-video-id.txt",
+                _WAIT_POLL_INTERVAL_S,
+                _WAIT_LOG_INTERVAL_S,
+            )
+            last_log_at = now
+        time.sleep(_WAIT_POLL_INTERVAL_S)
+
+
+def main() -> None:
+    video_id = _read_video_id()
     if not video_id:
-        log.error(
-            "No video ID. Set YOUTUBE_VIDEO_ID or write to %s", SHM_DIR / "youtube-video-id.txt"
-        )
-        sys.exit(1)
+        video_id = _wait_for_video_id()
 
     monitor = ChatMonitor(video_id)
     monitor.start()
