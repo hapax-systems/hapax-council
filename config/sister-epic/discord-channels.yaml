@@ -1,0 +1,97 @@
+# Discord server channel structure — sister epic Phase S1 + S4 scaffolding
+#
+# Operator fills in channel names, descriptions, and role gates. This
+# file is the STRUCTURE template; values are operator-owned decisions.
+#
+# Schema validated by tests/test_sister_epic_config.py.
+#
+# Compliance: no per-author state, consent-gated onboarding, token
+# pole 7 ethical engagement (no scoreboard / sentiment reward / loss
+# frames) per sister epic design doc.
+
+version: 1
+schema_owner: operator
+operator_action_required: true
+
+server:
+  name: TODO-operator-fills
+  description: TODO-operator-fills
+  icon_path: TODO-operator-fills
+
+# Channel categories, ordered top-to-bottom in the Discord UI
+categories:
+  - id: announcements
+    name: TODO
+    description: Official announcements, research milestones, tentpole events
+    channels:
+      - id: announcements
+        kind: text
+        read_only_to_members: true
+        topic: TODO
+      - id: rules-and-manifesto
+        kind: text
+        read_only_to_members: true
+        topic: Pinned manifesto + community rules
+      - id: research-updates
+        kind: text
+        read_only_to_members: true
+        topic: Condition state, claim progress, Phase close handoffs
+
+  - id: discussion
+    name: TODO
+    description: Member discussion space
+    channels:
+      - id: general
+        kind: text
+        topic: Off-topic conversation with loose moderation
+      - id: research-chat
+        kind: text
+        topic: Talk about the research, papers, methodology
+      - id: music-and-production
+        kind: text
+        topic: Music + hardware + producer talk
+      - id: stream-feedback
+        kind: text
+        topic: Post-stream feedback + feature suggestions
+
+  - id: tentpole
+    name: TODO
+    description: Activated during tentpole events only
+    channels:
+      - id: event-chat
+        kind: text
+        topic: Event-day-only active chat channel
+      - id: event-voice
+        kind: voice
+        topic: Event-day-only voice presence
+
+  - id: patron-only
+    name: TODO-patron
+    description: Patreon tier-gated channels
+    channels:
+      - id: patron-lounge
+        kind: text
+        required_role: patron-companion-or-higher
+        topic: TODO
+      - id: patron-qa
+        kind: text
+        required_role: patron-studio-or-higher
+        topic: TODO
+      - id: patron-stem-files
+        kind: text
+        required_role: patron-lab-or-higher
+        topic: Audio stem + project file drop point
+
+# Automated moderation + onboarding
+moderation:
+  onboarding_gate:
+    enabled: true
+    manifesto_acknowledgment_required: true
+    operator_review_window_hours: 48
+    operator_action_required: true  # Operator writes the prompt + criteria
+  auto_roles:
+    - role: member
+      trigger: manifesto_acknowledged
+  attack_log_path: /dev/shm/hapax-chat-attack-log.jsonl  # Phase 9 integration point
+  rate_limit_window_seconds: 300
+  rate_limit_threshold: 3

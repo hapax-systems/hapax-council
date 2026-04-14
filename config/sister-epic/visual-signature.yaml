@@ -1,0 +1,81 @@
+# Visual signature lock — sister epic Phase S0 scaffolding
+#
+# Operator fills in hex values, font file paths, logo paths. Alpha
+# guarantees the schema; operator owns every value that makes a
+# visual decision.
+#
+# Visual constants inherited from council existing design language:
+#   - Gruvbox Hard Dark palette for R&D working mode
+#   - Solarized Dark palette for Research working mode
+#   - IBM VGA Nerd Font for ANSI-art overlays
+#   - JetBrainsMono Nerd Font for HUD text
+# See docs/logos-design-language.md for authority; this file exposes
+# the sister epic's use of those constants for artifacts outside the
+# live compositor.
+
+version: 1
+schema_owner: operator
+operator_action_required: true
+
+# Fonts
+fonts:
+  primary_display:
+    name: TODO-operator-fills  # "IBM VGA Nerd Font" per Bundle 7 §5.3
+    path: TODO
+    weights: [regular]
+  primary_ui:
+    name: TODO-operator-fills  # "JetBrainsMono Nerd Font" per existing council design
+    path: TODO
+    weights: [regular, bold]
+  accent:
+    name: null  # optional, operator decides
+    path: null
+
+# Color palettes (two modes — inherits council working mode distinction)
+palettes:
+  research:  # Solarized Dark
+    bg0: TODO  # "#002b36"
+    bg1: TODO  # "#073642"
+    fg0: TODO  # "#fdf6e3"
+    fg1: TODO  # "#eee8d5"
+    accent_yellow: TODO  # "#b58900"
+    accent_cyan: TODO    # "#2aa198"
+    accent_blue: TODO    # "#268bd2"
+  rnd:  # Gruvbox Hard Dark
+    bg0: TODO  # "#1d2021"
+    bg1: TODO  # "#282828"
+    fg0: TODO  # "#fbf1c7"
+    fg1: TODO  # "#ebdbb2"
+    accent_yellow: TODO  # "#fabd2f"
+    accent_orange: TODO  # "#fe8019"
+    accent_red: TODO     # "#fb4934"
+
+# Visual constant elements (what appears on every derivative artifact)
+visual_constants:
+  sierpinski_triangle:
+    enabled: true
+    source: "compositor Sierpinski renderer"
+    placement: "top-right corner of all static artifacts"
+  token_pole:
+    enabled: true
+    source: "compositor token_pole renderer"
+    placement: "left side of all static artifacts"
+  reverie:
+    enabled: true
+    source: "compositor reverie visual surface"
+    placement: "background layer of all static artifacts"
+
+# Logo / wordmark
+logo:
+  wordmark_path: TODO-operator-designs-and-fills
+  icon_path: TODO
+  favicon_path: TODO
+  opengraph_path: TODO
+
+# Usage rules
+usage_rules:
+  min_contrast_ratio: 4.5  # WCAG AA
+  tagline_required_on_artifact: true
+  tagline_text: TODO-operator-fills
+  do_not_recolor_visual_constants: true
+  do_not_stretch_logo: true
