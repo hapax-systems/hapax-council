@@ -13,6 +13,14 @@ MemoryMax=4G
 Environment=XDG_RUNTIME_DIR=%t
 Environment=__NV_DISABLE_EXPLICIT_SYNC=1
 Environment=RUST_LOG=info
+# BETA-FINDING-Q (queue 026 Phase 3): hapax-imagination has been
+# crashing ~65 times per 24h on wgpu fragment-stage validation errors
+# ("Error matching ShaderStages(FRAGMENT) shader requirements against
+# the pipeline"). systemd auto-restart masks the symptom but every
+# crash resets imagination state. Enable backtrace so the next crash
+# captures the full stack, unblocking the DynamicPipeline
+# param_order / WGSL struct drift root-cause investigation.
+Environment=RUST_BACKTRACE=1
 # Phase 4b: run the reverie visual surface fully headless. Frames
 # still flow to /dev/shm/hapax-visual/frame.jpg (Tauri VisualSurface
 # reads this via the HTTP frame server on :8053) and to
