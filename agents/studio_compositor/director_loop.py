@@ -20,6 +20,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from agents.studio_compositor import metrics
 from agents.studio_compositor.audio_control import SlotAudioControl
 from agents.studio_compositor.tts_client import DaimonionTtsClient
 
@@ -703,7 +704,11 @@ class DirectorLoop:
                 # old binary mute sounded like silence-then-voice-then-
                 # silence punching through the music — we want a musical
                 # 30 ms attack / 350 ms release ducking envelope.
+                # W3.3: voice_active gauge tracks the entire synthesis +
+                # playback window; paired with music_ducked it lets us
+                # measure trigger → duck latency in Grafana.
                 ducked = False
+                metrics.set_voice_active(True)
                 try:
                     pcm = self._synthesize(text)
                     if pcm:
@@ -718,6 +723,7 @@ class DirectorLoop:
                 finally:
                     if ducked and self._audio_control:
                         self._audio_control.restore()
+                    metrics.set_voice_active(False)
 
                 # Advance slot atomically (react mode only)
                 if activity == "react":

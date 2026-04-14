@@ -221,3 +221,84 @@ class TestDuckRestore:
         # ducked-state cache.
         ctrl.duck()
         assert math.isclose(ctrl._pre_duck_volumes[0], 0.7, abs_tol=1e-6)
+
+
+class TestDuckingMetricsGauge:
+    """W3.3: COMP_MUSIC_DUCKED gauge transitions through the envelope."""
+
+    @patch("agents.studio_compositor.audio_control.metrics.set_music_ducked")
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_duck_publishes_music_ducked_true(
+        self,
+        mock_run: MagicMock,
+        _sleep: MagicMock,
+        mock_set: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.duck()
+        ctrl._ramp_thread.join(timeout=2)
+        # duck() publishes True at the start of the attack ramp.
+        # The terminal state is "ducked" (still ducked), so no False
+        # is published until restore() finishes.
+        assert mock_set.call_args_list[0] == call(True)
+        assert call(False) not in mock_set.call_args_list
+
+    @patch("agents.studio_compositor.audio_control.metrics.set_music_ducked")
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_round_trip_publishes_true_then_false(
+        self,
+        mock_run: MagicMock,
+        _sleep: MagicMock,
+        mock_set: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.duck()
+        ctrl._ramp_thread.join(timeout=2)
+        ctrl.restore()
+        ctrl._ramp_thread.join(timeout=2)
+        # Sequence must include True (from duck) followed by False (from
+        # restore's terminal state). Order matters.
+        calls = mock_set.call_args_list
+        assert call(True) in calls
+        assert call(False) in calls
+        true_idx = calls.index(call(True))
+        false_idx = calls.index(call(False))
+        assert true_idx < false_idx
+
+    @patch("agents.studio_compositor.audio_control.metrics.set_music_ducked")
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_idempotent_duck_publishes_only_once(
+        self,
+        mock_run: MagicMock,
+        _sleep: MagicMock,
+        mock_set: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.duck()
+        ctrl._ramp_thread.join(timeout=2)
+        first_count = mock_set.call_count
+        ctrl.duck()  # No-op while already ducked.
+        # The second duck() returns at the state==ducked guard before
+        # touching any metrics, so the call count must not increase.
+        assert mock_set.call_count == first_count
+
+    @patch("agents.studio_compositor.audio_control.metrics.set_music_ducked")
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_idle_restore_publishes_nothing(
+        self,
+        mock_run: MagicMock,
+        _sleep: MagicMock,
+        mock_set: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.restore()
+        # No envelope state change → no metric publish at all.
+        assert mock_set.call_count == 0

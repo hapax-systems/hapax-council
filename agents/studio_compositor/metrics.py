@@ -108,6 +108,8 @@ REVERIE_POOL_SLOT_COUNT: Any = None
 COMP_MEMORY_FOOTPRINT: Any = None
 COMP_TTS_CLIENT_TIMEOUT_TOTAL: Any = None
 CAM_FRAME_FLOW_STALE_TOTAL: Any = None
+COMP_VOICE_ACTIVE: Any = None
+COMP_MUSIC_DUCKED: Any = None
 
 
 def _init_metrics() -> None:
@@ -144,6 +146,8 @@ def _init_metrics() -> None:
     global COMP_MEMORY_FOOTPRINT
     global COMP_TTS_CLIENT_TIMEOUT_TOTAL
     global CAM_FRAME_FLOW_STALE_TOTAL
+    global COMP_VOICE_ACTIVE
+    global COMP_MUSIC_DUCKED
 
     if not _PROMETHEUS_AVAILABLE:
         return
@@ -234,6 +238,21 @@ def _init_metrics() -> None:
         "studio_camera_frame_flow_stale_total",
         "Frame-flow watchdog FRAME_FLOW_STALE dispatches",
         ["role"],
+        registry=REGISTRY,
+    )
+    # Livestream-performance-map W3.3 / Sprint 4 item 190: voice +
+    # music ducking observability. Two correlated gauges so the
+    # voice-trigger → music-duck latency can be measured (delta
+    # between voice_active going high and music_ducked going high)
+    # and the steady-state ducking residency can be plotted.
+    COMP_VOICE_ACTIVE = Gauge(
+        "studio_compositor_voice_active",
+        "1 when TTS playback is in progress (director loop _do_speak_and_advance), 0 otherwise",
+        registry=REGISTRY,
+    )
+    COMP_MUSIC_DUCKED = Gauge(
+        "studio_compositor_music_ducked",
+        "1 when SlotAudioControl is in any non-idle envelope state (ducking/ducked/restoring), 0 when idle",
         registry=REGISTRY,
     )
 
@@ -559,6 +578,18 @@ def on_frame_flow_stale(role: str) -> None:
     if CAM_FRAME_FLOW_STALE_TOTAL is None:
         return
     CAM_FRAME_FLOW_STALE_TOTAL.labels(role=role).inc()
+
+
+def set_voice_active(active: bool) -> None:
+    if COMP_VOICE_ACTIVE is None:
+        return
+    COMP_VOICE_ACTIVE.set(1 if active else 0)
+
+
+def set_music_ducked(ducked: bool) -> None:
+    if COMP_MUSIC_DUCKED is None:
+        return
+    COMP_MUSIC_DUCKED.set(1 if ducked else 0)
 
 
 def on_pipeline_restart(pipeline_name: str) -> None:

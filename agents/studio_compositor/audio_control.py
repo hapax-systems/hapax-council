@@ -30,6 +30,8 @@ import subprocess
 import threading
 import time
 
+from . import metrics
+
 log = logging.getLogger(__name__)
 
 
@@ -191,6 +193,10 @@ class SlotAudioControl:
                 slot: max(0.0, vol * attenuation) for slot, vol in self._pre_duck_volumes.items()
             }
             duration_s = max(0.001, attack_ms / 1000.0)
+        # W3.3: any non-idle envelope state is "music_ducked" for
+        # observability purposes. The gauge stays high through the
+        # attack ramp + sustain + release ramp, then drops on idle.
+        metrics.set_music_ducked(True)
 
         self._ramp_thread = threading.Thread(
             target=self._run_ramp,
@@ -220,6 +226,7 @@ class SlotAudioControl:
             if not self._pre_duck_volumes:
                 # Defensive: nothing to restore to. Just snap idle.
                 self._ramp_state = "idle"
+                metrics.set_music_ducked(False)
                 return
             self._cancel_event.set()
 
@@ -277,3 +284,4 @@ class SlotAudioControl:
                 self._ramp_state = terminal_state
                 if terminal_state == "idle":
                     self._pre_duck_volumes = {}
+                    metrics.set_music_ducked(False)
