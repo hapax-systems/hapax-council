@@ -28,8 +28,24 @@ try:
     if cv2.cuda.getCudaEnabledDeviceCount() > 0:
         _HAS_CUDA = True
         log.info("CUDA available: %d device(s)", cv2.cuda.getCudaEnabledDeviceCount())
+    else:
+        # Phase 10 observability polish / delta R4 — surface the CPU
+        # fallback path so it stops being invisible. Previously the
+        # bare `except Exception: pass` below and the zero-device
+        # branch here both silently disabled every CUDA path. Expensive
+        # studio_fx effects (datamosh, neon, per-pixel remap) then ran
+        # at ~1 full core of CPU with no operator-visible signal. The
+        # fix for the underlying package situation (R3) is operator-
+        # owned; this log line at least makes the fallback loud.
+        log.warning(
+            "OpenCV CUDA unavailable (0 enabled devices); studio_fx will "
+            "fall back to CPU — expect elevated CPU load on GPU-heavy effects"
+        )
 except Exception:
-    pass
+    log.warning(
+        "OpenCV CUDA probe raised an exception; studio_fx will fall back to CPU",
+        exc_info=True,
+    )
 
 
 def has_cuda() -> bool:

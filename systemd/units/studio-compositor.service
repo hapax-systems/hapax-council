@@ -36,6 +36,12 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 EnvironmentFile=/run/user/1000/hapax-secrets.env
+# Phase 10 observability polish — lock the compositor's CUDA-visible
+# device to index 0 so nvh264enc and cudacompositor can never drift to
+# a different GPU across reboots. Matches delta's sprint-5-delta-audit
+# C2+C3 findings. Defaults are correct today; this makes the intent
+# durable in the unit file itself.
+Environment=CUDA_VISIBLE_DEVICES=0
 # Cap OpenTelemetry BatchSpanProcessor so Langfuse outages can't fill the
 # Python heap with pending spans — same treatment as hapax-daimonion got
 # in PR #731's OOM-cascade containment. Defaults are 2048 queue and 30 s
