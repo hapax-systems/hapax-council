@@ -225,14 +225,26 @@ async fn create_headless_device() -> (wgpu::Device, wgpu::Queue) {
         ..Default::default()
     });
 
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await
-        .expect("headless: no suitable GPU adapter found");
+    // Multi-GPU pinning: HAPAX_WGPU_ADAPTER_CONTAINS=3090 selects the adapter
+    // whose name contains that substring. Needed when multiple NVIDIA dGPUs are
+    // present — wgpu's HighPerformance preference alone cannot distinguish them
+    // and will pick the lowest PCI-bus card, which is not necessarily the one
+    // driving the display surface.
+    let adapter = match std::env::var("HAPAX_WGPU_ADAPTER_CONTAINS") {
+        Ok(needle) => instance
+            .enumerate_adapters(wgpu::Backends::VULKAN)
+            .into_iter()
+            .find(|a| a.get_info().name.contains(&needle))
+            .unwrap_or_else(|| panic!("headless: no adapter matching '{needle}'")),
+        Err(_) => instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("headless: no suitable GPU adapter found"),
+    };
 
     log::info!("headless: using adapter {:?}", adapter.get_info().name);
 
