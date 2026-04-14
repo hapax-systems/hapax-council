@@ -16,11 +16,22 @@ from __future__ import annotations
 
 import logging
 import math
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import cairo
+
+# Drop #42 SIERP-2: hoist `gi.require_version` + `GdkPixbuf` + `Gdk`
+# imports to module top. Previously these lived inside `_load_frame`,
+# costing ~1 ms/tick via the gi machinery's module-lookup + version
+# check path when YT frames were hot. `gi.require_version` is cheap
+# once the version is bound for the interpreter's lifetime, so the
+# module-level import is effectively free on subsequent calls.
+import gi
+
+gi.require_version("GdkPixbuf", "2.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk, GdkPixbuf  # noqa: E402
 
 from .cairo_source import CairoSource, CairoSourceRunner
 
@@ -54,6 +65,15 @@ class SierpinskiCairoSource(CairoSource):
         self._frame_mtimes: dict[int, float] = {}
         self._active_slot = 0
         self._audio_energy = 0.0
+        # Drop #42 SIERP-1: cache triangle geometry + inscribed rects
+        # keyed on canvas size. Triangle vertices and the 4 inscribed
+        # rects (3 corners + 1 center void) are deterministic in
+        # canvas_w/canvas_h, so we can compute them once per resize
+        # and reuse across ticks. Saves ~0.2 ms/tick.
+        self._geom_cache_size: tuple[int, int] | None = None
+        self._cached_all_triangles: list[list[tuple[float, float]]] | None = None
+        self._cached_corner_rects: list[tuple[float, float, float, float]] | None = None
+        self._cached_center_rect: tuple[float, float, float, float] | None = None
 
     def set_active_slot(self, slot_id: int) -> None:
         self._active_slot = slot_id
@@ -69,6 +89,38 @@ class SierpinskiCairoSource(CairoSource):
         t: float,
         state: dict[str, Any],
     ) -> None:
+        # Drop #42 SIERP-1: recompute geometry only on canvas resize.
+        if self._geom_cache_size != (canvas_w, canvas_h):
+            self._rebuild_geometry_cache(canvas_w, canvas_h)
+
+        assert self._cached_all_triangles is not None
+        assert self._cached_corner_rects is not None
+        assert self._cached_center_rect is not None
+
+        # Load and draw video frames in corner triangles. Rects are
+        # from the geometry cache; triangles are only needed for the
+        # line work below, which reads them directly from
+        # self._cached_all_triangles.
+        for slot_id in range(3):
+            frame_surface = self._load_frame(slot_id)
+            opacity = 0.9 if slot_id == self._active_slot else 0.4
+            rect = self._cached_corner_rects[slot_id]
+            self._draw_video_in_triangle(cr, frame_surface, rect, opacity)
+
+        # Waveform in center
+        self._draw_waveform(cr, self._cached_center_rect, self._audio_energy, t)
+
+        # Draw line work with audio-reactive width
+        line_w = 1.5 + self._audio_energy * 2.0
+        self._draw_triangle_lines(cr, self._cached_all_triangles, line_w, t)
+
+    def _rebuild_geometry_cache(self, canvas_w: int, canvas_h: int) -> None:
+        """Recompute triangle vertices + inscribed rects for this canvas size.
+
+        Called once per resize (and on first render). All downstream
+        ticks reuse the cached geometry. Matches the drop #42 SIERP-1
+        optimization.
+        """
         fw = float(canvas_w)
         fh = float(canvas_h)
 
@@ -85,20 +137,9 @@ class SierpinskiCairoSource(CairoSource):
         corner_2 = [m02, m12, tri[2]]  # bottom-right
         center = [m01, m12, m02]  # center void
 
-        # Load and draw video frames in corner triangles
-        for slot_id, corner in enumerate([corner_0, corner_1, corner_2]):
-            frame_surface = self._load_frame(slot_id)
-            opacity = 0.9 if slot_id == self._active_slot else 0.4
-            self._draw_video_in_triangle(cr, frame_surface, corner, opacity)
-
-        # Waveform in center
-        self._draw_waveform(cr, center, self._audio_energy)
-
         # Level 2 subdivision lines (inside corners)
-        all_triangles = [tri, corner_0, corner_1, corner_2, center]
-
-        # Subdivide corners for level 2 line detail
-        for corner in [corner_0, corner_1, corner_2]:
+        all_triangles: list[list[tuple[float, float]]] = [tri, corner_0, corner_1, corner_2, center]
+        for corner in (corner_0, corner_1, corner_2):
             cm01 = self._midpoint(corner[0], corner[1])
             cm12 = self._midpoint(corner[1], corner[2])
             cm02 = self._midpoint(corner[0], corner[2])
@@ -111,9 +152,14 @@ class SierpinskiCairoSource(CairoSource):
                 ]
             )
 
-        # Draw line work with audio-reactive width
-        line_w = 1.5 + self._audio_energy * 2.0
-        self._draw_triangle_lines(cr, all_triangles, line_w, t)
+        self._cached_all_triangles = all_triangles
+        self._cached_corner_rects = [
+            self._inscribed_rect(corner_0),
+            self._inscribed_rect(corner_1),
+            self._inscribed_rect(corner_2),
+        ]
+        self._cached_center_rect = self._inscribed_rect(center)
+        self._geom_cache_size = (canvas_w, canvas_h)
 
     def _load_frame(self, slot_id: int) -> cairo.ImageSurface | None:
         """Load a YouTube frame JPEG as a Cairo surface, with mtime caching."""
@@ -124,21 +170,11 @@ class SierpinskiCairoSource(CairoSource):
             mtime = path.stat().st_mtime
             if mtime == self._frame_mtimes.get(slot_id, 0):
                 return self._frame_surfaces.get(slot_id)
-            # Load JPEG via GdkPixbuf → Cairo surface
-            import gi
-
-            gi.require_version("GdkPixbuf", "2.0")
-            from gi.repository import GdkPixbuf
-
             pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(path))
             # Convert to Cairo-compatible ARGB surface
             w, h = pixbuf.get_width(), pixbuf.get_height()
             surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
             cr = cairo.Context(surface)
-
-            gi.require_version("Gdk", "4.0")
-            from gi.repository import Gdk
-
             Gdk.cairo_set_source_pixbuf(cr, pixbuf, 0, 0)
             cr.paint()
             self._frame_surfaces[slot_id] = surface
@@ -236,14 +272,19 @@ class SierpinskiCairoSource(CairoSource):
         self,
         cr: Any,
         surface: cairo.ImageSurface | None,
-        tri: list[tuple[float, float]],
+        rect: tuple[float, float, float, float],
         opacity: float,
     ) -> None:
-        """Draw a video frame as the max inscribed rectangle within a triangle."""
+        """Draw a video frame into a precomputed inscribed rectangle.
+
+        Drop #42 SIERP-1: the inscribed rect is now precomputed at
+        geometry-cache-build time (once per canvas resize) and passed
+        in directly, rather than recomputed per tick per corner.
+        """
         if surface is None or opacity < 0.01:
             return
 
-        rx, ry, rw, rh = self._inscribed_rect(tri)
+        rx, ry, rw, rh = rect
         if rw < 1.0 or rh < 1.0:
             return
 
@@ -300,9 +341,22 @@ class SierpinskiCairoSource(CairoSource):
             cr.close_path()
             cr.stroke()
 
-    def _draw_waveform(self, cr: Any, tri: list[tuple[float, float]], energy: float) -> None:
-        """Draw waveform bars inside the largest inscribed rect of the center triangle."""
-        rx, ry, rw, rh = self._inscribed_rect(tri)
+    def _draw_waveform(
+        self,
+        cr: Any,
+        rect: tuple[float, float, float, float],
+        energy: float,
+        t: float,
+    ) -> None:
+        """Draw waveform bars inside a precomputed inscribed rectangle.
+
+        Drop #42 SIERP-1 + SIERP-3: rect is precomputed from the
+        geometry cache. Phase argument is the ``t`` passed down from
+        ``render()`` rather than a fresh ``time.monotonic()`` call,
+        so the waveform phase stays consistent with the rest of the
+        renderer's animation clock (correctness fix).
+        """
+        rx, ry, rw, rh = rect
         if rw < 1.0 or rh < 1.0:
             return
 
@@ -318,7 +372,7 @@ class SierpinskiCairoSource(CairoSource):
         start_x = rx
 
         for i in range(bar_count):
-            amp = (energy * 0.5 + 0.1) * (0.5 + 0.5 * math.sin(i * 0.8 + time.monotonic() * 2.0))
+            amp = (energy * 0.5 + 0.1) * (0.5 + 0.5 * math.sin(i * 0.8 + t * 2.0))
             bar_h = amp * rh * 0.85
             x = start_x + i * (bar_w + gap)
             y = cy - bar_h * 0.5

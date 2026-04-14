@@ -161,8 +161,19 @@ def tick_slot_pipeline(compositor: Any, t: float) -> None:
             else None
         )
         if defn and defn.glsl_source:
-            implicit = {k: v for k, v in time_uniforms.items() if f"u_{k}" in defn.glsl_source}
-            if implicit:
+            # Drop #43 FXT-1: cache the set of implicit time-uniform
+            # keys this shader references on defn itself. Without the
+            # cache, every tick does 3 string-contains scans × 24 slots
+            # × 30 fps = 2160 scans/sec. The result is deterministic in
+            # defn.glsl_source, so a single attribute on defn suffices.
+            implicit_keys: tuple[str, ...] | None = getattr(
+                defn, "_hapax_implicit_uniform_keys", None
+            )
+            if implicit_keys is None:
+                implicit_keys = tuple(k for k in time_uniforms if f"u_{k}" in defn.glsl_source)
+                defn._hapax_implicit_uniform_keys = implicit_keys
+            if implicit_keys:
+                implicit = {k: time_uniforms[k] for k in implicit_keys}
                 compositor._slot_pipeline._slot_base_params[i].update(implicit)
                 if compositor._slot_pipeline._slot_is_temporal[i]:
                     compositor._slot_pipeline._apply_glfeedback_uniforms(i)
