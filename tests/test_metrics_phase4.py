@@ -156,6 +156,74 @@ class TestWatchdogMetric:
         assert metrics._last_watchdog_monotonic <= time.monotonic()
 
 
+class TestCamerasHealthyGauge:
+    """Queue 022 #4 / queue 023 #24: ``studio_compositor_cameras_healthy``
+    must increment as cameras register HEALTHY and decrement as they
+    transition out. Prior behaviour was to only set ``_total``; _healthy
+    sat at 0 forever."""
+
+    def test_register_increments_healthy_and_total(self) -> None:
+        # Reset any state leaked from earlier tests.
+        metrics._cam_models.clear()
+        metrics._cam_states.clear()
+        metrics._refresh_counts()
+
+        assert metrics.COMP_CAMERAS_TOTAL._value.get() == 0
+        assert metrics.COMP_CAMERAS_HEALTHY._value.get() == 0
+
+        metrics.register_camera("healthy-a", "brio")
+        metrics.register_camera("healthy-b", "c920")
+
+        assert metrics.COMP_CAMERAS_TOTAL._value.get() == 2
+        assert metrics.COMP_CAMERAS_HEALTHY._value.get() == 2
+
+    def test_transition_out_of_healthy_decrements(self) -> None:
+        metrics._cam_models.clear()
+        metrics._cam_states.clear()
+        metrics._refresh_counts()
+
+        metrics.register_camera("tr-a", "brio")
+        metrics.register_camera("tr-b", "c920")
+        assert metrics.COMP_CAMERAS_HEALTHY._value.get() == 2
+
+        metrics.on_state_transition("tr-a", "healthy", "degraded")
+        assert metrics.COMP_CAMERAS_HEALTHY._value.get() == 1
+
+        metrics.on_state_transition("tr-a", "degraded", "offline")
+        assert metrics.COMP_CAMERAS_HEALTHY._value.get() == 1
+
+        metrics.on_state_transition("tr-a", "offline", "recovering")
+        assert metrics.COMP_CAMERAS_HEALTHY._value.get() == 1
+
+        metrics.on_state_transition("tr-a", "recovering", "healthy")
+        assert metrics.COMP_CAMERAS_HEALTHY._value.get() == 2
+
+
+class TestMemoryFootprintGauge:
+    """Queue 022 #6 / queue 023 #25: compositor self-reports its RSS so the
+    grafana memory panel does not need to cross-reference node_exporter."""
+
+    def test_update_memory_footprint_reads_vm_rss(self) -> None:
+        metrics._update_memory_footprint()
+        v = metrics.COMP_MEMORY_FOOTPRINT._value.get()
+        # VmRSS is always > 0 for a running Python process.
+        assert v > 0
+        # And not absurdly large (upper bound 100 GB — sanity guard).
+        assert v < 100 * 1024 * 1024 * 1024
+
+
+class TestTtsClientTimeoutCounter:
+    """Queue 023 #32: repeated DaimonionTtsClient readall timeouts
+    should be visible in Prometheus, not only in the journal."""
+
+    def test_record_timeout_increments(self) -> None:
+        before = metrics.COMP_TTS_CLIENT_TIMEOUT_TOTAL._value.get()
+        metrics.record_tts_client_timeout()
+        metrics.record_tts_client_timeout()
+        after = metrics.COMP_TTS_CLIENT_TIMEOUT_TOTAL._value.get()
+        assert after == before + 2
+
+
 class TestConcurrentUpdates:
     def test_concurrent_pad_probes_no_drift(self) -> None:
         import threading

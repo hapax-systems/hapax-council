@@ -117,6 +117,12 @@ class DaimonionTtsClient:
             return b""
         except TimeoutError:
             log.warning("tts client: synthesize timed out after %.1fs", self.timeout_s)
+            try:
+                from agents.studio_compositor.metrics import record_tts_client_timeout
+
+                record_tts_client_timeout()
+            except Exception:
+                log.debug("tts timeout metric increment failed", exc_info=True)
             return b""
         except OSError as exc:
             log.warning("tts client: socket error: %s", exc)

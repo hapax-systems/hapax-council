@@ -130,6 +130,7 @@ dev = [
     "ruff>=0.15.0",
     "pytest-benchmark>=5.2.3",
     "schemathesis>=4.7",
+    "prometheus-client>=0.24.1",
 ]
 
 [tool.pytest.ini_options]
