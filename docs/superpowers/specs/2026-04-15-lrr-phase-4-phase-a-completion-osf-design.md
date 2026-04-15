@@ -6,10 +6,12 @@
 **Epic reference:** `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` §5 Phase 4
 **Plan reference:** `docs/superpowers/plans/2026-04-15-lrr-phase-4-phase-a-completion-osf-plan.md`
 **Branch target:** `feat/lrr-phase-4-phase-a-completion`
-**Cross-epic authority:** drop #62 §5 UP-6 + §14 (substrate reframing — Condition A' target is no longer Hermes)
+**Cross-epic authority:** drop #62 §5 UP-6 + §14 (substrate reframing — Hermes abandoned) + §16 (scenario 1 + scenario 2 ratification) + §17 (scenario 2 Option C parallel-backend pivot)
 **Unified phase mapping:** **UP-6 Phase A completion + OSF pre-reg** (drop #62 §5); depends on UP-1 + UP-5
 
 > **2026-04-15T08:10Z note:** the epic spec's "control arm lockdown" framing assumed Condition A' would be a Hermes 3 substrate swap. Per drop #62 §14, Condition A' target is now TBD per operator substrate ratification. Phase 4 is UNAFFECTED by §14 in its Phase A COLLECTION scope — Condition A is still Qwen3.5-9B and the collection lockdown is still valid. Only the downstream "what Condition A' is" is superseded. Phase 4 opener should NOT modify the Condition A lockdown based on §14; the lockdown is the control arm and is substrate-independent on the A side.
+
+> **2026-04-15T22:45Z update (queue #177 alignment patch):** drop #62 §16 subsequently ratified the post-§14 substrate arrangement — scenario 1 is Qwen3.5-9B + RIFTS baseline; scenario 2 is OLMo 3-7B × {SFT, DPO, RLVR} as three parallel arms. §17 then pivoted scenario 2 execution to Option C (parallel TabbyAPI :5001 backend) after beta's #209 report that exllamav3 0.0.29 is incompatible with TabbyAPI's pinned cu12 stack. Phase 4 scope is UNCHANGED — Condition A is still Qwen3.5-9B and the collection lockdown still holds — but the "Condition A' target is TBD" phrasing in §1 below is no longer accurate. Condition A' is now the scenario 2 OLMo parallel arms that Phase 5 executes. No structural changes to Phase 4 deliverables or plan; framing-only update. See also queue #171 for the v0.0.28 intermediate-version assessment that may retire Option C in favor of scenario 2 Option A.
 
 ---
 

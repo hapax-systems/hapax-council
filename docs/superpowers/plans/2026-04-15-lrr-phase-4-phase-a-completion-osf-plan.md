@@ -99,8 +99,9 @@
 ## Cross-epic coordination
 
 - **Phase 4 is substrate-independent** on the Condition A side per drop #62 §14 note; only the downstream Condition A' target is superseded
+- **Post-§16 update (2026-04-15T22:45Z, queue #177 alignment patch):** Condition A' is no longer TBD. Per drop #62 §16, A' is scenario 2: OLMo 3-7B × {SFT, DPO, RLVR} as three parallel arms. Per drop #62 §17, scenario 2 execution pivoted to Option C (parallel TabbyAPI :5001 backend) after beta's #209 exllamav3 blocker. Queue #171's v0.0.28 matrix may retire Option C in favor of scenario 2 Option A. Phase 4 deliverables and execution order are unchanged by this framing update.
 - **G3 Sprint 0 gate** may require non-LRR Bayesian schedule resolution
-- **Phase 4 handoff unblocks Phase 5a** (substrate swap, whatever substrate the operator ratifies)
+- **Phase 4 handoff unblocks Phase 5a** (scenario 2 OLMo parallel-arm execution)
 
 ---
 
