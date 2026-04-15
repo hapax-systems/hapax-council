@@ -7,14 +7,25 @@ After=ollama.service
 Type=simple
 WorkingDirectory=%h/projects/tabbyAPI
 ExecStart=%h/projects/tabbyAPI/venv/bin/python3 main.py
+# Warmup: pre-trigger the exllamav3 hybrid-attention JIT compile on
+# service start so the first user-facing voice call does not pay the
+# cold-start penalty. Per beta's 2026-04-15 substrate research drop
+# (docs/research/2026-04-15-substrate-reeval-post-hermes.md §9.1 fix
+# #2), the Qwen3.5-9B Gated DeltaNet attention path has a "shaky"
+# first-call JIT compile per the exllamav3 0.0.23 README. The warmup
+# script retries on connection-refused while the model loads (~40-50 s),
+# then sends a 1-token no-op. Best-effort — `-` prefix makes failures
+# non-fatal; script exits 0 unconditionally.
+ExecStartPost=-%h/projects/hapax-council/scripts/tabbyapi-warmup.sh
 Restart=on-failure
 RestartSec=15
 # LRR Phase 3 item 8: raised from 120 → 180 seconds. Qwen3.5-9B EXL3
-# loads in ~40-50 s; Hermes 3 70B EXL3 at 3.0bpw (~26 GB) loads in
-# ~70-90 s on the 3090 based on comparable 70B EXL3 model-load
-# benchmarks. The extra 60 s of headroom prevents systemd from
-# killing start before the 70B model-load path finishes reading the
-# 30 safetensors shards from disk.
+# loads in ~40-50 s. (Historical: a Hermes 3 70B EXL3 substrate was
+# planned in an earlier phase at 3.0bpw ~26 GB requiring ~70-90 s
+# model-load, which drove the 180 s ceiling. That path was abandoned
+# 2026-04-15 per operator direction — see drop #62 §14 — and the 180 s
+# ceiling remains as headroom and as a buffer for the warmup's retry
+# window on first call.)
 TimeoutStartSec=180
 Environment=PYTORCH_ALLOC_CONF=backend:cudaMallocAsync
 
