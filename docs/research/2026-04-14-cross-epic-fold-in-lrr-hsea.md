@@ -1149,4 +1149,100 @@ If a future session wants to update the Phase 5 spec §3.2 explicitly for Option
 
 — alpha, 2026-04-15T20:29Z (drop #62 §17 amendment, formerly §16.1; captures delta's 18:49Z Option C pivot per queue #142)
 
+## 18. Forward-looking — post-scenario-1+2 epic state (queue #156)
+
+**Status:** roadmap / planning section, not a decision record. **Honest about uncertainty.** Authored before scenarios 1+2 actually execute, so predictions are conditional on execution outcomes. Reader should treat this as "what alpha + delta expect the post-ship state to look like" rather than a commitment.
+
+### 18.1 Post-scenario-1 state (Qwen3.5-9B + RIFTS empirical)
+
+**If scenario 1 succeeds** (RIFTS benchmark produces a coherent grounding number for Qwen3.5-9B):
+
+- Phase A baseline gains research-grade empirical calibration — external reference point comparable to Shaikh 2024/2025 literature
+- LRR Phase 4 OSF pre-registration can cite the RIFTS number as the "current substrate grounding performance" without hedging
+- Voice grounding substrate question is closed empirically, not just structurally
+- Scenario 2 OLMo isogenic comparison has a calibration anchor — the RIFTS baseline for Qwen becomes the reference against which OLMo variants are measured
+- Phase 7 persona spec authoring proceeds on Qwen3.5-9B as the confirmed substrate
+
+**If scenario 1 invalidates Qwen3.5-9B** (RIFTS reveals unacceptable grounding performance):
+
+- Fork point. Three options surface:
+  - **1a.** Tune Qwen via local fine-tuning against Phase A corpus (high effort, uncertain outcome)
+  - **1b.** Accept reduced performance as a Cycle 2 finding; document as negative result
+  - **1c.** Accelerate scenario 2 and promote OLMo to production (reverses prod/research distinction)
+- Operator decision point: which fork to take. Alpha + delta would draft a decision brief summarizing invalidation evidence + option tradeoffs
+- Phase 5 re-spec (third iteration) would follow
+- **Uncertainty:** RIFTS is multi-category. "Invalidation" would be category-specific, not binary — the decision brief is more like "Qwen is strong on X, weak on Y; does Y matter enough to reframe the claim?"
+
+### 18.2 Post-scenario-2 state (OLMo 3-7B × {SFT, DPO, RLVR} isogenic comparison)
+
+**If `claim-shaikh-sft-vs-dpo-vs-rlvr` cycle 2 produces a coherent finding** (one training regime shows statistically distinguishable grounding performance):
+
+- Findings drop published at `docs/research/2026-04-XX-claim-shaikh-sft-vs-dpo-vs-rlvr-cycle-2-findings.md`
+- **Unlocks LRR Phase 6** (governance + stream-mode): finalization can cite empirical training-regime evidence rather than theoretical framing
+- **Unlocks LRR Phase 7** (persona authoring): persona spec can reference training-regime-specific behavioral markers if one regime shows distinct register patterns
+- **Enables substrate default decision**: if one regime is clearly better, operator may switch production Qwen → winning OLMo variant. This is a new substrate ratification event — would need its own drop #62 addendum (§19 if chronologically filed)
+- **Enables HSEA Phase 4 I-cluster narration**: I4 + I5 narrators per queue #141 §7 text templates get their concrete substrate target
+
+**If the comparison is inconclusive** (no statistically distinguishable difference):
+
+- Findings drop still published: "null result: training regime does not significantly affect conversational grounding on RIFTS-category tasks at the 7B scale"
+- Itself a publishable finding — contradicts or qualifies Shaikh (2024 NAACL)
+- LRR Phase 6/7/8/9 still unblocked because the substrate pair is live regardless
+- **Uncertainty source:** 7B scale may be below the threshold where training-regime differences manifest. A future Cycle 3 at 13B+ scale could revisit if hardware + budget permits
+
+### 18.3 Downstream Phase activation conditions (post-scenarios)
+
+| Phase | Current blocker | Post-scenario-1+2 unblock |
+|---|---|---|
+| **LRR Phase 6** (governance + stream-mode) | Phase 5 substrate delivery + joint hapax-constitution PR vehicle authoring | Unblocks when Phase 5 scenarios 1+2 are live + drills pass. Joint PR vehicle includes the 4 amendments already shipped via queue #166 + remaining Phase 6 items (hapax-stream-mode CLI, ConsentGatedWriter, presence-detect closed loop, fortress retirement) |
+| **LRR Phase 7** (persona/posture/role) | Substrate to calibrate against | Unblocks when scenarios 1+2 are live. Prep inventory (queue #131) substrate-independent 60% can ship as standalone YAML |
+| **LRR Phase 8** (attention bid + objectives) | Phase 7 persona + Phase 6 stream-mode axis | Unblocks sequentially after Phase 6 + 7. Not gated on scenarios directly |
+| **LRR Phase 9** (closed-loop narration) | Phase 8 attention bid channel live | Unblocks after Phase 8. SHM publisher stubs (queue #131 P9.prep-A) substrate-independent — can ship ahead |
+| **HSEA Phase 4 I-cluster** (code drafting narrators) | Phase 5 substrate + LRR Phase 6 + LRR Phase 7 | Unblocks in parallel with LRR Phase 7; I4/I5 narrators retarget per queue #141 §7 templates |
+| **HSEA Phase 5 M-series** (biometric/memory/mobility) | Phase 5 substrate + hardware gates (Hailo HAT, ReSpeaker) | Partially on substrate, fully when hardware installed |
+| **HSEA Phase 6/7** (content quality + self-monitoring) | Plan files unauthored per #112 audit + Phase 5 substrate | Unblocks when Phase 6/7 plans authored (queue TBD) + scenarios are live |
+| **HSEA Phase 10+** (reflexive stack + multi-agent spawner + long-tail) | Upstream HSEA phases | Sequential |
+
+### 18.4 Operator decision queue (post-ship)
+
+Decisions alpha + delta expect will need operator input after scenarios 1+2 ship, rough priority order:
+
+1. **Production substrate decision** — if scenario 2 produces a clear winner, switch Qwen → OLMo-winner in production, or keep Qwen as prod + OLMo as research? (Default: keep Qwen; only switch on strong evidence)
+2. **Phase 6 joint PR authoring session timing** — 4 amendments already shipped via #166; what's the execution window for remaining Phase 6 deliverables?
+3. **Hardware gate scheduling** — Hailo HAT (HSEA Phase 5 M1 biometric) + ReSpeaker (HSEA Phase 5 voice interception) both have procurement/install windows
+4. **`cb-officium-data-boundary` bidirectional → uni-directional migration** — per operator 20:18-20:20Z direction, migrate when tooling is stable. What's "stable"? (Default: after enforcement surfaces land + 2 weeks of bidirectional observation)
+5. **FINDING-S SDLC pipeline decision** — per queue #130, default-ships Option 1 (retire) on 2026-04-22 unless operator overrides
+6. **5b-as-future question** — per §13 + §16, 5b structurally unreachable on current hardware. If hardware upgrade opens (48 GB+ VRAM), does 5b re-enter scope? (Default: no, 5b is closed)
+
+### 18.5 Post-Friday ReSpeaker integration (placeholder per queue #156 description)
+
+**Status:** placeholder — depends on ReSpeaker arrival Friday 2026-04-17.
+
+- ReSpeaker installed on `hapax-ai` Pi 5 per epsilon's Pi fleet deployment plan
+- Provides room-ambient voice capture with Silero VAD + PipeWire ROC streaming
+- **Unblocks HSEA Phase 5 voice-interception channel** (M-series) + **LRR Phase 8 attention-bid audio component**
+- If integration works first try (high confidence per epsilon's pre-staged scaffolding at `pi-edge/hapax-ai/` + `config/pipewire/respeaker-room-mic.conf`): parallel-track observability addition, doesn't block scenarios 1+2
+- If calibration issues: spatial+spectral calibration against existing Cortado + Blue Yeti setup, ~1-session follow-up
+- Alpha has no specific content beyond placeholder — ReSpeaker work is primarily epsilon + beta territory per the Pi fleet deployment plan
+
+### 18.6 Uncertainty acknowledgments
+
+This §18 is a roadmap, not a commitment. Specific uncertainties:
+
+1. **RIFTS benchmark wall-clock time** — alpha estimated ~30-60 min in #143, could be longer depending on dataset size + inference speed
+2. **OLMo quantization time** — ~2h per variant estimated, faster if AllenAI publishes pre-quantized EXL3 wheels
+3. **GPU contention on parallel TabbyAPI** — §17 Option C flagged this; actual behavior under dual-backend VRAM pressure unmeasured
+4. **Phase A data collection parallelism** — if Phase A runs during Phase 5 execution, timelines could interleave confusingly. #143 §6.5 calls this out
+5. **Consent revocation drill** — depends on tester person availability in realistic timing windows
+6. **Delta's refill cadence** — queue-based work assumes delta keeps refilling; fallback to legacy refill-cycle mode if delta stops
+7. **The drop #62 doc itself will need §19** at some point — next ratification event (whatever it is) gets its own addendum per §12.5 convention
+
+### 18.7 Closing
+
+Epic post-scenario-1+2 state most likely: Phase A empirical calibration in hand, both Qwen and OLMo substrates live in parallel, Phase 6 + 7 authoring sessions scheduled, cycle 2 findings drop ready for publication. Primary operator decisions queued: production-substrate-winner (if scenario 2 produces one) + Phase 6 execution timing. Secondary decisions cluster around hardware gates + `cb-officium-data-boundary` migration. No major surprises anticipated unless RIFTS produces unexpectedly bad Qwen numbers or OLMo reveals regime-specific failure modes.
+
+This §18 should be re-read at scenario close + compared to actual post-ship state. Delta or the Phase 6 opener session should append a "§18 retrospective" subsection noting which predictions held + which drifted.
+
+— alpha, 2026-04-15T21:46Z (queue #156 forward-looking, numbered §18 because §17 was claimed by Option C amendment in queue #145 ToC renumbering)
+
 — End of drop #62 fold-in analysis.
