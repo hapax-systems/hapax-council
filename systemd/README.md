@@ -185,16 +185,51 @@ Trace metadata survives in ClickHouse/Postgres — only raw event blobs expire. 
 
 The following services and timers are disabled (2026-03-27). They supported 24/7 audio/video recording, classification, and RAG ingestion — purely archival with no live consumers. The live perception and effects pipeline (compositor, VLA, fx, person detector) is unaffected as it captures directly from cameras and PipeWire.
 
-| Unit | Purpose | Re-enable with |
-|------|---------|---------------|
-| `audio-recorder.service` | Blue Yeti → FLAC archival | `systemctl --user enable --now audio-recorder` |
-| `contact-mic-recorder.service` | Cortado → FLAC archival | `systemctl --user enable --now contact-mic-recorder` |
-| `rag-ingest.service` | Document watchdog → Qdrant | `systemctl --user enable --now rag-ingest` |
-| `audio-processor.timer` | FLAC classify → RAG docs | `systemctl --user enable --now audio-processor.timer` |
-| `video-processor.timer` | MKV classify → sidecars | `systemctl --user enable --now video-processor.timer` |
-| `av-correlator.timer` | Cross-modal → studio_moments | `systemctl --user enable --now av-correlator.timer` |
-| `flow-journal.timer` | Flow transitions → RAG docs | `systemctl --user enable --now flow-journal.timer` |
-| `video-retention.timer` | Prune old MKV segments | `systemctl --user enable --now video-retention.timer` |
+**LRR Phase 2 item 1 scope (2026-04-15):** the archival pipeline is partially re-enabled under the *archive-as-research-instrument* framing per `docs/superpowers/specs/2026-04-15-lrr-phase-2-archive-research-instrument-design.md` §3.1 + §4 decision 3. Scope is narrowed to **audio recording only** — classification, cross-modal correlation, and RAG ingest remain disabled and are deferred to LRR Phase 5+.
+
+| Unit | Purpose | LRR Phase 2 scope | Re-enable with |
+|------|---------|-------------------|----------------|
+| `audio-recorder.service` | Blue Yeti → FLAC archival | **in-scope (Phase 2 item 1)** | `systemctl --user enable --now audio-recorder` |
+| `contact-mic-recorder.service` | Cortado → FLAC archival | **in-scope (Phase 2 item 1)** | `systemctl --user enable --now contact-mic-recorder` |
+| `rag-ingest.service` | Document watchdog → Qdrant | DEFERRED to Phase 5+ (§4 decision 3) | `systemctl --user enable --now rag-ingest` |
+| `audio-processor.timer` | FLAC classify → RAG docs | DEFERRED to Phase 5+ (classification) | `systemctl --user enable --now audio-processor.timer` |
+| `video-processor.timer` | MKV classify → sidecars | DEFERRED to Phase 5+ (classification) | `systemctl --user enable --now video-processor.timer` |
+| `av-correlator.timer` | Cross-modal → studio_moments | DEFERRED to Phase 5+ (cross-modal) | `systemctl --user enable --now av-correlator.timer` |
+| `flow-journal.timer` | Flow transitions → RAG docs | DEFERRED to Phase 5+ (RAG) | `systemctl --user enable --now flow-journal.timer` |
+| `video-retention.timer` | Prune old MKV segments | DEFERRED to Phase 5+ (retention policy TBD) | `systemctl --user enable --now video-retention.timer` |
+
+### LRR Phase 2 item 1 activation — operator runs manually
+
+The two in-scope services (`audio-recorder`, `contact-mic-recorder`) are **ratified for re-enablement but NOT auto-enabled by this commit**. Starting audio recording is an operational change against live hardware (Blue Yeti + Cortado MKIII contact mic) that should happen under operator consent in a moment of the operator's choosing, not at merge time.
+
+Operator activation sequence after this commit merges:
+
+```bash
+# Pre-check — hardware available, disk has headroom for FLAC at ~1.4 GB/day per mic
+pactl list short sources | grep -E 'Yeti|Contact'
+df -h ~/audio-recording
+
+# Enable + start the two in-scope services
+systemctl --user enable --now audio-recorder.service
+systemctl --user enable --now contact-mic-recorder.service
+
+# Verify each starts cleanly
+systemctl --user status audio-recorder.service contact-mic-recorder.service
+
+# Watch the first FLAC segment land
+ls -lt ~/audio-recording/raw/ | head -5
+journalctl --user -u audio-recorder.service -n 30
+journalctl --user -u contact-mic-recorder.service -n 30
+```
+
+Rollback if either service fails its first run:
+
+```bash
+systemctl --user disable --now audio-recorder.service
+systemctl --user disable --now contact-mic-recorder.service
+```
+
+The 6 DEFERRED services (classification, cross-modal, RAG, retention) remain untouched by LRR Phase 2. They re-enable under a future LRR Phase 5+ decision after the classifier model, Qdrant cardinality budget, and retention policy decisions land.
 
 ## Recovery
 
