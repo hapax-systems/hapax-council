@@ -106,6 +106,17 @@ class RtmpOutputBin:
             if encoder is None:
                 log.error("rtmp bin: nvh264enc factory failed")
                 return False
+            # Drop #47 C2 + sprint-5-delta-audit F1: pin nvh264enc to
+            # the same CUDA device as cudacompositor so the session cannot
+            # drift off GPU 0 if the CUDA enumeration order ever changes
+            # (e.g. under a different systemd unit override or a kernel
+            # upgrade). Mirrors the `cuda-device-id` set in `pipeline.py`
+            # for `cudacompositor`. Try/except because older nvh264enc
+            # builds didn't expose the property.
+            try:
+                encoder.set_property("cuda-device-id", 0)
+            except Exception:
+                log.debug("nvh264enc: cuda-device-id property not supported", exc_info=True)
             encoder.set_property("bitrate", self._bitrate_kbps)
             encoder.set_property("rc-mode", 2)  # 2 = cbr
             encoder.set_property("gop-size", self._gop_size)

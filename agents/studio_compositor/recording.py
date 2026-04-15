@@ -33,6 +33,14 @@ def add_recording_branch(
         "caps", Gst.Caps.from_string("video/x-raw(memory:CUDAMemory),format=NV12")
     )
     encoder = Gst.ElementFactory.make("nvh264enc", f"rec-enc-{role}")
+    # Drop #47 C2: pin nvh264enc to the same CUDA device as cudacompositor
+    # (GPU 0 under CUDA_DEVICE_ORDER=PCI_BUS_ID + CUDA_VISIBLE_DEVICES=0).
+    # Prevents the per-camera recording encoder from drifting to GPU 1 if
+    # CUDA enumeration order ever changes.
+    try:
+        encoder.set_property("cuda-device-id", 0)
+    except Exception:
+        log.debug("nvh264enc (rec-enc-%s): cuda-device-id not supported", role, exc_info=True)
     encoder.set_property("preset", 2)
     encoder.set_property("rc-mode", 3)
     encoder.set_property("qp-const", rec_cfg.qp)
@@ -88,6 +96,14 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     valve = Gst.ElementFactory.make("valve", "hls-valve")
     valve.set_property("drop", not compositor._consent_recording_allowed)
     encoder = Gst.ElementFactory.make("nvh264enc", "hls-enc")
+    # Drop #47 C2: pin HLS nvh264enc to GPU 0 for the same reasons as the
+    # rtmp_output and rec-enc branches — cudacompositor lives on GPU 0,
+    # and forcing the encoder to the same device avoids cross-GPU texture
+    # copies when CUDA enumeration order drifts.
+    try:
+        encoder.set_property("cuda-device-id", 0)
+    except Exception:
+        log.debug("nvh264enc (hls-enc): cuda-device-id not supported", exc_info=True)
     encoder.set_property("preset", 2)
     # Delta 2026-04-14-encoder-output-path-walk finding #2: the previous
     # config set ``rc-mode=3`` (VBR) but then overrode it with
