@@ -429,3 +429,130 @@ class TestTagReactionsSubcommand:
             )
         )
         assert result == 0
+
+
+class TestSetCollectionHaltSubcommand:
+    """LRR Phase 4 item 7: ``set-collection-halt`` subcommand."""
+
+    def test_sets_halt_timestamp_on_open_condition(self, isolated_registry):
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        result = cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-phase-a-baseline-qwen-001",
+                timestamp="2026-04-15T12:00:00Z",
+                force=False,
+            )
+        )
+        assert result == 0
+        condition = cli._read_condition("cond-phase-a-baseline-qwen-001")
+        assert condition["collection_halt_at"] == "2026-04-15T12:00:00Z"
+        assert condition["closed_at"] is None  # condition stays OPEN
+
+    def test_now_resolves_to_current_timestamp(self, isolated_registry):
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        result = cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-phase-a-baseline-qwen-001",
+                timestamp="now",
+                force=False,
+            )
+        )
+        assert result == 0
+        condition = cli._read_condition("cond-phase-a-baseline-qwen-001")
+        halt_at = condition["collection_halt_at"]
+        assert halt_at is not None
+        assert halt_at.endswith("Z")
+
+    def test_refuses_to_overwrite_existing_without_force(self, isolated_registry):
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-phase-a-baseline-qwen-001",
+                timestamp="2026-04-15T12:00:00Z",
+                force=False,
+            )
+        )
+        result = cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-phase-a-baseline-qwen-001",
+                timestamp="2026-05-01T00:00:00Z",
+                force=False,
+            )
+        )
+        assert result == 1
+        condition = cli._read_condition("cond-phase-a-baseline-qwen-001")
+        assert condition["collection_halt_at"] == "2026-04-15T12:00:00Z"
+
+    def test_force_overwrites_existing(self, isolated_registry):
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-phase-a-baseline-qwen-001",
+                timestamp="2026-04-15T12:00:00Z",
+                force=False,
+            )
+        )
+        result = cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-phase-a-baseline-qwen-001",
+                timestamp="2026-05-01T00:00:00Z",
+                force=True,
+            )
+        )
+        assert result == 0
+        condition = cli._read_condition("cond-phase-a-baseline-qwen-001")
+        assert condition["collection_halt_at"] == "2026-05-01T00:00:00Z"
+
+    def test_rejects_unknown_condition(self, isolated_registry):
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        result = cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-does-not-exist",
+                timestamp="2026-04-15T12:00:00Z",
+                force=False,
+            )
+        )
+        assert result == 1
+
+    def test_rejects_naive_timestamp(self, isolated_registry):
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        result = cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-phase-a-baseline-qwen-001",
+                timestamp="2026-04-15T12:00:00",
+                force=False,
+            )
+        )
+        assert result == 1
+
+    def test_rejects_invalid_timestamp(self, isolated_registry):
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        result = cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-phase-a-baseline-qwen-001",
+                timestamp="not-a-timestamp",
+                force=False,
+            )
+        )
+        assert result == 1
+
+    def test_normalizes_offset_timestamp_to_z(self, isolated_registry):
+        cli = isolated_registry
+        cli.cmd_init(_args())
+        result = cli.cmd_set_collection_halt(
+            _args(
+                condition_id="cond-phase-a-baseline-qwen-001",
+                timestamp="2026-04-15T14:00:00+02:00",
+                force=False,
+            )
+        )
+        assert result == 0
+        condition = cli._read_condition("cond-phase-a-baseline-qwen-001")
+        assert condition["collection_halt_at"] == "2026-04-15T12:00:00Z"
