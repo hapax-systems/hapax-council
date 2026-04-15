@@ -181,3 +181,178 @@ class TestTableFormat:
         )
         assert rc == 0
         assert "(no results)" in capsys.readouterr().out
+
+
+class TestStats:
+    def test_stats_json_aggregates_by_condition_and_kind(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root = _fake_archive(tmp_path)
+        rc = archive_search.main(["--archive-root", str(root), "--format", "json", "stats"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["total_segments"] == 4
+        assert payload["by_condition"]["cond-a"] == 3
+        assert payload["by_condition"]["cond-b"] == 1
+        assert payload["by_archive_kind"]["hls"] == 4
+        assert payload["total_reaction_count"] >= 2  # rx-1 + rx-2 from segment00001
+        assert payload["total_duration_seconds"] > 0
+        assert payload["oldest_segment_start_ts"] is not None
+        assert payload["newest_segment_start_ts"] is not None
+
+    def test_stats_empty_archive(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        root = tmp_path / "empty"
+        root.mkdir()
+        rc = archive_search.main(["--archive-root", str(root), "--format", "json", "stats"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["total_segments"] == 0
+        assert payload["by_condition"] == {}
+        assert payload["oldest_segment_start_ts"] is None
+
+    def test_stats_table_format(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        root = _fake_archive(tmp_path)
+        rc = archive_search.main(["--archive-root", str(root), "--format", "table", "stats"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "total segments: 4" in out
+        assert "by condition_id:" in out
+        assert "cond-a" in out
+
+
+class TestVerify:
+    def test_verify_clean_archive_exits_zero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root = _fake_archive(tmp_path)
+        rc = archive_search.main(["--archive-root", str(root), "--format", "json", "verify"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["total_sidecars_checked"] == 4
+        assert payload["issues_found"] == 0
+        assert payload["issues"] == []
+
+    def test_verify_missing_segment_reports_issue(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root = _fake_archive(tmp_path)
+        # Delete one .ts file so its sidecar points at a missing segment
+        ts_files = list((root / "hls" / "2026-04-14").glob("*.ts"))
+        assert ts_files
+        ts_files[0].unlink()
+
+        rc = archive_search.main(["--archive-root", str(root), "--format", "json", "verify"])
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["issues_found"] == 1
+        assert "segment_missing" in payload["issues"][0]["issue"]
+
+    def test_verify_corrupt_sidecar_reports_parse_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root = tmp_path / "archive"
+        hls_dir = root / "hls" / "2026-04-14"
+        hls_dir.mkdir(parents=True)
+        (hls_dir / "corrupt.json").write_text("{not valid json")
+        rc = archive_search.main(["--archive-root", str(root), "--format", "json", "verify"])
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["issues_found"] == 1
+        assert "parse_error" in payload["issues"][0]["issue"]
+
+
+class TestNote:
+    def test_note_without_vault_env_exits_2(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("HAPAX_VAULT_PATH", raising=False)
+        root = _fake_archive(tmp_path)
+        rc = archive_search.main(["--archive-root", str(root), "note", "segment00001"])
+        assert rc == 2
+        assert "HAPAX_VAULT_PATH not set" in capsys.readouterr().err
+
+    def test_note_vault_path_missing_exits_2(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("HAPAX_VAULT_PATH", str(tmp_path / "no-such-vault"))
+        root = _fake_archive(tmp_path)
+        rc = archive_search.main(["--archive-root", str(root), "note", "segment00001"])
+        assert rc == 2
+        assert "does not exist" in capsys.readouterr().err
+
+    def test_note_writes_new_note(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("HAPAX_VAULT_PATH", str(vault))
+        root = _fake_archive(tmp_path)
+        rc = archive_search.main(["--archive-root", str(root), "note", "segment00001"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "written"
+        assert payload["segment_id"] == "segment00001"
+        note_path = Path(payload["note_path"])
+        assert note_path.exists()
+        body = note_path.read_text(encoding="utf-8")
+        assert "segment00001" in body
+        assert "cond-a" in body
+
+    def test_note_preserves_existing_without_force(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("HAPAX_VAULT_PATH", str(vault))
+        root = _fake_archive(tmp_path)
+        # First write
+        archive_search.main(["--archive-root", str(root), "note", "segment00001"])
+        capsys.readouterr()  # flush
+        # Second write should see existing + not clobber
+        rc = archive_search.main(["--archive-root", str(root), "note", "segment00001"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "exists"
+
+    def test_note_force_overwrites(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("HAPAX_VAULT_PATH", str(vault))
+        root = _fake_archive(tmp_path)
+        archive_search.main(["--archive-root", str(root), "note", "segment00001"])
+        capsys.readouterr()
+        rc = archive_search.main(["--archive-root", str(root), "note", "segment00001", "--force"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "written"
+
+    def test_note_unknown_segment_returns_1(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("HAPAX_VAULT_PATH", str(vault))
+        root = _fake_archive(tmp_path)
+        rc = archive_search.main(["--archive-root", str(root), "note", "segment-does-not-exist"])
+        assert rc == 1
+        assert "not found" in capsys.readouterr().err

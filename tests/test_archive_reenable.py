@@ -137,7 +137,7 @@ class TestRetentionPolicyInvariants:
             / "docs"
             / "superpowers"
             / "specs"
-            / "2026-04-14-lrr-phase-2-archive-retention.md"
+            / "2026-04-15-lrr-phase-2-archive-retention.md"
         )
         assert doc.is_file()
 
@@ -147,7 +147,7 @@ class TestRetentionPolicyInvariants:
             / "docs"
             / "superpowers"
             / "specs"
-            / "2026-04-14-lrr-phase-2-archive-retention.md"
+            / "2026-04-15-lrr-phase-2-archive-retention.md"
         )
         body = doc.read_text(encoding="utf-8")
         assert "No automatic deletion" in body
@@ -161,7 +161,7 @@ class TestRetentionPolicyInvariants:
             / "docs"
             / "superpowers"
             / "specs"
-            / "2026-04-14-lrr-phase-2-archive-retention.md"
+            / "2026-04-15-lrr-phase-2-archive-retention.md"
         )
         body = doc.read_text(encoding="utf-8")
         assert "purge.log" in body
