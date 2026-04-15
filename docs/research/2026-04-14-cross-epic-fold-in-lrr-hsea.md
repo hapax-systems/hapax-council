@@ -1009,4 +1009,99 @@ Substrate question is closed. Qwen3.5-9B (scenario 1, production) + OLMo 3-7B ×
 
 — alpha, 2026-04-15T19:58Z (drop #62 §16 addendum; operator ratified 2026-04-15T18:21Z)
 
+## 16.1 Amendment 2026-04-15T18:49Z — scenario 2 pivoted to Option C (parallel TabbyAPI)
+
+**Status:** delta-authored + operator-informed (no re-ratification required — the 18:21Z ratification covered execution-mechanism changes per §16.4). **Reason:** beta's attempted exllamav3 upgrade hit a packaging conflict; Option C parallel backend chosen as the implementation path for scenario 2.
+
+### 16.1.1 What changed
+
+**§16.2's scenario 2 execution mechanism** shifts from "upgrade TabbyAPI's main venv exllamav3 0.0.23 → 0.0.29 and add OLMo routes to the existing backend" to "**deploy a parallel TabbyAPI instance on :5001 with a separate venv containing exllamav3 0.0.29 + torch 2.11+ + OLMo 3-7B**." The main TabbyAPI :5000 stays pinned to the current cu12 stack serving Qwen3.5-9B without disruption.
+
+**Scope of scenario 1 is unchanged** — RIFTS empirical against Qwen3.5-9B does not strictly require the exllamav3 upgrade. Substrate research v1 §9.1 called the upgrade "incidental maintenance benefit." Scenario 1 is unblocked and proceeding independently.
+
+### 16.1.2 Blocker root cause (queue item #209)
+
+Beta attempted `uv pip install --upgrade exllamav3==0.0.29` in TabbyAPI's venv at 18:30-18:42Z per queue #209 procedure. The upgrade succeeded package-wise but pulled breaking transitive dependencies:
+
+- `exllamav3 0.0.29` (from PyPI) requires `torch >= 2.11`
+- `torch 2.9.0+cu128 → torch 2.11.0+cu130` drag
+- Broke `exllamav2 0.3.2+cu128.torch2.9.0` (prebuilt `.so` for torch 2.9 ABI — undefined `c10_cuda` symbol)
+- Broke `xformers 0.0.35` (built against torch 2.10+, incompatible with both the new torch 2.11 and the venv's Python 3.12)
+- Broke `flash_attn 2.8.3+cu128torch2.9.0cxx11abiFALSE` pinned wheel
+
+**The upgrade precondition ("exllamav3 0.0.29 is a drop-in replacement") is false at the transitive-dependency level.** TabbyAPI's pinned cu12 stack is tightly coupled to torch 2.9.0+cu128; bumping torch requires coordinated upstream releases from turboderp (exllamav3 wheel) + the kingbri1 flash-attn fork + the exllamav2 rebuild — none of which exist yet for torch 2.11 + cu13.
+
+### 16.1.3 Rollback (executed)
+
+Beta applied a full rollback at 18:42-18:45Z:
+
+```
+uv pip install -e ".[cu12]"      # restore all pinned cu12 extras
+uv pip uninstall xformers        # xformers not in cu12 pins; exllamav2 has except ModuleNotFoundError: path
+```
+
+**TabbyAPI restored to baseline.** Health post-rollback: ✓ Active, serving Qwen3.5-9B-exl3-5.00bpw, smoke test 68.8 tok/s completion rate. xformers is gone (exllamav2 gracefully degrades; no observable regression). Production impact: zero.
+
+### 16.1.4 Option C — parallel TabbyAPI :5001
+
+**New approach:** run a second TabbyAPI instance on `localhost:5001` with a separate Python venv containing the modern stack:
+
+- `torch 2.11.0+cu130`
+- `exllamav3 0.0.29` (from PyPI, not pinned wheel)
+- No exllamav2 / flash-attn / xformers (OLMo 3-7B uses only the exllamav3 serving path)
+- OLMo 3-7B × 3 EXL3 5.0bpw quantized variants
+
+**Systemd unit:** `tabbyapi-olmo.service` (new), bound to port 5001, separate venv at `~/projects/tabbyAPI-olmo/.venv` (or similar isolated path).
+
+**LiteLLM routing:** the new `local-research-sft` / `-dpo` / `-rlvr` routes point at `http://localhost:5001/v1` instead of the originally-planned `:5000`.
+
+**GPU allocation:** possible GPU contention on RTX 3090 between main TabbyAPI + OLMo backend. Mitigation (optional, operator decision): commit RTX 5060 Ti to OLMo service via `CUDA_VISIBLE_DEVICES=1` on the new systemd unit. Operator has not yet decided; Option C ships first with shared 3090 + reassesses if contention materializes.
+
+### 16.1.5 Trade-offs vs original in-place upgrade
+
+| Dimension | Original (in-place upgrade) | Option C (parallel backend) |
+|---|---|---|
+| Production disruption | HIGH risk — upgrade broke main TabbyAPI | **ZERO** — main TabbyAPI untouched |
+| Upstream wait | Need turboderp `0.0.29+cu128.torch2.9.0` wheel | **NONE** — uses PyPI exllamav3 directly |
+| Execution time | ~2.5 hours | ~4 hours (1 extra hour for venv setup + systemd unit) |
+| Systemd complexity | 1 service | 2 services |
+| Clean separation | Production + research share backend | **Production + research cleanly separated** |
+| GPU contention | Same backend → same GPU(s) | Possible 3090 contention; mitigation via `CUDA_VISIBLE_DEVICES=1` on 5060 Ti |
+| Rollback | Rolling back upgrade is painful | Rolling back = `systemctl stop tabbyapi-olmo.service` |
+
+**Option C is better on every axis except setup time.** The extra hour is a one-time cost; the clean separation pays dividends forever.
+
+### 16.1.6 Queue item updates applied by delta at 18:48Z
+
+- **#209** (exllamav3 upgrade) — BLOCKED, rollback executed, post-mortem inflection written
+- **#210** (RIFTS scenario 1) — `depends_on: ["209"]` removed; UNBLOCKED, beta can pull immediately
+- **#211** (OLMo deployment) — rescoped from "upgrade main TabbyAPI" to "deploy parallel TabbyAPI :5001 with separate venv"
+- **#212** (LiteLLM route addition) — scope refined: `local-research-*` routes point at `http://localhost:5001`, not `:5000`
+
+### 16.1.7 Why this does NOT require re-ratification from operator
+
+Per §16.4, the original 18:21Z operator ratification was for "scenarios 1+2 in parallel as complementary HIGH-confidence paths." The ratification covered **the research outcome** (dual-track substrate deployment enabling RIFTS empirical + `claim-shaikh` cycle 2 isogenic test) + **the research design** (keeping Qwen in production + adding OLMo as research substrate).
+
+Option C changes the **execution mechanism** for scenario 2 (parallel backend vs in-place upgrade) without changing the research outcome or research design. The operator's 18:21Z authorization explicitly covered this class of mechanical pivot — delta's 18:49Z operator-facing inflection confirmed "your original authorization covered this class of execution change."
+
+**Operator veto path:** if the operator disagrees and prefers waiting for upstream turboderp wheel instead of the parallel backend, the veto can be entered via `~/.cache/hapax/relay/inflections/` or directly to delta. Until a veto materializes, Option C proceeds.
+
+### 16.1.8 Cross-references
+
+- **#209 blocker inflection:** `~/.cache/hapax/relay/inflections/20260415-184500-beta-delta-209-exllamav3-upgrade-blocked.md` (202-line technical post-mortem from beta)
+- **Delta operator-facing pivot inflection:** `~/.cache/hapax/relay/inflections/20260415-184900-delta-operator-substrate-scenario-2-option-c-pivot.md`
+- **Queue #209** (blocked), **#210** (dep removed), **#211** (rescoped), **#212** (rescoped)
+- **§16 parent addendum:** §16 above (PR #895, queue #137)
+- **LRR Phase 5 re-spec:** `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate-scenario-1-2-design.md` (PR #896, queue #138) — the §3.2 scenario 2 deployment tasks are implicitly Option C from now forward
+
+### 16.1.9 Implications for Phase 5 spec §3.2
+
+The LRR Phase 5 spec at `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate-scenario-1-2-design.md` §3.2 (scenario 2 — OLMo 3-7B × 3 variants parallel-deployed) was authored at 20:10Z **before this §16.1 amendment was written**. The §3.2 deployment tasks describe the original framing ("Configure TabbyAPI to serve all four models") which is now Option C territory.
+
+**No edit to the Phase 5 spec is required** — the phase 5 opener reads this §16.1 amendment + the spec + delta's pivot inflection and applies Option C at execution time. Task 3 in §3.2 ("Configure TabbyAPI to serve all four models") becomes "Deploy parallel TabbyAPI :5001 backend serving OLMo 3-7B × 3 variants; main :5000 remains Qwen-only."
+
+If a future session wants to update the Phase 5 spec §3.2 explicitly for Option C framing, that is a small follow-up queue item (not this §16.1 commit's scope).
+
+— alpha, 2026-04-15T20:29Z (drop #62 §16.1 amendment; captures delta's 18:49Z Option C pivot per queue #142)
+
 — End of drop #62 fold-in analysis.
