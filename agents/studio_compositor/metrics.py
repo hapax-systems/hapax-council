@@ -131,6 +131,7 @@ COMP_PROCESS_FD_COUNT: Any = None
 COMP_CAMERA_REBUILD_TOTAL: Any = None
 COMP_PIPELINE_TEARDOWN_DURATION_MS: Any = None
 COMP_SOURCE_RENDER_DURATION_MS: Any = None
+COMP_FX_PASSTHROUGH_SLOTS: Any = None
 # Last value the mirror published, so we can detect rollback events
 # (the gauge → counter delta must be non-negative since the underlying
 # Rust counter is monotonic across imagination process lifetime).
@@ -311,6 +312,7 @@ def _init_metrics() -> None:
     global COMP_CAMERA_REBUILD_TOTAL
     global COMP_PIPELINE_TEARDOWN_DURATION_MS
     global COMP_SOURCE_RENDER_DURATION_MS
+    global COMP_FX_PASSTHROUGH_SLOTS
     COMP_GLFEEDBACK_RECOMPILE_TOTAL = Counter(
         "compositor_glfeedback_recompile_total",
         "Number of times SlotPipeline.activate_plan set_property-ed a glfeedback "
@@ -410,6 +412,22 @@ def _init_metrics() -> None:
         "Per-source CairoSourceRunner render time per frame, in milliseconds",
         ["source_id"],
         buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2000.0),
+        registry=REGISTRY,
+    )
+
+    # Drop #37 FX-1: passthrough-slot count. The `SlotPipeline` builds
+    # `num_slots=24` fixed GL slots and assigns actual shaders to the
+    # subset matching the current preset (typically 5-9 nodes). The
+    # unassigned slots run PASSTHROUGH_SHADER which is a no-op but still
+    # consumes GPU memory bandwidth and a draw call per frame. This
+    # gauge exposes `num_slots - assigned_slots` so Grafana can show
+    # how many slots are idle in each preset activation — the raw data
+    # that decides whether drop #37 FX-3 (dynamic num_slots) is worth
+    # shipping. Pairs with the existing
+    # `compositor_glfeedback_recompile_total` counter (drop #5).
+    COMP_FX_PASSTHROUGH_SLOTS = Gauge(
+        "compositor_fx_passthrough_slots",
+        "Number of GL slots running PASSTHROUGH_SHADER (unassigned) in the current SlotPipeline plan",
         registry=REGISTRY,
     )
 

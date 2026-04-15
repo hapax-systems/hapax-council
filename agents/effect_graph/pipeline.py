@@ -211,6 +211,19 @@ class SlotPipeline:
             except Exception:
                 log.debug("glfeedback recompile counters unavailable", exc_info=True)
 
+        # Drop #37 FX-1: publish the passthrough-slot count per plan
+        # activation. Counts slots whose assignment is `None` after the
+        # sequential assignment pass. Drives the FX-2 / FX-3 decision on
+        # whether to ship dynamic `num_slots = max_preset_size + 3`.
+        try:
+            from agents.studio_compositor import metrics as _comp_metrics
+
+            if _comp_metrics.COMP_FX_PASSTHROUGH_SLOTS is not None:
+                passthrough = sum(1 for a in self._slot_assignments if a is None)
+                _comp_metrics.COMP_FX_PASSTHROUGH_SLOTS.set(passthrough)
+        except Exception:
+            log.debug("passthrough slot gauge unavailable", exc_info=True)
+
         log.info(
             "Activated plan '%s': %d/%d slots used, %d fragment set_property calls",
             plan.name,
