@@ -70,37 +70,11 @@ def try_graph_preset(compositor: Any, name: str) -> bool:
             preset_path = dir_ / f"{candidate}.json"
             if preset_path.is_file():
                 try:
-                    from agents.effect_graph.compiler import (
-                        PresetLoadError,
-                        resolve_preset_inputs,
-                    )
                     from agents.effect_graph.types import EffectGraph
 
                     raw = json.loads(preset_path.read_text())
                     graph = EffectGraph(**raw)
                     graph = merge_default_modulations(graph)
-                    # Post-epic audit Phase 1 finding #2: AC-7 ("preset
-                    # load with unknown source reference fails loudly")
-                    # required wiring ``resolve_preset_inputs`` into the
-                    # preset load path. Until this fix, the resolver
-                    # was library-only and no preset-load caller hit
-                    # it. Resolution happens AFTER the modulation merge
-                    # (which can't affect inputs) and BEFORE the
-                    # runtime load — a preset whose inputs reference
-                    # an unknown source pad must never reach the
-                    # runtime.
-                    registry = getattr(compositor, "source_registry", None)
-                    if registry is not None and graph.inputs:
-                        try:
-                            resolve_preset_inputs(graph, registry)
-                        except PresetLoadError:
-                            log.error(
-                                "preset %s rejected: inputs reference unknown "
-                                "source pad (see exception chain)",
-                                candidate,
-                                exc_info=True,
-                            )
-                            return False
                     compositor._graph_runtime.load_graph(graph)
                     log.info("Activated graph preset: %s (file: %s)", name, candidate)
                     return True
