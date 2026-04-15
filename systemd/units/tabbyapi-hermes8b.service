@@ -1,0 +1,36 @@
+[Unit]
+Description=TabbyAPI — EXL3 inference engine (second instance, Hermes 3 8B on :5001)
+After=network.target
+After=ollama.service
+# Co-resident with the primary tabbyapi.service which serves Qwen 3.5-9B
+# on :5000. This second instance serves Hermes 3 8B parallel-pivot per
+# the drop #62 option (c) ratification:
+#   docs/research/2026-04-15-drop-62-option-c-ratification.md
+# The two instances run concurrently. LiteLLM routes local-fast, coding,
+# reasoning → :5000 (Qwen) and local-fast-hermes, coding-hermes,
+# reasoning-hermes → :5001 (Hermes 8B). *-hermes routes fall back to
+# Qwen routes first, then cloud.
+#
+# This unit is NOT deployed until:
+#   1. Hermes 3 8B EXL3 5.0bpw weights exist on disk (operator action)
+#   2. config.yml.hermes-8b exists at the tabbyAPI checkout root
+#   3. GPU allocation is decided per the drop-in TODO
+#   4. Operator has run scripts/install-units.sh
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/tabbyAPI
+# Pass --config to override the default config.yml so the second
+# instance reads config.yml.hermes-8b without disturbing the existing
+# config.yml used by tabbyapi.service (Qwen instance).
+ExecStart=%h/projects/tabbyAPI/venv/bin/python3 main.py --config %h/projects/tabbyAPI/config.yml.hermes-8b
+Restart=on-failure
+RestartSec=15
+# Hermes 3 8B EXL3 at 5.0bpw (~5 GB weights) loads in ~15-25 s on the
+# 3090 based on comparable 8B EXL3 model-load benchmarks. The 120 s
+# default is ample headroom.
+TimeoutStartSec=120
+Environment=PYTORCH_ALLOC_CONF=backend:cudaMallocAsync
+
+[Install]
+WantedBy=default.target
