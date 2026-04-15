@@ -33,13 +33,19 @@ def _minimal_patch_payload() -> dict[str, object]:
 class TestCommandLatencyInstrumentation:
     @patch("logos.api.routes.studio_effects._observe_stage")
     @patch("logos.api.routes.studio_effects._get_runtime")
-    def test_replace_graph_observes_all_stages(
+    def test_replace_graph_observes_validate_ipc_total(
         self,
         mock_get_runtime: MagicMock,
         mock_observe: MagicMock,
         tmp_path,
     ) -> None:
+        """Drop #48 API-1/API-2: replace_effect_graph is mutation-bus
+        authoritative — no in-process runtime_load step. Handler
+        observes validate + ipc_write + total only."""
         rt = MagicMock()
+        # load_graph should NOT be called — the runtime load happens on
+        # the compositor side via state_reader_loop's poll of
+        # /dev/shm/hapax-compositor/graph-mutation.json.
         rt.load_graph = MagicMock()
         mock_get_runtime.return_value = rt
 
@@ -51,9 +57,13 @@ class TestCommandLatencyInstrumentation:
 
         observed_stages = {call.args[1] for call in mock_observe.call_args_list}
         assert "validate" in observed_stages
-        assert "runtime_load" in observed_stages
         assert "ipc_write" in observed_stages
         assert "total" in observed_stages
+        # Drop #48 API-1: runtime_load is no longer observed — the handler
+        # no longer calls rt.load_graph directly. Runtime load happens
+        # out-of-process via the mutation bus.
+        assert "runtime_load" not in observed_stages
+        rt.load_graph.assert_not_called()
         # All observations are tagged with the same command name.
         commands = {call.args[0] for call in mock_observe.call_args_list}
         assert commands == {"replace_graph"}

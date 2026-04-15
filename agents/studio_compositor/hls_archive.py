@@ -155,6 +155,7 @@ def rotate_segment(
     stimmung: dict[str, Any],
     now: datetime | None = None,
     target_duration_seconds: float = DEFAULT_TARGET_DURATION_SECONDS,
+    dest_filename: str | None = None,
 ) -> Path:
     """Move a single segment to the archive + write its sidecar.
 
@@ -172,9 +173,16 @@ def rotate_segment(
     queries against segments produced before this fix shipped will
     still see the old (inverted) timestamps — the rewrite is a
     separate backfill job.
+
+    Phase 2 filename-collision handling: ``dest_filename`` optionally
+    overrides the target filename so the rotate_pass caller can
+    resolve collisions from compositor-restart segment-counter resets
+    (e.g., a new ``segment00000.ts`` from after a restart going to
+    ``segment00000.ts.1``). When ``None``, the original filename is
+    preserved (backwards-compatible default).
     """
     target_dir.mkdir(parents=True, exist_ok=True)
-    new_path = target_dir / segment_path.name
+    new_path = target_dir / (dest_filename or segment_path.name)
     if new_path.exists():
         raise FileExistsError(f"archive destination already occupied: {new_path}")
 
@@ -255,9 +263,47 @@ def rotate_pass(
         if not is_segment_stable(segment_path, now_ts=now_ts, window_seconds=window_seconds):
             skipped_unstable += 1
             continue
-        if (target_dir / segment_path.name).exists():
-            skipped_already_rotated += 1
-            continue
+        # Phase 2 filename-collision resolution.
+        #
+        # On compositor restart, hlssink2's segment counter resets to 0
+        # and reuses names like `segment00000.ts`. The target_dir
+        # already contains a file with that name from the previous
+        # boot's output. The previous "exists → skip as already
+        # rotated" check silently dropped every live segment after
+        # restart, stalling the whole archive indefinitely.
+        #
+        # Fix: compare mtime between the live source and the archived
+        # destination. If within 2 s, same segment (tolerates the
+        # mtime-preserving shutil.move). Otherwise collision from a
+        # different boot — find next available numeric suffix and
+        # rotate the new segment into ``segment00000.ts.1`` etc.
+        # Chronological ordering is preserved via the sidecar
+        # ``segment_end_ts`` regardless of filename.
+        dest_filename: str | None = None
+        live_dest = target_dir / segment_path.name
+        if live_dest.exists():
+            try:
+                src_mtime = segment_path.stat().st_mtime
+                dest_mtime = live_dest.stat().st_mtime
+            except OSError:
+                skipped_already_rotated += 1
+                continue
+            if abs(src_mtime - dest_mtime) < 2.0:
+                skipped_already_rotated += 1
+                continue
+            stem = segment_path.stem
+            suffix = segment_path.suffix
+            for n in range(1, 10000):
+                alt_name = f"{stem}.{n}{suffix}"
+                if not (target_dir / alt_name).exists():
+                    dest_filename = alt_name
+                    break
+            if dest_filename is None:
+                errors.append(
+                    f"{segment_path.name}: collision suffix exhausted at 10000 — "
+                    "live segment could not be archived"
+                )
+                continue
         try:
             rotate_segment(
                 segment_path,
@@ -266,6 +312,7 @@ def rotate_pass(
                 stimmung=stimmung,
                 now=now_dt,
                 target_duration_seconds=target_duration_seconds,
+                dest_filename=dest_filename,
             )
             rotated += 1
         except Exception as exc:  # pragma: no cover — defensive log-and-continue

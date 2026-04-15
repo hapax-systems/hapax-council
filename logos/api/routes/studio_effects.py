@@ -124,6 +124,25 @@ async def get_effect_graph():
 async def replace_effect_graph(request: dict[str, object]):
     from agents.effect_graph.types import EffectGraph
 
+    # Drop #48 API-1/API-2: mutation-bus is the authoritative path.
+    # Previously this handler called `rt.load_graph(graph)` directly
+    # in-process AND wrote the mutation file, causing the compositor to
+    # apply the same graph twice (once synchronously on the FastAPI
+    # worker thread, once ~50-100 ms later from `state_reader_loop`'s
+    # 10 Hz poll of graph-mutation.json). The in-process double-apply
+    # wasted 5-7 ms of control-plane work per PUT per drop #46
+    # measurement. Consolidating on the mutation-bus path also makes
+    # this handler consistent with chat_reactor + random_mode, which
+    # already write to the same bus.
+    #
+    # Caller-visible contract change: this handler no longer guarantees
+    # the graph is active by the time the response returns; the
+    # compositor picks it up on its next 10 Hz poll (worst-case 100 ms
+    # latency). Operator-facing tools (chain builder, API) observe the
+    # activation via subsequent GET /studio/effect/graph reads, which
+    # return the in-process state from `rt.get_graph_state()` — that's
+    # updated from the same mutation bus, so consistency holds at the
+    # operator-visible layer.
     t_start = time.perf_counter()
     rt = _get_runtime()
     if not rt:
@@ -134,9 +153,6 @@ async def replace_effect_graph(request: dict[str, object]):
         graph = EffectGraph(**request)
         t_validate = time.perf_counter()
         _observe_stage("replace_graph", "validate", (t_validate - t_start) * 1000.0)
-        rt.load_graph(graph)
-        t_runtime = time.perf_counter()
-        _observe_stage("replace_graph", "runtime_load", (t_runtime - t_validate) * 1000.0)
     except Exception as e:
         raise HTTPException(400, str(e)) from e
     try:
@@ -147,7 +163,7 @@ async def replace_effect_graph(request: dict[str, object]):
         source_path = Path("/dev/shm/hapax-compositor/fx-source.txt")
         source_path.write_text(source)
         t_ipc = time.perf_counter()
-        _observe_stage("replace_graph", "ipc_write", (t_ipc - t_runtime) * 1000.0)
+        _observe_stage("replace_graph", "ipc_write", (t_ipc - t_validate) * 1000.0)
     except OSError:
         pass
     _observe_stage("replace_graph", "total", (time.perf_counter() - t_start) * 1000.0)
