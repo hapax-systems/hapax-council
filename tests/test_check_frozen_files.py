@@ -59,7 +59,7 @@ class TestNoActiveCondition:
             patch.object(script, "REGISTRY_DIR", registry),
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
         ):
-            assert script.main() == 0
+            assert script.main([]) == 0
 
     def test_returns_zero_when_current_file_empty(self, tmp_path: Path):
         script = _load_script()
@@ -70,7 +70,7 @@ class TestNoActiveCondition:
             patch.object(script, "REGISTRY_DIR", registry),
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
         ):
-            assert script.main() == 0
+            assert script.main([]) == 0
 
 
 class TestEmptyFrozenList:
@@ -91,7 +91,7 @@ class TestEmptyFrozenList:
             patch.object(script, "REGISTRY_DIR", registry),
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
         ):
-            assert script.main() == 0
+            assert script.main([]) == 0
 
 
 class TestFrozenViolation:
@@ -121,7 +121,7 @@ class TestFrozenViolation:
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
             patch.object(script, "DEVIATIONS_DIR", tmp_path / "research/protocols/deviations"),
         ):
-            result = script.main()
+            result = script.main([])
         assert result == 1
         out = capsys.readouterr().err
         assert "FROZEN-FILE VIOLATION" in out
@@ -146,7 +146,7 @@ class TestFrozenViolation:
             patch.object(script, "REGISTRY_DIR", registry),
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
         ):
-            assert script.main() == 0
+            assert script.main([]) == 0
 
 
 class TestDeviationOverride:
@@ -184,7 +184,7 @@ class TestDeviationOverride:
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
             patch.object(script, "DEVIATIONS_DIR", deviations),
         ):
-            result = script.main()
+            result = script.main([])
         assert result == 0
         out = capsys.readouterr().out
         assert "DEVIATION-100" in out
@@ -219,7 +219,7 @@ class TestDeviationOverride:
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
             patch.object(script, "DEVIATIONS_DIR", deviations),
         ):
-            assert script.main() == 1
+            assert script.main([]) == 1
 
 
 class TestMultiDeviationCoverage:
@@ -269,7 +269,7 @@ class TestMultiDeviationCoverage:
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
             patch.object(script, "DEVIATIONS_DIR", deviations),
         ):
-            assert script.main() == 0
+            assert script.main([]) == 0
         out = capsys.readouterr().out
         assert "DEVIATION-001" in out and "DEVIATION-002" in out
         # Multi-deviation summary must report both deviation filenames.
@@ -312,7 +312,7 @@ class TestMultiDeviationCoverage:
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
             patch.object(script, "DEVIATIONS_DIR", deviations),
         ):
-            assert script.main() == 0
+            assert script.main([]) == 0
         out = capsys.readouterr().out
         assert "DEVIATION-100" in out
 
@@ -349,7 +349,7 @@ class TestMultiDeviationCoverage:
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
             patch.object(script, "DEVIATIONS_DIR", deviations),
         ):
-            assert script.main() == 1
+            assert script.main([]) == 1
 
 
 class TestPathPrefixMatching:
@@ -377,7 +377,7 @@ class TestPathPrefixMatching:
             patch.object(script, "CURRENT_FILE", registry / "current.txt"),
             patch.object(script, "DEVIATIONS_DIR", tmp_path / "no-deviations"),
         ):
-            assert script.main() == 1
+            assert script.main([]) == 1
 
 
 class TestFileIsFrozenHelper:
@@ -399,3 +399,123 @@ class TestFileIsFrozenHelper:
     def test_no_match(self):
         script = _load_script()
         assert script._file_is_frozen("x.py", ["a/b.py", "c/"]) is False
+
+
+class TestProbeMode:
+    """LRR Phase 1 item 4b — ``--probe <path>`` pre-edit query mode.
+
+    Per the spec, the probe is a direct path check (no staged state
+    consulted). Exit 0 = path is safe to edit (not frozen OR covered
+    by deviation); exit 2 = path is declined by the probe (frozen +
+    uncovered, OR registry-uninitialized).
+    """
+
+    def _setup_registry(self, tmp_path: Path, frozen: list[str]) -> tuple:
+        """Create a registry + active condition. Returns (registry, deviations)."""
+        registry = tmp_path / "registry"
+        condition_dir = registry / "cond-test-001"
+        condition_dir.mkdir(parents=True)
+        (registry / "current.txt").write_text("cond-test-001")
+        condition_yaml_body = "frozen_files:\n"
+        for f in frozen:
+            condition_yaml_body += f"  - {f}\n"
+        (condition_dir / "condition.yaml").write_text(condition_yaml_body)
+        deviations = tmp_path / "deviations"
+        deviations.mkdir()
+        return registry, deviations
+
+    def test_probe_unfrozen_path_returns_zero(self, tmp_path: Path):
+        script = _load_script()
+        registry, deviations = self._setup_registry(
+            tmp_path, ["agents/hapax_daimonion/grounding_ledger.py"]
+        )
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script._probe("docs/research/test.md") == 0
+
+    def test_probe_frozen_path_returns_two(self, tmp_path: Path):
+        script = _load_script()
+        registry, deviations = self._setup_registry(
+            tmp_path, ["agents/hapax_daimonion/grounding_ledger.py"]
+        )
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script._probe("agents/hapax_daimonion/grounding_ledger.py") == 2
+
+    def test_probe_frozen_path_with_deviation_returns_zero(self, tmp_path: Path):
+        script = _load_script()
+        registry, deviations = self._setup_registry(
+            tmp_path, ["agents/hapax_daimonion/grounding_ledger.py"]
+        )
+        (deviations / "DEVIATION-999.md").write_text(
+            "DEVIATION-999\n\npaths: agents/hapax_daimonion/grounding_ledger.py\n"
+        )
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script._probe("agents/hapax_daimonion/grounding_ledger.py") == 0
+
+    def test_probe_uninitialized_registry_returns_two(self, tmp_path: Path):
+        script = _load_script()
+        registry = tmp_path / "registry"
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", tmp_path / "deviations"),
+        ):
+            assert script._probe("docs/research/test.md") == 2
+
+    def test_probe_empty_frozen_list_returns_zero(self, tmp_path: Path):
+        script = _load_script()
+        registry, deviations = self._setup_registry(tmp_path, [])
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script._probe("agents/hapax_daimonion/grounding_ledger.py") == 0
+
+    def test_probe_prefix_match(self, tmp_path: Path):
+        script = _load_script()
+        registry, deviations = self._setup_registry(tmp_path, ["agents/hapax_daimonion/"])
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script._probe("agents/hapax_daimonion/grounding_ledger.py") == 2
+            assert script._probe("docs/research/test.md") == 0
+
+    def test_probe_invocation_via_main(self, tmp_path: Path):
+        """End-to-end test: invoke main() with explicit argv containing --probe."""
+        script = _load_script()
+        registry, deviations = self._setup_registry(
+            tmp_path, ["agents/hapax_daimonion/grounding_ledger.py"]
+        )
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script.main(["--probe", "docs/research/test.md"]) == 0
+
+    def test_probe_invocation_via_main_rejected(self, tmp_path: Path):
+        """End-to-end test: invoke main() with --probe on a frozen path."""
+        script = _load_script()
+        registry, deviations = self._setup_registry(
+            tmp_path, ["agents/hapax_daimonion/grounding_ledger.py"]
+        )
+        with (
+            patch.object(script, "REGISTRY_DIR", registry),
+            patch.object(script, "CURRENT_FILE", registry / "current.txt"),
+            patch.object(script, "DEVIATIONS_DIR", deviations),
+        ):
+            assert script.main(["--probe", "agents/hapax_daimonion/grounding_ledger.py"]) == 2
