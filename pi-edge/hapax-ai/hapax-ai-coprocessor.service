@@ -1,0 +1,67 @@
+# hapax-ai-coprocessor — Hailo-accelerated vision inference daemon
+#
+# Runs per-person identity (face embeddings via MobileFaceNet/ArcFace), YOLOv8-pose
+# body tracking, and MediaPipe Hands landmark detection on the operator-view camera
+# feed. Consumes frames via workstation SHM-over-network (rsync-pull or NFS-mount
+# of the workstation's hapax-visual SHM), produces structured per-person JSON at ~100 FPS.
+#
+# Unblocks:
+#   - Phase 6 §6 presence-detect-without-contract T0 block (needs detected_person_ids)
+#   - Phase 8 §11 environmental perception emphasis (hero-mode camera switching)
+#
+# Plan reference: relay context 2026-04-15-epsilon-pi-fleet-deployment-plan.md §3
+# Pre-staged 2026-04-15 (epsilon). Actual workload implementation lands post-Pi-5-boot
+# when the operator has hands on the hardware. This unit is the systemd scaffolding.
+
+[Unit]
+Description=Hapax AI Coprocessor (Hailo vision inference)
+After=network-online.target hapax-ai-ready.target
+Wants=network-online.target
+PartOf=hapax-ai.target
+
+[Service]
+Type=simple
+Environment="HAILO_DEVICE=/dev/hailo0"
+Environment="HAPAX_AI_SHM_ROOT=/dev/shm/hapax-ai"
+Environment="HAPAX_AI_OUTPUT_DETECTIONS=/dev/shm/hapax-ai/detections.json"
+Environment="HAPAX_AI_INPUT_FRAMES=/mnt/workstation-shm/hapax-visual"
+Environment="HAPAX_AI_MODEL_DIR=/opt/hapax-ai/models"
+Environment="PYTHONUNBUFFERED=1"
+
+# Wait for the input SHM mount before starting
+ExecStartPre=/bin/sh -c 'test -d ${HAPAX_AI_INPUT_FRAMES} || exit 78'
+# 78 = EX_CONFIG → systemd does not restart; operator must mount the input source
+
+ExecStart=/opt/hapax-ai/venv/bin/python -m hapax_ai.coprocessor \
+    --device ${HAILO_DEVICE} \
+    --input-dir ${HAPAX_AI_INPUT_FRAMES} \
+    --output-detections ${HAPAX_AI_OUTPUT_DETECTIONS} \
+    --model-face ${HAPAX_AI_MODEL_DIR}/mobilefacenet.hef \
+    --model-pose ${HAPAX_AI_MODEL_DIR}/yolov8s-pose.hef \
+    --model-hands ${HAPAX_AI_MODEL_DIR}/mediapipe-hands.hef \
+    --target-fps 100
+
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/dev/shm/hapax-ai /var/log/hapax-ai
+PrivateTmp=true
+# NOT PrivateDevices — we need /dev/hailo0
+
+# Resource caps
+CPUWeight=200
+MemoryMax=3G
+IOWeight=200
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-ai-coprocessor
+
+[Install]
+WantedBy=default.target

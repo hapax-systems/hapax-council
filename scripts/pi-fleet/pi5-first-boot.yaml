@@ -1,0 +1,68 @@
+# Raspberry Pi Imager custom image settings for hapax-ai first boot
+# Apply via Raspberry Pi Imager → Ctrl+Shift+X → "Use custom" → paste the values below
+# OR via rpi-imager CLI with --cloud-init / --user-data flag (newer imager versions)
+#
+# Target: Pi 5 arriving Thursday 2026-04-16, becomes hapax-ai
+# Plan: ~/.cache/hapax/relay/context/2026-04-15-epsilon-pi-fleet-deployment-plan.md §3
+
+# --- Hostname ---
+hostname: hapax-ai
+
+# --- User + SSH (NO PASSWORD AUTH — key only) ---
+username: hapax
+# Password set during first imager session; replace prior to flashing
+password_hashed: "REPLACE_WITH_OPENSSL_PASSWD_OUTPUT"
+# Generate: openssl passwd -6 '<password>'
+
+ssh_enabled: true
+ssh_password_auth: false
+ssh_authorized_keys:
+  # Workstation public key — matches what's on the other Pis already
+  - "REPLACE_WITH_WORKSTATION_PUBKEY"
+  # Paste contents of ~/.ssh/id_ed25519.pub from the workstation here
+
+# --- Network ---
+# Ethernet primary (plug into the LAN switch)
+# WiFi as fallback only
+wifi_enabled: true
+wifi_ssid: "REPLACE_WITH_SSID"
+wifi_psk: "REPLACE_WITH_WPA_PSK"
+wifi_country: "US"
+
+# --- Locale ---
+timezone: "America/Chicago"  # CDT
+keyboard_layout: "us"
+locale: "en_US.UTF-8"
+
+# --- First-boot packages (apt install -y after network is up) ---
+# Note: Raspberry Pi Imager userconfig doesn't run arbitrary scripts directly;
+# this list is captured here as the "what to apt install on first SSH" reference.
+first_boot_apt_install:
+  - hailo-all                      # Hailo firmware, PCIe driver, HailoRT, Tappas
+  - pipewire-audio-client-libraries
+  - pipewire-module-roc-sink       # for Friday ReSpeaker streaming
+  - pipewire-module-roc-source
+  - python3-pip
+  - python3-venv
+  - rnnoise                        # or build from source
+  - avahi-daemon
+  - prometheus-node-exporter       # Phase 10 observability prerequisite
+
+# --- Config files to set post-boot ---
+# /boot/firmware/config.txt additions (enables PCIe Gen3 for faster Hailo):
+config_txt_additions: |
+  # Enable PCIe Gen3 for AI HAT+ (Pi 5)
+  dtparam=pciex1_gen=3
+  # Active Cooler auto-curve (default is fine but explicit is better)
+  dtoverlay=cooling-fan
+  # NVMe boot priority if NVMe is installed in stacking HAT
+  # boot_order=0xf416
+
+# --- Verification checks (run after first SSH) ---
+first_boot_smoke_tests:
+  - "hailortcli fw-control identify            # → reports Hailo-8 device at /dev/hailo0"
+  - "hailortcli scan                           # → lists available HEF files"
+  - "vcgencmd measure_temp                     # → expect ~50-55°C at idle with Active Cooler"
+  - "systemctl --user status                   # → baseline user services"
+  - "ip -4 a show eth0 | grep inet             # → confirms DHCP-reserved 192.168.68.79"
+  - "ssh-copy-id hapax@workstation.local       # → enable pull-based rsync from workstation"

@@ -1,0 +1,24 @@
+# /etc/udev/rules.d/99-respeaker.rules
+# Stable symlink for the ReSpeaker USB Mic Array v2.0 regardless of USB
+# enumeration order. The ReSpeaker's USB VID:PID is 2886:0018 (Seeed, XMOS XVF-3000).
+# Pre-staged 2026-04-15 (epsilon) for Friday 2026-04-17 arrival.
+#
+# Install:
+#   sudo cp respeaker-udev.rules /etc/udev/rules.d/99-respeaker.rules
+#   sudo udevadm control --reload
+#   sudo udevadm trigger
+#
+# After install, the ReSpeaker appears as /dev/respeaker-mic-array as long as
+# it is plugged in. Other scripts can reference this stable symlink instead
+# of the USB enumeration path (which changes).
+
+# Raw USB device symlink
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2886", ATTRS{idProduct}=="0018", \
+    SYMLINK+="respeaker-mic-array", \
+    GROUP="audio", MODE="0660", \
+    TAG+="uaccess"
+
+# Capture device symlink (the PCM subdevice the capture apps use)
+KERNEL=="pcmC*D*c", SUBSYSTEMS=="usb", ATTRS{idVendor}=="2886", ATTRS{idProduct}=="0018", \
+    SYMLINK+="respeaker-pcm", \
+    GROUP="audio", MODE="0660"

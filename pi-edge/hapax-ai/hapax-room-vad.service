@@ -1,0 +1,50 @@
+# hapax-room-vad — room voice activity detector on hapax-ai
+#
+# Reads the cleaned ReSpeaker DSP output (ch0 post-XVF-3000) via PipeWire,
+# runs Silero VAD at 16 kHz, emits a 1 Hz SHM signal consumed by
+# presence_engine.py as a new positive-only room-voice evidence channel.
+#
+# LR tentative: 3.0 for positive evidence (room voice detected), None for absence.
+# Positive-only pattern matches contact mic + ir_hand_active per the presence
+# engine's design principle.
+#
+# Plan reference: relay context 2026-04-15-epsilon-pi-fleet-deployment-plan.md §4
+# Pre-staged 2026-04-15 (epsilon) for Friday 2026-04-17 arrival.
+
+[Unit]
+Description=Hapax Room VAD (Silero on ReSpeaker stream)
+After=pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+Environment="HAPAX_ROOM_VAD_SOURCE=capture.respeaker-clean"
+Environment="HAPAX_ROOM_VAD_OUTPUT=/dev/shm/hapax-ai/room-vad.json"
+Environment="HAPAX_ROOM_VAD_THRESHOLD=0.5"
+Environment="HAPAX_ROOM_VAD_RATE_HZ=1"
+Environment="PYTHONUNBUFFERED=1"
+
+ExecStart=/opt/hapax-ai/venv/bin/python -m hapax_ai.room_vad \
+    --pipewire-source ${HAPAX_ROOM_VAD_SOURCE} \
+    --output ${HAPAX_ROOM_VAD_OUTPUT} \
+    --threshold ${HAPAX_ROOM_VAD_THRESHOLD} \
+    --publish-rate-hz ${HAPAX_ROOM_VAD_RATE_HZ}
+
+Restart=on-failure
+RestartSec=3s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/dev/shm/hapax-ai
+PrivateTmp=true
+
+CPUWeight=50
+MemoryMax=512M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-room-vad
+
+[Install]
+WantedBy=default.target

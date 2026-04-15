@@ -1,0 +1,65 @@
+# hapax-ai-asr — Hailo-accelerated Whisper streaming ASR
+#
+# Hybrid pipeline: Whisper encoder offloaded to Hailo, decoder on Pi 5 CPU.
+# Consumes operator audio via PipeWire module-roc-source subscribed to the
+# workstation's echo_cancel_source (Blue Yeti post-AEC). Produces an append-only
+# JSONL transcript with timestamps + confidence at ~250 ms latency.
+#
+# Unblocks:
+#   - Phase 9 §4 daimonion code-narration (provides redundant transcript path)
+#   - Phase 6 §4.B voice-transcript firewall (second observer for audit trail)
+#
+# Plan reference: relay context 2026-04-15-epsilon-pi-fleet-deployment-plan.md §3
+# Pre-staged 2026-04-15 (epsilon). Actual implementation lands post-Pi-5-boot
+# when the operator has hands on the hardware AND the Pi 5 has the Hailo HEF
+# compiled for Whisper. This unit is the systemd scaffolding.
+
+[Unit]
+Description=Hapax AI Streaming ASR (Hailo-accelerated Whisper)
+After=network-online.target pipewire.service hapax-ai-coprocessor.service
+Wants=pipewire.service
+PartOf=hapax-ai.target
+
+[Service]
+Type=simple
+Environment="HAILO_DEVICE=/dev/hailo0"
+Environment="HAPAX_ASR_MODEL=/opt/hapax-ai/models/whisper-small-encoder.hef"
+Environment="HAPAX_ASR_DECODER_BACKEND=whispercpp"
+Environment="HAPAX_ASR_INPUT=roc-source.operator-yeti"
+Environment="HAPAX_ASR_OUTPUT=/dev/shm/hapax-ai/transcripts.jsonl"
+Environment="HAPAX_ASR_LANGUAGE=en"
+Environment="PYTHONUNBUFFERED=1"
+
+# Wait for the ROC source to be published by workstation pipewire
+ExecStartPre=/bin/sh -c 'pw-cat --list-sources | grep -q roc-source.operator-yeti || exit 78'
+
+ExecStart=/opt/hapax-ai/venv/bin/python -m hapax_ai.asr \
+    --device ${HAILO_DEVICE} \
+    --encoder ${HAPAX_ASR_MODEL} \
+    --decoder-backend ${HAPAX_ASR_DECODER_BACKEND} \
+    --pipewire-source ${HAPAX_ASR_INPUT} \
+    --output-jsonl ${HAPAX_ASR_OUTPUT} \
+    --language ${HAPAX_ASR_LANGUAGE} \
+    --vad-gate-from /dev/shm/hapax-ai/room-vad.json \
+    --target-latency-ms 250
+
+Restart=on-failure
+RestartSec=5s
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/dev/shm/hapax-ai /var/log/hapax-ai
+PrivateTmp=true
+
+# Resource caps
+CPUWeight=150
+MemoryMax=2G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-ai-asr
+
+[Install]
+WantedBy=default.target
