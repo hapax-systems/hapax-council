@@ -148,6 +148,14 @@ class BudgetTracker:
 
         New sources are auto-created on first record. The deque
         evicts the oldest sample when ``window_size`` is exceeded.
+
+        Drop #41 C1: also observes into the per-source Prometheus
+        histogram so dashboards can answer "which source is closest
+        to starving the layout budget" without scraping `costs.json`.
+        Histogram observation is best-effort — if metrics aren't
+        initialized (test envs, prometheus_client not importable) the
+        recording proceeds normally and only the in-process rolling
+        window is updated.
         """
         with self._lock:
             state = self._states.get(source_id)
@@ -155,6 +163,15 @@ class BudgetTracker:
                 state = _SourceState(samples=deque(maxlen=self._window_size))
                 self._states[source_id] = state
             state.samples.append(elapsed_ms)
+        try:
+            from agents.studio_compositor import metrics as _metrics
+
+            if _metrics.COMP_SOURCE_RENDER_DURATION_MS is not None:
+                _metrics.COMP_SOURCE_RENDER_DURATION_MS.labels(source_id=source_id).observe(
+                    elapsed_ms
+                )
+        except Exception:
+            pass
 
     def record_skip(self, source_id: str) -> None:
         """Record that a tick was skipped (over budget).

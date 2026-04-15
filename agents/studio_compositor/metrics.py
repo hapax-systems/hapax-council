@@ -130,6 +130,7 @@ COMP_GLFEEDBACK_ACCUM_CLEAR_TOTAL: Any = None
 COMP_PROCESS_FD_COUNT: Any = None
 COMP_CAMERA_REBUILD_TOTAL: Any = None
 COMP_PIPELINE_TEARDOWN_DURATION_MS: Any = None
+COMP_SOURCE_RENDER_DURATION_MS: Any = None
 # Last value the mirror published, so we can detect rollback events
 # (the gauge → counter delta must be non-negative since the underlying
 # Rust counter is monotonic across imagination process lifetime).
@@ -309,6 +310,7 @@ def _init_metrics() -> None:
     global COMP_PROCESS_FD_COUNT
     global COMP_CAMERA_REBUILD_TOTAL
     global COMP_PIPELINE_TEARDOWN_DURATION_MS
+    global COMP_SOURCE_RENDER_DURATION_MS
     COMP_GLFEEDBACK_RECOMPILE_TOTAL = Counter(
         "compositor_glfeedback_recompile_total",
         "Number of times SlotPipeline.activate_plan set_property-ed a glfeedback "
@@ -390,6 +392,24 @@ def _init_metrics() -> None:
         "Wall-clock duration of CameraPipeline.stop() NULL transition, per role",
         ["role"],
         buckets=(1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0, 2000.0, 5000.0),
+        registry=REGISTRY,
+    )
+
+    # Drop #41 (frame budget forensics) C1: per-source frame-time histogram.
+    # `BudgetTracker.record(source_id, elapsed_ms)` already collects this
+    # data into a rolling window for cost-snapshot publishing, but the
+    # window samples are only readable via `costs.json` snapshots. The
+    # histogram exposes the same observations to Prometheus so Grafana
+    # can answer "which cairo source is closest to starving the layout
+    # budget" without scraping the snapshot file. Bucket boundaries match
+    # the cairo source render budget (1-100 ms typical, 500-2000 ms tail
+    # for outliers like sierpinski with YouTube frames). Labelled by
+    # source_id so dashboards can split by per-source contribution.
+    COMP_SOURCE_RENDER_DURATION_MS = Histogram(
+        "studio_compositor_source_render_duration_ms",
+        "Per-source CairoSourceRunner render time per frame, in milliseconds",
+        ["source_id"],
+        buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2000.0),
         registry=REGISTRY,
     )
 
