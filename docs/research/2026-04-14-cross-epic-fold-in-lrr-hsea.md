@@ -668,9 +668,21 @@ The §4 recommendation (option c: fork LRR Phase 5 into 5a 8B parallel + 5b 70B 
 
 ### 13.4 Implications for downstream artifacts
 
-**(a) HSEA Phase 0 deliverable 0.5 `sp-hsea-mg-001` axiom precedent.** Epsilon's Phase 6 spec §0.5.4 cross-references the rule *"any future 70B substrate decision must pre-register a consent-revocation drill and pass it before being authorized."* With 5b structurally unreachable, this rule shifts from a **continuous active guard** (protecting against a plausible near-term 70B reactivation) to a **forward-guard clause for a currently-dormant path**. The rule content does not change; its scope-of-applicability narrows from "watch for hardware envelope changes" to "if the hardware envelope ever changes beyond the year horizon, gate 70B reactivation on a consent-revocation drill."
+**(a) 70B reactivation guard constitutional rule (LRR Phase 6 amendment, NOT HSEA Phase 0 0.5).**
 
-Per beta's 06:25Z inflection §"Epsilon" paragraph, this is optional Phase 6 spec §12.4 scope-note work for epsilon, not a content change. Delta does not touch the HSEA Phase 0 spec's §3.5 axiom precedent deliverable scope — the precedent YAML content is unchanged, only the real-world scenario the rule protects against has shifted from near-term to far-horizon.
+**Clarification per beta's item #41 audit finding (2026-04-15T10:15Z) — 2026-04-15T17:15Z inline edit by delta:** the earlier draft of this subsection conflated two separate precedents. They are:
+
+1. **`sp-hsea-mg-001` (HSEA Phase 0 deliverable 0.5)** — the drafting-as-content precedent. *"Drafting constitutes preparation (not delivery) IFF operator retains discrete revocable non-visual delivery authority."* **Substrate-agnostic by construction.** §14 does not affect this precedent; its content, scope, and ship vehicle (joint `hapax-constitution` PR via LRR Phase 6 per §10 Q5 ratification) are all unchanged by the Hermes abandonment.
+
+2. **The 70B reactivation guard rule** — a **LRR Phase 6 constitutional amendment**, NOT part of `sp-hsea-mg-001`. The rule: *"any future 70B substrate decision must pre-register a consent-revocation drill and pass it before being authorized."* **Substrate-specific by construction** (it is about 70B substrate authorization, which is an LRR concern about research substrate swaps, not an HSEA concern about drafting-as-content).
+
+The two precedents ship together in the same joint `hapax-constitution` PR (per Q5 joint PR ratification), but they are distinct constitutional artifacts. Conflating them would misattribute substrate-specific content to a substrate-agnostic precedent.
+
+**§14 impact on the 70B reactivation guard (LRR Phase 6 rule only):** with 5b structurally unreachable, this rule shifts from a **continuous active guard** (protecting against a plausible near-term 70B reactivation) to a **forward-guard clause for a currently-dormant path**. The rule content does not change; only its scope-of-applicability narrows from "watch for hardware envelope changes" to "if the hardware envelope ever changes beyond the year horizon, gate 70B reactivation on a consent-revocation drill." This is an LRR Phase 6 scope note, not an HSEA Phase 0 0.5 content change.
+
+**§14 impact on `sp-hsea-mg-001` (HSEA Phase 0 0.5 precedent):** **NONE.** The drafting-as-content precedent is substrate-agnostic. §14 does not modify, narrow, or expand `sp-hsea-mg-001`. The HSEA Phase 0 spec's §3.5 axiom precedent deliverable is unchanged by the Hermes abandonment.
+
+Per beta's 06:25Z inflection §"Epsilon" paragraph, the LRR Phase 6 scope-note work is optional for epsilon (not a content change). Per beta's 07:50Z HSEA Phase 0 audit item #3 finding and beta's item #41 cross-phase audit, the two precedents must stay clearly distinguished to prevent re-implementation drift or misattribution during the joint constitutional PR review cycle.
 
 **(b) Phase 5 spec §0.5 + DEVIATION-037 amendment headers.** Beta's PR #819 amendments retain the 5b (70B) reference procedure bodies verbatim as audit trail. This is the correct data structure: the reference procedure is dormant but preserved for future re-examination if the hardware envelope ever changes. Beta is explicitly NOT editing these artifacts in response to the 06:20Z direction, on the grounds that:
 1. 5a (the live path) is unchanged.
