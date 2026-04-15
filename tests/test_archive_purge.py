@@ -197,3 +197,171 @@ class TestActiveConditionGuard:
         assert rc == 0
         for p in segs:
             assert not p.exists()
+
+
+def _write_contract(
+    contracts_dir: Path,
+    *,
+    contract_id: str,
+    person_id: str,
+    active: bool,
+) -> None:
+    """Write a minimal consent contract YAML for test fixtures."""
+    contracts_dir.mkdir(parents=True, exist_ok=True)
+    body = f"""\
+id: {contract_id}
+parties: [operator, {person_id}]
+scope: [biometric]
+direction: one_way
+visibility_mechanism: on_request
+created_at: '2026-01-01T00:00:00Z'
+"""
+    if not active:
+        body += "revoked_at: '2026-04-15T00:00:00Z'\n"
+    (contracts_dir / f"{contract_id}.yaml").write_text(body, encoding="utf-8")
+
+
+class TestConsentRevocationTieIn:
+    """LRR Phase 2 spec §3.9 consent-revocation hook."""
+
+    def test_no_contract_passes_consent_check(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root, segs, _ = _seed_archive(tmp_path)
+        contracts_dir = tmp_path / "contracts"
+        contracts_dir.mkdir()  # empty dir — no contracts
+        rc = archive_purge.main(
+            [
+                "--condition",
+                "cond-a",
+                "--confirm",
+                "--archive-root",
+                str(root),
+                "--active-condition-pointer",
+                str(tmp_path / "no-pointer.txt"),
+                "--consent-revoked-for",
+                "simon",
+                "--contracts-dir",
+                str(contracts_dir),
+            ]
+        )
+        assert rc == 0
+        assert "consent check passes" in capsys.readouterr().err
+        for p in segs:
+            assert not p.exists()
+
+    def test_revoked_contract_passes_consent_check(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A revoked contract is indistinguishable from 'no contract' to the
+        `ConsentRegistry.get_contract_for()` accessor (which only returns
+        active contracts). Both resolve to 'consent check passes' — what
+        matters is that a LIVE contract does NOT exist, regardless of
+        whether it was never created or was created-then-revoked."""
+        root, segs, _ = _seed_archive(tmp_path)
+        contracts_dir = tmp_path / "contracts"
+        _write_contract(
+            contracts_dir,
+            contract_id="simon-biometric",
+            person_id="simon",
+            active=False,
+        )
+        rc = archive_purge.main(
+            [
+                "--condition",
+                "cond-a",
+                "--confirm",
+                "--archive-root",
+                str(root),
+                "--active-condition-pointer",
+                str(tmp_path / "no-pointer.txt"),
+                "--consent-revoked-for",
+                "simon",
+                "--contracts-dir",
+                str(contracts_dir),
+            ]
+        )
+        assert rc == 0
+        err = capsys.readouterr().err
+        # get_contract_for() only returns active contracts, so a revoked
+        # contract reads as "no contract" — both paths pass the check.
+        assert "consent check passes" in err
+        for p in segs:
+            assert not p.exists()
+
+    def test_live_contract_refuses_purge(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root, segs, _ = _seed_archive(tmp_path)
+        contracts_dir = tmp_path / "contracts"
+        _write_contract(
+            contracts_dir,
+            contract_id="simon-biometric",
+            person_id="simon",
+            active=True,
+        )
+        rc = archive_purge.main(
+            [
+                "--condition",
+                "cond-a",
+                "--confirm",
+                "--archive-root",
+                str(root),
+                "--active-condition-pointer",
+                str(tmp_path / "no-pointer.txt"),
+                "--consent-revoked-for",
+                "simon",
+                "--contracts-dir",
+                str(contracts_dir),
+            ]
+        )
+        assert rc == 3
+        err = capsys.readouterr().err
+        assert "LIVE" in err
+        # Segments must be preserved when consent check refuses
+        for p in segs:
+            assert p.exists(), f"{p} must NOT be deleted when contract is live"
+
+    def test_audit_log_records_consent_revoked_for_field(self, tmp_path: Path) -> None:
+        root, _, _ = _seed_archive(tmp_path)
+        contracts_dir = tmp_path / "contracts"
+        contracts_dir.mkdir()
+        archive_purge.main(
+            [
+                "--condition",
+                "cond-a",
+                "--confirm",
+                "--archive-root",
+                str(root),
+                "--active-condition-pointer",
+                str(tmp_path / "no-pointer.txt"),
+                "--consent-revoked-for",
+                "simon",
+                "--contracts-dir",
+                str(contracts_dir),
+                "--reason",
+                "guardian revoked simon scope",
+            ]
+        )
+        log_path = root / "purge.log"
+        assert log_path.exists()
+        entries = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+        assert entries[-1]["consent_revoked_for"] == "simon"
+        assert entries[-1]["reason"] == "guardian revoked simon scope"
+
+    def test_audit_log_omits_consent_field_when_not_set(self, tmp_path: Path) -> None:
+        root, _, _ = _seed_archive(tmp_path)
+        archive_purge.main(
+            [
+                "--condition",
+                "cond-a",
+                "--confirm",
+                "--archive-root",
+                str(root),
+                "--active-condition-pointer",
+                str(tmp_path / "no-pointer.txt"),
+            ]
+        )
+        log_path = root / "purge.log"
+        entries = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+        assert "consent_revoked_for" not in entries[-1]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LRR Phase 2 item 9 — archive purge CLI.
+"""LRR Phase 2 item 9 — archive purge CLI with consent-revocation tie-in.
 
 Auditable deletion of archive data tied to a single ``condition_id``.
 Default is **dry-run**: the CLI prints what would be deleted without
@@ -9,11 +9,31 @@ Refuses to purge the currently-active condition. Every invocation
 (dry-run or confirmed) writes an entry to the purge audit log at
 ``<archive_root>/purge.log``.
 
+**Consent-revocation tie-in (LRR Phase 2 spec §3.9):** the
+``--consent-revoked-for <person_id>`` flag binds the purge to the
+interpersonal_transparency axiom. When set:
+
+  1. The CLI loads ``ConsentRegistry`` from ``axioms/contracts/``
+  2. Looks up the active contract for ``<person_id>``
+  3. Requires that EITHER no contract exists, OR the contract's
+     ``revoked_at`` is populated
+  4. If a live (non-revoked) contract exists, the purge is refused
+     with exit 3 — the operator must revoke the contract via the
+     contracts YAML before purging the derived data
+  5. On confirmed purge, the audit log entry carries the
+     ``consent_revoked_for`` field so the purge is traceable to the
+     revocation event
+
+This prevents "purge first, revoke later" ordering that would
+temporarily violate the axiom's fail-closed semantics.
+
 Usage::
 
     archive-purge.py --condition <id>               # dry-run (default)
     archive-purge.py --condition <id> --confirm     # live
     archive-purge.py --condition <id> --confirm --reason "consent revocation"
+    archive-purge.py --condition <id> --confirm \\
+        --consent-revoked-for simon --reason "guardian revoked simon's scope"
 """
 
 from __future__ import annotations
@@ -32,6 +52,40 @@ from shared.stream_archive import (
 PURGE_LOG_NAME = "purge.log"
 DEFAULT_REASON = "operator explicit"
 ACTIVE_CONDITION_POINTER = Path.home() / "hapax-state" / "research-registry" / "current.txt"
+
+
+def _consent_revocation_check(
+    person_id: str,
+    contracts_dir: Path | None = None,
+) -> tuple[bool, str]:
+    """Verify that ``person_id`` has no active (non-revoked) consent contract.
+
+    Returns ``(ok, message)``. ``ok=True`` means the purge is permitted
+    with respect to the consent axiom — either no contract exists, or
+    the existing contract is revoked. ``ok=False`` means a live contract
+    is in place and the purge must be refused until the operator revokes
+    it via the contracts YAML first.
+
+    Read-only import — uses the existing ``shared.governance.consent``
+    surface which loads ``axioms/contracts/*.yaml`` from disk. Does not
+    modify any contract state.
+    """
+    try:
+        from shared.governance.consent import ConsentRegistry
+    except ImportError as exc:
+        return False, f"ConsentRegistry import failed: {exc}"
+
+    registry = ConsentRegistry()
+    registry.load(contracts_dir)
+    contract = registry.get_contract_for(person_id)
+    if contract is None:
+        return True, f"no contract for {person_id!r} — consent check passes"
+    if not contract.active:
+        return True, f"contract {contract.id!r} for {person_id!r} is revoked — consent check passes"
+    return False, (
+        f"contract {contract.id!r} for {person_id!r} is LIVE (not revoked); "
+        f"revoke it in axioms/contracts/ before purging the derived data"
+    )
 
 
 def _iter_sidecars(root: Path) -> list[Path]:
@@ -114,6 +168,20 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Override the active-condition pointer file (test harness)",
     )
+    parser.add_argument(
+        "--consent-revoked-for",
+        default=None,
+        help=(
+            "Person ID whose consent has been revoked, binding this purge to "
+            "the interpersonal_transparency axiom. When set, the CLI verifies "
+            "the person has no active (non-revoked) contract before proceeding."
+        ),
+    )
+    parser.add_argument(
+        "--contracts-dir",
+        default=None,
+        help="Override the consent contracts directory (test harness)",
+    )
     args = parser.parse_args(argv)
 
     root = Path(args.archive_root) if args.archive_root else archive_root()
@@ -131,6 +199,18 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # LRR Phase 2 spec §3.9 consent-revocation tie-in.
+    if args.consent_revoked_for is not None:
+        contracts_dir = Path(args.contracts_dir) if args.contracts_dir else None
+        ok, msg = _consent_revocation_check(args.consent_revoked_for, contracts_dir)
+        print(f"consent-check: {msg}", file=sys.stderr)
+        if not ok:
+            print(
+                f"ERROR: refusing to purge — {msg}",
+                file=sys.stderr,
+            )
+            return 3
 
     targets = _collect_targets(root, args.condition)
 
@@ -172,18 +252,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # Always write an audit entry — even dry-run runs are audited so the
     # purge.log is a complete history of decisions, not just actions.
-    _append_audit_log(
-        root / PURGE_LOG_NAME,
-        {
-            "ts": _now_iso(),
-            "condition_id": args.condition,
-            "mode": mode,
-            "operator": "hapax",
-            "segments_affected": len(targets),
-            "bytes_affected": total_bytes,
-            "reason": args.reason,
-        },
-    )
+    audit_entry: dict[str, object] = {
+        "ts": _now_iso(),
+        "condition_id": args.condition,
+        "mode": mode,
+        "operator": "hapax",
+        "segments_affected": len(targets),
+        "bytes_affected": total_bytes,
+        "reason": args.reason,
+    }
+    if args.consent_revoked_for is not None:
+        audit_entry["consent_revoked_for"] = args.consent_revoked_for
+    _append_audit_log(root / PURGE_LOG_NAME, audit_entry)
 
     return 0
 
