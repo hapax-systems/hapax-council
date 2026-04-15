@@ -36,6 +36,7 @@ Document has grown from §1-§10 (original 2026-04-14 synthesis) through §11-§
 - [§15 Continuous-session directive](#15-addendum--operator-continuous-session-directive-2026-04-15t1707z) — 17:07Z — no session retirement until LRR epic close
 - [§16 Scenario 1+2 ratification](#16-addendum-2026-04-15t1821z--substrate-scenarios-12-ratification) — 18:21Z — Qwen + OLMo 3-7B × 3 parallel deployment ratified, substrate question closed
 - [§17 Option C pivot (formerly §16.1)](#17-amendment-2026-04-15t1849z--scenario-2-pivoted-to-option-c-parallel-tabbyapi) — 18:49Z — scenario 2 execution pivoted to parallel TabbyAPI :5001 after beta's #209 exllamav3 upgrade blocker
+- [§18 Forward-looking post-scenario-1+2 ship](#18-forward-looking--post-scenario-12-epic-state-queue-156) — 2026-04-15T21:46Z — roadmap section: post-scenario-1 Qwen/RIFTS state, post-scenario-2 OLMo isogenic state, downstream Phase 6/7/8/9 activation conditions, operator decision queue, ReSpeaker Friday placeholder, 7 uncertainty acknowledgments
 
 **How to read the document:**
 
@@ -52,6 +53,8 @@ Document has grown from §1-§10 (original 2026-04-14 synthesis) through §11-§
 - 2026-04-15 18:21Z+: §16 scenario ratification appended (~75 lines)
 - 2026-04-15 18:49Z+: §17 (formerly §16.1) Option C pivot appended (~85 lines)
 - 2026-04-15 20:40Z+: this §0 ToC + §16.1→§17 renumbering, queue #145
+- 2026-04-15 21:46Z+: §18 forward-looking roadmap appended (~96 lines, queue #156)
+- 2026-04-15 22:15Z+: §0 ToC updated to include §18 link, queue #169
 
 ---
 
