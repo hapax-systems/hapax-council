@@ -5,3 +5,20 @@ members = [
     "src-imagination",
 ]
 resolver = "2"
+
+# Drop #30 logos-build-time-audit §2: enable incremental compilation
+# for release builds. Default `incremental = false` in `release` mode
+# throws away per-function compilation units between builds, forcing
+# full recompilation of any crate whose source inputs hash differently.
+# With `incremental = true` + `codegen-units = 256`, cargo's dep-graph
+# tracking reuses work across rebuilds for 20-60 % wall-clock savings
+# on the typical rebuild-logos path (persistent `CARGO_TARGET_DIR` at
+# `~/.cache/hapax/build-target`). Costs: ~200 MiB extra in `target/`
+# for the `incremental/` subdirectory, and the binary runs slightly
+# slower at runtime — but for a Tauri app where the webview does the
+# heavy lifting, the native runtime delta is negligible vs the
+# rebuild-iteration speedup. Tauri's own docs recommend
+# `codegen-units = 256` for dev iteration.
+[profile.release]
+incremental = true
+codegen-units = 256
