@@ -208,3 +208,127 @@ Branch-only commit per queue item #122 acceptance criteria.
 - Memory: `project_pi6_sync_hub.md`, `project_ir_perception.md`
 
 — alpha, 2026-04-15T18:50Z
+
+---
+
+## 13. Mermaid visual rendering (added 2026-04-15T21:07Z, queue #149)
+
+Visual diagram companion to the §2/§3 matrices. Nodes colored by status (closed/shipped, in-progress, blocked/superseded, pre-staged, executable). Edges show dependency direction (upstream → downstream).
+
+```mermaid
+flowchart TB
+    subgraph LRR["LRR Epic (11 phases)"]
+      LRR0["LRR P0: Verification<br/>✓ CLOSED"]
+      LRR1["LRR P1: Research Registry<br/>⧗ READY"]
+      LRR2["LRR P2: Archive + Replay<br/>✓ SHIPPED (10 PRs)"]
+      LRR3["LRR P3: Hardware + Partition<br/>⧗ PARTIAL (§0.5 amended)"]
+      LRR4["LRR P4: Phase A Completion<br/>⧗ PRE-STAGED"]
+      LRR5["LRR P5: Substrate Scenario 1+2<br/>⧗ PRE-STAGED (re-spec'd)"]
+      LRR6["LRR P6: Governance + Stream-Mode<br/>⧗ PRE-STAGED (cohabitation)"]
+      LRR7["LRR P7: Persona/Posture/Role<br/>⧗ PRE-STAGED (SUPERSEDED note)"]
+      LRR8["LRR P8: Attention Bid<br/>⧗ PRE-STAGED"]
+      LRR9["LRR P9: Closed-Loop Narration<br/>⧗ PRE-STAGED"]
+      LRR10["LRR P10: Observability Drills<br/>⧗ PARTIAL (#801 shipped)"]
+    end
+
+    subgraph HSEA["HSEA Epic (13 phases)"]
+      HSEA0["HSEA P0: Foundation Primitives<br/>⧗ PRE-STAGED"]
+      HSEA1["HSEA P1: Visibility Surfaces<br/>⧗ PRE-STAGED"]
+      HSEA2["HSEA P2: Core Director Activities<br/>⧗ PRE-STAGED"]
+      HSEA3["HSEA P3: Research Program Orch<br/>⧗ PRE-STAGED"]
+      HSEA4["HSEA P4: Code Drafting Cluster<br/>⧗ PRE-STAGED"]
+      HSEA5["HSEA P5: M-Series Triad<br/>⧗ PRE-STAGED"]
+      HSEA6["HSEA P6: Content Quality + Clips<br/>⧗ SPEC ONLY (no plan)"]
+      HSEA7["HSEA P7: Self-Monitoring<br/>⧗ SPEC ONLY (no plan)"]
+      HSEA8["HSEA P8: Platform Value Curation<br/>⧗ PRE-STAGED"]
+      HSEA9["HSEA P9: Revenue Preparation<br/>⧗ PRE-STAGED"]
+      HSEA10["HSEA P10: Reflexive Stack<br/>⧗ PRE-STAGED"]
+      HSEA11["HSEA P11: Multi-Agent Spawner<br/>⧗ PRE-STAGED"]
+      HSEA12["HSEA P12: Long-Tail Handoff<br/>⧗ PRE-STAGED"]
+    end
+
+    Substrate[["⚡ Substrate Scenario 1+2<br/>drop #62 §16 + §17<br/>RATIFIED 18:21Z, pivoted 18:49Z"]]:::ratified
+
+    LRR0 --> LRR1
+    LRR1 --> LRR2
+    LRR2 --> LRR3
+    LRR3 --> LRR4
+    LRR4 --> LRR5
+    LRR5 --> LRR6
+    LRR6 --> LRR7
+    LRR7 --> LRR8
+    LRR8 --> LRR9
+    LRR9 --> LRR10
+
+    HSEA0 --> HSEA1
+    HSEA1 --> HSEA2
+    HSEA2 --> HSEA3
+    HSEA3 --> HSEA4
+    HSEA4 --> HSEA5
+    HSEA5 --> HSEA6
+    HSEA5 --> HSEA7
+    HSEA6 --> HSEA8
+    HSEA7 --> HSEA8
+    HSEA8 --> HSEA9
+    HSEA9 --> HSEA10
+    HSEA10 --> HSEA11
+    HSEA11 --> HSEA12
+
+    LRR2 -.-> HSEA1
+    LRR4 -.-> HSEA3
+    LRR5 -.-> HSEA4
+    LRR6 -.-> HSEA6
+    LRR6 -.-> HSEA9
+    LRR7 -.-> HSEA2
+    LRR7 -.-> HSEA4
+    LRR8 -.-> HSEA5
+    LRR9 -.-> HSEA7
+    LRR9 -.-> HSEA11
+    LRR10 -.-> HSEA1
+    LRR10 -.-> HSEA10
+
+    Substrate -.-> LRR5
+    Substrate -.-> LRR7
+    Substrate -.-> HSEA4
+
+    classDef shipped fill:#d0f4de,stroke:#1b5e20,stroke-width:2px,color:#000
+    classDef ready fill:#fffac0,stroke:#f9a825,stroke-width:2px,color:#000
+    classDef partial fill:#bdefff,stroke:#01579b,stroke-width:2px,color:#000
+    classDef prestaged fill:#e8e8e8,stroke:#555,stroke-width:1px,color:#000
+    classDef ratified fill:#ffcad4,stroke:#b71c1c,stroke-width:3px,color:#000
+
+    class LRR0,LRR2 shipped
+    class LRR1 ready
+    class LRR3,LRR10 partial
+    class LRR4,LRR5,LRR6,LRR7,LRR8,LRR9 prestaged
+    class HSEA0,HSEA1,HSEA2,HSEA3,HSEA4,HSEA5,HSEA8,HSEA9,HSEA10,HSEA11,HSEA12 prestaged
+    class HSEA6,HSEA7 partial
+```
+
+**Legend:**
+- 🟢 **Shipped** — phase executed to completion (LRR P0 verification, P2 archive+replay)
+- 🟡 **Ready** — prerequisites met, can execute (LRR P1 registry foundation)
+- 🔵 **Partial** — some items shipped, others pending (LRR P3 hardware + §0.5 amendment, LRR P10 #801 + incremental work; HSEA P6/P7 spec-only)
+- ⬜ **Pre-staged** — spec + plan authored, not yet executed (most phases)
+- 🔴 **Ratified cross-cutting** — drop #62 §16 + §17 substrate scenario 1+2 annotation (affects LRR P5 + P7 + HSEA P4)
+
+**Reading the diagram:**
+
+- Solid arrows = within-epic sequential dependencies (LRR P0 → P1 → P2 → ...)
+- Dashed arrows = cross-epic dependencies (e.g., LRR P5 → HSEA P4 means HSEA Phase 4 reads LRR Phase 5 substrate output)
+- The red Substrate node represents the §16 + §17 cross-cutting decision that unblocks LRR P5 and re-scopes LRR P7 + HSEA P4
+
+**Limitations of the diagram:**
+
+1. Does not show **parallelism opportunities** (noted in §7 above) — alpha + beta can run multiple phases in parallel when dependencies permit
+2. Does not show **critical path length** — use §6 for that analysis
+3. Does not encode **effort estimates** — those live in the phase specs themselves
+4. Renders natively on GitHub markdown + mermaid-cli + obsidian-mermaid plugins; may need local rendering for complex views
+
+**Rendering tips:**
+
+- GitHub: commit to main + view — renders inline
+- Local: `mmdc -i <this-file> -o graph.png` or via obsidian-mermaid plugin
+- Mermaid live editor: paste the code block into `https://mermaid.live/`
+
+— alpha, 2026-04-15T21:08Z (queue #149 mermaid visual addition)
