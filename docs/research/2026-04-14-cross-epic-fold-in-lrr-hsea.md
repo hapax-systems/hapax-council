@@ -928,4 +928,85 @@ This is a legitimate use of the drop #62 structure because:
 
 — alpha, 2026-04-15T17:12Z
 
+## 16. Addendum 2026-04-15T18:21Z — substrate scenarios 1+2 ratification
+
+**Status:** operator-ratified. **Timestamp:** 2026-04-15T18:21Z UTC. **Supersedes:** §14 "substrate question reopened" pending state. **Supplements:** §15 continuous-session directive (unchanged).
+
+### 16.1 Operator directive (verbatim)
+
+> "go with your rec"
+
+Operator response to delta's substrate decision brief citing beta's substrate re-evaluation v1+v2 recommendation of scenarios 1+2 in parallel as complementary HIGH-confidence paths. The brief was shipped at 2026-04-15T18:18Z; operator ratified at 2026-04-15T18:21Z.
+
+### 16.2 What was ratified
+
+**Both scenarios 1 and 2, deployed in parallel as complementary substrates.**
+
+#### Scenario 1 — Qwen3.5-9B + exllamav3 upgrade + RIFTS empirical
+
+**Scope:**
+- Keep Qwen3.5-9B on TabbyAPI as the production serving substrate
+- Upgrade exllamav3 runtime from 0.0.23 → 0.0.29 (bug fixes + KVZip compatibility)
+- Run RIFTS (research-grade grounding evaluation dataset) against Qwen3.5-9B empirically
+- Confirms Qwen3.5-9B is a viable Phase A baseline substrate without needing Hermes
+
+**Execution blocks:** exllamav3 runtime upgrade in TabbyAPI venv, RIFTS dataset download (~2 GB), re-run of Phase A baseline benchmarks. All operator-authorized per 18:21Z directive.
+
+#### Scenario 2 — Parallel-deploy OLMo 3-7B
+
+**Scope:**
+- Deploy OLMo 3-7B on TabbyAPI as a parallel route (not replacing Qwen)
+- Three variants: SFT + DPO + RLVR (all three training regimes of OLMo 3-7B available from AllenAI)
+- Exposed as new LiteLLM routes: `local-research-sft`, `local-research-dpo`, `local-research-rlvr`
+- **Enables `claim-shaikh` cycle 2 isogenic test** — the three OLMo variants share architecture + pretraining data, differing only in post-training. This is the cleanest test of "does training regime affect conversational grounding" that the substrate landscape offers
+- Runs in parallel with Qwen3.5-9B; VRAM budget accommodates both via TabbyAPI model-switching or split-memory
+
+**Execution blocks:** OLMo 3-7B weight downloads (~12 GB × 3 variants = ~36 GB), EXL3 5.0bpw quantization pipeline for each variant, TabbyAPI config to expose three new routes. All operator-authorized per 18:21Z directive.
+
+### 16.3 Why this supersedes §14 + §13
+
+**§14 "Hermes 3 70B abandoned" remains valid** — Hermes 3 is permanently dropped from the research-substrate pool. §14's declaration that Phase 5 "Hermes 3 70B Substrate Swap" is structurally blocked is unchanged.
+
+**What §16 changes:** the "substrate question reopened" state that §14 left behind is now closed. The substrate pair is defined: **Qwen3.5-9B (scenario 1) × OLMo 3-7B in three variants (scenario 2)**. LRR Phase 5 is re-specced around this pair (see queue item #138).
+
+**§13 "5b structurally unreachable"** is orthogonal — it was about future body-count framings, not substrate selection. Remains valid as an epistemic closing of a future branch.
+
+### 16.4 Unblock implications
+
+1. **LRR Phase 5** — no longer blocked. Re-spec underway (queue item #138). The substrate swap target is now `Qwen3.5-9B + OLMo 3-7B parallel` rather than `Qwen → Hermes`. `claim-shaikh-sft-vs-dpo` is now tractable via the OLMo SFT/DPO variant pair (isogenic test).
+2. **LRR Phase 6 (governance finalization + stream-mode axis)** — substrate-agnostic; unchanged. Already-pre-staged §0.5 reconciliation block (queue #127) applies without modification.
+3. **LRR Phase 7 (persona/posture/role)** — becomes per-substrate. A persona spec may need variants for Qwen vs OLMo if system-prompt compliance behavior differs. Queue #131's Phase 7 prep inventory (60% substrate-independent) still applies for the substrate-agnostic portion; the substrate-dependent 40% now has a concrete target.
+4. **Phase A baseline (Cycle 2)** — runs on Qwen3.5-9B as before. No data invalidation. RIFTS dataset adds empirical grounding beyond existing Phase A design.
+5. **Phase B substrate comparison** — becomes a tractable cross-substrate isogenic test using OLMo's three training-regime variants. Supersedes the originally-specced Qwen vs Hermes comparison from LRR Phase 5.
+
+### 16.5 Cross-references
+
+- **Substrate v1 research:** beta's `bb2fb27ca` on `beta-phase-4-bootstrap` (branch-only; queue #144 cherry-picks to main)
+- **Substrate v2 re-evaluation:** `docs/research/2026-04-15-substrate-reeval-v2-post-verification.md` (already on main)
+- **Substrate v2 errata:** `d33b5860c` on `beta-phase-4-bootstrap` (branch-only)
+- **RIFTS harness:** `3a7672bd1` on `beta-phase-4-bootstrap` (branch-only; likely a separate cherry-pick follow-up)
+- **Delta's substrate decision brief:** inflection at 2026-04-15T18:18Z (delta → operator)
+- **Queue item #138:** LRR Phase 5 re-spec using scenarios 1+2
+- **Queue item #139:** LRR Phase 3 Hermes reference cleanup (post-§14 + §16)
+- **Queue item #141:** HSEA epic Hermes-drift sweep
+- **Queue item #142:** Drop #62 §16 Option C amendment (exllamav3 blocker + parallel TabbyAPI pivot — may supplement or refine this §16)
+- **Queue item #143:** LRR Phase 5 plan authoring (substrate scenario 1+2 framing)
+- **Queue item #144:** Cherry-pick beta substrate research v1 to main
+
+### 16.6 Downstream drift that needs remediation (post-§16)
+
+Research docs written between §14 (2026-04-15T06:35Z) and §16 (2026-04-15T18:21Z) described the substrate state as "structurally blocked." Those references are now stale:
+
+- `agents/hapax_daimonion/proofs/RESEARCH-STATE.md` — queue #121 update describes Phase 5 as "structurally blocked"; **needs amendment to reflect §16 resolution**
+- `docs/research/2026-04-15-cross-epic-dependency-graph.md` — queue #122 describes substrate gate as critical-path blocker; **needs amendment to reflect §16 resolution**
+- `docs/research/2026-04-15-phase-7-8-9-prep-inventory.md` — queue #131 describes Phase 7/8/9 substrate-dep items as blocked; **substrate-dep items are now unblocked for scenario 1+2, ripe for re-evaluation**
+
+Alpha will file follow-up queue items to amend these three (or delta may pick them up). Not in scope for this §16 commit; each is a separate small patch.
+
+### 16.7 Closing
+
+Substrate question is closed. Qwen3.5-9B (scenario 1, production) + OLMo 3-7B × 3 variants (scenario 2, research) in parallel. LRR Phase 5 re-spec underway. Downstream RESEARCH-STATE + cross-epic graph + Phase 7/8/9 prep inventory need remediation patches to reflect the unblock.
+
+— alpha, 2026-04-15T19:58Z (drop #62 §16 addendum; operator ratified 2026-04-15T18:21Z)
+
 — End of drop #62 fold-in analysis.
