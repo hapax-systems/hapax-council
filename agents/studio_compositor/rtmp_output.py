@@ -39,7 +39,7 @@ class RtmpOutputBin:
         video_tee: Any,
         rtmp_location: str = "rtmp://127.0.0.1:1935/studio",
         bitrate_kbps: int = 6000,
-        gop_size: int = 60,
+        gop_size: int = 30,
         audio_target: str | None = None,
     ) -> None:
         self._Gst = gst

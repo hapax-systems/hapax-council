@@ -176,10 +176,17 @@ def build_pipeline(compositor: Any) -> Any:
     convert_out = Gst.ElementFactory.make("videoconvert", "convert-out")
     convert_out.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     sink_caps = Gst.ElementFactory.make("capsfilter", "sink-caps")
+    # F6 (drop #32 B7): format is NV12, not YUY2. NV12 is cheaper to convert
+    # from the upstream BGRA source (compositor mix → BGRA → NV12 costs ~30-40%
+    # less CPU on the videoconvert step than BGRA → YUY2), matches the
+    # livestream standard for v4l2loopback + OBS consumption, and is supported
+    # by v4l2loopback 0.15.3 on exclusive_caps=1 devices (verified via isolated
+    # gst-launch test on /dev/video10 2026-04-15). Operator-confirmed; applies
+    # on next compositor restart.
     sink_caps.set_property(
         "caps",
         Gst.Caps.from_string(
-            f"video/x-raw,format=YUY2,width={compositor.config.output_width},"
+            f"video/x-raw,format=NV12,width={compositor.config.output_width},"
             f"height={compositor.config.output_height},framerate={fps}/1"
         ),
     )
@@ -265,7 +272,10 @@ def build_pipeline(compositor: Any) -> Any:
         video_tee=output_tee,
         rtmp_location="rtmp://127.0.0.1:1935/studio",
         bitrate_kbps=6000,
-        gop_size=2 * fps,
+        # F3 (drop #33): gop_size drops from 2*fps (60) to fps (30), 1 keyframe
+        # per second. Matches YouTube-recommended sweet spot and reduces
+        # HLS-equivalent latency on RTMP ingest. Operator-confirmed 2026-04-15.
+        gop_size=fps,
     )
     log.info("rtmp output bin constructed (detached until toggle_livestream)")
 
