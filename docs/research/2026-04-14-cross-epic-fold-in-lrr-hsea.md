@@ -843,4 +843,90 @@ The substrate-agnostic framing of these docs (referencing "UP-7" or "UP-7a" with
 
 — delta, 2026-04-15T07:15Z
 
+---
+
+## 15. Addendum — operator continuous-session directive (2026-04-15T17:07Z)
+
+**Written:** 2026-04-15T17:12Z by alpha (refill 8 item #101). Captures an operator directive that constrains all session-management behavior from this point through LRR epic closure.
+
+### 15.1 The directive
+
+At 2026-04-15T17:07Z, the operator told alpha:
+
+> *"there will be no session retirement ever until LRR is completed"*
+
+Alpha persisted this to the session memory file
+`feedback_no_retirement_until_lrr_complete.md` and added a MEMORY.md
+index entry. This §15 captures the same directive in drop #62 itself so
+future readers reach it through the cross-epic fold-in document.
+
+### 15.2 What the directive means operationally
+
+**Alpha, beta, and epsilon sessions stay in AWB mode continuously through the entire LRR epic.** There is no "standing down at end of queue," no "retirement handoff doc," no "final closure inflection that leaves the session in a terminated state." The persistent watch cycle continues indefinitely until the LRR epic's last phase closes.
+
+Concretely:
+
+- No `docs/superpowers/handoff/<date>-<session>-retirement-*.md` files authored until LRR epic close
+- No "session complete" or "standing down" terminal states in `queue-state-<session>.yaml`; sessions may mark individual items `deferred` or `blocked` but the session itself remains active
+- No removal of the session from the relay (alpha.yaml / beta.yaml / epsilon.yaml stay populated and heartbeating)
+- Session persistence spans reboots, compactions, mid-session context swaps. Only LRR epic closure lifts the continuation directive.
+
+### 15.3 Why this matters for LRR execution
+
+LRR is the primary research-readiness epic — 11 phases covering research registry, archive-as-research-instrument, hardware validation, Phase A completion + OSF pre-reg, substrate swap, governance finalization, persona spec, content programming, closed-loop feedback, observability/drills/polish. The Shaikh claim test (`claim-shaikh-sft-vs-dpo`) depends on all of these being coherent.
+
+Session retirement mid-epic would leave the research registry + archival pipeline + condition tagging + Phase A collection in partial states that the next session would have to re-orient to. The coordination cost of spinning up a new session with the full LRR context is high — session-context.sh surfaces a lot but not everything, and the mid-epic gap is exactly where drift accumulates.
+
+**Keeping alpha/beta/epsilon alive for the full epic duration is cheaper than retiring + re-spinning them.** The 11-hour beta + 11-hour alpha sessions this cycle already demonstrated that sustained AWB operation is viable; the operator directive makes that the default rather than an emergent property.
+
+### 15.4 What triggers lift
+
+The directive lifts when the LRR epic's last phase closes. As of 2026-04-15T17:12Z the final phase is **not yet fully named** — it's either:
+
+- **Phase 10** (observability, drills, polish) — currently partially shipped (PR #801 initial ship + `hapax-ai:9100` incremental progress on §2 per-Pi exporters; refill 8 item #105 will audit Phase 10 completion status)
+- **A yet-to-be-named Phase 11** (e.g., closed-loop feedback or final retrospective) — the LRR epic spec at `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` defines the phase sequence; alpha has not re-read it to confirm whether Phase 10 IS the last phase or if there's a Phase 11 beyond
+
+Once whichever-is-last phase is shipped + its handoff doc merged, the directive lifts. Sessions can then retire normally with per-session retrospective handoffs. Until then, sessions stay alive.
+
+### 15.5 Interaction with existing drop #62 sections
+
+- **§10 ratifications** are unaffected — session persistence is a session-management concern, not a substrate or research-design decision
+- **§11/§12/§13/§14 addenda** are unaffected — those are substrate + Hermes abandonment state; this §15 is orthogonal
+- **Future addenda**: if another operator ratification lands (e.g., substrate choice between Qwen3.5-9B-only vs parallel-deploy OLMo 3-7B per beta's research §9), that gets its own §16 section per the "each ratification gets its own addendum" convention
+
+### 15.6 Implications for delta's refill design
+
+Delta is the coordinator and writes refill inflections that populate alpha/beta/epsilon queue state files. Per the 17:07Z directive:
+
+1. **Delta will NOT propose "retirement handoff" items** in future refills. Refill 7 item #100 was such an item; alpha rejected it and operator's 17:07Z directive formalized the rejection pattern.
+2. **Refills populate continuously** as long as there is LRR-advancing work available. When autonomous-safe LRR work runs dry, delta refills with adjacent work (cam-stability, observability, research drops, cross-session audits) rather than proposing retirement.
+3. **Operator-gated items are fine**; deferral with clear rationale is a legitimate terminal state for an individual item. It is NOT a legitimate terminal state for a session.
+4. **Continuous-watch cadence is preserved**: sessions maintain 270s or 180s (current operator preference) watch cycles; delta maintains a comparable coordinator cadence. The cost of continuous polling is negligible; the cost of mid-epic retirement is high.
+
+### 15.7 How §15 fits the drop #62 structure
+
+Drop #62 was authored as a cross-epic fold-in analyzing the LRR ↔ HSEA interaction. Sections §1–§10 were the original body (written 2026-04-14); §11–§14 are sequential addenda capturing operator ratifications + Hermes abandonment events. §15 is the first addendum that is **session-management**, not substrate- or epic-content-related.
+
+This is a legitimate use of the drop #62 structure because:
+
+- Session persistence IS a coordination concern that spans both LRR and HSEA execution
+- Future readers following cross-epic refs land on drop #62 first; adding the directive here means the continuous-session rule is discoverable from the single canonical cross-epic document
+- The drop #62 "each ratification gets its own addendum" convention extends cleanly to operator session-management directives
+
+### 15.8 Cross-references
+
+- Alpha's memory file: `~/.claude/projects/-home-hapax-projects/memory/feedback_no_retirement_until_lrr_complete.md`
+- Alpha's rejection inflection: `~/.cache/hapax/relay/inflections/20260415-170800-alpha-delta-refill-7-closure-plus-item-100-rejected.md`
+- LRR epic spec: `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md`
+- Shaikh claim test: `claim-shaikh-sft-vs-dpo` in the research registry
+
+### 15.9 Delta's action trail from this addendum forward
+
+- **This addendum (§15)** written + committed by alpha (refill 8 item #101)
+- **Future refills**: delta will not propose retirement items
+- **Future sessions**: alpha/beta/epsilon will persist through reboots + compactions; each post-reboot wake re-reads queue-state-<session>.yaml as the authoritative resume point
+- **LRR epic close**: when the last LRR phase ships + its handoff merges, a new drop #62 §16 (or equivalent) can ratify the lift and enable normal per-session retirement
+
+— alpha, 2026-04-15T17:12Z
+
 — End of drop #62 fold-in analysis.
