@@ -18,7 +18,6 @@ export interface NodeTypeDef {
   outputs: Record<string, string>;
   params: Record<string, ParamDef>;
   temporal: boolean;
-  temporal_buffers: number;
 }
 
 /** 10 aesthetic categories from the spec. */

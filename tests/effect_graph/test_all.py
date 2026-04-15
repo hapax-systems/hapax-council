@@ -104,7 +104,6 @@ def test_registry_backend_default_when_field_missing(tmp_path: Path):
                 "outputs": {"out": "frame"},
                 "params": {},
                 "temporal": False,
-                "temporal_buffers": 0,
             }
         )
     )
@@ -127,7 +126,6 @@ def test_registry_backend_explicit_value_preserved(tmp_path: Path):
                 "outputs": {"out": "frame"},
                 "params": {},
                 "temporal": False,
-                "temporal_buffers": 0,
             }
         )
     )

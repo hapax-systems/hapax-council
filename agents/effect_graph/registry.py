@@ -19,7 +19,6 @@ class LoadedShaderDef:
     outputs: dict[str, PortType]
     params: dict[str, ParamDef]
     temporal: bool
-    temporal_buffers: int
     compute: bool
     glsl_source: str | None
     requires_content_slots: bool = False
@@ -53,7 +52,6 @@ class ShaderRegistry:
             outputs=outputs,
             params=params,
             temporal=raw.get("temporal", False),
-            temporal_buffers=raw.get("temporal_buffers", 0),
             compute=raw.get("compute", False),
             glsl_source=glsl,
             requires_content_slots=raw.get("requires_content_slots", False),
@@ -77,7 +75,6 @@ class ShaderRegistry:
             "outputs": {k: v.value for k, v in d.outputs.items()},
             "params": {k: v.model_dump() for k, v in d.params.items()},
             "temporal": d.temporal,
-            "temporal_buffers": d.temporal_buffers,
             "compute": d.compute,
             "requires_content_slots": d.requires_content_slots,
             "backend": d.backend,

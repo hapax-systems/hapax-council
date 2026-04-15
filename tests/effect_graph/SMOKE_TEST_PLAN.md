@@ -326,7 +326,7 @@ curl -s localhost:8051/api/studio/effect/nodes | python3 -c "import sys,json; d=
 curl -s localhost:8051/api/studio/effect/nodes/colorgrade | python3 -m json.tool
 
 # 12.3 Get temporal node
-curl -s localhost:8051/api/studio/effect/nodes/trail | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'temporal={d.get(\"temporal\")}, buffers={d.get(\"temporal_buffers\")}')"
+curl -s localhost:8051/api/studio/effect/nodes/trail | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'temporal={d.get(\"temporal\")}')"
 
 # 12.4 Unknown node → 404
 curl -s localhost:8051/api/studio/effect/nodes/nonexistent -w "\n%{http_code}"
@@ -334,7 +334,7 @@ curl -s localhost:8051/api/studio/effect/nodes/nonexistent -w "\n%{http_code}"
 
 - [ ] Returns 54 node types
 - [ ] Each schema has node_type, inputs, outputs, params
-- [ ] Temporal nodes marked with temporal=true, temporal_buffers≥1
+- [ ] Temporal nodes marked with temporal=true
 - [ ] Unknown node type returns 404
 
 ---
