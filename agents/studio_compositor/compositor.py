@@ -507,6 +507,21 @@ class StudioCompositor:
     def _status_tick(self) -> bool:
         if self._running:
             self._write_status("running")
+            # Drop #41 BT-5 / drop #52 FDL-2: publish process fd count so
+            # future regressions in the camera-rebuild-thrash path become
+            # scrape-visible before they hit the LimitNOFILE=65536
+            # ceiling. os.listdir on /proc/self/fd is a cheap file count;
+            # use a broad try/except because the directory can momentarily
+            # vanish during heavy fd churn.
+            try:
+                from . import metrics as _metrics
+
+                if _metrics.COMP_PROCESS_FD_COUNT is not None:
+                    import os as _os
+
+                    _metrics.COMP_PROCESS_FD_COUNT.set(len(_os.listdir("/proc/self/fd")))
+            except Exception:
+                log.debug("fd count gauge update failed", exc_info=True)
         return self._running
 
     def start_layout_only(self) -> None:

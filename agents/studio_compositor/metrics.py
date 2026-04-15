@@ -122,6 +122,14 @@ COMP_MUSIC_DUCKED: Any = None
 HAPAX_IMAGINATION_SHADER_ROLLBACK_TOTAL: Any = None
 COMP_GLFEEDBACK_RECOMPILE_TOTAL: Any = None
 COMP_GLFEEDBACK_ACCUM_CLEAR_TOTAL: Any = None
+# Drop #41 BT-5 + drop #52 FDL-2/3/4 observability triple: surface the
+# compositor's fd count, per-camera rebuild count, and per-stop teardown
+# duration as scrape-visible metrics so future regressions in the
+# camera-rebuild-thrash path become alertable before they starve
+# downstream fds (drop #51 live-incident pattern).
+COMP_PROCESS_FD_COUNT: Any = None
+COMP_CAMERA_REBUILD_TOTAL: Any = None
+COMP_PIPELINE_TEARDOWN_DURATION_MS: Any = None
 # Last value the mirror published, so we can detect rollback events
 # (the gauge → counter delta must be non-negative since the underlying
 # Rust counter is monotonic across imagination process lifetime).
@@ -298,6 +306,9 @@ def _init_metrics() -> None:
     # a direct before/after picture of the fix.
     global COMP_GLFEEDBACK_RECOMPILE_TOTAL
     global COMP_GLFEEDBACK_ACCUM_CLEAR_TOTAL
+    global COMP_PROCESS_FD_COUNT
+    global COMP_CAMERA_REBUILD_TOTAL
+    global COMP_PIPELINE_TEARDOWN_DURATION_MS
     COMP_GLFEEDBACK_RECOMPILE_TOTAL = Counter(
         "compositor_glfeedback_recompile_total",
         "Number of times SlotPipeline.activate_plan set_property-ed a glfeedback "
@@ -342,6 +353,43 @@ def _init_metrics() -> None:
         "studio_compositor_pipeline_restarts_total",
         "Pipeline teardown + rebuild events",
         ["pipeline"],
+        registry=REGISTRY,
+    )
+
+    # Drop #41 BT-5 / drop #52 FDL-2: process fd count gauge. Read from
+    # /proc/self/fd in the status tick so any future regression in the
+    # camera-rebuild-thrash path (drop #51 root cause) becomes
+    # scrape-visible before it exhausts the LimitNOFILE=65536 drop-in
+    # ceiling. Alert candidate: >80% of LimitNOFILE sustained for 5 min.
+    COMP_PROCESS_FD_COUNT = Gauge(
+        "studio_compositor_process_fd_count",
+        "Number of open file descriptors in the compositor process (from /proc/self/fd)",
+        registry=REGISTRY,
+    )
+
+    # Drop #52 FDL-3: per-camera rebuild counter. Increments on every
+    # CameraPipeline.rebuild() call. Rate spikes are the signature of
+    # the rebuild-thrash fault pattern from drop #51 — thousands of
+    # rebuilds per hour on a single camera role means the USB/v4l2
+    # layer is in a bad state. Alert candidate: rate >5/min sustained.
+    COMP_CAMERA_REBUILD_TOTAL = Counter(
+        "studio_compositor_camera_rebuild_total",
+        "Cumulative camera pipeline rebuild events per role",
+        ["role"],
+        registry=REGISTRY,
+    )
+
+    # Drop #52 FDL-4: teardown duration histogram. Observes the
+    # wall-clock cost of CameraPipeline.stop()'s get_state(NULL) wait
+    # — long tail means the NULL transition is blocking on a v4l2 or
+    # CUDA cleanup cascade and we should expect the rebuild path to
+    # be sluggish. Primary use is validating that the FDL-1 5 s bound
+    # is generous enough for normal teardown (<100 ms p99 expected).
+    COMP_PIPELINE_TEARDOWN_DURATION_MS = Histogram(
+        "studio_compositor_camera_teardown_duration_ms",
+        "Wall-clock duration of CameraPipeline.stop() NULL transition, per role",
+        ["role"],
+        buckets=(1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0, 2000.0, 5000.0),
         registry=REGISTRY,
     )
 

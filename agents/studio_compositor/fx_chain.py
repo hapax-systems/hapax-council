@@ -345,7 +345,16 @@ def build_inline_fx_chain(
     # that would otherwise carry one-frame-old base content. No
     # `ignore-inactive-pads` counterpart: glvideomixer does not expose
     # that property (its internal aggregator base does not surface it).
-    glmixer.set_property("latency", 33_000_000)
+    #
+    # Beta pass-4 L-01: wrap in try/except for uniformity with the
+    # cudacompositor setters in pipeline.py COMP-1/COMP-2. `latency` is
+    # a well-known GstAggregator property so failure is extremely
+    # unlikely on any modern gst-plugins-bad build, but the asymmetry
+    # is a code-review flag — one of the two patterns should win.
+    try:
+        glmixer.set_property("latency", 33_000_000)
+    except Exception:
+        log.debug("glvideomixer: latency property not supported", exc_info=True)
 
     # --- Post-mixer: shader chain → output ---
     from agents.effect_graph.pipeline import SlotPipeline

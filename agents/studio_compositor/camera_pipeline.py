@@ -257,7 +257,21 @@ class CameraPipeline:
                 return
             Gst = self._Gst
             self._pipeline.set_state(Gst.State.NULL)
+            teardown_start = time.monotonic()
             ret, state, pending = self._pipeline.get_state(timeout=5 * Gst.SECOND)
+            teardown_ms = (time.monotonic() - teardown_start) * 1000.0
+            # Drop #52 FDL-4: observe the NULL-transition wall-clock. Normal
+            # teardowns finish in <100 ms; long tails mean v4l2/CUDA cleanup
+            # is blocking, which is what makes rebuild-thrash costly.
+            try:
+                from . import metrics as _metrics
+
+                if _metrics.COMP_PIPELINE_TEARDOWN_DURATION_MS is not None:
+                    _metrics.COMP_PIPELINE_TEARDOWN_DURATION_MS.labels(
+                        role=self._spec.role
+                    ).observe(teardown_ms)
+            except Exception:
+                log.debug("teardown duration histogram observe failed", exc_info=True)
             if ret == Gst.StateChangeReturn.FAILURE:
                 log.warning(
                     "camera_pipeline %s: NULL transition failed, resources may leak",
@@ -295,6 +309,16 @@ class CameraPipeline:
         """Teardown and rebuild from scratch. Returns True on successful restart."""
         with self._state_lock:
             self._rebuild_count += 1
+            # Drop #52 FDL-3: cumulative rebuild counter per role.
+            # Rate spikes are the signature of rebuild-thrash faults
+            # (drop #51 root cause). Alert candidate: rate >5/min/role.
+            try:
+                from . import metrics as _metrics
+
+                if _metrics.COMP_CAMERA_REBUILD_TOTAL is not None:
+                    _metrics.COMP_CAMERA_REBUILD_TOTAL.labels(role=self._spec.role).inc()
+            except Exception:
+                log.debug("rebuild counter inc failed", exc_info=True)
             self.teardown()
             try:
                 self.build()

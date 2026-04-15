@@ -6,7 +6,7 @@
     "slitscan": {
       "type": "slitscan",
       "params": {
-        "delay": 0.4,
+        "speed": 0.4,
         "direction": 0
       }
     },
