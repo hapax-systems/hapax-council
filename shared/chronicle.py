@@ -130,40 +130,55 @@ def query(
     trace_id    Exact trace_id match; None = any.
     limit       Maximum number of results returned.
     path        JSONL file to read.
+
+    Drop #23 Option A: walks the JSONL file in reverse (newest-first) so
+    we can early-exit on `ts < since` and stop once we have `limit`
+    results. Pre-fix this function read every line, parsed every event,
+    then sorted at the end — `~85%` of CPU time was in `json.loads` for
+    events that were filtered out by the `since` bound. For a 1-hour
+    query on a 2.8-hour file the reverse walk parses `~36%` of lines;
+    for a 15-minute query, `~9%`. Median latency drops from
+    `~1500 ms → ~215 ms` per drop #23 §3.1 measurements. Tmpfs read
+    of the whole file is cheap — chronicle is `RETENTION_S=12h` and the
+    trim() helper keeps the file bounded; the doc estimates `~14 MB`
+    typical, well within memory.
     """
     if not path.exists():
         return []
 
     effective_until = until if until is not None else time.time()
 
-    results: list[ChronicleEvent] = []
     try:
-        with path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    ev = ChronicleEvent.from_json(raw)
-                except (json.JSONDecodeError, KeyError):
-                    continue
-
-                if ev.ts < since or ev.ts > effective_until:
-                    continue
-                if source is not None and ev.source != source:
-                    continue
-                if event_type is not None and ev.event_type != event_type:
-                    continue
-                if trace_id is not None and ev.trace_id != trace_id:
-                    continue
-
-                results.append(ev)
+        lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
 
-    # Newest-first, then enforce limit.
-    results.sort(key=lambda e: e.ts, reverse=True)
-    return results[:limit]
+    results: list[ChronicleEvent] = []
+    for raw in reversed(lines):
+        if not raw:
+            continue
+        try:
+            ev = ChronicleEvent.from_json(raw)
+        except (json.JSONDecodeError, KeyError):
+            continue
+
+        if ev.ts > effective_until:
+            continue
+        if ev.ts < since:
+            break  # Reverse walk: every earlier line is also too old.
+
+        if source is not None and ev.source != source:
+            continue
+        if event_type is not None and ev.event_type != event_type:
+            continue
+        if trace_id is not None and ev.trace_id != trace_id:
+            continue
+
+        results.append(ev)
+        if len(results) >= limit:
+            break  # Reverse walk produces newest-first; stop at limit.
+
+    return results
 
 
 # ── Retention ─────────────────────────────────────────────────────────────────
