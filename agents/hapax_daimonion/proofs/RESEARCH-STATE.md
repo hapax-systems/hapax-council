@@ -1,7 +1,44 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-04-14 (LRR Phase 0 open — voice grounding state pin)
+**Last updated:** 2026-04-14 (LRR Phase 4 re-spec — livestream-only rule)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
+
+## 2026-04-14 — LRR Phase 4 re-spec: livestream-only rule (beta)
+
+**Operator directive (2026-04-14):** every grounding experiment observation — both livestream director reactions AND voice-pipeline grounding DVs (`turn_pair_coherence`, `context_anchor_success`, `activation_score`, `acceptance_type`, `sentinel_retrieval`) — is collected **exclusively while the livestream is running in research mode** with an active condition in `/dev/shm/hapax-compositor/research-marker.json`. Dedicated 1-on-1 voice sessions are not a data source for any phase of the LRR epic.
+
+**Rationale:** the LRR epic name is "LIVESTREAM RESEARCH READY." The livestream is the research medium, not a sideshow to it. The previous Phase 4 spec carried forward the pre-LRR Cycle 2 Phase A dedicated-session paradigm, which the epic was supposed to retire. Operator explicit correction.
+
+**Blast radius audit (pre-edit):** zero undo on 5 merged LRR phases. Phases 0/1/2/9-PR1/10 are already livestream-native by construction — `director_loop.py` is the only current reader of `/dev/shm/hapax-compositor/research-marker.json`, so all tagged reactions on main already flow through the livestream path. Voice session reactions are currently NOT tagged with `condition_id` at all. Only Phase 4 spec carried the old dedicated-session framing; Phases 5, 6, and 7 needed 1-3 line reframes. Phase 3 and Phase 8+ were unaffected.
+
+**One engineering gap surfaced:** `conversation_pipeline.py` + `grounding_evaluator.py` write Langfuse scores for every grounding DV but do NOT currently read the research marker. So when the operator speaks on stream, voice-grounding DVs are produced but are not attributable to any research condition. Phase 4 scope item 1 ships `shared/research_marker.py` (single reader for both `director_loop.py` and `conversation_pipeline.py`) and wires every `hapax_score()` call in the voice pipeline to carry `metadata.condition_id` when the marker is active. Acceptance: a stream voice utterance produces Langfuse scores with `metadata.condition_id=cond-phase-a-baseline-qwen-001`, verifiable via Langfuse score query filter.
+
+**Pre-LRR dedicated-session data disposition:** the ~431 grounding-act pairs from 2026-03-21/24/25 (per §529 of this file) are retired from Condition A via **DEVIATION-038** (next available; Phase 5 has DEVIATION-037 reserved). Data remains in Langfuse for historical/pilot reference but is excluded from Condition A sample counts by construction — the pre-LRR scores lack the `metadata.condition_id` field that Phase 4 item 1 introduces, so any analysis script filtering `metadata.condition_id=cond-phase-a-baseline-qwen-001` naturally excludes them. DEVIATION-038 also covers the Phase 4 item 1 frozen-file edit to `grounding_evaluator.py` (Inner Zone of `experiment-freeze-manifest.txt`); one DEVIATION filing, two effects.
+
+**Pre-registration amendment (`CYCLE-2-PREREGISTRATION.md`):** three surgical edits required before filing — §3.2 Setting (state livestream-only, not "daily voice AI user"), §2.3 Phase Definitions (reference DEVIATION-038 for pre-LRR exclusion), §4.1 Implementation (extend list to include `director_loop.py` + `shared/research_marker.py` + `/dev/shm/hapax-compositor/research-marker.json` alongside existing `conversation_pipeline.py`/`grounding_ledger.py`/`persona.py`/`conversational_policy.py`). Pre-reg is vague enough that livestream data doesn't strictly violate it, but the amendment is mandatory for transparency.
+
+**Sample size unit flip:** the pre-reg currently names "≥10 sessions" from the dedicated-session model. Phase 4's spec doc (to be written at phase open) replaces that with a hybrid target:
+- ≥N **stream director reactions** tagged with `cond-phase-a-baseline-qwen-001` in `stream-reactions` Qdrant + reactor JSONL.
+- ≥M **voice grounding DVs** in Langfuse with `metadata.condition_id=cond-phase-a-baseline-qwen-001` covering the 5 DVs listed above.
+
+Both N and M are co-specified with operator at Phase 4 open, calibrated against the statistical-power commitment in the pre-reg. The hybrid target protects against channel-specific droughts: if the livestream runs but the operator doesn't speak, the voice channel stalls while the reaction channel advances (and vice versa).
+
+**Phase 4 cadence flip:** from "1-2 weeks time-gated (operator voice session cadence)" to "1-2 sessions engineering bootstrap + livestream-run-gated collection window that parallelizes with Phase 3 quant wait." Engineering cost is actually **lower** than the old spec because the "operator runs 10 sessions" workflow is replaced by "livestream runs anyway; condition_id plumbing does the rest."
+
+**Phase 4 data integrity lock (scope item 7) now includes three exports, not two:**
+1. JSONL checksums (as before)
+2. Qdrant snapshot of Condition A points (as before)
+3. **NEW:** Langfuse score export filtered by `metadata.condition_id=cond-phase-a-baseline-qwen-001`, stored at `~/hapax-state/research-registry/cond-phase-a-baseline-qwen-001/langfuse-scores.jsonl` with sha256 in the same `data-checksums.txt`.
+
+Omitting the Langfuse export would leave the voice-grounding DV channel analytically unreachable after the Phase 5 swap — Condition A and Condition A' would be compared only on stream-director reaction metrics, not on the pre-registered grounding DVs.
+
+**Spec file edits applied to `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md`** (8 edits: phase summary row, summary note, Phase 4 full rewrite, Phase 5 dependency + pre-swap check, Phase 7 persona notes, risk R5, parallelism note). Full edit log preserved in `~/.cache/hapax/relay/context/2026-04-14-beta-lrr-phase-4-respec-livestream-only.md` (beta drop to alpha).
+
+**LRR audit trajectory context:** five audit passes landed across this session, cumulative state 0 CRITICAL / 5 HIGH (4 fixed, 1 tracked via drop #41) / 15 MED / 25 LOW / 16 OBS across 25+ merged PRs. The research-registry + frozen-files + HLS archive + Phase 10 observability polish are all green and test-pinned; there is no research-infrastructure-side risk to opening Phase 4 once Phase 3 runtime partition is live.
+
+**Quant status:** Hermes 3 70B EXL3 3.0bpw quantization approaching completion (layer 78 of 80 at time of writing, ~20 min remaining per exllamav3's own estimate). Chain watcher alive; will auto-launch 3.5bpw on completion. Phase 5 is blocked on this quant; Phase 4 is NOT blocked on the quant.
+
+**Pre-existing Phase 0 voice grounding state pin below is still valid** — everything it documented about Cycle 2 Phase A readiness, pre-registration state, implementation state, experiment config, voice transcript permissions, and Kokoro baseline remains accurate. The ONLY change is that Phase 4 data collection is now livestream-only rather than dedicated-session, and Phase 4 has an engineering bootstrap block that was implicit before.
 
 ## 2026-04-14 — LRR Phase 0 voice grounding state pin
 

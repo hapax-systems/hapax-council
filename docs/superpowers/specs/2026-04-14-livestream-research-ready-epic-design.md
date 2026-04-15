@@ -134,7 +134,7 @@ Derived from prior decisions (DF-1, D-1, D-2) and the operator's end-state state
 | **1** | Research Registry Foundation | Append-only condition registry; per-segment metadata; frozen-file enforcement; OSF template; Qdrant schema drift fixes | yes (infrastructure) | Phase 0 | 2 sessions |
 | **2** | Archive + Replay as Research Instrument | Re-enable archival; research-marker injection; segment metadata; search interface; layout-declared `video_out` migration | yes (infrastructure) | Phase 1 | 2-3 sessions |
 | **3** | Hardware Migration Validation + Hermes 3 Preparation | Partition reconciliation α→γ; PSU/thermal/PCIe validation; Hermes 3 EXL3 download; TabbyAPI config draft; cable hygiene; brio-operator fps re-measure | yes (systemd, ops) | Phase 2 | 2-3 sessions |
-| **4** | Phase A Completion + OSF Pre-Registration | G3 gate resolution; control arm collection; OSF project + pre-reg filed; `stats.py` BEST verified | partial (operator + code) | Phase 1 (metadata), Phase 3 (hardware stable) | 1-2 weeks time-gated |
+| **4** | Phase A Completion + OSF Pre-Registration | G3 gate resolution; livestream-only control arm collection; `conversation_pipeline.py` condition_id plumbing; pre-LRR dedicated-session retirement via DEVIATION; OSF project + pre-reg filed; `stats.py` BEST verified | yes (code + operator) | Phase 1 (metadata), Phase 3 (hardware stable) | 1-2 sessions code + livestream-run-gated collection |
 | **5** | Hermes 3 70B Substrate Swap | Execute Hermes 3 migration; Condition A→A' transition; DEVIATION-037 filed; consent-latency + speech-continuity exit tests; Kokoro-GPU eval | yes (substrate swap) | Phase 4 | 2 sessions |
 | **6** | Governance Finalization + Stream-Mode Axis | `it-irreversible-broadcast`; `su-privacy-001` + `corporate_boundary` clarifications; stream-mode axis; FINDING-R Qdrant writer gate; stimmung-aware auto-private; presence-detect closed loop; fortress enum retirement; `ConsentRegistry.load_all()` validation | yes (governance + infrastructure) | Phase 5 | 2-3 sessions |
 | **7** | Persona / Posture / Role Spec Authoring (DF-1) | Write the spec; absorb token pole ethical engagement as foundation; VOLATILE-band injection | yes (persona infrastructure) | Phase 5, Phase 6 | 1-2 sessions |
@@ -142,7 +142,9 @@ Derived from prior decisions (DF-1, D-1, D-2) and the operator's end-state state
 | **9** | Closed-Loop Feedback + Narration + Chat Integration | Daimonion code-narration (with SHM signal publishers); chat-structure → stimmung → activity selection loop; research-aware chat reactor; operator-voice-over-YouTube PipeWire ducking | yes (closed loop) | Phase 8 | 2-3 sessions |
 | **10** | Observability, Drills, Polish | Per-condition Prometheus slicing; stimmung dashboards; 6 drills + 2-hour stability drill; 18-item stability matrix; FINDING-S SDLC decision; T3 prompt caching; cross-repo scrape fixes (A11-A13); daimonion + VLA Prometheus exporters; weekly correlation report; pre/post stimmung delta protocol | yes (observability) | Phase 9 | 3-4 sessions |
 
-**Total: 11 phases.** Sequenced by hard dependency + branch discipline. Phase 4 is time-gated (operator voice sessions); all others are engineering-gated.
+**Total: 11 phases.** Sequenced by hard dependency + branch discipline. Phase 4 combines a small engineering block (condition_id plumbing + pre-LRR data retirement DEVIATION + OSF filing) with a livestream-run-gated collection window; all other phases are purely engineering-gated.
+
+**Livestream-only rule for all experimental data collection.** Per operator directive 2026-04-14, every grounding experiment observation (both stream-director reactions AND voice-pipeline grounding DVs like `turn_pair_coherence` / `context_anchor_success`) is collected exclusively while the livestream is running in research mode with an active condition in `/dev/shm/hapax-compositor/research-marker.json`. Dedicated 1-on-1 voice sessions are **not a data source** for any phase of the LRR epic. The pre-LRR Cycle 2 Phase A dedicated-session data (~431 pairs from 2026-03-21/24/25) is retired via DEVIATION in Phase 4; it remains in Langfuse for historical reference but is explicitly excluded from Condition A sample counts.
 
 ---
 
@@ -463,68 +465,103 @@ Each phase section below is structured as a mini-design-doc, intended to be extr
 
 ---
 
-### Phase 4 — Phase A Completion + OSF Pre-Registration
+### Phase 4 — Phase A Completion + OSF Pre-Registration (livestream-only)
 
-**Goal:** Complete the Condition A control arm data collection. File the OSF pre-registration. Lock Condition A data integrity with checksums. Establish the ready-to-swap state.
+**Goal:** Lock the Condition A control arm under the livestream-only rule. Ship the small engineering set that makes voice-pipeline grounding DVs attributable to a research condition. Retire the pre-LRR dedicated-session data. File the OSF pre-registration. Reach the ready-to-swap state.
 
-**Dependency:** Phase 1 (registry) + Phase 3 (hardware ready). Time-gated by operator voice session cadence.
+**Dependency:** Phase 1 (registry + tagging) + Phase 2 (archive durable) + Phase 3 (hardware Option γ + Hermes 3 quant ready).
+
+**Gating model:** hybrid. A small engineering block (scope items 1–3) is engineering-gated. The subsequent control-arm collection window (scope items 4–8) is **livestream-run-gated** — it advances whenever the livestream is running in research mode with the active condition, and completes when the sample target is met. There is no operator-session cadence lever. Collection throughput = stream hours × active-condition tag coverage.
 
 **Intended spec path:** `docs/superpowers/specs/YYYY-MM-DD-lrr-phase-4-phase-a-completion-design.md`
 
-**Theoretical grounding:** Under Option B, Condition A must have a real sample size before swap. Hermes 3 plan §8 recommends "Complete current Phase A baseline with Qwen3.5-9B, then introduce Hermes 3 via deviation record." This phase is that recommendation operationalized under the research registry model.
+**Theoretical grounding (unchanged):** Under Option B, Condition A must have a real sample size before swap. Hermes 3 plan §8 recommends "Complete current Phase A baseline with Qwen3.5-9B, then introduce Hermes 3 via deviation record." This phase operationalizes that recommendation under the research registry model **and** the livestream-only rule — the baseline is accumulated from livestream-running context, not dedicated 1-on-1 sessions.
 
-**Preamble — Sprint 0 G3 blocker.** The SessionStart context reports `Sprint: 0 (Day 16) | BLOCKING: G3 | Next: 7.2 Run Claim 5 correlation analysis`. G3 is an existing Bayesian validation sprint gate that pre-dates this epic. Phase 4 depends on the Bayesian schedule being unblocked enough to complete Condition A collection. Two options:
+**Livestream-only rule (operator directive 2026-04-14):** every experimental observation is collected while the livestream is running in research mode with `research-registry current` pointing at the active condition. The rule applies uniformly to:
+
+- **Livestream director reactions** — `director_loop.py` output (already condition_id-tagged via `_read_research_marker()`, Phase 1 infrastructure).
+- **Voice-pipeline grounding DVs** — `turn_pair_coherence`, `context_anchor_success`, `activation_score`, `acceptance_type`, `sentinel_retrieval` written by `grounding_evaluator.py` + `conversation_pipeline.py` when the operator speaks on stream. **These are not currently tagged with `condition_id`** (director_loop is the only reader of the SHM marker). Phase 4 scope item 1 closes this gap.
+
+Dedicated 1-on-1 voice sessions are not a data source for any phase of the LRR epic. Pre-LRR Cycle 2 Phase A dedicated-session data is retired via DEVIATION (scope item 2) — preserved in Langfuse for historical reference but excluded from Condition A sample counts.
+
+**Preamble — Sprint 0 G3 blocker (unchanged):** The SessionStart context reports `Sprint: 0 (Day 16) | BLOCKING: G3 | Next: 7.2 Run Claim 5 correlation analysis`. Phase 4 depends on the Bayesian schedule being unblocked enough to complete Condition A collection. Two options:
 - **Option 1 (resolve inside LRR):** Phase 4 opens with a G3 resolution step — identify G3's definition in the sprint state files, execute the pending Claim 5 correlation analysis (Measure 7.2), close the gate, resume Phase A collection.
 - **Option 2 (resolve outside LRR):** Document G3 as `blocked_on: sprint-0-g3` in the condition registry. Operator or a separate Bayesian-schedule session resolves G3. LRR Phase 4 waits.
 
-**Default recommendation: Option 1.** G3 is inside the path of the work anyway; resolving it inside Phase 4 avoids cross-session coordination overhead. If G3 turns out to require non-LRR work (e.g., upstream stats methodology decisions), fall back to Option 2 and document the blocker.
+**Default recommendation: Option 1.** G3 is inside the path of the work anyway; resolving it inside Phase 4 avoids cross-session coordination overhead.
 
 **Scope:**
 
-1. **Target sample size.** Per pre-registration: minimum 10 sessions. Actual target: operator-determined; at least 10 voice grounding sessions under Qwen3.5-9B with experiment-freeze active.
+1. **Wire `conversation_pipeline.py` to the research marker.** The voice pipeline's `grounding_evaluator.py` currently writes `hapax_score()` calls for every grounding DV but does not read `/dev/shm/hapax-compositor/research-marker.json`. Phase 4 adds a tagging path:
+   - A cached reader identical in shape to `director_loop.py::_read_research_marker()` (5s TTL, fail-safe None on absent/corrupt file), placed in `shared/research_marker.py` so both `director_loop.py` and `conversation_pipeline.py` depend on a single implementation.
+   - `conversation_pipeline.py::_create_langfuse_trace()` (or equivalent span opener) adds `condition_id` to the trace/span metadata when the marker is active.
+   - Every `hapax_score(...)` call in `grounding_evaluator.py` and `conversation_pipeline.py` passes `metadata={"condition_id": <current>}` so downstream analysis can filter Langfuse scores by condition.
+   - **Acceptance check:** after shipping, a stream-mode voice utterance must produce Langfuse scores that include the `condition_id` field in their metadata, verifiable via `langfuse_client.get_scores(name="turn_pair_coherence", metadata_filter=...)`.
+   - **Frozen-file implication:** `grounding_evaluator.py` is in the Inner Zone of `experiment-freeze-manifest.txt`. This change is technically a frozen-file edit and requires a DEVIATION filing (see item 2). `conversation_pipeline.py` is Middle Zone — behavioral changes require review but not DEVIATION.
 
-2. **Daily data collection cadence.** Operator runs voice grounding sessions. Each session writes reactions tagged with `cond-phase-a-baseline-qwen-001`. Reactions persist to Qdrant + JSONL + Langfuse per Phase 1 infrastructure.
+2. **Retire pre-LRR dedicated-session data via DEVIATION.** File `research/protocols/deviations/DEVIATION-038.md` (next available after the Phase 5 DEVIATION-037 reservation; renumber if ordering changes) with:
+   - **What:** pre-LRR Cycle 2 Phase A dedicated-session data (~431 grounding-act pairs from 2026-03-21/24/25, per `RESEARCH-STATE.md` §529) is excluded from the Condition A baseline sample.
+   - **Why:** LRR epic adopts a livestream-only rule for experimental data collection. The dedicated-session paradigm these pairs came from is superseded by the livestream-running research mode. Data remains in Langfuse for historical/pilot reference but does not count toward pre-registered sample size.
+   - **Impact:** Condition A sample size starts at 0 at Phase 4 open and accumulates exclusively from livestream-running reactions + stream-mode voice grounding DVs tagged with `cond-phase-a-baseline-qwen-001`.
+   - **Mitigation:** none needed — preservation of the pilot data is already guaranteed by Langfuse retention; exclusion is a labeling choice, not a deletion.
+   - **Registers under:** claim `claim-shaikh-sft-vs-dpo`.
+   - The DEVIATION is committed to `research/protocols/deviations/` **before** the OSF pre-registration filing (item 4) so the pre-reg document references it.
 
-3. **Mid-collection integrity checks.** Every N sessions (e.g., every 3):
-   - Verify `research-registry current` is `cond-phase-a-baseline-qwen-001`
-   - Verify no frozen-file diffs have been applied
-   - Verify `stream-reactions` Qdrant point count is growing
-   - Verify Langfuse traces are coming through with the condition tag
+3. **Amend `CYCLE-2-PREREGISTRATION.md` for livestream-only data source.** Small edits, not a full rewrite:
+   - **§3.2 Setting:** clarify that data is collected during livestream runs in research mode, not dedicated voice-AI-user sessions.
+   - **§2.3 Phase Definitions:** state that Condition A is accumulated from livestream context only; DEVIATION-038 referenced as the pre-LRR pilot exclusion.
+   - **§4.1 Implementation:** extend the implementation list to include `director_loop.py`, `shared/research_marker.py`, and `/dev/shm/hapax-compositor/research-marker.json` alongside the existing `conversation_pipeline.py`/`grounding_ledger.py`/`persona.py`/`conversational_policy.py`.
+   - Pre-reg remains unfiled at this point; filing is scope item 4.
 
-4. **OSF project creation + pre-registration filing.** Operator action:
-   - Create OSF project for the claim (claim ID `claim-shaikh-sft-vs-dpo`)
-   - Upload the pre-registration document (already written, per `RESEARCH-STATE.md`)
-   - Generate OSF pre-registration URL
-   - Update `research-registry/cond-phase-a-baseline-qwen-001/condition.yaml` with `osf_project_id` and `pre_registration.url`
-   - Commit the updated registry entry
+4. **OSF project creation + pre-registration filing.** Operator action (one-way; operator sign-off required):
+   - Create OSF project for the claim (claim ID `claim-shaikh-sft-vs-dpo`).
+   - Upload the amended pre-registration document from scope item 3.
+   - Generate OSF pre-registration URL.
+   - Update `research-registry/cond-phase-a-baseline-qwen-001/condition.yaml` with `osf_project_id` and `pre_registration.url`.
+   - Commit the updated registry entry + the DEVIATION-038 file in the same commit.
 
-5. **ORCID + Zenodo + GitHub Pages.** Per `RESEARCH-STATE.md` remaining items. These are research infrastructure plumbing, not gating for Phase 5 swap, but should be authored during this phase's idle time.
+5. **Livestream-run-gated control arm collection.** With items 1–4 shipped, the livestream runs in research mode with the active condition. Collection throughput = stream hours × active-condition tag coverage. Sample size unit per pre-registration amendment: hybrid of
+   - **stream director reactions** tagged with `cond-phase-a-baseline-qwen-001` in `stream-reactions` Qdrant collection + `reactor-log-YYYY-MM.jsonl`
+   - **voice grounding DVs** in Langfuse with `metadata.condition_id=cond-phase-a-baseline-qwen-001` covering `turn_pair_coherence`, `context_anchor_success`, `acceptance_type`, `activation_score`, and `sentinel_retrieval`.
 
-6. **Data integrity lock.** At Phase 4 completion:
-   - Compute sha256 of each Condition A JSONL file
-   - Record in `research-registry/cond-phase-a-baseline-qwen-001/data-checksums.txt`
-   - Take a Qdrant snapshot (qdrant CLI export) for Condition A points
-   - Store snapshot at `~/hapax-state/research-registry/cond-phase-a-baseline-qwen-001/qdrant-snapshot.tgz`
+   **Target sample size (to finalize in the Phase 4 spec doc, not this epic):** the pre-registration currently names "10 sessions" from the dedicated-session model. Phase 4's spec doc replaces that with a stream-hours + turn-pair-coherence-count target, co-specified with the operator at Phase 4 open. A defensible starting floor: ≥N stream director reactions AND ≥M condition-tagged `turn_pair_coherence` scores in Langfuse, with N and M calibrated against the statistical-power commitment in the pre-registration.
 
-7. **Condition A close signal.** Write a `Phase A Complete` marker to the registry — NOT a condition close (conditions never close per P-3), but a `collection_halt_at: <ts>` field indicating that data collection for Condition A has halted in favor of Condition A'. Condition A remains queryable, comparable, and referenceable.
+6. **Continuous mid-collection integrity checks.** Run every N reactions (e.g., every 100) rather than every session:
+   - Verify `research-registry current` is `cond-phase-a-baseline-qwen-001`.
+   - Verify no frozen-file diffs have been applied (re-run the Phase 1 pre-commit check manually on `git status` state).
+   - Verify `stream-reactions` Qdrant count with `condition_id=cond-phase-a-baseline-qwen-001` is monotonically growing.
+   - Verify Langfuse scores with `metadata.condition_id=cond-phase-a-baseline-qwen-001` are monotonically growing (both stream-director-originated and voice-grounding-originated).
+   - Verify the split between stream-director observations and voice-grounding observations remains consistent with prior checkpoints (a sudden drop in either channel indicates a wiring regression).
+
+7. **Data integrity lock.** At Phase 4 completion (sample targets hit):
+   - sha256 each Condition A JSONL log file, record in `research-registry/cond-phase-a-baseline-qwen-001/data-checksums.txt`.
+   - Take a Qdrant snapshot (qdrant CLI export) for all `stream-reactions` points carrying the Condition A tag. Store at `~/hapax-state/research-registry/cond-phase-a-baseline-qwen-001/qdrant-snapshot.tgz`.
+   - Export Langfuse scores filtered by `metadata.condition_id=cond-phase-a-baseline-qwen-001` to `~/hapax-state/research-registry/cond-phase-a-baseline-qwen-001/langfuse-scores.jsonl` and sha256 it into the same `data-checksums.txt`. This is the voice-grounding DV half of the Condition A record; omitting it would leave the voice channel analytically unreachable after swap.
+
+8. **Condition A close signal.** Write `collection_halt_at: <ts>` into `condition.yaml` — not a condition close (conditions never close per P-3), just a halt marker for this collection window. Condition A remains queryable, comparable, and referenceable.
 
 **Exit criteria:**
 
-- ≥ 10 voice grounding sessions completed under Qwen3.5-9B with Condition A tag
-- All sessions have reactions in `stream-reactions` Qdrant + JSONL + Langfuse with `condition_id=cond-phase-a-baseline-qwen-001`
-- No frozen-file deviations filed during Condition A collection (or any deviations explicitly recorded as such)
-- OSF project exists; pre-registration uploaded; URL recorded in condition registry
-- Data checksums captured; Qdrant snapshot created
-- `research-registry current` still `cond-phase-a-baseline-qwen-001` with `collection_halt_at: <ts>` marked
-- `RESEARCH-STATE.md` updated with Phase A complete status
+- `shared/research_marker.py` exists; both `director_loop.py` and `conversation_pipeline.py` import from it. (scope 1)
+- A stream-mode voice utterance produces at least one Langfuse score with `metadata.condition_id=cond-phase-a-baseline-qwen-001` — verified by end-to-end live test. (scope 1)
+- `research/protocols/deviations/DEVIATION-038.md` committed. (scope 2)
+- `CYCLE-2-PREREGISTRATION.md` amended (§2.3, §3.2, §4.1) before filing. (scope 3)
+- OSF project exists; pre-registration uploaded; URL recorded in `condition.yaml`. (scope 4)
+- Sample targets (N stream reactions + M voice grounding DVs, to be defined in the Phase 4 spec doc) met under `condition_id=cond-phase-a-baseline-qwen-001`. (scope 5)
+- No frozen-file deviations filed during the collection window beyond DEVIATION-038 (any others explicitly recorded with impact analysis). (scope 6)
+- Data checksums captured; Qdrant snapshot created; Langfuse score export created. (scope 7)
+- `research-registry current` still `cond-phase-a-baseline-qwen-001` with `collection_halt_at: <ts>` marked. (scope 8)
+- `RESEARCH-STATE.md` updated: "Phase A Complete (livestream-only baseline under Qwen3.5-9B); Condition A locked pending Phase 5 swap."
 
 **Risks:**
-- Operator session cadence may be slower than 10-sessions-in-1-week. Time-gated phase; allow flex.
-- Any frozen-file edit during this phase invalidates Condition A. Frozen-file pre-commit enforcement (Phase 1) must be working.
-- OSF pre-registration filing is a one-way step — once filed, the claim is public. Operator sign-off required.
-- The Cycle 2 Phase A "continuity-v2" experimental config from `RESEARCH-STATE.md` should be verified as the canonical Condition A substrate.
 
-**Handoff implications:** Phase 4 is the control arm lock-down. It is the only phase where operator action dominates; engineering work is minimal during the collection window.
+- **Livestream run-hours target may be slower than expected.** Collection is gated on operator running the livestream with research mode active; if the livestream sits idle, the control arm stalls. Mitigation: Phase 4's spec doc co-specifies the sample target with operator so the expected time window is agreed upfront.
+- **`conversation_pipeline.py` condition_id plumbing touches frozen-file code.** `grounding_evaluator.py` is Inner Zone. Adding `condition_id` to `hapax_score()` metadata is behaviorally neutral (doesn't change the computed score) but is technically a frozen-file edit. DEVIATION-038 covers this jointly with the pre-LRR data retirement so only one deviation filing is needed for both changes.
+- **Stream-director observations and voice-grounding DVs diverge.** If the livestream runs but the operator doesn't speak, the voice-grounding channel accumulates zero samples. The mitigation is the hybrid sample target (item 5) — both channels have independent floors.
+- **OSF pre-registration filing is one-way.** Once filed, the claim is public; the amended pre-reg from scope item 3 must be reviewed before filing. Operator sign-off required.
+- **Pre-LRR dedicated-session data resurfaces in analysis.** If a downstream analysis script treats all Langfuse `turn_pair_coherence` scores as Condition A, the ~431 pre-LRR pairs contaminate the sample. Mitigation: every Condition A query filters on `metadata.condition_id=cond-phase-a-baseline-qwen-001`, which the pre-LRR data lacks by construction (it was written before the research-marker wiring existed).
+
+**Handoff implications:** Phase 4 splits into an engineering bootstrap (scope items 1–4, closable in 1–2 sessions) followed by a livestream-run-gated collection window that runs in the background while Phase 5 preparation (Phase 3 hardware + quant) completes. The engineering bootstrap can start the moment Phase 3 hardware is stable; the collection window runs in parallel with any remaining Phase 3 tuning. Phase 5 pre-swap checks (section below) continue to depend on "Phase 4 complete (Condition A locked, checksums, Qdrant + Langfuse snapshots)."
 
 ---
 
@@ -532,18 +569,18 @@ Each phase section below is structured as a mini-design-doc, intended to be extr
 
 **Goal:** Execute the Hermes 3 migration plan. Swap the local inference substrate from Qwen3.5-9B to Hermes 3 70B SFT-only. Mark the Condition A→A' boundary in the research registry. File DEVIATION-037.
 
-**Dependency:** Phase 3 (hardware ready) + Phase 4 (Condition A locked).
+**Dependency:** Phase 3 (hardware ready) + Phase 4 (Condition A locked — livestream director reactions AND voice grounding DVs both tagged and accumulated to sample target; DEVIATION-038 filed; OSF pre-reg live).
 
 **Intended spec path:** `docs/superpowers/specs/YYYY-MM-DD-lrr-phase-5-hermes-3-substrate-swap-design.md`
 
-**Theoretical grounding:** Per Hermes 3 70B voice architecture design and Option B decision. The substrate swap IS the claim (SFT-only vs DPO under identical grounding directives).
+**Theoretical grounding:** Per Hermes 3 70B voice architecture design and Option B decision. The substrate swap IS the claim (SFT-only vs DPO under identical grounding directives). Under the livestream-only rule, the Condition A→A' boundary is a research-marker atomic write during an active livestream run — no dedicated-session framing anywhere.
 
 **Scope:**
 
 This phase executes the existing Hermes 3 migration plan Tasks 1–13 with research-registry integration. The Hermes 3 plan is the authoritative procedure; this phase adds the research registry atomics (pre-swap checks, condition transition, DEVIATION-037 filing).
 
 **Pre-swap checks:**
-1. Phase 4 complete (Condition A locked, checksums, Qdrant snapshot)
+1. Phase 4 complete (Condition A locked, checksums, Qdrant snapshot, Langfuse score export per Phase 4 scope item 7)
 2. Phase 3 complete (hardware + quant ready)
 3. Operator available (this is a high-risk operation — do not unattended)
 4. Current `RESEARCH-STATE.md` saved
@@ -867,7 +904,7 @@ This phase executes the existing Hermes 3 migration plan Tasks 1–13 with resea
 2. **VOLATILE-band injection mechanism.** The persona spec is compiled into a system-prompt fragment and injected into every `director_loop.py` LLM call under the VOLATILE band. Mechanism:
    - `shared/persona_renderer.py` reads the YAML, compiles to a ~400-token system prompt fragment
    - `director_loop._build_unified_prompt()` adds a "## Persona" section between "## Identity" and "## Phenomenal Context"
-   - Same injection in `agents/hapax_daimonion/persona.py` `_EXPERIMENT_PROMPT` for voice grounding sessions
+   - Same injection in `agents/hapax_daimonion/persona.py` `_EXPERIMENT_PROMPT` for voice grounding on stream (fires whenever the operator speaks into the voice pipeline while research mode is active; no dedicated-session path)
    - Fragment is revalidated on file change via inotify (or a 30s timer)
 
 3. **Frozen-file implications.** The persona file `axioms/persona/hapax-livestream.yaml` becomes part of the Condition A' (and future conditions) frozen-file manifest. Changes to the persona are a new sub-experiment, not a within-condition variation.
@@ -889,7 +926,7 @@ This phase executes the existing Hermes 3 migration plan Tasks 1–13 with resea
 - `axioms/persona/hapax-livestream.yaml` v1 committed with operator sign-off
 - `shared/persona_renderer.py` operational; compiles to a persona fragment < 500 tokens
 - `director_loop._build_unified_prompt()` injects the fragment; confirmed by reading the live prompt via `python -c "..."` or equivalent
-- `hapax_daimonion.persona._EXPERIMENT_PROMPT` includes the fragment for voice grounding
+- `hapax_daimonion.persona._EXPERIMENT_PROMPT` includes the fragment for voice grounding (fires on any stream voice utterance while the research condition is active)
 - 5 synthetic test prompts show measurable register shift from pre-persona baseline
 - Persona file in the Condition A' frozen-file manifest
 - `research-registry show cond-phase-a-prime-hermes-002 --persona` returns the persona sha256
@@ -1228,7 +1265,7 @@ This phase executes the existing Hermes 3 migration plan Tasks 1–13 with resea
 | R2 | Phase 1 metadata backfill loses data | Low | High | Qdrant snapshot before backfill; test on copy first. |
 | R3 | Phase 3 Hermes 3 quant unavailable pre-made | Medium | Medium | Self-quantization path; fallback to Qwen3.5-32B EXL3 if self-quant fails. |
 | R4 | Phase 3 PSU fails stress test | Low | High | PSU replacement; fallback to Option α (single-GPU TabbyAPI Hermes 2.5bpw). |
-| R5 | Phase 4 Condition A data collection too slow | Medium | Medium | Time-gated; extend as needed. |
+| R5 | Phase 4 Condition A data collection too slow (livestream hours insufficient for sample target) | Medium | Medium | Livestream-run-gated; co-specify realistic target with operator at Phase 4 open; extend collection window as needed. Engineering bootstrap (scope items 1–4) is not blocked by this risk. |
 | R6 | Phase 5 Hermes 3 directive compliance below threshold | Medium | High | Rollback + 3.5 bpw re-quant; plan §10 documents this. |
 | R7 | Phase 6 FINDING-R requires operator policy decision | Medium | Medium | Present 3 options in Phase 6 spec. |
 | R8 | Phase 7 persona spec doesn't land because operator doesn't approve | Medium | High | Multiple iteration cycles planned. |
@@ -1320,7 +1357,7 @@ Phase 4 (Phase A Completion) ──┴──→ Phase 5 (Hermes 3 Swap)
                                     Phase 10 (Observability + Drills + Polish)
 ```
 
-Phases 1-3 can in principle overlap (Phase 1 is registry infrastructure, Phase 2 is archive infrastructure, Phase 3 is hardware prep) but branch discipline serializes them. Phase 4 (time-gated) can overlap with Phase 3 (hardware prep) because Phase 4 is operator data collection, not engineering.
+Phases 1-3 can in principle overlap (Phase 1 is registry infrastructure, Phase 2 is archive infrastructure, Phase 3 is hardware prep) but branch discipline serializes them. Phase 4's livestream-run-gated collection window (scope items 5–8) can overlap with Phase 3 (hardware prep) and with Phase 5 preparation because collection throughput is determined by stream hours, not engineering-session availability. Phase 4's engineering bootstrap (scope items 1–4) is serialized like every other code block.
 
 ---
 
