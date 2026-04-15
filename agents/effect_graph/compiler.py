@@ -74,7 +74,6 @@ class ExecutionStep:
     output_edges: list[EdgeDef]
     temporal: bool = False
     temporal_buffers: int = 0
-    needs_dedicated_fbo: bool = False
 
 
 @dataclass
@@ -263,10 +262,6 @@ class GraphCompiler:
     def _build(
         self, graph: EffectGraph, edges: list[EdgeDef], order: list[str]
     ) -> list[ExecutionStep]:
-        out_count: dict[str, int] = defaultdict(int)
-        for e in edges:
-            if not e.is_layer_source:
-                out_count[e.source_node] += 1
         steps = []
         for nid in order:
             n = graph.nodes[nid]
@@ -288,7 +283,6 @@ class GraphCompiler:
                     output_edges=[e for e in edges if e.source_node == nid],
                     temporal=d.temporal if d else False,
                     temporal_buffers=d.temporal_buffers if d else 0,
-                    needs_dedicated_fbo=out_count.get(nid, 0) > 1,
                 )
             )
         return steps

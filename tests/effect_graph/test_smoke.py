@@ -601,28 +601,6 @@ class TestCompilerExecutionPlan:
         trail_step = next(s for s in plan.steps if s.node_id == "t")
         assert trail_step.temporal and trail_step.temporal_buffers >= 1
 
-    def test_fanout_fbo(self, compiler: GraphCompiler):
-        g = EffectGraph(
-            nodes={
-                "c": NodeInstance(type="colorgrade"),
-                "b1": NodeInstance(type="bloom"),
-                "b2": NodeInstance(type="scanlines"),
-                "m": NodeInstance(type="blend"),
-                "o": NodeInstance(type="output"),
-            },
-            edges=[
-                ["@live", "c"],
-                ["c", "b1"],
-                ["c", "b2"],
-                ["b1", "m:a"],
-                ["b2", "m:b"],
-                ["m", "o"],
-            ],
-        )
-        plan = compiler.compile(g)
-        c_step = next(s for s in plan.steps if s.node_id == "c")
-        assert c_step.needs_dedicated_fbo
-
     def test_transition_ms_propagated(self, compiler: GraphCompiler):
         g = _minimal_graph(transition_ms=750)
         plan = compiler.compile(g)

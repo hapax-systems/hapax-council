@@ -233,22 +233,6 @@ def test_reject_bad_layer(compiler):
         compiler.compile(g)
 
 
-def test_fanout_fbo(compiler):
-    g = EffectGraph(
-        name="t",
-        nodes={
-            "c": NodeInstance(type="colorgrade"),
-            "s": NodeInstance(type="scanlines"),
-            "b": NodeInstance(type="bloom"),
-            "m": NodeInstance(type="blend"),
-            "o": NodeInstance(type="output"),
-        },
-        edges=[["@live", "c"], ["c", "s"], ["c", "b"], ["s", "m:a"], ["b", "m:b"], ["m", "o"]],
-    )
-    plan = compiler.compile(g)
-    assert next(s for s in plan.steps if s.node_id == "c").needs_dedicated_fbo
-
-
 # --- Phase 5a: multi-output compile ---
 
 
