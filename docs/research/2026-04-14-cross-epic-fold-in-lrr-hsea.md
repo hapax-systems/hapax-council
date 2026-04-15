@@ -625,4 +625,73 @@ Precondition 4 is the new precondition that this ratification introduced; it rep
 
 — delta, 2026-04-15T05:45Z
 
+---
+
+## 13. Addendum 2026-04-15 — operator reframes 5b from "deferred backlog" to structurally unreachable
+
+**Written:** 2026-04-15T06:30Z by delta, after beta's inflection `20260415-062500-beta-alpha-delta-epsilon-70b-quant-killed-5b-unreachable.md` reported the operator's 06:20Z direction "1 hardware env unlikely to change within the year" and beta's subsequent kill of the 3.5bpw quant process at layer 57/80.
+
+### 13.1 What the operator said + what beta did
+
+At 2026-04-15T06:20Z, in response to beta's three-reason quant-completion status report, the operator replied:
+
+> "1 hardware env unlikely to change within the year"
+
+The "1" prefix references beta's reason 1: *"completion preserves the weight as a backlog artifact if hardware envelope ever changes (PCIe Gen 5 dual-Blackwell, single-card 80GB Blackwell, etc.)."* The operator's message directly falsifies the premise: the hardware envelope (RTX 3090 + RTX 5060 Ti, PCIe Gen 4 dual-GPU) is not changing within the year, so the 70B weight has no plausible activation path in the foreseeable future.
+
+Beta's actions in response (all non-destructive):
+
+1. Killed the 3.5bpw quant process (PID 106727) via SIGTERM at layer 57/80. Process terminated cleanly. GPU 1 (RTX 3090) VRAM freed from ~18GB used to 18359 MiB free. Chain-watcher retired.
+2. Updated task #63 subject and status to `completed` (quant chain terminated per operator direction).
+3. Left the partial 3.5bpw work dir + the bf16 reference weight + the completed 3.0bpw weight on disk — all operator-disposition items per beta's 06:25Z inflection disk table (~221 GB total recoverable, not urgent).
+4. Did NOT restart TabbyAPI (operator controls restart timing given the mobo-swap context).
+5. Did NOT edit Phase 5 spec §0.5 or DEVIATION-037 (both are correct on 5a, the live path; the 5b reframing is a nuance best captured here).
+
+### 13.2 Reframing: 5b from "deferred backlog" to "structurally unreachable"
+
+The §4 recommendation (option c: fork LRR Phase 5 into 5a 8B parallel + 5b 70B layer-split deferred) was authored 2026-04-14 with the hedge that 5b was *gated on* future hardware-envelope changes or sub-2s 70B inference demonstrations. That hedge is now collapsed:
+
+- **Gate (i) — different hardware** (PCIe Gen 5 dual-Blackwell, single-card 80GB Blackwell, or similar): operator explicitly says this is not going to happen within the year.
+- **Gate (ii) — sub-2s 70B inference on current envelope**: drop #56 v3's `interpersonal_transparency` consent-latency axiom analysis established that 70B layer-split on the current hardware cannot meet the <2s consent-latency bound no matter the quant level. This gate was already unreachable; the operator's direction doesn't move it but confirms that no hardware path opens it either.
+
+**Net: 5b is no longer "deferred backlog, may reactivate if hardware envelope changes" — it is "dormant-indefinitely, reactivation requires both a hardware envelope change AND a fresh consent-latency validation."** The 5b reference procedure bodies in Phase 5 spec §0.5 and DEVIATION-037 remain intact as audit-trail documentation of what was assumed when drop #62 §4 was authored, but they describe a path that has no plausible activation trajectory.
+
+### 13.3 Corrections to §11 and §12 framing
+
+§11.1 contained the sentence: *"Beta's 3.5bpw quant chain remains useful as the backlog weight; it is not wasted."* At delta's 05:25Z write time, this was accurate given the hardware gate was plausible. As of 06:20Z operator direction, the premise of "useful as backlog weight" is falsified and the 3.5bpw chain has been killed. Delta does NOT edit §11.1 in place per the "each ratification gets its own addendum" convention (established in §11.5); §11.1 is historically accurate to its write time, and this §13 addendum provides the updated read.
+
+§12.3 item (b) described the HSEA epic plan §8 "Cross-epic coordination" dependency on "LRR UP-7 merged" resolving to "LRR UP-7a (8B) merged, not UP-7 (70B)". That resolution is unchanged: UP-7a (8B parallel) is still the live path. The 06:20Z operator direction does not affect UP-7a in any way.
+
+### 13.4 Implications for downstream artifacts
+
+**(a) HSEA Phase 0 deliverable 0.5 `sp-hsea-mg-001` axiom precedent.** Epsilon's Phase 6 spec §0.5.4 cross-references the rule *"any future 70B substrate decision must pre-register a consent-revocation drill and pass it before being authorized."* With 5b structurally unreachable, this rule shifts from a **continuous active guard** (protecting against a plausible near-term 70B reactivation) to a **forward-guard clause for a currently-dormant path**. The rule content does not change; its scope-of-applicability narrows from "watch for hardware envelope changes" to "if the hardware envelope ever changes beyond the year horizon, gate 70B reactivation on a consent-revocation drill."
+
+Per beta's 06:25Z inflection §"Epsilon" paragraph, this is optional Phase 6 spec §12.4 scope-note work for epsilon, not a content change. Delta does not touch the HSEA Phase 0 spec's §3.5 axiom precedent deliverable scope — the precedent YAML content is unchanged, only the real-world scenario the rule protects against has shifted from near-term to far-horizon.
+
+**(b) Phase 5 spec §0.5 + DEVIATION-037 amendment headers.** Beta's PR #819 amendments retain the 5b (70B) reference procedure bodies verbatim as audit trail. This is the correct data structure: the reference procedure is dormant but preserved for future re-examination if the hardware envelope ever changes. Beta is explicitly NOT editing these artifacts in response to the 06:20Z direction, on the grounds that:
+1. 5a (the live path) is unchanged.
+2. The 5b body is audit-trail; deleting it would erase "what was assumed 2026-04-14."
+3. PR #819 is a Phase 4 bootstrap PR; 5b reframing is scope creep past the Phase 4 purpose.
+
+Delta concurs with beta's reasoning. The amendment headers are correct as-authored; the nuance belongs in this drop #62 §13 addendum rather than in the spec or DEVIATION.
+
+**(c) Alpha's `beta.yaml::quant_state` block.** Alpha owns the yaml update per the cohabitation protocol. Beta's 06:25Z inflection §"Alpha" section surfaces the needed edits: `3_5bpw` row flipped to killed status, `chain_watcher_pid` nulled, optional `5b_disposition: "unreachable_structurally"` row added. Delta does not touch beta.yaml.
+
+**(d) Disk disposition (~221 GB recoverable).** Beta's 06:25Z inflection flags three operator-disposition items: `~/hapax-state/quant-staging/work-3.5bpw/` (54 GB partial quant, safe to delete), `~/hapax-state/quant-staging/Hermes-3-Llama-3.1-70B-bf16/` (~140 GB reference weight, operator's call), `~/projects/tabbyAPI/models/Hermes-3-Llama-3.1-70B-EXL3-3.0bpw/` (27 GB completed but dormant, operator's call). Not urgent. Flagged here for audit-trail completeness; operator decides disposition.
+
+### 13.5 Cross-links
+
+- Beta's inflection `20260415-062500-beta-alpha-delta-epsilon-70b-quant-killed-5b-unreachable.md` — full text of the kill report + disk disposition table + implications per peer.
+- Operator keyword "1 hardware env unlikely to change within the year" at 2026-04-15T06:20Z (terminal, not relay-captured).
+- Task #63 updated by beta at 06:25Z: "Chain 3.5bpw quant — KILLED at layer 57/80 per operator 'hardware env unlikely to change within the year' direction (5b deferred backlog unreachable)".
+
+### 13.6 Delta's action trail from this addendum forward
+
+- **This addendum (§13)** written + committed alongside the LRR Phase 1 per-phase spec + plan pre-staging docs (delta's current extraction task) and the HSEA Phase 2 extraction (alpha's 06:20Z delegated request). Single commit.
+- **No further drop #62 edits planned** from delta unless another operator signal lands that shifts the UP-7a/UP-7b framing. If the operator's disposition decisions on the ~221 GB disk artifacts arrive, those are operator-space actions and do not require a §14.
+- **No code, no PRs, no worktree.** Same delta constraints as all prior addenda.
+- **No ack requested** — this is a closure addendum, not a recipient-action inflection.
+
+— delta, 2026-04-15T06:30Z
+
 — End of drop #62 fold-in analysis.
