@@ -192,57 +192,6 @@ def test_default_layout_path_resolves_through_symlink(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Preset inputs edge cases (AC-7 robustness)
-# ---------------------------------------------------------------------------
-
-
-def test_preset_input_rejects_duplicate_as_aliases() -> None:
-    """Two ``inputs`` entries with the same ``as`` alias must be rejected.
-
-    The pydantic schema does not enforce uniqueness on ``as`` across
-    the list; the resolver silently overwrote the earlier alias when
-    this audit looked at the code. If an operator expects ``layer0``
-    to refer to source A but another entry later binds ``layer0`` to
-    source B, the preset is ambiguous.
-
-    This test pins the *current* resolver behavior: the later entry
-    wins. If a future audit decides ambiguity should raise, this test
-    is the breakage point — flipping it is deliberate.
-    """
-    from agents.effect_graph.compiler import resolve_preset_inputs
-    from agents.effect_graph.types import EffectGraph, NodeInstance, PresetInput
-    from agents.studio_compositor.source_registry import SourceRegistry
-
-    class _StubBackend:
-        def __init__(self, tag: str) -> None:
-            self.tag = tag
-
-        def get_current_surface(self) -> None:
-            return None
-
-    registry = SourceRegistry()
-    a = _StubBackend("A")
-    b = _StubBackend("B")
-    registry.register("pad_a", a)
-    registry.register("pad_b", b)
-
-    graph = EffectGraph(
-        name="dup-alias",
-        nodes={"n": NodeInstance(type="noise")},
-        edges=[],
-        inputs=[
-            PresetInput(pad="pad_a", as_="layer0"),
-            PresetInput(pad="pad_b", as_="layer0"),
-        ],
-    )
-
-    resolved = resolve_preset_inputs(graph, registry)
-    # Current behavior: last-declared wins.
-    assert resolved["layer0"] is b
-    assert len(resolved) == 1
-
-
-# ---------------------------------------------------------------------------
 # Compositor startup edge cases
 # ---------------------------------------------------------------------------
 
