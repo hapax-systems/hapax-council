@@ -122,27 +122,23 @@ def merge_default_modulations(graph: Any) -> Any:
 
     existing = {(m.node, m.param) for m in graph.modulations}
 
-    # Build type→node_id map for matching default bindings to prefixed nodes
-    type_to_ids: dict[str, list[str]] = {}
-    for nid, node in graph.nodes.items():
-        t = node.type
-        if t not in type_to_ids:
-            type_to_ids[t] = []
-        type_to_ids[t].append(nid)
+    # Drop #47 DR-5: direct type→node_id map. Previously this built a
+    # dict[str, list[str]] + picked `[-1]` to handle prefixed IDs in
+    # multi-instance preset chains ('p0_bloom' + 'p1_bloom' → slot 'bloom').
+    # No production preset uses that chain composition path and every live
+    # preset has unique (node_id, node_type) mappings, so a flat dict
+    # assignment (last-wins on any future duplicate) preserves the original
+    # semantics with no list bookkeeping.
+    type_to_id: dict[str, str] = {node.type: nid for nid, node in graph.nodes.items()}
 
     from agents.effect_graph.types import ModulationBinding
 
     merged = list(graph.modulations)
     for d in defaults:
         target_type = d["node"]
-        # Find all nodes matching this type (handles prefixed IDs like p0_bloom)
-        matching_ids = type_to_ids.get(target_type, [])
-        if not matching_ids:
+        node_id = type_to_id.get(target_type)
+        if node_id is None:
             continue
-        # Apply to the LAST matching node — in chains, earlier instances are
-        # neutralized (identity params), so modulations should target the
-        # last instance which retains authored params.
-        node_id = matching_ids[-1]
         key = (node_id, d["param"])
         if key not in existing:
             merged.append(
