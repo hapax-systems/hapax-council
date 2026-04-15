@@ -394,3 +394,182 @@ class TestColdStartFrameFlowGrace:
             )
         finally:
             pm.stop()
+
+
+class TestStopWaitsForNullTransition:
+    """FDL-1 regression pins (drop #52 + commit ec3d85883).
+
+    Without a synchronous wait after ``set_state(NULL)``, fast rebuild
+    cycles interrupt GStreamer's async cleanup before v4l2src's buffer
+    pool releases its dmabuf handles. The pipeline bin stays in ASYNC
+    NULL transition while ``teardown()`` drops the Python reference —
+    the cleanup cascade stops mid-flight with dmabuf fds still open in
+    the process fd table. Observed ~150 fds/min leak under the
+    c920-desk rebuild-thrash fault documented in drop #51.
+
+    Fix (``camera_pipeline.py::stop``): call ``get_state(5 * SECOND)``
+    after ``set_state(NULL)`` to block until the NULL transition
+    actually completes, logging a warning on FAILURE or
+    timeout-mid-transition.
+    """
+
+    def _cam_with_mock_pipeline(self, gst, mock_pipeline):
+        """Build a CameraPipeline and inject a mock _pipeline directly.
+
+        Bypasses build() because the real construction requires a
+        working v4l2 device. The stop() logic only touches
+        ``self._pipeline`` and ``self._Gst``, so a mock is sufficient
+        to exercise the FDL-1 fix path.
+        """
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec("fdl1-test"), gst=Gst, fps=30)
+        cam._pipeline = mock_pipeline
+        cam._started = True
+        return cam
+
+    def test_stop_calls_get_state_with_5s_timeout(self, gst):
+        """Regression pin: stop() MUST call get_state() after
+        set_state(NULL) with a 5-second timeout. Reverting this to a
+        bare set_state(NULL) without a wait will reintroduce the
+        dmabuf leak."""
+        Gst, _ = gst
+
+        mock_pipeline = mock.Mock()
+        mock_pipeline.get_state.return_value = (
+            Gst.StateChangeReturn.SUCCESS,
+            Gst.State.NULL,
+            Gst.State.VOID_PENDING,
+        )
+
+        cam = self._cam_with_mock_pipeline(gst, mock_pipeline)
+        cam.stop()
+
+        mock_pipeline.set_state.assert_called_once_with(Gst.State.NULL)
+        mock_pipeline.get_state.assert_called_once()
+        timeout_arg = mock_pipeline.get_state.call_args.kwargs.get("timeout")
+        if timeout_arg is None:
+            timeout_arg = mock_pipeline.get_state.call_args.args[0]
+        assert timeout_arg == 5 * Gst.SECOND, (
+            f"stop() must wait up to 5 seconds for NULL transition; "
+            f"got timeout={timeout_arg}. Reverting this value lets fast "
+            f"rebuild cycles interrupt cleanup and leak dmabufs. See "
+            f"drop #52 + commit ec3d85883."
+        )
+        assert cam._started is False
+
+    def test_stop_set_state_before_get_state(self, gst):
+        """set_state(NULL) must be called BEFORE get_state() — the
+        inverse ordering would block indefinitely on a still-PLAYING
+        pipeline."""
+        Gst, _ = gst
+
+        call_order: list[str] = []
+        mock_pipeline = mock.Mock()
+        mock_pipeline.set_state.side_effect = lambda _state: call_order.append("set_state")
+        mock_pipeline.get_state.side_effect = lambda **_kw: (
+            call_order.append("get_state"),
+            (Gst.StateChangeReturn.SUCCESS, Gst.State.NULL, Gst.State.VOID_PENDING),
+        )[1]
+
+        cam = self._cam_with_mock_pipeline(gst, mock_pipeline)
+        cam.stop()
+
+        assert call_order == ["set_state", "get_state"], (
+            f"stop() must call set_state(NULL) THEN get_state(); observed order: {call_order}"
+        )
+
+    def test_stop_logs_warning_on_failure(self, gst, caplog):
+        """When the NULL transition returns FAILURE, stop() must log a
+        warning so operators notice resource leaks on pathological
+        teardowns. Silent failure would let the leak rate accumulate
+        unnoticed."""
+        import logging
+
+        Gst, _ = gst
+
+        mock_pipeline = mock.Mock()
+        mock_pipeline.get_state.return_value = (
+            Gst.StateChangeReturn.FAILURE,
+            Gst.State.PLAYING,
+            Gst.State.NULL,
+        )
+
+        cam = self._cam_with_mock_pipeline(gst, mock_pipeline)
+        with caplog.at_level(logging.WARNING, logger="agents.studio_compositor.camera_pipeline"):
+            cam.stop()
+
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("NULL transition failed" in r.getMessage() for r in warnings), (
+            f"stop() must log a WARNING on NULL transition FAILURE; "
+            f"observed log records: {[r.getMessage() for r in warnings]}"
+        )
+        assert cam._started is False
+
+    def test_stop_logs_warning_on_timeout_mid_transition(self, gst, caplog):
+        """When get_state times out with the pipeline still not at
+        NULL, stop() must log the stuck state so operators can
+        correlate with fd-count or rebuild-rate alerts."""
+        import logging
+
+        Gst, _ = gst
+
+        mock_pipeline = mock.Mock()
+        mock_pipeline.get_state.return_value = (
+            Gst.StateChangeReturn.ASYNC,
+            Gst.State.READY,
+            Gst.State.NULL,
+        )
+
+        cam = self._cam_with_mock_pipeline(gst, mock_pipeline)
+        with caplog.at_level(logging.WARNING, logger="agents.studio_compositor.camera_pipeline"):
+            cam.stop()
+
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("NULL transition timed out" in r.getMessage() for r in warnings), (
+            f"stop() must log a WARNING when NULL transition times out; "
+            f"observed log records: {[r.getMessage() for r in warnings]}"
+        )
+
+    def test_stop_silent_on_successful_transition(self, gst, caplog):
+        """Normal teardowns (NULL reached within timeout) must NOT
+        emit warnings — the warning log is reserved for pathological
+        cases so it serves as a signal, not noise."""
+        import logging
+
+        Gst, _ = gst
+
+        mock_pipeline = mock.Mock()
+        mock_pipeline.get_state.return_value = (
+            Gst.StateChangeReturn.SUCCESS,
+            Gst.State.NULL,
+            Gst.State.VOID_PENDING,
+        )
+
+        cam = self._cam_with_mock_pipeline(gst, mock_pipeline)
+        with caplog.at_level(logging.WARNING, logger="agents.studio_compositor.camera_pipeline"):
+            cam.stop()
+
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert warnings == [], (
+            f"successful NULL transition must not log warnings; "
+            f"got: {[r.getMessage() for r in warnings]}"
+        )
+
+    def test_stop_idempotent_when_pipeline_is_none(self, gst):
+        """Existing invariant preserved by FDL-1: stop() with no
+        pipeline built is a no-op, not a crash. This pins the early
+        return at ``if self._pipeline is None: return`` so the fix
+        doesn't accidentally regress the idempotency guarantee from
+        ``test_stop_without_build_is_idempotent``.
+        """
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec("idempotent-test"), gst=Gst, fps=30)
+        assert cam._pipeline is None
+
+        cam.stop()
+        cam.stop()
+        assert cam._started is False
