@@ -1,9 +1,104 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-04-15 (drop #62 §13/§14/§15 addenda — Hermes abandonment + 5b reframing + continuous session directive)
+**Last updated:** 2026-04-15 (drop #62 §16 + §17 addenda — substrate scenario 1+2 ratification + Option C pivot)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
-## 2026-04-15 — Drop #62 §13/§14/§15 deltas (substrate + session continuity)
+## 2026-04-15 — Drop #62 §16 + §17 substrate resolution (SUPERSEDES §13/§14 pending state)
+
+**Ratification:** operator "go with your rec" at 2026-04-15T18:21Z UTC (drop #62 §16, PR #895 queue #137). Subsequent execution-mechanism pivot at 2026-04-15T18:49Z per §17 (formerly §16.1, PR #899 queue #142).
+
+### §16 — Substrate scenario 1+2 ratified (the replacement for Hermes)
+
+**Decision:** substrate pair defined as Qwen3.5-9B (scenario 1, production) + OLMo 3-7B × {SFT, DPO, RLVR} (scenario 2, research). Both deployed in parallel via TabbyAPI. Closes the substrate question that §14 Hermes abandonment reopened.
+
+**Scenario 1 (Qwen3.5-9B production verification):**
+- Keep Qwen3.5-9B on main TabbyAPI :5000 serving the `local-fast`/`coding`/`reasoning` routes (no change)
+- Optional: upgrade exllamav3 0.0.23 → 0.0.29 for incidental maintenance benefits — **NOT REQUIRED** per substrate research v1 §9.1
+- Run RIFTS empirical benchmark (Shaikh 2024/2025 grounding dataset) against Qwen3.5-9B
+- Publishes empirical baseline grounding number for Phase A
+
+**Scenario 2 (OLMo 3-7B research triad — isogenic test substrate):**
+- Deploy OLMo 3-7B × 3 training-regime variants: SFT, DPO, RLVR
+- All three share architecture + pretraining data; differ only in post-training
+- **Isogenic test substrate** for `claim-shaikh-sft-vs-dpo-vs-rlvr` cycle 2 (renamed from original `claim-shaikh-sft-vs-dpo` which required Hermes pair)
+- New LiteLLM routes: `local-research-sft`, `local-research-dpo`, `local-research-rlvr`
+
+**What scenario 1+2 replaces:**
+- Hermes 3 70B substrate swap (Phase 5 as originally specified) → **no longer executable** per §14
+- `claim-shaikh-sft-vs-dpo` (original cycle 2) → **reframed** to OLMo three-regime comparison
+- Phase B Hermes substrate comparison → **replaced** by Phase B OLMo variant comparison (cleaner isogenic test than the original Qwen vs Hermes spec)
+
+### §17 — Scenario 2 pivoted to Option C parallel TabbyAPI (formerly §16.1)
+
+**Why:** beta attempted the exllamav3 0.0.29 upgrade at 18:30-18:42Z per queue #209, but the upgrade pulled `torch 2.9 → 2.11` and broke exllamav2 + xformers + flash-attn pinned wheels. Full rollback executed; TabbyAPI restored to baseline at 68.8 tok/s smoke-test.
+
+**Option C:** run a second TabbyAPI instance on `localhost:5001` with a **separate venv** containing the modern stack:
+- `torch 2.11.0+cu130`
+- `exllamav3 0.0.29` (from PyPI)
+- No exllamav2 / flash-attn / xformers
+- OLMo 3-7B × 3 variants at EXL3 5.0bpw
+
+Main :5000 stays pinned to the production cu12 stack serving Qwen3.5-9B without disruption.
+
+**New systemd unit:** `tabbyapi-olmo.service`, port 5001, separate venv. Optional `CUDA_VISIBLE_DEVICES=1` to commit RTX 5060 Ti to OLMo (operator decision).
+
+**LiteLLM routing:** `local-research-*` routes point at `http://localhost:5001/v1` instead of `:5000`.
+
+**Zero production disruption.** Trade-off: +1 systemd service, +1 hour setup vs original in-place upgrade plan.
+
+### §15 — Operator continuous-session directive (unchanged)
+
+Still in force. No session retirement (alpha/beta/epsilon) until LRR epic closes at Phase 10. §15.4 amended 2026-04-15T18:08Z (PR #877) to remove "or Phase 11" hedge — LRR closes at Phase 10 definitively.
+
+### §13 + §14 (historical context)
+
+**§14 (Hermes abandonment)** remains valid as historical reason — Hermes 3 70B is permanently dropped from the research-substrate pool. §16 is the replacement, not a reversal.
+
+**§13 (5b structurally unreachable)** remains valid — the "five-body" framing is closed off. §16's dual-track scenario 1+2 is NOT a reopening of 5b.
+
+### Tier-2 document currency check (2026-04-15 post-§16 + §17)
+
+Systematic re-check of tier-2 docs referenced by this state file post-§16:
+
+| Doc | Location | Currency | Action |
+|---|---|---|---|
+| LRR Phase 5 spec (Hermes, beta-branch) | `2026-04-14-lrr-phase-5-hermes-3-substrate-swap-design.md` on `beta-phase-4-bootstrap` | OBSOLETE per §14 + §16 | **Superseded** by the new main-branch Phase 5 spec (below); do NOT edit the cohabitation-branch spec per protocol |
+| **LRR Phase 5 spec (new, on main)** | `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate-scenario-1-2-design.md` | ✓ CURRENT (PR #896, queue #138) | authoritative Phase 5 framing going forward |
+| **LRR Phase 5 plan (new, on main)** | `docs/superpowers/plans/2026-04-15-lrr-phase-5-substrate-scenario-1-2-plan.md` | ✓ CURRENT (PR #900, queue #143) | execution plan with dual scenario tracks + drills |
+| LRR Phase 3 spec | `docs/superpowers/specs/2026-04-14-lrr-phase-3-hardware-validation-design.md` | ✓ CURRENT (PR #897, queue #139 added §0.5 amendment; Hermes body preserved as historical) | no further action |
+| LRR Phase 7 spec | `docs/superpowers/specs/2026-04-15-lrr-phase-7-persona-posture-role-spec-authoring-design.md` | ✓ CURRENT — already had SUPERSEDED note (delta commit `e1cd99b48`) | no further action |
+| LRR Phase 10 spec (stability matrix) | `docs/superpowers/runbooks/lrr-phase-10-stability-matrix.md` | ✓ CURRENT (PR #887, queue #128) | substrate-agnostic; no drift |
+| HSEA epic spec + phase specs | `docs/superpowers/specs/*hsea*` | ✓ CURRENT post queue #141 (PR #898) — 19 Hermes hits classified: 11 archival, 6 phase-opener-deferrals, 2 incidental | no further action |
+| Substrate research v1 | `docs/research/2026-04-15-substrate-reeval-post-hermes.md` | ✓ CURRENT (PR #901, queue #144 cherry-picked to main) | now on main, cross-refs resolve |
+| Substrate research v2 | `docs/research/2026-04-15-substrate-reeval-v2-post-verification.md` | ✓ CURRENT (already on main via PR #869) | — |
+| Drop #62 fold-in + §16 + §17 | `docs/research/2026-04-14-cross-epic-fold-in-lrr-hsea.md` | ✓ CURRENT (§0 ToC added PR #902 queue #145; §16.1→§17 renumbered) | — |
+| Claim registry | `research/claims/*.yaml` | **PENDING** — `claim-shaikh-sft-vs-dpo` needs retirement or reframing to `claim-shaikh-sft-vs-dpo-vs-rlvr` | Phase 5 Stage 2d (queue #212 or follow-up) |
+| DEVIATION-037 | `research/protocols/deviations/DEVIATION-037.md` | **PENDING** — needs amendment or supersession with substrate scenario 1+2 framing | Phase 5 execution task |
+| Pre-registration doc | `research/CYCLE-2-PHASE-A-PRE-REGISTRATION.md` | ✓ CURRENT — Phase A unaffected by §16; still uses Qwen baseline | — |
+
+**Net result:** 8 tier-2 docs confirmed CURRENT post-§16. Two items PENDING (claim registry + DEVIATION-037), both deferred to Phase 5 execution time. The primary drift that #121 flagged (LRR Phase 5 spec on main) is **resolved** via PR #896 authoring the new substrate scenario 1+2 spec.
+
+### Action items (post-§16 — resolved)
+
+1. ~~LRR Phase 5 spec re-spec~~ → ✓ SHIPPED via PR #896 (queue #138)
+2. ~~Claim registry update~~ → DEFERRED to Phase 5 Stage 2d (claim stub authoring at phase execution time)
+3. ~~Substitute substrate selection~~ → ✓ RATIFIED via §16 (Qwen + OLMo 3-7B × 3)
+
+### Action items (post-§17 — pending)
+
+1. **Queue item #213+** — author Phase 5 Stage 2d claim stub at execution time
+2. **DEVIATION-037 amendment** — draft during Phase 5 execution
+3. **LRR epic spec § Phase 5 cross-reference** — small follow-up to redirect the epic spec's § Phase 5 to the new standalone spec (low priority, optional)
+
+### What the #121 draft said that is now stale
+
+The 2026-04-15T18:40Z version of this file described Phase 5 as "structurally blocked" awaiting alt-substrate ratification, and listed "substitute substrate under active research." That state is **closed** — §16 ratified the substrate pair at 18:21Z (3 minutes before the #121 PR merged, 19 minutes before this update was authored). The #121 framing captured the correct state at the time but was superseded within minutes.
+
+**Reader guidance:** the text below (§13/§14/§15 sections from #121, plus the 2026-04-14 Phase 0 pin) remains valid as historical context but should be read through the lens of §16 resolution. When in doubt, §16 + §17 supersede #121 framing.
+
+---
+
+## 2026-04-15 — Drop #62 §13/§14/§15 deltas (substrate + session continuity) [HISTORICAL, superseded by §16 above]
 
 This pin captures substrate-level + research-design-level deltas ratified during the 2026-04-15 overnight session. All three §13/§14/§15 addenda are operator-ratified and land atop the 2026-04-14 LRR Phase 0 pin below.
 
