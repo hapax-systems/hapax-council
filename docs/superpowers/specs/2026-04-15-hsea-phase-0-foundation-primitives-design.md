@@ -97,7 +97,7 @@ class WatchedQueryPool:
 
 **Deliverable size:** ~430 LOC, 1 day serial work.
 
-### 3.2 Governance queue (`shared/governance_queue.py` + JSONL state + Cairo overlay + inotify watcher)
+### 3.2 Governance queue (`shared/governance_queue.py` + JSONL state + inotify watcher)
 
 **Scope:**
 - JSONL append-only ledger at `~/hapax-state/governance-queue.jsonl` with archive rotation at `~/hapax-state/governance-queue-archive.jsonl`
@@ -108,17 +108,17 @@ class WatchedQueryPool:
 - Readers read without locking; tolerate partial trailing lines
 - `GovernanceQueue` module API: `append(title, type, drafted_by, location, approval_path, metadata) → id`, `update_status(id, new_status, actor, notes)`, `pending(max_age_s)`, `oldest_pending_age_s()`, `most_recent()`, `reap(older_than_days=30)`
 - Obsidian inbox sync: inotify watcher on `~/Documents/Personal/00-inbox/` detects `ACCESS` → `update_status(id, "reviewing")`; detects `MODIFY` + parses frontmatter status change → `update_status(id, "approved"|"rejected")`; uses `shared/frontmatter.py` parser
-- Cairo overlay: persistent badge showing pending count + oldest age + most recent; color transitions (green empty, yellow >24h oldest, red >72h oldest); refreshes at 1 Hz via `WatchedQueryPool`-equivalent poller from deliverable 0.1
+- **Cairo overlay is OUT OF SCOPE for Phase 0 (descoped to HSEA Phase 1 deliverable 1.5).** The original HSEA epic spec §5 Phase 0 listed a Cairo overlay in 0.2, but it was also listed in Phase 1 as deliverable 1.5 (drop #62 §7 resource budget row 2 carried this forward). The 2026-04-15 extraction resolves the duplication: Phase 0 ships the queue primitive (module + inotify watcher + reap) and Phase 1 ships the Cairo overlay. `agents/studio_compositor/governance_queue_source.py` is a Phase 1 deliverable, not Phase 0.
 - Reap: weekly systemd timer `hapax-governance-queue-reap.timer` moves archived entries out of main file
 
 **Target files:**
 - `shared/governance_queue.py` (~220 LOC module)
-- `agents/studio_compositor/governance_queue_source.py` (~180 LOC overlay source)
 - `agents/governance_queue_watcher.py` or `logos/watchers/governance_queue_watcher.py` (~120 LOC inotify daemon)
 - `tests/shared/test_governance_queue.py` (~200 LOC)
 - `systemd/user/hapax-governance-queue-reap.timer` + `.service` (config)
+- **NOT shipped by Phase 0** (HSEA Phase 1 1.5): `agents/studio_compositor/governance_queue_source.py` (~150 LOC overlay source; see `docs/superpowers/specs/2026-04-15-hsea-phase-1-visibility-surfaces-design.md` §3.5)
 
-**Deliverable size:** ~720 LOC, 1 day serial work.
+**Deliverable size:** ~540 LOC (was ~720; Cairo overlay ~180 LOC moved to Phase 1), 0.8 day serial work.
 
 ### 3.3 Spawn budget ledger (`shared/spawn_budget.py` + JSONL state + caps YAML + Cairo overlay)
 
@@ -246,7 +246,7 @@ Phase 0 closes when ALL of the following are verified:
 
 1. All 6 deliverables merged to main:
    - [ ] `shared/prom_query.py` + tests passing
-   - [ ] `shared/governance_queue.py` + overlay + inotify watcher + tests passing
+   - [ ] `shared/governance_queue.py` + inotify watcher + tests passing (Cairo overlay descoped to HSEA Phase 1 1.5)
    - [ ] `shared/spawn_budget.py` + caps YAML + overlay + tests passing
    - [ ] `scripts/promote-*.sh` (8 scripts) + `_promote-common.sh` + bats tests passing
    - [ ] `axioms/precedents/hsea/management-governance-drafting-as-content.yaml.draft` committed (final promotion deferred to LRR Phase 6 joint PR)
@@ -312,11 +312,11 @@ TDD checkbox task breakdown at `docs/superpowers/plans/2026-04-15-hsea-phase-0-f
 
 Execution order inside Phase 0 (single session, sequential per delta's Phase 0 foundation research):
 
-1. **0.6 epic state file** (hsea-state.yaml + research-stream-state.yaml + session-context.sh extension) — written first so session-context sees the phase as open immediately
-2. **0.1 prom_query** — no dependencies; unblocks 0.2's overlay
-3. **0.3 spawn_budget** — independent from 0.1 and 0.2; can interleave
-4. **0.2 governance_queue** — depends on 0.1 for overlay rendering
-5. **0.4 promote scripts** — depends on 0.2 ledger interface
+1. **0.6 epic state file** (hsea-state.yaml + verify-and-append research-stream-state.yaml + session-context.sh extension) — written first so session-context sees the phase as open immediately
+2. **0.1 prom_query** — no dependencies; required by 0.3's spawn-budget Cairo overlay and by all HSEA Phase 1 surfaces downstream
+3. **0.3 spawn_budget** — consumes 0.1 for its Cairo overlay; otherwise independent
+4. **0.2 governance_queue** — independent (Cairo overlay descoped to HSEA Phase 1 1.5 per drop #62 §7 row 2 resolution); can interleave with 0.1/0.3
+5. **0.4 promote scripts** — depends on 0.2 ledger module API for status lookups
 6. **0.5 axiom precedent draft** — ships last so the hook additions can reference the committed promote scripts by path
 
 Each deliverable is a separate PR (or a single multi-commit PR with reviewer pass per deliverable). Phase 0 closes when all six are merged, the shared index reflects closure, and the smoke tests pass.

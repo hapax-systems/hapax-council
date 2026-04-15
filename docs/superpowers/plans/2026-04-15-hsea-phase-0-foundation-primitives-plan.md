@@ -243,14 +243,17 @@ Depends on 0.1 (Cairo overlay uses `WatchedQueryPool`). Executed after 0.1 + 0.3
   - [ ] Graceful shutdown on SIGTERM
   - [ ] Systemd user unit: `systemd/user/hapax-governance-queue-watcher.service` (`Type=simple`, `Restart=on-failure`, `ExecStart=uv run python -m agents.governance_queue_watcher`)
 
-### 4.4 Cairo overlay source
+### 4.4 Cairo overlay source — DESCOPED to HSEA Phase 1 deliverable 1.5
 
-- [ ] Create `agents/studio_compositor/governance_queue_source.py` (~180 LOC):
-  - [ ] Implements `CairoSource` protocol
-  - [ ] Poller: `WatchedQueryPool.register` with a pseudo-query that reads from the ledger at 1 Hz (NOT prometheus — governance queue is not exported as metrics, the pool is being reused as a polling scheduler)
-  - [ ] OR: simpler — uses its own `threading.Timer` at 1 Hz; no dependency on prom_query for this specific source. Spec prefers the pool for consistency; implementer may choose.
-  - [ ] Badge: pending count + oldest-age + most-recent-id
-  - [ ] Color: green (0 pending), yellow (>24h oldest), red (>72h oldest)
+Per the 2026-04-15 extraction of HSEA Phase 1 spec + plan, the governance queue Cairo overlay is NOT a Phase 0 deliverable. It is shipped as deliverable 1.5 of HSEA Phase 1 (see `docs/superpowers/specs/2026-04-15-hsea-phase-1-visibility-surfaces-design.md` §3.5 + the companion Phase 1 plan).
+
+Phase 0 ships the queue primitive (module + inotify watcher + reap timer) only. The Cairo overlay is Phase 1's responsibility because:
+
+1. The HSEA epic spec listed the overlay in BOTH Phase 0 0.2 and Phase 1 1.5 (a pre-existing inconsistency).
+2. Drop #62 §7 resource budget row 2 re-listed the overlay as a Phase 1 surface.
+3. The phase names themselves argue for the split: Phase 0 = "Foundation Primitives" (primitives, not surfaces); Phase 1 = "Visibility Surfaces" (where Cairo overlays belong).
+
+Phase 0 session that opens this work should SKIP this subtask and proceed directly to task 4.5. Do NOT ship `agents/studio_compositor/governance_queue_source.py` as part of Phase 0.
 
 ### 4.5 Reap timer
 
@@ -260,8 +263,9 @@ Depends on 0.1 (Cairo overlay uses `WatchedQueryPool`). Executed after 0.1 + 0.3
 ### 4.6 Commit 0.2
 
 - [ ] Lint + format + pyright on all new files
-- [ ] `git add shared/governance_queue.py agents/governance_queue_watcher.py agents/studio_compositor/governance_queue_source.py tests/shared/test_governance_queue.py systemd/user/hapax-governance-queue-*.{timer,service}`
-- [ ] `git commit -m "feat(hsea-phase-0): 0.2 governance queue + inotify watcher + Cairo overlay + reap timer"`
+- [ ] `git add shared/governance_queue.py agents/governance_queue_watcher.py tests/shared/test_governance_queue.py systemd/user/hapax-governance-queue-*.{timer,service}`
+- [ ] NOTE: `agents/studio_compositor/governance_queue_source.py` is NOT staged here — it is HSEA Phase 1 deliverable 1.5
+- [ ] `git commit -m "feat(hsea-phase-0): 0.2 governance queue module + inotify watcher + reap timer"`
 - [ ] Update `hsea-state.yaml::phase_statuses[0].deliverables[0.2].status: completed`
 
 ---
