@@ -1,0 +1,40 @@
+implication_id: mg-drafting-visibility-001
+axiom_id: management_governance
+version: 1
+tier: T0
+enforcement: block
+canon: purposivist
+mode: compatibility
+level: system
+text: |
+  LLM-drafted content about specific team members (emails, messages,
+  performance feedback, 1:1 notes, coaching recommendations, reviews,
+  anything naming or implicitly identifying a person) MUST be visibly
+  marked as drafted AND MUST NOT be auto-sent to any delivery channel.
+  Operator review + manual delivery is the ONLY acceptable egress path.
+rationale: |
+  Management axiom: "LLMs prepare, humans deliver." This implication is
+  the operational teeth: drafts are marked + blocked from auto-send
+  regardless of model confidence, output formatting, or whether a consent
+  contract exists for the subject. The draft→delivery transition requires
+  a human gesture.
+scope:
+  applies_to:
+    - outbound_email_drafts
+    - slack_message_drafts
+    - feedback_documents
+    - 1_on_1_prep_notes
+    - performance_review_drafts
+    - coaching_recommendations
+  excludes:
+    - operator's own first-person notes
+    - non-person-specific content
+  markers: "visible DRAFT overlay, prefix text, frontmatter flag, explicit channel separation (drafts/ vs sent/)"
+cross_references:
+  drop_62: ["§3 row UP-8", "§10 Q5", "§12 Q2-Q10 batch"]
+  precedent: sp-hsea-mg-001
+authority:
+  ratified_by: operator
+  ratified_at: "2026-04-15T05:35Z"
+  ratification_vehicle: "Drop #62 §10 Q5 batch ratification. Joint hapax-constitution PR vehicle (UP-8)."
+  canonical_text_source: "delta → operator exchange 2026-04-15T20:18Z; operator approved delta's drafted text."

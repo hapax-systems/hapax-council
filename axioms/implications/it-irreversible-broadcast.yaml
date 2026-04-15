@@ -1,0 +1,33 @@
+implication_id: it-irreversible-broadcast
+axiom_id: interpersonal_transparency
+version: 1
+tier: T0
+enforcement: block
+canon: purposivist
+mode: compatibility
+level: system
+text: |
+  Any system output that broadcasts information about a non-operator person
+  to a public or otherwise irreversible channel (livestream, published clip,
+  saved transcript, third-party API, social post, permanent storage served
+  to outside readers) without an active consent contract from that person
+  MUST be blocked.
+rationale: |
+  Irreversible channels cannot be retracted; harm from an unratified
+  broadcast compounds over time. Hard gate at the stream-output boundary
+  and any equivalent publishing path. Enforcement: ConsentGatedWriter
+  wrappers on stream output + publishing paths; PR-time grep for
+  unrestricted write paths.
+scope:
+  applies_to: [stream_output, clip_publish, transcript_export, external_api_post]
+  excludes: [in-memory state, in-process telemetry, operator-local logs]
+  expansion_trigger: any new output surface that cannot be un-published
+cross_references:
+  drop_62: ["§3 row UP-8", "§10 Q5", "§12 Q2-Q10 batch", "§16 substrate scenario 1+2"]
+  precedent: sp-hsea-mg-001
+  related_implications: [su-privacy-001]
+authority:
+  ratified_by: operator
+  ratified_at: "2026-04-15T05:35Z"
+  ratification_vehicle: "Drop #62 §10 Q5 batch ratification (operator batch-accepted 9 decisions + 6 autonomous-queue items). Joint hapax-constitution PR vehicle (UP-8)."
+  canonical_text_source: "delta → operator exchange 2026-04-15T20:18Z (post drop #62 §10 Q5 ratification, canonical text was not authored in drop #62; operator approved delta's drafted text)."

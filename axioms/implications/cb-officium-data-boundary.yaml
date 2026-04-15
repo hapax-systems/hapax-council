@@ -1,0 +1,66 @@
+implication_id: cb-officium-data-boundary
+axiom_id: corporate_boundary
+version: 1
+tier: T0
+enforcement: block
+canon: textualist
+mode: compatibility
+level: system
+text: |
+  Data ownership boundary: hapax-officium is the work data system. Any
+  data originating in hapax-officium stays in hapax-officium. Non-officium
+  systems (hapax-council, personal vault at ~/Documents/Personal, hapax-watch,
+  hapax-phone, hapax-mcp, logos APIs, local caches) MUST NOT ingest
+  officium-originated data except via explicit operator action. Agents
+  MUST NOT auto-bridge data between officium and non-officium systems.
+enforcement_direction:
+  current: bidirectional
+  target: uni_directional_officium_outbound_only
+  rationale: |
+    Per operator direction 2026-04-15T20:20Z: "Start bi-directional because
+    of safety, however, uni is ideal." Ship bidirectional on day 1 to
+    maximize safety while tooling matures; migrate to uni-directional
+    (officium → elsewhere blocked; elsewhere → officium allowed) as a
+    follow-up when the enforcement surface is stable enough to trust
+    non-officium-originated data entering officium.
+rationale: |
+  The parent corporate_boundary axiom addresses a distinct infrastructure
+  concern (obsidian-hapax plugin cross-network behavior on employer-managed
+  devices). This implication layers a data-ownership rule on top: the
+  technical work boundary is defined by data ORIGIN, not device or network.
+  officium holds work data; everything else holds personal + management-
+  practice + home-system data. Bidirectional start preserves both systems'
+  invariants while trust is built.
+scope:
+  work_system: hapax-officium
+  non_work_systems:
+    - hapax-council
+    - ~/Documents/Personal/ (Obsidian vault)
+    - hapax-watch
+    - hapax-phone
+    - hapax-mcp
+    - logos API state / caches
+  applies_to:
+    - direct file writes across system boundaries
+    - shared database writes that cross-contaminate (postgres, qdrant, redis)
+    - LLM tool invocations that read one system and write to another
+    - sync agents
+    - subprocess invocations that pipe between systems
+  excludes:
+    - explicit operator-authorized transfers (manual git, curl, copy-paste)
+    - read-only queries that don't persist cross-system state
+    - shared immutable infrastructure (hapax-sdlc package from constitution)
+enforcement_surfaces:
+  - pre-commit hook that greps for cross-system path patterns
+  - agent-level gate in shared/consent.py or equivalent
+  - write-boundary wrapper on officium storage layer
+  - write-boundary wrapper on council storage layer
+cross_references:
+  drop_62: ["§3 row UP-8 (PR vehicle)", "§10 Q5", "§12 Q2-Q10 batch"]
+  related_implications: [it-irreversible-broadcast, mg-drafting-visibility-001]
+  precedent: sp-hsea-mg-001
+  parent_axiom_text_unchanged: "corporate_boundary axiom (registry.yaml lines 66-79) remains the obsidian-hapax plugin cross-network rule. This implication is additive, not corrective. Operator chose Option B (new implication file, preserve existing axiom text) at 2026-04-15T20:18Z."
+authority:
+  ratified_by: operator
+  ratified_at: "2026-04-15T20:18Z"
+  ratification_vehicle: "Direct operator response to delta: '1a 2 work data is anything that originates in officium. the real boundary on a technical level is officium = work. Everything else, not work.' Operator chose Option B + bidirectional start at 20:20Z."
