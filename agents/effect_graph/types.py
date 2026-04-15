@@ -69,14 +69,6 @@ class ModulationBinding(BaseModel):
     decay: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
-class LayerPalette(BaseModel):
-    saturation: float = Field(default=1.0, ge=0.0, le=2.0)
-    brightness: float = Field(default=1.0, ge=0.0, le=2.0)
-    contrast: float = Field(default=1.0, ge=0.0, le=2.0)
-    sepia: float = Field(default=0.0, ge=0.0, le=1.0)
-    hue_rotate: float = Field(default=0.0, ge=-180.0, le=180.0)
-
-
 class PresetInput(BaseModel):
     """Preset-level binding from a SourceRegistry source pad to a layer slot.
 
@@ -121,7 +113,6 @@ class EffectGraph(BaseModel):
     nodes: dict[str, NodeInstance]
     edges: list[list[str]]
     modulations: list[ModulationBinding] = Field(default_factory=list)
-    layer_palettes: dict[str, LayerPalette] = Field(default_factory=dict)
     # Phase 7 of the source-registry completion epic (parent task I26):
     # optional per-preset source pad bindings. When present, the preset
     # loader resolves each ``pad`` against the live ``SourceRegistry``

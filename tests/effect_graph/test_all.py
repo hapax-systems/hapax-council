@@ -14,7 +14,6 @@ from agents.effect_graph.types import (
     EdgeDef,
     EffectGraph,
     GraphPatch,
-    LayerPalette,
     ModulationBinding,
     NodeInstance,
     ParamDef,
@@ -41,11 +40,6 @@ def test_edge_def_ports():
 def test_edge_def_bad():
     with pytest.raises(ValueError):
         EdgeDef.from_list(["only"])
-
-
-def test_layer_palette_validation():
-    with pytest.raises(ValidationError):
-        LayerPalette(saturation=5.0)
 
 
 def test_smoothing_validation():
@@ -465,11 +459,6 @@ def test_runtime_topology(runtime):
         )
     )
     assert "b" in runtime.current_graph.nodes
-
-
-def test_runtime_palette(runtime):
-    runtime.set_layer_palette("live", LayerPalette(saturation=0.5))
-    assert runtime.get_layer_palette("live").saturation == 0.5
 
 
 def test_runtime_modulations(runtime):

@@ -21,7 +21,6 @@ from agents.effect_graph.types import (
     EdgeDef,
     EffectGraph,
     GraphPatch,
-    LayerPalette,
     ModulationBinding,
     NodeInstance,
     ParamDef,
@@ -199,37 +198,6 @@ class TestModulationBinding:
             ModulationBinding(node="a", param="b", source="s", smoothing=-0.01)
 
 
-class TestLayerPalette:
-    def test_defaults(self):
-        lp = LayerPalette()
-        assert lp.saturation == 1.0 and lp.brightness == 1.0 and lp.contrast == 1.0
-        assert lp.sepia == 0.0 and lp.hue_rotate == 0.0
-
-    def test_custom(self):
-        lp = LayerPalette(saturation=0.5, hue_rotate=-45.0)
-        assert lp.saturation == 0.5
-
-    def test_saturation_too_high(self):
-        with pytest.raises(ValidationError):
-            LayerPalette(saturation=2.1)
-
-    def test_saturation_too_low(self):
-        with pytest.raises(ValidationError):
-            LayerPalette(saturation=-0.1)
-
-    def test_sepia_range(self):
-        with pytest.raises(ValidationError):
-            LayerPalette(sepia=1.1)
-
-    def test_hue_rotate_range(self):
-        with pytest.raises(ValidationError):
-            LayerPalette(hue_rotate=181.0)
-
-    def test_hue_rotate_negative(self):
-        lp = LayerPalette(hue_rotate=-180.0)
-        assert lp.hue_rotate == -180.0
-
-
 class TestEffectGraph:
     def test_minimal(self):
         g = _minimal_graph()
@@ -249,14 +217,6 @@ class TestEffectGraph:
             modulations=[ModulationBinding(node="c", param="saturation", source="audio_rms")],
         )
         assert len(g.modulations) == 1
-
-    def test_with_layer_palettes(self):
-        g = EffectGraph(
-            nodes={"c": NodeInstance(type="colorgrade"), "o": NodeInstance(type="output")},
-            edges=[["@live", "c"], ["c", "o"]],
-            layer_palettes={"live": LayerPalette(saturation=0.5)},
-        )
-        assert g.layer_palettes["live"].saturation == 0.5
 
     def test_transition_ms_default(self):
         g = _minimal_graph()
@@ -840,11 +800,6 @@ class TestRuntimeInitial:
         assert runtime.current_graph is None
         assert runtime.current_plan is None
 
-    def test_initial_palettes(self, runtime: GraphRuntime):
-        for layer in ("live", "smooth", "hls"):
-            p = runtime.get_layer_palette(layer)
-            assert p.saturation == 1.0
-
     def test_initial_state_export(self, runtime: GraphRuntime):
         state = runtime.get_graph_state()
         assert state["graph"] is None
@@ -980,15 +935,6 @@ class TestRuntimeLevel3FullReplace:
         runtime.load_graph(g2)
         assert len(runtime.modulator.bindings) == 0
 
-    def test_load_applies_palettes(self, runtime: GraphRuntime):
-        g = EffectGraph(
-            nodes={"c": NodeInstance(type="colorgrade"), "o": NodeInstance(type="output")},
-            edges=[["@live", "c"], ["c", "o"]],
-            layer_palettes={"live": LayerPalette(saturation=0.3)},
-        )
-        runtime.load_graph(g)
-        assert runtime.get_layer_palette("live").saturation == 0.3
-
     def test_load_fires_callback(self, runtime: GraphRuntime):
         calls = []
         runtime._on_plan_changed = lambda old, new: calls.append(True)
@@ -1002,39 +948,16 @@ class TestRuntimeLevel3FullReplace:
         assert runtime.current_graph.nodes["c"].params.get("saturation") != 999
 
 
-class TestRuntimeLayerPalettes:
-    def test_set_and_get(self, runtime: GraphRuntime):
-        runtime.set_layer_palette("live", LayerPalette(saturation=0.5, hue_rotate=-30))
-        p = runtime.get_layer_palette("live")
-        assert p.saturation == 0.5 and p.hue_rotate == -30
-
-    def test_independent_layers(self, runtime: GraphRuntime):
-        runtime.set_layer_palette("live", LayerPalette(saturation=0.5))
-        runtime.set_layer_palette("smooth", LayerPalette(saturation=0.8))
-        assert runtime.get_layer_palette("live").saturation == 0.5
-        assert runtime.get_layer_palette("smooth").saturation == 0.8
-
-    def test_unknown_layer_returns_default(self, runtime: GraphRuntime):
-        p = runtime.get_layer_palette("nonexistent")
-        assert p.saturation == 1.0
-
-    def test_set_unknown_layer_ignored(self, runtime: GraphRuntime):
-        runtime.set_layer_palette("nonexistent", LayerPalette(saturation=0.1))
-        # Should not raise, palette not stored
-
-
 class TestRuntimeStateExport:
     def test_no_graph(self, runtime: GraphRuntime):
         state = runtime.get_graph_state()
         assert state["graph"] is None
-        assert state["layer_palettes"] == {}
         assert state["modulations"] == []
 
     def test_with_graph(self, runtime: GraphRuntime):
         runtime.load_graph(_minimal_graph(name="test"))
         state = runtime.get_graph_state()
         assert state["graph"]["name"] == "test"
-        assert "live" in state["layer_palettes"]
 
     def test_state_serializable(self, runtime: GraphRuntime):
         runtime.load_graph(_minimal_graph())

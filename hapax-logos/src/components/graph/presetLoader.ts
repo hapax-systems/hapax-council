@@ -13,7 +13,6 @@ export interface EffectGraphJson {
   nodes: Record<string, { type: string; params: Record<string, number | string | boolean> }>;
   edges: [string, string][];
   modulations: { node: string; param: string; source: string; scale?: number; offset?: number; smoothing?: number }[];
-  layer_palettes?: Record<string, unknown>;
 }
 
 /** Convert EffectGraph JSON → React Flow nodes + edges with dagre layout. */

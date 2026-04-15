@@ -213,27 +213,6 @@ async def remove_graph_node(node_id: str):
     return {"status": "ok"}
 
 
-@router.patch("/studio/layer/{layer}/palette")
-async def set_layer_palette(layer: str, palette: dict[str, object]):
-    from agents.effect_graph.types import LayerPalette
-
-    if layer not in ("live", "smooth", "hls"):
-        raise HTTPException(400, f"Invalid layer: {layer}")
-    rt = _get_runtime()
-    if not rt:
-        raise HTTPException(503, "Compositor not available")
-    rt.set_layer_palette(layer, LayerPalette(**palette))
-    return {"status": "ok"}
-
-
-@router.get("/studio/layer/status")
-async def get_layer_status():
-    rt = _get_runtime()
-    if not rt:
-        return {"layers": {}}
-    return {"layers": {l: rt.get_layer_palette(l).model_dump() for l in ("live", "smooth", "hls")}}
-
-
 @router.put("/studio/effect/graph/modulations")
 async def replace_modulations(bindings: list[dict[str, object]]):
     from agents.effect_graph.types import ModulationBinding

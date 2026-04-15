@@ -77,8 +77,6 @@ interface:
     type: list[list[str]]
   - name: modulations
     type: list[ModulationBinding]
-  - name: layer_palettes
-    type: dict[str, LayerPalette]
   - name: add_nodes
     type: dict[str, NodeInstance]
   - name: remove_nodes

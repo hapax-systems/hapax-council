@@ -21,8 +21,7 @@ Covers:
 - [ ] EdgeDef: simple, with ports, layer sources (@live/@smooth/@hls)
 - [ ] NodeInstance: with params, empty, nested
 - [ ] ModulationBinding: defaults, custom scale/offset/smoothing, bounds enforcement
-- [ ] LayerPalette: defaults, custom, range validation (sat/bright/contrast 0-2, sepia 0-1, hue -180..180)
-- [ ] EffectGraph: minimal, parsed_edges, modulations, palettes, transition_ms
+- [ ] EffectGraph: minimal, parsed_edges, modulations, transition_ms
 - [ ] GraphPatch: empty, add nodes/edges, remove nodes/edges
 - [ ] Registry: loads all 54 node types, sorted, unknown returns None
 - [ ] Registry: all node categories (35 processing, 6 temporal, 5 compositing, 3 generative, 2 meta)
@@ -242,43 +241,33 @@ curl -s localhost:8051/api/studio/effect/graph/modulations | python3 -m json.too
 ## Layer 10: API Routes — Layer Control
 
 ```bash
-# 10.1 Get layer status
-curl -s localhost:8051/api/studio/layer/status | python3 -m json.tool
-
-# 10.2 Set layer palette
-curl -s -X PATCH localhost:8051/api/studio/layer/live/palette \
-  -H 'Content-Type: application/json' \
-  -d '{"saturation": 0.8, "brightness": 1.1, "contrast": 1.2, "sepia": 0.0, "hue_rotate": 0.0}' | python3 -m json.tool
-
-# 10.3 Enable/disable layer
+# 10.1 Enable/disable layer
 curl -s -X PATCH localhost:8051/api/studio/layer/smooth/enabled \
   -H 'Content-Type: application/json' \
   -d '{"enabled": true}' | python3 -m json.tool
 
-# 10.4 Verify flag file created
+# 10.2 Verify flag file created
 cat /dev/shm/hapax-compositor/layer-smooth-enabled.txt
 
-# 10.5 Set smooth delay
+# 10.3 Set smooth delay
 curl -s -X PATCH localhost:8051/api/studio/layer/smooth/delay \
   -H 'Content-Type: application/json' \
   -d '{"delay_seconds": 3.0}' | python3 -m json.tool
 
-# 10.6 Verify delay file
+# 10.4 Verify delay file
 cat /dev/shm/hapax-compositor/smooth-delay.txt
 
-# 10.7 Invalid layer name → 400
+# 10.5 Invalid layer name → 400
 curl -s -X PATCH localhost:8051/api/studio/layer/invalid/enabled \
   -H 'Content-Type: application/json' \
   -d '{"enabled": true}' -w "\n%{http_code}"
 
-# 10.8 Invalid delay value → 400
+# 10.6 Invalid delay value → 400
 curl -s -X PATCH localhost:8051/api/studio/layer/smooth/delay \
   -H 'Content-Type: application/json' \
   -d '{"delay_seconds": 50}' -w "\n%{http_code}"
 ```
 
-- [ ] GET layer status returns palettes for all three layers
-- [ ] PATCH palette updates layer color grading
 - [ ] PATCH enabled writes flag file to /dev/shm
 - [ ] PATCH delay writes seconds to /dev/shm
 - [ ] Invalid layer name returns 400
@@ -298,7 +287,7 @@ curl -s localhost:8051/api/studio/presets/ghost | python3 -m json.tool | head -1
 # 11.3 Save user preset
 curl -s -X PUT localhost:8051/api/studio/presets/test_smoke \
   -H 'Content-Type: application/json' \
-  -d '{"name":"smoke test","description":"test","transition_ms":500,"nodes":{"cg":{"type":"colorgrade","params":{"saturation":1.5}},"out":{"type":"output","params":{}}},"edges":[["@live","cg"],["cg","out"]],"modulations":[],"layer_palettes":{}}' | python3 -m json.tool
+  -d '{"name":"smoke test","description":"test","transition_ms":500,"nodes":{"cg":{"type":"colorgrade","params":{"saturation":1.5}},"out":{"type":"output","params":{}}},"edges":[["@live","cg"],["cg","out"]],"modulations":[]}' | python3 -m json.tool
 
 # 11.4 Verify saved preset appears in list
 curl -s localhost:8051/api/studio/presets | python3 -c "import sys,json; d=json.load(sys.stdin); print([p['name'] for p in d['presets'] if p['name']=='test_smoke'])"

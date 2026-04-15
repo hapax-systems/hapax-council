@@ -190,28 +190,6 @@ for (const role of roles.slice(0, 3)) { // Test first 3
 
 ---
 
-## Layer 6: Layer Palette Control
-
-```javascript
-// 6.1 Set live layer palette (warm)
-await page.evaluate('() => fetch("/api/studio/layer/live/palette", {method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({saturation: 0.5, brightness: 1.2, contrast: 1.1, sepia: 0.3, hue_rotate: 15})})');
-await page.waitForTimeout(500);
-await page.screenshot({path: 'smoke-palette-warm.jpg', type: 'jpeg', quality: 90});
-
-// 6.2 Reset to neutral
-await page.evaluate('() => fetch("/api/studio/layer/live/palette", {method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({saturation: 1.0, brightness: 1.0, contrast: 1.0, sepia: 0.0, hue_rotate: 0.0})})');
-
-// 6.3 Verify layer status
-const layers = await page.evaluate('() => fetch("/api/studio/layer/status").then(r => r.json())');
-// Expected: layers.layers has live, smooth, hls keys
-```
-
-- [ ] Palette change affects visual output
-- [ ] Reset returns to neutral
-- [ ] Layer status reports all three layers
-
----
-
 ## Layer 7: Layer Enable/Disable
 
 ```javascript
@@ -288,7 +266,7 @@ const trail = await page.evaluate('() => fetch("/api/studio/effect/nodes/trail")
 
 ```javascript
 // 10.1 Save user preset
-const testGraph = {name:"playwright-test", description:"smoke", transition_ms:500, nodes:{cg:{type:"colorgrade",params:{saturation:2.0}},out:{type:"output",params:{}}}, edges:[["@live","cg"],["cg","out"]], modulations:[], layer_palettes:{}};
+const testGraph = {name:"playwright-test", description:"smoke", transition_ms:500, nodes:{cg:{type:"colorgrade",params:{saturation:2.0}},out:{type:"output",params:{}}}, edges:[["@live","cg"],["cg","out"]], modulations:[]};
 await page.evaluate(`(g) => fetch("/api/studio/presets/playwright_test", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(g)})`, testGraph);
 
 // 10.2 Verify in list
@@ -400,14 +378,12 @@ await page.screenshot({path: 'smoke-stress-final.jpg', type: 'jpeg', quality: 90
 
 ---
 
-## Layer 14: Combined Flow — Effect + Layer + Camera
+## Layer 14: Combined Flow — Effect + Camera + Smooth
 
 ```javascript
-// Full integration: activate preset, set palette, switch camera, enable smooth
+// Full integration: activate preset, switch camera, enable smooth
 await page.evaluate('() => window.__logos.execute("studio.preset.activate", {name: "neon"})');
 await page.waitForTimeout(1000);
-
-await page.evaluate('() => fetch("/api/studio/layer/live/palette", {method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({saturation: 1.5, hue_rotate: 30})})');
 
 await page.evaluate('() => fetch("/api/studio/camera/select", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({role: "c920-room"})})');
 await page.waitForTimeout(1000);
@@ -421,16 +397,14 @@ await page.screenshot({path: 'smoke-combined.jpg', type: 'jpeg', quality: 90});
 const combined = {
     preset: await page.evaluate('() => window.__logos.query("studio.activePreset")'),
     smooth: await page.evaluate('() => window.__logos.query("studio.smoothMode")'),
-    layers: await page.evaluate('() => fetch("/api/studio/layer/status").then(r => r.json())'),
 };
-// Expected: preset === "neon", smooth === true, layers has modified palette
+// Expected: preset === "neon", smooth === true
 
 // Clean up
 await page.evaluate('() => window.__logos.execute("studio.smooth.disable")');
-await page.evaluate('() => fetch("/api/studio/layer/live/palette", {method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({saturation: 1.0, brightness: 1.0, contrast: 1.0, sepia: 0.0, hue_rotate: 0.0})})');
 ```
 
-- [ ] Preset + palette + camera + smooth all active simultaneously
+- [ ] Preset + camera + smooth all active simultaneously
 - [ ] State queries return correct combined state
 - [ ] Clean teardown works
 
