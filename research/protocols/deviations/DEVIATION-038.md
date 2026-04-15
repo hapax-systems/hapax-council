@@ -4,6 +4,36 @@
 **Phase at time of change:** baseline (LRR Phase 4 open pending — this DEVIATION is filed as part of the Phase 4 engineering bootstrap, before active Condition A collection begins)
 **Author:** beta (LRR audit + Phase 4 bootstrap session)
 
+## Files covered by this DEVIATION
+
+This DEVIATION authorizes edits to the following frozen files (listed
+verbatim for `check-frozen-files.py` substring-match coverage):
+
+- `agents/hapax_daimonion/grounding_evaluator.py` — Inner Zone of
+  `experiment-freeze-manifest.txt`. Edited to add `metadata` kwarg
+  on `hapax_score(...)` calls so voice grounding DVs in Langfuse are
+  attributable to the active research condition_id.
+- `agents/hapax_daimonion/conversation_pipeline.py` — Middle Zone of
+  `experiment-freeze-manifest.txt` AND listed in
+  `~/hapax-state/research-registry/cond-phase-a-baseline-qwen-001/condition.yaml::frozen_files`.
+  Edited to (a) read the active research condition via the new
+  `shared/research_marker.py` helper and (b) pass `condition_id`
+  into the trace metadata dict on `hapax_trace(...)` + as a kwarg on
+  every `hapax_score(...)` call that tags a grounding DV.
+- `agents/hapax_daimonion/proofs/CYCLE-2-PREREGISTRATION.md` — Inner
+  Zone (the entire `proofs/` subtree is frozen). Three surgical
+  pre-filing amendments to §2.3, §3.2, §4.1 so the pre-registration
+  document reflects the livestream-only data source before the OSF
+  filing in Phase 4 scope item 4.
+
+All three edits are bundled into a single DEVIATION because they are
+components of one coherent change: LRR Phase 4 adopting the
+livestream-only rule for experimental data collection. Splitting into
+three DEVIATIONs would obscure that they are interdependent — the
+research marker read is useless without the metadata kwargs that
+consume it, and the pre-registration amendment describes the
+implementation set that the other two effects realize.
+
 ## What Changed
 
 Two discrete effects, bundled into one DEVIATION because they are both part of LRR Phase 4's engineering bootstrap and share a single conceptual root (adopting the livestream-only rule for experimental data collection):
