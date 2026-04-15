@@ -2,7 +2,8 @@
 
 **Phase:** 2 (Archive + Replay as Research Instrument)
 **Status:** authoritative (this document governs the archive lifecycle)
-**Referenced from:** `docs/superpowers/specs/2026-04-14-lrr-phase-2-archive-research-instrument-design.md` §Item 8
+**Referenced from:** `docs/superpowers/specs/2026-04-15-lrr-phase-2-archive-research-instrument-design.md` §3.8 (item 8)
+**Renamed:** 2026-04-15 from `docs/superpowers/specs/2026-04-14-lrr-phase-2-archive-retention.md` to match the LRR Phase 2 extraction spec path convention (delta queue refill 4 item #62).
 
 ## Principle
 
