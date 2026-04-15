@@ -69,6 +69,51 @@ class SourceRegistry:
         """Return the list of registered source_ids in insertion order."""
         return list(self._backends.keys())
 
+    def start_all(self) -> None:
+        """Start every registered backend that exposes a ``start()`` method.
+
+        Drop #41 BT-1 fix: Phase 9 Task 29 of the compositor unification
+        epic removed the legacy Cairo-source facades' draw calls but
+        left the replacement path unwired. Layout-declared Cairo
+        sources (``token_pole``, ``album``, ``stream_overlay``,
+        ``reverie``) were constructed via :meth:`construct_backend` and
+        :meth:`register`-ed, but nothing ever called ``start()`` on the
+        resulting :class:`CairoSourceRunner` instances — so the
+        background render threads never ran,
+        ``get_current_surface()`` always returned ``None``, and
+        ``pip_draw_from_layout`` silently skipped every source
+        (``if src is None: continue``). The operator-visible symptom
+        was "PiP content missing from the livestream output" —
+        ``costs.json`` only recorded the two legacy facades
+        (``sierpinski-lines`` + ``overlay-zones``), confirming the
+        other 4 sources had never ticked.
+
+        This method is idempotent and type-tolerant: any backend with
+        a ``start()`` attribute gets called. ``ShmRgbaReader`` and
+        similar passive backends that don't expose ``start()`` are
+        left alone. Per-backend start failures are logged and
+        swallowed — a broken cairo class must not take down the
+        compositor's layout wiring. ``CairoSourceRunner.start()`` is
+        itself idempotent (the runner tracks its own thread state),
+        so calling ``start_all()`` twice is safe.
+
+        Called at the end of
+        :meth:`StudioCompositor.start_layout_only`, after all
+        registrations complete.
+        """
+        for source_id, backend in self._backends.items():
+            start = getattr(backend, "start", None)
+            if start is None:
+                continue
+            try:
+                start()
+                log.info("SourceRegistry.start_all: started %s", source_id)
+            except Exception:
+                log.exception(
+                    "SourceRegistry.start_all: failed to start %s",
+                    source_id,
+                )
+
     def construct_backend(
         self,
         source: SourceSchema,
