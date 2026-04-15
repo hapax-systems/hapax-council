@@ -32,6 +32,25 @@ import cairo
 
 log = logging.getLogger(__name__)
 
+# Guarded against CI environments that lack the Pango/PangoCairo typelibs.
+# Same pattern as `sierpinski_renderer._HAS_GDK`. `_build_layout` short-
+# circuits via `_HAS_PANGO` so the CairoSource render path becomes a
+# no-op rather than raising; callers that do need real text rendering
+# (running compositor on the operator workstation) always have the
+# typelibs installed and land in the live path.
+try:
+    import gi
+
+    gi.require_version("Pango", "1.0")
+    gi.require_version("PangoCairo", "1.0")
+    from gi.repository import Pango, PangoCairo  # noqa: E402
+
+    _HAS_PANGO = True
+except (ImportError, ValueError):
+    Pango = None  # type: ignore[assignment]
+    PangoCairo = None  # type: ignore[assignment]
+    _HAS_PANGO = False
+
 # Standard outline offset patterns. Callers can supply custom tuples,
 # but these two cover the existing OverlayZone (8-offset thick) and
 # AlbumOverlay (4-offset axis-aligned) cases verbatim.
@@ -99,15 +118,12 @@ class _LayoutBundle:
 def _build_layout(cr: cairo.Context, style: TextStyle) -> _LayoutBundle:
     """Construct a Pango layout for ``style`` on ``cr``.
 
-    Imports PangoCairo lazily so the helper can be unit-tested without
-    GTK installed in the test environment (the import only fires when
-    a real Cairo context is in play).
+    When the Pango typelibs are absent (CI), returns an empty bundle
+    with ``width_px == height_px == 0`` so callers (measure/render)
+    become safe no-ops instead of raising at import time.
     """
-    import gi
-
-    gi.require_version("Pango", "1.0")
-    gi.require_version("PangoCairo", "1.0")
-    from gi.repository import Pango, PangoCairo
+    if not _HAS_PANGO:
+        return _LayoutBundle(layout=None, width_px=0, height_px=0)
 
     layout = PangoCairo.create_layout(cr)
     font = Pango.FontDescription.from_string(style.font_description)
@@ -149,9 +165,10 @@ def render_text(
 
     The single Pango code path. Used by inline draws (e.g.
     AlbumOverlay attribution) where the text composites directly into
-    the live cairooverlay context.
+    the live cairooverlay context. No-op when Pango is unavailable.
     """
-    from gi.repository import PangoCairo
+    if not _HAS_PANGO:
+        return 0, 0
 
     bundle = _build_layout(cr, style)
 

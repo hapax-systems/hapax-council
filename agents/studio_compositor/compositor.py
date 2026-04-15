@@ -563,6 +563,15 @@ class StudioCompositor:
         self.layout_state = state
         self.source_registry = registry
 
+        # Drop #41 BT-1 fix: start every registered backend that exposes
+        # a start() method. Previously this was missing, leaving
+        # layout-declared Cairo sources (token_pole, album,
+        # stream_overlay, reverie) constructed-but-dormant — their
+        # background render threads never ran and pip_draw_from_layout
+        # silently skipped them. See SourceRegistry.start_all docstring
+        # for the full analysis.
+        registry.start_all()
+
         # Phase 10 carry-over from Phase 2 item 10: attach the router
         # that enumerates video_out surfaces. Pure data plumbing —
         # the legacy hardcoded sink construction in ``pipeline.py`` is
