@@ -1,0 +1,50 @@
+precedent_id: sp-hsea-mg-001
+axiom_id: management_governance
+secondary_axioms: [interpersonal_transparency]
+version: 1
+short_name: "drafting-as-content"
+situation: |
+  HSEA Phase 0 agents (and any phase in drafting mode) produce LLM-
+  generated content intended to eventually compose into the Legomena Live
+  stream output. At drafting time, content is non-final, may contain
+  hallucinations, may reference individuals, and has not received operator
+  review. If draft content appears on-stream unmarked, viewers conflate it
+  with operator-ratified statements.
+decision: |
+  Drafting-as-content rule: any draft-phase artifact that composes into
+  stream output MUST be visibly marked as draft state. Acceptable markers
+  include overlay typography, channel separation, watermark, or frontmatter-
+  driven rendering. Draft content is NOT stream-ready content. Operator
+  ratification (explicit gesture, not implicit elapsed-time approval)
+  flips an artifact from draft to stream-ready.
+reasoning: |
+  The rule is SUBSTRATE-AGNOSTIC — does not depend on which LLM produces
+  the draft. Qwen3.5-9B, OLMo 3-7B, Claude, or any future substrate produce
+  drafts that compose into the stream the same way. Governance concern
+  is CONTENT STATE, not substrate identity.
+
+  DISTINCT from the 70B reactivation guard (substrate-specific, LRR Phase 6).
+  sp-hsea-mg-001 is about content state; the 70B guard is about substrate
+  identity. Drop #62 §14.4(c) formally split these to prevent conflation.
+
+  Binds both management_governance (drafts as operator-deliverable prep)
+  and interpersonal_transparency (drafts mentioning non-operator persons
+  carry consent implications).
+authority:
+  ratified_by: operator
+  ratified_at: "2026-04-15T05:35Z"
+  ratification_vehicle: "Drop #62 §10 Q5 batch ratification. Subsequently disambiguated from the 70B reactivation guard via drop #62 §14.4(c) (commit 6293a9a29). Joint hapax-constitution PR vehicle (UP-8)."
+  canonical_text_source: "delta → operator exchange 2026-04-15T20:18Z; operator approved delta's drafted text."
+cross_references:
+  drop_62:
+    - "§3 row UP-8 (PR vehicle)"
+    - "§10 Q5 (initial ratification)"
+    - "§12 Q2-Q10 batch ratification"
+    - "§13 5b reframing"
+    - "§14 Hermes abandonment"
+    - "§14.4(c) precedent disambiguation"
+    - "§16 substrate scenario 1+2 ratification"
+  related_implications:
+    - it-irreversible-broadcast
+    - mg-drafting-visibility-001
+    - cb-officium-data-boundary
