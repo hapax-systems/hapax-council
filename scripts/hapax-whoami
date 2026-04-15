@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# hapax-whoami — print the calling Claude Code session's identity by walking
+# the process tree up to the foot terminal window and reading its Hyprland
+# window title (alpha / beta / delta / epsilon / gamma / zeta).
+#
+# Operator convention: each foot window running a Claude Code session is
+# manually titled with the session name (e.g. "alpha"). Claude Code prepends
+# an activity spinner glyph (⠐, ✳, etc.) to the title, which this script
+# strips before emitting the bare identity.
+#
+# Exit codes:
+#   0 — identity printed to stdout
+#   1 — no foot ancestor found, or title has no recognized identity
+#   2 — missing dependencies (hyprctl, jq) OR hyprctl output invalid
+#       (Hyprland socket unavailable — e.g. HYPRLAND_INSTANCE_SIGNATURE not set)
+#
+# Installation: install to `~/.local/bin/hapax-whoami` + `chmod +x`.
+
+set -eu
+
+# Walk up the process tree from $$ looking for a `foot` ancestor.
+pid=$$
+foot_pid=""
+depth=0
+while [ "$pid" -gt 1 ] && [ "$depth" -lt 32 ]; do
+  if [ ! -r "/proc/$pid/comm" ]; then
+    break
+  fi
+  comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+  if [ "$comm" = "foot" ]; then
+    foot_pid=$pid
+    break
+  fi
+  # Field 4 of /proc/PID/stat is ppid. The second field is (comm) which can
+  # contain parentheses/spaces; use the `)` as a boundary.
+  stat_line=$(cat "/proc/$pid/stat" 2>/dev/null || true)
+  [ -z "$stat_line" ] && break
+  pid=$(echo "$stat_line" | awk -F')' '{print $2}' | awk '{print $2}')
+  [ -z "$pid" ] && break
+  depth=$((depth + 1))
+done
+
+if [ -z "$foot_pid" ]; then
+  echo "hapax-whoami: no foot ancestor found within $depth levels" >&2
+  exit 1
+fi
+
+command -v hyprctl >/dev/null 2>&1 || { echo "hapax-whoami: hyprctl not found" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { echo "hapax-whoami: jq not found" >&2; exit 2; }
+
+# Per beta #215 Edge 3: if HYPRLAND_INSTANCE_SIGNATURE is missing (e.g. run
+# via `env -i`), hyprctl prints an error line to stdout instead of JSON,
+# which confuses jq downstream. Capture hyprctl output first + validate that
+# it parses as JSON before feeding to the real jq query.
+hyprctl_json=$(hyprctl clients -j 2>&1) || {
+  echo "hapax-whoami: hyprctl failed: $hyprctl_json" >&2
+  exit 2
+}
+if ! echo "$hyprctl_json" | jq empty 2>/dev/null; then
+  echo "hapax-whoami: hyprctl output is not valid JSON (Hyprland socket unavailable? HYPRLAND_INSTANCE_SIGNATURE set?)" >&2
+  echo "hapax-whoami: raw first line: $(echo "$hyprctl_json" | head -1)" >&2
+  exit 2
+fi
+
+title=$(echo "$hyprctl_json" | jq -r --argjson pid "$foot_pid" '.[] | select(.pid == $pid) | .title')
+
+if [ -z "$title" ] || [ "$title" = "null" ]; then
+  echo "hapax-whoami: no window title for foot pid $foot_pid" >&2
+  exit 1
+fi
+
+# Match a known session name. Case-insensitive, last match wins so activity
+# glyphs + prefixes don't interfere.
+identity=$(echo "$title" | grep -oiE '\b(alpha|beta|gamma|delta|epsilon|zeta|eta)\b' | tail -1 | tr '[:upper:]' '[:lower:]')
+
+if [ -z "$identity" ]; then
+  echo "hapax-whoami: window title did not match a known session name: $title" >&2
+  exit 1
+fi
+
+echo "$identity"
