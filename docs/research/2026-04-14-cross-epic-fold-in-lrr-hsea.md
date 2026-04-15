@@ -1,14 +1,57 @@
 # Drop #62 — Cross-epic fold-in: LRR ↔ HSEA unified roadmap
 
-**Date:** 2026-04-14
-**Author:** delta (research support role, synthesizing cross-epic fold-in research agent)
-**Status:** Draft synthesis. Operator decisions required at §4 (substrate swap), §6 (state file), §10 (open questions).
+**Date:** 2026-04-14 (original) through 2026-04-15 (§11-§17 addenda)
+**Author:** delta (original, §1-§10) + delta/alpha (addenda §11-§17)
+**Status:** original synthesis §1-§10 resolved via operator ratifications in §11-§17. Substrate question closed via §16 + §17 Option C pivot.
 **Source documents:**
-- LRR spec: `/home/hapax/projects/hapax-council/docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` (1371 lines, 11 phases, alpha-authored)
-- LRR plan: `/home/hapax/projects/hapax-council/docs/superpowers/plans/2026-04-14-livestream-research-ready-epic-plan.md`
-- HSEA spec: `/home/hapax/projects/hapax-council/docs/superpowers/specs/2026-04-14-hsea-epic-design.md` (794 lines, 13 phases, delta-authored)
-- HSEA plan: `/home/hapax/projects/hapax-council/docs/superpowers/plans/2026-04-14-hsea-epic-plan.md`
+- LRR spec: `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` (1371 lines, 11 phases, alpha-authored)
+- LRR plan: `docs/superpowers/plans/2026-04-14-livestream-research-ready-epic-plan.md`
+- HSEA spec: `docs/superpowers/specs/2026-04-14-hsea-epic-design.md` (794 lines, 13 phases, delta-authored)
+- HSEA plan: `docs/superpowers/plans/2026-04-14-hsea-epic-plan.md`
 - Drop #57 (tactics), drop #58 (HSEA thesis), drop #59 (HSEA audit)
+
+## 0. Table of contents
+
+Document has grown from §1-§10 (original 2026-04-14 synthesis) through §11-§17 (2026-04-15 operator-ratification addenda). Use this ToC to navigate the ~1100 lines.
+
+**Original synthesis (2026-04-14, delta-authored):**
+
+- [§1 Executive summary](#1-executive-summary) — headline findings + decisions-needed summary
+- [§2 Phase-by-phase overlap matrix](#2-phase-by-phase-overlap-matrix) — LRR × HSEA phase × concept overlap table
+- [§3 Shared concept ownership table](#3-shared-concept-ownership-table) — who owns what (spawn ledger, prom-query lib, research registry, etc.)
+- [§4 70B vs 8B substrate swap resolution](#4-70b-vs-8b-substrate-swap-resolution) — original 3-option analysis; **superseded by §14 + §16**
+- [§5 Unified phase sequence](#5-unified-phase-sequence) — pre-ratification critical path
+- [§6 State file integration design](#6-state-file-integration-design) — `research-stream-state.yaml` sibling-files proposal
+- [§7 Resource conflict resolutions](#7-resource-conflict-resolutions) — GPU split, Prom cardinality, SHM paths
+- [§8 Drop #57 ownership map](#8-drop-57-ownership-map) — which epic owns which drop #57 tactic
+- [§9 Recommended HSEA spec edits](#9-recommended-hsea-spec-edits) — pre-execution amendments proposed
+- [§10 Open questions for operator review](#10-open-questions-for-operator-review) — 10 decision points Q1-Q10
+
+**Operator-ratification addenda (2026-04-15):**
+
+- [§11 Q1 ratification (Option C)](#11-addendum-2026-04-15--operator-ratification-of-10-q1-option-c) — 05:15Z — substrate swap strategy: 8B parallel + 70B deferred backlog
+- [§12 Q2-Q10 batch ratification](#12-addendum-2026-04-15--operator-batch-ratification-of-10-q2q10) — 05:35Z — joint hapax-constitution PR vehicle, all remaining questions resolved
+- [§13 5b reframing](#13-addendum-2026-04-15--operator-reframes-5b-from-deferred-backlog-to-structurally-unreachable) — 06:20Z — 70B parallel path (5b) is not reachable, narrowed to "structurally unreachable"
+- [§14 Hermes abandonment](#14-addendum-2026-04-15--operator-abandoned-hermes-substrate-question-reopened) — 06:35Z — Hermes 3 70B entirely dropped; substrate question reopened
+- [§15 Continuous-session directive](#15-addendum--operator-continuous-session-directive-2026-04-15t1707z) — 17:07Z — no session retirement until LRR epic close
+- [§16 Scenario 1+2 ratification](#16-addendum-2026-04-15t1821z--substrate-scenarios-12-ratification) — 18:21Z — Qwen + OLMo 3-7B × 3 parallel deployment ratified, substrate question closed
+- [§17 Option C pivot (formerly §16.1)](#17-amendment-2026-04-15t1849z--scenario-2-pivoted-to-option-c-parallel-tabbyapi) — 18:49Z — scenario 2 execution pivoted to parallel TabbyAPI :5001 after beta's #209 exllamav3 upgrade blocker
+
+**How to read the document:**
+
+1. If you're looking for **current substrate state**, read §16 + §17 (plus §14 for context on why Hermes is out).
+2. If you're looking for **original phase overlap analysis**, read §1 + §2 + §5.
+3. If you're looking for **operator decisions made**, read §10 for the questions + §11-§17 for the answers in temporal order.
+4. If you're looking for **session-management guidance**, read §15 (no retirement until LRR close).
+5. If you're a **phase opener**, read the relevant phase section in the LRR/HSEA spec, then scan §11-§17 for any amendment that affects your phase.
+
+**Document growth history:**
+- 2026-04-14: §1-§10 authored as initial synthesis (~620 lines)
+- 2026-04-15 early: §11 + §12 + §13 + §14 addenda appended (~230 lines)
+- 2026-04-15 17:07Z: §15 continuous-session directive appended (~75 lines)
+- 2026-04-15 18:21Z+: §16 scenario ratification appended (~75 lines)
+- 2026-04-15 18:49Z+: §17 (formerly §16.1) Option C pivot appended (~85 lines)
+- 2026-04-15 20:40Z+: this §0 ToC + §16.1→§17 renumbering, queue #145
 
 ---
 
@@ -1009,17 +1052,19 @@ Substrate question is closed. Qwen3.5-9B (scenario 1, production) + OLMo 3-7B ×
 
 — alpha, 2026-04-15T19:58Z (drop #62 §16 addendum; operator ratified 2026-04-15T18:21Z)
 
-## 16.1 Amendment 2026-04-15T18:49Z — scenario 2 pivoted to Option C (parallel TabbyAPI)
+## 17. Amendment 2026-04-15T18:49Z — scenario 2 pivoted to Option C (parallel TabbyAPI)
+<!-- This section was originally numbered §16.1 in the commit that introduced it (PR #899, queue #142). Renumbered to §17 in the queue #145 ToC pass to avoid heading-level collision with §16's ### 16.1 subsection. Body preserved verbatim below; internal sub-section numbers (17.1 through 17.9) correspond to the original 16.1.1 through 16.1.9. -->
+
 
 **Status:** delta-authored + operator-informed (no re-ratification required — the 18:21Z ratification covered execution-mechanism changes per §16.4). **Reason:** beta's attempted exllamav3 upgrade hit a packaging conflict; Option C parallel backend chosen as the implementation path for scenario 2.
 
-### 16.1.1 What changed
+### 17.1 What changed
 
 **§16.2's scenario 2 execution mechanism** shifts from "upgrade TabbyAPI's main venv exllamav3 0.0.23 → 0.0.29 and add OLMo routes to the existing backend" to "**deploy a parallel TabbyAPI instance on :5001 with a separate venv containing exllamav3 0.0.29 + torch 2.11+ + OLMo 3-7B**." The main TabbyAPI :5000 stays pinned to the current cu12 stack serving Qwen3.5-9B without disruption.
 
 **Scope of scenario 1 is unchanged** — RIFTS empirical against Qwen3.5-9B does not strictly require the exllamav3 upgrade. Substrate research v1 §9.1 called the upgrade "incidental maintenance benefit." Scenario 1 is unblocked and proceeding independently.
 
-### 16.1.2 Blocker root cause (queue item #209)
+### 17.2 Blocker root cause (queue item #209)
 
 Beta attempted `uv pip install --upgrade exllamav3==0.0.29` in TabbyAPI's venv at 18:30-18:42Z per queue #209 procedure. The upgrade succeeded package-wise but pulled breaking transitive dependencies:
 
@@ -1031,7 +1076,7 @@ Beta attempted `uv pip install --upgrade exllamav3==0.0.29` in TabbyAPI's venv a
 
 **The upgrade precondition ("exllamav3 0.0.29 is a drop-in replacement") is false at the transitive-dependency level.** TabbyAPI's pinned cu12 stack is tightly coupled to torch 2.9.0+cu128; bumping torch requires coordinated upstream releases from turboderp (exllamav3 wheel) + the kingbri1 flash-attn fork + the exllamav2 rebuild — none of which exist yet for torch 2.11 + cu13.
 
-### 16.1.3 Rollback (executed)
+### 17.3 Rollback (executed)
 
 Beta applied a full rollback at 18:42-18:45Z:
 
@@ -1042,7 +1087,7 @@ uv pip uninstall xformers        # xformers not in cu12 pins; exllamav2 has exce
 
 **TabbyAPI restored to baseline.** Health post-rollback: ✓ Active, serving Qwen3.5-9B-exl3-5.00bpw, smoke test 68.8 tok/s completion rate. xformers is gone (exllamav2 gracefully degrades; no observable regression). Production impact: zero.
 
-### 16.1.4 Option C — parallel TabbyAPI :5001
+### 17.4 Option C — parallel TabbyAPI :5001
 
 **New approach:** run a second TabbyAPI instance on `localhost:5001` with a separate Python venv containing the modern stack:
 
@@ -1057,7 +1102,7 @@ uv pip uninstall xformers        # xformers not in cu12 pins; exllamav2 has exce
 
 **GPU allocation:** possible GPU contention on RTX 3090 between main TabbyAPI + OLMo backend. Mitigation (optional, operator decision): commit RTX 5060 Ti to OLMo service via `CUDA_VISIBLE_DEVICES=1` on the new systemd unit. Operator has not yet decided; Option C ships first with shared 3090 + reassesses if contention materializes.
 
-### 16.1.5 Trade-offs vs original in-place upgrade
+### 17.5 Trade-offs vs original in-place upgrade
 
 | Dimension | Original (in-place upgrade) | Option C (parallel backend) |
 |---|---|---|
@@ -1071,14 +1116,14 @@ uv pip uninstall xformers        # xformers not in cu12 pins; exllamav2 has exce
 
 **Option C is better on every axis except setup time.** The extra hour is a one-time cost; the clean separation pays dividends forever.
 
-### 16.1.6 Queue item updates applied by delta at 18:48Z
+### 17.6 Queue item updates applied by delta at 18:48Z
 
 - **#209** (exllamav3 upgrade) — BLOCKED, rollback executed, post-mortem inflection written
 - **#210** (RIFTS scenario 1) — `depends_on: ["209"]` removed; UNBLOCKED, beta can pull immediately
 - **#211** (OLMo deployment) — rescoped from "upgrade main TabbyAPI" to "deploy parallel TabbyAPI :5001 with separate venv"
 - **#212** (LiteLLM route addition) — scope refined: `local-research-*` routes point at `http://localhost:5001`, not `:5000`
 
-### 16.1.7 Why this does NOT require re-ratification from operator
+### 17.7 Why this does NOT require re-ratification from operator
 
 Per §16.4, the original 18:21Z operator ratification was for "scenarios 1+2 in parallel as complementary HIGH-confidence paths." The ratification covered **the research outcome** (dual-track substrate deployment enabling RIFTS empirical + `claim-shaikh` cycle 2 isogenic test) + **the research design** (keeping Qwen in production + adding OLMo as research substrate).
 
@@ -1086,7 +1131,7 @@ Option C changes the **execution mechanism** for scenario 2 (parallel backend vs
 
 **Operator veto path:** if the operator disagrees and prefers waiting for upstream turboderp wheel instead of the parallel backend, the veto can be entered via `~/.cache/hapax/relay/inflections/` or directly to delta. Until a veto materializes, Option C proceeds.
 
-### 16.1.8 Cross-references
+### 17.8 Cross-references
 
 - **#209 blocker inflection:** `~/.cache/hapax/relay/inflections/20260415-184500-beta-delta-209-exllamav3-upgrade-blocked.md` (202-line technical post-mortem from beta)
 - **Delta operator-facing pivot inflection:** `~/.cache/hapax/relay/inflections/20260415-184900-delta-operator-substrate-scenario-2-option-c-pivot.md`
@@ -1094,7 +1139,7 @@ Option C changes the **execution mechanism** for scenario 2 (parallel backend vs
 - **§16 parent addendum:** §16 above (PR #895, queue #137)
 - **LRR Phase 5 re-spec:** `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate-scenario-1-2-design.md` (PR #896, queue #138) — the §3.2 scenario 2 deployment tasks are implicitly Option C from now forward
 
-### 16.1.9 Implications for Phase 5 spec §3.2
+### 17.9 Implications for Phase 5 spec §3.2
 
 The LRR Phase 5 spec at `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate-scenario-1-2-design.md` §3.2 (scenario 2 — OLMo 3-7B × 3 variants parallel-deployed) was authored at 20:10Z **before this §16.1 amendment was written**. The §3.2 deployment tasks describe the original framing ("Configure TabbyAPI to serve all four models") which is now Option C territory.
 
@@ -1102,6 +1147,6 @@ The LRR Phase 5 spec at `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate
 
 If a future session wants to update the Phase 5 spec §3.2 explicitly for Option C framing, that is a small follow-up queue item (not this §16.1 commit's scope).
 
-— alpha, 2026-04-15T20:29Z (drop #62 §16.1 amendment; captures delta's 18:49Z Option C pivot per queue #142)
+— alpha, 2026-04-15T20:29Z (drop #62 §17 amendment, formerly §16.1; captures delta's 18:49Z Option C pivot per queue #142)
 
 — End of drop #62 fold-in analysis.
