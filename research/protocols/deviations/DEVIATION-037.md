@@ -3,7 +3,7 @@
 **Date:** 2026-04-14 (original 70B draft) / 2026-04-15 (drop #62 Option C amendment) / YYYY-MM-DD (final at Phase 5a execution time)
 **Phase at time of change:** intervention-transition (Condition A → Condition A')
 **Author:** beta (draft) / alpha or operator (final, with post-execution notes filled in)
-**Status:** **DRAFT, RECONCILED WITH DROP #62 OPTION C** — committed in the Phase 4 bootstrap PR for operational convenience. This DEVIATION is not filed against an executed change until alpha (or the operator) rewrites the body per §"Amendment 2026-04-15" below and completes §"Post-execution verification notes" at Phase 5a execution time (scope item 14 of the Phase 5a procedure).
+**Status:** **DRAFT — drop #62 Option C RATIFIED by operator 2026-04-15** — committed in the Phase 4 bootstrap PR for operational convenience. The 5a/5b fork is the authoritative scope for LRR Phase 5. This DEVIATION is not filed against an executed change until alpha (or the operator) rewrites the body per §"Amendment 2026-04-15" below and completes §"Post-execution verification notes" at Phase 5a execution time (scope item 14 of the Phase 5a procedure).
 
 ---
 

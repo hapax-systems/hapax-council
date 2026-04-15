@@ -6,11 +6,13 @@
 **Parent migration plan:** `docs/superpowers/plans/2026-04-10-hermes3-70b-migration.md` (Tasks 1–13; retained as the 5b reference; 5a will rewrite the dispatch model)
 **Theoretical grounding:** `docs/superpowers/specs/2026-04-10-hermes3-70b-voice-architecture-design.md`
 **DEVIATION authority for the substrate swap:** `research/protocols/deviations/DEVIATION-037.md` (pre-staged as a draft; filing is scope item 14 of the 5a procedure)
-**Status:** DRAFT — spec pre-staged on `beta-phase-4-bootstrap` branch. **Reconciled with drop #62 Option C 2026-04-15** (see §0.5). Awaiting operator review before marked ready.
+**Status:** DRAFT — spec pre-staged on `beta-phase-4-bootstrap` branch. **Reconciled with drop #62 Option C 2026-04-15** (see §0.5). **Option C RATIFIED by operator 2026-04-15** — the 5a/5b fork is now the authoritative scope for LRR Phase 5. Remainder of the spec's ratification (substrate-specific parameters, exit-criteria pass, DEVIATION-037 filing) moves to Phase 5a open time.
 
 ---
 
-## 0.5 Amendment 2026-04-15 — drop #62 Option C resolution
+## 0.5 Amendment 2026-04-15 — drop #62 Option C resolution (RATIFIED)
+
+> **Operator ratification 2026-04-15:** the operator has ratified drop #62 Option C. The 5a/5b fork described in this section is now the authoritative scope for LRR Phase 5. Drop #62 §10 question 1 ("substrate swap fork confirmation") is closed in favor of Option C. Delta is expected to update drop #62 with an addendum documenting the decision per delta's inflection `20260415-044500-delta-hsea-epic-cross-epic-fold-in-shipped.md` §"What delta will do if you reply".
 
 > **Read this section before §§1–6 below.** The original body of this spec targets a 70B substrate swap. Drop #62 (`docs/research/2026-04-14-cross-epic-fold-in-lrr-hsea.md`, delta) establishes — citing drop #56 v3 and the `interpersonal_transparency` consent-latency axiom — that **the 70B path is unreachable under the operator's own constitutional axiom**. 70B layer-split inference on the current RTX 3090 + RTX 5060 Ti envelope cannot meet the sub-2s consent-revocation round-trip the axiom requires. This is not a tunable; it is a structural gate.
 
