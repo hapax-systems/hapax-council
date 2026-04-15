@@ -8,12 +8,16 @@ single mutation surface so concurrent invocations don't corrupt the
 registry (atomic writes + flock).
 
 Subcommands:
-    research-registry.py init             create the registry dir + first condition
-    research-registry.py current          print active condition_id
-    research-registry.py list             list all conditions (open + closed)
-    research-registry.py open <slug>      open a new condition
-    research-registry.py close <id>       mark a condition closed
-    research-registry.py show <id>        print full condition.yaml
+    research-registry.py init                        create the registry dir + first condition
+    research-registry.py current                     print active condition_id
+    research-registry.py list                        list all conditions (open + closed)
+    research-registry.py open <slug>                 open a new condition
+    research-registry.py close <id>                  mark a condition closed
+    research-registry.py show <id>                   print full condition.yaml
+    research-registry.py set-collection-halt <id> <ts>
+                                                     set collection_halt_at on
+                                                     an open condition (LRR
+                                                     Phase 4 item 7)
 
 Epic spec: docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md § Phase 1
 Phase 1 spec: docs/superpowers/specs/2026-04-14-lrr-phase-1-research-registry-design.md
@@ -395,6 +399,65 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_set_collection_halt(args: argparse.Namespace) -> int:
+    """LRR Phase 4 item 7: set ``collection_halt_at`` on an open condition.
+
+    Phase 4 closes the live data-collection window for Condition A without
+    closing the condition itself (conditions never close per P-3). This
+    subcommand writes the marker so downstream consumers can distinguish
+    'condition is live but sealed for analysis' from 'condition is still
+    accepting data.'
+
+    Accepts an ISO-8601 UTC timestamp (e.g. ``2026-04-15T12:00:00Z``) or
+    the literal ``now`` for the current wall clock. Refuses to overwrite
+    a non-null ``collection_halt_at`` unless ``--force`` is given — the
+    marker is supposed to be set once per condition.
+    """
+    condition_id = args.condition_id
+    lock = _registry_lock()
+    try:
+        condition = _read_condition(condition_id)
+        if condition is None:
+            print(f"research-registry: condition {condition_id!r} not found", file=sys.stderr)
+            return 1
+        existing = condition.get("collection_halt_at")
+        if existing and not args.force:
+            print(
+                f"research-registry: {condition_id} already has "
+                f"collection_halt_at={existing}; pass --force to overwrite",
+                file=sys.stderr,
+            )
+            return 1
+        ts = args.timestamp
+        if ts == "now":
+            ts = _now_iso()
+        else:
+            try:
+                parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except ValueError as exc:
+                print(
+                    f"research-registry: invalid timestamp {ts!r} "
+                    f"(expected ISO-8601 or 'now'): {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            if parsed.tzinfo is None:
+                print(
+                    f"research-registry: timestamp {ts!r} has no timezone; "
+                    f"use a UTC suffix like 'Z' or '+00:00'",
+                    file=sys.stderr,
+                )
+                return 1
+            ts = parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        condition["collection_halt_at"] = ts
+        _write_condition(condition_id, condition)
+    finally:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+    print(f"research-registry: set collection_halt_at={ts} on {condition_id}")
+    return 0
+
+
 def cmd_tag_reactions(args: argparse.Namespace) -> int:
     """LRR Phase 1 item 9: backfill stream-reactions Qdrant points.
 
@@ -561,6 +624,20 @@ def main() -> int:
     tag_parser.add_argument(
         "--batch-size", type=int, default=100, help="points per scroll/update batch (default 100)"
     )
+    halt_parser = sub.add_parser(
+        "set-collection-halt",
+        help="set collection_halt_at on an open condition (LRR Phase 4 item 7)",
+    )
+    halt_parser.add_argument("condition_id", help="condition_id to mark")
+    halt_parser.add_argument(
+        "timestamp",
+        help="ISO-8601 UTC timestamp (e.g. 2026-04-15T12:00:00Z) or 'now'",
+    )
+    halt_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing non-null collection_halt_at",
+    )
     args = parser.parse_args()
     return {
         "init": cmd_init,
@@ -570,6 +647,7 @@ def main() -> int:
         "close": cmd_close,
         "show": cmd_show,
         "tag-reactions": cmd_tag_reactions,
+        "set-collection-halt": cmd_set_collection_halt,
     }[args.command](args)
 
 
