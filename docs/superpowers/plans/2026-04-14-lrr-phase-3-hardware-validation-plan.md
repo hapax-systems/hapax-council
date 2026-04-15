@@ -1,8 +1,10 @@
-# LRR Phase 3 — Hardware Migration Validation + Hermes 3 Prep (plan)
+# LRR Phase 3 — Hardware Migration Validation + Substrate Preparation (plan)
 
-**Spec:** `docs/superpowers/specs/2026-04-14-lrr-phase-3-hardware-validation-design.md`
-**Date:** 2026-04-14
+**Spec:** `docs/superpowers/specs/2026-04-14-lrr-phase-3-hardware-validation-design.md` (see § 0.5 amendment 2026-04-15 for Hermes-framing supersession)
+**Date:** 2026-04-14 (original), 2026-04-15 amendment
 **Shipping order:** 3 PRs per beta's revised stage split (see `~/.cache/hapax/relay/context/2026-04-14-beta-phase-3-supplement-verified-preconditions.md` §2)
+
+> **2026-04-15 amendment (queue #139):** Hermes 3 framing in the body of this plan is structurally obsolete per drop #62 §14 (Hermes abandonment) + §16 (substrate scenario 1+2 ratification). The partition work (Stage 1 + Stage 3) remains valid; Stage 2 "self-quantization" is removed from scope (Hermes is not being deployed). New Phase 5 spec at `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate-scenario-1-2-design.md` (PR #896) handles substrate-specific configuration. Spec §0.5 has the full amendment.
 
 ## Stage 1 — Pre-mobo, ships today as Phase 3 PR #1 (this PR)
 

@@ -1,10 +1,60 @@
-# LRR Phase 3 — Hardware Migration Validation + Hermes 3 Preparation
+# LRR Phase 3 — Hardware Migration Validation + Substrate Preparation
 
 **Epic:** Livestream Research Ready
 **Phase:** 3 of 11
-**Date:** 2026-04-14
+**Date:** 2026-04-14 (original), 2026-04-15 amendment
 **Dependency:** Phase 2 complete (shipped in PRs #797, #802, #805).
-**Session:** alpha (resumed after operator directive "do everything we can sans Hermes prep completion")
+**Session:** alpha (resumed after operator directive "do everything we can sans Hermes prep completion"; amended 2026-04-15 per drop #62 §14 + §16)
+
+## 0.5 Amendment 2026-04-15 — Hermes 3 framing superseded (queue #139)
+
+> **Post-ratification reconciliation:** the body of this spec (below) was authored on 2026-04-14 when Hermes 3 70B was the planned Phase 5 substrate. Drop #62 §14 (2026-04-15T06:35Z, delta commit `2bc6aec17`) subsequently abandoned Hermes 3 70B entirely — the 3.5bpw quant chain was killed, no viable configuration fits the 24 GB VRAM envelope. Drop #62 §16 (2026-04-15T18:21Z, PR #895 commit `349bf536f`) ratified the replacement: substrate scenario 1+2 parallel deployment (Qwen3.5-9B production + OLMo 3-7B × {SFT, DPO, RLVR} research triad).
+
+### 0.5.1 What remains valid in the body below
+
+- **The partition work** (Options α / β / γ for GPU allocation between studio-compositor + hapax-daimonion + TabbyAPI) is **substrate-agnostic**. It applies regardless of which LLM runs on TabbyAPI. Items 1, 2, 8, 9 in the body below are load-bearing for Phase 3 execution in the new substrate framing.
+- **The X670E hardware-gated items** (4, 10, 11) remain hardware-gated and remain deferred until the mobo swap window.
+- **The verification pass** (beta's PyTorch CUDA mapping, GPU thermal tests, USB topology) remains valid — these are hardware validations that do not depend on which LLM is loaded.
+- **The engineering disciplines** (Type=notify + WatchdogSec=60s on tabbyapi.service, TimeoutStartSec bump for long model loads, rollback procedures) remain valid and rescope to the new substrate framing.
+
+### 0.5.2 What is obsolete in the body below
+
+- **Item 6** (Hermes 3 70B EXL3 3.0bpw self-quantization) — **NO LONGER IN SCOPE.** Hermes is abandoned. The BF16 weights at `~/hapax-state/quant-staging/Hermes-3-Llama-3.1-70B-bf16/` are historical artifacts; they can be deleted during a future cleanup pass but are not blocking anything.
+- **Item 7** (TabbyAPI config draft `config.yml.hermes-draft`) — **OBSOLETE.** The new target configuration for Phase 5 is the substrate scenario 1+2 dual-track config, which runs Qwen3.5-9B on the production routes + OLMo 3-7B × 3 variants on new `local-research-*` routes. A new config draft belongs to LRR Phase 5 execution, not Phase 3.
+- **§1.3 gpu_split `[2.75, 23.5]`** — obsolete as specified. The Hermes 70B single-model placement assumed ~23.5 GB on the 3090. The new substrate pair (Qwen 9B + OLMo 3 × 7B) has a different VRAM footprint and either runs in model-switching mode (TabbyAPI loads one at a time) or a different split.
+- **§3.2 "Revert Hermes 3 → Qwen3.5-9B (config)"** — revert is moot because Hermes was never active.
+- **§5 "Implication for Option γ / Hermes 3"** — the Option γ discussion of Hermes-70B-on-3090 is historical; Option γ in the new framing is Qwen-9B + OLMo-7B on 3090 with generous headroom.
+- **§6 Phase 5 unblock statement** — Phase 5 is no longer "Hermes 3 actual substrate swap"; it is substrate scenario 1+2 parallel deployment (see `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate-scenario-1-2-design.md`, PR #896).
+- **Phase 4 parallelism comment** — Phase 4 still runs on Qwen; the difference is that Phase 5 no longer prepares "the next substrate", it prepares the dual-track substrate pair.
+
+### 0.5.3 Net effect on Phase 3 scope
+
+Post-§14 + §16, Phase 3 is simpler:
+
+1. **Keep:** partition work (items 1, 2, 8, 9), beta's verification pass, engineering discipline around tabbyapi.service + Type=notify + TimeoutStartSec, rollback procedures
+2. **Drop:** Hermes-specific items (6, 7), `config.yml.hermes-draft`, Hermes VRAM math in §1.3, Hermes revert procedure in §3.2
+3. **Defer to Phase 5:** all substrate-specific configuration (the Phase 5 re-spec at `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate-scenario-1-2-design.md` handles this)
+4. **Defer to Phase 5 (not Phase 3):** generating the new TabbyAPI config that serves Qwen + OLMo pair — moved from Phase 3 Item 7 to Phase 5 scenario 2 deployment task
+
+### 0.5.4 Cross-references
+
+- **Drop #62 §14** (Hermes abandonment): `docs/research/2026-04-14-cross-epic-fold-in-lrr-hsea.md` §14
+- **Drop #62 §16** (scenario 1+2 ratification): `docs/research/2026-04-14-cross-epic-fold-in-lrr-hsea.md` §16 (PR #895, queue #137)
+- **LRR Phase 5 new spec** (substrate scenario 1+2): `docs/superpowers/specs/2026-04-15-lrr-phase-5-substrate-scenario-1-2-design.md` (PR #896, queue #138)
+- **Original Phase 5 spec** (Hermes framing, obsolete): `2026-04-14-lrr-phase-5-hermes-3-substrate-swap-design.md` on `beta-phase-4-bootstrap`
+- **Substrate research v2** (on main): `docs/research/2026-04-15-substrate-reeval-v2-post-verification.md`
+- **Phase 7 spec** (already has SUPERSEDED note, delta commit `e1cd99b48`): `docs/superpowers/specs/2026-04-15-lrr-phase-7-persona-posture-role-spec-authoring-design.md`
+- **Queue #139** (this amendment): alpha, 2026-04-15T20:15Z
+
+### 0.5.5 What happens if the body below still mentions Hermes
+
+It does — deliberately, as historical context. The body below is preserved in its 2026-04-14 form so the audit trail is legible. Future execution sessions read §0.5 first and know to treat the Hermes-specific items as historical. This is the same pattern beta used for Phase 5's §0.5 Option C amendment.
+
+**If a future session wants to rewrite the body:** file a follow-up queue item. Alpha did not rewrite in place because it would create git churn without changing the operational state (Phase 3 execution will read §0.5 and apply the correction regardless of whether the body is updated).
+
+— alpha, 2026-04-15T20:16Z (queue #139)
+
+---
 
 ## 0. Motivation + operator correction
 
