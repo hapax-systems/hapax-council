@@ -1,0 +1,135 @@
+# LRR Phase 2 item 10b — compositor zone registry.
+#
+# Declares every named zone available to Cairo sources plus the default
+# CairoSource class bound to each zone at compositor bootstrap.
+# `cairo_source_registry.py::CairoSourceRegistry` reads these defaults
+# via `config.compositor_zones.load_zone_defaults()` and populates the
+# registry in `start_layout_only()`.
+#
+# Philosophy: zones are SEMANTIC regions ("where content goes"), not
+# physical pixel rectangles. The pixel geometry of each zone lives in
+# `config/compositor-layouts/default.json::surfaces[]`. This file maps
+# zone names to default renderer classes + priorities. HSEA Phase 1
+# will add new zones (hud_top_left, objective_strip, frozen_files_placard,
+# governance_queue_placard, condition_transition_banner) and may
+# register higher-priority sources that override the defaults declared
+# here.
+#
+# Priority semantics:
+#   - Higher priority = rendered in front / preferred when multiple
+#     sources compete for the same zone
+#   - Phase 2 existing sources use priority 10 (default baseline)
+#   - HSEA Phase 1 new sources use priority 100 (override baseline)
+#   - Operator custom sources use priority 1000 (top override)
+#
+# Spec: docs/superpowers/specs/2026-04-15-lrr-phase-2-archive-research-instrument-design.md §3.10
+#
+schema_version: 1
+
+zones:
+  - name: token_pole_slot
+    description: |
+      Upper-left PiP slot, 300x300. Particle pole visualization of
+      capital accumulation + agent activity tokens. Owned by
+      `agents/studio_compositor/token_pole.py::TokenPoleCairoSource`.
+    default_source: TokenPoleCairoSource
+    default_source_module: agents.studio_compositor.token_pole
+    default_priority: 10
+
+  - name: reverie_slot
+    description: |
+      Upper-right PiP slot, 640x360. Reverie wgpu visual surface
+      consumed via shm_rgba backend. Not a CairoSource — external_rgba
+      kind in the layout schema. Listed here for zone enumeration
+      completeness; no CairoSource registration.
+    default_source: null
+    default_source_module: null
+    default_priority: 0
+
+  - name: album_slot
+    description: |
+      Lower-left PiP slot, 400x520. Album identifier + cover art +
+      editorial context. Owned by
+      `agents/studio_compositor/album_overlay.py::AlbumOverlayCairoSource`.
+    default_source: AlbumOverlayCairoSource
+    default_source_module: agents.studio_compositor.album_overlay
+    default_priority: 10
+
+  - name: stream_overlay_slot
+    description: |
+      Lower-right PiP slot, 400x200. Stream status + condition marker +
+      chat preview. Owned by
+      `agents/studio_compositor/stream_overlay.py::StreamOverlayCairoSource`.
+    default_source: StreamOverlayCairoSource
+    default_source_module: agents.studio_compositor.stream_overlay
+    default_priority: 10
+
+  - name: overlay_zones_full
+    description: |
+      Full-screen overlay (1920x1080). Multiple named sub-zones managed
+      by `agents/studio_compositor/overlay_zones.py::OverlayZoneManager`.
+      The CairoSource drives the full-frame Cairo context; sub-zones
+      are internal to the manager.
+    default_source: OverlayZonesCairoSource
+    default_source_module: agents.studio_compositor.overlay_zones
+    default_priority: 10
+
+  - name: sierpinski_slot
+    description: |
+      Sierpinski fractal + YouTube frame composite surface. Currently
+      unassigned to a default PiP position in the fallback layout, but
+      the source class exists and is registered here so HSEA Phase 1
+      can place it into a zone via layout assignment.
+    default_source: SierpinskiCairoSource
+    default_source_module: agents.studio_compositor.sierpinski_renderer
+    default_priority: 10
+
+# HSEA Phase 1 zone placeholders (shipped without default sources —
+# Phase 1 deliverables 1.1-1.5 create the source classes and register
+# them with `CairoSourceRegistry.register(...)`).
+#
+# Phase 2 does NOT create the HSEA Phase 1 classes; the zones are
+# declared here only so Phase 1 opener does not need to amend this
+# file. Phase 1 opener edits each entry below to add the real
+# `default_source` + `default_source_module` once the classes exist.
+
+  - name: hud_top_left
+    description: |
+      HSEA Phase 1 deliverable 1.1 — HUD strip showing condition_id,
+      time, operator presence. Top-left 400x80. Priority 100 per HSEA
+      Phase 1 spec.
+    default_source: null  # HSEA Phase 1 deliverable 1.1
+    default_source_module: null
+    default_priority: 100
+
+  - name: objective_strip
+    description: |
+      HSEA Phase 1 deliverable 1.2 — current objective + progress.
+      Bottom 1920x60 strip. Priority 100.
+    default_source: null  # HSEA Phase 1 deliverable 1.2
+    default_source_module: null
+    default_priority: 100
+
+  - name: frozen_files_placard
+    description: |
+      HSEA Phase 1 deliverable 1.3 — fires when a frozen-files commit
+      is blocked. Right-side 400x200 pop. Priority 100.
+    default_source: null  # HSEA Phase 1 deliverable 1.3
+    default_source_module: null
+    default_priority: 100
+
+  - name: governance_queue_placard
+    description: |
+      HSEA Phase 1 deliverable 1.4 — shows pending governance queue
+      items. Left-side 300x400 strip. Priority 100.
+    default_source: null  # HSEA Phase 1 deliverable 1.4
+    default_source_module: null
+    default_priority: 100
+
+  - name: condition_transition_banner
+    description: |
+      HSEA Phase 1 deliverable 1.5 — 3s fullscreen banner on
+      condition_id change. Priority 1000 (overrides everything).
+    default_source: null  # HSEA Phase 1 deliverable 1.5
+    default_source_module: null
+    default_priority: 1000

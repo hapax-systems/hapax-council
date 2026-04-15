@@ -572,6 +572,29 @@ class StudioCompositor:
         # for the full analysis.
         registry.start_all()
 
+        # LRR Phase 2 item 10b: populate CairoSourceRegistry from the
+        # zone catalog at `config/compositor-zones.yaml`. This is the
+        # NEW zone-binding registry (distinct from SourceRegistry which
+        # handles surface backend binding). Failures are logged but
+        # never raised — a missing or malformed zone catalog must not
+        # take down the compositor. HSEA Phase 1 will consume the
+        # populated registry via `CairoSourceRegistry.get_for_zone()`.
+        try:
+            from agents.studio_compositor.cairo_source_registry import load_zone_defaults
+
+            zones_path = Path(__file__).resolve().parents[2] / "config" / "compositor-zones.yaml"
+            registered, skipped = load_zone_defaults(zones_path)
+            log.info(
+                "cairo_source_registry populated: registered=%d skipped=%d",
+                registered,
+                skipped,
+            )
+        except Exception:
+            log.exception(
+                "cairo_source_registry population failed — "
+                "HSEA Phase 1 zone lookups will return empty results"
+            )
+
         # Phase 10 carry-over from Phase 2 item 10: attach the router
         # that enumerates video_out surfaces. Pure data plumbing —
         # the legacy hardcoded sink construction in ``pipeline.py`` is

@@ -46,10 +46,16 @@ Architectural judgment: commit 6983ae62e (naming collision resolution)
 
 from __future__ import annotations
 
+import importlib
+import logging
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from agents.studio_compositor.cairo_source import CairoSource
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -170,3 +176,103 @@ class CairoSourceRegistry:
         with cls._lock:
             cls._bindings = {}
             cls._counter = 0
+
+
+def load_zone_defaults(yaml_path: Path) -> tuple[int, int]:
+    """Populate the registry from ``config/compositor-zones.yaml``.
+
+    Reads the zone catalog, resolves each entry's ``default_source``
+    class by importing the declared module, and registers it in the
+    ``CairoSourceRegistry``. Entries with ``default_source: null`` are
+    zone placeholders for future phases (e.g. HSEA Phase 1 deliverables
+    1.1–1.5) and are skipped silently.
+
+    Returns ``(registered, skipped)`` — count of zones that were
+    registered vs. count that were skipped (either because the entry
+    had no default source or because the module/class resolution
+    failed). Resolution failures are logged but never raised — a broken
+    zone entry must not take down the compositor.
+
+    Idempotent in the sense that callers can inspect the return values
+    to decide whether to retry, but NOT in the sense that it deduplicates
+    against the existing registry state. Typical call site is a single
+    compositor bootstrap after ``clear()`` in tests or after process
+    start in production.
+
+    Spec: docs/superpowers/specs/2026-04-15-lrr-phase-2-archive-research-instrument-design.md §3.10
+    """
+    try:
+        import yaml  # deferred import so the module doesn't hard-require PyYAML
+    except ImportError:
+        log.error("load_zone_defaults: PyYAML not available; cannot read %s", yaml_path)
+        return 0, 0
+
+    if not yaml_path.exists():
+        log.warning("load_zone_defaults: zone catalog not found at %s", yaml_path)
+        return 0, 0
+
+    try:
+        data: Any = yaml.safe_load(yaml_path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        log.error("load_zone_defaults: failed to parse %s: %s", yaml_path, exc)
+        return 0, 0
+
+    zones = data.get("zones") or []
+    if not isinstance(zones, list):
+        log.error("load_zone_defaults: %s::zones is not a list", yaml_path)
+        return 0, 0
+
+    registered = 0
+    skipped = 0
+    for entry in zones:
+        if not isinstance(entry, dict):
+            log.debug("load_zone_defaults: non-dict zone entry skipped: %r", entry)
+            skipped += 1
+            continue
+        name = entry.get("name")
+        source_name = entry.get("default_source")
+        module_name = entry.get("default_source_module")
+        priority = entry.get("default_priority", 0)
+        if not name:
+            log.debug("load_zone_defaults: zone entry missing name, skipping")
+            skipped += 1
+            continue
+        if not source_name or not module_name:
+            # Placeholder zone for future phases. Not an error.
+            skipped += 1
+            continue
+        try:
+            module = importlib.import_module(module_name)
+            source_cls = getattr(module, source_name)
+        except (ImportError, AttributeError) as exc:
+            log.warning(
+                "load_zone_defaults: could not resolve %s.%s for zone %r: %s",
+                module_name,
+                source_name,
+                name,
+                exc,
+            )
+            skipped += 1
+            continue
+        try:
+            CairoSourceRegistry.register(
+                source_cls=source_cls,
+                zone=name,
+                priority=int(priority),
+            )
+            registered += 1
+        except (TypeError, ValueError) as exc:
+            log.warning(
+                "load_zone_defaults: CairoSourceRegistry.register failed for zone %r: %s",
+                name,
+                exc,
+            )
+            skipped += 1
+
+    log.info(
+        "load_zone_defaults: registered=%d skipped=%d from %s",
+        registered,
+        skipped,
+        yaml_path,
+    )
+    return registered, skipped

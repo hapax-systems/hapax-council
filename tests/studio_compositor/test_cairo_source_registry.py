@@ -10,6 +10,7 @@ Spec: docs/superpowers/specs/2026-04-15-lrr-phase-2-archive-research-instrument-
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,6 +19,7 @@ from agents.studio_compositor.cairo_source import CairoSource
 from agents.studio_compositor.cairo_source_registry import (
     CairoSourceBinding,
     CairoSourceRegistry,
+    load_zone_defaults,
 )
 
 if TYPE_CHECKING:
@@ -193,3 +195,83 @@ class TestThreadSafety:
         assert len(bindings) == N
         indices = {b.registration_index for b in bindings}
         assert len(indices) == N  # all unique
+
+
+class TestLoadZoneDefaults:
+    def test_missing_file_returns_zero_zero(self, tmp_path: Path):
+        registered, skipped = load_zone_defaults(tmp_path / "does-not-exist.yaml")
+        assert registered == 0
+        assert skipped == 0
+
+    def test_malformed_yaml_returns_zero_zero(self, tmp_path: Path):
+        p = tmp_path / "z.yaml"
+        p.write_text("{not valid yaml")
+        registered, skipped = load_zone_defaults(p)
+        assert registered == 0
+        assert skipped == 0
+
+    def test_non_list_zones_returns_zero_zero(self, tmp_path: Path):
+        p = tmp_path / "z.yaml"
+        p.write_text("schema_version: 1\nzones: not-a-list\n")
+        registered, skipped = load_zone_defaults(p)
+        assert registered == 0
+        assert skipped == 0
+
+    def test_placeholder_entries_count_as_skipped_not_error(self, tmp_path: Path):
+        p = tmp_path / "z.yaml"
+        p.write_text(
+            "schema_version: 1\n"
+            "zones:\n"
+            "  - name: future_zone\n"
+            "    default_source: null\n"
+            "    default_source_module: null\n"
+            "    default_priority: 100\n"
+        )
+        registered, skipped = load_zone_defaults(p)
+        assert registered == 0
+        assert skipped == 1
+
+    def test_production_zone_catalog_populates_real_registry(self):
+        """Integration — loads `config/compositor-zones.yaml` and verifies
+        the 5 real existing CairoSource classes register correctly."""
+        catalog_path = (
+            Path(__file__).resolve().parent.parent.parent / "config" / "compositor-zones.yaml"
+        )
+        assert catalog_path.exists(), f"production catalog missing at {catalog_path}"
+        CairoSourceRegistry.clear()
+        registered, skipped = load_zone_defaults(catalog_path)
+        # 5 real sources + 6 placeholders (reverie + 5 HSEA Phase 1 zones)
+        assert registered == 5, f"expected 5 real registrations, got {registered}"
+        assert skipped == 6
+        # Verify a few specific registrations
+        token_bindings = CairoSourceRegistry.get_for_zone("token_pole_slot")
+        assert len(token_bindings) == 1
+        assert token_bindings[0].source_cls.__name__ == "TokenPoleCairoSource"
+        assert token_bindings[0].priority == 10
+        album_bindings = CairoSourceRegistry.get_for_zone("album_slot")
+        assert len(album_bindings) == 1
+        assert album_bindings[0].source_cls.__name__ == "AlbumOverlayCairoSource"
+        sierpinski_bindings = CairoSourceRegistry.get_for_zone("sierpinski_slot")
+        assert len(sierpinski_bindings) == 1
+        assert sierpinski_bindings[0].source_cls.__name__ == "SierpinskiCairoSource"
+        # HSEA Phase 1 placeholder zones should NOT have registrations
+        assert CairoSourceRegistry.get_for_zone("hud_top_left") == []
+        assert CairoSourceRegistry.get_for_zone("condition_transition_banner") == []
+
+    def test_unresolvable_module_is_skipped_not_raised(self, tmp_path: Path):
+        p = tmp_path / "z.yaml"
+        p.write_text(
+            "schema_version: 1\n"
+            "zones:\n"
+            "  - name: broken\n"
+            "    default_source: DoesNotExist\n"
+            "    default_source_module: this.module.does.not.exist\n"
+            "    default_priority: 10\n"
+            "  - name: also_broken\n"
+            "    default_source: AlsoNope\n"
+            "    default_source_module: agents.studio_compositor.cairo_source\n"
+            "    default_priority: 10\n"
+        )
+        registered, skipped = load_zone_defaults(p)
+        assert registered == 0
+        assert skipped == 2
