@@ -881,12 +881,11 @@ Session retirement mid-epic would leave the research registry + archival pipelin
 
 ### 15.4 What triggers lift
 
-The directive lifts when the LRR epic's last phase closes. As of 2026-04-15T17:12Z the final phase is **not yet fully named** — it's either:
+The directive lifts when the LRR epic's last phase closes. **Phase 10 is the final phase.** The LRR epic spec at `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` defines exactly 11 phases (0–10); Phase 10 (observability, drills, polish) is the terminal phase, and no Phase 11 exists or is planned. This was confirmed by the queue item #125 structural audit and the queue item #111 cross-section consistency audit. The earlier hedge ("or a yet-to-be-named Phase 11") in this section has been corrected per queue item #126.
 
-- **Phase 10** (observability, drills, polish) — currently partially shipped (PR #801 initial ship + `hapax-ai:9100` incremental progress on §2 per-Pi exporters; refill 8 item #105 will audit Phase 10 completion status)
-- **A yet-to-be-named Phase 11** (e.g., closed-loop feedback or final retrospective) — the LRR epic spec at `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` defines the phase sequence; alpha has not re-read it to confirm whether Phase 10 IS the last phase or if there's a Phase 11 beyond
+Phase 10 status as of 2026-04-15T18:05Z: partially shipped (PR #801 initial ship + `hapax-ai:9100` incremental progress on §2 per-Pi exporters; refill 8 item #105 completed a Phase 10 audit).
 
-Once whichever-is-last phase is shipped + its handoff doc merged, the directive lifts. Sessions can then retire normally with per-session retrospective handoffs. Until then, sessions stay alive.
+Once Phase 10 ships + its handoff doc merges, the directive lifts. Sessions can then retire normally with per-session retrospective handoffs. Until then, sessions stay alive.
 
 ### 15.5 Interaction with existing drop #62 sections
 
