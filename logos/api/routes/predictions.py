@@ -22,6 +22,7 @@ UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 PLAN_FILE = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
 PERCEPTION_STATE = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 CHRONICLE_DIR = Path("/dev/shm/hapax-chronicle")
+PRESENCE_METRICS_FILE = Path("/dev/shm/hapax-daimonion/presence-metrics.json")
 
 
 def _read_predictions() -> dict:
@@ -426,5 +427,39 @@ async def predictions_metrics() -> Response:
     lines.append("# TYPE hapax_feature_flag gauge")
     world_flag = Path.home() / ".cache" / "hapax" / "world-routing-enabled"
     lines.append(f'hapax_feature_flag{{flag="world_routing"}} {1 if world_flag.exists() else 0}')
+
+    # --- PresenceEngine signal counters + live posterior/state (queue #224) ---
+    # Source: PresenceEngine writes a JSON snapshot every tick to
+    # PRESENCE_METRICS_FILE (see presence_engine.py::_write_metrics_snapshot).
+    # Three metrics land here:
+    #   hapax_presence_signal_fired_total{signal=...} — monotonic counter
+    #   hapax_presence_posterior                       — live Bayesian posterior
+    #   hapax_presence_state                           — state enum (0/1/2)
+    lines.append(
+        "# HELP hapax_presence_signal_fired_total Cumulative True observations per presence signal"
+    )
+    lines.append("# TYPE hapax_presence_signal_fired_total counter")
+    lines.append("# HELP hapax_presence_posterior Current Bayesian presence posterior (0-1)")
+    lines.append("# TYPE hapax_presence_posterior gauge")
+    lines.append(
+        "# HELP hapax_presence_state Hysteresis state enum (0=AWAY, 1=UNCERTAIN, 2=PRESENT)"
+    )
+    lines.append("# TYPE hapax_presence_state gauge")
+    try:
+        presence_metrics = json.loads(PRESENCE_METRICS_FILE.read_text())
+        counts = presence_metrics.get("signal_fire_counts", {}) or {}
+        for signal_name, count in sorted(counts.items()):
+            if isinstance(count, (int, float)):
+                lines.append(
+                    f'hapax_presence_signal_fired_total{{signal="{signal_name}"}} {int(count)}'
+                )
+        posterior = presence_metrics.get("posterior")
+        if isinstance(posterior, (int, float)):
+            lines.append(f"hapax_presence_posterior {float(posterior):.6f}")
+        state_enum = presence_metrics.get("state_enum")
+        if isinstance(state_enum, (int, float)):
+            lines.append(f"hapax_presence_state {int(state_enum)}")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
 
     return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")

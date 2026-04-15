@@ -10,15 +10,26 @@ and `presence_state` (str: PRESENT/UNCERTAIN/AWAY).
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import tempfile
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 from agents.hapax_daimonion.perception import PerceptionTier
 from agents.hapax_daimonion.primitives import Behavior
 
 log = logging.getLogger(__name__)
+
+# State enum used by the `hapax_presence_state` Prometheus gauge.
+# AWAY < UNCERTAIN < PRESENT so the ordering is monotone in presence evidence.
+PRESENCE_STATE_ENUM: dict[str, int] = {"AWAY": 0, "UNCERTAIN": 1, "PRESENT": 2}
+
+# Atomic tmp+rename write target consumed by `/api/predictions/metrics`.
+PRESENCE_METRICS_FILE = Path("/dev/shm/hapax-daimonion/presence-metrics.json")
 
 # Calibrated from first live run (2026-03-17):
 # - operator_face P(no_face|present) was 0.05, far too low — operator frequently
@@ -93,6 +104,17 @@ class PresenceEngine:
         self._history: deque[dict[str, object]] = deque(maxlen=100)
         self._event_log: Any | None = None
 
+        # Prometheus observability — cumulative True-observation counts per
+        # signal. Incremented every tick when a signal fires positive; exposed
+        # via `metrics_snapshot()` and the on-disk file consumed by the
+        # `/api/predictions/metrics` route. Seeded to 0 for every signal in
+        # `DEFAULT_SIGNAL_WEIGHTS` so the Prometheus series exist before the
+        # first fire — rate() over an always-zero series returns 0 instead of
+        # stale-label gaps, which matters when the signal has been silent for
+        # the full scrape window.
+        self._signal_fire_counts: dict[str, int] = dict.fromkeys(self._signal_weights, 0)
+        self._metrics_file_failures: int = 0
+
     def set_event_log(self, event_log: Any) -> None:
         self._event_log = event_log
 
@@ -130,6 +152,15 @@ class PresenceEngine:
 
         # Read signals from other backends' behaviors
         signal_observations = self._read_signals(behaviors)
+
+        # Tally cumulative fires for Prometheus counters. Only True fires
+        # count — None observations are "no evidence" and False fires are
+        # absence evidence, neither should inflate the positive-fire counter.
+        for signal_name, observed in signal_observations.items():
+            if observed is True:
+                self._signal_fire_counts[signal_name] = (
+                    self._signal_fire_counts.get(signal_name, 0) + 1
+                )
 
         # Compute posterior via likelihood ratios
         posterior = self._compute_posterior(signal_observations)
@@ -175,6 +206,11 @@ class PresenceEngine:
         self._last_posterior = posterior
         self._b_probability.update(posterior, now)
         self._b_state.update(self._state, now)
+
+        # Publish the Prometheus snapshot. The file is the scrape source for
+        # `/api/predictions/metrics`; consumers read it atomically via
+        # read_text() so a tmp+rename write is required.
+        self._write_metrics_snapshot()
 
         # Diagnostic: log active signals every 30 ticks (~75s)
         self._diag_counter = getattr(self, "_diag_counter", 0) + 1
@@ -408,3 +444,61 @@ class PresenceEngine:
     @property
     def history(self) -> list[dict[str, object]]:
         return list(self._history)
+
+    # -- Prometheus observability --
+
+    def metrics_snapshot(self) -> dict[str, Any]:
+        """Return a Prometheus-friendly snapshot of the current state.
+
+        Consumed by the `/api/predictions/metrics` endpoint (via the shm
+        file) and by tests. Fields:
+
+        - ``signal_fire_counts``: cumulative True-observation counts per
+          signal since process start. Restart-safe under Prometheus
+          counter-reset semantics.
+        - ``posterior``: current Bayesian posterior (0.0..1.0).
+        - ``state``: current hysteresis state string.
+        - ``state_enum``: integer enum for the gauge (0=AWAY,
+          1=UNCERTAIN, 2=PRESENT).
+        - ``ts``: wall-clock seconds for freshness gating.
+        """
+        return {
+            "signal_fire_counts": dict(self._signal_fire_counts),
+            "posterior": self._last_posterior,
+            "state": self._state,
+            "state_enum": PRESENCE_STATE_ENUM.get(self._state, PRESENCE_STATE_ENUM["UNCERTAIN"]),
+            "ts": time.time(),
+        }
+
+    def _write_metrics_snapshot(self, path: Path | None = None) -> None:
+        """Atomically write the metrics snapshot to disk.
+
+        Logged at warning for the first few failures, then silent — the
+        metrics file is advisory and must never stall the perception tick.
+        """
+        target = path if path is not None else PRESENCE_METRICS_FILE
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self.metrics_snapshot())
+            # tmp+rename keeps readers from observing a torn write.
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                dir=str(target.parent),
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp.write(payload)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                tmp_name = tmp.name
+            os.replace(tmp_name, target)
+            self._metrics_file_failures = 0
+        except OSError:
+            self._metrics_file_failures += 1
+            if self._metrics_file_failures <= 3:
+                log.warning(
+                    "PresenceEngine metrics snapshot write failed (%d)",
+                    self._metrics_file_failures,
+                    exc_info=True,
+                )
