@@ -3,9 +3,28 @@
 the Phase 5 per-phase spec §2 and exits non-zero on any unmet prereq.
 
 Intended to be run interactively at Phase 5 open time, before the
-operator triggers the actual substrate swap. The script is read-only
+operator triggers the actual substrate change. The script is read-only
 against all system state — it never mutates services, registry
 files, or config.
+
+AMENDMENT 2026-04-15 (drop #62 Option C): this script was drafted against
+the 70B substrate swap assumption (now Phase 5b, deferred behind a
+hardware envelope gate). At Phase 5a execution time (Hermes 3 8B parallel
+pivot), alpha either parameterizes this script with a --variant 5a flag or
+clones it to phase-5a-pre-swap-check.py with:
+
+  - quant path check rewritten from
+      ~/projects/tabbyAPI/models/Hermes-3-Llama-3.1-70B-EXL3-3.0bpw/
+    to
+      ~/projects/tabbyAPI/models/Hermes-3-Llama-3.1-8B-EXL3-5.0bpw/
+  - prereq #4 ("3.5bpw fallback present") deleted (5a has no fallback tier;
+    rollback is the dispatch flip)
+  - prereq #3 (daimonion GPU 0 pin) retained but non-blocking (5a does not
+    evict daimonion)
+  - new prereq: second TabbyAPI slot/instance config staged
+
+See the Phase 5 spec §0.5 (drop #62 Option C resolution) and
+DEVIATION-037 amendment for the full rewrite scope.
 
 Prereqs checked:
 

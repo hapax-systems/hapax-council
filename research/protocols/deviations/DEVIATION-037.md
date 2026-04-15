@@ -1,9 +1,53 @@
 # Deviation Record: DEVIATION-037
 
-**Date:** 2026-04-14 (draft pre-staged) / YYYY-MM-DD (final at Phase 5 swap time)
+**Date:** 2026-04-14 (original 70B draft) / 2026-04-15 (drop #62 Option C amendment) / YYYY-MM-DD (final at Phase 5a execution time)
 **Phase at time of change:** intervention-transition (Condition A → Condition A')
-**Author:** beta (draft) / alpha or operator (final, with post-swap notes filled in)
-**Status:** **DRAFT** — committed in the Phase 4 bootstrap PR for operational convenience. This DEVIATION is not filed against an executed swap until alpha (or the operator) completes §"Post-swap verification notes" at Phase 5 swap time (scope item 14 of the swap procedure).
+**Author:** beta (draft) / alpha or operator (final, with post-execution notes filled in)
+**Status:** **DRAFT, RECONCILED WITH DROP #62 OPTION C** — committed in the Phase 4 bootstrap PR for operational convenience. This DEVIATION is not filed against an executed change until alpha (or the operator) rewrites the body per §"Amendment 2026-04-15" below and completes §"Post-execution verification notes" at Phase 5a execution time (scope item 14 of the Phase 5a procedure).
+
+---
+
+## Amendment 2026-04-15 — drop #62 Option C reconciliation
+
+> **Read this section before the body below.** The body of this DEVIATION as originally drafted describes a Hermes 3 **70B** substrate **swap** (Qwen removed, Hermes 70B installed on dual-GPU layer split). Drop #62 (`docs/research/2026-04-14-cross-epic-fold-in-lrr-hsea.md`) resolves the LRR↔HSEA substrate conflict in favor of **Option C**: fork LRR Phase 5 into **5a (Hermes 3 8B parallel pivot, LRR-owned, primary)** and **5b (70B, deferred behind a hardware envelope gate, backlog)**. The governing authority is the `interpersonal_transparency` consent-latency axiom, which per drop #56 v3 makes the 70B layer-split path structurally unreachable on the current RTX 3090 + RTX 5060 Ti envelope.
+
+### What the body below describes vs what gets filed
+
+| | Original body (5b reference) | What DEVIATION-037 actually files at 5a execution time |
+|---|---|---|
+| **Change** | Swap: Qwen3.5-9B → Hermes 3 70B (3.0bpw, layer-split, 5060 Ti overflow) | **Additive**: Qwen3.5-9B stays; Hermes 3 8B EXL3 5.0bpw added on second TabbyAPI slot; `conversation_pipeline.py` dispatches on `active_model_family` field |
+| **Claim tested** | `claim-shaikh-sft-vs-dpo` via 70B-on-top-of-Qwen | `claim-shaikh-sft-vs-dpo` via 8B-parallel-to-Qwen (same claim, different hardware envelope) |
+| **Condition A'** | `cond-phase-a-prime-hermes-NNN` with `--substrate-model Hermes-3-Llama-3.1-70B-EXL3-3.0bpw` | `cond-phase-a-prime-hermes-8b-NNN` with `--substrate-model Hermes-3-Llama-3.1-8B-EXL3-5.0bpw` |
+| **Reversibility** | Full Qwen rollback required if exit criteria fail (`scripts/phase-5-rollback.sh` restores `config.yml.qwen-backup`) | **Qwen never leaves** — rollback is `active_model_family=qwen` dispatch flip + LiteLLM Hermes-route disable. No Qwen config state is mutated. |
+| **Operator adaptation confound** | HIGH (substrate swap is visible to operator as a single discrete change) | REDUCED (8B parallel is additive; operator can A/B the two substrates mid-session at dispatch granularity; ABA reversal structure preserved by dispatch flip) |
+| **Latency envelope** | ~1s round-trip increase (Hermes 3 70B layer-split) — gated on ≤500ms consent-revocation regression | **Latency envelope should not regress at all** at 8B; 8B EXL3 5.0bpw on RTX 3090 is expected to be **faster** than the current Qwen single-slot path, per drop #56 v3 analysis. Gate still applies; expected to pass comfortably. |
+| **VRAM budget** | ~23.5 GiB GPU 1 + ~2.75 GiB GPU 0 overflow | ~6–8 GiB GPU 1 additional for 8B slot, Qwen slot unchanged, daimonion STT unchanged on GPU 0 |
+| **Rollback** | Promote `config.yml.qwen-backup` back; full systemd restart | Flip `active_model_family` default back to `qwen`; disable `local-fast-hermes`/`coding-hermes`/`reasoning-hermes` LiteLLM routes; no systemd restart required |
+| **Constitutional implication** | `it-irreversible-broadcast` binds the swap as a broadcast event | Same implication binds 5a enablement; **additionally**, LRR Phase 6 formalizes *"any future 70B substrate decision must pre-register a consent-revocation drill and pass it before being authorized"* as a new constitutional amendment coupled to the `it-irreversible-broadcast` PR vehicle |
+
+### What stays preserved from the 5b body
+
+- **Research registry append-only invariant** — Condition A data is locked by Phase 4 regardless of 5a or 5b execution. `scripts/lock-phase-a-condition.py` does not change.
+- **Frozen-files enforcement** — the Condition A' frozen-files list is identical in both variants (same grounding package files; the substrate swap is the only difference and the substrate itself is not a frozen file).
+- **DVs and analysis methodology** — `turn_pair_coherence`, `context_anchor_success`, `acceptance_type`, `activation_score`, `sentinel_retrieval` are computed by the same `grounding_evaluator.py` code before and after 5a. BEST analysis (Kruschke 2013, HDI + ROPE) is unchanged.
+- **Consent revocation drill + speech continuity test gates** — the exit criteria from Phase 5 spec §§3.2/3.3 apply verbatim to 5a. They were the right gates for *any* substrate change, not just 70B.
+- **Condition A' is the claim test** — the claim is still `claim-shaikh-sft-vs-dpo`; the substrate family (SFT-only Hermes 3) is the manipulation. Going from 70B to 8B reduces the parameter-count confound on the Shaikh hypothesis (Mohapatra et al. 2024 show the SFT-vs-DPO effect is robust across scales), but does NOT retest or retract the claim.
+
+### Rewrite scope at Phase 5a execution
+
+When alpha files DEVIATION-037 at Phase 5a execution time (scope item 14 of the Phase 5a procedure), the following sections of the body below are **rewritten in place**:
+
+1. **§"What Changed"** — the pre-swap/post-swap tables become "Qwen slot (unchanged)" and "Hermes 3 8B parallel slot (new)"; the "changes touched" table drops `config.yml` swap and `gpu-pin.conf` changes (both are 5b artifacts) and adds second TabbyAPI slot config + additive LiteLLM routes + `active_model_family` dispatch patch.
+2. **§"Why"** — §"Theoretical grounding" bullet 2 ("Pre-training scale + SFT-only preservation") is rewritten: the parameter-count argument changes from 70B-vs-9B to 8B-vs-9B. Mohapatra et al. reference stays; the comparison becomes *"Hermes 3 8B SFT-only vs Qwen 9B DPO/GRPO, at near-identical parameter counts, isolates the post-training regime as the independent variable"*. This is **cleaner** than the 70B draft: 70B confounded parameter count with post-training regime; 8B removes that confound.
+3. **§"Impact on Experiment Validity"** — "HIGH — but SCOPED and COMPENSATED" downgrades to **"MEDIUM — SCOPED, COMPENSATED, and CLAIM-REFINED"**. The 8B-vs-9B comparison is a stronger test of the SFT-vs-DPO claim than the 70B-vs-9B comparison, because it eliminates the parameter-count confound. The operator adaptation confound is reduced by the parallel-dispatch structure.
+4. **§"Mitigation"** — the 3.5bpw fallback (a 70B-only concern) drops out. The 8B 5.0bpw quant needs no intermediate fallback; if it fails its gates, the rollback is the dispatch flip, not a bpw downgrade.
+5. **§"Post-swap verification notes"** → **§"Post-execution verification notes"** — placeholders updated to reflect 5a (e.g., "8B slot active in TabbyAPI", "`active_model_family` default", "dispatch-flip rollback latency measured at N ms").
+
+### Why the body below is retained verbatim through amendment time
+
+The operator reads DEVIATION records in bulk at phase open. Keeping the original 70B body visible below the amendment header — rather than deleting it and writing a fresh 8B body — preserves traceability: a future reader can see exactly what was assumed at 2026-04-14 drafting time, what drop #62 changed, and what the 5a filing is. The 5b reference body also remains load-bearing if the hardware envelope ever changes and Phase 5b reactivates from backlog.
+
+The rewrite described above is the **actual** DEVIATION filing, to be performed by alpha at Phase 5a scope item 14 with live verification data. The 5b reference body below it is the audit trail.
 
 ---
 

@@ -2,6 +2,34 @@
 # LRR Phase 5 rollback — full Qwen3.5-9B rollback from Hermes 3 70B.
 #
 # Implements the Phase 5 spec §6.2 full Qwen rollback procedure.
+#
+# AMENDMENT 2026-04-15 (drop #62 Option C): this script was drafted
+# against the 70B substrate SWAP assumption (now Phase 5b, deferred
+# behind a hardware envelope gate). Under Phase 5a (Hermes 3 8B parallel
+# pivot, the primary path), this full-Qwen-restore script is NOT the
+# rollback path.
+#
+# 5a rollback is structurally simpler because 5a is additive, not a
+# swap: Qwen never leaves TabbyAPI, it runs alongside Hermes 3 8B on a
+# separate slot with separate LiteLLM routes. The 5a rollback is:
+#
+#   1. conversation_pipeline.py: flip active_model_family default from
+#      "hermes_8b" back to "qwen" (one config line or env var)
+#   2. litellm/config.yaml: disable local-fast-hermes / coding-hermes /
+#      reasoning-hermes routes (comment out or remove — Qwen routes
+#      unaffected)
+#   3. hapax-daimonion: no restart needed (dispatch is per-turn)
+#   4. TabbyAPI: no restart needed (the Hermes 8B slot can stay loaded
+#      and idle, or be unloaded on next restart to free VRAM)
+#
+# At Phase 5a execution time, alpha either (a) rewrites this script in
+# place with --variant 5a plumbing, or (b) leaves this as the 5b
+# reference and writes a sibling phase-5a-rollback.sh for the dispatch
+# flip above. Neither decision needs to be made at pre-stage time.
+#
+# See the Phase 5 spec §0.5 and DEVIATION-037 amendment for the full
+# 5a/5b split.
+#
 # Use this when:
 #
 #   - The 3.0 bpw directive compliance benchmark fails AND the 3.5 bpw

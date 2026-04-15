@@ -1,9 +1,29 @@
 #!/usr/bin/env python3
 """LRR Phase 5 post-swap smoke test — run the directive compliance
 benchmark + CAPABLE tier assertion + latency measurement after the
-Hermes 3 substrate swap.
+Hermes 3 substrate change.
 
-This is Task 13 of the Phase 5 swap procedure (the go/no-go gate).
+This is Task 13 of the Phase 5 procedure (the go/no-go gate).
+
+AMENDMENT 2026-04-15 (drop #62 Option C): this script was drafted against
+the 70B substrate swap assumption (now Phase 5b, deferred). At Phase 5a
+execution time (Hermes 3 8B parallel pivot), the following changes apply:
+
+  - LiteLLM routes under test change from local-fast/coding/reasoning
+    (which swap to Hermes 3 70B in the 5b draft) to the additive routes
+    local-fast-hermes / coding-hermes / reasoning-hermes (5a: Qwen stays
+    on the legacy routes; Hermes 3 8B lives on the -hermes siblings)
+  - CAPABLE tier assertion is unchanged (CAPABLE = Claude Opus in both
+    variants); the local-fast assertion is RELAXED in 5a (local-fast
+    remains pointing at Qwen, not Hermes) and a NEW assertion is added:
+    local-fast-hermes points at Hermes 3 8B
+  - latency threshold is TIGHTENED in 5a: the 8B path should not just
+    match the 70B envelope, it should match or beat the Qwen baseline
+    (per drop #56 v3 analysis of 8B EXL3 5.0bpw on the RTX 3090)
+  - directive compliance benchmark (5 canned prompts) is unchanged — it
+    tests the grounding claim, not the substrate envelope
+
+See the Phase 5 spec §0.5 and DEVIATION-037 amendment.
 Exits non-zero if any of:
 
   - Directive compliance: < 3/5 prompts produced a response that

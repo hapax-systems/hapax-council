@@ -1,12 +1,66 @@
-# LRR Phase 5 — Hermes 3 70B Substrate Swap (design)
+# LRR Phase 5 — Hermes 3 Substrate Swap (design)
 
-**Date:** 2026-04-14 CDT
+**Date:** 2026-04-14 CDT (original 70B draft) / 2026-04-15 (drop #62 Option C amendment)
 **Author:** beta (pre-staged during LRR Phase 4 bootstrap; operator ratifies at phase open)
 **Parent epic spec:** `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` §Phase 5
-**Parent migration plan:** `docs/superpowers/plans/2026-04-10-hermes3-70b-migration.md` (authoritative Tasks 1–13; this spec references, does not re-derive)
+**Parent migration plan:** `docs/superpowers/plans/2026-04-10-hermes3-70b-migration.md` (Tasks 1–13; retained as the 5b reference; 5a will rewrite the dispatch model)
 **Theoretical grounding:** `docs/superpowers/specs/2026-04-10-hermes3-70b-voice-architecture-design.md`
-**DEVIATION authority for the substrate swap:** `research/protocols/deviations/DEVIATION-037.md` (pre-staged as a draft; filing is scope item 14 of the swap procedure)
-**Status:** DRAFT — spec pre-staged on `beta-phase-4-bootstrap` branch. Awaiting operator review before marked ready.
+**DEVIATION authority for the substrate swap:** `research/protocols/deviations/DEVIATION-037.md` (pre-staged as a draft; filing is scope item 14 of the 5a procedure)
+**Status:** DRAFT — spec pre-staged on `beta-phase-4-bootstrap` branch. **Reconciled with drop #62 Option C 2026-04-15** (see §0.5). Awaiting operator review before marked ready.
+
+---
+
+## 0.5 Amendment 2026-04-15 — drop #62 Option C resolution
+
+> **Read this section before §§1–6 below.** The original body of this spec targets a 70B substrate swap. Drop #62 (`docs/research/2026-04-14-cross-epic-fold-in-lrr-hsea.md`, delta) establishes — citing drop #56 v3 and the `interpersonal_transparency` consent-latency axiom — that **the 70B path is unreachable under the operator's own constitutional axiom**. 70B layer-split inference on the current RTX 3090 + RTX 5060 Ti envelope cannot meet the sub-2s consent-revocation round-trip the axiom requires. This is not a tunable; it is a structural gate.
+
+### 0.5.1 The Option C resolution
+
+Drop #62 §4 forks LRR Phase 5 into two phases:
+
+- **Phase 5a — Hermes 3 8B parallel pivot (primary path, LRR-owned).** A second TabbyAPI instance (or a second model slot in the existing instance) serving Hermes 3 8B EXL3 5.0bpw. Additive LiteLLM routes (`local-fast-hermes`, `coding-hermes`, `reasoning-hermes`). `conversation_pipeline.py` dispatches on an `active_model_family` field. The Qwen3.5-9B substrate is NOT removed — Condition A and Condition A' run side-by-side via dispatch, not substrate swap. This satisfies drop #56 v3's 8B pivot recommendation and drop #57 T2.6 (additive, not replace). **This is the phase that ships.**
+
+- **Phase 5b — Hermes 3 70B path (deferred backlog).** Retained as a documented future path, gated on a hardware envelope change: (i) PCIe Gen 5 dual-Blackwell, (ii) single-card 80GB Blackwell, or (iii) sub-2s 70B inference demonstrated empirically on *some* envelope. Until one of those gates trips, 5b is not a Phase, it is a backlog item. The original body of this spec (§§1–6) is the 5b reference procedure.
+
+### 0.5.2 What this means for the body of this spec
+
+Sections §§1–6 below were drafted against the 70B swap assumption. **They are not deleted**, for three reasons:
+
+1. The exit criteria (§4: consent-revocation drill ≤500ms over pre-migration envelope, speech-continuity zero-drop, CAPABLE tier preservation, continuous cognitive loop) are the right exit criteria for *any* substrate change, not just 70B. Phase 5a inherits all of them verbatim.
+2. The rollback procedures (§6) are the template for 5a's "disable the 8B parallel config" rollback, which is structurally simpler (it's a dispatch flip, not a config revert).
+3. The 5b reference procedure remains load-bearing for the backlog item — if the hardware envelope ever changes, 5b reactivates without re-research.
+
+### 0.5.3 Phase 5a deltas from the 5b body below
+
+When alpha executes Phase 5a (at phase open time, after Phase 4 Condition A is locked), the following concrete deltas apply to the §§1–6 body below:
+
+| Section | 5b (original) | 5a (Option C) |
+|---|---|---|
+| §1 Goal | Swap TabbyAPI from Qwen to Hermes 3 70B | Stand up Hermes 3 8B parallel alongside Qwen via dispatch; Qwen stays as co-active substrate |
+| §2 Prereqs | 70B 3.0bpw + 3.5bpw quants present | Hermes 3 8B EXL3 5.0bpw quant present (the 70B rows are 5b-only) |
+| §3.1 Swap procedure | 16-step 70B swap via `config.yml.hermes-draft` promotion | 16-step additive deploy: second TabbyAPI slot/instance, `local-fast-hermes`/`coding-hermes`/`reasoning-hermes` LiteLLM routes, `active_model_family` field, per-turn dispatch. Research registry atomic A opens `cond-phase-a-prime-hermes-8b-NNN` with `--substrate-model Hermes-3-Llama-3.1-8B-EXL3-5.0bpw` |
+| §3.2 Consent revocation drill | Gate the swap on ≤500ms regression | **Same gate**, now measured against the 8B parallel path. The 8B path must meet it (which, per drop #56 v3 analysis, it can) |
+| §3.3 Speech continuity | Gate on zero dropped frames during 60s continuous utterance | **Same gate**, now measured against 8B parallel |
+| §3.4 CAPABLE tier | `local-fast`/`coding`/`reasoning` → Hermes 3 70B | `local-fast-hermes`/`coding-hermes`/`reasoning-hermes` → Hermes 3 8B; legacy `local-fast`/`coding`/`reasoning` remain on Qwen; CAPABLE still Opus |
+| §4 Exit criteria | VRAM footprint ~23.5 GiB on GPU 1 from 70B | VRAM footprint ~6–8 GiB on GPU 1 from 8B EXL3 5.0bpw; Qwen slot unchanged |
+| §5 Risks | 70B OOM on 5060 Ti overflow; layer-split device-mapping inversion | 8B-on-top-of-Qwen VRAM coexistence; dispatch-field-race on first enable |
+| §6 Rollback | Promote `config.yml.qwen-backup` back | Flip `active_model_family` default back to `qwen`; disable Hermes 3 LiteLLM routes; no Qwen state was ever lost because Qwen never left |
+
+### 0.5.4 Axiom precedent action (LRR Phase 6 coupling)
+
+Drop #62 §3 row 11 couples this to LRR Phase 6: the governance pass must formalize the rule *"any future 70B substrate decision must pre-register a consent-revocation drill and pass it before being authorized."* That rule goes into the `hapax-constitution` `it-irreversible-broadcast` PR vehicle alongside HSEA's `sp-hsea-mg-001` precedent. Epsilon's Phase 6 pre-staged spec (committed in this same PR at `c945b78f2`) already lists the constitutional amendment as scope item 1 — the drop #62 reconciliation slots into that existing item as a concrete sub-clause.
+
+### 0.5.5 HSEA Phase 4 I4 demotion (informational)
+
+Drop #62 §4 also demotes HSEA Phase 4 cluster I4 from "Hapax drafts the 8B pivot code" to "Hapax narrates LRR Phase 5a's 8B pivot landing, drafts a research drop summarizing the substrate change, and routes it through the governance queue." This is HSEA's problem, not LRR's, but LRR Phase 5a authors should know that HSEA I4 is a downstream spectator and should plan the 5a landing timestamps to give HSEA's narrator a clean event stream to watch.
+
+### 0.5.6 DEVIATION-037 rewrite scope
+
+The pre-staged `research/protocols/deviations/DEVIATION-037.md` draft is likewise reconciled via its own amendment header. Its body below this amendment remains the 5b reference; when DEVIATION-037 is filed at Phase 5a execution time (scope item 14), alpha rewrites the "What Changed" / "Why" / "Impact on Experiment Validity" bodies to describe the 8B parallel pivot. The drop #62 amendment in DEVIATION-037 pre-declares this rewrite so the bookkeeping is clean.
+
+### 0.5.7 Script parameterization deferred
+
+The three pre-staged Phase 5 scripts (`phase-5-pre-swap-check.py`, `phase-5-post-swap-smoke.py`, `phase-5-rollback.sh`) each carry their own §0 amendment header noting they target 5b by default. At 5a execution time, alpha either (a) rewrites them in place with `--variant 5a` plumbing, or (b) copies them to `phase-5a-*` siblings and keeps the 5b versions as a backlog artifact. Neither decision needs to be made at pre-stage time.
 
 ---
 
