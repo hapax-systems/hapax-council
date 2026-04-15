@@ -73,7 +73,6 @@ class ExecutionStep:
     input_edges: list[EdgeDef]
     output_edges: list[EdgeDef]
     temporal: bool = False
-    temporal_buffers: int = 0
 
 
 @dataclass
@@ -282,7 +281,6 @@ class GraphCompiler:
                     input_edges=[e for e in edges if e.target_node == nid],
                     output_edges=[e for e in edges if e.source_node == nid],
                     temporal=d.temporal if d else False,
-                    temporal_buffers=d.temporal_buffers if d else 0,
                 )
             )
         return steps

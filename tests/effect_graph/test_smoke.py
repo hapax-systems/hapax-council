@@ -341,7 +341,6 @@ class TestRegistryNodeCategories:
             d = registry.get(nt)
             assert d is not None, f"Missing temporal node: {nt}"
             assert d.temporal, f"{nt} should be temporal"
-            assert d.temporal_buffers >= 1, f"{nt} needs temporal_buffers >= 1"
 
     def test_all_compositing_nodes_exist(self, registry: ShaderRegistry):
         for nt in self.EXPECTED_COMPOSITING:
@@ -599,7 +598,7 @@ class TestCompilerExecutionPlan:
         )
         plan = compiler.compile(g)
         trail_step = next(s for s in plan.steps if s.node_id == "t")
-        assert trail_step.temporal and trail_step.temporal_buffers >= 1
+        assert trail_step.temporal
 
     def test_transition_ms_propagated(self, compiler: GraphCompiler):
         g = _minimal_graph(transition_ms=750)

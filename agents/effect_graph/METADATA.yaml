@@ -27,8 +27,6 @@ interface:
     type: dict[str, ParamDef]
   - name: temporal
     type: bool
-  - name: temporal_buffers
-    type: int
   - name: compute
     type: bool
   - name: type
