@@ -29,6 +29,31 @@ def _touch_segment(path: Path, *, age_seconds: float = 0.0) -> None:
         os.utime(path, (mtime, mtime))
 
 
+class TestLoadStimmungSnapshot:
+    """Queue #146 G1 — `_load_stimmung_snapshot` error-path coverage.
+
+    The happy path is exercised via `rotate_segment` fixtures. The three
+    defensive branches — missing file, malformed JSON, non-dict payload —
+    were previously only indirectly exercised. These tests pin each branch
+    so a future refactor cannot silently change the empty-dict fallback.
+    """
+
+    def test_missing_file_returns_empty_dict(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does-not-exist.json"
+        assert not missing.exists()
+        assert hls_archive._load_stimmung_snapshot(missing) == {}
+
+    def test_malformed_json_returns_empty_dict(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.json"
+        bad.write_text("{this is not valid json", encoding="utf-8")
+        assert hls_archive._load_stimmung_snapshot(bad) == {}
+
+    def test_non_dict_payload_returns_empty_dict(self, tmp_path: Path) -> None:
+        list_payload = tmp_path / "list.json"
+        list_payload.write_text(json.dumps(["stance", "dimensions"]), encoding="utf-8")
+        assert hls_archive._load_stimmung_snapshot(list_payload) == {}
+
+
 class TestIsSegmentStable:
     def test_fresh_segment_not_stable(self, tmp_path: Path) -> None:
         seg = tmp_path / "segment00001.ts"

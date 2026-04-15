@@ -365,3 +365,95 @@ class TestConsentRevocationTieIn:
         log_path = root / "purge.log"
         entries = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
         assert "consent_revoked_for" not in entries[-1]
+
+
+class TestFilesystemAtomicity:
+    """Queue #146 G2 — filesystem partial-failure behaviour.
+
+    Phase 2 unit tests cover the happy paths for purge but do not exercise
+    the per-target OSError branch in the confirmed-delete loop. A purge
+    that partially fails should: (a) still write an audit entry, (b)
+    report errors to stderr, (c) continue through remaining targets so
+    one broken segment does not strand the rest.
+    """
+
+    def test_audit_log_still_written_when_unlink_fails(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        root, segs, sidecars = _seed_archive(tmp_path)
+        pointer = tmp_path / "current.txt"
+        pointer.write_text("cond-inactive")
+
+        failing = segs[0]
+        real_unlink = Path.unlink
+
+        def patched_unlink(self: Path, *args: object, **kwargs: object) -> None:
+            if self == failing:
+                raise PermissionError(f"EACCES (simulated): {self}")
+            real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", patched_unlink)
+
+        rc = archive_purge.main(
+            [
+                "--condition",
+                "cond-a",
+                "--confirm",
+                "--archive-root",
+                str(root),
+                "--active-condition-pointer",
+                str(pointer),
+            ]
+        )
+        assert rc == 0, "purge should return 0 even on partial failure"
+
+        captured = capsys.readouterr()
+        assert "EACCES (simulated)" in captured.err
+        assert str(failing) in captured.err
+
+        log_path = root / "purge.log"
+        assert log_path.exists(), "audit log must be written even on partial failure"
+        entries = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+        final = entries[-1]
+        assert final["mode"] == "confirmed"
+        assert final["segments_affected"] == 2
+
+        assert failing.exists(), "the segment whose unlink raised must remain on disk"
+        assert not segs[1].exists(), "the healthy segment must have been deleted"
+        assert not sidecars[1].exists(), "the healthy sidecar must have been deleted"
+
+    def test_purge_continues_past_missing_segment(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root, segs, sidecars = _seed_archive(tmp_path)
+        pointer = tmp_path / "current.txt"
+        pointer.write_text("cond-inactive")
+
+        segs[0].unlink()
+        assert not segs[0].exists()
+        assert sidecars[0].exists()
+
+        rc = archive_purge.main(
+            [
+                "--condition",
+                "cond-a",
+                "--confirm",
+                "--archive-root",
+                str(root),
+                "--active-condition-pointer",
+                str(pointer),
+            ]
+        )
+        assert rc == 0
+        assert not sidecars[0].exists(), "orphan sidecar must still be deleted"
+        assert not segs[1].exists()
+        assert not sidecars[1].exists()
+
+        log_path = root / "purge.log"
+        entries = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+        assert entries[-1]["segments_affected"] == 2
