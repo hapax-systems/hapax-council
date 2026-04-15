@@ -29,11 +29,16 @@ Option (c) — fork into 5a + 5b — preserves exit criteria, surfaces drop #56 
 
 ## 3. Downstream implications
 
-### 3.1 LRR spec (NOT edited in this PR)
+### 3.1 LRR spec (NOT edited in this PR — already shipped on PR #819 branch)
 
-The LRR spec at `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` still describes Phase 5 as the 70B layer-split path. LRR spec edits are owned by the real beta session via PR #819 (`beta-phase-4-bootstrap` branch) and will be applied there during rebase. This ratification doc is the reference that rebase should cite.
+The LRR spec at `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` on `main` still describes Phase 5 as the 70B layer-split path. LRR spec edits are owned by the PR #819 session on the `beta-phase-4-bootstrap` branch and **have already been shipped there** per the PR #819 author's 2026-04-15T05:00Z and 05:15Z inflections:
 
-Per delta's 2026-04-15T04:45Z inflection (§"For beta (PR #819 author)"): the Phase 5 spec needs a small edit renaming references from "70B layer split" to "8B parallel" and adding a note referencing drop #56 v3 + the axiom-precedent rule. `DEVIATION-037` text also shifts from "70B procedure" to "8B pivot rationale + reference to drop #56 v3 + reference to consent-latency axiom." The `scripts/phase-5-*.py` files at `beta-phase-4-bootstrap` commit history should be reviewed for 70B-specific assumptions (GPU memory budgets, layer-split config, `hapax-dmn` eviction) — many become unnecessary under 8B.
+- **Commit `738fde330` on `beta-phase-4-bootstrap`** (2026-04-15T05:00Z) — initial reconciliation. 5 files changed, 176 insertions / 11 deletions, docs-only + docstring-only, zero runtime code. Added a new `§0.5 Amendment 2026-04-15 — drop #62 Option C resolution` to the Phase 5 spec, prepended an `Amendment 2026-04-15` section to `research/protocols/deviations/DEVIATION-037.md`, and added docstring amendment notes to `scripts/phase-5-pre-swap-check.py`, `scripts/phase-5-post-swap-smoke.py`, and `scripts/phase-5-rollback.sh` describing the 5a execution deltas. Conditional pending operator ratification at commit time.
+- **Commit `156beef92` on `beta-phase-4-bootstrap`** (2026-04-15T05:15Z) — surgical ratification status flip. Two ~5-line edits: Phase 5 spec status line appended with "Option C RATIFIED by operator 2026-04-15 — the 5a/5b fork is now the authoritative scope for LRR Phase 5", and DEVIATION-037 status flipped from "DRAFT, RECONCILED WITH DROP #62 OPTION C" to "DRAFT — drop #62 Option C RATIFIED by operator 2026-04-15". The reconciliation bodies below each amendment header are unchanged.
+
+The PR #819 author's approach preserves the 70B content verbatim under an amendment header so the audit trail is intact and the 5b reference procedure remains in the repo for when the hardware envelope changes. The §0.5.3 migration table in the Phase 5 spec enumerates the concrete deltas that apply to §§1–6 at 5a execution time (§1 Goal, §2 Prereqs, §3.1 Swap procedure, §3.2 Consent revocation drill, §3.3 Speech continuity, §3.4 CAPABLE tier, §4 Exit criteria, §5 Risks, §6 Rollback). The three Phase 5 scripts (`phase-5-pre-swap-check.py`, `phase-5-post-swap-smoke.py`, `phase-5-rollback.sh`) carry docstring-only amendment notes pointing at the spec §0.5 and DEVIATION-037 amendment; the script bodies themselves are rewritten at 5a execution time by the session that opens UP-7a.
+
+The LRR spec edits will appear on `main` when PR #819 merges. Until then, the spec on `main` continues to describe the 70B path; the ratification is captured on the branch, not on the main line.
 
 ### 3.2 HSEA spec and plan (already edited in drop #62)
 
@@ -203,6 +208,11 @@ The Hermes 3 8B EXL3 5.0bpw weights do not exist on disk. The operator must eith
 - Drop #60 + #61 (HSEA epic spec + plan)
 - Drop #62 §4 (three options; (c) recommended)
 - Delta 2026-04-15T04:45Z inflection (HSEA + fold-in shipped summary + "For beta (PR #819 author)" guidance cross-referenced above)
-- **This doc:** drop #62 §10 question #1 confirmed → option (c)
+- Operator confirmation to this session via "8" keyword response, 2026-04-15T04:40Z
+- PR #819 beta 2026-04-15T05:00Z inflection + commit `738fde330` (initial reconciliation, conditional)
+- Operator confirmation to the PR #819 session via "ratified" keyword response, 2026-04-15T05:10Z (same decision, second session)
+- PR #819 beta 2026-04-15T05:15Z inflection + commit `156beef92` (ratification status flip)
+- Delta 2026-04-15T05:05Z identity-correction inflection (maps this session as "alpha" in the post-rename naming; pivots delta to complementary HSEA Phase 0 doc extraction)
+- **This doc + PR #826:** complementary main-branch artifacts — decision record + draft systemd scaffolding + embedded host-config drafts. Non-overlapping with PR #819's `beta-phase-4-bootstrap` branch edits.
 
 — End of ratification record.
