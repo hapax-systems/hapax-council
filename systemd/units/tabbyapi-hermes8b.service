@@ -2,10 +2,29 @@
 Description=TabbyAPI — EXL3 inference engine (second instance, Hermes 3 8B on :5001)
 After=network.target
 After=ollama.service
+#
+# SUPERSEDED 2026-04-15T06:35Z — operator abandoned Hermes entirely with
+# direction "We've abandoned hermes. Devote extensive research into if
+# Qwen3.5-9B-exl3-5.00bpw is actually the best production substrate for
+# our very unique use cases." Drop #62 §14 (commit 2bc6aec17) is the
+# canonical audit-trail capture. Beta's 722-line substrate
+# re-evaluation research at docs/research/2026-04-15-substrate-reeval-
+# post-hermes.md (commit bb2fb27ca on beta-phase-4-bootstrap) recommends
+# keeping Qwen3.5-9B + complementary parallel-deploy OLMo 3-7B. Neither
+# is yet operator-ratified.
+#
+# This unit file is retained as AUDIT-TRAIL REFERENCE MATERIAL ONLY. The
+# structure (second-instance TabbyAPI on :5001 + --config override +
+# GPU pin drop-in) is reusable for any parallel substrate the operator
+# eventually chooses — a find-and-replace swap of Hermes-specific
+# values. Do NOT deploy this unit as-is; it references weights and
+# a config file that no longer match any live substrate path.
+#
 # Co-resident with the primary tabbyapi.service which serves Qwen 3.5-9B
 # on :5000. This second instance serves Hermes 3 8B parallel-pivot per
 # the drop #62 option (c) ratification:
 #   docs/research/2026-04-15-drop-62-option-c-ratification.md
+# (now superseded per the amendment at the top of that file's §1)
 # The two instances run concurrently. LiteLLM routes local-fast, coding,
 # reasoning → :5000 (Qwen) and local-fast-hermes, coding-hermes,
 # reasoning-hermes → :5001 (Hermes 8B). *-hermes routes fall back to
