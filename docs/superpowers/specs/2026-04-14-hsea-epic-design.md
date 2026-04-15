@@ -394,14 +394,20 @@ Derived from drops #57, #58, #59 + operator pushback sequences:
 - Opus rate limiter: ≤3/day tracked in `~/hapax-state/opus-drafter-counter.jsonl`
 - LOC: ~600 total
 
-**4.3 Per-task drafter subclasses** (7 modules under `agents/code_drafter/`):
-- **I1 `t1_3_pymc5_best`** — Kruschke PyMC 5 BEST port + 4 verification tests. Tier: `capable`. Line cap: 400. Depends on: LRR Phase 1 merged.
-- **I2 `t1_7_stimmung_prior`** — Hysteretic activity bias vector in `director_loop.py::_build_unified_prompt`. Tier: `balanced`. Line cap: 250.
-- **I3 `t2_2_burst_cadence`** — Cadence state machine with burst/rest transitions driven by stimmung. Tier: `balanced`. Line cap: 300.
-- **I4a `t2_6a_tabby_config`** / **I4b `t2_6b_litellm_routes`** / **I4c `t2_6c_pipeline_dispatch`** — Split 8B pivot into 3 independent sub-drafters (drop #59 recommended). Each line cap 200, can be approved independently with `blocked_by` dependencies.
-- **I5 `t2_8_guardrail_layer`** — Pydantic-ai output validator for `conversation_pipeline.py` with protected-class denylist + second-pass classifier. Tier: `balanced`. Line cap: 350. Mandatory fixture test for known violations.
-- **I6 `t4_8_youtube_tee`** — Tee branch for `rtmp_output.py` for backup ingest. Tier: `balanced`. Line cap: 200.
-- **I7 `t4_11_ritualized_states`** — Four ritualized director states (Midnight/Wake/Crate/Last Call) with time-of-day gating. Tier: `balanced`. Line cap: 500.
+**4.3 Per-task drafter subclasses** (per drop #62 §4 + §10 Q3 rescoping, operator-ratified 2026-04-15): 2 code-generation drafters + 5 narration-only spectator drafters. Every former I-drafter whose target file is either LRR-owned or in the active condition's frozen-files manifest has been demoted to narration-only; it watches LRR land the canonical code and drafts a stream-content research drop summarizing the landing, rather than generating the code itself. Net LOC on this cluster: ~1,100 (down from ~3,500 pre-rescoping). See drop #62 `docs/research/2026-04-14-cross-epic-fold-in-lrr-hsea.md` §8 for the ownership map and the drop #47 DR-7 PR #828 for the PresetInput retirement that closed the source-registry-binding path most of these drafters would have had to touch.
+
+**Code-generation drafters** (write real source patches, route through `promote-patch.sh` + operator inbox):
+
+- **I6 `t4_8_youtube_tee`** — Tee branch for `rtmp_output.py` for backup ingest. Tier: `balanced`. Line cap: 200. **Conditional:** `rtmp_output.py` must NOT be in the active condition's frozen-files manifest at drafter open time. If frozen, I6 demotes to narration-only and the code work moves to a DEVIATION-gated LRR PR.
+- **I7 `t4_11_ritualized_states`** — Four ritualized director states (Midnight/Wake/Crate/Last Call) with time-of-day gating. Tier: `balanced`. Line cap: 500. Targets `agents/director_loop/_ritual_states.py` (new file; no frozen-file touch). Survives the rescoping unchanged — drop #62 §8 notes this is the only I-drafter that writes genuinely new HSEA code rather than duplicating LRR work.
+
+**Spectator narrator drafters** (watch LRR phases land the code; draft a research drop summarizing; route through `promote-drop.sh` + operator inbox):
+
+- **I1 `t1_3_pymc5_best_narrator`** — Watches LRR UP-1 (research registry foundation) for PyMC 5 BEST port commits (LRR Phase 1 item 7). Drafts a research drop summarizing the port at landing time. Tier: `balanced`. Line cap: 150 (research drop text). Depends on: LRR UP-1 merged. Original code-generation scope owned by LRR Phase 1, not HSEA.
+- **I2 `t1_7_stimmung_prior_narrator`** — Watches LRR UP-11 (LRR Phase 9 closed-loop wiring) for stimmung-gated activity prior commits. Drafts a research drop with the wiring diagram + before/after stimmung traces. Tier: `balanced`. Line cap: 150. Depends on: LRR UP-11 merged.
+- **I3 `t2_2_burst_cadence_narrator`** — Watches LRR UP-11 (LRR Phase 9 + Phase 10 PERCEPTION_INTERVAL tuning) for burst/rest cadence state machine commits. Drafts a research drop with state-diagram + cadence histograms. Tier: `balanced`. Line cap: 150. Depends on: LRR UP-11 merged.
+- **I4 `t2_6_hermes_8b_pivot_narrator`** — Watches LRR UP-7a (unified Phase 5a, 8B parallel pivot per drop #62 §4 Option C ratification 2026-04-15) for TabbyAPI config + LiteLLM route + conversation_pipeline dispatch landings. Drafts a research drop covering the pivot rationale (drop #56 v3 consent-latency axiom), the fork rationale (drop #62 §4 Option C), the pre-staged scaffolding (PR #826 systemd + LiteLLM drafts), and the activation sequence. Tier: `balanced`. Line cap: 300 (this is the largest narrator drop — substrate swap narrates the full arc from #54 through #62 through operator activation). Depends on: LRR UP-7a merged.
+- **I5 `t2_8_guardrail_narrator`** — Watches LRR UP-7a DEVIATION-037 landing (the guardrail bundles into the 8B pivot DEVIATION per drop #62 §10 Q2 ratification 2026-04-15) for `conversation_pipeline.py` validator commits. Drafts a research drop with the validator taxonomy + fixture coverage + first operator-observed violations. Tier: `balanced`. Line cap: 200. Depends on: LRR UP-7a merged + DEVIATION-037 filed.
 
 **4.4 `promote-patch.sh` + `reject-patch.sh`**
 - Re-runs final ruff + pytest + frozen-files check + destructive regex
@@ -420,10 +426,12 @@ Derived from drops #57, #58, #59 + operator pushback sequences:
 - Review output written to `review_notes.md`
 - Operator sees Hapax's self-review before Hapax's work (closes the loop)
 
-**Exit criteria:**
-- All 7 per-task drafters produce valid CodePatch outputs against real source files
-- At least 2 patches have gone through the full draft→review→approve→promote cycle successfully
-- `check-frozen-files.py --probe` mode merged
+**Exit criteria (rescoped per drop #62 §10 Q3):**
+- Both code-generation drafters (I6 conditional on `rtmp_output.py` not frozen, I7) produce valid CodePatch outputs against real source files
+- All 5 narration-only spectator drafters (I1/I2/I3/I4/I5) produce valid research drop outputs that cite the underlying LRR phase commits by SHA
+- At least 1 code patch (from I6 or I7) has gone through the full draft→review→approve→promote cycle successfully
+- At least 2 narrator drops have gone through the full draft→review→approve→promote-drop cycle successfully
+- `check-frozen-files.py --probe` mode merged (LRR Phase 1 item 4 dependency)
 - `capable` alias registered in config
 - Opus daily cap enforced by at least one mock test
 
