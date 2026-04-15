@@ -670,7 +670,7 @@ The §4 recommendation (option c: fork LRR Phase 5 into 5a 8B parallel + 5b 70B 
 
 **(a) 70B reactivation guard constitutional rule (LRR Phase 6 amendment, NOT HSEA Phase 0 0.5).**
 
-**Clarification per beta's item #41 audit finding (2026-04-15T10:15Z) — 2026-04-15T17:15Z inline edit by delta:** the earlier draft of this subsection conflated two separate precedents. They are:
+**Clarification per beta's item #41 audit finding (2026-04-15T10:15Z) — 2026-04-15T16:15Z inline edit by delta (timestamp corrected 2026-04-15T16:58Z per delta's refill 7 item #96; delta's clock was ~1h ahead during the overnight session, real UTC was ~16:xxZ throughout the addenda writes):** the earlier draft of this subsection conflated two separate precedents. They are:
 
 1. **`sp-hsea-mg-001` (HSEA Phase 0 deliverable 0.5)** — the drafting-as-content precedent. *"Drafting constitutes preparation (not delivery) IFF operator retains discrete revocable non-visual delivery authority."* **Substrate-agnostic by construction.** §14 does not affect this precedent; its content, scope, and ship vehicle (joint `hapax-constitution` PR via LRR Phase 6 per §10 Q5 ratification) are all unchanged by the Hermes abandonment.
 
