@@ -576,3 +576,61 @@ The visual layer aggregator produces ambient parameters (`color_warmth`, `speed`
 - Intentionally decoupled from working mode (stimmung drives visual temperature, not mode)
 
 These parameters should be formalized in their own specification (parameter ranges, derivation rules, biometric thresholds) but are not part of this document's color/typography/spacing contract.
+
+## 12. Stream Mode Considerations
+
+Logos renders inside a Tauri webview that, in some configurations (Phase 8 Logos studio view tile), is composited into the 24/7 livestream. This section documents the stream-safety constraints the rest of the design language must respect on stream-visible surfaces. Per LRR Phase 6 §12 governance-finalization amendment.
+
+### 12.1 Broadcast-safe type scale
+
+On-stream text minimum is **12px**. Sites below 12px must EITHER be redacted when `stream-mode` is publicly visible OR raised to 12px+. There is no middle ground: 10px text on a 4–8 Mbps H.264 stream is visual noise.
+
+The revised scale (Tailwind arbitrary values, declared in `index.css`):
+
+| Tier | Size | Usage |
+|---|---|---|
+| `off-stream-counter` | 7–8px | Reserved — never used on stream-visible surfaces. Redaction required. |
+| `stream-minimum` | 12px | Absolute minimum for any text rendered on a surface that may be captured. Signal labels, counters, timestamps. |
+| `stream-body` | 14px | Default body text on stream-visible surfaces. |
+| `stream-emphasis` | 18px | Headings, active labels, statuses. |
+| `stream-display` | 24px+ | Titles, marquee content. |
+
+The 7–8px tier is not deleted; it remains available for off-stream surfaces (the classification inspector — already exempt from density rules per §7.2) and for surfaces that get wrapped in `<RedactWhenLive>` at the component level.
+
+### 12.2 Broadcast-safe color envelope
+
+Semantic colors from §3.1 are defined at their natural hex values. On stream-visible surfaces, a saturation ceiling applies:
+
+- Any hex with `luminance > 0.7` AND `saturation > 0.85` must be muted by 15% chroma before rendering. Apply via `color-mix(in oklch, var(--color-X) 85%, var(--color-zinc-400) 15%)`.
+- Pure red-400 (`#fb4934` Gruvbox, `#dc322f` Solarized) and pure yellow-400 (`#fabd2f` Gruvbox, `#b58900` Solarized) are the two colors most likely to exceed broadcast chroma. Both should be muted per the rule above on stream-visible surfaces.
+- Detection overlay colors (§3.8) are exempt — they are designed against a specific perceptual vocabulary, the operator has learned them, and changing them on-stream would break recognition for operator reading while creating no meaningful benefit for stream viewers.
+
+### 12.3 Animation stability
+
+Opacity-only animations with low delta (e.g. 0.3→0.6 in 8s) compress poorly on lossy codecs and often appear as flat frames punctuated by keyframe transitions. On stream-visible surfaces, animations must satisfy at least one of:
+
+- Opacity delta ≥ 0.5 (0.3→0.8 or similar), OR
+- Position/scale delta ≥ 2px, OR
+- Color delta crossing at least one semantic boundary (green → yellow, etc.)
+
+The existing `signal-breathe-slow/mod/fast` keyframes in `index.css` are to be verified stream-safe by the Phase 10 privacy regression suite's frame-diff check (pending Phase 10 §3.2 dashboards + drills). `signal-breathe-crit` (0.6s + 1.15× scale) is trivially stream-safe under all three rules.
+
+### 12.4 Enforcement
+
+- **Text sizes**: a linter rule in `hapax-logos` (either a `eslint-plugin-hapax-stream-safety` custom package or an inline ESLint custom rule) matches any `text-\[(?:\d+px)\]` class where the number is under 12, and flags it unless the usage is inside a `<RedactWhenLive>` or within a `classification-inspector` CSS scope.
+- **Colors**: runtime check in `ThemeProvider` that warns (dev-mode only) if any component renders a raw hex outside the palette system.
+- **Animations**: enforced by review, not runtime — the Phase 10 frame-diff check is the backstop.
+
+### 12.5 Stream-mode awareness API
+
+Components that render stream-visible content read the current stream mode via the `useStreamMode()` hook (backed by `/api/stream/mode` poll and a React context provider per §4.5 of the LRR Phase 6 spec). The hook returns one of `off | private | public | public_research`; components redact or re-style per the rules above when `mode ∈ {public, public_research}`.
+
+The CLI axis is `shared/stream_mode.py::get_stream_mode()` (fail-closed to `public` on read error; see that module's docstring for the full fail-safety contract). A frontend wrapper component `<RedactWhenLive>` short-circuits its children to a neutral placeholder when `is_publicly_visible()` is true; the same component is the canonical site for the 7–8px off-stream-counter escape hatch.
+
+### 12.6 Scope (what this section does NOT cover)
+
+- Reverie shader pipeline visuals (GPU surface; governed by `docs/superpowers/specs/2026-04-13-reverie-source-registry-completion-design.md`).
+- Studio compositor Cairo overlays (governed by `docs/superpowers/specs/2026-04-12-compositor-source-registry-foundation-design.md`).
+- Detection overlay colors (§3.8, exempt per §12.2 above).
+
+These three surfaces are rendered outside the Logos webview and do not inherit the Logos type scale; their own specifications govern stream-safety within their pipelines.
