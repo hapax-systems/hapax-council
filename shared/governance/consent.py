@@ -211,6 +211,74 @@ class ConsentRegistry:
                 categories |= contract.scope
         return frozenset(categories)
 
+    def revoke_contract(
+        self,
+        contract_id: str,
+        *,
+        contracts_dir: Path | None = None,
+    ) -> float:
+        """LRR Phase 6 §7 — revoke a single consent contract by ID.
+
+        Synchronous revocation: marks the in-memory contract revoked AND
+        moves the YAML to ``<contracts_dir>/revoked/<YYYY-MM-DD>-<id>.yaml``
+        so downstream readers that re-scan the dir see the contract as
+        revoked immediately (no 60s cache wait).
+
+        Returns the wall-clock seconds the full in-process revocation took.
+        The §7 drill asserts this is ≤ 5.0 s end-to-end (including the
+        filesystem operation).
+
+        Raises ``KeyError`` if the contract_id is not registered. Caller
+        is responsible for ConsentGatedWriter / Reader cache invalidation
+        at their layer; ``_fail_closed`` is NOT set because a single-
+        contract revoke does not mean the registry itself is broken.
+        """
+        t0 = time.monotonic()
+        contract = self._contracts.get(contract_id)
+        if contract is None:
+            raise KeyError(f"Contract {contract_id} not registered")
+
+        now_iso = datetime.now().isoformat()
+        revoked_contract = ConsentContract(
+            id=contract.id,
+            parties=contract.parties,
+            scope=contract.scope,
+            direction=contract.direction,
+            visibility_mechanism=contract.visibility_mechanism,
+            created_at=contract.created_at,
+            revoked_at=now_iso,
+            principal_class=contract.principal_class,
+            guardian=contract.guardian,
+        )
+        self._contracts[contract_id] = revoked_contract
+
+        # Move the YAML file to revoked/ so a fresh load() also sees it revoked.
+        # Missing source file is not fatal — the in-memory state already carries
+        # the revocation.
+        directory = contracts_dir or _CONTRACTS_DIR
+        src = directory / f"{contract_id}.yaml"
+        if src.exists():
+            revoked_dir = directory / "revoked"
+            revoked_dir.mkdir(parents=True, exist_ok=True)
+            stamp = now_iso[:10]  # YYYY-MM-DD
+            dst = revoked_dir / f"{stamp}-{contract_id}.yaml"
+            # Avoid collision on multiple same-day revocations
+            n = 2
+            while dst.exists():
+                dst = revoked_dir / f"{stamp}-{contract_id}-{n}.yaml"
+                n += 1
+            src.rename(dst)
+            log.info("Revoked contract %s — moved YAML to %s", contract_id, dst)
+        else:
+            log.warning(
+                "Revoked contract %s in-memory only (source YAML %s missing)",
+                contract_id,
+                src,
+            )
+
+        elapsed = time.monotonic() - t0
+        return elapsed
+
     def purge_subject(self, person_id: str) -> list[str]:
         """Mark all contracts for a person as revoked.
 
