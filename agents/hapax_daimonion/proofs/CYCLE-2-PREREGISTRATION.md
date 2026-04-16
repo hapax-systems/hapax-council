@@ -1,7 +1,7 @@
 # Pre-Registration: Conversational Grounding via Structured Context Anchoring (Cycle 2)
 
-**Pre-registration date:** 2026-04-16 (draft); to be re-dated at OSF submission
-**Registration location:** [OSF URL — filled at submission time] + Git commit [SHA — frozen at pre-reg merge commit, recorded here before OSF submission]
+**Pre-registration date:** 2026-04-16
+**Registration location:** https://osf.io/5c2kr/overview + Git commit `ceb84310e5e7cc46758e647f2df3ac5f2850533e`
 **Substrate condition locked for this pre-registration:** Condition A — Qwen3.5-9B (EXL3 5.0bpw) served by TabbyAPI on `:5000`, routed as the `local-fast`/`coding`/`reasoning` LiteLLM routes. The parallel OLMo-3-7B substrate (Condition A') deployed 2026-04-16 on `:5001` is **out of scope** for this pre-registration; an equivalent Cycle 2 analysis under Condition A' will be filed as a separate pre-registration if and when it is undertaken.
 
 ---
@@ -278,7 +278,7 @@ See `lab-journal/posts/2026-03-21-deviation-disclosure/` for Cycle 1→2 deviati
 - Research documents: `agents/hapax_daimonion/proofs/`
 - Livestream archive (where relevant, subject to consent posture): public YouTube channel feed; per-segment sidecar metadata under `/data/archive/`
 - Lab journal: not yet published (placeholder removed from this pre-reg; will be added via deviation record if enabled later)
-- OSF registration: [URL — filled at OSF submission]
+- OSF registration: https://osf.io/5c2kr/overview (filed 2026-04-16)
 - Source code: [https://github.com/ryanklee/hapax-council](https://github.com/ryanklee/hapax-council)
 - License: CC-BY-4.0 (text), CC0 (data), Apache-2.0 (code)
 
