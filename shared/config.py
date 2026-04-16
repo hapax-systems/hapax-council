@@ -97,6 +97,7 @@ MODELS: dict[str, str] = {
     "reasoning": "reasoning",
     "coding": "coding",
     "local-fast": "local-fast",
+    "local-research-instruct": "local-research-instruct",
 }
 
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
