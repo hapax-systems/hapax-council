@@ -22,6 +22,12 @@ log = logging.getLogger(__name__)
 
 _CONTRACTS_DIR = Path(__file__).parent.parent.parent / "axioms" / "contracts"
 
+
+class ConsentContractLoadError(Exception):
+    """Raised by ``ConsentRegistry.load(..., strict=True)`` when a contract
+    YAML file fails to parse. LRR Phase 6 §11 fail-loud validation."""
+
+
 # Registered child principals — ONLY these children may have consent contracts.
 # All other children are categorically excluded from system participation.
 # Guardian-granted consent: operator is legal guardian.
@@ -77,10 +83,24 @@ class ConsentRegistry:
             return False  # Never loaded from disk — staleness doesn't apply
         return time.time() - self._loaded_at > stale_threshold_s
 
-    def load(self, contracts_dir: Path | None = None) -> int:
+    def load(self, contracts_dir: Path | None = None, *, strict: bool = False) -> int:
         """Load all contract files from the contracts directory.
 
-        Returns the number of active contracts loaded.
+        Args:
+            contracts_dir: Path to scan. Defaults to repo ``axioms/contracts/``.
+            strict: LRR Phase 6 §11 — when True, raise
+                ``ConsentContractLoadError`` on any malformed YAML or
+                construction failure instead of logging and skipping.
+                Tests, CI, and startup should use ``strict=True`` to
+                prevent silent contract loss. Default ``False`` preserves
+                the existing fail-soft behavior for runtime reload paths.
+
+        Returns:
+            The number of active contracts loaded.
+
+        Raises:
+            ConsentContractLoadError: When ``strict=True`` and any contract
+                file fails to parse. Error message includes the file path.
         """
         directory = contracts_dir or _CONTRACTS_DIR
         try:
@@ -106,7 +126,11 @@ class ConsentRegistry:
                             contract.parties[1],
                             ", ".join(sorted(contract.scope)),
                         )
-                except Exception:
+                except Exception as exc:
+                    if strict:
+                        raise ConsentContractLoadError(
+                            f"Failed to load contract from {path}: {exc}"
+                        ) from exc
                     log.exception("Failed to load contract from %s", path)
 
             self._fail_closed = False
@@ -119,6 +143,10 @@ class ConsentRegistry:
                 self._cl_degraded = False
                 log.info("Control law [consent_engine]: recovered")
             return count
+        except ConsentContractLoadError:
+            # Strict-mode validation failure — propagate outward.
+            # Do not set fail_closed: caller wants to see the error.
+            raise
         except Exception:
             log.exception("Failed to load contracts from %s", directory)
             self._fail_closed = True
