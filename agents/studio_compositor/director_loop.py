@@ -110,6 +110,11 @@ def _jsonl_log_path(now: datetime | None = None) -> Path:
 LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 LITELLM_KEY = ""
 
+# Director commentary model. Defaults to the local Qwen3.5-9B substrate via
+# LiteLLM so the director keeps reacting even when cloud billing hiccups.
+# Override via HAPAX_DIRECTOR_MODEL env var if a specific cloud model is wanted.
+DIRECTOR_MODEL = os.environ.get("HAPAX_DIRECTOR_MODEL", "local-fast")
+
 PERCEPTION_INTERVAL = 8.0  # seconds between LLM perception calls
 MIN_VIDEO_DURATION = 15.0  # minimum seconds before allowing CUT
 MAX_VIDEO_DURATION = 60.0  # force CUT after this
@@ -624,7 +629,7 @@ class DirectorLoop:
 
         body = json.dumps(
             {
-                "model": "claude-opus",
+                "model": DIRECTOR_MODEL,
                 "messages": messages,
                 "max_tokens": 2048,
                 "temperature": 0.7,
