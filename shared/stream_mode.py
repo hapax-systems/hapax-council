@@ -123,3 +123,81 @@ def is_research_visible(path: Path | None = None) -> bool:
         return get_stream_mode_or_off(path) == StreamMode.PUBLIC_RESEARCH
     except Exception:
         return False
+
+
+# ── Filesystem deny-list (LRR Phase 6 §4.C) ─────────────────────────────────
+#
+# Path prefixes / suffixes that must NEVER render on a stream-visible surface
+# regardless of stream-mode. Belt-and-suspenders to the Phase 8 terminal
+# capture regex which has known failure modes (e.g. `tree ~/.password-store/`
+# renders the filesystem structure but per-line regex obscuration does not
+# catch filesystem rendering). This gate blocks the PATH itself regardless
+# of the rendering mechanism.
+
+DENY_PATH_PREFIXES: tuple[str, ...] = (
+    # Pass password store — never a path to render
+    str(Path.home() / ".password-store"),
+    # GPG secrets
+    str(Path.home() / ".gnupg"),
+    # SSH keys
+    str(Path.home() / ".ssh"),
+    # Hapax runtime secrets file created by hapax-secrets.service
+    "/run/user/1000/hapax-secrets.env",
+    # Personal vault — ontologically operator-only
+    str(Path.home() / "Documents" / "Personal"),
+    # Work vault — employer-boundary content per corporate_boundary
+    str(Path.home() / "Documents" / "Work"),
+)
+
+DENY_PATH_SUFFIXES: tuple[str, ...] = (
+    # Any .envrc — these hold direnv-loaded secrets
+    ".envrc",
+    # Any raw .env file
+    ".env",
+)
+
+# Filenames (exact match on the terminal component) that are always denied
+# regardless of directory. Catches things like an operator running
+# `cat id_rsa` from an unexpected cwd.
+DENY_FILENAMES: frozenset[str] = frozenset(
+    {
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_rsa.pub",
+        "id_ed25519.pub",
+        "id_ecdsa.pub",
+        "credentials.json",
+        "secrets.json",
+        "token.json",
+        ".netrc",
+    }
+)
+
+
+def is_path_stream_safe(path: Path | str) -> bool:
+    """Return True iff ``path`` is safe to render on a stream-visible surface.
+
+    Conservative — fails closed (returns False) on ambiguous paths. Callers
+    that render file paths in chat responses, tool output, briefing
+    content, terminal capture, or any Logos file-viewer surface MUST
+    consult this before rendering, regardless of the current stream-mode.
+
+    Rules (any one → not safe):
+      1. Path resolves to a prefix in DENY_PATH_PREFIXES
+      2. Path ends with a suffix in DENY_PATH_SUFFIXES
+      3. Basename matches DENY_FILENAMES exactly
+    """
+    try:
+        p = Path(path).expanduser()
+    except Exception:
+        return False
+
+    s = str(p)
+    for prefix in DENY_PATH_PREFIXES:
+        if s == prefix or s.startswith(prefix + "/"):
+            return False
+    for suffix in DENY_PATH_SUFFIXES:
+        if s.endswith(suffix):
+            return False
+    return p.name not in DENY_FILENAMES
