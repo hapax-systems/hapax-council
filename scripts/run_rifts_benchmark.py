@@ -30,10 +30,12 @@ import json
 import os
 import sys
 import time
+from collections import Counter
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal, get_args
 
 import httpx
 
@@ -41,6 +43,39 @@ RIFTS_DATASET_NAME = "microsoft/rifts"
 DEFAULT_LITELLM_URL = os.environ.get("LITELLM_URL", "http://localhost:4000")
 DEFAULT_MAX_TOKENS = 256
 DEFAULT_TIMEOUT_S = 60.0
+
+GroundingActLabel = Literal[
+    "Reformulation",
+    "Repair",
+    "Restart",
+    "Clarification",
+    "Overresponse",
+    "Acknowledgment",
+    "Follow-up",
+    "Unrelated",
+    "Error",
+]
+
+LABELER_SYSTEM_PROMPT = """You are an expert in conversational analysis and grounding. Your task is to label each turn in the provided dialogue between a **User** and an **Assistant** with the appropriate **Grounding Act**.
+
+**Taxonomy of Grounding Acts:**
+
+1.  **Addressing Acts (Difficulty in Grounding):**
+    -   **Reformulation:** The speaker restates or repeats their previous query in different words because the previous turn failed to achieve the goal.
+    -   **Repair:** The speaker directly corrects a misunderstanding or error in the previous turn (e.g., "I meant X, not Y").
+    -   **Restart:** The speaker resets the conversation or starts over because the current path is no longer productive.
+
+2.  **Ambiguous Acts (Managing Uncertainty):**
+    -   **Clarification:** The speaker asks a question to disambiguate the other's intent or to narrow down the scope of a request.
+    -   **Overresponse:** The assistant provides a verbose response that answers more than what was asked, often making assumptions to avoid asking for clarification.
+
+3.  **Advancing Acts (Progress in Grounding):**
+    -   **Acknowledgment:** A turn whose primary purpose is to signal that the previous message was received and understood (e.g., "Okay," "I see").
+    -   **Follow-up:** The speaker asks a directed question that builds on the current context to advance the interaction or seek additional related information.
+
+**Output Format:**
+For each turn, provide the label in the following JSON format:
+`{"turn_id": <id>, "speaker": <User/Assistant>, "label": <label>, "reason": <brief explanation>}`"""
 
 
 # Inline fixture — 5 example prompts for --dry-run. These are beta's synthetic
@@ -93,6 +128,8 @@ class RunResult:
     tokens_out: int | None
     error: str | None
     timestamp: str
+    grounding_label: GroundingActLabel | None = field(default=None)
+    grounding_reason: str | None = field(default=None)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -141,6 +178,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=0,
         help="Cap on number of prompts to run (0 = all; useful for smoke tests)",
+    )
+    parser.add_argument(
+        "--relabel-only",
+        type=Path,
+        help="Path to a results JSONL file to relabel. Skips inference.",
+    )
+    parser.add_argument(
+        "--labeler-model",
+        default="balanced",
+        help="LiteLLM model route for the grounding-act labeler (default: balanced)",
     )
     return parser.parse_args(argv)
 
@@ -260,11 +307,17 @@ def _call_litellm(
     model: str,
     prompt: str,
     max_tokens: int,
+    system_prompt: str | None = None,
 ) -> tuple[str, int | None, int | None, float, str | None]:
     """Call LiteLLM /v1/chat/completions. Returns (response_text, tokens_in, tokens_out, latency_ms, error)."""
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
     body = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "max_tokens": max_tokens,
         "stream": False,
     }
@@ -304,10 +357,64 @@ def _call_litellm(
     return content, tokens_in, tokens_out, latency_ms, None
 
 
+def _get_grounding_act_label(
+    *,
+    client: httpx.Client,
+    url: str,
+    key: str,
+    model: str,
+    prompt_id: str,
+    prompt: str,
+    response: str,
+) -> tuple[GroundingActLabel | None, str | None, str | None]:
+    """Use an LLM to label the assistant's response with a grounding act."""
+    labeler_prompt = f"""<dialogue>
+<turn id="{prompt_id}_user" speaker="User">
+{prompt}
+</turn>
+<turn id="{prompt_id}_assistant" speaker="Assistant">
+{response}
+</turn>
+</dialogue>
+
+Which grounding act best describes the Assistant's turn?
+"""
+    label_text, _, _, _, error = _call_litellm(
+        client=client,
+        url=url,
+        key=key,
+        model=model,
+        prompt=labeler_prompt,
+        max_tokens=128,
+        system_prompt=LABELER_SYSTEM_PROMPT,
+    )
+    if error:
+        return "Error", None, f"Labeler LLM call failed: {error}"
+
+    try:
+        # The model might return ```json ... ```, so we need to extract it.
+        if "```json" in label_text:
+            json_str = label_text.split("```json")[1].split("```")[0].strip()
+        else:
+            json_str = label_text
+        label_data = json.loads(json_str)
+        label = label_data.get("label")
+        reason = label_data.get("reason")
+        if label in get_args(GroundingActLabel):
+            return label, reason, None
+        return "Error", reason, f"Invalid label from LLM: {label}"
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        return (
+            "Error",
+            None,
+            f"Failed to parse labeler response: {exc}. Response was: {label_text[:100]}",
+        )
+
+
 def _dry_run(model: str, output_path: Path | None) -> int:
     print(f"# RIFTS harness dry run — {datetime.now(UTC).isoformat()}")
     print(f"# model route: {model}")
-    print(f"# planned output: {output_path or '(none — dry run)'}")
+    print(f"# planned output: {output_path or '(none - dry run)'}")
     print(f"# fixture prompts: {len(DRY_RUN_FIXTURE)}")
     print("#")
     print("# Dry run does NOT call LiteLLM and does NOT download the real dataset.")
@@ -330,8 +437,7 @@ def _real_run(args: argparse.Namespace) -> int:
         return 2
 
     output_path = args.output or Path(
-        f"research/benchmarks/rifts/results-{args.model}-"
-        f"{datetime.now(UTC).strftime('%Y%m%d-%H%M%SZ')}.jsonl"
+        f"research/benchmarks/rifts/results-{args.model}-{datetime.now(UTC).strftime('%Y%m%d-%H%M%SZ')}.jsonl"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -377,7 +483,7 @@ def _real_run(args: argparse.Namespace) -> int:
                 error=error,
                 timestamp=datetime.now(UTC).isoformat(),
             )
-            out_f.write(json.dumps(result.__dict__) + "\n")
+            out_f.write(json.dumps(result.__dict__, default=str) + "\n")
             out_f.flush()
 
             if error:
@@ -397,8 +503,96 @@ def _real_run(args: argparse.Namespace) -> int:
     return 0 if count_error == 0 else 1
 
 
+def _relabel_run(args: argparse.Namespace) -> int:
+    if not args.relabel_only or not args.relabel_only.exists():
+        print(f"ERROR: --relabel-only file not found: {args.relabel_only}", file=sys.stderr)
+        return 2
+
+    print(f"# RIFTS harness relabeling run — {datetime.now(UTC).isoformat()}")
+    print(f"# labeler model route: {args.labeler_model}")
+    print(f"# input file: {args.relabel_only}")
+    print("#")
+
+    results: list[RunResult] = []
+    with args.relabel_only.open("r") as f:
+        for line in f:
+            if args.limit and len(results) >= args.limit:
+                break
+            try:
+                data = json.loads(line)
+                results.append(RunResult(**data))
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                print(f"  ERROR skipping line: {exc}")
+
+    count_total = len(results)
+    count_labeled = 0
+    count_errors = 0
+    label_counts: Counter[GroundingActLabel] = Counter()
+
+    with httpx.Client() as client:
+        for i, result in enumerate(results):
+            label, reason, error = _get_grounding_act_label(
+                client=client,
+                url=args.litellm_url,
+                key=args.litellm_key,
+                model=args.labeler_model,
+                prompt_id=result.prompt_id,
+                prompt=result.prompt_text,
+                response=result.response,
+            )
+            if error:
+                print(f"  [{i + 1:4d}] ERROR labeling {result.prompt_id}: {error}")
+                count_errors += 1
+                result.grounding_label = "Error"
+                result.grounding_reason = error
+                continue
+
+            result.grounding_label = label
+            result.grounding_reason = reason
+            if label:
+                count_labeled += 1
+                label_counts[label] += 1
+                if (i + 1) % 20 == 0:
+                    print(
+                        f"  [{i + 1:4d}/{count_total}] Labeled {count_labeled} OK, {count_errors} err..."
+                    )
+
+    print("#")
+    print(
+        f"# Relabeling complete. Total: {count_total}, Labeled: {count_labeled}, Errors: {count_errors}"
+    )
+    print("#")
+    print("# Grounding Act Distribution:")
+    for label, count in label_counts.most_common():
+        percentage = (count / count_labeled) * 100 if count_labeled else 0
+        print(f"- {label:<15}: {count:4d} ({percentage:5.1f}%)")
+
+    ambiguous_prompts = sum(1 for r in results if r.ambiguous)
+    clarification_on_ambiguous = sum(
+        1 for r in results if r.ambiguous and r.grounding_label == "Clarification"
+    )
+    overresponse_on_ambiguous = sum(
+        1 for r in results if r.ambiguous and r.grounding_label == "Overresponse"
+    )
+
+    print("#")
+    print("# RIFTS Grounding Accuracy:")
+    if ambiguous_prompts > 0:
+        accuracy = (clarification_on_ambiguous / ambiguous_prompts) * 100
+        overresponse_rate = (overresponse_on_ambiguous / ambiguous_prompts) * 100
+        print(f"- Total Ambiguous Prompts: {ambiguous_prompts}")
+        print(f"- Asked for Clarification: {clarification_on_ambiguous} ({accuracy:.1f}%)")
+        print(f"- Over-responded (Assumed): {overresponse_on_ambiguous} ({overresponse_rate:.1f}%)")
+    else:
+        print("- No ambiguous prompts found in the results file.")
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.relabel_only:
+        return _relabel_run(args)
     if args.dry_run:
         return _dry_run(args.model, args.output)
     return _real_run(args)
