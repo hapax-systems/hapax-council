@@ -1,7 +1,8 @@
 # Pre-Registration: Conversational Grounding via Structured Context Anchoring (Cycle 2)
 
-**Pre-registration date:** [TO BE FILLED — before Phase B data collection begins]
-**Registration location:** [OSF URL] + Git commit [SHA]
+**Pre-registration date:** 2026-04-16 (draft); to be re-dated at OSF submission
+**Registration location:** [OSF URL — filled at submission time] + Git commit [SHA — frozen at pre-reg merge commit, recorded here before OSF submission]
+**Substrate condition locked for this pre-registration:** Condition A — Qwen3.5-9B (EXL3 5.0bpw) served by TabbyAPI on `:5000`, routed as the `local-fast`/`coding`/`reasoning` LiteLLM routes. The parallel OLMo-3-7B substrate (Condition A') deployed 2026-04-16 on `:5001` is **out of scope** for this pre-registration; an equivalent Cycle 2 analysis under Condition A' will be filed as a separate pre-registration if and when it is undertaken.
 
 ---
 
@@ -45,6 +46,8 @@ A-B-A (baseline → intervention → reversal).
 
 **Carryover concern:** Barlow, Nock & Hersen (2009) note reversal designs are inappropriate when interventions entail learning. Grounding creates persistent knowledge structures. If A' does not return to baseline, this will be interpreted as "residual of learning" rather than evidence against the intervention. A-B-A-B extension may be adopted if A' is ambiguous.
 
+**Livestream context for phase transitions:** Data collection occurs entirely during 24/7 livestream operation (see §3.2). Phase transitions happen mid-stream: a phase boundary is marked by the operator toggling the feature-flag set defined in §2.3 via the operator-facing flag CLI, which causes an atomic persistence of the new flag state before the next utterance is processed. In-flight discourse units (DU state PENDING at the moment of transition) are allowed to resolve under their originating phase's flags and are tagged with their originating phase; no mid-DU flag changes occur. The stream itself does not stop at phase boundaries.
+
 ### 2.3 Phase Definitions
 
 | Phase | Label | Condition | Treatment Flags |
@@ -79,7 +82,14 @@ Minimum 10 sessions per phase. Transition when minimum reached AND last 3 sessio
 Single operator, sole user of the system. Daily voice AI user. ADHD diagnosis (relevant: pacing, dysfluency tolerance, and executive function support are part of the system's design rationale).
 
 ### 3.2 Setting
-Home office. CachyOS (Arch-based), RTX 3090, Hyprland (Wayland). Blue Yeti microphone, PreSonus Studio 24c audio interface. LiteLLM gateway routing to Claude Opus 4.6. Kokoro TTS. Faster-whisper STT (distil-large-v3).
+Home office, 24/7 research livestream (the constitutive LRR-epic principle: the stream IS the research instrument; there are no offline / non-stream-context sessions). CachyOS (Arch-based), RTX 5060 Ti (compositor + imagination) + RTX 3090 (TabbyAPI local inference), Hyprland (Wayland). Blue Yeti microphone (operator voice), PreSonus Studio 24c audio interface (Cortado MKIII contact mic + monitor outputs). Studio compositor at `/dev/video42` → OBS V4L2 + native GStreamer RTMP → MediaMTX local relay on `:1935` → YouTube public endpoint.
+
+**LLM infrastructure (locked for Condition A pre-registration):**
+- LiteLLM gateway on `:4000` routes the voice conversational backbone to local inference (`local-fast` → Qwen3.5-9B via TabbyAPI `:5000`). Cloud routes (`balanced` → Claude Opus, `fast` → Gemini Flash) are used only for auxiliary reasoning surfaces (orientation, briefing, governance) and do NOT serve the conversational turn under study.
+- STT: faster-whisper distil-large-v3 (GPU).
+- TTS: Kokoro 82M (CPU).
+- Langfuse callback wired on LiteLLM for per-turn trace capture (enabled 2026-04-16; see LRR Phase 5 closure).
+- Nomic embedder: `nomic-embed-text-v2-moe` via Ollama CPU route (GPU-isolated from TabbyAPI per workspace CLAUDE.md § Shared Infrastructure).
 
 ### 3.3 Generalizability
 Single-case study. Results apply to this specific operator-system dyad only. Generalization requires conceptual replication on different systems and operators.
@@ -138,15 +148,25 @@ Implementation: `conversation_pipeline.py`, `grounding_ledger.py`, `persona.py`,
 
 ## 5. Session Inclusion/Exclusion Criteria
 
+### 5.0 Operational definition of "session"
+
+Because data collection occurs during continuous livestream operation (§3.2), "session" is defined operationally as follows:
+
+A **session** is a contiguous livestream segment bounded on both sides by either (a) a feature-flag transition event, (b) a stream-stop event (including unintended stream interruption > 30s), or (c) an explicit operator-emitted session boundary marker (a CLI command writing a timestamped session-boundary event to the research registry). Every utterance within a session shares a single set of feature-flag values (§2.3). Sessions are non-overlapping and together tile the full livestream uptime during the study period.
+
+Session IDs are assigned deterministically from the session boundary markers in the append-only research registry. No session exists outside the livestream.
+
 ### 5.1 Inclusion
 - Minimum 5 conversational turns
-- Feature flags in correct state for current phase
+- Feature flags in correct state for current phase throughout the session
 - All per-turn scores present in Langfuse
 
 ### 5.2 Exclusion
-- System crash or VRAM failure mid-session
-- Operator explicitly debugging/testing (not natural conversation)
-- Feature flag state incorrect for current phase
+- System crash or VRAM failure mid-session (the session is truncated at the failure timestamp; if the pre-failure portion meets the 5-turn minimum it may be included, otherwise excluded)
+- Operator-emitted `experiment-pause` marker active during the session (operator is explicitly debugging the system itself, not conducting natural-use interaction)
+- Feature flag state incorrect for current phase (should not occur if §2.2 mid-stream-transition protocol is followed; any such session is excluded)
+
+**Not exclusion criteria (explicit):** operator coding on-stream, operator reading audience chat, operator reacting to ambient studio/music activity, operator engaged with other non-Hapax software — all of these are natural livestream operation and are IN SCOPE as conversational ground-truth per the livestream-as-research-instrument principle.
 
 ### 5.3 Turn-Level
 All turns with valid `turn_pair_coherence` score included. Turns where embedding failed (score=None) excluded from primary analysis but counted for session turn threshold.
@@ -162,7 +182,7 @@ Sessions with >30% missing turn-level coherence scores excluded. No imputation.
 Minimum 10, maximum 20 per phase.
 
 ### 6.2 Justification
-Resource constraint: operator has ~5-10 sessions per evening. 10 sessions minimum provides adequate precision for BEST estimation (Cycle 1 pilot: 17 baseline sessions yielded stable session means). 20 sessions maximum prevents indefinite collection.
+Sessions accumulate during livestream uptime (§3.2, §5.0); the rate of session accumulation depends on flag-transition cadence and stream duration rather than on scheduled offline windows. 10 sessions minimum provides adequate precision for BEST estimation (Cycle 1 pilot: 17 baseline sessions yielded stable session means under a prior non-stream session model that is no longer operational; session-level variance is expected to be comparable or lower in stream-continuous data). 20 sessions maximum prevents indefinite collection.
 
 ### 6.3 Sequential Monitoring
 Compute posterior after every 5 sessions. Report HDI width and %ROPE at each checkpoint. No optional stopping — minimum 10 sessions regardless of posterior.
@@ -208,7 +228,7 @@ Report BCTau (Tarlow 2017) as supplementary effect size.
 7. Apply decision rules (Section 7.5)
 8. Sensitivity: re-run with Normal(0, 1) prior and HalfNormal(1) SD prior
 
-Code: `agents/hapax_daimonion/stats.py` (to be updated with BEST implementation before Phase B analysis).
+**Code and implementation commitment:** `agents/hapax_daimonion/stats.py` currently ships a **scipy-analytical BEST approximation** (method label `scipy-analytical-approx-2026-04-14`). Before Phase B analysis begins, the analysis code will be upgraded to **PyMC MCMC BEST** (method label `pymc-mcmc-2026-04-XX`) per the priors and model specified in §7.2–§7.3. The analytical-approximation code remains in the repository as a secondary sensitivity check; primary results will be reported from the MCMC implementation. The MCMC upgrade must land on main before the first Phase B session is included in any analysis. This commitment is frozen by §9 deviation-protocol rules once pre-reg is filed.
 
 ### 7.7 Exploratory (not pre-registered, lower evidential status)
 - Trajectory slope comparison (does coherence improve faster in Phase B?)
@@ -242,7 +262,9 @@ Any deviation after data collection begins documented in `research/protocols/dev
 | # | Section | Original | Deviation | Justification | Impact |
 |---|---------|----------|-----------|---------------|--------|
 
-Analysis code versioned at code freeze commit (SHA to be recorded here after freeze). Post-registration code changes are deviations. Experiment freeze enforcement (pre-commit hook + CI gate) prevents accidental changes to frozen paths.
+**Code freeze:** Analysis code is versioned at the git commit SHA recorded on line 4 above; this SHA is set when the pre-registration PR merges and matches the commit that lands this file on main. Post-registration code changes to any path listed in `research/protocols/frozen-paths.yaml` are deviations and require a row in the table above. Experiment freeze enforcement (pre-commit hook + CI gate) prevents accidental changes to frozen paths during data collection.
+
+**Substrate swap during collection:** if operator elects to switch the conversational backbone from Qwen3.5-9B (Condition A) to OLMo-3 (Condition A') during the Cycle 2 collection window, this constitutes a deviation that invalidates the current pre-registration and requires a new pre-registration under Condition A'. The deployed OLMo-3 backend at `:5001` (LiteLLM `local-research-instruct` route) is idle from the pre-reg's perspective until such a new filing occurs.
 
 See `lab-journal/posts/2026-03-21-deviation-disclosure/` for Cycle 1→2 deviation disclosure (Willroth & Atherton 2024 format).
 
@@ -250,11 +272,13 @@ See `lab-journal/posts/2026-03-21-deviation-disclosure/` for Cycle 1→2 deviati
 
 ## 10. Transparency
 
-- Raw session data: `proofs/claim-1-stable-frame/data/cycle-2/`
-- Analysis code: `agents/hapax_daimonion/stats.py`
+- Raw session data: `proofs/claim-1-stable-frame/data/cycle-2/` (in-repo; stream-originated per §3.2, §5.0)
+- Langfuse trace archive: live via the LiteLLM `langfuse` callback (enabled 2026-04-16); metadata persists indefinitely in ClickHouse (no TTL) with a 3-day MinIO blob retention per the LRR Phase 5 observability remediation. A durable consumer-side trace reader (`agents/_langfuse_local.py`) writes per-day JSONL snapshots so trace-level metadata remains readable after blob expiry.
+- Analysis code: `agents/hapax_daimonion/stats.py` (pinned at the pre-reg commit SHA; upgraded to PyMC MCMC per §7.6 before Phase B analysis)
 - Research documents: `agents/hapax_daimonion/proofs/`
-- Lab journal: [GitHub Pages URL — to be enabled]
-- OSF registration: [URL — to be filed]
+- Livestream archive (where relevant, subject to consent posture): public YouTube channel feed; per-segment sidecar metadata under `/data/archive/`
+- Lab journal: not yet published (placeholder removed from this pre-reg; will be added via deviation record if enabled later)
+- OSF registration: [URL — filled at OSF submission]
 - Source code: [https://github.com/ryanklee/hapax-council](https://github.com/ryanklee/hapax-council)
 - License: CC-BY-4.0 (text), CC0 (data), Apache-2.0 (code)
 
