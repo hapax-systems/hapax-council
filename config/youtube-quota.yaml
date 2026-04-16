@@ -1,0 +1,34 @@
+# YouTube Data API v3 quota + rate-limit budget for Hapax-autonomous writes.
+#
+# Applies to any agent in this repo that makes authenticated YouTube writes —
+# currently only the description auto-update path wired in Phase 9.
+#
+# Operator posture 2026-04-16:
+# - Default daily cap: 2000 units / 10000 default project quota (20%).
+# - Per-stream update cap: 5 description updates (prevents per-stream runaway).
+# - Per-update cost: 50 units (snippet.description-scoped videos.update).
+# - Live counter at /dev/shm/hapax-compositor/youtube-quota.json; resets at
+#   Pacific midnight (YouTube API quota rollover).
+# - Refuses silently once budget is exhausted; does NOT retry or queue.
+#
+# Reference:
+# - Phase 9 spec hook 3 (code-narration prep: docs/research/2026-04-15-daimonion-code-narration-prep.md §3)
+# - Phase 8 spec §3.7 (YouTube description auto-update, item 7)
+
+daily_budget_units: 2000
+per_stream_max_updates: 5
+per_update_unit_cost: 50
+quota_file: /dev/shm/hapax-compositor/youtube-quota.json
+
+# When exceeded: update is skipped, event logged, description remains at
+# last successful write. No retry loop.
+on_budget_exhausted: skip_silent
+
+# Rollover: YouTube API uses Pacific midnight for quota rollover.
+# Counter resets when the stored day differs from the current Pacific date.
+rollover_timezone: America/Los_Angeles
+
+# OAuth scope required for videos.update on snippet.description:
+# https://www.googleapis.com/auth/youtube.force-ssl
+# Already authorized via scripts/youtube-auth.py.
+oauth_scope: https://www.googleapis.com/auth/youtube.force-ssl
