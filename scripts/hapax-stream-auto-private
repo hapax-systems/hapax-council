@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""hapax-stream-auto-private — LRR Phase 6 §5 closed-loop enforcer.
+
+Designed to be run on a systemd user timer (every 15s). Reads live
+stimmung. If the system is in a state where public broadcast is not safe
+(overall_stance=critical, high operator stress, high resource pressure,
+high error rate), and the current stream mode is PUBLIC or PUBLIC_RESEARCH,
+force-transitions to PRIVATE and logs the reason.
+
+This is the executive_function axiom's compensation mechanism: when
+stimmung says "not a good time to be broadcasting," the system handles
+the pull-back automatically rather than requiring operator action.
+
+Bypassable via ``HAPAX_DISABLE_AUTO_PRIVATE=1`` in the environment (for
+tests and emergency manual override).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from shared.stream_mode import (  # noqa: E402
+    StreamMode,
+    get_stream_mode_or_off,
+    set_stream_mode,
+)
+from shared.stream_transition_gate import (  # noqa: E402
+    read_stimmung_snapshot,
+    stimmung_auto_private_needed,
+)
+
+logging.basicConfig(
+    format="%(asctime)s %(levelname)s hapax-stream-auto-private: %(message)s",
+    level=logging.INFO,
+)
+log = logging.getLogger("hapax-stream-auto-private")
+
+
+def main() -> int:
+    if os.environ.get("HAPAX_DISABLE_AUTO_PRIVATE") == "1":
+        log.info("disabled via HAPAX_DISABLE_AUTO_PRIVATE=1")
+        return 0
+
+    current = get_stream_mode_or_off()
+    # Only act on public-family modes; off/private are already safe
+    if current not in (StreamMode.PUBLIC, StreamMode.PUBLIC_RESEARCH):
+        return 0
+
+    stimmung = read_stimmung_snapshot()
+    if not stimmung:
+        log.debug("stimmung snapshot unavailable; no action")
+        return 0
+
+    decision = stimmung_auto_private_needed(stimmung)
+    if decision.allowed:
+        return 0  # stimmung is fine, stay public
+
+    log.warning(
+        "AUTO-PRIVATE triggered: current=%s reason=%s",
+        current.value,
+        decision.reason,
+    )
+    set_stream_mode(StreamMode.PRIVATE)
+    log.info("stream mode set to private")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

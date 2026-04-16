@@ -1,0 +1,13 @@
+[Unit]
+Description=Stream auto-private enforcer (LRR Phase 6 §5)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/docs/superpowers/specs/2026-04-15-lrr-phase-6-governance-finalization-design.md
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-stream-auto-private
+Restart=no
+
+# The executive_function axiom compensation mechanism. See spec §5.
+# Runs on a 15s timer via hapax-stream-auto-private.timer.

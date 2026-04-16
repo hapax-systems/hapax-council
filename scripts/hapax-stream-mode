@@ -5,7 +5,15 @@ The stream-mode axis is distinct from the working-mode axis:
 - working-mode governs R&D vs research-experiment degradation
 - stream-mode governs what the livestream surface exposes to the outside world
 
-See shared/stream_mode.py for the full spec and fail-closed semantics.
+Gating (LRR Phase 6 §6):
+- Transitions INTO public or public_research pass through the presence-T0
+  gate. If a non-operator person is detected without an active
+  broadcast-consent contract, the transition is blocked.
+- ``--force`` bypasses the presence gate (logged, use only when operator
+  has explicit context the presence engine lacks).
+
+See shared/stream_mode.py for the state semantics and shared/
+stream_transition_gate.py for the presence-T0 gate.
 
 Usage:
     hapax-stream-mode                       print the current mode
@@ -13,11 +21,13 @@ Usage:
     hapax-stream-mode private               MediaMTX local relay only; Tailscale-gated
     hapax-stream-mode public                public CDN; full broadcast consent required
     hapax-stream-mode public_research       public + research-mode surfaces exposed
+    hapax-stream-mode public --force        bypass presence-T0 gate (logged)
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -28,8 +38,35 @@ from shared.stream_mode import (  # noqa: E402
     get_stream_mode_or_off,
     set_stream_mode,
 )
+from shared.stream_transition_gate import (  # noqa: E402
+    presence_t0_gate,
+    read_presence_probability,
+)
+
+logging.basicConfig(
+    format="%(asctime)s %(levelname)s hapax-stream-mode: %(message)s",
+    level=logging.INFO,
+)
+log = logging.getLogger("hapax-stream-mode")
 
 _VALID_MODES = [m.value for m in StreamMode]
+
+
+def _active_broadcast_contracts() -> frozenset[str]:
+    """Return the set of active broadcast-consent contract IDs."""
+    try:
+        from shared.governance.consent import load_contracts
+
+        registry = load_contracts()
+        active = frozenset(
+            cid
+            for cid, c in registry._contracts.items()
+            if c.active and "broadcast" in {s.strip().lower() for s in getattr(c, "scope", [])}
+        )
+        return active
+    except Exception as exc:
+        log.warning("failed to load broadcast contracts: %s", exc)
+        return frozenset()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,13 +81,37 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="New stream mode. Omit to print the current mode.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass the presence-T0 gate (logged).",
+    )
     args = parser.parse_args(argv)
 
     if args.mode is None:
         print(get_stream_mode_or_off().value)
         return 0
 
-    set_stream_mode(StreamMode(args.mode))
+    target = StreamMode(args.mode)
+
+    # §6 presence-T0 gate — block public transitions on unconsented presence
+    if not args.force:
+        gate = presence_t0_gate(
+            target,
+            presence_probability=read_presence_probability(),
+            active_broadcast_contracts=_active_broadcast_contracts(),
+        )
+        if not gate.allowed:
+            log.error("BLOCKED: %s", gate.reason)
+            log.error("Use --force to bypass (operator responsibility).")
+            return 2
+    elif target in (StreamMode.PUBLIC, StreamMode.PUBLIC_RESEARCH):
+        log.warning(
+            "presence-T0 gate BYPASSED via --force; operator took responsibility "
+            "for broadcast-consent coverage"
+        )
+
+    set_stream_mode(target)
     print(args.mode)
     return 0
 
