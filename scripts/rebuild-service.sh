@@ -136,6 +136,57 @@ if [ -z "$SERVICE" ]; then
     exit 0
 fi
 
+# --- System pressure guard ---
+# 2026-04-16 incident: studio-compositor's main Python process went zombie
+# after rebuild-services fired twice within 5 minutes while the rig was at
+# load-avg 22 with 13 GB of swap in use. The restart itself crashed the
+# process under memory pressure. Prevent: skip the restart when the
+# system is too stressed to survive it cleanly. SHA_FILE is NOT updated
+# on skip so the next rebuild cycle retries once pressure drops.
+#
+# Thresholds are conservative defaults; override via env vars when the
+# migration changes the baseline.
+: "${HAPAX_REBUILD_LOAD_MAX:=3.0}"      # load-avg per CPU core
+: "${HAPAX_REBUILD_SWAP_PCT_MAX:=50}"   # swap used as % of total
+: "${HAPAX_REBUILD_SKIP_GUARD:=0}"      # 1 to bypass the guard entirely
+
+PRESSURE_REASON=""
+if [ "$HAPAX_REBUILD_SKIP_GUARD" != "1" ]; then
+    read -r load_1min _ _ _ _ < /proc/loadavg
+    cores=$(nproc 2>/dev/null || echo 1)
+    load_per_core=$(awk -v l="$load_1min" -v c="$cores" 'BEGIN { printf "%.2f", l/c }')
+    if awk -v lpc="$load_per_core" -v max="$HAPAX_REBUILD_LOAD_MAX" 'BEGIN { exit (lpc > max) ? 0 : 1 }'; then
+        PRESSURE_REASON="load-per-core=${load_per_core} > ${HAPAX_REBUILD_LOAD_MAX} (load_1min=${load_1min}, cores=${cores})"
+    else
+        swap_total=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)
+        swap_used=$(awk '/^SwapFree:/ {free=$2} /^SwapTotal:/ {total=$2} END {print total-free}' /proc/meminfo)
+        if [ "${swap_total:-0}" -gt 0 ]; then
+            swap_pct=$((swap_used * 100 / swap_total))
+            if [ "$swap_pct" -gt "$HAPAX_REBUILD_SWAP_PCT_MAX" ]; then
+                PRESSURE_REASON="swap=${swap_pct}% > ${HAPAX_REBUILD_SWAP_PCT_MAX}% (used=${swap_used}kB, total=${swap_total}kB)"
+            fi
+        fi
+    fi
+fi
+
+if [ -n "$PRESSURE_REASON" ]; then
+    # System too stressed for a safe restart. Skip without advancing
+    # SHA_FILE so we retry next cycle. Throttled ntfy per distinct SHA
+    # so the operator isn't spammed while pressure persists.
+    PRESSURE_NOTIFIED_FILE="$STATE_DIR/last-pressure-skip-${SHA_KEY}-sha"
+    LAST_PRESSURE_NOTIFIED=$(cat "$PRESSURE_NOTIFIED_FILE" 2>/dev/null || echo "none")
+    skip_msg="$SERVICE restart SKIPPED under pressure — $PRESSURE_REASON — retrying next cycle"
+    echo "[WARN] rebuild-service: $skip_msg" >&2
+    logger -t "$LOG_TAG" -p user.warning "$skip_msg"
+    if [ "$CURRENT_SHA" != "$LAST_PRESSURE_NOTIFIED" ]; then
+        ntfy "$SERVICE restart deferred (pressure)" \
+            "$PRESSURE_REASON. Deploy ${CURRENT_SHA:0:8} waits for system to settle. HAPAX_REBUILD_SKIP_GUARD=1 to force." \
+            "default" "hourglass"
+        echo "$CURRENT_SHA" > "$PRESSURE_NOTIFIED_FILE"
+    fi
+    exit 0
+fi
+
 ntfy "$SERVICE restarting" "${LAST_SHA:0:8} → ${CURRENT_SHA:0:8}" "low" "hammer_and_wrench"
 
 systemctl --user restart "$SERVICE" 2>/dev/null || {
