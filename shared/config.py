@@ -207,16 +207,32 @@ def get_qdrant():
 
 
 @functools.lru_cache(maxsize=1)
-def get_qdrant_grpc() -> QdrantClient:
-    """Return a QdrantClient using gRPC transport (lower latency for hot paths).
+def _get_qdrant_grpc_raw() -> QdrantClient:
+    """Return the raw (ungated) gRPC QdrantClient. For internal use only.
 
-    NOTE: gRPC client is currently ungated because gRPC upserts bypass the
-    shared.governance.qdrant_gate wrapper. Phase 6 §3 follow-up: extend gating
-    to the gRPC path, then deprecate this function's ungated variant.
-    Until then, callers that go through gRPC must take extra care with
-    person-adjacent collections — or gate at the call site directly.
+    Same role as ``_get_qdrant_raw``: exposed so ``ConsentGatedQdrant`` can
+    write through after its checks, and so schema bootstrapping can reach
+    the unwrapped client.
     """
     return QdrantClient(QDRANT_URL, prefer_grpc=True, grpc_port=6334)
+
+
+@functools.lru_cache(maxsize=1)
+def get_qdrant_grpc():
+    """Return a consent-gated gRPC QdrantClient (LRR Phase 6 §3 / FINDING-R).
+
+    Identical consent-gating semantics as ``get_qdrant()``; wraps the raw
+    gRPC client with ``ConsentGatedQdrant`` so person-adjacent upserts
+    filter unconsented points regardless of transport. Reads and schema
+    calls proxy through unchanged via ``__getattr__``.
+
+    Closes the follow-up flagged during the initial FINDING-R wire-in:
+    gRPC callers in ``agents/hapax_daimonion/tools.py`` and elsewhere
+    were bypassing the gate while the HTTP factory was already gated.
+    """
+    from shared.governance.qdrant_gate import ConsentGatedQdrant
+
+    return ConsentGatedQdrant(inner=_get_qdrant_grpc_raw())
 
 
 class InstrumentedQdrantClient:

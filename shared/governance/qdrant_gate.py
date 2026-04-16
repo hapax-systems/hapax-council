@@ -35,9 +35,28 @@ _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
 # Collections that may contain person-adjacent data, mapped to their consent
 # data category. Upserts to these collections are consent-checked.
+#
+# The 10-collection inventory is canon per workspace CLAUDE.md:
+#   profile-facts, documents, axiom-precedents, operator-episodes,
+#   studio-moments, operator-corrections, affordances, hapax-apperceptions,
+#   operator-patterns, stream-reactions.
+#
+# Listed here are the collections that receive non-operator data. The rest
+# are either operator-only (operator-episodes / -corrections / -patterns)
+# or system-internal (axiom-precedents, affordances) and are exempted from
+# consent checks.
 PERSON_ADJACENT_COLLECTIONS: dict[str, str] = {
     "documents": "document",
     "profile-facts": "document",
+    # stream-reactions has a chat_authors field flagged in FINDING-R §2.5 of
+    # the Phase 6 pre-epic audit (2178 points with chat_authors observed).
+    "stream-reactions": "broadcast",
+    # studio-moments captures biometric + scene frames that may include
+    # non-operator people (collaborators, audience, guests).
+    "studio-moments": "broadcast",
+    # hapax-apperceptions stores shared perception frames; may carry
+    # audience/guest identifiers incidentally.
+    "hapax-apperceptions": "broadcast",
 }
 
 # Payload fields checked for person identifiers, per collection.
@@ -54,6 +73,24 @@ PERSON_FIELDS: dict[str, list[tuple[str, str]]] = {
     "profile-facts": [
         ("audience_key", "direct"),
         ("audience_name", "direct"),
+    ],
+    "stream-reactions": [
+        # Field name from FINDING-R §2.5 verification.
+        ("chat_authors", "list"),
+        ("chat_author", "direct"),
+        ("audience_key", "direct"),
+    ],
+    "studio-moments": [
+        ("people", "list"),
+        ("audience", "list"),
+        ("subject", "direct"),
+        ("audience_key", "direct"),
+    ],
+    "hapax-apperceptions": [
+        ("people", "list"),
+        ("audience_key", "direct"),
+        ("audience_name", "direct"),
+        ("subject", "direct"),
     ],
 }
 

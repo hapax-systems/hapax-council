@@ -27,7 +27,13 @@ from pathlib import Path
 from shared.stream_mode import StreamMode
 
 STIMMUNG_STATE_FILE = Path("/dev/shm/hapax-stimmung/state.json")
-PRESENCE_STATE_FILE = Path("/dev/shm/hapax-dmn/health.json")
+# PresenceEngine writes the live presence posterior to this file at every tick.
+# The "posterior" field is the Bayesian log-odds probability [0.0, 1.0] that
+# a non-operator-identified person is present. Distinct from
+# /dev/shm/hapax-dmn/health.json (which is a control-signal health snapshot
+# for the daimonion component and does NOT contain presence).
+PRESENCE_STATE_FILE = Path("/dev/shm/hapax-daimonion/presence-metrics.json")
+PRESENCE_FIELD_NAME = "posterior"
 
 
 @dataclass(frozen=True)
@@ -187,19 +193,36 @@ def read_stimmung_snapshot(path: Path | None = None) -> dict:
 
 
 def read_presence_probability(path: Path | None = None) -> float:
-    """Read the live presence-probability posterior from dmn health.
+    """Read the live presence-probability posterior from PresenceEngine.
+
+    Source of truth: ``/dev/shm/hapax-daimonion/presence-metrics.json``.
+    The ``posterior`` field is PresenceEngine's Bayesian probability that
+    a non-operator-identified person is present.
 
     Returns 0.0 on any I/O or parse error — no-information case, which
-    means the presence gate will allow (since 0.0 < threshold).
+    means the presence gate will allow (since 0.0 < threshold). The
+    fallback is OK for the presence gate specifically because a missing
+    presence signal means we cannot confidently block a broadcast on
+    presence grounds; the gate's role is to positively confirm presence,
+    not to presume it.
+
+    Backward-compat: if a caller passes a path whose payload has the
+    legacy ``presence_probability`` key (scalar or nested), that is also
+    recognised.
     """
     p = path if path is not None else PRESENCE_STATE_FILE
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return 0.0
-    val = data.get("presence_probability")
-    if isinstance(val, dict):
-        val = val.get("value")
+
+    # Primary path: PresenceEngine's posterior
+    val = data.get(PRESENCE_FIELD_NAME)
+    if val is None:
+        # Backward-compat for alternate writers / legacy tests
+        val = data.get("presence_probability")
+        if isinstance(val, dict):
+            val = val.get("value")
     try:
         return float(val) if val is not None else 0.0
     except (TypeError, ValueError):
