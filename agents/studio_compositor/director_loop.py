@@ -110,10 +110,28 @@ def _jsonl_log_path(now: datetime | None = None) -> Path:
 LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 LITELLM_KEY = ""
 
-# Director commentary model. Defaults to the local Qwen3.5-9B substrate via
-# LiteLLM so the director keeps reacting even when cloud billing hiccups.
-# Override via HAPAX_DIRECTOR_MODEL env var if a specific cloud model is wanted.
+# Director commentary model. Default is the local Qwen3.5-9B substrate via
+# LiteLLM (`local-fast`) — no cloud billing dependency; keeps the stream
+# reacting even when cloud routes are billed-out or denied. Override via
+# HAPAX_DIRECTOR_MODEL env var. If set to a known multimodal route
+# (e.g. "fast"/gemini or "balanced"/claude), images are forwarded; otherwise
+# the director strips images before the call.
 DIRECTOR_MODEL = os.environ.get("HAPAX_DIRECTOR_MODEL", "local-fast")
+
+# Routes known to accept ``image_url`` content in the OpenAI-compatible
+# messages body. Anything else → images stripped at the call site.
+MULTIMODAL_ROUTES: frozenset[str] = frozenset(
+    {
+        "fast",
+        "balanced",
+        "claude-opus",
+        "claude-sonnet",
+        "claude-haiku",
+        "gemini-flash",
+        "gemini-pro",
+        "long-context",
+    }
+)
 
 PERCEPTION_INTERVAL = 8.0  # seconds between LLM perception calls
 MIN_VIDEO_DURATION = 15.0  # minimum seconds before allowing CUT
@@ -605,7 +623,10 @@ class DirectorLoop:
             return ""
 
         content: list[dict] = []
-        if images:
+        # Only forward images when the configured route is known multimodal.
+        # Text-only routes (e.g. local Qwen3.5-9B) timeout or error when fed
+        # base64-encoded JPEGs via the OpenAI-compat image_url shape.
+        if images and DIRECTOR_MODEL in MULTIMODAL_ROUTES:
             import base64
 
             for img_path in images:
