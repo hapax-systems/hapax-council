@@ -178,14 +178,44 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
 
 
 @functools.lru_cache(maxsize=1)
-def get_qdrant() -> QdrantClient:
-    """Return a QdrantClient connected to the configured URL (singleton)."""
+def _get_qdrant_raw() -> QdrantClient:
+    """Return the raw (ungated) QdrantClient. For internal use only.
+
+    Callers should use ``get_qdrant()`` which wraps the raw client with
+    the consent-gate proxy. The raw client is exposed here for schema
+    bootstrapping, tests, and the gate itself (which needs unwrapped
+    access to write through).
+    """
     return QdrantClient(QDRANT_URL)
 
 
 @functools.lru_cache(maxsize=1)
+def get_qdrant():
+    """Return a consent-gated Qdrant client (LRR Phase 6 §3 / FINDING-R).
+
+    Wraps the raw client with ``ConsentGatedQdrant`` so every upsert to
+    a person-adjacent collection passes the consent gate. Reads and
+    schema operations pass through to the raw client unchanged via
+    ``__getattr__`` proxying.
+
+    For schema bootstrapping / tests that explicitly need the ungated
+    client, import ``_get_qdrant_raw`` directly.
+    """
+    from shared.governance.qdrant_gate import ConsentGatedQdrant
+
+    return ConsentGatedQdrant(inner=_get_qdrant_raw())
+
+
+@functools.lru_cache(maxsize=1)
 def get_qdrant_grpc() -> QdrantClient:
-    """Return a QdrantClient using gRPC transport (lower latency for hot paths)."""
+    """Return a QdrantClient using gRPC transport (lower latency for hot paths).
+
+    NOTE: gRPC client is currently ungated because gRPC upserts bypass the
+    shared.governance.qdrant_gate wrapper. Phase 6 §3 follow-up: extend gating
+    to the gRPC path, then deprecate this function's ungated variant.
+    Until then, callers that go through gRPC must take extra care with
+    person-adjacent collections — or gate at the call site directly.
+    """
     return QdrantClient(QDRANT_URL, prefer_grpc=True, grpc_port=6334)
 
 
