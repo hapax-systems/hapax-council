@@ -1,8 +1,16 @@
 # LRR Phase 7 — Persona / Posture / Role Spec Authoring — Design Spec
 
+> **⚠ SUPERSEDED 2026-04-16** by `docs/superpowers/specs/2026-04-16-lrr-phase-7-redesign-persona-posture-role.md`.
+>
+> This spec's YAML schema (`role.facets[]`, `posture.bearing/temperament/pacing`, `personality.attention/aesthetic/register`, `engagement_commitments.audience_axis`, `splattribution_commitment`) was burned down per operator's 2026-04-16 reframe. Reasons: facets imply decomposable identity (rejected — roles are thick positions in the "Father" sense); bearing/temperament/pacing are personification vocabulary (rejected — persona is description-of-being); personality treats personality as primary (rejected — Hapax has no personality in the schema's sense). The redesign locks an 8-position taxonomy across 3 layers (functional dissolved), adopts Actor-Network Theory as primary theoretical frame, and replaces the YAML schema with three artifacts: persona document (prose, description-of-being), posture vocabulary (architectural-state → named-posture map), role registry (8 thick positions). See the redesign spec for current scope, exit criteria, and rationale.
+>
+> Content below preserved for provenance only.
+
+---
+
 **Date:** 2026-04-15
 **Author:** delta (pre-staging extraction from LRR epic spec; LRR execution remains alpha's workstream)
-**Status:** DRAFT pre-staging — awaiting operator sign-off + LRR UP-7 (substrate swap) + UP-8 (governance) closed before Phase 7 open
+**Status:** SUPERSEDED 2026-04-16 — see redesign spec above
 **Epic reference:** `docs/superpowers/specs/2026-04-14-livestream-research-ready-epic-design.md` §5 Phase 7 (canonical source)
 **Plan reference:** `docs/superpowers/plans/2026-04-15-lrr-phase-7-persona-spec-plan.md` (companion TDD checkbox plan)
 **Branch target:** `feat/lrr-phase-7-persona-spec`

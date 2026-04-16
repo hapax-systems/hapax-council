@@ -1,8 +1,14 @@
 # LRR Phase 7 — Persona / Posture / Role Spec Authoring — Plan
 
+> **⚠ SUPERSEDED 2026-04-16.** Companion spec was burned down per operator's reframe. See `docs/superpowers/specs/2026-04-16-lrr-phase-7-redesign-persona-posture-role.md` for the current Phase 7 design. The companion plan for the redesign will be authored at `docs/superpowers/plans/2026-04-16-lrr-phase-7-redesign-plan.md` once the operator greenlights the spec.
+>
+> Content below preserved for provenance only. Do NOT execute the steps in this plan — every item references the rejected YAML schema.
+
+---
+
 **Date:** 2026-04-15
 **Author:** delta (pre-staging extraction; LRR execution remains alpha's workstream)
-**Status:** DRAFT pre-staging — awaiting operator sign-off + LRR UP-7 + UP-8 closed before Phase 7 open
+**Status:** SUPERSEDED 2026-04-16 — see redesign spec linked above
 **Spec reference:** `docs/superpowers/specs/2026-04-15-lrr-phase-7-persona-spec-design.md`
 **Branch target:** `feat/lrr-phase-7-persona-spec`
 **Unified phase mapping:** UP-9 Persona (~800 LOC, 2-3 sessions + operator review iterations)
