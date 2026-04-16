@@ -187,8 +187,14 @@ def build_pipeline_task(
     )
     context_aggregator = LLMContextAggregatorPair(context)
 
-    # Build processor chain, optionally inserting FrameGate before STT
-    processors = [transport.input()]
+    # Build processor chain, optionally inserting FrameGate before STT.
+    # VadStatePublisher sits directly after transport.input() so VAD frames
+    # (UserStartedSpeakingFrame / UserStoppedSpeakingFrame) are observed
+    # before they enter any downstream stage. Per LRR Phase 9 hook 4 —
+    # publishes operator-speech-active state for compositor-side ducking.
+    from agents.hapax_daimonion.vad_state_publisher import VadStatePublisher
+
+    processors = [transport.input(), VadStatePublisher()]
     if frame_gate is not None:
         processors.append(frame_gate)
     processors.extend(
