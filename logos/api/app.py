@@ -178,6 +178,7 @@ from logos.api.routes.query import router as query_router
 from logos.api.routes.scout import router as scout_router
 from logos.api.routes.sprint import router as sprint_router
 from logos.api.routes.stimmung import router as stimmung_router
+from logos.api.routes.stream import router as stream_router
 from logos.api.routes.studio import router as studio_router
 from logos.api.routes.studio_compositor import router as studio_compositor_router
 from logos.api.routes.studio_effects import router as studio_effects_router
@@ -207,6 +208,7 @@ app.include_router(fortress_router)
 app.include_router(pi_router)
 app.include_router(sprint_router)
 app.include_router(stimmung_router)
+app.include_router(stream_router)
 app.include_router(dmn_router)
 app.include_router(events_router)
 app.include_router(exploration_router)

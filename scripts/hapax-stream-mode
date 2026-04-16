@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""hapax-stream-mode — CLI for the LRR Phase 6 stream-mode axis.
+
+The stream-mode axis is distinct from the working-mode axis:
+- working-mode governs R&D vs research-experiment degradation
+- stream-mode governs what the livestream surface exposes to the outside world
+
+See shared/stream_mode.py for the full spec and fail-closed semantics.
+
+Usage:
+    hapax-stream-mode                       print the current mode
+    hapax-stream-mode off                   tear down all stream outputs
+    hapax-stream-mode private               MediaMTX local relay only; Tailscale-gated
+    hapax-stream-mode public                public CDN; full broadcast consent required
+    hapax-stream-mode public_research       public + research-mode surfaces exposed
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from shared.stream_mode import (  # noqa: E402
+    StreamMode,
+    get_stream_mode_or_off,
+    set_stream_mode,
+)
+
+_VALID_MODES = [m.value for m in StreamMode]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="hapax-stream-mode",
+        description="Read or write the livestream broadcast posture.",
+    )
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        choices=_VALID_MODES,
+        default=None,
+        help="New stream mode. Omit to print the current mode.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.mode is None:
+        print(get_stream_mode_or_off().value)
+        return 0
+
+    set_stream_mode(StreamMode(args.mode))
+    print(args.mode)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
