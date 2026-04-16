@@ -1,6 +1,6 @@
 """Vendored working mode reader for the agents package.
 
-Tracks the operator's current working state: RESEARCH, RND, or FORTRESS.
+Tracks the operator's current working state: RESEARCH or RND.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from pathlib import Path
 class WorkingMode(StrEnum):
     RESEARCH = "research"
     RND = "rnd"
-    FORTRESS = "fortress"
 
 
 WORKING_MODE_FILE = Path.home() / ".cache" / "hapax" / "working-mode"
@@ -38,7 +37,3 @@ def is_research() -> bool:
 
 def is_rnd() -> bool:
     return get_working_mode() == WorkingMode.RND
-
-
-def is_fortress() -> bool:
-    return get_working_mode() == WorkingMode.FORTRESS

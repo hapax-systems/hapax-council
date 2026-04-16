@@ -19,7 +19,6 @@ from pathlib import Path
 class WorkingMode(StrEnum):
     RESEARCH = "research"
     RND = "rnd"
-    FORTRESS = "fortress"
 
 
 WORKING_MODE_FILE = Path.home() / ".cache" / "hapax" / "working-mode"
@@ -47,8 +46,3 @@ def is_research() -> bool:
 def is_rnd() -> bool:
     """True when in R&D mode (full speed)."""
     return get_working_mode() == WorkingMode.RND
-
-
-def is_fortress() -> bool:
-    """True when in fortress mode (DF forcing function active)."""
-    return get_working_mode() == WorkingMode.FORTRESS
