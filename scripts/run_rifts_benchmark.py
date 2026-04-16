@@ -180,6 +180,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Cap on number of prompts to run (0 = all; useful for smoke tests)",
     )
     parser.add_argument(
+        "--split",
+        choices=["test", "train", "val", "all"],
+        default="all",
+        help=(
+            "Filter to one microsoft/rifts split (test/train/val) or run all. "
+            "Paper compares against the held-out test split (578 rows); pass "
+            "'--split test' for paper-comparable numbers vs Shaikh et al's "
+            "23.23%% frontier average."
+        ),
+    )
+    parser.add_argument(
         "--relabel-only",
         type=Path,
         help="Path to a results JSONL file to relabel. Skips inference.",
@@ -454,6 +465,10 @@ def _real_run(args: argparse.Namespace) -> int:
     count_total = 0
     with httpx.Client() as client, output_path.open("w") as out_f:
         for raw in _load_dataset(args.dataset_path):
+            if args.split != "all":
+                row_split = str(raw.get("split", "")).lower()
+                if row_split != args.split:
+                    continue
             if args.limit and count_total >= args.limit:
                 break
             count_total += 1
