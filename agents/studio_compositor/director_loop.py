@@ -755,15 +755,47 @@ class DirectorLoop:
             else nullcontext(None)
         )
 
+        # LRR Phase 10 §3.1 — per-condition Prometheus slicing. The director
+        # is the highest-frequency LLM call site on stream; wrapping it here
+        # populates hapax_llm_calls_total / _latency_seconds / _outcomes_total
+        # with the active research condition as a label, so dashboards can
+        # slice reaction volume / latency by Condition A vs Condition A'.
         try:
-            with span_ctx as span:
+            from agents.telemetry.llm_call_span import llm_call_span
+        except ImportError:
+            llm_call_span = None  # type: ignore[assignment]
+
+        metrics_ctx = (
+            llm_call_span(model=DIRECTOR_MODEL, route="director")
+            if llm_call_span is not None
+            else nullcontext(None)
+        )
+
+        try:
+            with span_ctx as span, metrics_ctx as metrics_span:
                 req = urllib.request.Request(
                     LITELLM_URL,
                     body,
                     {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
                 )
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    data = json.loads(resp.read())
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = json.loads(resp.read())
+                except TimeoutError:
+                    # re-raise so llm_call_span tags outcome="timeout"
+                    raise
+                except urllib.error.HTTPError as exc:
+                    # 4xx/5xx from LiteLLM → refused outcome (distinct from
+                    # transport error). Caller sees empty string; metrics
+                    # record the distinction.
+                    if metrics_span is not None:
+                        metrics_span.set_outcome("refused")
+                    log.warning(
+                        "LiteLLM HTTP %s — %s",
+                        getattr(exc, "code", "?"),
+                        getattr(exc, "reason", "?"),
+                    )
+                    return ""
 
                 try:
                     import sys
