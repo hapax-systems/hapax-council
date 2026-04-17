@@ -44,7 +44,7 @@ SceneMode = Literal[
     "conversation",
     "idle-ambient",
     "mixed",
-    "research-foregrounded",
+    "research-primary",
 ]
 
 PresetFamilyHint = Literal[
@@ -221,7 +221,7 @@ class StructuralDirector:
         parts.append("## Response Format")
         parts.append(
             "{\n"
-            '  "scene_mode": "<desk-work|hardware-play|conversation|idle-ambient|mixed|research-foregrounded>",\n'
+            '  "scene_mode": "<desk-work|hardware-play|conversation|idle-ambient|mixed|research-primary>",\n'
             '  "preset_family_hint": "<audio-reactive|calm-textural|glitch-dense|warm-minimal>",\n'
             '  "long_horizon_direction": "<1-2 sentences>"\n'
             "}"
