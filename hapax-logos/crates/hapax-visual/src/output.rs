@@ -230,10 +230,17 @@ fn sidecar_path(rgba_path: &Path) -> PathBuf {
     PathBuf::from(as_os)
 }
 
-/// Write RGBA pixel data and its metadata sidecar atomically.
+/// Write pixel data and its metadata sidecar atomically.
+///
+/// The compositor-facing consumer is `agents/studio_compositor/shm_rgba_reader.py`
+/// which loads the file as `cairo.ImageSurface(FORMAT_ARGB32)` — little-endian
+/// BGRA in memory. The composite texture is `Rgba8Unorm`, so the GPU readback
+/// is in R,G,B,A byte order. Without a channel swap here, red bytes display as
+/// blue in the compositor (observed 2026-04-17 — reverie quadrant rendering
+/// solid blue instead of the shader output). Swap R↔B before writing.
 ///
 /// Both files are written via `tmp + rename` so a mid-write crash cannot
-/// leave a partial RGBA visible to a reader: the rename is atomic on
+/// leave a partial frame visible to a reader: the rename is atomic on
 /// tmpfs. The sidecar carries `{ w, h, stride, frame_id }`; the reader
 /// caches by `frame_id` so a stale frame is never reprocessed.
 pub fn write_side_output(
@@ -248,10 +255,15 @@ pub fn write_side_output(
         fs::create_dir_all(parent)?;
     }
 
+    let mut bgra = pixels.to_vec();
+    for px in bgra.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+
     let mut rgba_tmp_os = path.as_os_str().to_os_string();
     rgba_tmp_os.push(".tmp");
     let rgba_tmp = PathBuf::from(rgba_tmp_os);
-    fs::write(&rgba_tmp, pixels)?;
+    fs::write(&rgba_tmp, &bgra)?;
     fs::rename(&rgba_tmp, path)?;
 
     let sidecar = sidecar_path(path);
@@ -294,6 +306,16 @@ mod tests {
         assert_eq!(meta["h"], 4);
         assert_eq!(meta["stride"], 16);
         assert_eq!(meta["frame_id"], 42);
+    }
+
+    #[test]
+    fn write_side_output_swaps_rgba_to_bgra() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("reverie.rgba");
+        let rgba_red = vec![0xFF, 0x00, 0x00, 0xFF];
+        write_side_output(&path, &rgba_red, 1, 1, 4, 1).unwrap();
+        let written = fs::read(&path).unwrap();
+        assert_eq!(written, vec![0x00, 0x00, 0xFF, 0xFF]);
     }
 
     #[test]
