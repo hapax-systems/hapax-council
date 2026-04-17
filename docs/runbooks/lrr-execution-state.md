@@ -144,3 +144,21 @@ Per operator 2026-04-16 clarification, migration only swaps CPU, RAM, mobo. Ever
 ---
 
 — rewritten by delta (LRR single-session takeover — continuous run through Phase 7 redesign + Phase 10 per-agent span migration + Phase 6 §4.A per-route batches 1+2), 2026-04-16 late session
+
+---
+
+## LRR EPIC CLOSED — 2026-04-17
+
+All ten phases shipped. Closure handoff: `docs/superpowers/handoff/2026-04-17-lrr-epic-closure.md`.
+
+Residual items are external-trigger-gated only:
+
+- Phase 4 MCMC BEST analysis: data-sufficiency gate (target ≥8 sessions).
+- NVMe install + /data migration: hardware arrival (enclosure + 1TB NVMe).
+- hapax-constitution#46 operator merge: operator action.
+- Phase 7 legacy prompt cleanup: 14-day validation window (earliest 2026-04-30).
+- Phase 7 persona document-driven voice activation: daimonion restart.
+
+Any livestream work beyond those triggers is a new epic — see closure handoff §8.
+
+— alpha, 2026-04-17 morning (LRR closure session, continuous takeover)
