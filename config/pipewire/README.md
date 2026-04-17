@@ -43,6 +43,30 @@ systemctl --user restart hapax-daimonion.service
 Unset or empty falls through to the default role-based wireplumber
 routing — the FX chain is fully opt-in.
 
+## Operator-voice-over-YouTube ducker (LRR Phase 9 §3.8)
+
+`voice-over-ytube-duck.conf` is a *different shape* from the TTS presets
+above — it lives in the same directory for convenience, but it operates
+on a separate sink (`hapax-ytube-ducked`) that OBS / browsers target
+for the YouTube music bed. A sidechain compressor driven by the operator
+mic attenuates the bed when the operator speaks.
+
+Install + verify:
+
+```fish
+cp config/pipewire/voice-over-ytube-duck.conf ~/.config/pipewire/pipewire.conf.d/
+systemctl --user restart pipewire pipewire-pulse wireplumber
+pactl list short sinks | grep hapax-ytube-ducked
+```
+
+Route media through it by selecting **Hapax YouTube Ducker** as the
+audio output in OBS (per-source Advanced Audio Properties → Audio
+Monitoring device) or in Chromium (via `--alsa-output-device` / PipeWire
+sink chooser). Tune `threshold / ratio / attack / release` in the file
+header; sensible starting point: `-30 dBFS`, `8:1`, `5 ms`, `300 ms`.
+
+Depends on the `sc4m_1916` LADSPA plugin (``swh-plugins`` on Arch).
+
 ## Troubleshooting
 
 - **Sink does not appear after install:** verify `pipewire.service` and
