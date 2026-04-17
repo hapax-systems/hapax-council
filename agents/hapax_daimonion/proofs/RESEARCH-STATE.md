@@ -1,7 +1,29 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-04-15 (drop #62 §16 + §17 addenda — substrate scenario 1+2 ratification + Option C pivot)
+**Last updated:** 2026-04-17 (LRR closure + Phase 7 persona-doc activation in production)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
+
+## 2026-04-17 — LRR epic closed + Phase 7 persona-doc voice activated
+
+**State:** Hapax daimonion restarted at 2026-04-17T13:58Z with the Phase 7 document-driven persona composer live in production. No `HAPAX_PERSONA_LEGACY` override set → composer output (~4957 chars of description-of-being + role declaration + voice-mode + partner block + tools) is what every utterance now sees.
+
+**Active condition:** `cond-phase-a-persona-doc-qwen-001` (open). Post-activation observation window accumulates session-level metrics for the 14-day validation period before the Phase 7 legacy-prompt cleanup PR (#40, earliest 2026-04-30).
+
+**What LRR closure delivered into production:**
+- Phase 6 governance redaction + stream-mode axis fully landed.
+- Phase 7 persona/posture/role taxonomy (ANT primary) ratified and active.
+- Phase 8 content programming via research objectives — 12 items shipped. Stream-deck adapter, hero-mode switcher, YouTube desc syncer, objectives overlay, environmental perception / salience emphasis, attention-bid scorer + delivery dispatcher, research overlay zone.
+- Phase 9 full set shipped (chat structural analyzer + sink + wiring, activity scoring + wiring, chat queue + producer, captions source + registry, PipeWire operator-voice duck, research-mode chat-reactor sensitivity, code-narration impingement producer).
+- Phase 10 per-condition Prometheus slicing, stimmung dashboards, 18-item stability matrix, six-drill harness + first execution + import-path fix.
+
+**Remaining before Phase A closes:** ≥8 livestream sessions to reach MCMC BEST data-sufficiency (at 2; next trigger ≈ 2026-05-10 at current cadence).
+
+**Follow-ups surfaced by the 2026-04-17 drill execution:**
+- `shared.consent` is actually `shared.governance.consent` — patched the drill-harness import probes (#994).
+- Stimmung-breach and failure-mode rehearsals pending attended slots; privacy-regression-suite under contention pending.
+
+---
+
 
 ## 2026-04-15 — Drop #62 §16 + §17 substrate resolution (SUPERSEDES §13/§14 pending state)
 
