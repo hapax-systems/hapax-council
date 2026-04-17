@@ -1,14 +1,14 @@
 # LRR Execution State Runbook
 
 **Scope:** operator-facing single-page status for the Livestream Research Ready (LRR) epic.
-**Authoritative surface:** `origin/main` and local infrastructure state as of **2026-04-16** (16:00 CDT).
-**Regeneration:** rewrite whenever a phase closes or substrate state changes. Last rewrite: beta (LRR single-session takeover, continuous run), 2026-04-16.
+**Authoritative surface:** `origin/main` and local infrastructure state as of **2026-04-16** (late session).
+**Regeneration:** rewrite whenever a phase closes or substrate state changes. Last rewrite: delta (LRR single-session takeover — continuous run through Phase 7 redesign + Phase 10 per-agent migration + Phase 6 §4.A per-route batches 1 and 2), 2026-04-16.
 
 ---
 
 ## Headline
 
-Pre-migration state: governance-complete milestone is 6 of 7 gates green (constitution#46 is operator-gated). Substantial Phase 8/9/10 progress shipped beyond the migration milestone per operator's "keep moving, not ready to migrate yet." Remaining pre-migration work is largely additive — Phase 6 §4 redaction, §7 revocation drill, Phase 8 items 4-12, Phase 9 hook 1 (code-narration), Phase 10 dashboards/drills.
+Pre-migration state: governance-complete milestone is 6 of 7 gates green (constitution#46 is operator-gated). Phase 7 redesigned under operator's "tender/fragile" reframe — taxonomy locked, ANT primary theoretical frame. Phase 6 §4.A per-route redaction now 8/17 endpoint-field combos migrated across two batches. Phase 10 per-agent llm_call_span migration complete for 11 additional LLM call sites beyond the director. Remaining pre-migration work: Phase 6 §4.B transcript firewall, §4.E mental-state Qdrant, Phase 8 items 4-12, Phase 9 hook 1, Phase 10 dashboards/drills.
 
 ---
 
@@ -22,11 +22,11 @@ Pre-migration state: governance-complete milestone is 6 of 7 gates green (consti
 | **3** | Hardware Validation + Substrate Prep | ✅ CLOSED | 2026-04-16 | — | — |
 | **4** | Phase A Completion + OSF | 🟢 OPERATOR-DONE; data accumulating | 2026-04-16 (OSF #5c2kr filed) | PyMC MCMC BEST upgrade before Phase B analysis | Stream uptime (autonomous) |
 | **5** | Substrate Scenario 1+2 | ✅ CLOSED | 2026-04-16 | — | — |
-| **6** | Governance Finalization | 🟡 MOSTLY SHIPPED | 2026-04-16 (§2 #947, §3 #948, §5+§6 #949, §10+§11 #953) | §4 redaction, §7 revocation drill, §12 broadcast-safe typography | hapax-constitution#46 operator merge |
-| **7** | Persona Spec | 🟡 SPEC ON MAIN; kickoff-state drafted | 2026-04-16 (#939) | Pydantic persona schema, YAML authoring, stream-mode axis consumer | constitution#46 merge |
+| **6** | Governance Finalization | 🟡 §4.A ADVANCING (8/17) | 2026-04-16 (batch 1 #967, batch 2 #968) | §4.B transcript firewall, §4.E mental-state Qdrant, §4.F Gmail/Calendar, §4.G test matrix | hapax-constitution#46 operator merge |
+| **7** | Persona Spec | 🟡 REDESIGNED; awaits operator ratification | 2026-04-16 (#965 burn-down + 8-position taxonomy + ANT primary) | Persona document (prose, description-of-being), posture vocabulary, role registry YAML, integration refactor | constitution#46 merge + operator review of #965 |
 | **8** | Content Programming | 🟡 Items 1+2+3 SHIPPED | 2026-04-16 (#940, #946, #954) | Items 4-12 (~1,500 LOC remaining) | — |
 | **9** | Closed-Loop Feedback | 🟡 Hooks 3+4 SHIPPED | 2026-04-16 (#943 plumbing, #952 VAD producer) | Hook 1 (code-narration), hook 3 YouTube description wire-in | — |
-| **10** | Observability / Drills / Polish | 🟡 Slicing helpers SHIPPED | 2026-04-16 (#944 helpers, #951 llm_call_span, FINDING-S retire) | Stimmung dashboards (Grafana JSON), 18-item stability matrix, 6 drills, per-agent call-site migration | — |
+| **10** | Observability / Drills / Polish | 🟡 Slicing helpers + per-agent migration SHIPPED | 2026-04-16 (#944 helpers, #951 span, #961 director, #966 per-agent 11 sites) | Stimmung dashboards (Grafana JSON), 18-item stability matrix, 6 drills | — |
 | 11 | (none) | — | — | — | No Phase 11; LRR = phases 0-10 |
 
 ---
@@ -75,6 +75,10 @@ Pre-migration state: governance-complete milestone is 6 of 7 gates green (consti
 | #953 | Phase 6 §10 fortress retire + §11 fail-loud consent load |
 | #954 | Phase 8 item 3 — director reads active objectives |
 | #46 (constitution) | Joint governance amendment (awaits operator) |
+| #965 | LRR Phase 7 redesign spec — burn-down of 2026-04-15 persona schema |
+| #966 | LRR Phase 10 §3.1 per-agent llm_call_span migration (11 call sites) |
+| #967 | LRR Phase 6 §4.A per-route batch 1 (stimmung/profile/management/perception) |
+| #968 | LRR Phase 6 §4.A per-route batch 2 (orientation/briefing/nudges/contracts + person-id helper) |
 
 (OSF pre-reg https://osf.io/5c2kr/overview filed by operator 2026-04-16)
 
@@ -126,14 +130,17 @@ Per operator 2026-04-16 clarification, migration only swaps CPU, RAM, mobo. Ever
 
 ## What to read next (pre-migration work surface)
 
-- **Phase 6 §4 redaction**: `docs/superpowers/specs/2026-04-15-lrr-phase-6-governance-finalization-design.md` §3.4 (stream-mode-aware API response redaction; touches most `logos/api/routes/*`)
-- **Phase 6 §7 revocation drill**: spec §3.7 (mid-stream revocation < 5s; needs inotify-based ConsentRegistry watcher)
-- **Phase 8 item 4**: objective visibility overlay (Cairo source on compositor)
-- **Phase 8 items 5-12**: hero-mode, Stream Deck, YouTube description wire-in, attention bids, environmental perception, overlay content formalization
-- **Phase 9 hook 1**: daimonion code-narration (impingement consumer for source='code_narration')
-- **Phase 10**: stimmung dashboards (Grafana JSON), 18-item stability matrix, 6 operational drills
-- **Migration runbook**: not yet written; will be at migration trigger time per memory `project_rig_migration.md`
+- **Phase 6 §4.A remaining**: /api/chat/history does not currently exist (defer); batches 1+2 (#967, #968) cover 8/17 endpoint-field combos. See spec §3.4.A for remaining items.
+- **Phase 6 §4.B transcript firewall**: spec §3.4.B — read-side firewall on `~/.local/share/hapax-daimonion/events-*.jsonl` + `/dev/shm/hapax-dmn/impingements.jsonl`. Needs AST scanner for CI.
+- **Phase 6 §4.E mental-state Qdrant read-side redaction**: spec §3.4.E — `mental_state_safe_summary` field + Gemini backfill for existing points in 5 collections.
+- **Phase 6 §4.F Gmail/Calendar**: spec §3.4.F — redact email subjects/bodies, event titles/attendees when rendered on stream.
+- **Phase 6 §4.G integration test matrix**: spec §3.4.G — cover stream-mode transitions × all redacted endpoints.
+- **Phase 7 artifacts** (blocked on #965 greenlight + constitution#46): persona document prose, posture vocabulary, role registry YAML.
+- **Phase 8 items 4-12**: objective visibility overlay (Cairo), hero-mode camera switching, Stream Deck, YouTube description wire-in, attention bids, environmental perception, overlay content formalization.
+- **Phase 9 hook 1**: daimonion code-narration (impingement consumer for source='code_narration').
+- **Phase 10**: stimmung dashboards (Grafana JSON — now viable since 12 per-condition call sites are wired via #961 + #966), 18-item stability matrix, 6 operational drills.
+- **Migration runbook**: not yet written; will be at migration trigger time per memory `project_rig_migration.md`.
 
 ---
 
-— rewritten by beta (LRR single-session takeover, continuous run), 2026-04-16 16:00 CDT
+— rewritten by delta (LRR single-session takeover — continuous run through Phase 7 redesign + Phase 10 per-agent span migration + Phase 6 §4.A per-route batches 1+2), 2026-04-16 late session
