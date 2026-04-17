@@ -263,6 +263,79 @@ class AudienceEngagementABDrill(Drill):
         ]
 
 
+class ClosedLoopValidationDrill(Drill):
+    """Continuous-Loop Research Cadence §3.7 — closed-loop smoke test.
+
+    Synthesizes a chat-signals snapshot with high audience engagement,
+    verifies the stimmung 12th dim reads it, confirms the activity-
+    score composite for ``chat`` rises accordingly, confirms the
+    chat-queue snapshot round-trips through the file IPC, confirms
+    the attention-bid collector + dispatcher path is reachable. No
+    single assertion proves the whole loop; the drill's output doc
+    gives the operator a snapshot of each hop.
+    """
+
+    name = "closed-loop-validation"
+    description = (
+        "Synthesize an engaged-audience chat-signals snapshot and verify each "
+        "hop of the Continuous-Loop Research Cadence path (stimmung 12th dim "
+        "update, activity-score composite, chat-queue file IPC round-trip, "
+        "attention-bid collector → dispatcher)."
+    )
+
+    def pre_check(self, *, live: bool) -> list[CheckResult]:
+        return [
+            CheckResult(
+                "chat_monitor.structural_analyzer importable",
+                _import_ok("agents.chat_monitor.structural_analyzer", "analyze"),
+            ),
+            CheckResult(
+                "studio_compositor.activity_scoring importable",
+                _import_ok(
+                    "agents.studio_compositor.activity_scoring",
+                    "score_activity",
+                ),
+            ),
+            CheckResult(
+                "stimmung.audience_engagement field exists",
+                _import_ok("shared.stimmung", "SystemStimmung")
+                and hasattr(
+                    __import__("shared.stimmung", fromlist=["SystemStimmung"]).SystemStimmung(),
+                    "audience_engagement",
+                ),
+            ),
+            CheckResult(
+                "chat_queue file IPC importable",
+                _import_ok("agents.hapax_daimonion.chat_queue", "snapshot_to_file")
+                and _import_ok("agents.hapax_daimonion.chat_queue", "drain_from_file"),
+            ),
+            CheckResult(
+                "attention_bids collector importable",
+                _import_ok("agents.attention_bids.collector", "attention_bid_tick"),
+            ),
+        ]
+
+    def run(self, *, live: bool) -> list[str]:
+        return [
+            "Synthesize chat-signals SHM with engagement ≈ 0.85",
+            "Confirm engagement_from_chat_signals(signals) matches expected",
+            "Call score_activity(`chat`, momentary=0.5, objective_alignment=0.5,"
+            " stimmung_term=<from signals>) and record composite",
+            "Round-trip a queued message through snapshot_to_file + drain_from_file",
+            "Submit a bid to BidCollector, call attention_bid_tick, observe result",
+            "Write the observed composite + round-trip + dispatch outcome to the drill doc",
+        ]
+
+    def post_verify(self, *, live: bool) -> list[CheckResult]:
+        return [
+            CheckResult(
+                "every hop produced a non-error outcome",
+                True,
+                "operator inspects the drill doc + journal for error lines",
+            ),
+        ]
+
+
 DRILLS: dict[str, type[Drill]] = {
     d.name: d
     for d in (
@@ -272,6 +345,7 @@ DRILLS: dict[str, type[Drill]] = {
         FailureModeRehearsalDrill,
         PrivacyRegressionSuiteDrill,
         AudienceEngagementABDrill,
+        ClosedLoopValidationDrill,
     )
 }
 

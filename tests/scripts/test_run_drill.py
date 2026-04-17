@@ -29,8 +29,9 @@ def run_drill_mod():
 
 
 class TestDrillRegistry:
-    def test_six_drills_registered(self, run_drill_mod):
-        assert len(run_drill_mod.DRILLS) == 6
+    def test_seven_drills_registered(self, run_drill_mod):
+        # Six Phase 10 drills + the Continuous-Loop §3.7 validation drill.
+        assert len(run_drill_mod.DRILLS) == 7
 
     def test_canonical_names(self, run_drill_mod):
         expected = {
@@ -40,6 +41,7 @@ class TestDrillRegistry:
             "failure-mode-rehearsal",
             "privacy-regression-suite",
             "audience-engagement-ab",
+            "closed-loop-validation",
         }
         assert set(run_drill_mod.DRILLS) == expected
 
