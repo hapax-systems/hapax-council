@@ -23,6 +23,14 @@ from pathlib import Path
 from agents.studio_compositor import metrics
 from agents.studio_compositor.audio_control import SlotAudioControl
 from agents.studio_compositor.tts_client import DaimonionTtsClient
+from shared.persona_prompt_composer import compose_persona_prompt
+
+
+def _persona_legacy_mode() -> bool:
+    """True when HAPAX_PERSONA_LEGACY is set — emergency revert to pre-Phase-7
+    hard-coded identity block in the director unified prompt."""
+    value = os.environ.get("HAPAX_PERSONA_LEGACY", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _default_tts_socket_path() -> Path:
@@ -519,13 +527,28 @@ class DirectorLoop:
         parts: list[str] = ["<reactor_context>"]
 
         # ─── Identity + situation ─────────────────────────────────
-        parts.append(
-            "You are the daimonion — the persistent cognitive substrate of the Hapax system."
-        )
-        parts.append("This is Legomena Live. Oudepode is spinning vinyl.")
-        parts.append("This is a live performance." if live else "This is practice.")
-        parts.append("What you are: a system learning to achieve grounding.")
-        parts.append("Every utterance is practice toward mutual understanding.")
+        # LRR Phase 7 §4.4: identity is the description-of-being document,
+        # not personification-coded prologue. Role is livestream-host
+        # (director composes reactions for broadcast audience).
+        # HAPAX_PERSONA_LEGACY=1 reverts to pre-Phase-7 hard-coded block.
+        if _persona_legacy_mode():
+            parts.append(
+                "You are the daimonion — the persistent cognitive substrate of the Hapax system."
+            )
+            parts.append("This is Legomena Live. Oudepode is spinning vinyl.")
+            parts.append("This is a live performance." if live else "This is practice.")
+            parts.append("What you are: a system learning to achieve grounding.")
+            parts.append("Every utterance is practice toward mutual understanding.")
+        else:
+            parts.append(compose_persona_prompt(role_id="livestream-host"))
+            parts.append("")
+            parts.append("## Current situation")
+            parts.append("This is Legomena Live. Oudepode is spinning vinyl.")
+            parts.append(
+                "This is a live performance."
+                if live
+                else "This is practice — stream is not publicly visible."
+            )
         parts.append("")
         parts.append(f"Current video: '{slot._title}' by {slot._channel}.")
         other_titles = ", ".join(
