@@ -895,6 +895,24 @@ class DirectorLoop:
         except Exception:
             log.debug("PerceptualField build failed", exc_info=True)
 
+        # ─── Layer 1c: Structural direction (Phase 5c — long-horizon
+        # context from StructuralDirector). Stays in effect ~150s; reading
+        # is best-effort. Missing file → narrative director decides freely.
+        try:
+            structural_path = Path("/dev/shm/hapax-structural/intent.json")
+            if structural_path.exists():
+                struct = json.loads(structural_path.read_text(encoding="utf-8"))
+                if struct.get("long_horizon_direction"):
+                    parts.append("")
+                    parts.append("## Structural Direction")
+                    parts.append(
+                        f"scene_mode: {struct.get('scene_mode')} · "
+                        f"preset_family_hint: {struct.get('preset_family_hint')}"
+                    )
+                    parts.append(f"→ {struct['long_horizon_direction']}")
+        except Exception:
+            log.debug("structural intent read failed", exc_info=True)
+
         # ─── Layer 2: System state (TOON ~150 tokens, 40% savings) ─
         try:
             from shared.context import ContextAssembler

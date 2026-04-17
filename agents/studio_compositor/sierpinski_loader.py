@@ -14,6 +14,7 @@ z_order so the active slot sorts highest and the shader binds it first.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -103,6 +104,39 @@ class SierpinskiLoader:
             log.info("DirectorLoop started via SierpinskiLoader")
         except Exception:
             log.exception("DirectorLoop startup failed")
+
+        # Phase 5c: twitch (4s deterministic) + structural (150s LLM) directors
+        # run alongside narrative. Enable via env flags so operator can disable
+        # if either introduces an issue during rehearsal. Defaults ON for
+        # post-epic behavior.
+        if os.environ.get("HAPAX_TWITCH_DIRECTOR_ENABLED", "1").lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }:
+            try:
+                from agents.studio_compositor.twitch_director import TwitchDirector
+
+                self._twitch_director = TwitchDirector()
+                self._twitch_director.start()
+                log.info("TwitchDirector started (4s cadence)")
+            except Exception:
+                log.exception("TwitchDirector startup failed")
+        if os.environ.get("HAPAX_STRUCTURAL_DIRECTOR_ENABLED", "1").lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }:
+            try:
+                from agents.studio_compositor.structural_director import StructuralDirector
+
+                self._structural_director = StructuralDirector()
+                self._structural_director.start()
+                log.info("StructuralDirector started (150s cadence)")
+            except Exception:
+                log.exception("StructuralDirector startup failed")
 
     def stop(self) -> None:
         self._running = False
