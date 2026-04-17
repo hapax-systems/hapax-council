@@ -85,7 +85,7 @@ def _parse_intent_from_llm(raw: str, fallback_activity: str = "react") -> Direct
 
 
 def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
-    """Write the intent to JSONL + the narrative-state SHM file.
+    """Write the intent to JSONL + the narrative-state SHM file + Prometheus.
 
     Non-fatal: any IO error is logged but does not block the director loop.
     """
@@ -98,6 +98,12 @@ def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
             fh.write(json.dumps(payload) + "\n")
     except Exception:
         log.warning("director-intent JSONL write failed", exc_info=True)
+    try:
+        from shared.director_observability import emit_director_intent
+
+        emit_director_intent(intent, condition_id=condition_id)
+    except Exception:
+        log.debug("prometheus emit_director_intent failed", exc_info=True)
     try:
         _NARRATIVE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         state = {
