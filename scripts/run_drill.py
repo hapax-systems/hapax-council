@@ -89,8 +89,8 @@ class PreStreamConsentDrill(Drill):
         return [
             CheckResult("axioms/contracts/ exists", Path("axioms/contracts").is_dir()),
             CheckResult(
-                "shared.consent.ConsentRegistry importable",
-                _import_ok("shared.consent", "ConsentRegistry"),
+                "shared.governance.consent.ConsentRegistry importable",
+                _import_ok("shared.governance.consent", "ConsentRegistry"),
             ),
         ]
 
@@ -119,8 +119,8 @@ class MidStreamConsentRevocationDrill(Drill):
     def pre_check(self, *, live: bool) -> list[CheckResult]:
         return [
             CheckResult(
-                "revoke_contract() importable",
-                _import_ok("shared.consent", "revoke_contract"),
+                "shared.governance.consent.revoke_contract importable",
+                _import_ok("shared.governance.consent", "revoke_contract"),
             ),
         ]
 
