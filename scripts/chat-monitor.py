@@ -270,19 +270,25 @@ class ChatMonitor:
 
             record_spend("membership", 1000, 0, cost=0.0)
 
-        # LRR Phase 9 §3.5: async-review chat queue producer. Not
-        # drained here — the daimonion reviews holistically when
-        # director-loop picks `chat`. Push is best-effort; queue
-        # overflow evicts oldest via deque semantics.
+        # LRR Phase 9 §3.5: async-review chat queue producer. Drained by
+        # the daimonion director-loop during `chat` activity via the
+        # Continuous-Loop §3.3 file IPC (snapshot_to_file / drain_from_file).
+        # Push is best-effort; queue overflow evicts oldest via deque
+        # semantics. Snapshot file is updated on every push so the
+        # daimonion always reads the current FIFO-20.
         if self._chat_queue is not None and text:
             try:
-                from agents.hapax_daimonion.chat_queue import QueuedMessage
+                from agents.hapax_daimonion.chat_queue import (
+                    QueuedMessage,
+                    snapshot_to_file,
+                )
 
                 self._chat_queue.push(
                     QueuedMessage(text=text, ts=float(timestamp), author_id=author_id)
                 )
+                snapshot_to_file(self._chat_queue)
             except Exception:
-                log.debug("ChatQueue push failed", exc_info=True)
+                log.debug("ChatQueue push/snapshot failed", exc_info=True)
 
         # A5: chat-reactive preset switching (no per-author state retained)
         if self._preset_reactor is not None and text:

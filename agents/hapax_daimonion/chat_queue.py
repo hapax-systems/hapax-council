@@ -14,21 +14,33 @@ context-switch to every chat message individually. Instead it reviews
 the last 20 messages holistically when it has decided chat is what
 should be happening right now.
 
-Consent-safe: no author names stored, no persistence to disk, no
-log-line with message contents beyond debug. The queue is in-process
-only; a daimonion restart loses whatever was unread.
+Consent-safe: no author names stored (snapshot IPC strips ``author_id``
+before write), no persistence to disk beyond an ephemeral snapshot
+that is deleted on drain, no log-line with message contents beyond
+debug. The queue is in-process only in each service; cross-service
+handoff (chat-monitor → daimonion) uses the ``snapshot`` / ``drain``
+file IPC (Continuous-Loop Research Cadence §3.3).
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from threading import Lock
 
 log = logging.getLogger(__name__)
 
 DEFAULT_MAX_SIZE: int = 20
+
+# Continuous-Loop Research Cadence §3.3 — cross-service IPC path.
+# Producer (chat-monitor process) writes the snapshot on push; consumer
+# (daimonion director-loop during `chat` activity) atomically reads +
+# unlinks. The file holds up to DEFAULT_MAX_SIZE messages (FIFO-20).
+SNAPSHOT_PATH = Path("/dev/shm/hapax-chat-queue-snapshot.json")
 
 
 @dataclass(frozen=True)
@@ -101,4 +113,91 @@ class ChatQueue:
             return self._total_seen
 
 
-__all__ = ["ChatQueue", "QueuedMessage", "DEFAULT_MAX_SIZE"]
+def snapshot_to_file(
+    queue: ChatQueue,
+    *,
+    path: Path | None = None,
+) -> None:
+    """Atomically write the current queue contents to ``path`` for IPC.
+
+    Strips ``author_id`` (consent-safe) and keeps only ``text`` + ``ts``.
+    Atomic via tmp + ``os.replace`` so a reader never sees a torn JSON.
+    Called by the producer (chat-monitor) after every push.
+    """
+    out_path = path or SNAPSHOT_PATH
+    messages = queue.snapshot()
+    payload = {
+        "messages": [
+            {"text": m.text, "ts": m.ts}
+            for m in messages  # author_id stripped
+        ],
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, out_path)
+
+
+def drain_from_file(
+    *,
+    path: Path | None = None,
+) -> list[QueuedMessage]:
+    """Atomically read + unlink the snapshot; return the messages.
+
+    Consumer-side of the cross-service handoff. Unlink-on-read ensures
+    the same batch is never consumed twice — a subsequent drain before
+    the producer writes again returns ``[]``. Missing / malformed file
+    also returns ``[]``.
+
+    Called by the daimonion director-loop when ``chat`` activity is
+    selected.
+    """
+    in_path = path or SNAPSHOT_PATH
+    if not in_path.exists():
+        return []
+    try:
+        text = in_path.read_text(encoding="utf-8")
+    except OSError:
+        log.debug("chat-queue snapshot read failed", exc_info=True)
+        return []
+    try:
+        in_path.unlink()
+    except OSError:
+        log.debug("chat-queue snapshot unlink failed", exc_info=True)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        log.debug("chat-queue snapshot parse failed", exc_info=True)
+        return []
+    if not isinstance(data, dict):
+        return []
+    raw_messages = data.get("messages", [])
+    if not isinstance(raw_messages, list):
+        return []
+    out: list[QueuedMessage] = []
+    for entry in raw_messages:
+        if not isinstance(entry, dict):
+            continue
+        text_v = entry.get("text")
+        ts_v = entry.get("ts")
+        if not isinstance(text_v, str):
+            continue
+        try:
+            ts_f = float(ts_v) if ts_v is not None else 0.0
+        except (TypeError, ValueError):
+            ts_f = 0.0
+        out.append(QueuedMessage(text=text_v, ts=ts_f))
+    return out
+
+
+# Alias — keeps asdict handy for callers who want a dict form.
+_ = asdict
+
+__all__ = [
+    "ChatQueue",
+    "DEFAULT_MAX_SIZE",
+    "QueuedMessage",
+    "SNAPSHOT_PATH",
+    "drain_from_file",
+    "snapshot_to_file",
+]
