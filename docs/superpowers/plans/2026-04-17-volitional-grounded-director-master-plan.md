@@ -75,4 +75,31 @@ Audit fixes land before Phase 1's first commit.
 - 2026-04-17 (alpha) — Phase 0 shipped (commit 2377fee66, BGRA fix).
 - 2026-04-17 (alpha) — self-audit run; 5 fixes applied (narrative-state.json for twitch, overlay-alpha-overrides + hero-camera-override + recent-recruitment SHM files explicit, preset_family_selector.py named, condition_id reader doc, DMN impingement cross-consumption risk flagged in spec §13).
 - 2026-04-17 (alpha) — Phase 1 shipped (DirectorIntent + wiring, 2 commits, 31 tests). Legacy flag `HAPAX_DIRECTOR_MODEL_LEGACY=1` works; JSONL + narrative-state.json writing on every director tick.
-- *(phases 2-9 ship here)*
+- 2026-04-17 (alpha) — Phase 2 shipped (PerceptualField + director-prompt integration, 1 commit, +14 tests). Every existing classifier/detector reaches the director as typed JSON inside `<Perceptual Field>` block. No new sensors.
+- *(phases 3-9 ship here)*
+
+## Resumption notes (for the session that continues this epic)
+
+**Where we are:** commits on `volitional-director` through `d9b1fc861`. Phases 0, 1, 2 shipped cleanly. Test suites green (Phase 1: 31 tests; Phase 2: 14 tests; total 45). Two pre-existing unrelated test failures in `test_compositor_wiring.py` (expected set lacks `captions` but origin/main layout has it; not our fault, not blocking).
+
+**What the running system looks like now:**
+- Director emits `DirectorIntent` (behind the scenes — LLM still returns `{activity, react}` until Phase 3 teaches it the richer shape).
+- `~/hapax-state/stream-experiment/director-intent.jsonl` accumulates one line per tick.
+- `/dev/shm/hapax-director/narrative-state.json` exists with current stance/activity.
+- Director prompt contains `## Perceptual Field` block with full structured JSON of contact-mic / MIDI / vision / IR / stimmung / album / chat-aggregate / presence / context signals.
+- Legacy flag `HAPAX_DIRECTOR_MODEL_LEGACY=1` bypasses new behavior cleanly.
+
+**Next up: Phase 3.** `docs/superpowers/plans/2026-04-17-phase-3-compositional-recruitment.md` is the executable plan. Scope:
+- Create compositional capability catalog (camera.hero.*, fx.family.*, overlay.foreground.*, youtube.direction.*, attention.winner.*) under `shared/affordances/compositional/`.
+- Seed Qdrant `affordances` collection with the catalog.
+- Create `agents/studio_compositor/compositional_consumer.py` that translates pipeline recruitments into compositor mutations.
+- Demote `random_mode` and `_reload_slot_from_playlist` to fallbacks; retire `objective_hero_switcher` direct-dispatch path.
+- Wire attention-bid dispatch to recruitment.
+
+Phase 3 is the largest remaining phase. Allow ~2-3 hours of uninterrupted execution context.
+
+**Phases 4-9** are smaller and well-scoped per their plans. Phase 8 (DEVIATION record + new condition declaration) must ship before Phase 9 rehearsal attempts activation.
+
+**Not-yet-done that's external to this plan:** the dirty state in the `hapax-council` main worktree (78 D-staged files from a prior aborted cleanup) remains untouched. It's unrelated to this epic. Operator should either `git restore` those paths or investigate before the next main-worktree push.
+
+**Rehearsal timing:** per `docs/research/2026-04-17-expected-behavior-at-launch.md §4`, the first real live attempt goes via 30-minute private rehearsal. Phase 9 owns this gate. Until Phases 3-7 land, the system runs in Phase 0-2 configuration (PerceptualField in prompt, no compositional recruitment yet, no multi-rate, no new legibility surfaces).
