@@ -47,15 +47,17 @@ def test_get_model_alias_fallthrough():
 
 
 def test_get_qdrant_returns_client(_mock_qdrant_if_unavailable):
-    from qdrant_client import QdrantClient
+    """LRR Phase 6 FINDING-R: get_qdrant() returns a consent-gated wrapper.
 
-    # Skip when Qdrant is mocked (CI) — the mock returns MagicMock, not QdrantClient
-    from conftest import _QDRANT_UP
+    The wrapper proxies QdrantClient methods, but the call sites must never
+    see the raw client directly. The invariant is duplicated in
+    tests/shared/test_qdrant_gate_wiring.py (which is the canonical pin) —
+    this test stays as a smoke check at the shared.config import boundary.
+    """
+    from shared.governance.qdrant_gate import ConsentGatedQdrant
 
-    if not _QDRANT_UP:
-        pytest.skip("Qdrant not available")
     client = get_qdrant()
-    assert isinstance(client, QdrantClient)
+    assert isinstance(client, ConsentGatedQdrant)
 
 
 def test_profiles_dir_is_path():

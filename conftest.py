@@ -63,9 +63,11 @@ _QDRANT_UP = _qdrant_available()
 def _mock_qdrant_if_unavailable():
     """Prevent Qdrant connection errors in CI (no Qdrant server).
 
-    Patches get_qdrant() with a MagicMock client when Qdrant is unreachable.
-    Tests that explicitly test the Qdrant client can mark themselves with
-    @pytest.mark.needs_qdrant to skip instead.
+    Patches the raw factory (``_get_qdrant_raw`` / ``_get_qdrant_grpc_raw``)
+    to return a MagicMock so the consent gate wrapping in ``get_qdrant()``
+    stays intact — the LRR Phase 6 FINDING-R closure invariant (tests in
+    ``tests/shared/test_qdrant_gate_wiring.py``) asserts ``get_qdrant()``
+    returns a ``ConsentGatedQdrant``, so we must not replace it wholesale.
     """
     if _QDRANT_UP:
         yield
@@ -77,9 +79,20 @@ def _mock_qdrant_if_unavailable():
     mock_client.search.return_value = []
     mock_client.count.return_value = MagicMock(count=0)
 
+    # Clear any cached real client so the patched raw factories take effect.
+    try:
+        import shared.config as _shared_config
+
+        _shared_config.get_qdrant.cache_clear()
+        _shared_config.get_qdrant_grpc.cache_clear()
+        _shared_config._get_qdrant_raw.cache_clear()
+        _shared_config._get_qdrant_grpc_raw.cache_clear()
+    except (ImportError, AttributeError):
+        _shared_config = None  # noqa: F841 — silenced for try/finally below
+
     targets = [
-        "shared.config.get_qdrant",
-        "shared.config.get_qdrant_grpc",
+        "shared.config._get_qdrant_raw",
+        "shared.config._get_qdrant_grpc_raw",
     ]
     try:
         import agents._config  # noqa: F401
@@ -94,6 +107,11 @@ def _mock_qdrant_if_unavailable():
     yield
     for p in patches:
         p.stop()
+    if _shared_config is not None:
+        _shared_config.get_qdrant.cache_clear()
+        _shared_config.get_qdrant_grpc.cache_clear()
+        _shared_config._get_qdrant_raw.cache_clear()
+        _shared_config._get_qdrant_grpc_raw.cache_clear()
 
 
 @pytest.fixture(autouse=True, scope="function")
