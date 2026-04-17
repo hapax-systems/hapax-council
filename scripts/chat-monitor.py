@@ -174,6 +174,17 @@ class ChatMonitor:
             self._preset_reactor = None
             log.debug("PresetReactor unavailable", exc_info=True)
 
+        # LRR Phase 9 §3.5: chat queue producer. Drain side is in the
+        # daimonion during `chat` activity; this process only pushes.
+        try:
+            from agents.hapax_daimonion.chat_queue import ChatQueue
+
+            self._chat_queue = ChatQueue()
+            log.info("ChatQueue enabled — async-review FIFO-20 producer")
+        except Exception:
+            self._chat_queue = None
+            log.debug("ChatQueue unavailable", exc_info=True)
+
     def start(self) -> None:
         """Start monitoring chat."""
         self._running = True
@@ -258,6 +269,20 @@ class ChatMonitor:
             from token_ledger import record_spend
 
             record_spend("membership", 1000, 0, cost=0.0)
+
+        # LRR Phase 9 §3.5: async-review chat queue producer. Not
+        # drained here — the daimonion reviews holistically when
+        # director-loop picks `chat`. Push is best-effort; queue
+        # overflow evicts oldest via deque semantics.
+        if self._chat_queue is not None and text:
+            try:
+                from agents.hapax_daimonion.chat_queue import QueuedMessage
+
+                self._chat_queue.push(
+                    QueuedMessage(text=text, ts=float(timestamp), author_id=author_id)
+                )
+            except Exception:
+                log.debug("ChatQueue push failed", exc_info=True)
 
         # A5: chat-reactive preset switching (no per-author state retained)
         if self._preset_reactor is not None and text:

@@ -70,6 +70,7 @@ def list_classes() -> list[str]:
 
 def _register_builtins() -> None:
     from agents.studio_compositor.album_overlay import AlbumOverlayCairoSource
+    from agents.studio_compositor.captions_source import CaptionsCairoSource
     from agents.studio_compositor.research_marker_overlay import ResearchMarkerOverlay
     from agents.studio_compositor.sierpinski_renderer import SierpinskiCairoSource
     from agents.studio_compositor.stream_overlay import StreamOverlayCairoSource
@@ -78,6 +79,10 @@ def _register_builtins() -> None:
     register("TokenPoleCairoSource", TokenPoleCairoSource)
     register("AlbumOverlayCairoSource", AlbumOverlayCairoSource)
     register("SierpinskiCairoSource", SierpinskiCairoSource)
+    # LRR Phase 9 §3.6 — scientific-register caption overlay. Registered
+    # so the class is declarable from Layout JSON; operator decides when
+    # to add a captions surface.
+    register("CaptionsCairoSource", CaptionsCairoSource)
     # Post-epic layout fix: StreamOverlayCairoSource renders the
     # preset/viewers/chat-activity three-line status strip, anchored
     # to the bottom-right of whatever canvas it is drawn into. It

@@ -505,6 +505,33 @@ class DirectorLoop:
                     self._activity = activity
                     self._reactor.set_header(activity.upper())
 
+                # LRR Phase 9 §3.2 observability pass — compute the
+                # stimmung-modulated score for the LLM-chosen activity
+                # and emit a telemetry line. Behaviour is unchanged; the
+                # log makes the signal visible so we can tune the 0.05
+                # weight and decide whether to promote to an override.
+                try:
+                    from .activity_scoring import (
+                        score_activity,
+                        stimmung_term_for_activity_from_shm,
+                    )
+
+                    stimmung_term = stimmung_term_for_activity_from_shm(activity)
+                    score = score_activity(
+                        activity,
+                        momentary=0.8,  # assumed: LLM chose it confidently
+                        objective_alignment=0.5,
+                        stimmung_term=stimmung_term,
+                    )
+                    log.info(
+                        "activity_score activity=%s stimmung_term=%.2f composite=%.3f",
+                        activity,
+                        stimmung_term,
+                        score,
+                    )
+                except Exception:
+                    log.debug("activity scoring telemetry failed", exc_info=True)
+
                 # Speak — speech + slot advance happen in one thread
                 self._speak_activity(text, activity)
 
