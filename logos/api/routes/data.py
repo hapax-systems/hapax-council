@@ -15,9 +15,30 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from logos.api.cache import cache
-from logos.api.deps.stream_redaction import require_private_stream
+from logos.api.deps.stream_redaction import (
+    is_publicly_visible,
+    references_non_broadcast_person_id,
+    require_private_stream,
+)
 
 router = APIRouter(prefix="/api", tags=["data"])
+
+
+def _load_consent_registry():
+    """Lazily load consent registry for person-id redaction.
+
+    Swallowing load failures here is deliberate: if the registry can't
+    be loaded, fall back to treating ALL names as non-broadcast-consented
+    (fail closed — reference detection returns True because an empty
+    registry can't confirm any person). Callers checking the returned
+    value must treat a None as "no registry available → assume worst".
+    """
+    try:
+        from logos._governance import load_contracts
+
+        return load_contracts()
+    except Exception:  # pragma: no cover — defensive
+        return None
 
 
 def _dict_factory(fields: list[tuple]) -> dict:
@@ -86,7 +107,25 @@ async def get_infrastructure():
 
 @router.get("/briefing")
 async def get_briefing():
-    return _slow_response(_to_dict(cache.briefing))
+    data = _to_dict(cache.briefing)
+    if is_publicly_visible() and isinstance(data, dict):
+        # LRR Phase 6 §4.A: omit action_items that reference a person
+        # without active broadcast contract
+        registry = _load_consent_registry()
+        action_items = data.get("action_items") or []
+        if registry is not None and isinstance(action_items, list):
+            filtered = []
+            for item in action_items:
+                if not isinstance(item, dict):
+                    continue
+                combined = " ".join(str(item.get(k, "")) for k in ("action", "reason", "command"))
+                if not references_non_broadcast_person_id(combined, registry):
+                    filtered.append(item)
+            data["action_items"] = filtered
+        elif registry is None:
+            # fail-closed: can't verify → omit all action_items on broadcast
+            data["action_items"] = []
+    return _slow_response(data)
 
 
 @router.get("/scout")
@@ -116,7 +155,29 @@ async def get_readiness():
 
 @router.get("/nudges")
 async def get_nudges():
-    return _slow_response(_to_dict(cache.nudges))
+    data = _to_dict(cache.nudges)
+    if is_publicly_visible() and isinstance(data, list):
+        # LRR Phase 6 §4.A: omit nudges whose detail references a person
+        # without active broadcast contract
+        registry = _load_consent_registry()
+        if registry is not None:
+            data = [
+                n
+                for n in data
+                if not (
+                    isinstance(n, dict)
+                    and references_non_broadcast_person_id(
+                        " ".join(
+                            str(n.get(k, "")) for k in ("detail", "title", "suggested_action")
+                        ),
+                        registry,
+                    )
+                )
+            ]
+        else:
+            # fail-closed: can't verify → omit all nudges on broadcast
+            data = []
+    return _slow_response(data)
 
 
 @router.get("/agents")

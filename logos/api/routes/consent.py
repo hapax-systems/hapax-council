@@ -258,17 +258,37 @@ async def trace_consent(
 
 @router.get("/contracts")
 async def list_contracts() -> dict:
-    """List all consent contracts (active and revoked)."""
+    """List all consent contracts (active and revoked).
+
+    LRR Phase 6 §4.A: when stream is publicly visible, replaces each party
+    name with a positional role label (``operator`` stays; other parties
+    become ``party_N``). ``scope`` is structural (e.g. ``voice_text``,
+    ``biometrics``, ``broadcast``) and safe as-is; timestamps are safe.
+    """
     try:
         from logos._governance import load_contracts
+        from logos.api.deps.stream_redaction import is_publicly_visible
 
         registry = load_contracts()
+        redact_parties = is_publicly_visible()
         contracts = []
         for contract in registry:
+            parties_out: list[str]
+            if redact_parties:
+                parties_out = []
+                n = 0
+                for p in contract.parties:
+                    if p == "operator":
+                        parties_out.append("operator")
+                    else:
+                        n += 1
+                        parties_out.append(f"party_{n}")
+            else:
+                parties_out = list(contract.parties)
             contracts.append(
                 {
                     "id": contract.id,
-                    "parties": list(contract.parties),
+                    "parties": parties_out,
                     "scope": sorted(contract.scope),
                     "active": contract.active,
                     "created_at": contract.created_at,

@@ -211,3 +211,37 @@ def pii_redact(text: str, placeholder: str = "[redacted]") -> str:
     for pat in _PII_PATTERNS:
         out = pat.sub(placeholder, out)
     return out
+
+
+# ── Registry-aware person-id redaction (LRR Phase 6 §4.A briefing/nudges) ───
+
+
+def references_non_broadcast_person_id(text: str, registry: Any) -> bool:
+    """True iff ``text`` mentions a registered person_id lacking an active
+    broadcast-scope contract.
+
+    Scans for every non-operator party name in the passed registry. A
+    match is case-insensitive substring. If any matched person lacks a
+    contract scoped to ``"broadcast"``, the text is considered non-safe
+    for a public stream.
+
+    Caller provides the registry (typically a ``ConsentRegistry`` from
+    ``logos._governance``) so this module stays agnostic of the specific
+    registry implementation — anything iterable over contracts-with-
+    ``parties`` and with a ``contract_check(pid, "broadcast")`` method
+    works.
+    """
+    if not text:
+        return False
+    lower = text.lower()
+    seen: set[str] = set()
+    for contract in registry:
+        for party in getattr(contract, "parties", ()):
+            if not party or party == "operator":
+                continue
+            if party in seen:
+                continue
+            seen.add(party)
+            if party.lower() in lower and not registry.contract_check(party, "broadcast"):
+                return True
+    return False
