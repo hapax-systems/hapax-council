@@ -1,4 +1,47 @@
-# Bayesian Validation R&D Schedule
+# Bayesian Validation R&D Schedule — CLOSED 2026-04-17
+
+> ## ⚠️ DEPRECATION NOTICE
+>
+> **Operator-ratified closure 2026-04-17** per directive: "close the
+> bayesian validation, not happening. We need to start the livestream
+> to begin research instead."
+>
+> This schedule was created 2026-03-29 for a 21-day R&D window (Days 1–21,
+> 2026-03-30 to 2026-04-19). Sprint 0 (Days 1–2) completed; Sprints 1–3
+> (Days 3–21) never started. The LRR epic was authored in parallel on
+> 2026-04-14, absorbed the substrate and governance work this schedule
+> would have covered, and closed on 2026-04-17 (see
+> `docs/superpowers/handoff/2026-04-17-lrr-epic-closure.md`).
+>
+> The live research instrument is now **LRR Phase A**
+> (`cond-phase-a-persona-doc-qwen-001`, open in the research registry).
+> Per-condition Prometheus slicing, stimmung × stream correlation
+> dashboards, and the LRR stability matrix (Phase 10) provide the
+> measurement infrastructure this schedule originally specified.
+>
+> **Final state at close:**
+>
+> | Dimension | Value |
+> |---|---|
+> | Day count at close | 19 of 21 |
+> | Measures complete | 5 of 27 (4.1 PASS, 8.1, 3.2 harness, 3.3 harness, 7.2 deferred) |
+> | Measures abandoned | 22 of 27 (Sprint 1+ never started) |
+> | Gates | G1 PASS (DMN hallucination 0% contradictions). G2 DEFERRED (DEVIATION-025 not filed). G3–G7 untested. |
+> | Superseded by | LRR epic, all ten phases shipped 2026-04-17 |
+>
+> **If specific measures still matter, fold them into the Continuous-Loop
+> Research Cadence epic's §3.7 closed-loop-validation drill** rather than
+> reviving this parallel schedule. LRR-era Prometheus slicing already
+> covers the per-condition time-series that measures 7.1 / 7.2 wanted.
+>
+> The remainder of this document is preserved as historical specification
+> — do not treat any section below as an active work queue.
+>
+> ---
+>
+> **Original preamble below.**
+
+---
 
 **Created:** 2026-03-29
 **Authority:** Bayesian Validity Analysis of Hapax Research Tent-Pole Models (session 2026-03-29)
