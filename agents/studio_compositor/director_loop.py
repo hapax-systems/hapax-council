@@ -84,8 +84,54 @@ def _parse_intent_from_llm(raw: str, fallback_activity: str = "react") -> Direct
         return DirectorIntent(activity=fallback_activity, stance=Stance.NOMINAL, narrative_text="")
 
 
+_DMN_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
+
+
+def _emit_compositional_impingements(intent: DirectorIntent, condition_id: str) -> None:
+    """Write each CompositionalImpingement to the DMN impingement stream.
+
+    The AffordancePipeline reads this stream; compositor-origin impingements
+    become recruitable against the compositional affordance catalog
+    (shared/compositional_affordances.py). Source tag
+    `studio_compositor.director.compositional` lets downstream consumers
+    (daimonion, reverie) filter compositor-origin impingements from their
+    own recruitment pass if needed.
+
+    Phase 3c of the volitional-director epic (PR #1018).
+    """
+    if not intent.compositional_impingements:
+        return
+    try:
+        from shared.impingement import Impingement, ImpingementType
+
+        _DMN_IMPINGEMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        lines: list[str] = []
+        now = time.time()
+        for imp in intent.compositional_impingements:
+            dmn_imp = Impingement(
+                timestamp=now,
+                source="studio_compositor.director.compositional",
+                type=ImpingementType.SALIENCE_INTEGRATION,
+                strength=float(imp.salience),
+                content={
+                    "narrative": imp.narrative,
+                    "intent_family": imp.intent_family,
+                    "material": imp.material,
+                    "dimensions": dict(imp.dimensions),
+                    "director_activity": intent.activity,
+                    "director_stance": str(intent.stance),
+                    "condition_id": condition_id,
+                },
+            )
+            lines.append(dmn_imp.model_dump_json())
+        with _DMN_IMPINGEMENTS_FILE.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception:
+        log.warning("DMN compositional-impingement emission failed", exc_info=True)
+
+
 def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
-    """Write the intent to JSONL + the narrative-state SHM file + Prometheus.
+    """Write the intent to JSONL + narrative-state SHM + Prometheus + DMN stream.
 
     Non-fatal: any IO error is logged but does not block the director loop.
     """
@@ -117,6 +163,9 @@ def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
         tmp.replace(_NARRATIVE_STATE_PATH)
     except Exception:
         log.warning("narrative-state.json write failed", exc_info=True)
+    # Phase 3c — emit compositional impingements so AffordancePipeline
+    # can recruit compositional capabilities.
+    _emit_compositional_impingements(intent, condition_id=condition_id)
 
 
 def _default_tts_socket_path() -> Path:
@@ -227,7 +276,7 @@ MULTIMODAL_ROUTES: frozenset[str] = frozenset(
     }
 )
 
-PERCEPTION_INTERVAL = 8.0  # seconds between LLM perception calls
+PERCEPTION_INTERVAL = 20.0  # seconds between LLM perception calls (Phase 5c: 8→20)
 MIN_VIDEO_DURATION = 15.0  # minimum seconds before allowing CUT
 MAX_VIDEO_DURATION = 60.0  # force CUT after this
 
@@ -886,7 +935,35 @@ class DirectorLoop:
         parts.append("Second: the full composed surface viewers see.")
         parts.append("")
         parts.append("## Response Format")
-        parts.append('{"activity": "chosen_activity", "react": "your words"}')
+        parts.append(
+            "Return a single JSON object. Either the legacy shape "
+            '{"activity": ..., "react": ...} (always accepted as a safe '
+            "fallback) or the richer DirectorIntent shape when you can "
+            "ground specific compositional moves in the perceptual field:"
+        )
+        parts.append(
+            "{\n"
+            '  "activity": "<one of the listed activities>",\n'
+            '  "stance": "<nominal|seeking|cautious|degraded|critical>",\n'
+            '  "narrative_text": "<your words>",\n'
+            '  "grounding_provenance": ["<signal.path.from.perceptual_field>", ...],\n'
+            '  "compositional_impingements": [\n'
+            "    {\n"
+            '      "narrative": "<gibson-verb description of the compositional move>",\n'
+            '      "intent_family": "<camera.hero|preset.bias|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition>",\n'
+            '      "material": "<water|fire|earth|air|void>",\n'
+            '      "salience": 0.0..1.0\n'
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+        parts.append(
+            "Prefer the richer shape. Use compositional_impingements to say "
+            "what you want foregrounded, biased, dimmed, cut to, or "
+            "declared — the pipeline recruits the right capability. "
+            "Ground every move: grounding_provenance lists the "
+            "perceptual-field keys that made this move felt-necessary."
+        )
         parts.append("Complete your sentences. Say as much or as little as the moment requires.")
         parts.append("</reactor_context>")
 
