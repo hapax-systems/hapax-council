@@ -26,6 +26,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .random_mode import (
@@ -48,6 +49,53 @@ preset names. 30s is intentionally slower than the ~5–10s random_mode
 cycling, so a chat-triggered switch actually gets held for a meaningful
 window before random_mode or the next chat hit can replace it.
 """
+
+
+# ── LRR Phase 9 §3.3 — research-aware chat reactor ──────────────────────────
+#
+# Two tunables that differ between default and research-mode windows:
+#
+# * ``cooldown_seconds`` — default 30s (ambient feel); research-mode 90s
+#   (deliberate rhythm so a preset hit is held long enough to correlate
+#   with a research-activity segment).
+# * ``require_trigger_prefix`` — default None (any preset keyword
+#   matches); research-mode ``"!fx"`` (viewers must prepend ``!fx`` to
+#   request a switch, matching the explicit-syntax convention the
+#   research window deliberately teaches).
+#
+# The A/B window drill (docs/drills/2026-04-17-audience-engagement-ab.md)
+# consumes these — window A runs ``DEFAULT``, window B runs
+# ``RESEARCH_MODE``, and the compositor's Stream Moments collector
+# captures reaction deltas across the two windows.
+
+
+@dataclass(frozen=True)
+class ReactorSensitivity:
+    cooldown_seconds: float
+    require_trigger_prefix: str | None = None
+
+
+DEFAULT_SENSITIVITY: ReactorSensitivity = ReactorSensitivity(cooldown_seconds=COOLDOWN_SECONDS)
+RESEARCH_MODE_SENSITIVITY: ReactorSensitivity = ReactorSensitivity(
+    cooldown_seconds=90.0, require_trigger_prefix="!fx"
+)
+
+
+def resolve_sensitivity_for_working_mode(working_mode: str | None = None) -> ReactorSensitivity:
+    """Pick a sensitivity profile based on the operator's working mode.
+
+    ``research`` mode → research-mode sensitivity; anything else (``rnd``
+    or unset) → default. The injectable string parameter lets tests
+    exercise the mapping without touching the working-mode file.
+    """
+    if working_mode is None:
+        try:
+            from shared.working_mode import get_working_mode
+
+            working_mode = get_working_mode().value
+        except Exception:  # pragma: no cover — fallback only
+            working_mode = ""
+    return RESEARCH_MODE_SENSITIVITY if working_mode == "research" else DEFAULT_SENSITIVITY
 
 
 def _keyword_for(preset_name: str) -> str:
@@ -78,13 +126,27 @@ class PresetReactor:
         self,
         preset_dir: Path | None = None,
         mutation_file: Path | None = None,
-        cooldown: float = COOLDOWN_SECONDS,
+        cooldown: float | None = None,
+        sensitivity: ReactorSensitivity | None = None,
     ) -> None:
         self._preset_dir = preset_dir or PRESET_DIR
         self._mutation_file = mutation_file or MUTATION_FILE
-        self._cooldown = cooldown
+        # Back-compat: ``cooldown=`` kwarg overrides the sensitivity's
+        # cooldown while preserving whatever trigger-prefix the
+        # sensitivity specified. Tests that mutate ``_cooldown``
+        # directly after construction continue to work.
+        base = sensitivity or DEFAULT_SENSITIVITY
+        self._cooldown: float = cooldown if cooldown is not None else base.cooldown_seconds
+        self._trigger_prefix: str | None = base.require_trigger_prefix
         self._last_switch_monotonic: float = 0.0
         self._build_keyword_index()
+
+    @property
+    def sensitivity(self) -> ReactorSensitivity:
+        return ReactorSensitivity(
+            cooldown_seconds=self._cooldown,
+            require_trigger_prefix=self._trigger_prefix,
+        )
 
     def _build_keyword_index(self) -> None:
         """Build a ``keyword -> preset_name`` map from the preset directory.
@@ -127,10 +189,25 @@ class PresetReactor:
         Stateless — no cooldown check, no current-preset comparison. The
         caller decides whether to act on the match. Split out so tests
         can exercise the pattern matching independently of file I/O.
+
+        If ``sensitivity.require_trigger_prefix`` is set, the message
+        must begin with that prefix (case-insensitive) for the keyword
+        scan to run; otherwise the match is ambient (any preset name
+        anywhere in the message).
         """
         if not message_text or self._match_regex is None:
             return None
-        m = self._match_regex.search(message_text)
+        prefix = self._trigger_prefix
+        if prefix:
+            stripped = message_text.lstrip()
+            if not stripped.lower().startswith(prefix.lower()):
+                return None
+            # Scan only the tail after the prefix — avoids prefix matching
+            # itself if a preset happens to share the prefix string.
+            scan_from = stripped[len(prefix) :]
+        else:
+            scan_from = message_text
+        m = self._match_regex.search(scan_from)
         if not m:
             return None
         key = m.group(1).lower()
