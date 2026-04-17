@@ -503,9 +503,51 @@ async def handle_search_documents(params) -> None:
 _CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 _GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
+# LRR Phase 6 §4.F — stream-mode-aware redaction for Gmail + Calendar content.
+# When stream is publicly visible (public or public_research), these handlers
+# refuse to return email / calendar content: subjects, bodies, event titles,
+# attendee names, and locations all constitute potential leaks of non-operator
+# persons (interpersonal_transparency axiom), employer-boundary content
+# (corporate_boundary axiom), or operator-private correspondence that has no
+# broadcast consent contract. Fail-closed with a terse explanation the LLM
+# can relay to the audience without leaking anything.
+
+_BROADCAST_SAFE_EMAIL_STUB = (
+    "Email content is private and not broadcast-safe on the current stream. "
+    "The operator can read directly; I won't render email subjects or bodies "
+    "while publicly visible."
+)
+
+_BROADCAST_SAFE_CALENDAR_STUB = (
+    "Calendar content (event titles, attendees, locations) is private and not "
+    "broadcast-safe on the current stream. The operator can read directly; I "
+    "won't render calendar entries while publicly visible."
+)
+
+
+def _stream_is_publicly_visible() -> bool:
+    """Thin import shim — defer stream_mode import to call-time so the tool
+    module remains importable in test environments where shared.stream_mode
+    is stubbed or the state file is absent.
+
+    Fails closed to True (most restrictive) on import error per the Phase 6
+    fail-closed invariant.
+    """
+    try:
+        from shared.stream_mode import is_publicly_visible
+
+        return is_publicly_visible()
+    except Exception:
+        return True
+
 
 async def handle_get_calendar_today(params) -> None:
     """Fetch upcoming calendar events from Google Calendar API."""
+    # LRR Phase 6 §4.F: fail-closed redaction on publicly visible stream.
+    if _stream_is_publicly_visible():
+        await params.result_callback(_BROADCAST_SAFE_CALENDAR_STUB)
+        return
+
     days_ahead = min(params.arguments.get("days_ahead", 2), 7)
 
     try:
@@ -562,6 +604,11 @@ async def handle_get_calendar_today(params) -> None:
 
 async def handle_search_emails(params) -> None:
     """Search emails via Qdrant or Gmail API."""
+    # LRR Phase 6 §4.F: fail-closed redaction on publicly visible stream.
+    if _stream_is_publicly_visible():
+        await params.result_callback(_BROADCAST_SAFE_EMAIL_STUB)
+        return
+
     query = params.arguments["query"]
     max_results = min(params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS)
     recent_only = params.arguments.get("recent_only", False)
