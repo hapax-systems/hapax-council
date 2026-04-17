@@ -68,21 +68,6 @@
       "tags": []
     },
     {
-      "id": "captions",
-      "kind": "cairo",
-      "backend": "cairo",
-      "params": {
-        "class_name": "CaptionsCairoSource",
-        "natural_w": 1840,
-        "natural_h": 110
-      },
-      "update_cadence": "always",
-      "rate_hz": null,
-      "tags": [
-        "continuous-loop-3-4"
-      ]
-    },
-    {
       "id": "activity_header",
       "kind": "cairo",
       "backend": "cairo",
@@ -92,7 +77,7 @@
         "natural_h": 56
       },
       "update_cadence": "always",
-      "rate_hz": null,
+      "rate_hz": 2,
       "tags": [
         "legibility",
         "authorship"
@@ -108,7 +93,7 @@
         "natural_h": 40
       },
       "update_cadence": "always",
-      "rate_hz": null,
+      "rate_hz": 2,
       "tags": [
         "legibility",
         "authorship"
@@ -124,7 +109,7 @@
         "natural_h": 400
       },
       "update_cadence": "always",
-      "rate_hz": null,
+      "rate_hz": 1,
       "tags": [
         "legibility"
       ]
@@ -139,7 +124,7 @@
         "natural_h": 40
       },
       "update_cadence": "always",
-      "rate_hz": null,
+      "rate_hz": 2,
       "tags": [
         "legibility",
         "research"
@@ -155,7 +140,7 @@
         "natural_h": 120
       },
       "update_cadence": "always",
-      "rate_hz": null,
+      "rate_hz": 5,
       "tags": [
         "legibility"
       ]
@@ -406,13 +391,6 @@
       "surface": "pip-lr",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": []
-    },
-    {
-      "source": "captions",
-      "surface": "captions_strip",
-      "transform": {},
-      "opacity": 0.92,
       "per_assignment_effects": []
     },
     {
