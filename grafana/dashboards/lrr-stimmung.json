@@ -1,0 +1,165 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Stimmung dashboard — the 11-dimensional operator+system affect state over time, with the overall_stance reducer. Source: hapax_stimmung_value{dimension} + hapax_stimmung_stance + hapax_stimmung_freshness_s, exposed via /api/predictions/metrics (logos/api/routes/predictions.py, scraped by Prometheus at 30s).\n\nStance mapping (numeric → label):\n  0.0 = nominal (operational baseline)\n  0.1 = seeking (exploration deficit > 0.35, recruitment threshold halved)\n  0.25 = cautious (preventive posture)\n  0.5 = degraded (stress elevated, load rising)\n  1.0 = critical (immediate attention)\n\nDimensions (per shared/stimmung and logos/api/routes/stimmung.py):\n  health, resource_pressure, error_rate, processing_throughput,\n  perception_confidence, llm_cost_pressure, grounding_quality,\n  exploration_deficit, operator_stress, operator_energy,\n  physiological_coherence.\n\nPhase 6 §4.A redaction: when stream-mode is publicly visible, /api/stimmung bands three operator-mental-state dims (energy / coherence / stress) into categorical labels and omits the other 8. This dashboard is private by construction (runs against the raw prometheus gauges, not the redacted HTTP surface). Do NOT expose this dashboard on the stream.\n\nDeployment: symlink or copy this file to ~/llm-stack/grafana/provisioning/dashboards/json/lrr-stimmung.json, then restart grafana or reload provisioning.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Overall stance over time. Step changes are hysteresis-guarded (3-tick minimum) so transitions are meaningful, not noise.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"drawStyle": "line", "fillOpacity": 40, "lineInterpolation": "stepBefore"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "nominal", "color": "green"}}},
+            {"type": "value", "options": {"0.1": {"text": "seeking", "color": "blue"}}},
+            {"type": "value", "options": {"0.25": {"text": "cautious", "color": "yellow"}}},
+            {"type": "value", "options": {"0.5": {"text": "degraded", "color": "orange"}}},
+            {"type": "value", "options": {"1": {"text": "critical", "color": "red"}}}
+          ],
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "blue", "value": 0.05},
+              {"color": "yellow", "value": 0.2},
+              {"color": "orange", "value": 0.4},
+              {"color": "red", "value": 0.8}
+            ]
+          }
+        }
+      },
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [
+        {"expr": "hapax_stimmung_stance", "legendFormat": "stance", "refId": "A"}
+      ],
+      "title": "Overall stance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Operator-state dimensions — the three redaction-banded dims from Phase 6 §4.A. Stress spikes upward when load is high; energy trends with time-of-day; coherence inverts under context-switching.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "smooth"},
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "id": 2,
+      "targets": [
+        {"expr": "hapax_stimmung_value{dimension=\"operator_stress\"}", "legendFormat": "stress", "refId": "A"},
+        {"expr": "hapax_stimmung_value{dimension=\"operator_energy\"}", "legendFormat": "energy", "refId": "B"},
+        {"expr": "hapax_stimmung_value{dimension=\"physiological_coherence\"}", "legendFormat": "coherence", "refId": "C"}
+      ],
+      "title": "Operator state (stress / energy / coherence)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "System-health dimensions — health, error_rate, resource_pressure, processing_throughput, perception_confidence, llm_cost_pressure. Spikes + drops on any of these often precede stance transitions.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 5},
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "id": 3,
+      "targets": [
+        {"expr": "hapax_stimmung_value{dimension=\"health\"}", "legendFormat": "health", "refId": "A"},
+        {"expr": "hapax_stimmung_value{dimension=\"error_rate\"}", "legendFormat": "error_rate", "refId": "B"},
+        {"expr": "hapax_stimmung_value{dimension=\"resource_pressure\"}", "legendFormat": "resource_pressure", "refId": "C"},
+        {"expr": "hapax_stimmung_value{dimension=\"processing_throughput\"}", "legendFormat": "throughput", "refId": "D"},
+        {"expr": "hapax_stimmung_value{dimension=\"perception_confidence\"}", "legendFormat": "perception_conf", "refId": "E"},
+        {"expr": "hapax_stimmung_value{dimension=\"llm_cost_pressure\"}", "legendFormat": "llm_cost", "refId": "F"}
+      ],
+      "title": "System state (health + cost + perception)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Grounding quality + exploration deficit — the pair that governs SEEKING stance transitions. When deficit > 0.35 and all other dims nominal, stance flips to seeking and recruitment threshold halves.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 20, "lineInterpolation": "smooth"},
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "id": 4,
+      "targets": [
+        {"expr": "hapax_stimmung_value{dimension=\"grounding_quality\"}", "legendFormat": "grounding_quality", "refId": "A"},
+        {"expr": "hapax_stimmung_value{dimension=\"exploration_deficit\"}", "legendFormat": "exploration_deficit", "refId": "B"}
+      ],
+      "title": "Grounding + exploration deficit (SEEKING-trigger pair)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Freshness — how stale is each dimension's last update? Dimensions over 60s old indicate the upstream sensor has gone quiet. Flat lines near zero = healthy; sawtooth ramps = intermittent sensor.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "continuous-YlOrRd"},
+          "custom": {"drawStyle": "line", "fillOpacity": 5, "lineInterpolation": "stepBefore"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 30},
+              {"color": "red", "value": 120}
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "id": 5,
+      "targets": [
+        {"expr": "hapax_stimmung_freshness_s", "legendFormat": "{{dimension}}", "refId": "A"}
+      ],
+      "title": "Dimension freshness (s since update)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["lrr", "phase-10", "stimmung", "observability"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "LRR — Stimmung (affect + system state)",
+  "uid": "lrr-stimmung",
+  "version": 1,
+  "weekStart": ""
+}
