@@ -48,6 +48,7 @@ CANDIDATE_ACTIVITIES: tuple[str, ...] = (
     "react",
     "chat",
     "vinyl",
+    "music",
     "study",
     "observe",
     "silence",
@@ -98,8 +99,8 @@ def stimmung_term_for_activity(
 
     * High engagement + active chat threads → raise ``chat`` / ``react``.
     * Low engagement → raise ``study`` / ``silence``.
-    * ``observe`` / ``vinyl`` neutral (0.0) — they're operator-facing,
-      not audience-facing.
+    * ``observe`` / ``vinyl`` / ``music`` neutral (0.0) — they're
+      operator-facing, not audience-facing.
 
     The caller multiplies by the stimmung weight (0.05 default) so the
     effective push is small; we keep the raw value in [-1, 1] for
@@ -127,7 +128,7 @@ def stimmung_term_for_activity(
         if high:
             return -0.5
         return 0.0
-    # observe / vinyl / unknown → neutral.
+    # observe / vinyl / music / unknown → neutral.
     return 0.0
 
 

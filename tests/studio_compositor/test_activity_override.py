@@ -55,7 +55,9 @@ class TestConstants:
     def test_candidate_activities_cover_schema(self):
         from agents.studio_compositor.activity_scoring import CANDIDATE_ACTIVITIES
 
-        expected = {"react", "chat", "vinyl", "study", "observe", "silence"}
+        # Epic 2 (2026-04-17) added ``music`` as the vinyl-decoupled
+        # music-featuring activity; ``vinyl`` retained for back-compat.
+        expected = {"react", "chat", "vinyl", "music", "study", "observe", "silence"}
         assert set(CANDIDATE_ACTIVITIES) == expected
 
 

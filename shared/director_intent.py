@@ -22,14 +22,18 @@ from shared.stimmung import Stance
 
 # ── Vocabulary ────────────────────────────────────────────────────────────
 
-# HSEA Phase 2 activity extension (6 → 13). Existing 6 come from the
-# current `ACTIVITY_CAPABILITIES` in director_loop.py; the 7 new activities
-# come from
-# `docs/superpowers/specs/2026-04-15-hsea-phase-2-core-director-activities-design.md`.
+# HSEA Phase 2 activity extension (6 → 13 → 14). The six original activities
+# come from the compositor's ``ACTIVITY_CAPABILITIES``; HSEA Phase 2 added
+# seven (``docs/superpowers/specs/2026-04-15-hsea-phase-2-core-director-activities-design.md``).
+# Epic 2 (2026-04-17) added ``music`` as the vinyl-decoupled music-featuring
+# activity: ``vinyl`` is retained as an alias so prior runs' artifacts stay
+# valid, but new prompts guide the LLM to emit ``music`` so the director
+# talks about music whether or not the turntable is active.
 ActivityVocabulary = Literal[
     "react",
     "chat",
     "vinyl",
+    "music",
     "study",
     "observe",
     "silence",

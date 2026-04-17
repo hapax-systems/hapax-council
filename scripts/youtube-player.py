@@ -44,6 +44,30 @@ V4L2_DEVICE = V4L2_DEVICES[0]
 lock = threading.Lock()
 
 
+def _playback_rate() -> float:
+    """Global playback rate for YouTube A/V. Default 0.5x for DMCA evasion.
+
+    Rationale: broadcast streams that contain audio pitch/tempo-matched to
+    the original commercial recording are DMCA-fingerprint matchable.
+    Slowing to 0.5x shifts the spectral signature enough to evade the
+    fingerprinter while keeping the music recognizable as Oudepode's
+    curated aesthetic. Override via HAPAX_YOUTUBE_PLAYBACK_RATE.
+
+    Range: (0.25, 2.0). Values outside are clamped.
+    """
+    raw = os.environ.get("HAPAX_YOUTUBE_PLAYBACK_RATE", "0.5").strip()
+    try:
+        rate = float(raw)
+    except ValueError:
+        log.warning("HAPAX_YOUTUBE_PLAYBACK_RATE=%r not parseable; using 0.5", raw)
+        return 0.5
+    if rate < 0.25:
+        return 0.25
+    if rate > 2.0:
+        return 2.0
+    return rate
+
+
 class VideoSlot:
     """Independent video playback slot with v4l2 output + JPEG snapshots."""
 
@@ -77,6 +101,19 @@ class VideoSlot:
             pass
 
         snapshot_path = SHM_DIR / f"yt-frame-{self.slot_id}.jpg"
+        rate = _playback_rate()
+        # PTS multiplier slows video (rate=0.5 → setpts=2.000*PTS).
+        # atempo slows audio; ffmpeg's atempo filter supports 0.5..100.0
+        # natively so no chaining needed for the DMCA-evasion preset.
+        video_pts = f"setpts={1.0 / rate:.3f}*PTS"
+        audio_tempo = f"atempo={rate:.3f}"
+        log.info(
+            "Slot %d playback rate %.3fx (video %s, audio %s)",
+            self.slot_id,
+            rate,
+            video_pts,
+            audio_tempo,
+        )
         cmd = [
             "ffmpeg",
             "-y",
@@ -94,7 +131,7 @@ class VideoSlot:
             "-map",
             "0:v",
             "-vf",
-            "scale=1920:1080",
+            f"{video_pts},scale=1920:1080",
             "-pix_fmt",
             "yuyv422",
             "-f",
@@ -104,15 +141,17 @@ class VideoSlot:
             "-map",
             "0:v",
             "-vf",
-            "scale=384:216",
+            f"{video_pts},scale=384:216",
             "-update",
             "1",
             "-r",
             "10",
             str(snapshot_path),
-            # Output 3: audio to PipeWire
+            # Output 3: audio to PipeWire (tempo-shifted for DMCA evasion)
             "-map",
             "1:a",
+            "-af",
+            audio_tempo,
             "-f",
             "pulse",
             "-ac",

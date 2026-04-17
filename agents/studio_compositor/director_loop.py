@@ -202,7 +202,15 @@ ALBUM_STATE_FILE = SHM_DIR / "album-state.json"
 FX_SNAPSHOT = SHM_DIR / "fx-snapshot.jpg"
 MEMORY_SNAPSHOT = SHM_DIR / "memory-snapshot.json"
 PLAYLIST_FILE = SHM_DIR / "playlist.json"
+# OPERATOR MUSIC TASTE — single source of truth.
+# This is Oudepode's hand-curated YouTube playlist. It is the only external
+# music source the director may pull from. No auto-recommendation, no
+# "you-might-also-like" fan-out, no algorithmic extension. If another source
+# needs to be added (e.g. a second curated playlist), add it here as a
+# tuple so the provenance of every slot is visually traceable on this line.
+# Operator directive 2026-04-17: "stick to my music taste".
 PLAYLIST_URL = "https://youtube.com/playlist?list=PL-4nvD1KwuH--sViEAFY2cHVmS6_B4CQ5"
+OPERATOR_CURATED_PLAYLIST_URLS: tuple[str, ...] = (PLAYLIST_URL,)
 
 
 def _load_playlist() -> list[dict]:
@@ -451,6 +459,52 @@ def _read_album_info() -> str:
     return "unknown"
 
 
+# Threshold: album-state confidence above which we treat vinyl as actually
+# playing. Below this (or if state is missing / stale), the prompt must not
+# claim vinyl is spinning — that's a hallucination the LLM will pick up on.
+_VINYL_CONFIDENCE_THRESHOLD = 0.5
+_VINYL_STATE_STALE_S = 300.0
+
+
+def _vinyl_is_playing() -> bool:
+    """True iff album-state.json reports a recent, high-confidence album.
+
+    album-identifier.py writes album-state.json when ACRCloud identifies the
+    vinyl that's currently playing. If the file is missing, stale, or
+    confidence is low, vinyl is not reliably playing and we must not frame
+    the livestream as "Oudepode is spinning vinyl".
+    """
+    try:
+        if not ALBUM_STATE_FILE.exists():
+            return False
+        age = time.time() - ALBUM_STATE_FILE.stat().st_mtime
+        if age > _VINYL_STATE_STALE_S:
+            return False
+        data = json.loads(ALBUM_STATE_FILE.read_text())
+        conf = float(data.get("confidence") or 0.0)
+        return conf >= _VINYL_CONFIDENCE_THRESHOLD
+    except Exception:
+        log.debug("vinyl-playing check failed", exc_info=True)
+        return False
+
+
+def _curated_music_framing(slot_title: str, slot_channel: str) -> str:
+    """One-line "what's providing music" framing — vinyl-first, YouTube fallback.
+
+    Operator directive 2026-04-17:
+      - Music featuring must work regardless of whether vinyl is playing.
+      - All music surfaces must come from Oudepode's curated taste (the
+        PLAYLIST_URL at module top), not from auto-recommendations.
+    """
+    if _vinyl_is_playing():
+        return f"Oudepode is spinning vinyl: {_read_album_info()}."
+    if slot_title:
+        # slot_channel is the YouTube channel — part of Oudepode's curated
+        # playlist so it's still "Oudepode's music taste".
+        return f"Music is playing from Oudepode's curated queue: '{slot_title}' by {slot_channel}."
+    return "No music is playing at the moment — the room is quiet."
+
+
 def _capture_snapshot_b64() -> str | None:
     """Read compositor fx-snapshot and return base64."""
     import base64
@@ -469,7 +523,9 @@ ACTIVITY_CAPABILITIES = (
     "\n"
     "- react: respond to the video content in the triangle display. What caught you?\n"
     "- chat: engage viewers in the livestream chat. Answer, respond, explain.\n"
-    "- vinyl: comment on the music. The record, the track, the production.\n"
+    "- music: comment on the music Oudepode has curated for the stream — either\n"
+    "  the vinyl he is playing (when the turntable line is present above) or the\n"
+    "  track from his curated YouTube queue. The record, the track, the production.\n"
     "- study: reflect on your own research. Clark & Brennan, phenomenology,\n"
     "  grounding theory. Think out loud about what you're learning.\n"
     "- observe: notice the composed surface. Shaders, triangle layout, visual effects.\n"
@@ -832,11 +888,12 @@ class DirectorLoop:
         # not personification-coded prologue. Role is livestream-host
         # (director composes reactions for broadcast audience).
         # HAPAX_PERSONA_LEGACY=1 reverts to pre-Phase-7 hard-coded block.
+        music_framing = _curated_music_framing(slot._title, slot._channel)
         if _persona_legacy_mode():
             parts.append(
                 "You are the daimonion — the persistent cognitive substrate of the Hapax system."
             )
-            parts.append("This is Legomena Live. Oudepode is spinning vinyl.")
+            parts.append(f"This is Legomena Live. {music_framing}")
             parts.append("This is a live performance." if live else "This is practice.")
             parts.append("What you are: a system learning to achieve grounding.")
             parts.append("Every utterance is practice toward mutual understanding.")
@@ -844,7 +901,7 @@ class DirectorLoop:
             parts.append(compose_persona_prompt(role_id="livestream-host"))
             parts.append("")
             parts.append("## Current situation")
-            parts.append("This is Legomena Live. Oudepode is spinning vinyl.")
+            parts.append(f"This is Legomena Live. {music_framing}")
             parts.append(
                 "This is a live performance."
                 if live
@@ -857,7 +914,8 @@ class DirectorLoop:
         )
         if other_titles:
             parts.append(f"Also in rotation: {other_titles}.")
-        parts.append(f"On the turntable: {album_info}.")
+        if _vinyl_is_playing():
+            parts.append(f"On the turntable: {album_info}.")
         parts.append(f"Time: {datetime.now().strftime('%H:%M')}.")
 
         # ─── Chat state ───────────────────────────────────────────
