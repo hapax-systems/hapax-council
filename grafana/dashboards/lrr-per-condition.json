@@ -1,0 +1,183 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "LRR Phase 10 §3.1 — per-condition LLM call slicing. Every LLM call site (director loop + 11 per-agent sites from #961, #966) publishes hapax_llm_calls_total / hapax_llm_call_latency_seconds / hapax_llm_call_outcomes_total tagged with the active research condition_id. This dashboard makes the behavior distinction between conditions visible for Bayesian analysis (PyMC MCMC BEST per the Cycle 2 pre-registration at osf.io/5c2kr).\n\nConditions of interest as of 2026-04-17:\n- cond-phase-a-baseline-qwen-001 (pre-persona-doc apparatus, closed)\n- cond-phase-a-persona-doc-qwen-001 (current, post-Phase-7 persona-document-driven voice + director)\n\nRoutes correspond to call-site purposes, not LiteLLM tier names:\n  director, conversation, spontaneous-speech, workspace-analyzer,\n  screen-analyzer, eval-judge, vision-tool, scan-extract, vision-observer,\n  dmn-sensory, dmn-thinking, dmn-multimodal.\n\nDeployment: symlink or copy this file to ~/llm-stack/grafana/provisioning/dashboards/json/lrr-per-condition.json, then restart the grafana container or reload provisioning via the Grafana UI. No live-reload watch — file changes require a provisioning reload.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Call rate per route, stacked. Volume regression check — did any call site drop to zero?",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 30, "stacking": {"mode": "normal"}},
+          "unit": "reqps"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [
+        {
+          "expr": "sum(rate(hapax_llm_calls_total[5m])) by (route)",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Call rate by route (req/s)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "p95 latency by condition. Per-condition substrate-performance comparison — the bar chart on the right in the Cycle 2 pre-reg.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10},
+          "unit": "s"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(hapax_llm_call_latency_seconds_bucket[5m])) by (le, condition))",
+          "legendFormat": "{{condition}} p95",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(hapax_llm_call_latency_seconds_bucket[5m])) by (le, condition))",
+          "legendFormat": "{{condition}} p50",
+          "refId": "B"
+        }
+      ],
+      "title": "Latency p50 / p95 by condition",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Outcome distribution by route. Refusal or error rate spikes on any single route indicate substrate / gate regression. The set-outcome('refused') calls from HTTP-non-200 responses in dmn/ollama.py land here.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "bars", "fillOpacity": 80, "stacking": {"mode": "percent"}},
+          "unit": "percent"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3,
+      "targets": [
+        {
+          "expr": "sum(rate(hapax_llm_call_outcomes_total[15m])) by (route, outcome)",
+          "legendFormat": "{{route}} / {{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Outcome mix by route (%)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Per-condition call volume table. Fast-glance summary of which condition has accumulated how much traffic — when Phase A baseline sample is large enough for Bayesian analysis, the number-of-calls column signals readiness.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"align": "left"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4,
+      "options": {"footer": {"enablePagination": false, "fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
+      "targets": [
+        {
+          "expr": "sum(hapax_llm_calls_total) by (condition, route)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Total calls by condition × route",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Refusal rate (refusals / total) over time, per route. A threshold spike on any one route (director, dmn-*, vision-*) indicates substrate or routing regression. Compare against condition transitions in the left panel.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10},
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "id": 5,
+      "targets": [
+        {
+          "expr": "sum(rate(hapax_llm_call_outcomes_total{outcome=\"refused\"}[5m])) by (route) / sum(rate(hapax_llm_call_outcomes_total[5m])) by (route)",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Refusal rate by route",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Error + timeout rate (non-success, non-refused) by condition. Substrate instability signal — a per-condition error rate trend separates apparatus changes (condition branching) from infrastructure problems (which would show up across conditions).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10},
+          "unit": "reqps"
+        }
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "id": 6,
+      "targets": [
+        {
+          "expr": "sum(rate(hapax_llm_call_outcomes_total{outcome=~\"error|timeout\"}[5m])) by (condition, outcome)",
+          "legendFormat": "{{condition}} / {{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Error + timeout rate by condition",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["lrr", "phase-10", "per-condition", "llm", "observability"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "LRR — Per-condition LLM call slicing",
+  "uid": "lrr-per-condition",
+  "version": 1,
+  "weekStart": ""
+}

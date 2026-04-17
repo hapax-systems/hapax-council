@@ -1,0 +1,41 @@
+# Grafana dashboards
+
+Authoritative copies of Grafana dashboard JSON live in this directory. Grafana reads dashboards from `~/llm-stack/grafana/provisioning/dashboards/json/` (bind-mounted into the container at `/etc/grafana/provisioning/dashboards/json`); deployment is a symlink or copy from here to there.
+
+## Dashboards
+
+| File | UID | Purpose |
+|---|---|---|
+| `studio-cameras.json` | (per-file) | Phase 4 of the camera 24/7 resilience epic. Source: `agents/studio_compositor/metrics.py` on `127.0.0.1:9482`. |
+| `lrr-per-condition.json` | `lrr-per-condition` | LRR Phase 10 §3.1 per-condition LLM call slicing. Every LLM call site publishes `hapax_llm_calls_total` / `hapax_llm_call_latency_seconds` / `hapax_llm_call_outcomes_total` tagged with the active research condition_id. |
+| `lrr-stimmung.json` | `lrr-stimmung` | LRR Phase 10 affect + system-state dashboard. 11 stimmung dimensions + overall stance + freshness. Source: `/api/predictions/metrics` (logos, scraped at 30s). |
+
+## Install
+
+One-time symlink (recommended — updates to the council repo propagate automatically):
+
+```bash
+mkdir -p ~/llm-stack/grafana/provisioning/dashboards/json
+for f in ~/projects/hapax-council/grafana/dashboards/*.json; do
+    ln -sf "$f" ~/llm-stack/grafana/provisioning/dashboards/json/$(basename "$f")
+done
+```
+
+Then reload provisioning:
+
+```bash
+docker restart grafana
+# or via the Grafana UI: Dashboards → Browse → Provisioning → Reload
+```
+
+## Dashboard-under-repo invariant
+
+Dashboards committed to this directory are the authoritative copy. Never hand-edit the JSON under `~/llm-stack/` directly — that's the live bind-mount target. Edits should go through a council-repo PR so they survive rebuilds, migrations, and diff reviews.
+
+## Cross-references
+
+- `scripts/provision_dashboards.py` — programmatic dashboard generator for some of the older dashboards (reverie predictions, etc.). Newer dashboards are hand-authored JSON.
+- `docs/research/2026-04-15-grafana-dashboards-catalog.md` — catalog of existing dashboards and their metric sources.
+- `docs/superpowers/specs/2026-04-03-affordance-observability-design.md` — metric definitions for `hapax_stimmung_*` gauges.
+- `agents/telemetry/condition_metrics.py` — Prometheus emitters for `hapax_llm_calls_total` / `hapax_llm_call_latency_seconds` / `hapax_llm_call_outcomes_total`.
+- `agents/telemetry/llm_call_span.py` — canonical span helper that drives the per-condition emissions (call-site migration shipped in #961 director + #966 11-site per-agent sweep).
