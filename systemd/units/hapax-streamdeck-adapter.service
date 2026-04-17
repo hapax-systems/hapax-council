@@ -1,0 +1,20 @@
+[Unit]
+Description=Hapax Stream Deck → command-registry adapter
+After=hapax-secrets.service logos-api.service
+Wants=logos-api.service
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=HAPAX_LOG_LEVEL=INFO
+Environment=HAPAX_STREAMDECK_KEYMAP=%h/projects/hapax-council/config/streamdeck.yaml
+ExecStart=%h/.local/bin/uv run python -m agents.streamdeck_adapter
+WorkingDirectory=%h/projects/hapax-council
+MemoryMax=256M
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

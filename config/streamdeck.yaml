@@ -1,0 +1,64 @@
+# Stream Deck key map (LRR Phase 8 item 6).
+#
+# Each entry maps a Stream Deck key (0-indexed from top-left, left-to-right
+# then top-to-bottom) to a command-registry dispatch. The adapter forwards
+# the `command` + `args` verbatim to the Tauri command relay on
+# `ws://127.0.0.1:8052/ws/commands`, so any command the registry knows is
+# available here.
+#
+# Editable: add / re-order / change labels without restarting. The adapter
+# re-reads on start; a SIGHUP rescan can be wired in later if useful.
+
+bindings:
+  - key: 0
+    command: studio.camera_profile.set
+    args: { profile: hero_operator }
+    label: Operator
+  - key: 1
+    command: studio.camera_profile.set
+    args: { profile: hero_turntable }
+    label: Turntable
+  - key: 2
+    command: studio.camera_profile.set
+    args: { profile: hero_screen }
+    label: Screen
+  - key: 3
+    command: studio.camera_profile.set
+    args: { profile: balanced }
+    label: Balanced
+
+  - key: 4
+    command: studio.stream_mode.toggle
+    args: {}
+    label: Stream Mode
+  - key: 5
+    command: studio.private.enable
+    args: {}
+    label: Private
+
+  - key: 6
+    command: studio.activity.override
+    args: { activity: react }
+    label: React
+  - key: 7
+    command: studio.activity.override
+    args: { activity: vinyl }
+    label: Vinyl
+  - key: 8
+    command: studio.activity.override
+    args: { activity: study }
+    label: Study
+
+  - key: 9
+    command: research.condition.open
+    args: {}
+    label: RC Open
+  - key: 10
+    command: research.condition.close
+    args: {}
+    label: RC Close
+
+  - key: 11
+    command: attention_bid.dismiss
+    args: {}
+    label: Not Now
