@@ -340,6 +340,24 @@ def build_perceptual_field(
     # can contain the empty string which fails validation. Normalize to None.
     _prod_activity_raw = perception.get("production_activity")
     _prod_activity = _prod_activity_raw if _prod_activity_raw else None
+
+    def _as_float(val: object) -> float | None:
+        """Coerce perception-state values to float, tolerating legacy strings.
+
+        Older perception-state.json payloads can contain sentinels like
+        ``"unknown"`` where the typed Pydantic model expects a number.
+        Return None on any non-parseable input so the twitch loop doesn't
+        die on malformed upstream data.
+        """
+        if val is None:
+            return None
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
     ingestion = StudioIngestionState(
         music_genre=perception.get("music_genre"),
         production_activity=_prod_activity,
@@ -365,24 +383,32 @@ def build_perceptual_field(
         hand_gesture=perception.get("hand_gesture"),
         gaze_direction=perception.get("gaze_direction"),
         posture=perception.get("posture"),
-        ambient_brightness=perception.get("ambient_brightness"),
-        color_temperature=perception.get("color_temperature"),
+        ambient_brightness=_as_float(perception.get("ambient_brightness")),
+        color_temperature=_as_float(perception.get("color_temperature")),
         per_camera_person_count=perception.get("per_camera_person_count") or {},
         scene_type=perception.get("scene_type"),
     )
 
     # ── IR ────────────────────────────────────────────────────────────────
+    def _as_int(val: object) -> int | None:
+        if val is None:
+            return None
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return None
+
     ir = IrField(
-        ir_hand_activity=perception.get("ir_hand_activity"),
+        ir_hand_activity=_as_float(perception.get("ir_hand_activity")),
         ir_hand_zone=perception.get("ir_hand_zone"),
         ir_gaze_zone=perception.get("ir_gaze_zone"),
         ir_posture=perception.get("ir_posture"),
-        ir_heart_rate_bpm=perception.get("ir_heart_rate_bpm"),
-        ir_heart_rate_confidence=perception.get("ir_heart_rate_conf"),
-        ir_brightness=perception.get("ir_brightness"),
-        ir_person_count=perception.get("ir_person_count"),
+        ir_heart_rate_bpm=_as_int(perception.get("ir_heart_rate_bpm")),
+        ir_heart_rate_confidence=_as_float(perception.get("ir_heart_rate_conf")),
+        ir_brightness=_as_float(perception.get("ir_brightness")),
+        ir_person_count=_as_int(perception.get("ir_person_count")),
         ir_screen_looking=perception.get("ir_screen_looking"),
-        ir_drowsiness_score=perception.get("ir_drowsiness_score"),
+        ir_drowsiness_score=_as_float(perception.get("ir_drowsiness_score")),
     )
 
     # ── Album ─────────────────────────────────────────────────────────────
@@ -390,8 +416,8 @@ def build_perceptual_field(
         artist=album.get("artist"),
         title=album.get("title"),
         current_track=album.get("current_track"),
-        year=album.get("year"),
-        confidence=album.get("confidence"),
+        year=_as_int(album.get("year")),
+        confidence=_as_float(album.get("confidence")),
     )
 
     # ── Chat ──────────────────────────────────────────────────────────────
