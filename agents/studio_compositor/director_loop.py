@@ -698,6 +698,46 @@ class DirectorLoop:
                 missing.append(s.slot_id)
         return missing
 
+    def _honor_youtube_direction(self) -> None:
+        """Read + act on youtube-direction.json written by compositional_consumer.
+
+        Epic 2 Phase B. Actions:
+        - ``advance-queue`` → rotate to the next active slot (mod len).
+        - ``cut-away`` → pause the active slot via its audio control.
+        - ``cut-to`` → alias for advance-queue for now (operator-intent
+          only, no target-URL resolution yet).
+
+        The file is unlinked after consumption so the direction fires
+        once and can be re-issued by the pipeline on the next tick.
+        """
+        direction_path = SHM_DIR / "youtube-direction.json"
+        if not direction_path.exists():
+            return
+        try:
+            data = json.loads(direction_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            direction_path.unlink(missing_ok=True)
+            return
+        action = str(data.get("action") or "")
+        ttl_s = float(data.get("ttl_s") or 0.0)
+        set_at = float(data.get("set_at") or 0.0)
+        # Stale directions ignored — the TTL has elapsed.
+        if ttl_s > 0 and time.time() - set_at > ttl_s:
+            direction_path.unlink(missing_ok=True)
+            return
+        log.info("youtube-direction: %s", action)
+        if action in ("advance-queue", "cut-to"):
+            new_slot = (self._active_slot + 1) % len(self._slots)
+            self._active_slot = new_slot
+        elif action == "cut-away":
+            # Leave slot as-is but mute its audio (the slot keeps playing
+            # so the camera still has content, just no sound).
+            try:
+                self._audio.set_volume(self._active_slot, 0.0)
+            except Exception:
+                log.debug("cut-away audio mute failed", exc_info=True)
+        direction_path.unlink(missing_ok=True)
+
     def _dispatch_cold_starts(self) -> list[int]:
         """Kick off playlist reloads for slots missing a frame file.
 
@@ -726,6 +766,16 @@ class DirectorLoop:
                 if self._state == "SPEAKING":
                     time.sleep(0.5)
                     continue
+
+                # Epic 2 Phase B — honor youtube-direction intents written by
+                # compositional_consumer when cam.hero etc. are recruited.
+                # The consumer writes to /dev/shm/hapax-compositor/
+                # youtube-direction.json; this call reads + acts once per
+                # direction and clears the file so directions don't loop.
+                try:
+                    self._honor_youtube_direction()
+                except Exception:
+                    log.debug("youtube-direction honor failed", exc_info=True)
 
                 # Check for finished videos — reload from playlist
                 for s in self._slots:

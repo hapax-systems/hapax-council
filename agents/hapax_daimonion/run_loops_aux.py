@@ -184,6 +184,63 @@ def _world_routing_enabled() -> bool:
         return False
 
 
+# Compositional capability prefix set — matches every entry in
+# shared/compositional_affordances.py. Used to route pipeline recruitments
+# through compositional_consumer.dispatch (Epic 2 Phase B).
+_COMPOSITIONAL_PREFIXES: tuple[str, ...] = (
+    "cam.hero.",
+    "fx.family.",
+    "overlay.",
+    "youtube.",
+    "attention.winner.",
+    "stream.mode.",
+)
+
+
+def _is_compositional_capability(name: str) -> bool:
+    """True if ``name`` matches a capability in shared/compositional_affordances.py."""
+    if not isinstance(name, str):
+        return False
+    return any(name.startswith(p) for p in _COMPOSITIONAL_PREFIXES)
+
+
+def _dispatch_compositional(candidate, imp, daemon) -> None:
+    """Dispatch a compositional capability through the compositor's consumer.
+
+    Writes the SHM control file matching the capability family so the
+    compositor layer (cam.hero → hero-camera-override.json, etc.) picks
+    it up on next tick. Records the Thompson outcome based on whether
+    dispatch succeeded.
+    """
+    try:
+        from agents.studio_compositor.compositional_consumer import (
+            RecruitmentRecord,
+            dispatch,
+        )
+
+        record = RecruitmentRecord(
+            name=candidate.capability_name,
+            score=float(candidate.combined),
+            impingement_narrative=str(imp.content.get("narrative", "")),
+            ttl_s=30.0,
+        )
+        family = dispatch(record)
+        succeeded = family != "unknown"
+        log.info(
+            "Compositional dispatch: %s → %s (score=%.2f)",
+            candidate.capability_name,
+            family,
+            candidate.combined,
+        )
+        daemon._affordance_pipeline.record_outcome(
+            candidate.capability_name,
+            success=succeeded,
+            context={"source": imp.source, "family": family},
+        )
+    except Exception:
+        log.warning("Compositional dispatch failed", exc_info=True)
+
+
 async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
     """Poll DMN impingements and dispatch recruited affordances.
 
@@ -243,6 +300,20 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     success=True,
                                     context={"source": imp.source},
                                 )
+                            continue
+
+                        # --- Compositional capability dispatch (Epic 2 Phase B) ---
+                        # Compositor-origin impingements ("studio_compositor.
+                        # director.compositional") recruit compositional
+                        # capabilities from shared/compositional_affordances.py
+                        # (cam.hero.* / fx.family.* / overlay.* / youtube.* /
+                        # attention.winner.* / stream.mode.*.transition). These
+                        # resolve via agents.studio_compositor.
+                        # compositional_consumer.dispatch, which writes the SHM
+                        # control files the compositor layer consumes.
+                        if _is_compositional_capability(c.capability_name):
+                            if c.combined >= 0.3:
+                                _dispatch_compositional(c, imp, daemon)
                             continue
 
                         # --- Livestream toggle (cross-process to compositor) ---

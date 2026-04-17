@@ -63,8 +63,18 @@ def transition_in(new_graph: dict) -> None:
         time.sleep(TRANSITION_STEP_MS / 1000.0)
 
 
+_PRESET_BIAS_COOLDOWN_S = 20.0  # if a preset-bias was recruited within this
+# window, random_mode defers to the biased family instead of picking uniformly.
+# Epic 2 Phase B: compositional_consumer writes the bias timestamp; this loop
+# reads it via recent_recruitment_age_s("preset.bias").
+
+
 def run(interval: float = 30.0) -> None:
     """Run random preset cycling with smooth transitions."""
+    from agents.studio_compositor.compositional_consumer import (
+        recent_recruitment_age_s,
+    )
+
     presets = get_preset_names()
     last = None
     current_graph = None
@@ -75,6 +85,13 @@ def run(interval: float = 30.0) -> None:
             if state == "off":
                 time.sleep(1)
                 continue
+
+        # Epic 2 Phase B — if a preset-bias was recruited within the cooldown
+        # window, skip this uniform-random pick so the biased family sticks.
+        bias_age = recent_recruitment_age_s("preset.bias")
+        if bias_age is not None and bias_age < _PRESET_BIAS_COOLDOWN_S:
+            time.sleep(1.0)
+            continue
 
         # Pick random preset (avoid repeating)
         choices = [p for p in presets if p != last]
