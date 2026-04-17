@@ -1,0 +1,24 @@
+# LRR Phase 8 item 10 — attention-bid delivery channels.
+#
+# Each accepted bid (see agents/attention_bids/bidder.py) is routed
+# to every enabled channel below. Disable individual channels by
+# removing them from the list. Default: ntfy only until the operator
+# explicitly approves more intrusive channels.
+#
+# Available channels (see agents/attention_bids/dispatcher.py):
+#   ntfy             — notification via shared.notify.send_notification
+#   visual_flash     — writes /dev/shm/hapax-attention-bids/active.json
+#                      for the Logos sidebar to pick up
+#   tts              — writes /dev/shm/hapax-attention-bids/tts.json
+#                      for daimonion to speak on a DEDICATED operator-
+#                      only sink (never reaches stream audio)
+#   stream_deck_led  — writes /dev/shm/hapax-attention-bids/led.json
+#                      for the Stream Deck adapter to light a key
+
+enabled_channels:
+  - ntfy
+
+# Minimum minutes between deliveries on the same channel. Independent of
+# the bid-scoring hysteresis in the bidder; this is a post-acceptance
+# safety valve.
+hysteresis_minutes: 15
