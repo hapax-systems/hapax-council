@@ -71,7 +71,24 @@ Run `scripts/rig-migration-preflight.sh` OR walk the list below by hand.
 
 ### Verification sequence
 
-1. **System comes up** — Hyprland loads, greetd autologin fires.
+1. **System comes up** — Hyprland loads, greetd autologin fires. Lingering is enabled so systemd user services start pre-login.
+
+1.5. **Network — NIC name WILL likely change** (old: `enp6s0`, MAC `d4:5d:64:d7:c7:66`). The new mobo has a different integrated NIC at a different PCIe address, producing a new `enpXsY` name. Tailscale identity (`hapax-podium`, `100.117.1.83`) is stored in `/var/lib/tailscale/tailscaled.state` on `/` and survives the swap — it re-binds to whatever NIC has Internet egress. Confirm with:
+
+   ```bash
+   ip -o link show | awk -F': ' '{print $2}' | grep -E 'enp|eth|wlan'
+   # Note the new NIC name.
+   ip -4 addr show | grep 'inet ' | grep -v 127
+   # Should see both a LAN address (likely 192.168.68.x/22, may differ
+   # from prior 192.168.68.80 if router DHCP is MAC-keyed) and
+   # tailscale0 with 100.117.1.83.
+   tailscale status | head -3
+   # Expected: first line shows 100.117.1.83  hapax-podium. If
+   # "Logged out" — run `sudo tailscale up` to re-auth (will open
+   # a browser prompt).
+   ```
+
+   **Why it matters:** the Logos API at Tailscale `100.117.1.83:8051` is how the watch, phone, obsidian-hapax plugin, and hapax-mcp reach Hapax. If Tailscale is logged out, those consumers are cut off silently. LAN-IP-based fallbacks (192.168.68.80) may ALSO break if the router has a MAC-keyed DHCP reservation — the new NIC's MAC produces a new DHCP lease. Usually harmless since everything uses Tailscale, but worth knowing.
 
 2. **NVIDIA drivers bind both GPUs:**
 
@@ -148,6 +165,16 @@ Run `scripts/rig-migration-preflight.sh` OR walk the list below by hand.
     curl -s http://localhost:9090/-/healthy            # Prometheus
     curl -s http://localhost:3001/api/health            # Grafana
     ```
+
+### Session continuity for resumption
+
+Claude Code session state lives in `~/.claude/` — part of `$HOME` which survives the migration. When the operator resumes, the same session picks up from the exact point it was paused. No special action needed.
+
+**In-flight work on open PRs:** the 8 PRs from the last session (#965-#972) remain open against `origin/main`. **Recommendation: do NOT merge them during the migration window.** Reducing change surface during HW swap means a failure on first boot is hardware-attributable, not code+hardware-entangled. Merge after first-boot verification is green.
+
+The rebuild-logos timer continues to fire every 5 min even during the migration window (when online); it detaches the alpha worktree (`~/projects/hapax-council`) to `origin/main`. Not a concern — alpha was already at origin/main before shutdown.
+
+**Stream mode on first boot:** currently set to `private` in `~/.cache/hapax/stream-mode`. That file survives the migration. First-boot verification can happen with the stream in private (MediaMTX local relay, no public broadcast). Keep it at `private` during verification; do NOT flip to `public` until the full verification sequence above is green.
 
 ## Post-migration hardening
 
