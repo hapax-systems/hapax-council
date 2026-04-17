@@ -609,6 +609,23 @@ class ConversationPipeline:
                 pass
         self._emit("user_utterance", text=transcript, principal_id=_pid)
 
+        # Continuous-Loop Research Cadence §3.4 — write the most recent
+        # transcript line to the STT-recent file so the compositor's
+        # CaptionsCairoSource can render it as a scientific-register
+        # overlay. Atomic tmp+rename so partial writes are never seen
+        # by the renderer. Best-effort; never raise.
+        try:
+            import os as _os
+            from pathlib import Path as _Path
+
+            _stt_recent = _Path("/dev/shm/hapax-daimonion/stt-recent.txt")
+            _stt_recent.parent.mkdir(parents=True, exist_ok=True)
+            _tmp = _stt_recent.with_suffix(".txt.tmp")
+            _tmp.write_text(transcript + "\n", encoding="utf-8")
+            _os.replace(_tmp, _stt_recent)
+        except Exception:
+            log.debug("stt-recent write failed", exc_info=True)
+
         # ── Observation signals (Batch 4: revealed preferences) ──────
         # Emit events for future preference learning. No profile mutation.
         self._detect_observation_signals(transcript)

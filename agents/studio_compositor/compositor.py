@@ -107,6 +107,17 @@ _FALLBACK_LAYOUT = Layout(
                 "shm_path": "/dev/shm/hapax-sources/reverie.rgba",
             },
         ),
+        # Continuous-Loop Research Cadence §3.4 — caption strip.
+        SourceSchema(
+            id="captions",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "CaptionsCairoSource",
+                "natural_w": 1840,
+                "natural_h": 110,
+            },
+        ),
     ],
     surfaces=[
         SurfaceSchema(
@@ -128,6 +139,12 @@ _FALLBACK_LAYOUT = Layout(
             id="pip-lr",
             geometry=SurfaceGeometry(kind="rect", x=1500, y=860, w=400, h=200),
             z_order=10,
+        ),
+        # Continuous-Loop Research Cadence §3.4 — bottom caption strip.
+        SurfaceSchema(
+            id="captions_strip",
+            geometry=SurfaceGeometry(kind="rect", x=40, y=930, w=1840, h=110),
+            z_order=20,
         ),
         # LRR Phase 2 item 10 — video_out surfaces enumerated by
         # OutputRouter.from_layout() for the three current sinks.
@@ -159,6 +176,7 @@ _FALLBACK_LAYOUT = Layout(
         Assignment(source="reverie", surface="pip-ur"),
         Assignment(source="album", surface="pip-ll"),
         Assignment(source="stream_overlay", surface="pip-lr"),
+        Assignment(source="captions", surface="captions_strip", opacity=0.92),
     ],
 )
 

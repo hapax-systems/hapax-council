@@ -131,7 +131,19 @@ class CaptionsCairoSource(CairoSource):
     def _resolve_stream_mode(self) -> str:
         reader = self._stream_mode_reader
         if reader is None:
-            return DEFAULT_STREAM_MODE
+            # Default production reader: use the LRR Phase 6 canonical
+            # stream-mode file. Fail-closed to PUBLIC if the file is
+            # unreadable, matching the rest of the stream-mode consumers.
+            try:
+                from shared.stream_mode import get_stream_mode
+
+                return str(get_stream_mode())
+            except Exception:
+                log.debug(
+                    "default stream-mode reader failed — using module default",
+                    exc_info=True,
+                )
+                return DEFAULT_STREAM_MODE
         try:
             mode = reader()
         except Exception:

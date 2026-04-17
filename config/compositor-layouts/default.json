@@ -66,6 +66,19 @@
       "update_cadence": "always",
       "rate_hz": null,
       "tags": []
+    },
+    {
+      "id": "captions",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "CaptionsCairoSource",
+        "natural_w": 1840,
+        "natural_h": 110
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": ["continuous-loop-3-4"]
     }
   ],
   "surfaces": [
@@ -142,6 +155,24 @@
       "update_cadence": "always"
     },
     {
+      "id": "captions_strip",
+      "geometry": {
+        "kind": "rect",
+        "x": 40,
+        "y": 930,
+        "w": 1840,
+        "h": 110,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 20,
+      "update_cadence": "always"
+    },
+    {
       "id": "video_out_v4l2_loopback",
       "geometry": {
         "kind": "video_out",
@@ -205,6 +236,13 @@
       "surface": "pip-lr",
       "transform": {},
       "opacity": 1.0,
+      "per_assignment_effects": []
+    },
+    {
+      "source": "captions",
+      "surface": "captions_strip",
+      "transform": {},
+      "opacity": 0.92,
       "per_assignment_effects": []
     }
   ]

@@ -33,17 +33,22 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "stream_overlay",
         "sierpinski",
         "reverie",
+        # Continuous-Loop Research Cadence §3.4 — scientific-register
+        # caption strip along the bottom of the canvas.
+        "captions",
     }
 
     # LRR Phase 2 item 10: video_out surfaces declared for OutputRouter.from_layout()
     # enumeration. The 4 pip-* quadrants are the input surfaces; the 3 video_out_*
     # surfaces are the output sinks (v4l2 loopback, RTMP, HLS).
+    # Continuous-Loop §3.4 adds ``captions_strip`` as a horizontal band.
     surface_ids = {s.id for s in layout.surfaces}
     assert surface_ids == {
         "pip-ul",
         "pip-ur",
         "pip-ll",
         "pip-lr",
+        "captions_strip",
         "video_out_v4l2_loopback",
         "video_out_rtmp_mediamtx",
         "video_out_hls_playlist",
@@ -55,6 +60,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("reverie", "pip-ur"),
         ("album", "pip-ll"),
         ("stream_overlay", "pip-lr"),
+        ("captions", "captions_strip"),
     }
 
 
@@ -70,6 +76,7 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "stream_overlay": "cairo",
         "sierpinski": "cairo",
         "reverie": "shm_rgba",
+        "captions": "cairo",
     }
 
 
@@ -165,6 +172,7 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "stream_overlay",
         "sierpinski",
         "reverie",
+        "captions",
     }
 
 
