@@ -1,9 +1,19 @@
-"""Random preset cycling mode with smooth transitions."""
+"""Preset cycling — family-biased when director recruits, neutral fallback otherwise.
+
+Phase 3 of the volitional-director epic (2026-04-18 rewrite of the
+historical "random_mode"). The loop name + control file kept for
+backward compatibility, but the inner logic no longer picks uniformly
+from the entire preset corpus. See :mod:`agents.studio_compositor.preset_family_selector`
+for the family-aware selection logic.
+"""
 
 import json
+import logging
 import random
 import time
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 PRESET_DIR = Path(__file__).parent.parent.parent / "presets"
 SHM = Path("/dev/shm/hapax-compositor")
@@ -69,10 +79,45 @@ _PRESET_BIAS_COOLDOWN_S = 20.0  # if a preset-bias was recruited within this
 # reads it via recent_recruitment_age_s("preset.bias").
 
 
+def _read_recruited_family() -> str | None:
+    """Return the currently-active preset.bias family name, or None.
+
+    Reads ``recent-recruitment.json`` directly so we get the family
+    name (not just an "is recruited?" boolean). Returns None when the
+    bias has expired, the file is missing/malformed, or no family was
+    recorded.
+    """
+    try:
+        path = SHM / "recent-recruitment.json"
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entry = (data.get("families") or {}).get("preset.bias") or {}
+        ts = entry.get("last_recruited_ts")
+        if not isinstance(ts, (int, float)):
+            return None
+        if time.time() - float(ts) >= _PRESET_BIAS_COOLDOWN_S:
+            return None
+        family = entry.get("family")
+        return family if isinstance(family, str) and family else None
+    except Exception:
+        return None
+
+
 def run(interval: float = 30.0) -> None:
-    """Run random preset cycling with smooth transitions."""
-    from agents.studio_compositor.compositional_consumer import (
-        recent_recruitment_age_s,
+    """Run preset cycling: family-biased when director recruits, neutral fallback otherwise.
+
+    Phase 3 (volitional-director epic): when the director's compositional
+    impingement recruits ``fx.family.<family>``, this loop picks the next
+    preset *from that family* via :func:`preset_family_selector.pick_from_family`.
+    When no family is recruited, falls back to ``neutral-ambient`` rather
+    than uniform random across all presets — eliminating the operator-
+    flagged "shuffle feel" where effects appeared to be randomly cycling
+    instead of being actively chosen.
+    """
+    from agents.studio_compositor.preset_family_selector import (
+        FAMILY_PRESETS,
+        pick_from_family,
     )
 
     presets = get_preset_names()
@@ -86,16 +131,28 @@ def run(interval: float = 30.0) -> None:
                 time.sleep(1)
                 continue
 
-        # Epic 2 Phase B — if a preset-bias was recruited within the cooldown
-        # window, skip this uniform-random pick so the biased family sticks.
-        bias_age = recent_recruitment_age_s("preset.bias")
-        if bias_age is not None and bias_age < _PRESET_BIAS_COOLDOWN_S:
-            time.sleep(1.0)
-            continue
-
-        # Pick random preset (avoid repeating)
-        choices = [p for p in presets if p != last]
-        pick = random.choice(choices)
+        # Family-biased pick path (Phase 3): if director recruited a
+        # specific family within the cooldown window, pick a preset from
+        # that family. Otherwise, use the neutral-ambient fallback so we
+        # NEVER fall back to uniform random across the whole corpus —
+        # the operator's "no shuffle feel" directive.
+        recruited_family = _read_recruited_family()
+        if recruited_family is not None and recruited_family in FAMILY_PRESETS:
+            pick = pick_from_family(recruited_family, available=presets, last=last)
+            chosen_via = f"family={recruited_family}"
+        else:
+            pick = pick_from_family("neutral-ambient", available=presets, last=last)
+            chosen_via = "fallback=neutral-ambient"
+        if pick is None:
+            # Family map empty or all candidates filtered out — last-resort
+            # uniform random so the loop never silently stalls.
+            choices = [p for p in presets if p != last]
+            if not choices:
+                time.sleep(1.0)
+                continue
+            pick = random.choice(choices)
+            chosen_via = "uniform-fallback"
+        log.info("random_mode pick: %s (%s)", pick, chosen_via)
         last = pick
 
         new_graph = load_preset_graph(pick)
