@@ -750,12 +750,19 @@ class StudioCompositor:
         # concurrent reader on a stable snapshot during the layout swap.
         try:
             from agents.studio_compositor.ward_registry import (
+                clear_registry,
                 populate_camera_pips,
                 populate_from_layout,
                 populate_overlay_zones,
                 populate_youtube_slots,
             )
 
+            # Clear first so a future layout swap can't leave stale ward
+            # IDs from a prior layout sitting alongside the current ones.
+            # Today there's no swap path (the if-guard above short-circuits
+            # if layout_state already exists), but the explicit reset
+            # documents the assumption.
+            clear_registry()
             populate_from_layout(layout)
             populate_overlay_zones(["main", "research", "lyrics"])
             populate_youtube_slots(slot_count=3)

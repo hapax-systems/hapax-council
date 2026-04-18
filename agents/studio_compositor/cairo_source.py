@@ -463,8 +463,11 @@ class CairoSourceRunner:
             # runners since they share the module-level cache.
             from .ward_properties import ward_render_scope
 
+            ward_gated = False
             with ward_render_scope(cr, self._source_id) as _ward_props:
-                if _ward_props is not None:
+                if _ward_props is None:
+                    ward_gated = True
+                else:
                     self._source.render(
                         cr,
                         self._natural_w,
@@ -484,7 +487,12 @@ class CairoSourceRunner:
             self._surface_active_idx = inactive_idx
         self._frame_count += 1
         self._last_render_ms = (time.monotonic() - t0) * 1000.0
-        if self._freshness_gauge is not None:
+        # Skip the freshness publish when the ward was gated (visible=False).
+        # A transparent buffer is technically "published" but operationally
+        # it represents "deliberately hidden", not "source healthy and
+        # producing". Letting age_seconds() climb during a gated period
+        # lets the operator distinguish a gated ward from a stalled one.
+        if self._freshness_gauge is not None and not ward_gated:
             self._freshness_gauge.mark_published()
         # Phase 6 H23: push the same rendered surface into the
         # main-layer appsrc if one has been built. No-op when
