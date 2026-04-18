@@ -231,19 +231,44 @@ class RecruitmentCandidatePanelCairoSource(CairoSource):
         cr.select_font_face("DejaVu Sans Mono", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
         cr.set_font_size(10)
 
-        intents = _read_recent_intents(n=6)
-        items: list[tuple[str, float]] = []
-        for intent in reversed(intents):
-            for imp in intent.get("compositional_impingements") or []:
-                narrative = str(imp.get("narrative") or "")[:40]
-                family = str(imp.get("intent_family") or "")
-                salience = float(imp.get("salience") or 0.0)
-                label = f"{family}: {narrative}" if narrative else family
-                items.append((label, salience))
-                if len(items) >= 3:
-                    break
-            if len(items) >= 3:
-                break
+        # 2026-04-18 viewer audit: this panel used to display the LLM's
+        # flowery narrative attached to each CompositionalImpingement
+        # ("cut to a close-up of the turntable", "apply a subtle water
+        # overlay") as if those moves were happening. The compositor
+        # can only execute family-level dispatches (camera.hero selects
+        # a role, overlay.emphasis bumps alpha on a fixed set of
+        # targets, etc.) — the narratives were aspirational, never
+        # grounded. Operator noted the gap is visible and confusing.
+        #
+        # Switched to reading /dev/shm/hapax-compositor/recent-recruitment.json,
+        # which records what actually dispatched: the family plus the
+        # concrete family-specific detail (preset-bias family name,
+        # attention.winner source, etc.) and the age. That's honest.
+        items: list[tuple[str, float, float]] = []
+        try:
+            recent_path = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
+            if recent_path.exists():
+                raw = json.loads(recent_path.read_text(encoding="utf-8"))
+                now = time.time()
+                for family_name, detail in (raw.get("families") or {}).items():
+                    if not isinstance(detail, dict):
+                        continue
+                    last = float(detail.get("last_recruited_ts") or 0.0)
+                    if last <= 0:
+                        continue
+                    age = now - last
+                    extras: list[str] = []
+                    if "family" in detail and detail["family"]:
+                        extras.append(str(detail["family"]))
+                    if "pending_source" in detail and detail["pending_source"]:
+                        extras.append(str(detail["pending_source"]))
+                    suffix = f" [{', '.join(extras)}]" if extras else ""
+                    label = f"{family_name}{suffix}"
+                    items.append((label, age, last))
+                items.sort(key=lambda entry: entry[2], reverse=True)
+                items = items[:3]
+        except Exception:
+            items = []
 
         y = 28
         if not items:
@@ -252,13 +277,13 @@ class RecruitmentCandidatePanelCairoSource(CairoSource):
             cr.show_text("(no recent recruitments)")
             return
 
-        for label, salience in items:
+        for label, age_s, _last in items:
             cr.set_source_rgba(*pal["fg_primary"])
             cr.move_to(8, y)
             cr.show_text(label[:38])
             cr.set_source_rgba(*pal["accent_nominal"])
             cr.move_to(canvas_w - 44, y)
-            cr.show_text(f"{salience:.2f}")
+            cr.show_text(f"{age_s:4.0f}s")
             y += 14
 
 
