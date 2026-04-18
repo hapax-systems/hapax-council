@@ -46,13 +46,19 @@ log = logging.getLogger(__name__)
 
 _NARRATIVE_STATE = Path("/dev/shm/hapax-director/narrative-state.json")
 
-# Cadence by stance. CAUTIOUS/CRITICAL → disabled (None).
+# Cadence by stance. Per sim-1 audit (2026-04-18), CAUTIOUS was the
+# majority stance, and the prior design disabled twitch there → the
+# livestream had minute-long stretches with no meta-structural movement.
+# Operator directive: "no 'do nothing interesting' tick is acceptable."
+# Non-nominal stances now run twitch at a slower cadence (never None),
+# preserving the original intent that compositional pressure should be
+# low when the system is stressed, without falling to zero.
 _STANCE_CADENCE: dict[str, float | None] = {
     Stance.NOMINAL.value: 4.0,
     Stance.SEEKING.value: 3.0,
-    Stance.CAUTIOUS.value: None,
-    Stance.DEGRADED.value: None,
-    Stance.CRITICAL.value: None,
+    Stance.CAUTIOUS.value: 10.0,
+    Stance.DEGRADED.value: 20.0,
+    Stance.CRITICAL.value: 30.0,
 }
 
 # Debounce: minimum interval between identical emissions per family.

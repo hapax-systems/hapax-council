@@ -586,6 +586,15 @@ ACTIVITY_CAPABILITIES = (
     "\n"
     "Activities available to you. Choose the one this moment calls for.\n"
     "\n"
+    "Sim-1 audit (2026-04-18) found you defaulted to `react` on every tick.\n"
+    "The livestream is not just a video reaction feed — it is a working\n"
+    "studio with music, research, a composed surface, and a chat. **Vary\n"
+    "your activity tick-to-tick.** If you just reacted, the next tick should\n"
+    "usually be observe / music / study / chat rather than another react.\n"
+    "Silence is still a legal option, but every silence tick is a tick\n"
+    "where the livestream does nothing — prefer observe or music unless\n"
+    "the room is truly dead.\n"
+    "\n"
     "- react: respond to the video content in the triangle display. What caught you?\n"
     "- chat: engage viewers in the livestream chat. Answer, respond, explain.\n"
     "- music: comment on the music Oudepode has curated for the stream — either\n"
@@ -829,7 +838,16 @@ class DirectorLoop:
 
                 # Single LLM call — Hapax chooses activity + content
                 result = self._call_activity_llm(prompt, images)
+                condition_id = _read_research_marker() or "none"
                 if not result:
+                    # Operator directive (sim-1 audit, 2026-04-18):
+                    # "no 'do nothing interesting' tick is acceptable."
+                    # LLM timeout / empty response used to `continue` here,
+                    # leaving the livestream without any narrative-driven
+                    # compositional impingement for the entire tick. Emit
+                    # a baseline micromove instead so the compositor always
+                    # has something to recruit against.
+                    self._emit_micromove_fallback(reason="llm_empty", condition_id=condition_id)
                     time.sleep(1.0)
                     continue
 
@@ -838,7 +856,6 @@ class DirectorLoop:
                 # emissions run regardless of HAPAX_DIRECTOR_MODEL_LEGACY. The
                 # legacy flag only suppresses compositional-impingement emission
                 # + prompt enrichment (see _emit_intent_artifacts).
-                condition_id = _read_research_marker() or "none"
                 intent = _parse_intent_from_llm(
                     result,
                     fallback_activity="react",
@@ -851,6 +868,13 @@ class DirectorLoop:
 
                 # Handle activity
                 if activity == "silence" or not text:
+                    # Same operator directive — silence/empty is a do-nothing
+                    # outcome in everything downstream. Emit a micromove on
+                    # top of the already-written silence record so the DMN
+                    # stream still sees a compositor impingement this tick.
+                    self._emit_micromove_fallback(
+                        reason="silence_or_empty", condition_id=condition_id
+                    )
                     if self._activity != "silence":
                         log.info("Activity: silence")
                         self._activity = activity
@@ -877,6 +901,91 @@ class DirectorLoop:
             except Exception:
                 log.exception("Director loop error")
             time.sleep(0.5)
+
+    def _emit_micromove_fallback(self, *, reason: str, condition_id: str) -> None:
+        """Emit a pre-composed micromove when the LLM tick produces nothing.
+
+        Operator directive (2026-04-18 sim-1 audit): no director tick may
+        do nothing. When the LLM call times out, returns empty, or parses
+        to ``activity == "silence"`` with no narrative, we previously just
+        ``continue``d — leaving the compositor layer with zero new
+        impingements for the full 60s narrative cadence. This replaces
+        the gap with a rotating baseline: one ``CompositionalImpingement``
+        per tick, cycling through overlay emphasis, preset bias, and
+        stance-indicator refresh targets so the surface has a felt
+        movement every tick.
+
+        The micromove's ``DirectorIntent`` is written to the same JSONL +
+        narrative-state + DMN impingement stream as a real tick via
+        ``_emit_intent_artifacts``, so downstream consumers (compositional
+        consumer, affordance pipeline, research log) treat it uniformly.
+        """
+        try:
+            from shared.director_intent import CompositionalImpingement, DirectorIntent
+
+            micromove_cycle = [
+                (
+                    "overlay.emphasis",
+                    "Fade the grounding-provenance ticker back up to full so the "
+                    "perceptual-field sources stay legibly attributed.",
+                    "air",
+                ),
+                (
+                    "preset.bias",
+                    "Push the effect graph a notch toward calm-textural — small drift, "
+                    "no new content.",
+                    "water",
+                ),
+                (
+                    "overlay.emphasis",
+                    "Pulse the stance indicator so the current stance reads as active "
+                    "rather than frozen.",
+                    "earth",
+                ),
+                (
+                    "camera.hero",
+                    "Keep the current hero camera but nudge its framing weight — a small "
+                    "gesture, not a cut.",
+                    "earth",
+                ),
+                (
+                    "overlay.emphasis",
+                    "Dim the chrome half a step so the reverie breathes.",
+                    "void",
+                ),
+            ]
+            idx = int(getattr(self, "_micromove_cycle_idx", 0)) % len(micromove_cycle)
+            self._micromove_cycle_idx = idx + 1
+            family, narrative, material = micromove_cycle[idx]
+            try:
+                impingement = CompositionalImpingement(
+                    narrative=narrative,
+                    intent_family=family,  # type: ignore[arg-type]
+                    material=material,  # type: ignore[arg-type]
+                    salience=0.35,
+                    dimensions={},
+                )
+            except Exception:
+                log.debug("micromove impingement construct failed", exc_info=True)
+                return
+            try:
+                intent = DirectorIntent(
+                    activity="observe",
+                    narrative_text=f"[micromove:{reason}] {narrative}",
+                    grounding_provenance=[],
+                    compositional_impingements=[impingement],
+                )
+            except Exception:
+                log.debug("micromove DirectorIntent construct failed", exc_info=True)
+                return
+            _emit_intent_artifacts(intent, condition_id=condition_id)
+            log.info(
+                "director micromove fallback emitted: reason=%s family=%s",
+                reason,
+                family,
+            )
+        except Exception:
+            log.debug("_emit_micromove_fallback failed", exc_info=True)
 
     def _maybe_override_activity(self, proposed: str) -> str:
         """Apply Continuous-Loop §3.2 stimmung-modulated override gate.
