@@ -121,8 +121,21 @@ class RtmpOutputBin:
             encoder.set_property("rc-mode", 2)  # 2 = cbr
             encoder.set_property("gop-size", self._gop_size)
             encoder.set_property("zerolatency", True)
-            encoder.set_property("preset", 11)  # 11 = p4 medium
-            encoder.set_property("tune", 2)  # 2 = low-latency
+            # A+ Stage 0 (2026-04-17): preset p4 → p1 (fastest). On 3090
+            # at 720p30 CBR the visual difference vs p4 is inside the
+            # CBR-bitrate floor (quality is bitrate-pinned, not
+            # preset-pinned). p1 nets ~30-40% less encoder SM work.
+            encoder.set_property("preset", 1)  # 1 = p1 fastest
+            # A+ Stage 0: tune=ull (ultra low latency). ll keeps lookahead
+            # buffer for quality; at CBR the buffer gains nothing since
+            # bitrate is pinned. ull disables B-frames, lookahead, reorder.
+            encoder.set_property("tune", 3)  # 3 = ultra-low-latency
+            # A+ Stage 0: explicit b-frames=0. Critical for low-latency
+            # CBR broadcasting; removes any remaining reorder delay.
+            try:
+                encoder.set_property("bframes", 0)
+            except Exception:
+                log.debug("nvh264enc: bframes property not available", exc_info=True)
 
             h264_parse = Gst.ElementFactory.make("h264parse", "rtmp_h264parse")
             if h264_parse is None:

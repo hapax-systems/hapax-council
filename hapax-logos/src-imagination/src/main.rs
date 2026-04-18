@@ -493,7 +493,22 @@ fn main() {
     {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async {
-            let renderer = headless::Renderer::new(1920, 1080).await;
+            // A+ Stage 0 (2026-04-17): 1920x1080 → 640x360. The compositor
+            // samples reverie.rgba into a 640x360 PiP region (pip-ur);
+            // rendering at 1080p only to scale down wastes ~9x pixels
+            // through the 8-pass wgpu pipeline. 640x360 matches the
+            // compositor's target directly; shm writes drop from 8.3 MB
+            // to ~0.9 MB per frame. Override via HAPAX_IMAGINATION_WIDTH /
+            // HAPAX_IMAGINATION_HEIGHT env vars for future tuning.
+            let w: u32 = std::env::var("HAPAX_IMAGINATION_WIDTH")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(640);
+            let h: u32 = std::env::var("HAPAX_IMAGINATION_HEIGHT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(360);
+            let renderer = headless::Renderer::new(w, h).await;
             // run_forever returns Infallible — it never completes. Match
             // on the divergent type so the compiler knows we never fall
             // through.

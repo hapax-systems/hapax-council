@@ -37,10 +37,22 @@ class FallbackPipeline:
           ! interpipesink name=fb_<role>
     """
 
+    # A+ Stage 0 (2026-04-17): fallback producer framerate. The primary
+    # pipeline runs at 30fps (compositor canvas rate); the fallback is a
+    # static "CAMERA X OFFLINE" card with a bouncing ball that no one sees
+    # while the primary is healthy. Running it at 1fps saves ~20-25% CPU
+    # across all 6 fallback producers (8 fbsrc_*/queue threads at
+    # 24-35% CPU each in the thread dump) without perceptibly degrading
+    # swap-to-fallback latency (interpipesrc stream-sync=restart-ts
+    # handles the timestamp jump).
+    FALLBACK_FPS = 1
+
     def __init__(self, spec: CameraSpec, *, gst: Any, fps: int) -> None:
         self._spec = spec
         self._Gst = gst
-        self._fps = fps
+        # Accept the primary fps for API compatibility but clamp fallback
+        # to FALLBACK_FPS — the primary pipeline's cadence is independent.
+        self._fps = min(fps, self.FALLBACK_FPS)
 
         self._role_safe = spec.role.replace("-", "_")
         self._sink_name = f"fb_{self._role_safe}"

@@ -37,8 +37,8 @@
         "natural_w": 400,
         "natural_h": 200
       },
-      "update_cadence": "always",
-      "rate_hz": null,
+      "update_cadence": "rate",
+      "rate_hz": 2.0,
       "tags": []
     },
     {
@@ -109,7 +109,7 @@
         "natural_h": 400
       },
       "update_cadence": "rate",
-      "rate_hz": 1.0,
+      "rate_hz": 2.0,
       "tags": [
         "legibility"
       ]
@@ -219,7 +219,7 @@
         "natural_h": 140
       },
       "update_cadence": "rate",
-      "rate_hz": 1.0,
+      "rate_hz": 2.0,
       "tags": [
         "hothouse",
         "authorship"
@@ -235,7 +235,7 @@
         "natural_h": 46
       },
       "update_cadence": "rate",
-      "rate_hz": 1.0,
+      "rate_hz": 2.0,
       "tags": [
         "hothouse",
         "audience"

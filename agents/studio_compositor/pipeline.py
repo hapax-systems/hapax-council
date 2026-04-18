@@ -271,11 +271,15 @@ def build_pipeline(compositor: Any) -> Any:
         gst=Gst,
         video_tee=output_tee,
         rtmp_location="rtmp://127.0.0.1:1935/studio",
-        bitrate_kbps=6000,
-        # F3 (drop #33): gop_size drops from 2*fps (60) to fps (30), 1 keyframe
-        # per second. Matches YouTube-recommended sweet spot and reduces
-        # HLS-equivalent latency on RTMP ingest. Operator-confirmed 2026-04-15.
-        gop_size=fps,
+        # A+ Stage 0 (2026-04-17): 6000 → 3000 kbps. YouTube Live accepts
+        # 2500–4000 for 720p30; 6000 was inherited from a 1080p config and
+        # is over-bitrting smaller content.
+        bitrate_kbps=3000,
+        # A+ Stage 0: GOP back to 2*fps (60) = 2s keyframe interval,
+        # matching Twitch/YouTube recommendation for 720p30 and reducing
+        # encoder work vs the 1-second keyframes. Operator's low-latency
+        # need is served by tune=ll in rtmp_output.py, not by more I-frames.
+        gop_size=fps * 2,
     )
     log.info("rtmp output bin constructed (detached until toggle_livestream)")
 

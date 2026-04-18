@@ -270,7 +270,14 @@ def build_inline_fx_chain(
     from agents.effect_graph.pipeline import SlotPipeline
 
     registry = compositor._graph_runtime._registry if compositor._graph_runtime else None
-    compositor._slot_pipeline = SlotPipeline(registry, num_slots=24)
+    # A+ Stage 0 (2026-04-17): 24 → 12 glfeedback slots. Audit of all
+    # presets used by the compositor (chat_reactor + random_mode): max
+    # node count is 8 (trap, screwed, mirror_rorschach, heartbeat,
+    # ambient, dither_retro). 12 slots preserves 50% headroom above the
+    # largest preset while halving the per-frame full-screen quad work
+    # for passthrough slots — the fx-glmi+ thread at 54% CPU in the
+    # thread dump is dominated by these passthrough shader invocations.
+    compositor._slot_pipeline = SlotPipeline(registry, num_slots=12)
 
     glcolorconvert_out = Gst.ElementFactory.make("glcolorconvert", "fx-glcc-out")
     gldownload = Gst.ElementFactory.make("gldownload", "fx-gldownload")

@@ -126,12 +126,18 @@ impl Renderer {
         }
     }
 
-    /// Drive the render loop forever. 60fps tokio interval. Each tick
-    /// polls state, ticks content sources, and calls
-    /// `DynamicPipeline::render` into the offscreen view. The pipeline
-    /// writes `frame.jpg` + `reverie.rgba` every other frame internally.
+    /// Drive the render loop forever. A+ Stage 0 (2026-04-17): 62.5fps
+    /// → 30fps tokio interval. The compositor samples reverie.rgba at
+    /// 30fps into a 640x360 PiP; rendering at 62.5fps doubled wgpu work
+    /// for zero visual benefit downstream. 30fps aligns imagination's
+    /// output cadence with the compositor's sample rate. Override via
+    /// HAPAX_IMAGINATION_INTERVAL_MS env var for future tuning.
     pub async fn run_forever(mut self) -> Infallible {
-        let mut interval = tokio::time::interval(Duration::from_millis(16));
+        let interval_ms: u64 = std::env::var("HAPAX_IMAGINATION_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(33);
+        let mut interval = tokio::time::interval(Duration::from_millis(interval_ms));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         log::info!(
             "headless::Renderer::run_forever started at {}x{}",
