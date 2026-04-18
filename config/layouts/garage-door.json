@@ -339,6 +339,70 @@
         "hothouse",
         "audience"
       ]
+    },
+    {
+      "id": "activity_header",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ActivityHeaderCairoSource",
+        "natural_w": 800,
+        "natural_h": 56
+      },
+      "update_cadence": "rate",
+      "rate_hz": 2,
+      "tags": [
+        "legibility",
+        "authorship"
+      ]
+    },
+    {
+      "id": "stance_indicator",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "StanceIndicatorCairoSource",
+        "natural_w": 100,
+        "natural_h": 40
+      },
+      "update_cadence": "rate",
+      "rate_hz": 2,
+      "tags": [
+        "legibility",
+        "authorship"
+      ]
+    },
+    {
+      "id": "chat_keyword_legend",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ChatKeywordLegendCairoSource",
+        "natural_w": 160,
+        "natural_h": 400
+      },
+      "update_cadence": "rate",
+      "rate_hz": 2,
+      "tags": [
+        "legibility",
+        "authorship"
+      ]
+    },
+    {
+      "id": "grounding_provenance_ticker",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "GroundingProvenanceTickerCairoSource",
+        "natural_w": 480,
+        "natural_h": 40
+      },
+      "update_cadence": "rate",
+      "rate_hz": 2,
+      "tags": [
+        "legibility",
+        "authorship"
+      ]
     }
   ],
   "surfaces": [
@@ -547,6 +611,66 @@
         "h": 44
       },
       "z_order": 54
+    },
+    {
+      "id": "activity-header-top",
+      "geometry": {
+        "kind": "rect",
+        "x": 560,
+        "y": 16,
+        "w": 800,
+        "h": 56,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "z_order": 30
+    },
+    {
+      "id": "stance-indicator-tr",
+      "geometry": {
+        "kind": "rect",
+        "x": 1800,
+        "y": 24,
+        "w": 100,
+        "h": 40,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "z_order": 35
+    },
+    {
+      "id": "chat-legend-right",
+      "geometry": {
+        "kind": "rect",
+        "x": 1760,
+        "y": 400,
+        "w": 160,
+        "h": 400,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "z_order": 20
+    },
+    {
+      "id": "grounding-ticker-bl",
+      "geometry": {
+        "kind": "rect",
+        "x": 16,
+        "y": 900,
+        "w": 480,
+        "h": 40,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "z_order": 22
     }
   ],
   "assignments": [
@@ -654,6 +778,26 @@
       "source": "whos_here",
       "surface": "whos-here-tc",
       "opacity": 0.92
+    },
+    {
+      "source": "activity_header",
+      "surface": "activity-header-top",
+      "opacity": 1.0
+    },
+    {
+      "source": "stance_indicator",
+      "surface": "stance-indicator-tr",
+      "opacity": 1.0
+    },
+    {
+      "source": "chat_keyword_legend",
+      "surface": "chat-legend-right",
+      "opacity": 1.0
+    },
+    {
+      "source": "grounding_provenance_ticker",
+      "surface": "grounding-ticker-bl",
+      "opacity": 1.0
     }
   ]
 }

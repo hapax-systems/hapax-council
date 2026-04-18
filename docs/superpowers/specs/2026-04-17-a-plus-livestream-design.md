@@ -116,7 +116,7 @@ All of these are config-only; no code changes, no restart risk.
 | 0.4 | `hapax-imagination` render rate 62.5fps → 30fps | `headless.rs:134` (`Duration::from_millis(33)`) | 50% wgpu work dropped |
 | 0.5 | All hothouse + legibility Cairo sources: `rate_hz: 2` in layout JSON | `config/layouts/garage-door.json`, `config/compositor-layouts/default.json` | ~5% CPU (file IO from 90/s → 18/s) |
 | 0.6 | Fallback producer fps 30 → 1 | `fallback_pipeline.py:78,100` (`fps={self._fps}/1` → `fps=1/1` when idle) | ~20-25% CPU (the #3 drain in the table above) |
-| 0.7 | `SlotPipeline.num_slots` 24 → 8 | `fx_chain.py:273` | ~20-30% CPU (fewer passthrough draws); risk: presets with >8 nodes silently truncate — verify preset max is ≤8 |
+| 0.7 | `SlotPipeline.num_slots` 24 → 12 | `fx_chain.py:273` | ~20-30% CPU (fewer passthrough draws). Preset audit: max compositor-side preset is 8 nodes; 12 slots gives 50% headroom. (Design planned 8; bumped to 12 for safety margin.) |
 
 **Target after Stage 0: load average ≤10, compositor ≤250% CPU, full livestream functional.**
 

@@ -243,12 +243,19 @@ class CairoSourceRunner:
         legacy callers that use ``set_canvas_size`` to resize the output continue
         to work. If natural dims were set explicitly at construction, they are
         left alone (the source declares its own content resolution).
+
+        A+ Stage 3 audit fix (2026-04-17): dimension writes are taken
+        under ``_output_lock`` so the render loop cannot observe a
+        torn (old_w, new_h) mid-update. The render loop reads both
+        dimensions inside the same lock acquisition block so the
+        allocation decision sees a consistent pair.
         """
-        self._canvas_w = w
-        self._canvas_h = h
-        if not self._natural_explicit:
-            self._natural_w = w
-            self._natural_h = h
+        with self._output_lock:
+            self._canvas_w = w
+            self._canvas_h = h
+            if not self._natural_explicit:
+                self._natural_w = w
+                self._natural_h = h
 
     def get_output_surface(self) -> cairo.ImageSurface | None:
         """Return the most recent rendered surface, or None.
@@ -420,17 +427,23 @@ class CairoSourceRunner:
             # cairooverlay callback reads _output_surface under _output_lock;
             # we render into the OTHER surface, then swap atomically.
             # Surfaces are (re)allocated only when dimensions change.
-            dims = (self._natural_w, self._natural_h)
+            # Audit fix (2026-04-17): read dims + active idx inside
+            # _output_lock so a concurrent set_canvas_size cannot tear
+            # the (width, height) pair.
+            with self._output_lock:
+                dims = (self._natural_w, self._natural_h)
+                active_idx = self._surface_active_idx
             if self._surface_dims != dims or len(self._surfaces) < 2:
                 self._surfaces = [
-                    cairo.ImageSurface(cairo.FORMAT_ARGB32, self._natural_w, self._natural_h)
-                    for _ in range(2)
+                    cairo.ImageSurface(cairo.FORMAT_ARGB32, dims[0], dims[1]) for _ in range(2)
                 ]
-                self._surface_active_idx = 0
+                active_idx = 0
+                with self._output_lock:
+                    self._surface_active_idx = 0
                 self._surface_dims = dims
             # Write into the inactive buffer (whichever one the streaming
             # thread is NOT currently pointing at).
-            inactive_idx = 1 - self._surface_active_idx
+            inactive_idx = 1 - active_idx
             surface = self._surfaces[inactive_idx]
             # Clear the reused surface to fully transparent so the new
             # render starts from a known state (equivalent to a fresh

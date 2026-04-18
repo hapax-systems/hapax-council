@@ -68,8 +68,15 @@ class CompositorConfig(BaseModel):
 
     cameras: list[CameraSpec] = Field(default_factory=list)
     output_device: str = "/dev/video42"
-    output_width: int = 1920
-    output_height: int = 1080
+    # A+ Stage 2 (2026-04-17): canvas default 1920x1080 → 1280x720.
+    # Operator directive: "1080p is NOT a priority." Without matching
+    # defaults here, a missing ~/.config/hapax-compositor/config.yaml
+    # would silently revert to 1080p while LAYOUT_COORD_SCALE (0.6667)
+    # rescales the layout for 720p — rendering positions would collapse
+    # into the top-left of a 1080p canvas. Intentional 1080p sessions
+    # still available via YAML override.
+    output_width: int = 1280
+    output_height: int = 720
     framerate: int = 30  # 30fps — all cameras at 720p keeps decode manageable
     bitrate: int = 8_000_000
     watchdog_timeout_ms: int = 5000

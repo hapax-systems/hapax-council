@@ -422,12 +422,20 @@ class SierpinskiRenderer:
     """
 
     def __init__(self, *, budget_tracker: BudgetTracker | None = None) -> None:
+        # A+ Stage 2 audit B2 fix (2026-04-17): canvas dims pulled from
+        # config module constants rather than hardcoded 1920x1080. When
+        # the canvas drops to 720p, Sierpinski now allocates at the
+        # matching resolution instead of rendering 1920x1080 and
+        # downscaling — saves the pixel budget Stage 2 was meant to
+        # recover.
+        from .config import OUTPUT_HEIGHT, OUTPUT_WIDTH
+
         self._source = SierpinskiCairoSource()
         self._runner = CairoSourceRunner(
             source_id="sierpinski-lines",
             source=self._source,
-            canvas_w=1920,
-            canvas_h=1080,
+            canvas_w=OUTPUT_WIDTH,
+            canvas_h=OUTPUT_HEIGHT,
             target_fps=RENDER_FPS,
             budget_tracker=budget_tracker,
         )

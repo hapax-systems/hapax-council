@@ -231,11 +231,17 @@ def test_sierpinski_renderer_facade_renders_via_runner():
     # Tick the runner directly so we don't wait on the background thread.
     renderer._runner.tick_once()  # noqa: SLF001 — test boundary
 
-    # The cached surface is now populated.
+    # The cached surface is now populated. Dimensions come from
+    # config.OUTPUT_WIDTH/HEIGHT (A+ Stage 2 B2 fix: 2026-04-17) —
+    # Sierpinski was hardcoded to 1920x1080 which wasted pixels at
+    # 720p canvas. Test against the config so it survives further
+    # canvas resizing.
+    from agents.studio_compositor.config import OUTPUT_HEIGHT, OUTPUT_WIDTH
+
     out = renderer._runner.get_output_surface()  # noqa: SLF001
     assert out is not None
-    assert out.get_width() == 1920
-    assert out.get_height() == 1080
+    assert out.get_width() == OUTPUT_WIDTH
+    assert out.get_height() == OUTPUT_HEIGHT
 
 
 def test_sierpinski_renderer_draw_blits_cached_surface():

@@ -466,12 +466,16 @@ class OverlayZoneManager:
         *,
         budget_tracker: BudgetTracker | None = None,
     ) -> None:
+        # A+ Stage 2 audit B2 fix (2026-04-17): canvas dims pulled from
+        # config module constants. Same rationale as SierpinskiRenderer.
+        from .config import OUTPUT_HEIGHT, OUTPUT_WIDTH
+
         self._source = OverlayZonesCairoSource(zone_configs)
         self._runner = CairoSourceRunner(
             source_id="overlay-zones",
             source=self._source,
-            canvas_w=1920,
-            canvas_h=1080,
+            canvas_w=OUTPUT_WIDTH,
+            canvas_h=OUTPUT_HEIGHT,
             target_fps=RENDER_FPS,
             budget_tracker=budget_tracker,
         )

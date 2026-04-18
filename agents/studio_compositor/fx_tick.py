@@ -151,7 +151,18 @@ def tick_slot_pipeline(compositor: Any, t: float) -> None:
     if not compositor._slot_pipeline:
         return
 
-    time_uniforms = {"time": t % 600.0, "width": 1920.0, "height": 1080.0}
+    # A+ Stage 2 audit B3 fix (2026-04-17): width/height pulled from
+    # config module constants rather than hardcoded 1920/1080.
+    # Shaders that use width/height uniforms for UV normalization or
+    # aspect-ratio-dependent math compute correctly at whichever canvas
+    # size the compositor is currently using (1280x720 default).
+    from .config import OUTPUT_HEIGHT, OUTPUT_WIDTH
+
+    time_uniforms = {
+        "time": t % 600.0,
+        "width": float(OUTPUT_WIDTH),
+        "height": float(OUTPUT_HEIGHT),
+    }
     for i, node_type in enumerate(compositor._slot_pipeline.slot_assignments):
         if node_type is None:
             continue
