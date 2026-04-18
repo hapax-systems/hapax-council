@@ -929,28 +929,28 @@ class DirectorLoop:
         _ACTIVITY_VARIETY_WINDOW = 3
         _ROTATION = ("observe", "music", "study", "chat")
         try:
-            history = getattr(self, "_recent_activities", [])
-            if len(history) >= _ACTIVITY_VARIETY_WINDOW and all(
-                a == proposed for a in history[-_ACTIVITY_VARIETY_WINDOW:]
-            ):
+            history = list(getattr(self, "_recent_activities", []))
+            recent = history[-_ACTIVITY_VARIETY_WINDOW:]
+            log.info("activity rotation check: proposed=%s recent=%s", proposed, recent)
+            if len(history) >= _ACTIVITY_VARIETY_WINDOW and all(a == proposed for a in recent):
                 idx = int(getattr(self, "_activity_rotation_idx", 0)) % len(_ROTATION)
                 self._activity_rotation_idx = idx + 1
                 forced = _ROTATION[idx]
                 log.info(
-                    "activity rotation forced: %s → %s (repeated %d× in history)",
+                    "activity rotation FORCED: %s → %s (after %d consecutive)",
                     proposed,
                     forced,
                     _ACTIVITY_VARIETY_WINDOW,
                 )
-                history = list(history) + [forced]
+                history.append(forced)
             else:
-                history = list(history) + [proposed]
+                history.append(proposed)
             if len(history) > _ACTIVITY_VARIETY_WINDOW * 2:
                 history = history[-_ACTIVITY_VARIETY_WINDOW * 2 :]
             self._recent_activities = history
             return history[-1]
         except Exception:
-            log.debug("activity rotation enforcer raised", exc_info=True)
+            log.warning("activity rotation enforcer raised", exc_info=True)
             return proposed
 
     def _emit_micromove_fallback(self, *, reason: str, condition_id: str) -> None:
