@@ -370,7 +370,7 @@ MULTIMODAL_ROUTES: frozenset[str] = frozenset(
 # calm reactive render. Command R on the 3090 comfortably fits a full
 # DirectorIntent call inside ~8s, leaving a 4s buffer. Override via
 # HAPAX_NARRATIVE_CADENCE_S for debugging.
-PERCEPTION_INTERVAL: float = float(os.environ.get("HAPAX_NARRATIVE_CADENCE_S", "12.0"))
+PERCEPTION_INTERVAL: float = float(os.environ.get("HAPAX_NARRATIVE_CADENCE_S", "30.0"))
 MIN_VIDEO_DURATION = 15.0  # minimum seconds before allowing CUT
 MAX_VIDEO_DURATION = 60.0  # force CUT after this
 
@@ -1357,17 +1357,16 @@ class DirectorLoop:
                 )
                 try:
                     # 2026-04-17 director-LLM timeout sweep:
-                    # 30s (baseline) — GStreamer thread blocked 30s on
-                    # every stall, froze the stream.
-                    # 8s (Stage 1 over-correction) — local-fast
-                    # (Qwen3.5-9B EXL3 via TabbyAPI) takes 10-15s under
-                    # normal load; every tick timed out, director
-                    # emissions stopped entirely.
-                    # 20s (current) — fits local-fast with buffer. The
-                    # narrative cadence is 12s, so a single 20s stall
-                    # can defer one tick but perception advances at the
-                    # next PERCEPTION_INTERVAL regardless.
-                    with urllib.request.urlopen(req, timeout=20) as resp:
+                    # 30s baseline → 8s over-correction → 20s → 40s.
+                    # 20s was too tight once Command-R-08-2024 (35B,
+                    # 5bpw) replaced Qwen3.5-9B as local-fast: a
+                    # 10-15 kB prompt + 150 tokens out sits at ~25 s
+                    # even on an unloaded RTX 3090. 40s fits that,
+                    # and the narrative cadence is HAPAX_NARRATIVE_CADENCE_S
+                    # (default 30s since 2026-04-17) so a single stall
+                    # can't queue up. Env override: HAPAX_DIRECTOR_LLM_TIMEOUT_S.
+                    timeout_s = float(os.environ.get("HAPAX_DIRECTOR_LLM_TIMEOUT_S", "40"))
+                    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
                         data = json.loads(resp.read())
                 except TimeoutError:
                     # re-raise so llm_call_span tags outcome="timeout"
