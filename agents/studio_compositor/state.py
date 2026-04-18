@@ -399,6 +399,74 @@ def state_reader_loop(compositor: Any) -> None:
             except Exception:
                 log.debug("Layout mode switch failed", exc_info=True)
 
+        # stream-mode-intent.json consumer (meta-structural audit fix #6).
+        # compositional_consumer.dispatch_stream_mode_transition writes
+        # the recruited target_mode; nothing read it before. Converts
+        # the recruitment into an actual shared/stream_mode.set call so
+        # the new mode is honoured by every get_stream_mode() consumer
+        # (chat-reactor cooldowns, stimmung redaction, fortress gate,
+        # captions style, etc.). Same idempotency guard via set_at.
+        sm_intent_path = Path("/dev/shm/hapax-compositor/stream-mode-intent.json")
+        if sm_intent_path.exists():
+            try:
+                sm_payload = json.loads(sm_intent_path.read_text(encoding="utf-8"))
+                sm_set_at = float(sm_payload.get("set_at", 0.0))
+                target_mode_raw = str(sm_payload.get("target_mode") or "").strip()
+                sm_last_applied = getattr(compositor, "_stream_mode_last_applied_set_at", 0.0)
+                if target_mode_raw and sm_set_at > sm_last_applied:
+                    normalized = target_mode_raw.replace("-", "_").lower()
+                    try:
+                        from shared.stream_mode import StreamMode, set_stream_mode
+
+                        mode = StreamMode(normalized)
+                    except ValueError:
+                        mode = None
+                    if mode is not None:
+                        compositor._stream_mode_last_applied_set_at = sm_set_at
+                        set_stream_mode(mode)
+                        log.info(
+                            "stream-mode-intent applied: target=%s (%s)",
+                            target_mode_raw,
+                            mode.value,
+                        )
+            except Exception:
+                log.debug("stream-mode-intent consumer failed", exc_info=True)
+
+        # hero-camera-override.json consumer (meta-structural audit fix #4).
+        # compositional_consumer.dispatch_camera_hero writes this file when
+        # the affordance pipeline recruits a `cam.hero.<role>.<context>`
+        # capability; the compositor side previously had zero readers so
+        # recruitment was writing into the void. Applying the override
+        # here (inside the 1s state-reader loop) converts a recruited
+        # hero-camera selection into an actual layout-mode change.
+        hero_override_path = Path("/dev/shm/hapax-compositor/hero-camera-override.json")
+        if hero_override_path.exists():
+            try:
+                payload = json.loads(hero_override_path.read_text(encoding="utf-8"))
+                set_at = float(payload.get("set_at", 0.0))
+                ttl_s = float(payload.get("ttl_s", 30.0))
+                camera_role = payload.get("camera_role")
+                if isinstance(camera_role, str) and camera_role and (time.time() - set_at) <= ttl_s:
+                    requested_mode = f"hero/{camera_role}"
+                    current_mode = getattr(compositor, "_layout_mode", "balanced")
+                    last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
+                    if requested_mode != current_mode and set_at > last_applied:
+                        compositor._hero_override_last_applied_set_at = set_at
+                        GLib = compositor._GLib
+                        if GLib:
+                            GLib.idle_add(
+                                lambda m=requested_mode: apply_layout_mode(compositor, m) or False
+                            )
+                        else:
+                            apply_layout_mode(compositor, requested_mode)
+                        log.info(
+                            "hero-camera-override applied: role=%s mode=%s",
+                            camera_role,
+                            requested_mode,
+                        )
+            except Exception:
+                log.debug("hero-camera-override consumer failed", exc_info=True)
+
         # Livestream control (from daimonion affordance dispatch)
         try:
             process_livestream_control(compositor)

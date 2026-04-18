@@ -504,10 +504,53 @@ class OverlayZoneManager:
         This method runs on the GStreamer streaming thread and must stay
         under ~2ms. All content loading, Pango layout, and outlined-text
         rendering happens on the background runner thread.
+
+        Meta-structural audit fix #5: honor the `all-chrome` alpha
+        override from `/dev/shm/hapax-compositor/overlay-alpha-overrides.json`
+        — written by ``compositional_consumer.dispatch_overlay_emphasis``
+        when a ``overlay.dim.all-chrome`` capability is recruited. The
+        read is cached on the manager and refreshed every ~200ms so the
+        hot draw path stays under 2ms.
         """
         self._runner.set_canvas_size(canvas_w, canvas_h)
         surface = self._runner.get_output_surface()
         if surface is None:
             return
+        alpha = self._resolve_chrome_alpha()
         cr.set_source_surface(surface, 0, 0)
-        cr.paint()
+        if alpha < 0.999:
+            cr.paint_with_alpha(alpha)
+        else:
+            cr.paint()
+
+    def _resolve_chrome_alpha(self) -> float:
+        """Read the ``all-chrome`` alpha override (cached 200ms).
+
+        Returns 1.0 when the override is absent, expired, or invalid,
+        so the previous full-opacity behavior is the fail-open default.
+        """
+        import json as _json
+        import time as _time
+        from pathlib import Path as _Path
+
+        cache_ttl_s = 0.2
+        now = _time.monotonic()
+        cached = getattr(self, "_chrome_alpha_cache", None)
+        if cached is not None and (now - cached[0]) < cache_ttl_s:
+            return cached[1]
+
+        alpha = 1.0
+        try:
+            path = _Path("/dev/shm/hapax-compositor/overlay-alpha-overrides.json")
+            if path.exists():
+                data = _json.loads(path.read_text(encoding="utf-8"))
+                entry = (data.get("overrides") or {}).get("all-chrome")
+                if isinstance(entry, dict):
+                    expires_at = float(entry.get("expires_at", 0.0))
+                    if _time.time() <= expires_at:
+                        raw_alpha = float(entry.get("alpha", 1.0))
+                        alpha = max(0.0, min(1.0, raw_alpha))
+        except Exception:
+            alpha = 1.0
+        self._chrome_alpha_cache = (now, alpha)
+        return alpha
