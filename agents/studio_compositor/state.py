@@ -268,6 +268,22 @@ def state_reader_loop(compositor: Any) -> None:
                             store.set_active(target)
                     except Exception:
                         log.debug("layout_store.set_active failed", exc_info=True)
+                # Phase 6c hot-swap consumer wiring. The LayoutStore
+                # toggle above is advisory — no rendering code binds to
+                # it yet. The PipelineManager pin is the enforced path:
+                # it swaps every camera interpipesrc to its fallback and
+                # blocks any subsequent swap_to_primary for the duration
+                # of the pin. Closes axiom it-irreversible-broadcast at
+                # the live GStreamer egress, not just at persistence.
+                pm = getattr(compositor, "_pipeline_manager", None)
+                if pm is not None:
+                    try:
+                        pm.set_compose_safe(compose_safe)
+                    except Exception:
+                        log.exception(
+                            "pipeline_manager.set_compose_safe failed (compose_safe=%s)",
+                            compose_safe,
+                        )
                 log.info(
                     "compose-safe egress %s (prev=%s)",
                     "ACTIVE" if compose_safe else "cleared",
