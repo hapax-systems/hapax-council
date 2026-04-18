@@ -81,8 +81,11 @@ class TestCompositorConfig:
     def test_defaults(self) -> None:
         cfg = CompositorConfig()
         assert cfg.output_device == "/dev/video42"
-        assert cfg.output_width == 1920
-        assert cfg.output_height == 1080
+        # A+ Stage 2 B1 audit fix (2026-04-17): canvas default dropped
+        # from 1920×1080 to 1280×720 because effects-heavy compositing
+        # trades resolution for 62% CPU + 40% load reduction.
+        assert cfg.output_width == 1280
+        assert cfg.output_height == 720
         assert cfg.framerate == 30
         assert cfg.cameras == []
         assert cfg.overlay_enabled is True

@@ -104,15 +104,25 @@ class TestCaptionsCairoSourceState:
         assert state["text"] == "hello there"
         assert state["mode"] == "public_research"
 
-    def test_state_without_reader_uses_default(self, tmp_path: Path):
+    def test_state_without_reader_uses_shared_default(self, tmp_path: Path, monkeypatch):
         from agents.studio_compositor.captions_source import CaptionsCairoSource
+
+        # With no reader injected, the source delegates to
+        # shared.stream_mode.get_stream_mode(), which fail-closes to
+        # PUBLIC when the state file is absent. Pin the reader so this
+        # test doesn't depend on the host's /dev/shm state.
+        from shared.stream_mode import StreamMode
+
+        monkeypatch.setattr(
+            "shared.stream_mode.get_stream_mode", lambda path=None: StreamMode.PUBLIC
+        )
 
         p = tmp_path / "stt.txt"
         p.write_text("content\n", encoding="utf-8")
 
         src = CaptionsCairoSource(caption_path=p)
         state = src.state()
-        assert state["mode"] == "private"  # DEFAULT_STREAM_MODE
+        assert state["mode"] == "public"
 
     def test_state_reader_exception_falls_back(self, tmp_path: Path):
         from agents.studio_compositor.captions_source import CaptionsCairoSource
