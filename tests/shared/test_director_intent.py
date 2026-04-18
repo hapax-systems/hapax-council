@@ -14,6 +14,16 @@ from shared.director_intent import (
 from shared.stimmung import Stance
 
 
+def _silence_hold_imp() -> CompositionalImpingement:
+    """Stock impingement for tests that only exercise fields other than
+    compositional_impingements. Operator invariant (2026-04-18) requires
+    at least one impingement per DirectorIntent."""
+    return CompositionalImpingement(
+        narrative="silence hold: maintain surface",
+        intent_family="overlay.emphasis",
+    )
+
+
 class TestCompositionalImpingement:
     def test_minimal_valid_impingement(self):
         imp = CompositionalImpingement(
@@ -123,6 +133,7 @@ class TestDirectorIntent:
             activity="silence",
             stance="seeking",  # StrEnum accepts string
             narrative_text="",
+            compositional_impingements=[_silence_hold_imp()],
         )
         assert intent.stance == Stance.SEEKING
 
@@ -139,6 +150,7 @@ class TestDirectorIntent:
             activity="react",
             stance=Stance.SEEKING,
             narrative_text="what caught me",
+            compositional_impingements=[_silence_hold_imp()],
         )
         dumped = intent.model_dump_for_jsonl()
         assert dumped["stance"] == "seeking"
@@ -184,7 +196,12 @@ class TestDirectorIntent:
             "synthesize",
             "exemplar_review",
         ):
-            DirectorIntent(activity=activity, stance=Stance.NOMINAL, narrative_text="")
+            DirectorIntent(
+                activity=activity,
+                stance=Stance.NOMINAL,
+                narrative_text="",
+                compositional_impingements=[_silence_hold_imp()],
+            )
 
     def test_empty_grounding_provenance_allowed_but_noted(self):
         """Empty provenance is allowed — the pipeline accepts ungrounded
@@ -194,5 +211,6 @@ class TestDirectorIntent:
             stance=Stance.NOMINAL,
             narrative_text="",
             grounding_provenance=[],
+            compositional_impingements=[_silence_hold_imp()],
         )
         assert intent.grounding_provenance == []
