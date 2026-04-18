@@ -128,10 +128,16 @@ class VideoSlot:
             "-i",
             audio_url,
             # Output 1: v4l2loopback
+            # 2026-04-17 perf: was 1920x1080. The compositor blits this
+            # v4l2 stream into a PiP <= 640x640 on the Sierpinski
+            # triangle corners, so 1080p was pure waste — each ffmpeg
+            # spent ~40% CPU scaling up, then the compositor scaled
+            # back down. 960x540 keeps aspect + 2x headroom for the PiP
+            # and drops ffmpeg to ~15-20% CPU each.
             "-map",
             "0:v",
             "-vf",
-            f"{video_pts},scale=1920:1080",
+            f"{video_pts},scale=960:540",
             "-pix_fmt",
             "yuyv422",
             "-f",

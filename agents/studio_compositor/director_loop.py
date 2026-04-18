@@ -1356,7 +1356,11 @@ class DirectorLoop:
                     {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
                 )
                 try:
-                    with urllib.request.urlopen(req, timeout=30) as resp:
+                    # 2026-04-17 perf: 30s → 8s. A 30s block in the
+                    # GStreamer thread froze the stream on every stall.
+                    # Command R on the 3090 fits comfortably in 5s; 8s
+                    # gives buffer and surfaces real stalls fast.
+                    with urllib.request.urlopen(req, timeout=8) as resp:
                         data = json.loads(resp.read())
                 except TimeoutError:
                     # re-raise so llm_call_span tags outcome="timeout"
