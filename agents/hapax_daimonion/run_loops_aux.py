@@ -204,6 +204,52 @@ def _is_compositional_capability(name: str) -> bool:
     return any(name.startswith(p) for p in _COMPOSITIONAL_PREFIXES)
 
 
+_RECRUITMENT_LOG = Path("/dev/shm/hapax-daimonion/recruitment-log.jsonl")
+_RECRUITMENT_LOG_MAX_LINES = 500
+
+
+def _publish_recruitment_log(
+    kind: str, capability_name: str, score: float, source: str, imp_narrative: str
+) -> None:
+    """Append a recruited-capability record to a rolling SHM JSONL.
+
+    Meta-structural audit fix #2+#7 — studio.* and world-domain (env.,
+    body., digital., social., system., knowledge., space., world.)
+    capabilities were being recruited + Thompson-recorded but otherwise
+    silent. Any future consumer (UI, operator notification, automation)
+    can tail this file to see what the system is recruiting beyond the
+    handful of directly-dispatched families (notification /
+    compositional / livestream). Rotated at a soft cap so disk
+    pressure stays bounded.
+    """
+    try:
+        import json as _json
+        import time as _time
+
+        _RECRUITMENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": _time.time(),
+            "kind": kind,
+            "capability_name": capability_name,
+            "score": float(score),
+            "source": source[:40],
+            "narrative": (imp_narrative or "")[:160],
+        }
+        with _RECRUITMENT_LOG.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(record) + "\n")
+        try:
+            lines = _RECRUITMENT_LOG.read_text(encoding="utf-8").splitlines()
+            if len(lines) > _RECRUITMENT_LOG_MAX_LINES:
+                trimmed = lines[-_RECRUITMENT_LOG_MAX_LINES:]
+                tmp = _RECRUITMENT_LOG.with_suffix(".jsonl.tmp")
+                tmp.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
+                tmp.replace(_RECRUITMENT_LOG)
+        except OSError:
+            pass
+    except Exception:
+        log.debug("recruitment-log append failed", exc_info=True)
+
+
 def _dispatch_compositional(candidate, imp, daemon) -> None:
     """Dispatch a compositional capability through the compositor's consumer.
 
@@ -354,6 +400,13 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     c.combined,
                                     imp.source[:30],
                                 )
+                                _publish_recruitment_log(
+                                    "studio",
+                                    c.capability_name,
+                                    c.combined,
+                                    imp.source,
+                                    str(imp.content.get("narrative", "")),
+                                )
                                 daemon._affordance_pipeline.record_outcome(
                                     c.capability_name,
                                     success=True,
@@ -372,6 +425,13 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     c.capability_name,
                                     c.combined,
                                     imp.source[:30],
+                                )
+                                _publish_recruitment_log(
+                                    "world",
+                                    c.capability_name,
+                                    c.combined,
+                                    imp.source,
+                                    str(imp.content.get("narrative", "")),
                                 )
                                 daemon._affordance_pipeline.record_outcome(
                                     c.capability_name,
