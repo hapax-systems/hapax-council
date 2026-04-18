@@ -69,10 +69,11 @@ class TestSetAndResolve:
 
 class TestExpiry:
     def test_expired_entries_dropped_at_read(self):
-        # write a tuple with a TTL, manually advance the on-disk expiry
-        wp.set_ward_properties("album", wp.WardProperties(alpha=0.3), ttl_s=0.01)
+        # Generous TTL + sleep margin so CI runners with coarse clock
+        # resolution still observe the expiry.
+        wp.set_ward_properties("album", wp.WardProperties(alpha=0.3), ttl_s=0.1)
         wp.clear_ward_properties_cache()
-        time.sleep(0.05)
+        time.sleep(0.3)
         props = wp.resolve_ward_properties("album")
         assert props.alpha == 1.0  # back to defaults
 

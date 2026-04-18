@@ -159,9 +159,21 @@ class TokenPoleCairoSource(CairoSource):
         t: float,
         state: dict[str, Any],
     ) -> None:
-        """Advance internal animation state then paint a full scene."""
-        self._tick_state()
-        self._draw_scene(cr)
+        """Advance internal animation state then paint a full scene.
+
+        Honors per-ward modulation from
+        ``/dev/shm/hapax-compositor/ward-properties.json``: skips the
+        scene draw when ``visible`` is false, and applies ``alpha`` via
+        a Cairo group so the entire token-pole composition fades
+        uniformly with the dispatched property.
+        """
+        from .ward_properties import ward_render_scope
+
+        with ward_render_scope(cr, "token_pole") as props:
+            if props is None:
+                return
+            self._tick_state()
+            self._draw_scene(cr)
 
     def _tick_state(self) -> None:
         """Ledger I/O, position easing, pulse phase, particle physics."""

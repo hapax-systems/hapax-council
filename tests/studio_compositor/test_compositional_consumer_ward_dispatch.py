@@ -38,10 +38,11 @@ class TestWardSize:
         wp.clear_ward_properties_cache()
         assert wp.resolve_ward_properties("token_pole").scale == pytest.approx(1.10)
 
-    def test_unknown_modifier_falls_back_to_one(self):
-        assert cc.dispatch_ward_size("ward.size.album.fast-zoom", 10.0)
-        wp.clear_ward_properties_cache()
-        assert wp.resolve_ward_properties("album").scale == 1.0
+    def test_unknown_modifier_returns_false_and_does_not_write(self):
+        # Unknown modifiers must not silently clobber a prior valid override.
+        assert not cc.dispatch_ward_size("ward.size.album.fast-zoom", 10.0)
+        # No specific entry written
+        assert wp.get_specific_ward_properties("album") is None
 
     def test_malformed_returns_false(self):
         assert not cc.dispatch_ward_size("ward.size.album", 10.0)
@@ -136,3 +137,68 @@ class TestRecruitmentMarker:
         marker_path = cc._RECENT_RECRUITMENT
         data = json.loads(marker_path.read_text())
         assert "ward.size" in data["families"]
+
+
+class TestAuditRegression:
+    """Regression tests for bugs surfaced in the 2026-04-18 PR review."""
+
+    def test_unknown_modifier_does_not_clobber_existing_override(self):
+        # Bug #3: a typo'd modifier should NOT wipe a prior valid override.
+        cc.dispatch_ward_size("ward.size.album.shrink-20pct", 30.0)
+        wp.clear_ward_properties_cache()
+        assert wp.resolve_ward_properties("album").scale == pytest.approx(0.80)
+        # Now dispatch with a typo modifier
+        result = cc.dispatch_ward_size("ward.size.album.typo-modifier", 30.0)
+        assert result is False
+        wp.clear_ward_properties_cache()
+        # Album scale must STILL be 0.80, not reset to 1.0
+        assert wp.resolve_ward_properties("album").scale == pytest.approx(0.80)
+
+    def test_unknown_cadence_modifier_no_clobber(self):
+        cc.dispatch_ward_cadence("ward.cadence.thinking_indicator.pulse-2hz", 30.0)
+        wp.clear_ward_properties_cache()
+        assert wp.resolve_ward_properties("thinking_indicator").rate_hz_override == 2.0
+        result = cc.dispatch_ward_cadence("ward.cadence.thinking_indicator.invalid", 30.0)
+        assert result is False
+        wp.clear_ward_properties_cache()
+        assert wp.resolve_ward_properties("thinking_indicator").rate_hz_override == 2.0
+
+    def test_unknown_appearance_modifier_no_clobber(self):
+        cc.dispatch_ward_appearance("ward.appearance.album.tint-warm", 30.0)
+        wp.clear_ward_properties_cache()
+        assert wp.resolve_ward_properties("album").color_override_rgba is not None
+        result = cc.dispatch_ward_appearance("ward.appearance.album.invalid", 30.0)
+        assert result is False
+        wp.clear_ward_properties_cache()
+        # Color override should STILL be the warm tint
+        assert wp.resolve_ward_properties("album").color_override_rgba is not None
+
+    def test_dispatch_does_not_absorb_all_fallback(self):
+        # Bug #1: dispatching against a ward with no specific entry while
+        # an "all" fallback exists should NOT bake the fallback's values
+        # into the new specific entry.
+        wp.set_ward_properties("all", wp.WardProperties(alpha=0.5), ttl_s=30.0)
+        wp.clear_ward_properties_cache()
+        # Dispatch ward.size.album.shrink-20pct
+        cc.dispatch_ward_size("ward.size.album.shrink-20pct", 30.0)
+        wp.clear_ward_properties_cache()
+        # The album entry should have scale=0.8 AND alpha=1.0 (default),
+        # NOT alpha=0.5 absorbed from the fallback. Otherwise, when the
+        # all-fallback expires, album would still be dimmed.
+        specific = wp.get_specific_ward_properties("album")
+        assert specific is not None
+        assert specific.scale == pytest.approx(0.80)
+        assert specific.alpha == 1.0  # default, not the 0.5 fallback
+
+    def test_consecutive_dispatches_within_cache_window_preserve_all_fields(self):
+        # Bug #2: a second dispatch within the 200ms cache window must
+        # see the first dispatch's write, not a stale cache.
+        cc.dispatch_ward_size("ward.size.album.grow-110pct", 30.0)
+        # Do NOT manually clear cache here — the production code should
+        # invalidate it inside set_ward_properties.
+        cc.dispatch_ward_highlight("ward.highlight.album.glow", 30.0)
+        wp.clear_ward_properties_cache()
+        props = wp.resolve_ward_properties("album")
+        # Both fields should be present
+        assert props.scale == pytest.approx(1.10)
+        assert props.glow_radius_px == 12.0

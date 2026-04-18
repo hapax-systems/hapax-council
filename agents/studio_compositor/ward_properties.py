@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -128,6 +129,20 @@ def resolve_ward_properties(ward_id: str) -> WardProperties:
     return snapshot.fallback_all
 
 
+def get_specific_ward_properties(ward_id: str) -> WardProperties | None:
+    """Return the ward's specific override entry, or ``None`` if none exists.
+
+    Distinct from :func:`resolve_ward_properties` in that it does NOT
+    fall back to the ``"all"`` entry — useful for the dispatcher's
+    read-modify-write path which must distinguish "no specific entry yet"
+    (start from default) from "use the fallback values" (would
+    contaminate the specific entry with fallback values that then
+    survive the fallback's expiry).
+    """
+    snapshot = _refresh_cache_if_stale()
+    return snapshot.by_ward.get(ward_id)
+
+
 def all_resolved_properties() -> dict[str, WardProperties]:
     """Return a snapshot of every ward's resolved properties.
 
@@ -152,6 +167,13 @@ def set_ward_properties(
     The override expires at ``time.time() + ttl_s``; expired entries are
     discarded by the next reader. Special key ``"all"`` is honored as a
     global fallback; ward-specific entries beat it on merge.
+
+    The in-process cache is invalidated after the write so a follow-up
+    :func:`resolve_ward_properties` call within the 200ms TTL window
+    sees the new value. Without this, two dispatches against the same
+    ward within 200ms would race: the second's read-modify-write would
+    operate on a stale cached snapshot and silently drop the first
+    write's fields.
     """
     if ttl_s <= 0:
         log.warning("set_ward_properties: ttl_s must be > 0, got %.3f", ttl_s)
@@ -170,12 +192,54 @@ def set_ward_properties(
         tmp.replace(WARD_PROPERTIES_PATH)
     except Exception:
         log.warning("set_ward_properties write failed for %s", ward_id, exc_info=True)
+    finally:
+        clear_ward_properties_cache()
 
 
 def clear_ward_properties_cache() -> None:
     """Drop the in-process cache. Tests + any layout swap should call this."""
     global _cache
     _cache = None
+
+
+@contextmanager
+def ward_render_scope(cr: Any, ward_id: str):
+    """Context manager that wraps a Cairo source's per-tick draw with ward modulation.
+
+    Usage::
+
+        with ward_render_scope(cr, "token_pole") as props:
+            if props is None:
+                return  # ward is hidden, skip the entire draw
+            # ... normal drawing into ``cr`` ...
+
+    Behavior:
+    - Resolves the ward's properties (200ms cache).
+    - If ``visible`` is false, yields ``None`` so the caller can short-
+      circuit and the cairo surface stays transparent (the gst mixer
+      composites nothing visible).
+    - If ``alpha < 1.0``, pushes a Cairo group around the draw so the
+      caller's full composition fades uniformly when the group is
+      popped + painted with alpha.
+    - Otherwise yields ``props`` directly with no extra Cairo state.
+
+    Cairo source authors call this once at the top of their
+    ``render()`` to honor the dispatched per-ward properties without
+    re-implementing the visibility + alpha plumbing each time.
+    """
+    props = resolve_ward_properties(ward_id)
+    if not props.visible:
+        yield None
+        return
+    use_group = props.alpha < 0.999
+    if use_group:
+        cr.push_group()
+    try:
+        yield props
+    finally:
+        if use_group:
+            cr.pop_group_to_source()
+            cr.paint_with_alpha(max(0.0, min(1.0, props.alpha)))
 
 
 # ── Internals ──────────────────────────────────────────────────────────────
@@ -262,4 +326,5 @@ __all__ = [
     "clear_ward_properties_cache",
     "resolve_ward_properties",
     "set_ward_properties",
+    "ward_render_scope",
 ]

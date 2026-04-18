@@ -328,7 +328,8 @@ def dispatch_ward_size(capability_name: str, ttl_s: float) -> bool:
 
     Modifier vocabulary: ``shrink-20pct``, ``shrink-50pct``, ``natural``,
     ``default``, ``grow-110pct``, ``grow-150pct``. Unknown modifiers
-    fall back to natural size (scale=1.0) and log a warning.
+    log a warning and return False without writing — silently clobbering
+    a prior in-flight override with a typo would be worse than no-op.
     """
     parsed = _ward_dispatch_common(capability_name, "ward.size")
     if parsed is None:
@@ -337,7 +338,7 @@ def dispatch_ward_size(capability_name: str, ttl_s: float) -> bool:
     scale = _WARD_SIZE_MODIFIERS.get(modifier)
     if scale is None:
         log.warning("ward.size unknown modifier %s in %s", modifier, capability_name)
-        scale = 1.0
+        return False
     _write_ward_property(ward_id, ttl_s, scale=scale)
     _mark_recruitment("ward.size")
     return True
@@ -347,7 +348,8 @@ def dispatch_ward_position(capability_name: str, ttl_s: float) -> bool:
     """``ward.position.<ward_id>.<modifier>`` → ward-properties.json (drift_*).
 
     Modifier vocabulary: ``drift-sine-1hz``, ``drift-sine-slow``,
-    ``drift-circle-1hz``, ``static``, ``default``.
+    ``drift-circle-1hz``, ``static``, ``default``. Unknown modifiers
+    return False without writing — see ``dispatch_ward_size`` rationale.
     """
     parsed = _ward_dispatch_common(capability_name, "ward.position")
     if parsed is None:
@@ -356,7 +358,7 @@ def dispatch_ward_position(capability_name: str, ttl_s: float) -> bool:
     spec = _WARD_POSITION_MODIFIERS.get(modifier)
     if spec is None:
         log.warning("ward.position unknown modifier %s in %s", modifier, capability_name)
-        spec = _WARD_POSITION_MODIFIERS["default"]
+        return False
     if spec.get("drift_type_sine"):
         drift_type = "sine"
     elif spec.get("drift_type_circle"):
@@ -378,6 +380,7 @@ def dispatch_ward_staging(capability_name: str, ttl_s: float) -> bool:
     """``ward.staging.<ward_id>.<modifier>`` → ward-properties.json (visible/z_order).
 
     Modifier vocabulary: ``hide``, ``show``, ``top``, ``bottom``, ``default``.
+    Unknown modifiers return False without writing.
     """
     parsed = _ward_dispatch_common(capability_name, "ward.staging")
     if parsed is None:
@@ -386,7 +389,7 @@ def dispatch_ward_staging(capability_name: str, ttl_s: float) -> bool:
     spec = _WARD_STAGING_MODIFIERS.get(modifier)
     if spec is None:
         log.warning("ward.staging unknown modifier %s in %s", modifier, capability_name)
-        spec = _WARD_STAGING_MODIFIERS["default"]
+        return False
     update: dict = {}
     if "visible" in spec:
         update["visible"] = bool(spec["visible"])
@@ -401,7 +404,8 @@ def dispatch_ward_highlight(capability_name: str, ttl_s: float) -> bool:
     """``ward.highlight.<ward_id>.<modifier>`` → ward-properties.json (alpha/glow/pulse).
 
     Modifier vocabulary: ``pulse``, ``glow``, ``flash``, ``dim``,
-    ``foreground``, ``default``.
+    ``foreground``, ``default``. Unknown modifiers return False without
+    writing.
     """
     parsed = _ward_dispatch_common(capability_name, "ward.highlight")
     if parsed is None:
@@ -410,7 +414,7 @@ def dispatch_ward_highlight(capability_name: str, ttl_s: float) -> bool:
     spec = _WARD_HIGHLIGHT_MODIFIERS.get(modifier)
     if spec is None:
         log.warning("ward.highlight unknown modifier %s in %s", modifier, capability_name)
-        spec = {}
+        return False
     _write_ward_property(ward_id, ttl_s, **{k: float(v) for k, v in spec.items()})
     _mark_recruitment("ward.highlight")
     return True
@@ -419,10 +423,10 @@ def dispatch_ward_highlight(capability_name: str, ttl_s: float) -> bool:
 def dispatch_ward_appearance(capability_name: str, ttl_s: float) -> bool:
     """``ward.appearance.<ward_id>.<modifier>`` → ward-properties.json (color).
 
-    Modifier vocabulary is open-ended for now: ``tint-warm``,
-    ``tint-cool``, ``desaturate``, ``palette-default``. Color values
-    are computed from a small built-in lookup; out-of-vocabulary
-    modifiers fall back to the default palette (no override).
+    Modifier vocabulary: ``tint-warm``, ``tint-cool``, ``desaturate``,
+    ``palette-default``, ``default``. The two ``*default`` modifiers
+    explicitly clear any prior color override; other unknown modifiers
+    return False without writing.
     """
     parsed = _ward_dispatch_common(capability_name, "ward.appearance")
     if parsed is None:
@@ -435,8 +439,10 @@ def dispatch_ward_appearance(capability_name: str, ttl_s: float) -> bool:
         "palette-default": None,
         "default": None,
     }
-    color = palette.get(modifier)
-    _write_ward_property(ward_id, ttl_s, color_override_rgba=color)
+    if modifier not in palette:
+        log.warning("ward.appearance unknown modifier %s in %s", modifier, capability_name)
+        return False
+    _write_ward_property(ward_id, ttl_s, color_override_rgba=palette[modifier])
     _mark_recruitment("ward.appearance")
     return True
 
@@ -445,16 +451,17 @@ def dispatch_ward_cadence(capability_name: str, ttl_s: float) -> bool:
     """``ward.cadence.<ward_id>.<modifier>`` → ward-properties.json (rate_hz_override).
 
     Modifier vocabulary: ``pulse-2hz``, ``pulse-4hz``, ``quick``,
-    ``slow``, ``default``. ``default`` clears the override.
+    ``slow``, ``default``. ``default`` clears the override; other
+    unknown modifiers return False without writing.
     """
     parsed = _ward_dispatch_common(capability_name, "ward.cadence")
     if parsed is None:
         return False
     ward_id, modifier = parsed
-    rate = _WARD_CADENCE_MODIFIERS.get(modifier)
     if modifier not in _WARD_CADENCE_MODIFIERS:
         log.warning("ward.cadence unknown modifier %s in %s", modifier, capability_name)
-    _write_ward_property(ward_id, ttl_s, rate_hz_override=rate)
+        return False
+    _write_ward_property(ward_id, ttl_s, rate_hz_override=_WARD_CADENCE_MODIFIERS[modifier])
     _mark_recruitment("ward.cadence")
     return True
 
@@ -498,23 +505,63 @@ def _build_choreography_sequence(sequence_name: str, ttl_s: float) -> list:
     The ``ttl_s`` argument is the dispatch-side TTL; sequences cap each
     transition's ``duration_s`` at min(ttl_s, baked_default) so a long
     TTL doesn't extend a quick pulse.
+
+    ``from_value`` is read from each ward's current property state via
+    :func:`resolve_ward_properties` so the transition starts where the
+    ward actually IS — not where the sequence author guessed it would
+    be. Without this read, a ward that was previously dimmed to 0.4
+    would visibly snap to 1.0 (the guessed start) before easing.
+
+    Note on consumer wiring: ``album-emphasize``, ``hothouse-quiet``,
+    and ``camera-spotlight`` target Cairo source IDs (album, token_pole,
+    sierpinski, hothouse panels) and surface IDs (pip-ur etc.). Today
+    only ``OverlayZone.render`` consumes ward-properties; until per-
+    Cairo-source consumption + glvideomixer pad mutation land in
+    follow-up PRs, these sequences write to the animation-state file
+    but produce no visible effect on the livestream surface.
     """
     from agents.studio_compositor.animation_engine import Transition
+    from agents.studio_compositor.ward_properties import resolve_ward_properties
 
     now = time.time()
     cap = max(0.1, min(ttl_s, 5.0))
+
+    def _alpha(ward_id: str) -> float:
+        return resolve_ward_properties(ward_id).alpha
+
+    def _scale(ward_id: str) -> float:
+        return resolve_ward_properties(ward_id).scale
+
     if sequence_name == "album-emphasize":
         # Album scales up + brightens; everything else dims.
         return [
-            Transition("album", "scale", 1.0, 1.15, min(cap, 0.6), "ease-out-quad", now),
-            Transition("album", "alpha", 0.92, 1.0, min(cap, 0.4), "ease-out-quad", now),
-            Transition("token_pole", "alpha", 1.0, 0.5, min(cap, 0.5), "ease-in-quad", now),
-            Transition("sierpinski", "alpha", 1.0, 0.5, min(cap, 0.5), "ease-in-quad", now),
+            Transition(
+                "album", "scale", _scale("album"), 1.15, min(cap, 0.6), "ease-out-quad", now
+            ),
+            Transition("album", "alpha", _alpha("album"), 1.0, min(cap, 0.4), "ease-out-quad", now),
+            Transition(
+                "token_pole",
+                "alpha",
+                _alpha("token_pole"),
+                0.5,
+                min(cap, 0.5),
+                "ease-in-quad",
+                now,
+            ),
+            Transition(
+                "sierpinski",
+                "alpha",
+                _alpha("sierpinski"),
+                0.5,
+                min(cap, 0.5),
+                "ease-in-quad",
+                now,
+            ),
         ]
     if sequence_name == "hothouse-quiet":
         # All hothouse panels fade to half, leaving primary content prominent.
         return [
-            Transition(w, "alpha", 0.92, 0.4, min(cap, 0.5), "ease-out-quad", now)
+            Transition(w, "alpha", _alpha(w), 0.4, min(cap, 0.5), "ease-out-quad", now)
             for w in (
                 "impingement_cascade",
                 "recruitment_candidate_panel",
@@ -527,29 +574,45 @@ def _build_choreography_sequence(sequence_name: str, ttl_s: float) -> list:
     if sequence_name == "camera-spotlight":
         # The hero camera tile pops up; chrome dims out of the way.
         return [
-            Transition("pip-ur", "scale", 1.0, 1.1, min(cap, 0.4), "ease-out-quad", now),
-            Transition("pip-ul", "alpha", 1.0, 0.6, min(cap, 0.5), "ease-in-quad", now),
-            Transition("pip-ll", "alpha", 1.0, 0.6, min(cap, 0.5), "ease-in-quad", now),
-            Transition("pip-lr", "alpha", 1.0, 0.6, min(cap, 0.5), "ease-in-quad", now),
+            Transition(
+                "pip-ur", "scale", _scale("pip-ur"), 1.1, min(cap, 0.4), "ease-out-quad", now
+            ),
+            Transition(
+                "pip-ul", "alpha", _alpha("pip-ul"), 0.6, min(cap, 0.5), "ease-in-quad", now
+            ),
+            Transition(
+                "pip-ll", "alpha", _alpha("pip-ll"), 0.6, min(cap, 0.5), "ease-in-quad", now
+            ),
+            Transition(
+                "pip-lr", "alpha", _alpha("pip-lr"), 0.6, min(cap, 0.5), "ease-in-quad", now
+            ),
         ]
     return []
 
 
 def _write_ward_property(ward_id: str, ttl_s: float, **fields_) -> None:
-    """Read current ward properties for ``ward_id``, fold in ``fields_``, write back.
+    """Read current ward-specific entry for ``ward_id``, fold in ``fields_``, write back.
 
     The merge preserves any other override fields previously set on the
     same ward by an earlier dispatcher (e.g. a ``ward.size`` followed
     by a ``ward.highlight`` should leave both scale + alpha present in
     the final entry until expiry).
+
+    Critically: this reads the *specific* entry only, NOT the resolved
+    view that includes the ``"all"`` fallback. Otherwise a fresh
+    dispatch against a ward with no specific entry yet would absorb the
+    fallback's values into the new specific entry — and those values
+    would survive past the fallback's TTL, defeating the "specific is
+    full take" semantics that :func:`resolve_ward_properties`
+    documents.
     """
     from agents.studio_compositor.ward_properties import (
         WardProperties,
-        resolve_ward_properties,
+        get_specific_ward_properties,
         set_ward_properties,
     )
 
-    current = resolve_ward_properties(ward_id)
+    current = get_specific_ward_properties(ward_id) or WardProperties()
     update = WardProperties(**{**current.__dict__, **fields_})
     set_ward_properties(ward_id, update, ttl_s)
 

@@ -73,8 +73,14 @@ def all_wards() -> dict[str, WardMetadata]:
 
 
 def clear_registry() -> None:
-    """Drop every registered ward. Intended for tests + re-derivation."""
-    _REGISTRY.clear()
+    """Drop every registered ward. Intended for tests + re-derivation.
+
+    Swaps in a fresh empty dict rather than mutating the existing one
+    so a concurrent reader iterating ``all_wards()`` doesn't see a
+    half-cleared state.
+    """
+    global _REGISTRY
+    _REGISTRY = {}
 
 
 def populate_from_layout(layout: Layout) -> None:
@@ -84,29 +90,43 @@ def populate_from_layout(layout: Layout) -> None:
     their declared ``natural_w`` / ``natural_h`` from the schema params.
     Surfaces of kind ``video_out`` register as a separate VIDEO_OUT entry
     so operators can dim/pause output sinks via the same property layer.
+
+    Layout swap-safe: the existing registry is preserved while the new
+    one is being built, then atomically swapped in. A concurrent reader
+    on another thread sees either the old fully-populated registry or
+    the new one — never a partially-populated transitional state.
     """
+    new_registry: dict[str, WardMetadata] = dict(_REGISTRY)
     for src in layout.sources:
         category = _category_for_source_kind(src.kind)
         natural_w = _int_param(src.params, "natural_w")
         natural_h = _int_param(src.params, "natural_h")
-        register_ward(
-            WardMetadata(
-                ward_id=src.id,
-                category=category,
-                natural_w=natural_w,
-                natural_h=natural_h,
-                tags=tuple(src.tags),
-            )
+        new_registry[src.id] = WardMetadata(
+            ward_id=src.id,
+            category=category,
+            natural_w=natural_w,
+            natural_h=natural_h,
+            tags=tuple(src.tags),
         )
     for surf in layout.surfaces:
         if surf.geometry.kind != "video_out":
             continue
-        register_ward(
-            WardMetadata(
-                ward_id=surf.id,
-                category=WardCategory.VIDEO_OUT,
-            )
+        new_registry[surf.id] = WardMetadata(
+            ward_id=surf.id,
+            category=WardCategory.VIDEO_OUT,
         )
+    _swap_registry(new_registry)
+
+
+def _swap_registry(new_registry: dict[str, WardMetadata]) -> None:
+    """Atomically replace the module-level registry with ``new_registry``.
+
+    Concurrent readers via :func:`get_ward` / :func:`all_wards` see
+    either the old dict or the new one — never a partial mutation. The
+    GIL guarantees the rebind is atomic.
+    """
+    global _REGISTRY
+    _REGISTRY = new_registry
 
 
 def populate_overlay_zones(zone_ids: list[str]) -> None:
@@ -116,36 +136,42 @@ def populate_overlay_zones(zone_ids: list[str]) -> None:
     each zone has its own ID (``main``, ``research``, ``lyrics``) and
     operators may want to address them individually for property
     overrides (dim ``research`` while ``main`` stays foregrounded).
+
+    Atomic swap: see :func:`populate_from_layout` for the layout-swap
+    safety rationale.
     """
+    new_registry = dict(_REGISTRY)
     for zid in zone_ids:
-        register_ward(
-            WardMetadata(
-                ward_id=f"overlay-zone:{zid}",
-                category=WardCategory.OVERLAY_ZONE,
-            )
+        new_registry[f"overlay-zone:{zid}"] = WardMetadata(
+            ward_id=f"overlay-zone:{zid}",
+            category=WardCategory.OVERLAY_ZONE,
         )
+    _swap_registry(new_registry)
 
 
 def populate_youtube_slots(slot_count: int = 3) -> None:
-    """Register YouTube PiP slot IDs (``youtube-slot-0`` …)."""
+    """Register YouTube PiP slot IDs (``youtube-slot-0`` …). Atomic swap."""
+    new_registry = dict(_REGISTRY)
     for i in range(slot_count):
-        register_ward(
-            WardMetadata(
-                ward_id=f"youtube-slot-{i}",
-                category=WardCategory.YOUTUBE_SLOT,
-            )
+        new_registry[f"youtube-slot-{i}"] = WardMetadata(
+            ward_id=f"youtube-slot-{i}",
+            category=WardCategory.YOUTUBE_SLOT,
         )
+    _swap_registry(new_registry)
 
 
 def populate_camera_pips(camera_roles: list[str]) -> None:
-    """Register per-camera-role ward IDs (e.g. ``camera-pip:c920-overhead``)."""
+    """Register per-camera-role ward IDs (e.g. ``camera-pip:c920-overhead``).
+
+    Atomic swap: see :func:`populate_from_layout`.
+    """
+    new_registry = dict(_REGISTRY)
     for role in camera_roles:
-        register_ward(
-            WardMetadata(
-                ward_id=f"camera-pip:{role}",
-                category=WardCategory.CAMERA_PIP,
-            )
+        new_registry[f"camera-pip:{role}"] = WardMetadata(
+            ward_id=f"camera-pip:{role}",
+            category=WardCategory.CAMERA_PIP,
         )
+    _swap_registry(new_registry)
 
 
 def _category_for_source_kind(kind: str) -> WardCategory:

@@ -113,15 +113,16 @@ _EASINGS: dict[str, Callable[[float], float]] = {
 }
 
 
-def evaluate_transition(transition: Transition, now: float) -> float | None:
-    """Return the interpolated value, or ``None`` if the transition has expired.
+def evaluate_transition(transition: Transition, now: float) -> float:
+    """Return the interpolated value at ``now``.
 
     ``now`` is wall-clock seconds (``time.time()``). Returns the
-    eased-interpolated value while progress < 1.0 and ``to_value`` once
-    the transition has reached its end. Callers cleaning up may rely on
-    a separate :func:`is_expired` check; this function returns the
-    final value (not None) at progress=1.0 so a zero-duration transition
-    immediately resolves to its target.
+    eased-interpolated value while progress is in [0, 1) and
+    ``to_value`` at or past progress=1.0. Use :func:`is_expired` to
+    decide whether to drop a transition entirely; this function always
+    returns a usable float so consumers can read the resting target
+    after the animation completes (until :func:`is_expired` allows a
+    cleanup pass to prune).
     """
     if transition.duration_s <= 0:
         return transition.to_value
@@ -219,8 +220,6 @@ def evaluate_all(now: float | None = None) -> dict[str, dict[str, float]]:
     by_key: dict[tuple[str, str], tuple[float, float]] = {}
     for transition in snapshot_pairs:
         value = evaluate_transition(transition, now)
-        if value is None:
-            continue
         key = (transition.ward_id, transition.property)
         existing = by_key.get(key)
         if existing is None or transition.started_at >= existing[0]:
