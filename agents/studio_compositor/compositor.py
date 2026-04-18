@@ -414,7 +414,7 @@ def load_layout_or_fallback(path: Path) -> Layout:
         return _FALLBACK_LAYOUT
 
     try:
-        return Layout.model_validate(raw)
+        layout = Layout.model_validate(raw)
     except ValueError as exc:
         log.warning(
             "compositor layout %s failed schema validation (%s) — using fallback",
@@ -423,6 +423,19 @@ def load_layout_or_fallback(path: Path) -> Layout:
         )
         _notify_fallback(target, f"schema validation failed: {exc}")
         return _FALLBACK_LAYOUT
+    # A+ Stage 2: layouts are authored in 1920×1080 absolute coords. The
+    # canvas is currently 1280×720 (or whatever HAPAX_COMPOSITOR_OUTPUT_*
+    # overrides set). The rescale function in layout_loader.py was added
+    # alongside the canvas resize but only wired into LayoutStore (which
+    # is advisory). The active render path (this function → LayoutState
+    # → fx_chain.pip_draw_from_layout → blit_scaled) was missed, so
+    # surface coordinates have been used unscaled — pushing wards 33%
+    # right (and right-edge wards completely off-canvas) ever since
+    # commit c2ee21e86. Apply the same rescaling here so layout JSON
+    # geometry is normalized before the renderer reads it.
+    from .layout_loader import _rescale_layout
+
+    return _rescale_layout(layout)
 
 
 # Repo-root-anchored default layout path. Resolved from this file's

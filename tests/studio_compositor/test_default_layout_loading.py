@@ -343,3 +343,28 @@ def test_fallback_layout_parses_to_same_shape_as_default_json() -> None:
     assert {(a.source, a.surface) for a in _FALLBACK_LAYOUT.assignments} == {
         (a.source, a.surface) for a in disk.assignments
     }
+
+
+def test_load_layout_or_fallback_rescales_to_canvas_size() -> None:
+    """A+ Stage 2 invariant: layout JSON coords (1920×1080) get rescaled
+    to the active canvas (LAYOUT_COORD_SCALE) before reaching the renderer.
+
+    Regression pin for the bug where ``load_layout_or_fallback`` returned
+    the unscaled Layout, leaving every ward shifted ~33% right of its
+    intended position and right-edge wards off-canvas.
+    """
+    from agents.studio_compositor.compositor import load_layout_or_fallback
+    from agents.studio_compositor.config import LAYOUT_COORD_SCALE
+
+    layout = load_layout_or_fallback(DEFAULT_JSON)
+    activity_header = next(s for s in layout.surfaces if s.id == "activity-header-top")
+    expected_x = int(round(560 * LAYOUT_COORD_SCALE))
+    expected_w = int(round(800 * LAYOUT_COORD_SCALE))
+    assert activity_header.geometry.x == expected_x, (
+        f"activity-header-top x should be {expected_x} (560 × {LAYOUT_COORD_SCALE}), "
+        f"got {activity_header.geometry.x}"
+    )
+    assert activity_header.geometry.w == expected_w
+    chat_legend = next(s for s in layout.surfaces if s.id == "chat-legend-right")
+    expected_chat_x = int(round(1760 * LAYOUT_COORD_SCALE))
+    assert chat_legend.geometry.x == expected_chat_x
