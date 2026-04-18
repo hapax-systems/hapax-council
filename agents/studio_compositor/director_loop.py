@@ -1518,7 +1518,7 @@ class DirectorLoop:
             "  - homage.rotation — cycle to a new signature artefact "
             "(cadence: ~90s default; structural director can push rapid "
             "or deliberate).\n"
-            "  - homage.emergence — bring a dormant ward into view via "
+            "  - homage.emergence — bring an absent ward into view via "
             "the package's default entry (ticker-scroll-in for BitchX).\n"
             "  - homage.swap — trade a ward for another; simultaneous "
             "part-message + join-message.\n"

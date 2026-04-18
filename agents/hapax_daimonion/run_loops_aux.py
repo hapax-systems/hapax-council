@@ -195,6 +195,7 @@ _COMPOSITIONAL_PREFIXES: tuple[str, ...] = (
     "attention.winner.",
     "stream.mode.",
     "ward.",
+    "homage.",
 )
 
 
