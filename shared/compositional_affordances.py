@@ -407,6 +407,112 @@ _WARD_AFFORDANCES: list[CapabilityRecord] = (
 )
 
 
+# ── HOMAGE framework affordances (spec §4.11) ─────────────────────────────
+# Each maps to a package-specific transition that the choreographer
+# reconciles. Dispatch writes into homage-pending-transitions.json;
+# the choreographer consumes the next tick and emits the ordered plan.
+
+_HOMAGE_ROTATION: list[CapabilityRecord] = [
+    _record(
+        "homage.rotation.signature",
+        "rotates to a new signature artefact (quit-quip, join-banner, MOTD) under the active homage package",
+    ),
+    _record(
+        "homage.rotation.package-cycle",
+        "cycles the active homage package to the next value in the structural director's rotation",
+    ),
+]
+
+_HOMAGE_EMERGENCE: list[CapabilityRecord] = [
+    _record(
+        "homage.emergence.ward",
+        "brings a dormant ward into view via the package's default entry transition",
+    ),
+    _record(
+        "homage.emergence.activity-header",
+        "emerges the activity header for fresh legibility when activity changes",
+    ),
+    _record(
+        "homage.emergence.stance-indicator",
+        "emerges the stance indicator when stance shifts so viewers can read the change",
+    ),
+    _record(
+        "homage.emergence.grounding-ticker",
+        "emerges the grounding provenance ticker to foreground the signals driving this move",
+    ),
+]
+
+_HOMAGE_SWAP: list[CapabilityRecord] = [
+    _record(
+        "homage.swap.hero-chrome",
+        "swaps the hero camera with chrome wards in a choreographed exit-plus-entry pair",
+    ),
+    _record(
+        "homage.swap.legibility-pair",
+        "swaps two legibility surfaces so attention trades from activity to stance framing",
+    ),
+    _record(
+        "homage.swap.signature-motd",
+        "swaps a quit-quip off-frame and a MOTD block on-frame under the active package",
+    ),
+]
+
+_HOMAGE_CYCLE: list[CapabilityRecord] = [
+    _record(
+        "homage.cycle.legibility-wards",
+        "sweeps through the legibility wards in order, foregrounding each briefly",
+    ),
+    _record(
+        "homage.cycle.hothouse-wards",
+        "cycles hothouse diagnostic panels so viewers glimpse the machinery in rotation",
+    ),
+    _record(
+        "homage.cycle.chat-keywords",
+        "cycles chat vocabulary entries so the topic line refreshes which keywords are live",
+    ),
+]
+
+_HOMAGE_RECEDE: list[CapabilityRecord] = [
+    _record(
+        "homage.recede.ward",
+        "retires a ward to absent via the package's default exit transition",
+    ),
+    _record(
+        "homage.recede.all-chrome",
+        "retires all chrome wards for a music-first moment; mass part-message under the active package",
+    ),
+    _record(
+        "homage.recede.diagnostic",
+        "retires diagnostic hothouse panels when the moment is not a machinery moment",
+    ),
+]
+
+_HOMAGE_EXPAND: list[CapabilityRecord] = [
+    _record(
+        "homage.expand.hero",
+        "expands the hero camera with a scale-bump under the package's expansion transition",
+    ),
+    _record(
+        "homage.expand.album",
+        "expands the album overlay when music is the centre of the moment",
+    ),
+    _record(
+        "homage.expand.captions",
+        "expands the captions strip to emphasise a narration line that carries weight",
+    ),
+]
+
+
+_HOMAGE_AFFORDANCES: list[CapabilityRecord] = (
+    _HOMAGE_ROTATION
+    + _HOMAGE_EMERGENCE
+    + _HOMAGE_SWAP
+    + _HOMAGE_CYCLE
+    + _HOMAGE_RECEDE
+    + _HOMAGE_EXPAND
+)
+
+
 # ── Catalog ────────────────────────────────────────────────────────────────
 
 COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
@@ -417,6 +523,7 @@ COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
     + _ATTENTION_WINNER
     + _STREAM_MODE
     + _WARD_AFFORDANCES
+    + _HOMAGE_AFFORDANCES
 )
 
 

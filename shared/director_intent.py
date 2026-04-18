@@ -71,6 +71,18 @@ IntentFamily = Literal[
     "ward.appearance",
     "ward.cadence",
     "ward.choreography",
+    # HOMAGE framework families (spec §4.11). Each member maps to a
+    # package-specific transition recruited via the choreographer
+    # (``agents.studio_compositor.homage.choreographer``). Dispatch
+    # writes into ``/dev/shm/hapax-compositor/homage-pending-transitions.json``;
+    # the choreographer reconciles against package concurrency rules on
+    # the next tick.
+    "homage.rotation",
+    "homage.emergence",
+    "homage.swap",
+    "homage.cycle",
+    "homage.recede",
+    "homage.expand",
 ]
 
 # Imagination-fragment material taxonomy (matches

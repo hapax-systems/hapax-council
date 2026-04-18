@@ -641,6 +641,139 @@ def dispatch_stream_mode_transition(capability_name: str) -> bool:
 # ── Top-level dispatch ─────────────────────────────────────────────────────
 
 
+# ── HOMAGE dispatchers (spec §4.11) ────────────────────────────────────────
+#
+# Each homage.* recruitment writes a single pending-transition entry into
+# ``/dev/shm/hapax-compositor/homage-pending-transitions.json``. The
+# choreographer (``agents.studio_compositor.homage.choreographer``) reads
+# on the next tick, enforces concurrency, and emits the ordered plan.
+#
+# Mapping capability → transition:
+#   homage.rotation.*   → topic-change (non-state-changing; signals rotation)
+#   homage.emergence.*  → package.default_entry (ticker-scroll-in in BitchX)
+#   homage.swap.*       → part-message + join-message pair
+#   homage.cycle.*      → mode-change (signals stepped rotation)
+#   homage.recede.*     → package.default_exit (ticker-scroll-out in BitchX)
+#   homage.expand.*     → netsplit-burst (emphasis burst per package)
+
+
+_HOMAGE_PENDING_TRANSITIONS: Path = Path(
+    "/dev/shm/hapax-compositor/homage-pending-transitions.json"
+)
+
+
+def _active_package():
+    """Lazy import to avoid circular dependency at module load time."""
+    from agents.studio_compositor.homage import get_active_package
+
+    return get_active_package()
+
+
+def _append_pending_transition(source_id: str, transition: str) -> None:
+    """Append one pending transition to the SHM file (atomic tmp+rename)."""
+    now = time.time()
+    current: dict = {}
+    try:
+        if _HOMAGE_PENDING_TRANSITIONS.exists():
+            loaded = json.loads(_HOMAGE_PENDING_TRANSITIONS.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                current = loaded
+    except Exception:
+        log.debug("homage-pending-transitions read failed", exc_info=True)
+    transitions = current.get("transitions") if isinstance(current, dict) else None
+    if not isinstance(transitions, list):
+        transitions = []
+    transitions.append({"source_id": source_id, "transition": transition, "enqueued_at": now})
+    payload = {"transitions": transitions, "updated_at": now}
+    _atomic_write_json(_HOMAGE_PENDING_TRANSITIONS, payload)
+
+
+def _homage_source_id_suffix(capability_name: str, family_prefix: str) -> str:
+    """Extract the <source_id> part from ``homage.<family>.<source_id>``."""
+    parts = capability_name.split(".", 2)
+    if len(parts) < 3:
+        return ""
+    return parts[2]
+
+
+def dispatch_homage_rotation(capability_name: str) -> bool:
+    """Emit a rotation signal — the choreographer treats this as a
+    ``topic-change`` non-state-changing transition tagged to the
+    conceptual target (signature, package)."""
+    suffix = _homage_source_id_suffix(capability_name, "homage.rotation")
+    if not suffix:
+        log.warning("malformed homage.rotation name: %s", capability_name)
+        return False
+    _append_pending_transition(source_id=f"rotation:{suffix}", transition="topic-change")
+    _mark_recruitment("homage.rotation", extra={"target": suffix})
+    return True
+
+
+def dispatch_homage_emergence(capability_name: str) -> bool:
+    """Emit an entry transition for the named ward using the active
+    package's ``default_entry`` (ticker-scroll-in under BitchX)."""
+    suffix = _homage_source_id_suffix(capability_name, "homage.emergence")
+    if not suffix:
+        log.warning("malformed homage.emergence name: %s", capability_name)
+        return False
+    pkg = _active_package()
+    transition = pkg.transition_vocabulary.default_entry if pkg else "ticker-scroll-in"
+    _append_pending_transition(source_id=suffix.replace("-", "_"), transition=transition)
+    _mark_recruitment("homage.emergence", extra={"target": suffix})
+    return True
+
+
+def dispatch_homage_swap(capability_name: str) -> bool:
+    """Emit a swap — choreographer sees a part-message + join-message
+    pair tagged with the paired targets."""
+    suffix = _homage_source_id_suffix(capability_name, "homage.swap")
+    if not suffix:
+        log.warning("malformed homage.swap name: %s", capability_name)
+        return False
+    _append_pending_transition(source_id=f"swap-out:{suffix}", transition="part-message")
+    _append_pending_transition(source_id=f"swap-in:{suffix}", transition="join-message")
+    _mark_recruitment("homage.swap", extra={"target": suffix})
+    return True
+
+
+def dispatch_homage_cycle(capability_name: str) -> bool:
+    """Emit a cycle — choreographer sees a mode-change transition
+    tagged with the family being cycled."""
+    suffix = _homage_source_id_suffix(capability_name, "homage.cycle")
+    if not suffix:
+        log.warning("malformed homage.cycle name: %s", capability_name)
+        return False
+    _append_pending_transition(source_id=f"cycle:{suffix}", transition="mode-change")
+    _mark_recruitment("homage.cycle", extra={"target": suffix})
+    return True
+
+
+def dispatch_homage_recede(capability_name: str) -> bool:
+    """Emit an exit transition for the named ward using the active
+    package's ``default_exit`` (ticker-scroll-out under BitchX)."""
+    suffix = _homage_source_id_suffix(capability_name, "homage.recede")
+    if not suffix:
+        log.warning("malformed homage.recede name: %s", capability_name)
+        return False
+    pkg = _active_package()
+    transition = pkg.transition_vocabulary.default_exit if pkg else "ticker-scroll-out"
+    _append_pending_transition(source_id=suffix.replace("-", "_"), transition=transition)
+    _mark_recruitment("homage.recede", extra={"target": suffix})
+    return True
+
+
+def dispatch_homage_expand(capability_name: str) -> bool:
+    """Emit an expansion burst — choreographer sees a netsplit-burst
+    transition so the emphasis lands as coordinated multi-ward impact."""
+    suffix = _homage_source_id_suffix(capability_name, "homage.expand")
+    if not suffix:
+        log.warning("malformed homage.expand name: %s", capability_name)
+        return False
+    _append_pending_transition(source_id=f"expand:{suffix}", transition="netsplit-burst")
+    _mark_recruitment("homage.expand", extra={"target": suffix})
+    return True
+
+
 def dispatch(
     record: RecruitmentRecord,
 ) -> Literal[
@@ -657,6 +790,12 @@ def dispatch(
     "ward.appearance",
     "ward.cadence",
     "ward.choreography",
+    "homage.rotation",
+    "homage.emergence",
+    "homage.swap",
+    "homage.cycle",
+    "homage.recede",
+    "homage.expand",
     "unknown",
 ]:
     """Route a recruitment record to the correct dispatcher.
@@ -690,6 +829,18 @@ def dispatch(
         return "ward.cadence" if dispatch_ward_cadence(name, record.ttl_s) else "unknown"
     if name.startswith("ward.choreography."):
         return "ward.choreography" if dispatch_ward_choreography(name, record.ttl_s) else "unknown"
+    if name.startswith("homage.rotation."):
+        return "homage.rotation" if dispatch_homage_rotation(name) else "unknown"
+    if name.startswith("homage.emergence."):
+        return "homage.emergence" if dispatch_homage_emergence(name) else "unknown"
+    if name.startswith("homage.swap."):
+        return "homage.swap" if dispatch_homage_swap(name) else "unknown"
+    if name.startswith("homage.cycle."):
+        return "homage.cycle" if dispatch_homage_cycle(name) else "unknown"
+    if name.startswith("homage.recede."):
+        return "homage.recede" if dispatch_homage_recede(name) else "unknown"
+    if name.startswith("homage.expand."):
+        return "homage.expand" if dispatch_homage_expand(name) else "unknown"
     log.warning("unknown compositional capability family: %s", name)
     return "unknown"
 

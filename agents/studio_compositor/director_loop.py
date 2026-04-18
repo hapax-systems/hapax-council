@@ -1493,6 +1493,48 @@ class DirectorLoop:
             "drive."
         )
 
+        # HOMAGE composition section (spec §4.12). The active homage
+        # package gives the livestream surface its aesthetic grammar;
+        # homage.* families let the director ROUTE transitions through
+        # the choreographer rather than just biasing chrome alpha.
+        parts.append("")
+        parts.append("## Homage Composition")
+        parts.append(
+            "The active homage package is BitchX — it is the surface's "
+            "aesthetic substrate, giving every ward its grey-punctuation "
+            "skeleton, bright identity colouring, CP437 raster, angle-"
+            "bracket container, zero-frame transitions, and event-rhythm "
+            "texture. Nothing is pasted; every ward appearance is a "
+            "transition. Signature artefacts (quit-quips, join-banners, "
+            "MOTD blocks, kick-reasons) are authored by you under the "
+            "homage grammar — captured chat is never rendered."
+        )
+        parts.append(
+            "Every tick, think about whether a HOMAGE move fits what you "
+            "are doing. Each member pairs with a package transition the "
+            "choreographer will reconcile against concurrency rules:"
+        )
+        parts.append(
+            "  - homage.rotation — cycle to a new signature artefact "
+            "(cadence: ~90s default; structural director can push rapid "
+            "or deliberate).\n"
+            "  - homage.emergence — bring a dormant ward into view via "
+            "the package's default entry (ticker-scroll-in for BitchX).\n"
+            "  - homage.swap — trade a ward for another; simultaneous "
+            "part-message + join-message.\n"
+            "  - homage.cycle — sweep through a ward family (legibility "
+            "wards, hothouse panels, chat-keyword entries).\n"
+            "  - homage.recede — quiet a ward back to absent via the "
+            "package's default exit (ticker-scroll-out for BitchX).\n"
+            "  - homage.expand — emphasise a ward that is about to carry "
+            "a payload; netsplit-burst-class emphasis."
+        )
+        parts.append(
+            "NEVER paste. Every ward appearance is a transition. "
+            "Idle is the cardinal sin — compositional pressure is "
+            "compatible with calm pacing; it is incompatible with stasis."
+        )
+
         # Viewer-audit (2026-04-18): after 4 consecutive react narratives
         # the LLM was looping the same paragraph about the same video.
         # Insert an explicit "change the subject" rider when we've spent
