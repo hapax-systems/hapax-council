@@ -50,6 +50,13 @@ ActivityVocabulary = Literal[
 # family corresponds to a compositional affordance catalog introduced in
 # spec §3.3. Widening this literal requires updating the catalog seed
 # script (`scripts/seed-compositional-affordances.py`).
+#
+# The ``ward.*`` families are the ward-property-management surface
+# (memory ``reference_wards_taxonomy.md``): per-ward modulation of size,
+# position, staging, highlighting, appearance, cadence, and multi-ward
+# choreography. Dispatch lives in ``compositional_consumer.dispatch_ward_*``
+# and writes to ``/dev/shm/hapax-compositor/ward-properties.json`` and
+# ``/dev/shm/hapax-compositor/ward-animation-state.json``.
 IntentFamily = Literal[
     "camera.hero",
     "preset.bias",
@@ -57,6 +64,13 @@ IntentFamily = Literal[
     "youtube.direction",
     "attention.winner",
     "stream_mode.transition",
+    "ward.size",
+    "ward.position",
+    "ward.staging",
+    "ward.highlight",
+    "ward.appearance",
+    "ward.cadence",
+    "ward.choreography",
 ]
 
 # Imagination-fragment material taxonomy (matches

@@ -355,8 +355,17 @@ class OverlayZone:
         log.debug("Overlay zone '%s' updated from %s (%d chars)", self.id, path.name, len(raw))
 
     def render(self, cr: Any, canvas_w: int, canvas_h: int) -> None:
+        # Per-zone ward properties — visibility gate + alpha + position offset.
+        # Reads from ``/dev/shm/hapax-compositor/ward-properties.json`` keyed
+        # by ``overlay-zone:<zone_id>``. The 200ms cache inside
+        # ``ward_properties`` keeps this hot-path read sub-millisecond.
+        from .ward_properties import resolve_ward_properties
+
+        props = resolve_ward_properties(f"overlay-zone:{self.id}")
+        if not props.visible:
+            return
         if self._is_image and self._image_surface is not None:
-            self._render_image(cr, canvas_w, canvas_h)
+            self._render_image(cr, canvas_w, canvas_h, props.alpha)
             return
 
         if not self._pango_markup:
@@ -367,17 +376,29 @@ class OverlayZone:
         if self._cached_surface is None:
             return
 
+        offset_x = int(props.position_offset_x)
+        offset_y = int(props.position_offset_y)
         # Paint the pre-rendered outlined text surface — single blit per frame
         if self._scroll:
             # Scroll: text moves upward from bottom
             scroll_y = canvas_h - self._scroll_offset
-            cr.set_source_surface(self._cached_surface, self.x - 2, scroll_y)
+            cr.set_source_surface(self._cached_surface, self.x - 2 + offset_x, scroll_y + offset_y)
         else:
-            cr.set_source_surface(self._cached_surface, self.x - 2, self.y - 2)
-        cr.paint()
+            cr.set_source_surface(
+                self._cached_surface, self.x - 2 + offset_x, self.y - 2 + offset_y
+            )
+        if props.alpha < 0.999:
+            cr.paint_with_alpha(max(0.0, min(1.0, props.alpha)))
+        else:
+            cr.paint()
 
-    def _render_image(self, cr: Any, canvas_w: int, canvas_h: int) -> None:
-        """Render a PNG image overlay, scaled to fit max_width."""
+    def _render_image(self, cr: Any, canvas_w: int, canvas_h: int, alpha_mod: float = 1.0) -> None:
+        """Render a PNG image overlay, scaled to fit max_width.
+
+        ``alpha_mod`` is multiplied with the zone's baseline alpha so per-ward
+        ward.highlight + ward.staging dispatches modulate image overlays the
+        same way they modulate Pango text overlays.
+        """
         surf = self._image_surface
         iw, ih = surf.get_width(), surf.get_height()
         if iw == 0 or ih == 0:
@@ -387,7 +408,7 @@ class OverlayZone:
         cr.translate(self.x, self.y)
         cr.scale(scale, scale)
         cr.set_source_surface(surf, 0, 0)
-        cr.paint_with_alpha(self.color[3])
+        cr.paint_with_alpha(max(0.0, min(1.0, self.color[3] * alpha_mod)))
         cr.restore()
 
     def _rebuild_surface(self, cr: Any) -> None:

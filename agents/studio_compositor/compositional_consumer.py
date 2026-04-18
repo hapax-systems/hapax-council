@@ -254,6 +254,306 @@ def dispatch_attention_winner(capability_name: str) -> bool:
     return True
 
 
+_WARD_HIGHLIGHT_MODIFIERS: dict[str, dict[str, float]] = {
+    "pulse": {"border_pulse_hz": 2.0, "scale_bump_pct": 0.05},
+    "glow": {"glow_radius_px": 12.0},
+    "flash": {"alpha": 1.0, "scale_bump_pct": 0.15},
+    "dim": {"alpha": 0.35},
+    "foreground": {"alpha": 1.0, "glow_radius_px": 6.0},
+    "default": {},
+}
+
+_WARD_SIZE_MODIFIERS: dict[str, float] = {
+    "shrink-20pct": 0.80,
+    "shrink-50pct": 0.50,
+    "natural": 1.0,
+    "default": 1.0,
+    "grow-110pct": 1.10,
+    "grow-150pct": 1.50,
+}
+
+_WARD_POSITION_MODIFIERS: dict[str, dict[str, float]] = {
+    "drift-sine-1hz": {"drift_type_sine": 1.0, "drift_hz": 1.0, "drift_amplitude_px": 12.0},
+    "drift-sine-slow": {"drift_type_sine": 1.0, "drift_hz": 0.25, "drift_amplitude_px": 20.0},
+    "drift-circle-1hz": {"drift_type_circle": 1.0, "drift_hz": 1.0, "drift_amplitude_px": 16.0},
+    "static": {"drift_hz": 0.0, "drift_amplitude_px": 0.0},
+    "default": {"drift_hz": 0.0, "drift_amplitude_px": 0.0},
+}
+
+_WARD_STAGING_MODIFIERS: dict[str, dict[str, float | bool | int | None]] = {
+    "hide": {"visible": False},
+    "show": {"visible": True},
+    "top": {"z_order_override": 90},
+    "bottom": {"z_order_override": 5},
+    "default": {"z_order_override": None, "visible": True},
+}
+
+_WARD_CADENCE_MODIFIERS: dict[str, float | None] = {
+    "pulse-2hz": 2.0,
+    "pulse-4hz": 4.0,
+    "quick": 6.0,
+    "slow": 1.0,
+    "default": None,
+}
+
+
+def _ward_dispatch_common(
+    capability_name: str,
+    family_prefix: str,
+) -> tuple[str, str] | None:
+    """Parse a ``ward.<family>.<ward_id>.<modifier>`` capability name.
+
+    Returns ``(ward_id, modifier)`` on success or ``None`` if the name is
+    malformed. ``ward_id`` may itself contain hyphens (camera-pip:role,
+    overlay-zone:main, etc.) so the split limit is set to consume the
+    family prefix and trailing modifier with everything in-between
+    treated as the ward identifier.
+    """
+    if not capability_name.startswith(family_prefix + "."):
+        log.warning("malformed %s name: %s", family_prefix, capability_name)
+        return None
+    suffix = capability_name[len(family_prefix) + 1 :]
+    if "." not in suffix:
+        log.warning("malformed %s name (no modifier): %s", family_prefix, capability_name)
+        return None
+    ward_id, _, modifier = suffix.rpartition(".")
+    if not ward_id or not modifier:
+        log.warning("malformed %s name (empty parts): %s", family_prefix, capability_name)
+        return None
+    return ward_id, modifier
+
+
+def dispatch_ward_size(capability_name: str, ttl_s: float) -> bool:
+    """``ward.size.<ward_id>.<modifier>`` → ward-properties.json (scale field).
+
+    Modifier vocabulary: ``shrink-20pct``, ``shrink-50pct``, ``natural``,
+    ``default``, ``grow-110pct``, ``grow-150pct``. Unknown modifiers
+    fall back to natural size (scale=1.0) and log a warning.
+    """
+    parsed = _ward_dispatch_common(capability_name, "ward.size")
+    if parsed is None:
+        return False
+    ward_id, modifier = parsed
+    scale = _WARD_SIZE_MODIFIERS.get(modifier)
+    if scale is None:
+        log.warning("ward.size unknown modifier %s in %s", modifier, capability_name)
+        scale = 1.0
+    _write_ward_property(ward_id, ttl_s, scale=scale)
+    _mark_recruitment("ward.size")
+    return True
+
+
+def dispatch_ward_position(capability_name: str, ttl_s: float) -> bool:
+    """``ward.position.<ward_id>.<modifier>`` → ward-properties.json (drift_*).
+
+    Modifier vocabulary: ``drift-sine-1hz``, ``drift-sine-slow``,
+    ``drift-circle-1hz``, ``static``, ``default``.
+    """
+    parsed = _ward_dispatch_common(capability_name, "ward.position")
+    if parsed is None:
+        return False
+    ward_id, modifier = parsed
+    spec = _WARD_POSITION_MODIFIERS.get(modifier)
+    if spec is None:
+        log.warning("ward.position unknown modifier %s in %s", modifier, capability_name)
+        spec = _WARD_POSITION_MODIFIERS["default"]
+    if spec.get("drift_type_sine"):
+        drift_type = "sine"
+    elif spec.get("drift_type_circle"):
+        drift_type = "circle"
+    else:
+        drift_type = "none"
+    _write_ward_property(
+        ward_id,
+        ttl_s,
+        drift_type=drift_type,
+        drift_hz=float(spec.get("drift_hz", 0.0)),
+        drift_amplitude_px=float(spec.get("drift_amplitude_px", 0.0)),
+    )
+    _mark_recruitment("ward.position")
+    return True
+
+
+def dispatch_ward_staging(capability_name: str, ttl_s: float) -> bool:
+    """``ward.staging.<ward_id>.<modifier>`` → ward-properties.json (visible/z_order).
+
+    Modifier vocabulary: ``hide``, ``show``, ``top``, ``bottom``, ``default``.
+    """
+    parsed = _ward_dispatch_common(capability_name, "ward.staging")
+    if parsed is None:
+        return False
+    ward_id, modifier = parsed
+    spec = _WARD_STAGING_MODIFIERS.get(modifier)
+    if spec is None:
+        log.warning("ward.staging unknown modifier %s in %s", modifier, capability_name)
+        spec = _WARD_STAGING_MODIFIERS["default"]
+    update: dict = {}
+    if "visible" in spec:
+        update["visible"] = bool(spec["visible"])
+    if "z_order_override" in spec:
+        update["z_order_override"] = spec["z_order_override"]
+    _write_ward_property(ward_id, ttl_s, **update)
+    _mark_recruitment("ward.staging")
+    return True
+
+
+def dispatch_ward_highlight(capability_name: str, ttl_s: float) -> bool:
+    """``ward.highlight.<ward_id>.<modifier>`` → ward-properties.json (alpha/glow/pulse).
+
+    Modifier vocabulary: ``pulse``, ``glow``, ``flash``, ``dim``,
+    ``foreground``, ``default``.
+    """
+    parsed = _ward_dispatch_common(capability_name, "ward.highlight")
+    if parsed is None:
+        return False
+    ward_id, modifier = parsed
+    spec = _WARD_HIGHLIGHT_MODIFIERS.get(modifier)
+    if spec is None:
+        log.warning("ward.highlight unknown modifier %s in %s", modifier, capability_name)
+        spec = {}
+    _write_ward_property(ward_id, ttl_s, **{k: float(v) for k, v in spec.items()})
+    _mark_recruitment("ward.highlight")
+    return True
+
+
+def dispatch_ward_appearance(capability_name: str, ttl_s: float) -> bool:
+    """``ward.appearance.<ward_id>.<modifier>`` → ward-properties.json (color).
+
+    Modifier vocabulary is open-ended for now: ``tint-warm``,
+    ``tint-cool``, ``desaturate``, ``palette-default``. Color values
+    are computed from a small built-in lookup; out-of-vocabulary
+    modifiers fall back to the default palette (no override).
+    """
+    parsed = _ward_dispatch_common(capability_name, "ward.appearance")
+    if parsed is None:
+        return False
+    ward_id, modifier = parsed
+    palette: dict[str, tuple[float, float, float, float] | None] = {
+        "tint-warm": (1.0, 0.85, 0.65, 1.0),
+        "tint-cool": (0.65, 0.85, 1.0, 1.0),
+        "desaturate": (0.7, 0.7, 0.7, 1.0),
+        "palette-default": None,
+        "default": None,
+    }
+    color = palette.get(modifier)
+    _write_ward_property(ward_id, ttl_s, color_override_rgba=color)
+    _mark_recruitment("ward.appearance")
+    return True
+
+
+def dispatch_ward_cadence(capability_name: str, ttl_s: float) -> bool:
+    """``ward.cadence.<ward_id>.<modifier>`` → ward-properties.json (rate_hz_override).
+
+    Modifier vocabulary: ``pulse-2hz``, ``pulse-4hz``, ``quick``,
+    ``slow``, ``default``. ``default`` clears the override.
+    """
+    parsed = _ward_dispatch_common(capability_name, "ward.cadence")
+    if parsed is None:
+        return False
+    ward_id, modifier = parsed
+    rate = _WARD_CADENCE_MODIFIERS.get(modifier)
+    if modifier not in _WARD_CADENCE_MODIFIERS:
+        log.warning("ward.cadence unknown modifier %s in %s", modifier, capability_name)
+    _write_ward_property(ward_id, ttl_s, rate_hz_override=rate)
+    _mark_recruitment("ward.cadence")
+    return True
+
+
+def dispatch_ward_choreography(capability_name: str, ttl_s: float) -> bool:
+    """``ward.choreography.<sequence_name>`` → ward-animation-state.json transitions.
+
+    Sequence vocabulary: ``album-emphasize``, ``hothouse-quiet``,
+    ``camera-spotlight``. Each sequence emits a coordinated set of
+    ``Transition`` entries that the animation engine plays in parallel.
+
+    The choreography modifier (sequence name) is everything after
+    ``ward.choreography.``; we don't sub-parse a ward_id for this family
+    because the sequence itself names the wards it touches.
+    """
+    if not capability_name.startswith("ward.choreography."):
+        log.warning("malformed ward.choreography name: %s", capability_name)
+        return False
+    sequence_name = capability_name[len("ward.choreography.") :]
+    if not sequence_name:
+        log.warning("ward.choreography name has empty sequence: %s", capability_name)
+        return False
+    transitions = _build_choreography_sequence(sequence_name, ttl_s)
+    if not transitions:
+        log.warning("ward.choreography unknown sequence: %s", sequence_name)
+        return False
+    from agents.studio_compositor.animation_engine import append_transitions
+
+    append_transitions(transitions)
+    _mark_recruitment("ward.choreography")
+    return True
+
+
+def _build_choreography_sequence(sequence_name: str, ttl_s: float) -> list:
+    """Return the predefined ``Transition`` list for ``sequence_name``.
+
+    Empty list signals an unknown sequence name. Sequences are kept
+    short and predictable; new sequences should be added here with a
+    one-line comment explaining the operator-facing intent.
+
+    The ``ttl_s`` argument is the dispatch-side TTL; sequences cap each
+    transition's ``duration_s`` at min(ttl_s, baked_default) so a long
+    TTL doesn't extend a quick pulse.
+    """
+    from agents.studio_compositor.animation_engine import Transition
+
+    now = time.time()
+    cap = max(0.1, min(ttl_s, 5.0))
+    if sequence_name == "album-emphasize":
+        # Album scales up + brightens; everything else dims.
+        return [
+            Transition("album", "scale", 1.0, 1.15, min(cap, 0.6), "ease-out-quad", now),
+            Transition("album", "alpha", 0.92, 1.0, min(cap, 0.4), "ease-out-quad", now),
+            Transition("token_pole", "alpha", 1.0, 0.5, min(cap, 0.5), "ease-in-quad", now),
+            Transition("sierpinski", "alpha", 1.0, 0.5, min(cap, 0.5), "ease-in-quad", now),
+        ]
+    if sequence_name == "hothouse-quiet":
+        # All hothouse panels fade to half, leaving primary content prominent.
+        return [
+            Transition(w, "alpha", 0.92, 0.4, min(cap, 0.5), "ease-out-quad", now)
+            for w in (
+                "impingement_cascade",
+                "recruitment_candidate_panel",
+                "thinking_indicator",
+                "pressure_gauge",
+                "activity_variety_log",
+                "whos_here",
+            )
+        ]
+    if sequence_name == "camera-spotlight":
+        # The hero camera tile pops up; chrome dims out of the way.
+        return [
+            Transition("pip-ur", "scale", 1.0, 1.1, min(cap, 0.4), "ease-out-quad", now),
+            Transition("pip-ul", "alpha", 1.0, 0.6, min(cap, 0.5), "ease-in-quad", now),
+            Transition("pip-ll", "alpha", 1.0, 0.6, min(cap, 0.5), "ease-in-quad", now),
+            Transition("pip-lr", "alpha", 1.0, 0.6, min(cap, 0.5), "ease-in-quad", now),
+        ]
+    return []
+
+
+def _write_ward_property(ward_id: str, ttl_s: float, **fields_) -> None:
+    """Read current ward properties for ``ward_id``, fold in ``fields_``, write back.
+
+    The merge preserves any other override fields previously set on the
+    same ward by an earlier dispatcher (e.g. a ``ward.size`` followed
+    by a ``ward.highlight`` should leave both scale + alpha present in
+    the final entry until expiry).
+    """
+    from agents.studio_compositor.ward_properties import (
+        WardProperties,
+        resolve_ward_properties,
+        set_ward_properties,
+    )
+
+    current = resolve_ward_properties(ward_id)
+    update = WardProperties(**{**current.__dict__, **fields_})
+    set_ward_properties(ward_id, update, ttl_s)
+
+
 def dispatch_stream_mode_transition(capability_name: str) -> bool:
     """stream.mode.<mode>.transition → stream-mode-intent.json. A separate
     gate (shared/stream_transition_gate.py) adjudicates whether the
@@ -287,6 +587,13 @@ def dispatch(
     "youtube.direction",
     "attention.winner",
     "stream_mode.transition",
+    "ward.size",
+    "ward.position",
+    "ward.staging",
+    "ward.highlight",
+    "ward.appearance",
+    "ward.cadence",
+    "ward.choreography",
     "unknown",
 ]:
     """Route a recruitment record to the correct dispatcher.
@@ -306,6 +613,20 @@ def dispatch(
         return "attention.winner" if dispatch_attention_winner(name) else "unknown"
     if name.startswith("stream.mode.") and name.endswith(".transition"):
         return "stream_mode.transition" if dispatch_stream_mode_transition(name) else "unknown"
+    if name.startswith("ward.size."):
+        return "ward.size" if dispatch_ward_size(name, record.ttl_s) else "unknown"
+    if name.startswith("ward.position."):
+        return "ward.position" if dispatch_ward_position(name, record.ttl_s) else "unknown"
+    if name.startswith("ward.staging."):
+        return "ward.staging" if dispatch_ward_staging(name, record.ttl_s) else "unknown"
+    if name.startswith("ward.highlight."):
+        return "ward.highlight" if dispatch_ward_highlight(name, record.ttl_s) else "unknown"
+    if name.startswith("ward.appearance."):
+        return "ward.appearance" if dispatch_ward_appearance(name, record.ttl_s) else "unknown"
+    if name.startswith("ward.cadence."):
+        return "ward.cadence" if dispatch_ward_cadence(name, record.ttl_s) else "unknown"
+    if name.startswith("ward.choreography."):
+        return "ward.choreography" if dispatch_ward_choreography(name, record.ttl_s) else "unknown"
     log.warning("unknown compositional capability family: %s", name)
     return "unknown"
 
@@ -357,5 +678,12 @@ __all__ = [
     "dispatch_youtube_direction",
     "dispatch_attention_winner",
     "dispatch_stream_mode_transition",
+    "dispatch_ward_size",
+    "dispatch_ward_position",
+    "dispatch_ward_staging",
+    "dispatch_ward_highlight",
+    "dispatch_ward_appearance",
+    "dispatch_ward_cadence",
+    "dispatch_ward_choreography",
     "recent_recruitment_age_s",
 ]
