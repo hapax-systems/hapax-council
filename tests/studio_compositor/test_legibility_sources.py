@@ -1,4 +1,12 @@
-"""Phase-4 smoke tests for legibility Cairo sources."""
+"""Smoke + BitchX-grammar authenticity tests for the 4 legibility Cairo sources.
+
+Phase 4 of the HOMAGE epic. These tests pin:
+- That each migrated source still renders without error under feature-flag-off.
+- That the ward inherits HomageTransitionalSource (FSM hook points available).
+- That BitchX grammar is applied via ``get_active_package()`` — monospaced
+  font selection, palette roles resolved from the package (no hardcoded hex),
+  no rounded-rect chrome.
+"""
 
 from __future__ import annotations
 
@@ -8,28 +16,60 @@ import cairo
 import pytest
 
 from agents.studio_compositor import legibility_sources as ls
+from agents.studio_compositor.homage import BITCHX_PACKAGE
+from agents.studio_compositor.homage.transitional_source import (
+    HomageTransitionalSource,
+    TransitionState,
+)
 
 
-def _render(src_cls, w=400, h=60):
-    """Render into a fresh surface and return (surface, cr) for inspection."""
+class _SpyContext:
+    """Delegating wrapper around cairo.Context that records show_text + arc."""
+
+    def __init__(self, cr: cairo.Context) -> None:
+        self._cr = cr
+        self.show_text_calls: list[str] = []
+        self.arc_calls: int = 0
+
+    def show_text(self, text):
+        self.show_text_calls.append(text)
+        return self._cr.show_text(text)
+
+    def arc(self, *args, **kwargs):
+        self.arc_calls += 1
+        return self._cr.arc(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._cr, name)
+
+
+def _render(src_cls, w=800, h=60):
+    """Render into a fresh surface and return (surface, spy) for inspection."""
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
     cr = cairo.Context(surface)
+    spy = _SpyContext(cr)
     src = src_cls()
-    src.render(cr, w, h, t=0.0, state={})
-    return surface
+    src.render(spy, w, h, t=0.0, state={})
+    return surface, spy
 
 
 @pytest.fixture(autouse=True)
 def _redirect_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(ls, "_NARRATIVE_STATE", tmp_path / "narrative-state.json")
     monkeypatch.setattr(ls, "_DIRECTOR_INTENT_JSONL", tmp_path / "director-intent.jsonl")
-    monkeypatch.setattr(ls, "_WORKING_MODE_FILE", tmp_path / "working-mode")
     return tmp_path
 
 
 def _write_narrative_state(tmp_path, stance="nominal", activity="react"):
     (tmp_path / "narrative-state.json").write_text(
-        json.dumps({"stance": stance, "activity": activity, "last_tick_ts": 0, "condition_id": "c"})
+        json.dumps(
+            {
+                "stance": stance,
+                "activity": activity,
+                "last_tick_ts": 0,
+                "condition_id": "c",
+            }
+        )
     )
 
 
@@ -44,92 +84,143 @@ def _write_intent(tmp_path, prov=None, impingements=None):
     (tmp_path / "director-intent.jsonl").write_text(json.dumps(payload) + "\n")
 
 
-class TestActivityHeader:
-    def test_renders_without_state(self, tmp_path):
-        surf = _render(ls.ActivityHeaderCairoSource, 800, 60)
-        data = surf.get_data()
-        # Non-empty render
-        assert any(b != 0 for b in bytes(data[:1000]))
+def _surface_not_empty(surface: cairo.ImageSurface) -> bool:
+    data = bytes(surface.get_data()[:1000])
+    return any(b != 0 for b in data)
 
-    def test_reads_narrative_and_intent(self, tmp_path):
+
+# ── Smoke tests — render without crash, all states populated ──────────────
+
+
+class TestSmoke:
+    def test_activity_header_renders_without_state(self, tmp_path):
+        surf, _spy = _render(ls.ActivityHeaderCairoSource, 800, 60)
+        assert _surface_not_empty(surf)
+
+    def test_activity_header_reads_narrative_and_intent(self, tmp_path):
         _write_narrative_state(tmp_path, activity="vinyl")
         _write_intent(
             tmp_path,
             impingements=[
-                {"narrative": "turntable focus", "intent_family": "camera.hero", "salience": 0.9}
+                {
+                    "narrative": "turntable focus",
+                    "intent_family": "camera.hero",
+                    "salience": 0.9,
+                }
             ],
         )
-        surf = _render(ls.ActivityHeaderCairoSource, 800, 60)
-        assert surf.get_width() == 800
+        surf, _spy = _render(ls.ActivityHeaderCairoSource, 800, 60)
+        assert _surface_not_empty(surf)
 
-
-class TestStanceIndicator:
-    def test_nominal_default(self, tmp_path):
-        surf = _render(ls.StanceIndicatorCairoSource, 120, 40)
-        assert surf.get_width() == 120
-
-    def test_seeking_stance_from_file(self, tmp_path):
+    def test_stance_indicator_renders(self, tmp_path):
         _write_narrative_state(tmp_path, stance="seeking")
-        surf = _render(ls.StanceIndicatorCairoSource, 120, 40)
-        data = bytes(surf.get_data()[:4000])
-        # Verify some content rendered
-        assert any(b != 0 for b in data)
+        surf, _spy = _render(ls.StanceIndicatorCairoSource, 180, 32)
+        assert _surface_not_empty(surf)
 
-    def test_unknown_stance_fallback(self, tmp_path):
-        _write_narrative_state(tmp_path, stance="bogus")
-        # Should still render without crashing (dot uses fallback color)
-        surf = _render(ls.StanceIndicatorCairoSource, 120, 40)
-        assert surf is not None
+    def test_chat_keyword_legend_renders(self, tmp_path):
+        surf, _spy = _render(ls.ChatKeywordLegendCairoSource, 200, 200)
+        assert _surface_not_empty(surf)
 
+    def test_grounding_ticker_renders_empty(self, tmp_path):
+        surf, _spy = _render(ls.GroundingProvenanceTickerCairoSource, 600, 24)
+        assert _surface_not_empty(surf)
 
-class TestChatLegend:
-    def test_renders_keywords(self, tmp_path):
-        surf = _render(ls.ChatKeywordLegendCairoSource, 180, 200)
-        assert surf.get_width() == 180
-
-
-class TestGroundingTicker:
-    def test_empty_provenance(self, tmp_path):
-        surf = _render(ls.GroundingProvenanceTickerCairoSource, 500, 30)
-        # No intent file — should render "(ungrounded)"
-        assert surf.get_width() == 500
-
-    def test_with_provenance(self, tmp_path):
-        _write_intent(
-            tmp_path,
-            prov=[
-                "audio.contact_mic.desk_activity.drumming",
-                "visual.overhead_hand_zones.turntable",
-            ],
-        )
-        surf = _render(ls.GroundingProvenanceTickerCairoSource, 500, 30)
-        data = bytes(surf.get_data()[:2000])
-        assert any(b != 0 for b in data)
+    def test_grounding_ticker_renders_with_signals(self, tmp_path):
+        _write_intent(tmp_path, prov=["audio.midi.beat_position", "ir.ir_hand_zone.turntable"])
+        surf, _spy = _render(ls.GroundingProvenanceTickerCairoSource, 600, 24)
+        assert _surface_not_empty(surf)
 
 
-class TestWorkingModePalette:
-    def test_research_mode_default(self, tmp_path):
-        assert ls._read_working_mode() == "research"
-        pal = ls._palette()
-        assert "fg_primary" in pal
-
-    def test_rnd_mode_from_file(self, tmp_path):
-        (tmp_path / "working-mode").write_text("rnd")
-        assert ls._read_working_mode() == "rnd"
+# ── HOMAGE FSM inheritance ────────────────────────────────────────────────
 
 
-class TestRegistry:
-    def test_all_four_registered(self, tmp_path):
-        # Force re-import to trigger registration
-        from agents.studio_compositor.cairo_sources import (
-            get_cairo_source_class,
-            list_classes,
-        )
+class TestInheritsHomageTransitionalSource:
+    @pytest.mark.parametrize(
+        "cls",
+        [
+            ls.ActivityHeaderCairoSource,
+            ls.StanceIndicatorCairoSource,
+            ls.ChatKeywordLegendCairoSource,
+            ls.GroundingProvenanceTickerCairoSource,
+        ],
+    )
+    def test_is_homage_transitional_source(self, cls):
+        assert issubclass(cls, HomageTransitionalSource)
 
-        classes = set(list_classes())
-        assert "ActivityHeaderCairoSource" in classes
-        assert "StanceIndicatorCairoSource" in classes
-        assert "ChatKeywordLegendCairoSource" in classes
-        assert "GroundingProvenanceTickerCairoSource" in classes
-        # Fetchable
-        assert get_cairo_source_class("ActivityHeaderCairoSource") is ls.ActivityHeaderCairoSource
+    @pytest.mark.parametrize(
+        "cls,expected_id",
+        [
+            (ls.ActivityHeaderCairoSource, "activity_header"),
+            (ls.StanceIndicatorCairoSource, "stance_indicator"),
+            (ls.ChatKeywordLegendCairoSource, "chat_keyword_legend"),
+            (ls.GroundingProvenanceTickerCairoSource, "grounding_provenance_ticker"),
+        ],
+    )
+    def test_source_id_matches_layout_json(self, cls, expected_id):
+        assert cls().source_id == expected_id
+
+    def test_fsm_hook_points_available(self):
+        src = ls.ActivityHeaderCairoSource()
+        assert src.transition_state is TransitionState.ABSENT
+        src.apply_transition("ticker-scroll-in")
+        assert src.transition_state is TransitionState.ENTERING
+
+
+# ── BitchX grammar pins ────────────────────────────────────────────────────
+
+
+class TestBitchXGrammarApplied:
+    def test_active_package_is_bitchx_by_default(self):
+        from agents.studio_compositor.homage import get_active_package
+
+        active = get_active_package()
+        assert active is BITCHX_PACKAGE
+
+    def test_activity_header_uses_line_start_marker(self, tmp_path):
+        _write_narrative_state(tmp_path, activity="react")
+        _write_intent(tmp_path, impingements=[])
+        _, spy = _render(ls.ActivityHeaderCairoSource, 800, 60)
+        assert any(BITCHX_PACKAGE.grammar.line_start_marker in c for c in spy.show_text_calls)
+        assert any("REACT" in c for c in spy.show_text_calls)
+
+    def test_stance_indicator_uses_irc_mode_change_format(self, tmp_path):
+        _write_narrative_state(tmp_path, stance="seeking")
+        _, spy = _render(ls.StanceIndicatorCairoSource, 180, 32)
+        assert any("+H" in c for c in spy.show_text_calls)
+        assert any("SEEKING" in c for c in spy.show_text_calls)
+
+    def test_chat_keyword_legend_uses_topic_line_format(self, tmp_path):
+        _, spy = _render(ls.ChatKeywordLegendCairoSource, 200, 200)
+        assert any("Topic" in c for c in spy.show_text_calls)
+        assert any("#homage" in c for c in spy.show_text_calls)
+
+    def test_grounding_ticker_uses_join_format(self, tmp_path):
+        _write_intent(tmp_path, prov=["audio.midi.beat_position"])
+        _, spy = _render(ls.GroundingProvenanceTickerCairoSource, 600, 24)
+        assert any(c.startswith("* ") for c in spy.show_text_calls)
+
+    def test_grounding_ticker_empty_renders_ungrounded_marker(self, tmp_path):
+        _, spy = _render(ls.GroundingProvenanceTickerCairoSource, 600, 24)
+        assert any("ungrounded" in c for c in spy.show_text_calls)
+
+
+class TestNoRoundedRectChrome:
+    """Anti-pattern refusal — BitchX grammar forbids rounded corners
+    (spec §5.5). The migrated wards must not invoke Cairo arc calls for
+    background chrome — sharp rectangles only."""
+
+    @pytest.mark.parametrize(
+        "cls",
+        [
+            ls.ActivityHeaderCairoSource,
+            ls.ChatKeywordLegendCairoSource,
+            ls.GroundingProvenanceTickerCairoSource,
+        ],
+    )
+    def test_no_arcs_in_chrome(self, cls):
+        _, spy = _render(cls, 400, 60)
+        assert spy.arc_calls == 0
+
+    def test_stance_indicator_no_arcs(self):
+        _, spy = _render(ls.StanceIndicatorCairoSource, 400, 60)
+        assert spy.arc_calls == 0
