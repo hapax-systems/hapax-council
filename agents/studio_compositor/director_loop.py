@@ -864,11 +864,26 @@ class DirectorLoop:
                 )
                 activity = intent.activity
                 text = intent.narrative_text
+
+                # Sim-3 audit (2026-04-18): the activity rotation enforcer
+                # was running AFTER _emit_intent_artifacts, so the JSONL
+                # record captured the pre-rotation (monotone react) label.
+                # Rotate BEFORE emit so downstream consumers + the research
+                # log both see the rotated variety. The Continuous-Loop
+                # §3.2 stimmung-override runs first (it's content-driven,
+                # not repetition-driven), then the rotation enforcer as a
+                # repetition-breaker of last resort.
+                if activity not in ("silence",) and text:
+                    activity = self._maybe_override_activity(activity)
+                    activity = self._maybe_rotate_repeated_activity(activity)
+                if activity != intent.activity:
+                    intent = intent.model_copy(update={"activity": activity})
+
                 _emit_intent_artifacts(intent, condition_id=condition_id)
 
                 # Handle activity
                 if activity == "silence" or not text:
-                    # Same operator directive — silence/empty is a do-nothing
+                    # Operator directive — silence/empty is a do-nothing
                     # outcome in everything downstream. Emit a micromove on
                     # top of the already-written silence record so the DMN
                     # stream still sees a compositor impingement this tick.
@@ -881,26 +896,6 @@ class DirectorLoop:
                         self._reactor.set_header("SILENCE")
                     time.sleep(5.0)
                     continue
-
-                # Continuous-Loop Research Cadence §3.2 — stimmung-modulated
-                # activity-override gate. Promotes the LLM's proposed
-                # activity through the Phase 9 scorer; if guards pass and
-                # an alternate beats the proposal by ≥ override_margin,
-                # swap to the alternate BEFORE the rest of the loop runs.
-                # Falls back to the LLM's pick on any error.
-                activity = self._maybe_override_activity(activity)
-
-                # Sim-2 audit (2026-04-18): LLM picked `react` 30/30
-                # ticks despite the prompt nudge. The perceptual field is
-                # video-heavy (YouTube slots always on), so `react` is
-                # always the highest-signal move. Force variety: if the
-                # last N activities were all identical, rotate to the
-                # next in an observe/music/study/chat cycle. The
-                # narrative text (LLM's actual output) is preserved —
-                # only the ACTIVITY label flips — so downstream
-                # consumers treating activity as a categorical routing
-                # signal see diversity while the content stays coherent.
-                activity = self._maybe_rotate_repeated_activity(activity)
 
                 if activity != self._activity:
                     log.info("Activity: %s → %s", self._activity, activity)
