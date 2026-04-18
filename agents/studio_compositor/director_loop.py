@@ -1563,11 +1563,22 @@ class DirectorLoop:
                     cleaned = cleaned[:-3]
                 cleaned = cleaned.strip()
             obj = json.loads(cleaned)
+            # Volitional-grounded-director shape (PR #1017, 2026-04-17):
+            # the LLM now emits `{activity, stance, narrative_text, ...}`
+            # rather than the legacy `{react, cut}`. Accept either so the
+            # per-span coherence scoring + the legacy return contract
+            # keep working after the schema flip. The caller's
+            # `_parse_intent_from_llm` does the full validation.
+            if "narrative_text" in obj or "stance" in obj:
+                return (obj.get("narrative_text", "") or "", False)
             return (obj.get("react", ""), obj.get("cut", False))
         except (json.JSONDecodeError, KeyError):
-            # Truncated JSON — extract react text manually
+            # Truncated JSON — try new shape first, then legacy shape.
             import re
 
+            m = re.search(r'"narrative_text"\s*:\s*"([^"]*)', raw)
+            if m:
+                return (m.group(1), False)
             m = re.search(r'"react"\s*:\s*"([^"]*)', raw)
             if m:
                 text = m.group(1)
