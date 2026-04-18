@@ -99,9 +99,19 @@ class PipelineManager:
                 metrics.register_camera(spec.role, model)
 
                 try:
+                    # A+ Stage 1 (2026-04-17): cold-start fallback producers.
+                    # Build the pipeline now (so structure is ready + interpipe
+                    # sink exists) but do NOT call fb.start() — leaves it in
+                    # NULL state. ``ensure_fallback_started`` is called from
+                    # ``swap_to_fallback`` on first swap, transitioning the
+                    # pipeline to PLAYING just-in-time. While all primaries
+                    # are HEALTHY (steady state), the fallback producer
+                    # contributes zero CPU. On first swap, the first
+                    # fallback frame arrives ~50-100ms later than the
+                    # always-hot version, well under the 2s staleness
+                    # threshold.
                     fb = FallbackPipeline(spec, gst=self._Gst, fps=self._fps)
                     fb.build()
-                    fb.start()
                     self._fallbacks[spec.role] = fb
                 except Exception:
                     log.exception("fallback pipeline for %s: build failed", spec.role)
@@ -180,6 +190,15 @@ class PipelineManager:
             sm = self._state_machines.get(role)
         if src is None or fb is None:
             return
+        # A+ Stage 1 (2026-04-17): cold-start fallback producers. If the
+        # fallback is still in NULL state (never started because the
+        # primary was healthy), transition to PLAYING now so
+        # interpipesink emits frames. start() is idempotent so calling
+        # it on an already-playing fallback is a no-op.
+        try:
+            fb.start()
+        except Exception:
+            log.exception("swap_to_fallback: failed to start fallback pipeline for %s", role)
         src.set_property("listen-to", fb.sink_name)
         metrics.on_swap(role, to_fallback=True)
         log.info("swap_to_fallback: role=%s → %s", role, fb.sink_name)

@@ -82,10 +82,38 @@ class RtmpOutputBin:
             video_queue.set_property("max-size-time", 2 * Gst.SECOND)
             video_queue.set_property("leaky", 2)  # downstream
 
-            video_convert = Gst.ElementFactory.make("videoconvert", "rtmp_video_convert")
-            if video_convert is None:
-                log.error("rtmp bin: videoconvert factory failed")
-                return False
+            # A+ Stage 1 (2026-04-17): CPU videoconvert (BGRA→NV12) → GPU
+            # cudaupload + cudaconvert. The per-camera recording branch
+            # already uses this pattern (recording.py:29-33). Moving the
+            # colorspace conversion onto the CUDA copy engine + SM
+            # (~negligible cost vs NVENC) frees a full CPU thread that
+            # was doing per-frame colorspace math before the encoder.
+            # Falls back to software videoconvert if CUDA elements
+            # aren't available (e.g., GStreamer built without nvcodec).
+            video_convert = Gst.ElementFactory.make("cudaupload", "rtmp_cudaupload")
+            video_convert2 = Gst.ElementFactory.make("cudaconvert", "rtmp_cudaconvert")
+            if video_convert is None or video_convert2 is None:
+                log.warning(
+                    "rtmp bin: cudaupload/cudaconvert unavailable, "
+                    "falling back to software videoconvert"
+                )
+                video_convert = Gst.ElementFactory.make("videoconvert", "rtmp_video_convert")
+                video_convert2 = None
+                if video_convert is None:
+                    log.error("rtmp bin: videoconvert factory failed")
+                    return False
+            else:
+                try:
+                    video_convert.set_property("cuda-device-id", 0)
+                    video_convert2.set_property("cuda-device-id", 0)
+                except Exception:
+                    log.debug("cudaupload/cudaconvert: cuda-device-id not supported", exc_info=True)
+                # Feed encoder NV12 in CUDA memory, not CPU BGRA.
+                cuda_caps = Gst.ElementFactory.make("capsfilter", "rtmp_cuda_caps")
+                cuda_caps.set_property(
+                    "caps",
+                    Gst.Caps.from_string("video/x-raw(memory:CUDAMemory),format=NV12"),
+                )
 
             # Delta 2026-04-14-encoder-output-path-walk finding #5: queue
             # between videoconvert and nvh264enc. Without it, colorspace
@@ -242,6 +270,12 @@ class RtmpOutputBin:
                 mux,
                 sink,
             ]
+            # A+ Stage 1: cudaconvert + caps inserted between cudaupload
+            # and the encoder queue when the GPU path is live. ``cuda_caps``
+            # is only defined in the cudaupload branch.
+            if video_convert2 is not None:
+                elements.insert(elements.index(video_convert) + 1, video_convert2)
+                elements.insert(elements.index(video_convert2) + 1, cuda_caps)
             for el in elements:
                 bin_.add(el)
 
@@ -249,9 +283,20 @@ class RtmpOutputBin:
             if not video_queue.link(video_convert):
                 log.error("rtmp bin: video_queue -> video_convert link failed")
                 return False
-            if not video_convert.link(video_encoder_queue):
-                log.error("rtmp bin: video_convert -> video_encoder_queue link failed")
-                return False
+            if video_convert2 is not None:
+                if not video_convert.link(video_convert2):
+                    log.error("rtmp bin: cudaupload -> cudaconvert link failed")
+                    return False
+                if not video_convert2.link(cuda_caps):
+                    log.error("rtmp bin: cudaconvert -> cuda_caps link failed")
+                    return False
+                if not cuda_caps.link(video_encoder_queue):
+                    log.error("rtmp bin: cuda_caps -> video_encoder_queue link failed")
+                    return False
+            else:
+                if not video_convert.link(video_encoder_queue):
+                    log.error("rtmp bin: video_convert -> video_encoder_queue link failed")
+                    return False
             if not video_encoder_queue.link(encoder):
                 log.error("rtmp bin: video_encoder_queue -> encoder link failed")
                 return False

@@ -659,12 +659,20 @@ def pad_probe_on_buffer(pad: Any, info: Any, role: str) -> int:
         return 0
 
     now = time.monotonic()
-    with _lock:
-        model = _cam_models.get(role, "unknown")
-        last = _last_seq.get(role, -1)
-        prev_mono = _last_frame_monotonic.get(role, 0.0)
-        _last_seq[role] = seq
-        _last_frame_monotonic[role] = now
+    # A+ Stage 1 (2026-04-17): pad probe hot path ran under the global
+    # ``_lock`` at 180Hz (6 cameras × 30fps) and contended with the 1Hz
+    # poll loop that also held _lock — measured cost: brio-operator
+    # losing ~2fps sustained to lock contention. Python dict single-key
+    # __getitem__/__setitem__ are atomic under the GIL; remove the lock
+    # from the per-role dict reads/writes in the pad probe path. The
+    # 1Hz poll can observe a fractionally stale interleaving between
+    # _last_seq and _last_frame_monotonic — tolerable for a per-second
+    # averager; no frame-accurate consistency requirement.
+    model = _cam_models.get(role, "unknown")
+    last = _last_seq.get(role, -1)
+    prev_mono = _last_frame_monotonic.get(role, 0.0)
+    _last_seq[role] = seq
+    _last_frame_monotonic[role] = now
 
     if CAM_FRAMES_TOTAL is None:
         return 0
