@@ -111,6 +111,14 @@ try:
         "LLM response failed to parse as DirectorIntent — fell back to legacy path.",
         ("condition_id", "director_tier"),
     )
+    _vacuum_prevented_total = Counter(
+        "hapax_director_vacuum_prevented_total",
+        (
+            "Parser-error / silence fallbacks where the no-vacuum invariant "
+            "(operator 2026-04-18) populated a silence-hold impingement."
+        ),
+        ("condition_id", "director_tier", "reason"),
+    )
     _random_mode_pick_total = Counter(
         "hapax_random_mode_pick_total",
         "random_mode preset picks, labelled by selection path.",
@@ -212,6 +220,24 @@ def emit_parse_failure(tier: str, condition_id: str) -> None:
         log.warning("emit_parse_failure failed", exc_info=True)
 
 
+def emit_vacuum_prevented(reason: str, tier: str, condition_id: str) -> None:
+    """Increment when a parser/silence fallback attaches a silence-hold
+    impingement instead of emitting empty ``compositional_impingements``.
+
+    Operator no-vacuum invariant (2026-04-18). Non-zero rate is expected
+    (LLM occasionally returns malformed output); a sudden spike signals
+    upstream parser or prompt regression.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _vacuum_prevented_total.labels(
+            condition_id=condition_id, director_tier=tier, reason=reason
+        ).inc()
+    except Exception:
+        log.warning("emit_vacuum_prevented failed", exc_info=True)
+
+
 def emit_homage_package_active(package: str) -> None:
     """Record the active HOMAGE package. Sets 1 for ``package`` and
     0 for every previously-labelled series implicitly via Gauge."""
@@ -299,6 +325,7 @@ __all__ = [
     "emit_homage_violation",
     "emit_parse_failure",
     "emit_random_mode_pick",
+    "emit_vacuum_prevented",
     "emit_structural_intent",
     "emit_twitch_move",
     "observe_llm_latency",

@@ -293,7 +293,22 @@ def identify_album_vision(image_data: bytes) -> dict | None:
 
 # --- Combined vision + audio identification ---
 def _capture_audio_mp3() -> str | None:
-    """Capture audio from PipeWire (right channel), speed up 2x, return mp3 path."""
+    """Capture audio from PipeWire (right channel), restore nominal pitch/tempo,
+    return mp3 path.
+
+    The operator plays records on a Korg Handytrax-PLAY which exposes
+    discrete RPM presets plus a ±10% pitch knob. Playing 45 RPM records
+    on the 33⅓ setting (a common mode) produces a 0.741× playback rate;
+    the pre-2026-04-18 implementation hardcoded a 2× restore (assumed
+    literal 0.5× playback) which mangled ACRCloud/Gemini matching when
+    the rate was anything other than exactly 0.5×. Now reads the live
+    ``vinyl_playback_rate`` signal (:mod:`shared.vinyl_rate`) and
+    computes the restoration factor dynamically. ``1.0`` means no
+    restoration (identity) — the filter still runs to downmix stereo
+    to mono, but the sample-rate distortion is absent.
+    """
+    from shared.vinyl_rate import rate_to_restore_factor, read_vinyl_playback_rate
+
     raw_path = ""
     mp3_path = ""
     keep_mp3 = False
@@ -329,6 +344,16 @@ def _capture_audio_mp3() -> str | None:
         if not os.path.exists(raw_path) or os.path.getsize(raw_path) < 1000:
             return None
 
+        playback_rate = read_vinyl_playback_rate()
+        restore_factor = rate_to_restore_factor(playback_rate)
+        restored_rate = int(round(44100 * restore_factor))
+        log.info(
+            "Restoring audio: playback_rate=%.3f restore_factor=%.3f target_rate=%d",
+            playback_rate,
+            restore_factor,
+            restored_rate,
+        )
+
         subprocess.run(
             [
                 "ffmpeg",
@@ -336,7 +361,7 @@ def _capture_audio_mp3() -> str | None:
                 "-i",
                 raw_path,
                 "-af",
-                "pan=mono|c0=c1,asetrate=88200,aresample=44100",
+                f"pan=mono|c0=c1,asetrate={restored_rate},aresample=44100",
                 "-b:a",
                 "128k",
                 mp3_path,

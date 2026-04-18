@@ -170,8 +170,11 @@ class DirectorIntent(BaseModel):
       the legible, LLM-authored output. Posture vocabulary is explicitly
       excluded from narrative_text (hygiene enforced by tests).
     - *What compositional intent Hapax expresses* (`compositional_impingements`) —
-      the recruitment-bound moves. Zero impingements means the director
-      chose to reinforce the prior state (e.g., silence activity).
+      the recruitment-bound moves. **Every tick MUST emit at least one**
+      (operator invariant, 2026-04-18: "there is no justifiable context
+      where 'do nothing interesting' is acceptable"). If the LLM returned
+      no impingements, the parser / micromove fallback is responsible for
+      populating one before DirectorIntent construction.
     """
 
     grounding_provenance: list[str] = Field(
@@ -201,8 +204,14 @@ class DirectorIntent(BaseModel):
         ),
     )
     compositional_impingements: list[CompositionalImpingement] = Field(
-        default_factory=list,
-        description="Impingements the AffordancePipeline will recruit against.",
+        ...,
+        min_length=1,
+        description=(
+            "Impingements the AffordancePipeline will recruit against. "
+            "At least one is required per tick (operator invariant 2026-04-18). "
+            "Parser-error / silence paths must populate a silence-hold micromove "
+            "before constructing DirectorIntent."
+        ),
     )
 
     def model_dump_for_jsonl(self) -> dict:

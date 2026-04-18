@@ -23,9 +23,49 @@ from pathlib import Path
 from agents.studio_compositor import metrics
 from agents.studio_compositor.audio_control import SlotAudioControl
 from agents.studio_compositor.tts_client import DaimonionTtsClient
-from shared.director_intent import DirectorIntent
+from shared.director_intent import CompositionalImpingement, DirectorIntent
 from shared.persona_prompt_composer import compose_persona_prompt
 from shared.stimmung import Stance
+
+
+def _silence_hold_impingement() -> CompositionalImpingement:
+    """Stock silence-hold impingement for parser-error / legacy-shape fallbacks.
+
+    Operator invariant (2026-04-18): every tick must emit at least one
+    compositional_impingement. When the LLM returns empty / malformed /
+    legacy-shape output, the parser used to construct DirectorIntent with
+    ``compositional_impingements=[]`` — leaving the surface with nothing
+    to recruit for the full narrative cadence. Populating a silence-hold
+    micromove here keeps the invariant deterministically satisfied.
+    """
+    return CompositionalImpingement(
+        narrative=(
+            "Silence hold: maintain the current surface; stance indicator breathes, "
+            "chrome unchanged, no new recruitment this tick."
+        ),
+        intent_family="overlay.emphasis",
+        material="void",
+        salience=0.2,
+    )
+
+
+def _silence_hold_fallback_intent(
+    *, activity: str, narrative_text: str, reason: str, tier: str, condition_id: str
+) -> DirectorIntent:
+    """Construct a parser fallback DirectorIntent that satisfies the operator
+    no-vacuum invariant (2026-04-18) by attaching a silence-hold impingement."""
+    from shared.director_observability import emit_vacuum_prevented
+
+    try:
+        emit_vacuum_prevented(reason=reason, tier=tier, condition_id=condition_id)
+    except Exception:
+        log.debug("emit_vacuum_prevented failed", exc_info=True)
+    return DirectorIntent(
+        activity=activity,  # type: ignore[arg-type]
+        stance=Stance.NOMINAL,
+        narrative_text=narrative_text,
+        compositional_impingements=[_silence_hold_impingement()],
+    )
 
 
 def _persona_legacy_mode() -> bool:
@@ -75,15 +115,33 @@ def _parse_intent_from_llm(
     text = raw.strip()
     if not text:
         emit_parse_failure(tier=tier, condition_id=condition_id)
-        return DirectorIntent(activity="silence", stance=Stance.NOMINAL, narrative_text="")
+        return _silence_hold_fallback_intent(
+            activity="silence",
+            narrative_text="",
+            reason="parser_empty_text",
+            tier=tier,
+            condition_id=condition_id,
+        )
     try:
         obj = json.loads(text) if text.startswith("{") else None
     except (json.JSONDecodeError, TypeError):
         emit_parse_failure(tier=tier, condition_id=condition_id)
-        return DirectorIntent(activity="silence", stance=Stance.NOMINAL, narrative_text="")
+        return _silence_hold_fallback_intent(
+            activity="silence",
+            narrative_text="",
+            reason="parser_json_decode",
+            tier=tier,
+            condition_id=condition_id,
+        )
     if not isinstance(obj, dict):
         emit_parse_failure(tier=tier, condition_id=condition_id)
-        return DirectorIntent(activity="silence", stance=Stance.NOMINAL, narrative_text="")
+        return _silence_hold_fallback_intent(
+            activity="silence",
+            narrative_text="",
+            reason="parser_non_dict",
+            tier=tier,
+            condition_id=condition_id,
+        )
     # If the response looks like a full DirectorIntent, validate it.
     if "stance" in obj or "compositional_impingements" in obj:
         try:
@@ -94,10 +152,22 @@ def _parse_intent_from_llm(
     activity = obj.get("activity") or fallback_activity
     narrative = obj.get("react") or ""
     try:
-        return DirectorIntent(activity=activity, stance=Stance.NOMINAL, narrative_text=narrative)
+        return _silence_hold_fallback_intent(
+            activity=activity,
+            narrative_text=narrative,
+            reason="parser_legacy_shape",
+            tier=tier,
+            condition_id=condition_id,
+        )
     except Exception:
         emit_parse_failure(tier=tier, condition_id=condition_id)
-        return DirectorIntent(activity=fallback_activity, stance=Stance.NOMINAL, narrative_text="")
+        return _silence_hold_fallback_intent(
+            activity=fallback_activity,
+            narrative_text="",
+            reason="parser_legacy_construct_error",
+            tier=tier,
+            condition_id=condition_id,
+        )
 
 
 _DMN_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
@@ -598,9 +668,10 @@ ACTIVITY_CAPABILITIES = (
     "\n"
     "**Vary your activity tick-to-tick.** If you just reacted, the next\n"
     "tick should usually be observe / music / study / chat rather than\n"
-    "another react. Silence is a legal option, but every silence tick is\n"
-    "a tick where the livestream does nothing — prefer observe or music\n"
-    "unless the room is truly dead.\n"
+    "another react. Every tick MUST express a compositional move — there\n"
+    "is no 'do nothing' tick (operator invariant 2026-04-18). Silence is\n"
+    "a voice choice, never a compositional one; even silence ticks emit\n"
+    "at least one compositional_impingement saying what the surface does.\n"
     "\n"
     "Each activity below names the compositional impingements that\n"
     "typically pair with it (camera.hero, preset.bias family, ward.*).\n"

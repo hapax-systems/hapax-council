@@ -403,21 +403,23 @@ if [ -f "$RELAY_DIR/PROTOCOL.md" ]; then
   fi
 fi
 if [ "$RELAY_ACTIVE" = "true" ]; then
+  # Session identity (operator invariant 2026-04-18 from CVS #13):
+  # window-title is the authoritative identity. `hapax-whoami` walks /proc
+  # to the foot terminal and reads Hyprland's window title. Fall back to
+  # cwd mapping (covers delta / epsilon). The previous mtime-staleness
+  # heuristic mis-picked alpha for a beta worktree after reboot.
   ROLE=""
-  if [ -f "$RELAY_DIR/alpha.yaml" ] && [ -f "$RELAY_DIR/beta.yaml" ]; then
-    ALPHA_AGE=$(( $(date +%s) - $(stat -c %Y "$RELAY_DIR/alpha.yaml" 2>/dev/null || echo 0) ))
-    BETA_AGE=$(( $(date +%s) - $(stat -c %Y "$RELAY_DIR/beta.yaml" 2>/dev/null || echo 0) ))
-    if [ "$ALPHA_AGE" -gt "$BETA_AGE" ]; then
-      ROLE="alpha"
-    else
-      ROLE="beta"
-    fi
-  elif [ -f "$RELAY_DIR/alpha.yaml" ]; then
-    ROLE="beta"
-  elif [ -f "$RELAY_DIR/beta.yaml" ]; then
-    ROLE="alpha"
-  else
-    ROLE="alpha"
+  if command -v hapax-whoami >/dev/null 2>&1; then
+    ROLE="$(hapax-whoami 2>/dev/null | tr -d '[:space:]')"
+  fi
+  if [ -z "$ROLE" ]; then
+    case "$PWD" in
+      */hapax-council) ROLE="alpha" ;;
+      */hapax-council--beta) ROLE="beta" ;;
+      */hapax-council--delta*) ROLE="delta" ;;
+      */hapax-council--epsilon*) ROLE="epsilon" ;;
+      *) ROLE="alpha" ;;
+    esac
   fi
 
   echo ""

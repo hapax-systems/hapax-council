@@ -212,22 +212,37 @@ class CompositorAudioCapture:
         log.info("Audio capture stopped")
 
     def get_signals(self) -> dict[str, float]:
-        """Read signals and decay transient pulses (called once per tick at 30fps)."""
+        """Read signals and decay transient pulses (called once per tick at 30fps).
+
+        Wall-clock peak-hold (CVS #9 / 2026-04-18 research): snapshot the
+        CURRENT transient values into the signals dict BEFORE applying
+        decay. The DSP loop at 93 fps writes fresh pulse amplitudes
+        (``_onset_kick = 1.0`` on onset), but the prior implementation
+        returned the signals dict populated from the PRIOR tick (already
+        decayed), so an onset firing just before a render tick landed at
+        ~75% amplitude one tick late. Snapshot-before-decay closes the
+        gap: the render tick sees the peak of the most-recent DSP chunk,
+        and decay still happens between ticks for smooth fall-off.
+        """
         with self._lock:
-            result = dict(self._signals)
-            # Decay all pulse signals — fast attack already happened in _process_chunk
-            self._beat_pulse *= 0.7
-            self._onset_kick *= 0.75
-            self._onset_snare *= 0.65
-            self._onset_hat *= 0.55
-            # Vinyl mode: slower sidechain decay for half-speed tempo breathing
-            self._sidechain_kick *= 0.95 if self.VINYL_MODE else 0.92
+            # Snapshot current transient values before decay so the
+            # caller sees the latest DSP-chunk peak (operator no-sync-gap
+            # invariant).
             self._signals["beat_pulse"] = self._beat_pulse
             self._signals["mixer_beat"] = self._beat_pulse
             self._signals["onset_kick"] = self._onset_kick
             self._signals["onset_snare"] = self._onset_snare
             self._signals["onset_hat"] = self._onset_hat
             self._signals["sidechain_kick"] = self._sidechain_kick
+            result = dict(self._signals)
+            # Decay all pulse signals for the NEXT tick. Fast attack
+            # already happened in _process_chunk.
+            self._beat_pulse *= 0.7
+            self._onset_kick *= 0.75
+            self._onset_snare *= 0.65
+            self._onset_hat *= 0.55
+            # Vinyl mode: slower sidechain decay for half-speed tempo breathing
+            self._sidechain_kick *= 0.95 if self.VINYL_MODE else 0.92
             return result
 
     def _capture_loop(self) -> None:
