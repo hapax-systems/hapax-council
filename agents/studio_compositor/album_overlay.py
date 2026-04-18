@@ -22,7 +22,7 @@ from typing import Any
 
 import cairo
 
-from .cairo_source import CairoSource
+from .homage.transitional_source import HomageTransitionalSource
 
 log = logging.getLogger(__name__)
 
@@ -183,8 +183,8 @@ ALPHA = 0.85
 RENDER_FPS = 10
 
 
-class AlbumOverlayCairoSource(CairoSource):
-    """Phase 3b CairoSource implementation for the album cover overlay.
+class AlbumOverlayCairoSource(HomageTransitionalSource):
+    """HomageTransitionalSource implementation for the album cover overlay.
 
     Owns the cached album cover surface, the splattribution text and the
     currently-selected PiP effect. The render method draws everything into
@@ -194,6 +194,7 @@ class AlbumOverlayCairoSource(CairoSource):
     """
 
     def __init__(self) -> None:
+        super().__init__(source_id="album_overlay")
         self._surface: cairo.ImageSurface | None = None
         self._surface_mtime: float = 0.0
         self._attrib_text: str = ""
@@ -201,7 +202,7 @@ class AlbumOverlayCairoSource(CairoSource):
         self._fx_func: Any = None
         self._fx_name: str = ""
 
-    def render(
+    def render_content(
         self,
         cr: cairo.Context,
         canvas_w: int,

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .cairo_source import CairoSource
+from .homage.transitional_source import HomageTransitionalSource
 
 if TYPE_CHECKING:
     import cairo
@@ -88,8 +88,8 @@ def _read_latest_caption(path: Path) -> str:
     return ""
 
 
-class CaptionsCairoSource(CairoSource):
-    """CairoSource rendering the latest STT line with stream-mode styling."""
+class CaptionsCairoSource(HomageTransitionalSource):
+    """HomageTransitionalSource rendering the latest STT line with stream-mode styling."""
 
     def __init__(
         self,
@@ -97,6 +97,7 @@ class CaptionsCairoSource(CairoSource):
         caption_path: Path | None = None,
         stream_mode_reader: Any = None,
     ) -> None:
+        super().__init__(source_id="captions")
         self._path = caption_path or DEFAULT_CAPTION_PATH
         self._stream_mode_reader = stream_mode_reader
         self._current_text: str = ""
@@ -111,7 +112,7 @@ class CaptionsCairoSource(CairoSource):
         self._current_style = style_for_stream_mode(mode)
         return {"text": self._current_text, "mode": mode}
 
-    def render(
+    def render_content(
         self,
         cr: cairo.Context,
         canvas_w: int,

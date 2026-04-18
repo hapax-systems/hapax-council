@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .cairo_source import CairoSource
+from .homage.transitional_source import HomageTransitionalSource
 
 if TYPE_CHECKING:
     import cairo
@@ -84,15 +84,18 @@ def _format_chat(state: dict[str, Any]) -> str:
     return f"░ {authors} talking ({total})"
 
 
-class StreamOverlayCairoSource(CairoSource):
-    """CairoSource implementation for the stream status strip.
+class StreamOverlayCairoSource(HomageTransitionalSource):
+    """HomageTransitionalSource rendering the stream status strip.
 
     Polls the three SHM files every tick. Polling under lock is cheap
     at 2 fps and avoids caching-invalidation bugs when the operator
     rewrites preset or the token ledger updates.
     """
 
-    def render(
+    def __init__(self) -> None:
+        super().__init__(source_id="stream_overlay")
+
+    def render_content(
         self,
         cr: cairo.Context,
         canvas_w: int,

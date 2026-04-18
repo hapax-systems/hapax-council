@@ -24,7 +24,7 @@ from typing import Any
 
 import cairo
 
-from agents.studio_compositor.cairo_source import CairoSource
+from agents.studio_compositor.homage.transitional_source import HomageTransitionalSource
 
 MARKER_VISIBILITY_SECONDS = 3.0
 """How long the overlay stays visible after a marker update."""
@@ -35,13 +35,12 @@ DEFAULT_MARKER_PATH = Path("/dev/shm/hapax-compositor/research-marker.json")
 log = logging.getLogger(__name__)
 
 
-class ResearchMarkerOverlay(CairoSource):
-    """Cairo source that renders the active condition ID for ~3s after a change.
+class ResearchMarkerOverlay(HomageTransitionalSource):
+    """HomageTransitionalSource that renders the active condition ID for ~3s after a change.
 
-    The render function is called every tick by ``CairoSourceRunner`` on
-    a background thread. Each tick reads the marker file, checks whether
-    the last ``written_at`` falls within the visibility window, and
-    either draws the overlay or clears the canvas to fully transparent.
+    Each tick reads the marker file, checks whether the last
+    ``written_at`` falls within the visibility window, and either
+    draws the overlay or clears the canvas to fully transparent.
     """
 
     def __init__(
@@ -51,6 +50,7 @@ class ResearchMarkerOverlay(CairoSource):
         visibility_seconds: float = MARKER_VISIBILITY_SECONDS,
         now_fn: Any = None,
     ) -> None:
+        super().__init__(source_id="research_marker_overlay")
         self._marker_path = marker_path or DEFAULT_MARKER_PATH
         if visibility_seconds <= 0:
             raise ValueError(f"visibility_seconds must be > 0, got {visibility_seconds}")
@@ -62,7 +62,7 @@ class ResearchMarkerOverlay(CairoSource):
         """Snapshot the marker state so render() has a coherent view."""
         return self._read_marker()
 
-    def render(
+    def render_content(
         self,
         cr: cairo.Context,
         canvas_w: int,

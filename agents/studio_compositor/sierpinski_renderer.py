@@ -48,7 +48,8 @@ except (ImportError, ValueError):
     GdkPixbuf = None  # type: ignore[assignment]
     _HAS_GDK = False
 
-from .cairo_source import CairoSource, CairoSourceRunner
+from .cairo_source import CairoSourceRunner
+from .homage.transitional_source import HomageTransitionalSource
 
 if TYPE_CHECKING:
     from agents.studio_compositor.budget import BudgetTracker
@@ -67,15 +68,16 @@ COLORS = [
 ]
 
 
-class SierpinskiCairoSource(CairoSource):
-    """Phase 3b CairoSource implementation for the Sierpinski overlay.
+class SierpinskiCairoSource(HomageTransitionalSource):
+    """HomageTransitionalSource implementation for the Sierpinski overlay.
 
     Owns the YouTube frame cache, active-slot state, and audio energy
-    snapshot. The runner calls ``render()`` once per tick on a background
-    thread.
+    snapshot. The runner calls ``render_content()`` once per tick on a
+    background thread.
     """
 
     def __init__(self) -> None:
+        super().__init__(source_id="sierpinski")
         self._frame_surfaces: dict[int, cairo.ImageSurface | None] = {}
         self._frame_mtimes: dict[int, float] = {}
         self._active_slot = 0
@@ -96,7 +98,7 @@ class SierpinskiCairoSource(CairoSource):
     def set_audio_energy(self, energy: float) -> None:
         self._audio_energy = energy
 
-    def render(
+    def render_content(
         self,
         cr: cairo.Context,
         canvas_w: int,
