@@ -11,12 +11,19 @@ from agents.studio_compositor import compositional_consumer as cc
 
 @pytest.fixture
 def tmp_shm(monkeypatch, tmp_path):
-    """Redirect every compositor-read SHM path to tmp_path."""
+    """Redirect every compositor-read SHM path to tmp_path.
+
+    Also resets module-level dispatcher state (camera role history) so one
+    test's dwell/variety gates don't falsely reject the next test's
+    dispatch. Without this reset, the catalog-consistency test and the
+    ordered camera-hero tests collide on shared module state.
+    """
     monkeypatch.setattr(cc, "_HERO_CAMERA_OVERRIDE", tmp_path / "hero-camera-override.json")
     monkeypatch.setattr(cc, "_OVERLAY_ALPHA_OVERRIDES", tmp_path / "overlay-alpha-overrides.json")
     monkeypatch.setattr(cc, "_RECENT_RECRUITMENT", tmp_path / "recent-recruitment.json")
     monkeypatch.setattr(cc, "_YOUTUBE_DIRECTION", tmp_path / "youtube-direction.json")
     monkeypatch.setattr(cc, "_STREAM_MODE_INTENT", tmp_path / "stream-mode-intent.json")
+    monkeypatch.setattr(cc, "_CAMERA_ROLE_HISTORY", [])
     return tmp_path
 
 
@@ -131,11 +138,19 @@ class TestRecruitmentHistory:
 
 
 class TestCatalogConsistency:
-    def test_every_catalog_capability_has_a_dispatcher(self):
-        """Every name in COMPOSITIONAL_CAPABILITIES must be routable."""
+    def test_every_catalog_capability_has_a_dispatcher(self, tmp_shm, monkeypatch):
+        """Every name in COMPOSITIONAL_CAPABILITIES must be routable.
+
+        Resets camera role history before each dispatch so the dwell /
+        variety gates (which legitimately reject repeated picks at
+        runtime) don't cause false "no dispatcher" assertions when the
+        catalog contains many cam.hero.<role>.* entries sharing the
+        same role slug.
+        """
         from shared.compositional_affordances import COMPOSITIONAL_CAPABILITIES
 
         for cap in COMPOSITIONAL_CAPABILITIES:
+            monkeypatch.setattr(cc, "_CAMERA_ROLE_HISTORY", [])
             rec = cc.RecruitmentRecord(name=cap.name)
             family = cc.dispatch(rec)
             assert family != "unknown", f"no dispatcher for {cap.name}"

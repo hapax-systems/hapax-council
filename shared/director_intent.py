@@ -117,6 +117,20 @@ class CompositionalImpingement(BaseModel):
         le=1.0,
         description="Weight the pipeline applies during scoring.",
     )
+    grounding_provenance: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-impingement perceptual-field keys this move grounds in. "
+            "PR #1046 made compositional intent mandatory and required "
+            "grounding_provenance per impingement, but the field was only "
+            "on the envelope. Now first-class per impingement so the LLM "
+            "can comply: e.g., a preset.bias impingement cites "
+            "['audio.midi.beat_position'], a camera.hero cites "
+            "['ir.ir_hand_zone.turntable']. Empty list is allowed (the "
+            "pipeline accepts it) but the audit emits an UNGROUNDED "
+            "warning for the operator to track in research-mode logs."
+        ),
+    )
     intent_family: IntentFamily = Field(
         ...,
         description="Tag family the pipeline's catalog routes to.",

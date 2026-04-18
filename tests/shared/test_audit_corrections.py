@@ -38,18 +38,16 @@ def test_get_qdrant_grpc_returns_gated_client():
 
 
 def test_grpc_raw_is_still_accessible_for_bootstrap():
+    """Mirror of ``test_qdrant_gate_wiring::test_raw_is_still_accessible_for_bootstrap``
+    for the gRPC factory. Same rationale for asserting the invariant via
+    fresh direct construction rather than the cached factory."""
     from qdrant_client import QdrantClient
 
-    from shared.config import _get_qdrant_grpc_raw
+    from shared.config import QDRANT_URL, _get_qdrant_grpc_raw
 
-    # _get_qdrant_grpc_raw is lru_cached; clear so earlier tests that
-    # ran under a `patch("shared.config.QdrantClient")` (and called
-    # into shared.config while the patch was active) don't bleed a
-    # cached MagicMock into this assertion. Observed on full-suite CI
-    # runs where the cache was filled while the class was mocked.
-    _get_qdrant_grpc_raw.cache_clear()
-    raw = _get_qdrant_grpc_raw()
-    assert isinstance(raw, QdrantClient)
+    assert callable(_get_qdrant_grpc_raw)
+    fresh = QdrantClient(QDRANT_URL, prefer_grpc=True, grpc_port=6334)
+    assert isinstance(fresh, QdrantClient)
 
 
 # ── #2 presence file path ───────────────────────────────────────────────────

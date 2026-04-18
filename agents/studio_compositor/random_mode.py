@@ -153,6 +153,15 @@ def run(interval: float = 30.0) -> None:
             pick = random.choice(choices)
             chosen_via = "uniform-fallback"
         log.info("random_mode pick: %s (%s)", pick, chosen_via)
+        # S2: Prometheus observability — distinguishes family-recruited
+        # picks from the neutral-ambient fallback so Grafana can alert
+        # when fallback rate approaches old shuffle behaviour.
+        try:
+            from shared.director_observability import emit_random_mode_pick
+
+            emit_random_mode_pick(chosen_via)
+        except Exception:
+            pass
         last = pick
 
         new_graph = load_preset_graph(pick)

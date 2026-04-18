@@ -61,15 +61,18 @@ class TestStanceCadenceGate:
         t = td.TwitchDirector()
         assert t._cadence_or_none() == 3.0
 
-    def test_cautious_returns_none(self, tmp_path):
+    def test_cautious_returns_slow_cadence(self, tmp_path):
+        """Non-nominal stances run twitch at a SLOWER cadence, never None.
+        Operator directive: "no 'do nothing interesting' tick is acceptable"
+        — compositional pressure stays low under stress, not zero."""
         _write_narrative(tmp_path, stance="cautious")
         t = td.TwitchDirector()
-        assert t._cadence_or_none() is None
+        assert t._cadence_or_none() == 10.0
 
-    def test_critical_returns_none(self, tmp_path):
+    def test_critical_returns_slowest_cadence(self, tmp_path):
         _write_narrative(tmp_path, stance="critical")
         t = td.TwitchDirector()
-        assert t._cadence_or_none() is None
+        assert t._cadence_or_none() == 30.0
 
 
 class TestBeatSyncedAlbumPulse:
@@ -134,10 +137,10 @@ class TestDrummingBiasesAudioReactive:
 
 
 class TestNoEmissionsWhenStanceUnsafe:
-    def test_cautious_stance_quiescent(self, tmp_path):
-        """Cadence gate should return None; the loop would idle.
-        tick_once may still emit, but the loop wouldn't call it — that's
-        tested via the cadence gate separately."""
+    def test_cautious_stance_slow_cadence(self, tmp_path):
+        """Non-nominal stances run at a slower cadence, never fully quiescent.
+        Operator directive: every tick still contributes compositional
+        pressure — cautious = 10s interval, critical = 30s, not gated off."""
         _write_narrative(tmp_path, stance="cautious")
         t = td.TwitchDirector()
-        assert t._cadence_or_none() is None
+        assert t._cadence_or_none() == 10.0

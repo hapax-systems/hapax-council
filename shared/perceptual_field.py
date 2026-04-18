@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -180,6 +181,31 @@ class StreamHealthField(BaseModel):
     encoding_lag_ms: float | None = None
 
 
+class TendencyField(BaseModel):
+    """Anticipatory signals — rates of change, not instantaneous values.
+
+    S4 audit follow-up: the director only saw frozen instantaneous state
+    (current beat position, current desk energy, current chat count), so
+    moves landed after transitions rather than during them. Tendency
+    fields let the LLM anticipate: ``desk_energy_rate > 0`` means
+    operator is *warming up*; ``chat_heating_rate > 0.1/s`` means
+    audience interest is *spiking*; ``beat_position_rate`` stays near
+    tempo during playback but collapses to 0 when transport stops —
+    catching stop/pause faster than a stale ``transport_state`` would.
+
+    All rates in units-per-second. First read after module load returns
+    None for every field (no prior sample); subsequent reads within
+    ``_SAMPLE_TTL`` produce the diff. Samples older than TTL are
+    discarded so a paused director doesn't read multi-minute-old rates.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    beat_position_rate: float | None = None
+    desk_energy_rate: float | None = None
+    chat_heating_rate: float | None = None
+
+
 class PerceptualField(BaseModel):
     """Unified structured perceptual input for the director."""
 
@@ -194,6 +220,7 @@ class PerceptualField(BaseModel):
     stimmung: StimmungField = Field(default_factory=StimmungField)
     presence: PresenceField = Field(default_factory=PresenceField)
     stream_health: StreamHealthField = Field(default_factory=StreamHealthField)
+    tendency: TendencyField = Field(default_factory=TendencyField)
 
 
 # ── Reader ────────────────────────────────────────────────────────────────
@@ -306,6 +333,38 @@ def _time_of_day(clock: float | None = None) -> str:
     if 17 <= h < 22:
         return "evening"
     return "night"
+
+
+# S4: anticipation tendency state. Module-level so repeated reads can
+# compute per-second rates without each caller threading history. Reset
+# via ``reset_tendency_cache()`` in tests.
+_SAMPLE_TTL_S = 10.0
+_tendency_cache: dict[str, tuple[float, float]] = {}
+
+
+def reset_tendency_cache() -> None:
+    """Clear S4 tendency sample cache. Tests should call between assertions."""
+    _tendency_cache.clear()
+
+
+def _compute_rate(key: str, value: float | None, clock: float) -> float | None:
+    """Update cache for ``key`` and return per-second rate since last sample.
+
+    Returns None when: value missing, no prior sample, or prior sample
+    older than ``_SAMPLE_TTL_S``. On success also updates the cache for
+    the next call.
+    """
+    if value is None:
+        return None
+    prev = _tendency_cache.get(key)
+    _tendency_cache[key] = (clock, float(value))
+    if prev is None:
+        return None
+    prev_ts, prev_value = prev
+    dt = clock - prev_ts
+    if dt <= 0 or dt > _SAMPLE_TTL_S:
+        return None
+    return (float(value) - prev_value) / dt
 
 
 def build_perceptual_field(
@@ -451,6 +510,17 @@ def build_perceptual_field(
         probability=presence.get("presence_probability"),
     )
 
+    # ── Tendency (S4) ─────────────────────────────────────────────────────
+    # Per-second rates derived from diffs against the module-level sample
+    # cache. The first call after reset returns None for every rate; after
+    # a second call within _SAMPLE_TTL_S the rates carry real information.
+    _clock = time.time()
+    tendency = TendencyField(
+        beat_position_rate=_compute_rate("beat_position", midi.beat_position, _clock),
+        desk_energy_rate=_compute_rate("desk_energy", contact_mic.desk_energy, _clock),
+        chat_heating_rate=_compute_rate("chat_recent", float(chat.recent_message_count), _clock),
+    )
+
     return PerceptualField(
         audio=audio,
         visual=visual,
@@ -461,6 +531,7 @@ def build_perceptual_field(
         stimmung=stimmung,
         presence=presence_field,
         stream_health=StreamHealthField(),
+        tendency=tendency,
     )
 
 

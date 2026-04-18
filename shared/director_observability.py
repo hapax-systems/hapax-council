@@ -111,6 +111,11 @@ try:
         "LLM response failed to parse as DirectorIntent — fell back to legacy path.",
         ("condition_id", "director_tier"),
     )
+    _random_mode_pick_total = Counter(
+        "hapax_random_mode_pick_total",
+        "random_mode preset picks, labelled by selection path.",
+        ("chosen_via",),
+    )
 
     _METRICS_AVAILABLE = True
 except Exception:  # pragma: no cover — prometheus_client missing at install time
@@ -181,10 +186,27 @@ def emit_parse_failure(tier: str, condition_id: str) -> None:
         log.warning("emit_parse_failure failed", exc_info=True)
 
 
+def emit_random_mode_pick(chosen_via: str) -> None:
+    """Record a random_mode preset pick. ``chosen_via`` is one of
+    ``family=<name>``, ``fallback=neutral-ambient``, ``uniform-fallback``.
+
+    Lets Grafana distinguish director-recruited family picks from the
+    neutral-fallback path (operator's "no shuffle feel" directive) so we
+    can alert when fallback rate creeps toward shuffle behaviour.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _random_mode_pick_total.labels(chosen_via=chosen_via).inc()
+    except Exception:
+        log.warning("emit_random_mode_pick failed", exc_info=True)
+
+
 __all__ = [
     "canonicalize_grounding_signal",
     "emit_director_intent",
     "emit_parse_failure",
+    "emit_random_mode_pick",
     "emit_structural_intent",
     "emit_twitch_move",
     "observe_llm_latency",

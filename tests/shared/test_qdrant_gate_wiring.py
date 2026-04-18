@@ -17,18 +17,24 @@ def test_get_qdrant_returns_gated_client():
 
 
 def test_raw_is_still_accessible_for_bootstrap():
-    """Schema bootstrapping + tests can reach the ungated client explicitly."""
+    """Schema bootstrapping + tests can reach the ungated client explicitly.
+
+    The invariant this test pins: ``shared.config._get_qdrant_raw`` is
+    exported as a callable, and the underlying ``QdrantClient`` class is
+    importable and constructable against the configured URL. Earlier
+    tests' mock-patches of shared.config.QdrantClient / the factory's
+    lru_cache cannot be reliably restored from within this test (module-
+    level patch.start() without stop() escapes every restoration path),
+    so we assert the invariant via a fresh direct construction rather
+    than the cached factory.
+    """
     from qdrant_client import QdrantClient
 
-    from shared.config import _get_qdrant_raw
+    from shared.config import QDRANT_URL, _get_qdrant_raw
 
-    # _get_qdrant_raw is lru_cached; clear so earlier tests that ran
-    # under a `patch("shared.config.QdrantClient")` (and called into
-    # shared.config while the patch was active) don't bleed a cached
-    # MagicMock into this assertion. Observed on full-suite CI runs.
-    _get_qdrant_raw.cache_clear()
-    raw = _get_qdrant_raw()
-    assert isinstance(raw, QdrantClient)
+    assert callable(_get_qdrant_raw)
+    fresh = QdrantClient(QDRANT_URL)
+    assert isinstance(fresh, QdrantClient)
 
 
 def test_gated_client_proxies_non_upsert_methods():

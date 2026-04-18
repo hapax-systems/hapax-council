@@ -87,17 +87,20 @@ class TestFeatureFlag:
 class TestTokenBudget:
     """LLM system prompts share a budget with tool descriptions + context.
     Keep the persona fragment small enough that it doesn't crowd out other
-    material. 2000 chars ≈ 500 tokens is the soft ceiling per redesign spec
-    §4.1 ("Size target: ~400 tokens rendered (soft ceiling 500)")."""
+    material. Ceiling raised from 700 → 1200 after PR #1046 added the
+    livestream-director role paragraph (operator-directed, load-bearing:
+    it declares the three coupled decisions per tick that every narrative
+    tick must emit). Any further growth should trade against actual
+    compression of the existing content, not silent ceiling creep."""
 
     def test_fragment_under_soft_ceiling(self):
         composer.reset_cache_for_testing()
         fragment = composer.compose_persona_prompt()
         # Rough token count: 1 token ≈ 4 chars for English (conservative)
         approx_tokens = len(fragment) / 4
-        assert approx_tokens < 700, (
+        assert approx_tokens < 1200, (
             f"persona fragment approx {approx_tokens:.0f} tokens — "
-            f"exceeds 500-token soft ceiling. Compress the fragment "
+            f"exceeds 1200-token soft ceiling. Compress the fragment "
             f"(axioms/persona/hapax-description-of-being.prompt.md)."
         )
 
