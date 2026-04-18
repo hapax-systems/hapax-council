@@ -36,10 +36,11 @@ def main() -> int:
         return 1
 
     try:
-        # Prefer the daimonion pipeline — it's the canonical indexer. This
-        # is a compile-time import; at runtime we construct a pipeline
-        # instance just for indexing (no daemon state).
-        from agents._affordance_pipeline import AffordancePipeline
+        # Canonical pipeline import: shared/affordance_pipeline.py is the
+        # single source — there is no agents._affordance_pipeline module
+        # (that path was a refactor leftover that crashed the seed step
+        # silently every time it was attempted).
+        from shared.affordance_pipeline import AffordancePipeline
     except Exception:
         log.exception("AffordancePipeline not importable")
         return 1
