@@ -11,6 +11,22 @@ from httpx import ASGITransport, AsyncClient
 
 from logos.api.app import app
 
+
+@pytest.fixture(autouse=True)
+def _force_private_stream():
+    """Pin the stream-mode predicate to private for the full-fidelity tests.
+
+    ``/api/stimmung`` redacts to three banded dimensions when
+    ``is_publicly_visible()`` returns True, which is its fail-closed
+    default when the shared stream-mode state file is absent (CI, test
+    hosts without a warmed-up Council). All four tests in this module
+    assert the pre-redaction shape, so pin the predicate here rather
+    than duplicate the patch in every test.
+    """
+    with patch("logos.api.routes.stimmung.is_publicly_visible", return_value=False):
+        yield
+
+
 # Nested format matching SystemStimmung.model_dump_json() output
 _SAMPLE_STATE = {
     "overall_stance": "cautious",

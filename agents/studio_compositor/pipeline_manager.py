@@ -86,6 +86,14 @@ class PipelineManager:
         self._frame_flow_thread: threading.Thread | None = None
         self._last_recovery_at: dict[str, float] = {}
 
+        # Phase 6c consumer-side pin. When the consent-live-egress gate
+        # flips compose_safe active, set_compose_safe(True) swaps every
+        # camera to fallback and pins `swap_to_primary` to a no-op until
+        # cleared. Prevents a state-machine recovery (or an operator
+        # triggered swap) from restoring camera egress while the consent
+        # contract is absent. Axiom it-irreversible-broadcast T0.
+        self._compose_safe_pin: bool = False
+
     # ------------------------------------------------------------------ build
 
     def build(self) -> None:
@@ -219,6 +227,12 @@ class PipelineManager:
 
     def swap_to_primary(self, role: str) -> None:
         with self._lock:
+            if self._compose_safe_pin:
+                # Axiom it-irreversible-broadcast: refuse primary swaps
+                # while compose-safe egress is pinned. The consent gate
+                # (state.py) owns the clear.
+                log.info("swap_to_primary: role=%s denied — compose-safe pin active", role)
+                return
             src = self._interpipe_srcs.get(role)
             cam = self._cameras.get(role)
         if src is None or cam is None:
@@ -226,6 +240,34 @@ class PipelineManager:
         src.set_property("listen-to", cam.sink_name)
         metrics.on_swap(role, to_fallback=False)
         log.info("swap_to_primary: role=%s → %s", role, cam.sink_name)
+
+    def set_compose_safe(self, active: bool) -> None:
+        """Apply / clear the Phase 6c consent compose-safe egress pin.
+
+        When ``active`` is True, every camera is swapped to its fallback
+        and subsequent ``swap_to_primary`` calls become no-ops until the
+        pin is cleared. When False, the pin is released and any HEALTHY
+        state machines will restore primary on their next tick.
+
+        Idempotent. Safe to call from any thread; actual GStreamer
+        property writes go via the existing ``swap_to_fallback`` paths.
+        """
+        with self._lock:
+            prev = self._compose_safe_pin
+            self._compose_safe_pin = bool(active)
+            roles = list(self._interpipe_srcs.keys())
+        if active == prev:
+            return
+        if active:
+            log.warning(
+                "set_compose_safe(True): pinning %d cameras to fallback (consent gate)",
+                len(roles),
+            )
+            for role in roles:
+                # Direct swap; swap_to_fallback doesn't consult the pin.
+                self.swap_to_fallback(role)
+        else:
+            log.info("set_compose_safe(False): pin cleared (state machines resume control)")
 
     # ------------------------------------------------------------- status api
 

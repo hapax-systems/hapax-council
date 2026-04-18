@@ -57,8 +57,12 @@ ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/project
 # hapax-imagination-loop: imagination daemon loop (single-file modules)
 ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-imagination-loop.service --watch "agents/imagination.py agents/imagination_loop.py agents/imagination_resolver.py agents/imagination_context.py shared/" --sha-key imagination-loop
 
-# studio-fx: effect chain
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-fx.service --watch "agents/studio_fx/ agents/effect_graph/ shared/" --sha-key studio-fx
+# studio-fx retired 2026-04-17: the numpy/OpenCV effects pipeline was
+# orphaned after the effect_graph/WGSL unification. Every fx-*.jpg
+# output had zero readers, and the virtualcam target (/dev/video50) is
+# owned by the YouTube slot-0 ffmpeg. Freed ~1 core of wasted CPU.
+# The effect_graph watch group (agents/effect_graph/) is still covered
+# via studio-compositor's own rebuild entry above.
 
 # studio-fx-output: shell-launcher driving the GStreamer output bin; the
 # ExecStart IS the shell script, so its own source is the watch path.

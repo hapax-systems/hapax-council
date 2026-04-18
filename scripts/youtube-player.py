@@ -114,7 +114,15 @@ class VideoSlot:
             video_pts,
             audio_tempo,
         )
-        cmd = [
+        # 2026-04-17 CPU audit: only slot 0's v4l2 device is consumed by
+        # the compositor (fx_chain.py:448 binds /dev/video50 as the live
+        # YouTube source). Slots 1 and 2 write to /dev/video51 and
+        # /dev/video52 but have no reader — the YUV422 conversion +
+        # scale=960:540 was pure waste. Keep the v4l2 output for slot 0,
+        # skip it for the other slots. JPEG snapshots (used by the
+        # Sierpinski triangle) + pulse audio remain for every slot.
+        emit_v4l2 = self.slot_id == 0
+        cmd: list[str] = [
             "ffmpeg",
             "-y",
             "-reconnect",
@@ -127,23 +135,27 @@ class VideoSlot:
             video_url,
             "-i",
             audio_url,
-            # Output 1: v4l2loopback
-            # 2026-04-17 perf: was 1920x1080. The compositor blits this
-            # v4l2 stream into a PiP <= 640x640 on the Sierpinski
-            # triangle corners, so 1080p was pure waste — each ffmpeg
-            # spent ~40% CPU scaling up, then the compositor scaled
-            # back down. 960x540 keeps aspect + 2x headroom for the PiP
-            # and drops ffmpeg to ~15-20% CPU each.
-            "-map",
-            "0:v",
-            "-vf",
-            f"{video_pts},scale=960:540",
-            "-pix_fmt",
-            "yuyv422",
-            "-f",
-            "v4l2",
-            self.device,
-            # Output 2: JPEG snapshots for spirograph reactor
+        ]
+        if emit_v4l2:
+            cmd += [
+                # Output 1 (slot 0 only): v4l2loopback for the live YouTube
+                # source. 960x540 keeps aspect + 2x headroom for the PiP
+                # the compositor blits into (<=640x640 on the Sierpinski
+                # triangle corners), avoiding the wasted 1080p upscale+
+                # downscale round-trip.
+                "-map",
+                "0:v",
+                "-vf",
+                f"{video_pts},scale=960:540",
+                "-pix_fmt",
+                "yuyv422",
+                "-f",
+                "v4l2",
+                self.device,
+            ]
+        cmd += [
+            # Output (all slots): JPEG snapshots for the Sierpinski
+            # reactor. Each slot's triangle corner polls yt-frame-{id}.jpg.
             "-map",
             "0:v",
             "-vf",
@@ -153,7 +165,9 @@ class VideoSlot:
             "-r",
             "10",
             str(snapshot_path),
-            # Output 3: audio to PipeWire (tempo-shifted for DMCA evasion)
+            # Output (all slots): audio to PipeWire, tempo-shifted for
+            # DMCA evasion. Each slot ends up on its own pulse stream so
+            # the voice mixer can crossfade.
             "-map",
             "1:a",
             "-af",

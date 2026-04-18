@@ -100,9 +100,21 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     scale = Gst.ElementFactory.make("videoscale", "fx-snap-scale")
     scale_caps = Gst.ElementFactory.make("capsfilter", "fx-snap-scale-caps")
     scale_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=1280,height=720"))
+    # 2026-04-17 CPU audit: jpegenc at 30fps × 1280×720 dominated this
+    # branch of the tee. The downstream consumers — VisualSurface.tsx
+    # (HTTP /frame) and the OutputNode WebSocket (/ws/fx) — poll at 3fps
+    # via Image() preload. Rate-limit the FX snapshot branch to 3fps so
+    # the jpegenc, TCP push, and atomic file write all drop 90% of
+    # their per-second work.
+    rate = Gst.ElementFactory.make("videorate", "fx-snap-rate")
+    if rate is not None:
+        rate.set_property("drop-only", True)
+        rate.set_property("max-rate", 3)
+    rate_caps = Gst.ElementFactory.make("capsfilter", "fx-snap-rate-caps")
+    rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=3/1"))
     jpeg = Gst.ElementFactory.make("jpegenc", "fx-snap-jpeg")
     jpeg.set_property("quality", 85)
-    log.info("FX snapshot: CPU jpegenc at 1280x720")
+    log.info("FX snapshot: CPU jpegenc at 1280x720, rate-limited to 3fps")
 
     appsink = Gst.ElementFactory.make("appsink", "fx-snapshot-sink")
     appsink.set_property("sync", False)
@@ -205,7 +217,7 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     appsink.set_property("emit-signals", True)
     appsink.connect("new-sample", _on_fx_sample)
 
-    elements = [queue, convert, scale, scale_caps, jpeg, appsink]
+    elements = [queue, convert, scale, scale_caps, rate, rate_caps, jpeg, appsink]
 
     for el in elements:
         if el is None:
