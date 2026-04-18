@@ -1356,11 +1356,18 @@ class DirectorLoop:
                     {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
                 )
                 try:
-                    # 2026-04-17 perf: 30s → 8s. A 30s block in the
-                    # GStreamer thread froze the stream on every stall.
-                    # Command R on the 3090 fits comfortably in 5s; 8s
-                    # gives buffer and surfaces real stalls fast.
-                    with urllib.request.urlopen(req, timeout=8) as resp:
+                    # 2026-04-17 director-LLM timeout sweep:
+                    # 30s (baseline) — GStreamer thread blocked 30s on
+                    # every stall, froze the stream.
+                    # 8s (Stage 1 over-correction) — local-fast
+                    # (Qwen3.5-9B EXL3 via TabbyAPI) takes 10-15s under
+                    # normal load; every tick timed out, director
+                    # emissions stopped entirely.
+                    # 20s (current) — fits local-fast with buffer. The
+                    # narrative cadence is 12s, so a single 20s stall
+                    # can defer one tick but perception advances at the
+                    # next PERCEPTION_INTERVAL regardless.
+                    with urllib.request.urlopen(req, timeout=20) as resp:
                         data = json.loads(resp.read())
                 except TimeoutError:
                     # re-raise so llm_call_span tags outcome="timeout"
