@@ -293,8 +293,117 @@ _WARD_CADENCE: list[CapabilityRecord] = [
     ),
 ]
 
+# Audit C1 (2026-04-18): the ward.size / ward.position / ward.appearance
+# IntentFamily values were promoted to first-class in PR #1046's prompt
+# enum but had ZERO catalog entries — so family-restricted retrieval
+# (PR #1044) returned empty for every recruitment. These three lists
+# close that gap. Each entry pairs (ward, modifier) with a Gibson-verb
+# description per the unified-semantic-recruitment rubric.
+_WARD_SIZE: list[CapabilityRecord] = [
+    _record(
+        "ward.size.album.grow-150pct",
+        "scales the album cover up to 150% when music takes center stage",
+    ),
+    _record(
+        "ward.size.album.shrink-20pct",
+        "scales the album cover down 20% when music recedes and other content claims focus",
+    ),
+    _record(
+        "ward.size.album.natural",
+        "returns the album cover to its layout-declared natural size",
+    ),
+    _record(
+        "ward.size.token_pole.grow-110pct",
+        "enlarges the token pole when token economy or attention dynamics are the subject",
+    ),
+    _record(
+        "ward.size.token_pole.natural",
+        "returns the token pole to its natural size",
+    ),
+    _record(
+        "ward.size.captions.grow-110pct",
+        "enlarges the captions strip when accessibility or speech-clarity is the subject",
+    ),
+    _record(
+        "ward.size.captions.natural",
+        "returns captions to natural size",
+    ),
+    _record(
+        "ward.size.recruitment_candidate_panel.shrink-50pct",
+        "shrinks the recruitment candidate panel when its diagnostic detail is noise to the audience",
+    ),
+]
+
+_WARD_POSITION: list[CapabilityRecord] = [
+    _record(
+        "ward.position.token_pole.drift-sine-1hz",
+        "drifts the token pole vertically on a slow sine to signal gentle attention dynamics",
+    ),
+    _record(
+        "ward.position.token_pole.drift-sine-slow",
+        "drifts the token pole on a very slow sine for ambient hold states",
+    ),
+    _record(
+        "ward.position.album.drift-circle-1hz",
+        "circles the album cover slowly to signal the spinning vinyl when audio energy is high",
+    ),
+    _record(
+        "ward.position.album.static",
+        "holds the album cover at its layout position when music is incidental",
+    ),
+    _record(
+        "ward.position.captions.static",
+        "holds captions at their bottom-strip position",
+    ),
+    _record(
+        "ward.position.thinking_indicator.drift-sine-1hz",
+        "drifts the thinking indicator on a slow sine while LLM tick is in flight",
+    ),
+]
+
+_WARD_APPEARANCE: list[CapabilityRecord] = [
+    _record(
+        "ward.appearance.album.tint-warm",
+        "warms the album cover ward's color register when the music is warm or nostalgic",
+    ),
+    _record(
+        "ward.appearance.album.tint-cool",
+        "cools the album cover ward when the music is cold or melancholic",
+    ),
+    _record(
+        "ward.appearance.album.desaturate",
+        "desaturates the album cover for grayscale moments when color would distract",
+    ),
+    _record(
+        "ward.appearance.album.palette-default",
+        "returns the album cover to its default palette",
+    ),
+    _record(
+        "ward.appearance.captions.tint-warm",
+        "warms the captions strip's color when the speaker is the operator and warmth helps legibility",
+    ),
+    _record(
+        "ward.appearance.captions.palette-default",
+        "returns captions to their default color palette",
+    ),
+    _record(
+        "ward.appearance.token_pole.tint-cool",
+        "cools the token pole when token dynamics are subdued or contemplative",
+    ),
+    _record(
+        "ward.appearance.token_pole.palette-default",
+        "returns the token pole to its default palette",
+    ),
+]
+
 _WARD_AFFORDANCES: list[CapabilityRecord] = (
-    _WARD_HIGHLIGHT + _WARD_STAGING + _WARD_CHOREOGRAPHY + _WARD_CADENCE
+    _WARD_HIGHLIGHT
+    + _WARD_STAGING
+    + _WARD_CHOREOGRAPHY
+    + _WARD_CADENCE
+    + _WARD_SIZE
+    + _WARD_POSITION
+    + _WARD_APPEARANCE
 )
 
 
