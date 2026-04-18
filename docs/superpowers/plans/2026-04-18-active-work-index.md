@@ -68,9 +68,9 @@
 | #135 Camera naming | 🔵 SPEC | [design](../specs/2026-04-18-camera-naming-classification-design.md) | — | — |
 | #136 Follow-mode | 🔵 SPEC | [design](../specs/2026-04-18-follow-mode-design.md) | — | — |
 | #124 Reverie preservation | 🔵 SPEC | [design](../specs/2026-04-18-reverie-substrate-preservation-design.md) | — | — |
-| #125 Token pole HOMAGE | 🟣 | — | — | — |
+| #125 Token pole HOMAGE | 🔵 SPEC | [design](../specs/2026-04-18-token-pole-homage-migration-design.md) | — | — |
 | #126 Pango text repository | 🔁 (blocked on #155 linter) | — | — | — |
-| #128 Preset variety expansion | 🟣 (drafting) | — | — | — |
+| #159 Vinyl image ward | 🟣 (drafting) | — | — | — |
 
 ### Perception → Representation
 
@@ -84,16 +84,16 @@
 
 | Task | Status | Spec stub | Plan | PR |
 |---|---|---|---|---|
-| #133 Rode Wireless Pro | 🟣 | — | — | — |
+| #133 Rode Wireless Pro | 🔵 SPEC | [design](../specs/2026-04-18-rode-wireless-integration-design.md) | — | — |
 | #134 Audio pathways audit | 🔵 SPEC | [design](../specs/2026-04-18-audio-pathways-audit-design.md) | — | — |
 
 ### Music + Content Sources
 
 | Task | Status | Spec stub | Plan | PR |
 |---|---|---|---|---|
-| #127 SPLATTRIBUTION | 🟣 | — | — | — |
-| #130 Local music repository | 🟣 | — | — | — |
-| #131 SoundCloud integration | 🟣 ⚫ | — | — | — |
+| #127 SPLATTRIBUTION | 🔵 SPEC | [design](../specs/2026-04-18-splattribution-design.md) | — | — |
+| #130 Local music repository | 🔵 SPEC | [design](../specs/2026-04-18-local-music-repository-design.md) | — | — |
+| #131 SoundCloud integration | 🔵 SPEC | [design](../specs/2026-04-18-soundcloud-integration-design.md) | — | — |
 
 ### Operator ↔ Hapax Sidechannel
 
@@ -113,18 +113,37 @@
 
 | Task | Title | Spec | Status |
 |---|---|---|---|
+| #140-143 | Control-surface bundle (Stream Deck + KDEConnect + vinyl rate + IR cadence) | [design](../specs/2026-04-18-control-surface-bundle-design.md) | 🔵 SPEC |
+| #144 + #145 | YouTube broadcast bundle (description auto-update + reverse ducking) | [design](../specs/2026-04-18-youtube-broadcast-bundle-design.md) | 🔵 SPEC |
 | #146 | Token pole reward mechanic | [design](../specs/2026-04-18-token-pole-reward-mechanic-design.md) | 🔵 SPEC |
 | #149 | Audio reactivity contract | [design](../specs/2026-04-18-audio-reactivity-contract-design.md) | 🔵 SPEC |
 | #150 | Vision integration | [design](../specs/2026-04-18-vision-integration-design.md) | 🔵 SPEC |
+| #151 | Cross-agent audit dormant policy | [design](../specs/2026-04-18-heterogeneous-agent-audit-design.md) | 🔵 SPEC |
 | #155 | Anti-personification linter | [design](../specs/2026-04-18-anti-personification-linter-design.md) | 🔵 SPEC |
 | #156 | Role derivation research template | [design](../specs/2026-04-18-role-derivation-research-template-design.md) | 🔵 SPEC |
 | #157 | Non-destructive overlay layer | [design](../specs/2026-04-18-non-destructive-overlay-design.md) | 🔵 SPEC |
 
-### Fix-PR Briefs (ready to ship, no spec needed)
+### Fix-PRs Shipped in PR #1056 (2026-04-18 cascade)
 
-| Task | Title | Brief |
+| Task | Title | Status |
 |---|---|---|
-| #158 | Director "do nothing" invariant | [brief](./2026-04-18-director-no-op-fix-brief.md) 🚨 |
+| #158 | Director "do nothing" invariant | ✅ SHIPPED — schema `min_length=1` + parser fallbacks + regression test |
+| #152 | Session-naming identity (`hapax-whoami` + cwd fallback) | ✅ SHIPPED — 10-line session-context.sh fix |
+| #148 | Reactivity sync gap (snapshot-before-decay) | ✅ SHIPPED — `AudioCapture.get_signals` order fix |
+| #142 PR A | Vinyl rate-aware audio restoration (ACTIVE BUG) | ✅ SHIPPED — `shared/vinyl_rate.py` + album-identifier fix |
+
+### Operator Calls Made 2026-04-18 ("make the calls yourself")
+
+- **#142 Handytrax preset default:** 0.741× (45-on-33). Operator overrides via `/dev/shm/hapax-compositor/vinyl-playback-rate.txt`.
+- **#159 image source:** cover-DB (MusicBrainz + Discogs) PRIMARY, IR capture FALLBACK; palette-quant to mIRC-16.
+- **#159 warp source:** switch workstation daemon to Pi-side pre-warped `/album.jpg`.
+- **#129 operator face:** obscure on every egress (incl. local OBS V4L2).
+- **#129 SCRFD dropout:** fail-closed for broadcast, last-known for local preview.
+- **#129 archival recordings:** obscure applied (operator can flag override).
+- **#121 HARDM cell mapping:** JSON config (externalized).
+- **#121 TTS fidelity:** 16-band Kokoro envelope (matches grid).
+- **#132 sidechat narrative leak:** default silent; operator opt-in flag.
+- **#134 AEC:** WebRTC method; Kokoro TTS merged into reference signal.
 
 ---
 
