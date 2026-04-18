@@ -640,9 +640,13 @@ def write_state(album: dict, track: str) -> None:
     ]
     if track:
         lines.append(f'Track: "{track}"')
+    # "(LOL)" is deliberate commentary on dumb-LLM-attribution-confidence —
+    # it rides inline with the Confidence value rather than dangling on its
+    # own line below where it read as an LLM artifact.
     if confidence != "?":
-        lines.append(f"Confidence: {int(float(confidence) * 100)}%")
-    lines.append("LOL")
+        lines.append(f"Confidence: {int(float(confidence) * 100)}% (LOL)")
+    else:
+        lines.append("Confidence: ? (LOL)")
     try:
         SHM_DIR.mkdir(parents=True, exist_ok=True)
         MUSIC_ATTRIBUTION_FILE.write_text("\n".join(lines))
