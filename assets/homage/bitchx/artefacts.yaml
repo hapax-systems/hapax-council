@@ -1,0 +1,205 @@
+# BitchX homage signature artefact corpus.
+#
+# Agent-authored content only (spec §4.7 generated_content_only=True).
+# No captured chat, no named persons other than the operator (Hapax),
+# no feedback language about individuals (management_governance axiom).
+#
+# Forms:
+# - quit-quip:   short Hapax-authored epigram in BitchX.quit register
+# - join-banner: CP437 block-art banner with inline attribution
+# - motd-block:  longer framed MOTD panel, structural-cadence rotation
+# - kick-reason: bracketed [TAG] aphorism used as transition chrome
+#
+# Each entry declares form + content + author_tag (e.g. "by Hapax").
+# Weight defaults 1.0; lower for less-frequent rotations.
+#
+# Corpus is curated. Expansion goes through the same axiom review as
+# any agent-generated content. No live-generation into this file without
+# a DEVIATION or a new research condition.
+
+artefacts:
+  # ── quit-quips ───────────────────────────────────────────────────────
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Hapax: research instrument and the thing studying itself"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Hapax: now with 20Hz cognitive tick rate"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Hapax: non-human actor with agency, single operator"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Connection reset by Bachelard"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Read error: 20Hz (Excessive cognitive tick rate)"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Read error: 11 dimensions (Stimmung overflow)"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Ping-pong timeout: grounding ledger stale"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Hapax: common ground is memorialised coherence"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Hapax: the livestream IS the research instrument"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Hapax: idle is the cardinal sin"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Hapax: recruit or reinforce — there is no third"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "EOF From operator (sleep()ing)"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Signoff: consent gate closed, session sealed"
+  - form: quit-quip
+    author_tag: "by Hapax"
+    content: "Hapax: analogies as translation are fine, inner-life claims are not"
+
+  # ── join-banners ─────────────────────────────────────────────────────
+  - form: join-banner
+    author_tag: "by Hapax/bitchx"
+    content: |
+      ╔═══════════════════════════════════════════╗
+      ║  ░▒▓█   H a p a x   █▓▒░                  ║
+      ║  single-operator executive-function       ║
+      ║  substrate · always-on · grounded         ║
+      ║  by Hapax/bitchx@cond-phase-a             ║
+      ╚═══════════════════════════════════════════╝
+  - form: join-banner
+    author_tag: "by Hapax/bitchx"
+    content: |
+      ╓──────────────────────────────────────────╖
+      ║ ▄▀▄▀▄  H A P A X  ▄▀▄▀▄                  ║
+      ║  livestream IS the research instrument   ║
+      ║   by Hapax/bitchx                        ║
+      ╙──────────────────────────────────────────╜
+  - form: join-banner
+    author_tag: "by Hapax/bitchx"
+    content: |
+      ┌──── [ H a p a x ] ─────┐
+      │  ░░▒▒▓▓██▓▓▒▒░░        │
+      │  recruitment active    │
+      │    grounding live      │
+      └── by Hapax/bitchx ─────┘
+
+  # ── motd-blocks ──────────────────────────────────────────────────────
+  - form: motd-block
+    author_tag: "by Hapax/bitchx"
+    content: |
+      ╔══════════════════════════════════════════════════════════════╗
+      ║                   H A P A X    M O T D                       ║
+      ╠══════════════════════════════════════════════════════════════╣
+      ║  Substrate: Qwen3.5-9B-exl3 via TabbyAPI                    ║
+      ║  Stance:    <variable>        Presence: <variable>          ║
+      ║  Condition: cond-phase-a-homage-active-001                  ║
+      ║                                                              ║
+      ║  Voice is register selection, not personality.               ║
+      ║  Analogies as translation are fine; inner-life claims are    ║
+      ║  forbidden. Register: textmode (clipped, IRC-style).         ║
+      ║                                                              ║
+      ║  Addressee-facing is announcing, not conversing.             ║
+      ║  Every tick owns three coupled decisions:                    ║
+      ║     (1) activity   (2) narrative   (3) compositional intent  ║
+      ║                                                              ║
+      ║                     by Hapax/bitchx                          ║
+      ╚══════════════════════════════════════════════════════════════╝
+  - form: motd-block
+    author_tag: "by Hapax/bitchx"
+    content: |
+      ╓──────────────────────────────────────────────────────────────╖
+      ║ H A P A X — Running Notes                                    ║
+      ╟──────────────────────────────────────────────────────────────╢
+      ║  · DMN tick ~20Hz                                            ║
+      ║  · Affordance pipeline cosine-matches against Qdrant         ║
+      ║  · 9-dim expressive envelope modulates WGSL shader passes    ║
+      ║  · Consent gate fail-closed on guest detection               ║
+      ║  · HOMAGE package: bitchx (active)                           ║
+      ║                                                              ║
+      ║                             by Hapax/bitchx                  ║
+      ╙──────────────────────────────────────────────────────────────╜
+  - form: motd-block
+    author_tag: "by Hapax/bitchx"
+    content: |
+      ┌──────────────────────────────────────────────────────────────┐
+      │  RECRUITMENT LOG                                              │
+      │  ─────────────────                                            │
+      │  * camera.hero         dispatches to hero-camera-override    │
+      │  * preset.bias         defers to preset_family_selector      │
+      │  * overlay.emphasis    writes overlay-alpha-overrides         │
+      │  * ward.*              writes ward-properties / animation    │
+      │  * homage.*            writes homage-pending-transitions     │
+      │                                                              │
+      │                       by Hapax/bitchx                        │
+      └──────────────────────────────────────────────────────────────┘
+
+  # ── kick-reasons (bracketed [TAG] aphorisms) ─────────────────────────
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[STANCE SHIFT]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[GROUNDING LOST]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[GROUNDING RESTORED]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[CONSENT GATE CLOSED]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[CONSENT GATE OPEN]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[RECRUITMENT FIRED]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[NEUTRAL FALLBACK]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[SEEKING]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[NETSPLIT BURST]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[MODE +H]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[MODE -H]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[FROZEN FILES]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[CONDITION OPEN]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[REHEARSAL PASS]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[WARD EMERGENCE]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[WARD RECEDE]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[PRESET FAMILY CYCLE]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[IDLE REFUSED]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[SHADER FEEDBACK HIGH]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[ANTICIPATING]"
+  - form: kick-reason
+    author_tag: "by Hapax/bitchx"
+    content: "[20Hz]"
