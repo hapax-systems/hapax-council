@@ -214,6 +214,90 @@ _STREAM_MODE: list[CapabilityRecord] = [
     ),
 ]
 
+# ── Ward-property affordances ─────────────────────────────────────────────
+# Per-ward modulation of the livestream surface (memory
+# `reference_wards_taxonomy.md`). Each entry pairs one ward (Cairo source,
+# overlay zone, hothouse panel, etc.) with one modifier from the dispatcher's
+# vocabulary. Recruitment writes the corresponding entry to
+# /dev/shm/hapax-compositor/ward-properties.json or ward-animation-state.json.
+# The catalog is intentionally narrow at first — the high-leverage entries
+# (album emphasize, hothouse quiet during silence, captions dim during
+# study) — and grows as operators identify new modulation moves worth
+# recruiting against.
+
+_WARD_HIGHLIGHT: list[CapabilityRecord] = [
+    _record(
+        "ward.highlight.album.foreground",
+        "brightens the album cover ward when the music is the subject of the moment",
+    ),
+    _record(
+        "ward.highlight.album.dim",
+        "dims the album cover ward when the music is incidental and other content claims attention",
+    ),
+    _record(
+        "ward.highlight.captions.dim",
+        "dims the captions strip when the operator is silent or chat is the subject",
+    ),
+    _record(
+        "ward.highlight.captions.foreground",
+        "brightens the captions strip when the operator is speaking and accessibility matters",
+    ),
+    _record(
+        "ward.highlight.thinking_indicator.pulse",
+        "pulses the thinking indicator when an LLM tick is in flight to make latency visible",
+    ),
+]
+
+_WARD_STAGING: list[CapabilityRecord] = [
+    _record(
+        "ward.staging.recruitment_candidate_panel.hide",
+        "hides the recruitment candidate panel during a public stream when internal cognition should not be foregrounded",
+    ),
+    _record(
+        "ward.staging.recruitment_candidate_panel.show",
+        "shows the recruitment candidate panel during research-mode streams when transparency is the subject",
+    ),
+    _record(
+        "ward.staging.impingement_cascade.hide",
+        "hides the impingement cascade panel when the audience is non-research and the diagnostic is noise",
+    ),
+    _record(
+        "ward.staging.activity_variety_log.hide",
+        "hides the activity variety log when the operator wants the chrome to retreat",
+    ),
+]
+
+_WARD_CHOREOGRAPHY: list[CapabilityRecord] = [
+    _record(
+        "ward.choreography.album-emphasize",
+        "scales up and brightens the album cover while dimming peripheral wards when music becomes the moment",
+    ),
+    _record(
+        "ward.choreography.hothouse-quiet",
+        "fades all hothouse diagnostic panels to half opacity when primary content should claim attention",
+    ),
+    _record(
+        "ward.choreography.camera-spotlight",
+        "scales up the hero camera tile and dims the other PiPs when one camera deserves a spotlight moment",
+    ),
+]
+
+_WARD_CADENCE: list[CapabilityRecord] = [
+    _record(
+        "ward.cadence.thinking_indicator.pulse-2hz",
+        "speeds the thinking indicator's pulse to 2hz to signal heightened cognitive activity",
+    ),
+    _record(
+        "ward.cadence.thinking_indicator.default",
+        "returns the thinking indicator to its baseline cadence when activity has settled",
+    ),
+]
+
+_WARD_AFFORDANCES: list[CapabilityRecord] = (
+    _WARD_HIGHLIGHT + _WARD_STAGING + _WARD_CHOREOGRAPHY + _WARD_CADENCE
+)
+
+
 # ── Catalog ────────────────────────────────────────────────────────────────
 
 COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
@@ -223,6 +307,7 @@ COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
     + _YOUTUBE_DIRECTION
     + _ATTENTION_WINNER
     + _STREAM_MODE
+    + _WARD_AFFORDANCES
 )
 
 

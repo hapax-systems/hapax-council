@@ -452,13 +452,26 @@ class CairoSourceRunner:
             cr.set_operator(cairo.OPERATOR_CLEAR)
             cr.paint()
             cr.set_operator(cairo.OPERATOR_OVER)
-            self._source.render(
-                cr,
-                self._natural_w,
-                self._natural_h,
-                t0,
-                self._source.state(),
-            )
+            # Runner-level ward modulation: every CairoSource automatically
+            # honors per-ward visibility + alpha (and any future per-source
+            # property the Cairo blit can apply) without per-source code
+            # changes. ``visible=False`` short-circuits the source's render
+            # so the surface stays transparent (gst mixer composites
+            # nothing); ``alpha < 1`` wraps the draw in a Cairo group so
+            # the entire composition fades uniformly. Each runner reads the
+            # 200ms-cached ward-properties.json — sub-ms even with 16+
+            # runners since they share the module-level cache.
+            from .ward_properties import ward_render_scope
+
+            with ward_render_scope(cr, self._source_id) as _ward_props:
+                if _ward_props is not None:
+                    self._source.render(
+                        cr,
+                        self._natural_w,
+                        self._natural_h,
+                        t0,
+                        self._source.state(),
+                    )
             surface.flush()
         except Exception:
             log.exception("CairoSource %s render failed", self._source_id)

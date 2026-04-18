@@ -209,39 +209,37 @@ class AlbumOverlayCairoSource(CairoSource):
         t: float,
         state: dict[str, Any],
     ) -> None:
-        from .ward_properties import ward_render_scope
+        # Per-ward visibility + alpha modulation lives in the runner
+        # (``cairo_source.CairoSourceRunner._render_one_frame``); this
+        # method draws unconditionally.
+        self._refresh_cover()
+        self._refresh_attribution()
 
-        with ward_render_scope(cr, "album") as props:
-            if props is None:
-                return
-            self._refresh_cover()
-            self._refresh_attribution()
+        if self._surface is None:
+            return
 
-            if self._surface is None:
-                return
+        # Position the cover TEXT_BUFFER pixels down from the canvas top so
+        # the attribution text above the cover fits within the surface.
+        cr.save()
+        cr.translate(0, TEXT_BUFFER)
 
-            # Position the cover TEXT_BUFFER pixels down from the canvas top so
-            # the attribution text above the cover fits within the surface.
+        if self._attrib_text:
+            self._draw_attrib(cr)
+
+        sw = self._surface.get_width()
+        sh = self._surface.get_height()
+        if sw > 0 and sh > 0:
+            scale = SIZE / max(sw, sh)
             cr.save()
-            cr.translate(0, TEXT_BUFFER)
-
-            if self._attrib_text:
-                self._draw_attrib(cr)
-
-            sw = self._surface.get_width()
-            sh = self._surface.get_height()
-            if sw > 0 and sh > 0:
-                scale = SIZE / max(sw, sh)
-                cr.save()
-                cr.scale(scale, scale)
-                cr.set_source_surface(self._surface, 0, 0)
-                cr.paint_with_alpha(ALPHA)
-                cr.restore()
-
-                if self._fx_func is not None:
-                    self._fx_func(cr, SIZE, SIZE)
-
+            cr.scale(scale, scale)
+            cr.set_source_surface(self._surface, 0, 0)
+            cr.paint_with_alpha(ALPHA)
             cr.restore()
+
+            if self._fx_func is not None:
+                self._fx_func(cr, SIZE, SIZE)
+
+        cr.restore()
 
     def _refresh_cover(self) -> None:
         try:

@@ -742,6 +742,36 @@ class StudioCompositor:
         layout = load_layout_or_fallback(self._layout_path)
         state = LayoutState(layout)
         registry = SourceRegistry()
+
+        # Populate the ward registry from this layout so per-ward property
+        # dispatchers (`ward.size.<id>.*`, etc.) can validate against the
+        # canonical catalog and operator tooling can list every addressable
+        # ward. Atomic dict swap inside `populate_from_layout` keeps any
+        # concurrent reader on a stable snapshot during the layout swap.
+        try:
+            from agents.studio_compositor.ward_registry import (
+                populate_camera_pips,
+                populate_from_layout,
+                populate_overlay_zones,
+                populate_youtube_slots,
+            )
+
+            populate_from_layout(layout)
+            populate_overlay_zones(["main", "research", "lyrics"])
+            populate_youtube_slots(slot_count=3)
+            populate_camera_pips(
+                [
+                    "c920-overhead",
+                    "c920-desk",
+                    "c920-room",
+                    "brio-operator",
+                    "brio-synths",
+                    "brio-room",
+                ]
+            )
+        except Exception:
+            log.exception("ward_registry bootstrap failed; continuing without registry")
+
         for source in layout.sources:
             try:
                 backend = registry.construct_backend(source, budget_tracker=self._budget_tracker)
