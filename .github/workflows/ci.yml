@@ -71,11 +71,12 @@ jobs:
           LANGFUSE_HOST: "http://0.0.0.0:1"
         run: |
           # pytest hangs post-session due to open sockets from module-level
-          # LiteLLM/Qdrant clients. Tests complete in ~3min; hang is infinite.
-          # Use timeout to kill after 5min, pipe to tee to capture output,
+          # LiteLLM/Qdrant clients. Tests complete in ~4min post-HOMAGE epic
+          # (was ~3min pre-epic); hang after completion is infinite.
+          # Use timeout to kill after 8min, pipe to tee to capture output,
           # then parse the summary line for the real exit code.
           set +e
-          timeout -s KILL 300 \
+          timeout -s KILL 480 \
             uv run pytest tests/ -q \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \
               --ignore=tests/test_frame_gate.py \
