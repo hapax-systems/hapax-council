@@ -12,8 +12,17 @@ import json
 import pytest
 
 from agents.studio_compositor import director_loop as dl
-from shared.director_intent import DirectorIntent
+from shared.director_intent import CompositionalImpingement, DirectorIntent
 from shared.stimmung import Stance
+
+
+def _test_impingement() -> CompositionalImpingement:
+    """Stock CompositionalImpingement for DirectorIntent construction in tests.
+    Operator invariant (2026-04-18) requires at least one per intent."""
+    return CompositionalImpingement(
+        narrative="test impingement: wiring exercise",
+        intent_family="overlay.emphasis",
+    )
 
 
 class TestParseIntentFromLlm:
@@ -27,7 +36,9 @@ class TestParseIntentFromLlm:
         assert intent.activity == "react"
         assert intent.narrative_text == "what caught me"
         assert intent.stance == Stance.NOMINAL
-        assert intent.compositional_impingements == []
+        # Operator invariant (2026-04-18): legacy-shape fallback must still
+        # populate a silence-hold impingement rather than emit empty.
+        assert len(intent.compositional_impingements) == 1
 
     def test_legacy_shape_silence(self):
         intent = dl._parse_intent_from_llm('{"activity": "silence"}')
@@ -84,6 +95,7 @@ class TestEmitIntentArtifacts:
             activity="react",
             stance=Stance.NOMINAL,
             narrative_text="hello",
+            compositional_impingements=[_test_impingement()],
         )
         dl._emit_intent_artifacts(intent, condition_id="cond-test-001")
         assert jsonl.exists()
@@ -100,6 +112,7 @@ class TestEmitIntentArtifacts:
             activity="vinyl",
             stance=Stance.SEEKING,
             narrative_text="",
+            compositional_impingements=[_test_impingement()],
         )
         dl._emit_intent_artifacts(intent, condition_id="cond-x")
         assert narrative_state.exists()
@@ -112,8 +125,18 @@ class TestEmitIntentArtifacts:
     def test_narrative_state_atomic_replace(self, tmp_paths):
         """Writing twice should not leave tmp files behind."""
         _, narrative_state = tmp_paths
-        intent_a = DirectorIntent(activity="react", stance=Stance.NOMINAL, narrative_text="")
-        intent_b = DirectorIntent(activity="silence", stance=Stance.CAUTIOUS, narrative_text="")
+        intent_a = DirectorIntent(
+            activity="react",
+            stance=Stance.NOMINAL,
+            narrative_text="",
+            compositional_impingements=[_test_impingement()],
+        )
+        intent_b = DirectorIntent(
+            activity="silence",
+            stance=Stance.CAUTIOUS,
+            narrative_text="",
+            compositional_impingements=[_test_impingement()],
+        )
         dl._emit_intent_artifacts(intent_a, condition_id="c")
         dl._emit_intent_artifacts(intent_b, condition_id="c")
         state = json.loads(narrative_state.read_text())
@@ -130,7 +153,12 @@ class TestEmitIntentArtifacts:
         bad_jsonl = bad_parent / "director-intent.jsonl"
         monkeypatch.setattr(dl, "_DIRECTOR_INTENT_JSONL", bad_jsonl)
         monkeypatch.setattr(dl, "_NARRATIVE_STATE_PATH", tmp_path / "narrative-state.json")
-        intent = DirectorIntent(activity="react", stance=Stance.NOMINAL, narrative_text="")
+        intent = DirectorIntent(
+            activity="react",
+            stance=Stance.NOMINAL,
+            narrative_text="",
+            compositional_impingements=[_test_impingement()],
+        )
         # Should not raise
         dl._emit_intent_artifacts(intent, condition_id="c")
         # Narrative-state should still succeed independently.

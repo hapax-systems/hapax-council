@@ -157,8 +157,17 @@ class TestActivityVocabulary:
         assert "music" in CANDIDATE_ACTIVITIES
 
     def test_music_activity_constructs_director_intent(self):
-        from shared.director_intent import DirectorIntent
+        from shared.director_intent import CompositionalImpingement, DirectorIntent
         from shared.stimmung import Stance
 
-        intent = DirectorIntent(activity="music", stance=Stance.NOMINAL, narrative_text="")
+        intent = DirectorIntent(
+            activity="music",
+            stance=Stance.NOMINAL,
+            narrative_text="",
+            compositional_impingements=[
+                CompositionalImpingement(
+                    narrative="music-led surface hold", intent_family="preset.bias"
+                )
+            ],
+        )
         assert intent.activity == "music"
