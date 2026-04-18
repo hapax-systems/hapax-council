@@ -234,14 +234,16 @@ function FullscreenOverlay({ onClose }: { onClose: () => void }) {
         isolation: "isolate",
       }}
     >
-      {/* Video — fills available space above controls.
-          Uses bulletproof centered-contain pattern (max-width/max-height + auto)
-          rather than width/height: 100% + objectFit: contain. The latter has
-          edge cases under webkit2gtk where the image element's intrinsic size
-          can leak through and overflow:hidden clips the right edge — losing
-          chat_keyword_legend (x=1760-1920), stance_indicator (x=1800-1900),
-          and other right-edge wards. The max-* + auto pattern is what
-          letterbox CSS guides recommend for this exact case. */}
+      {/* Video — fills available space above controls. width/height: 100%
+          makes the img element fill the container; objectFit: contain
+          scales the source content to fit the element while preserving
+          aspect (letterbox bars when aspect mismatches). The earlier
+          attempt to use max-width/max-height + auto sized the img element
+          to its INTRINSIC dimensions (1280×720 for the compositor's
+          downscaled snapshot), leaving large black bars even on a
+          1920×1050 viewport. The right-edge ward "clipping" that
+          motivated that change was actually the layout coord rescale
+          bug fixed in #1042 — the CSS path was correct all along. */}
       <div
         style={{
           flex: 1,
@@ -256,13 +258,7 @@ function FullscreenOverlay({ onClose }: { onClose: () => void }) {
           ref={imgRef}
           alt="fullscreen output"
           draggable={false}
-          style={{
-            maxWidth: "100%",
-            maxHeight: "100%",
-            width: "auto",
-            height: "auto",
-            objectFit: "contain",
-          }}
+          style={{ width: "100%", height: "100%", objectFit: "contain" }}
         />
       </div>
 
