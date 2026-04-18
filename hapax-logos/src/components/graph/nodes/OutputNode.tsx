@@ -134,7 +134,12 @@ function OutputNodeInner({ data, selected }: NodeProps) {
           ref={imgRef}
           alt={label}
           draggable={false}
-          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+          // ``contain`` letterboxes when the node aspect-ratio differs from
+          // the compositor's 16:9 — ``cover`` would CROP the right edge,
+          // hiding the right-edge wards (chat_keyword_legend at x=1760,
+          // stance_indicator at x=1800, thinking_indicator at x=1620,
+          // whos_here at x=1460) which sit at the canvas's far right.
+          style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
         />
         <div
           style={{
