@@ -865,6 +865,24 @@ class DirectorLoop:
                 activity = intent.activity
                 text = intent.narrative_text
 
+                # Viewer-audit (2026-04-18): the LLM was emitting near-
+                # duplicate paragraphs tick after tick ("The tension in
+                # this deposition scene is palpable. The silence..."
+                # 6× of 10). For captions and TTS, repetition is boring.
+                # Word-Jaccard against the last 5 narratives; ≥0.6
+                # overlap means it's effectively the same thought — fall
+                # back to a micromove so the viewer gets a fresh visual
+                # instead of a restated paragraph.
+                if text and self._narrative_too_similar(text):
+                    log.info(
+                        "director narrative too similar to recent — emitting micromove fallback"
+                    )
+                    self._emit_micromove_fallback(
+                        reason="narrative_repeat", condition_id=condition_id
+                    )
+                    time.sleep(1.0)
+                    continue
+
                 # Sim-3 audit (2026-04-18): the activity rotation enforcer
                 # was running AFTER _emit_intent_artifacts, so the JSONL
                 # record captured the pre-rotation (monotone react) label.
@@ -878,6 +896,9 @@ class DirectorLoop:
                     activity = self._maybe_rotate_repeated_activity(activity)
                 if activity != intent.activity:
                     intent = intent.model_copy(update={"activity": activity})
+
+                if text:
+                    self._remember_narrative(text)
 
                 _emit_intent_artifacts(intent, condition_id=condition_id)
 
@@ -908,6 +929,53 @@ class DirectorLoop:
             except Exception:
                 log.exception("Director loop error")
             time.sleep(0.5)
+
+    def _narrative_too_similar(self, candidate: str) -> bool:
+        """Return True if ``candidate`` is effectively a restatement of a
+        recent narrative.
+
+        Uses a word-set Jaccard similarity on the last 5 emitted
+        narratives. Threshold 0.6 — empirically tuned against the
+        sim-5 dup cluster ("The tension in this deposition scene is
+        palpable. The silence..." repeated 6× of 10 emissions). Higher
+        thresholds missed the duplicates; lower thresholds were
+        rejecting legitimate same-topic-different-angle ticks.
+        """
+        try:
+            if not candidate or len(candidate) < 40:
+                return False
+            recent = list(getattr(self, "_recent_narratives", []))
+            if not recent:
+                return False
+            cand_words = set(w.lower().strip(".,!?;:'\"") for w in candidate.split())
+            cand_words = {w for w in cand_words if len(w) >= 4}
+            if len(cand_words) < 8:
+                return False
+            for prior in recent:
+                prior_words = set(w.lower().strip(".,!?;:'\"") for w in prior.split())
+                prior_words = {w for w in prior_words if len(w) >= 4}
+                if not prior_words:
+                    continue
+                intersection = len(cand_words & prior_words)
+                union = len(cand_words | prior_words)
+                jaccard = intersection / union if union else 0.0
+                if jaccard >= 0.6:
+                    return True
+            return False
+        except Exception:
+            log.debug("narrative similarity check raised", exc_info=True)
+            return False
+
+    def _remember_narrative(self, text: str) -> None:
+        """Append a narrative to the rolling de-dupe history (last 5)."""
+        try:
+            history = list(getattr(self, "_recent_narratives", []))
+            history.append(text)
+            if len(history) > 5:
+                history = history[-5:]
+            self._recent_narratives = history
+        except Exception:
+            log.debug("narrative remember failed", exc_info=True)
 
     def _maybe_rotate_repeated_activity(self, proposed: str) -> str:
         """Force activity-label variety when the LLM repeats itself.
@@ -1314,6 +1382,33 @@ class DirectorLoop:
         parts.append("")
         parts.append("## Your Role")
         parts.append(ACTIVITY_CAPABILITIES)
+
+        # Viewer-audit (2026-04-18): after 4 consecutive react narratives
+        # the LLM was looping the same paragraph about the same video.
+        # Insert an explicit "change the subject" rider when we've spent
+        # too long on video commentary so the next emission reaches for
+        # music / operator / reverie / study ground.
+        try:
+            recent = list(getattr(self, "_recent_narratives", []))
+            video_streak = 0
+            for narrative in reversed(recent):
+                low = (narrative or "").lower()
+                if any(k in low for k in ("video", "deposition", "footage", "scene")):
+                    video_streak += 1
+                else:
+                    break
+            if video_streak >= 3:
+                parts.append("")
+                parts.append(
+                    "## Scope nudge\n"
+                    f"You have commented on the video for {video_streak} ticks in a row. "
+                    "The viewer can see the video. **Shift ground**: comment on "
+                    "the music Oudepode is playing, the reverie visual mood, "
+                    "the operator's desk activity, or the active research "
+                    "objective. Anything BUT another video paragraph."
+                )
+        except Exception:
+            log.debug("scope nudge failed", exc_info=True)
         parts.append("")
         parts.append("## Images")
         parts.append("Two images attached. First: the current video frame.")

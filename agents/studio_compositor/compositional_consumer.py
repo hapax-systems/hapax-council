@@ -82,10 +82,40 @@ def _safe_load_json(path: Path) -> dict:
 # ── Per-family dispatchers ─────────────────────────────────────────────────
 
 
+_CAMERA_ROLE_HISTORY: list[tuple[float, str]] = []
+_CAMERA_MIN_DWELL_S = 12.0
+_CAMERA_VARIETY_WINDOW = 3
+
+
+def _record_camera_role(role: str) -> None:
+    now = time.time()
+    _CAMERA_ROLE_HISTORY.append((now, role))
+    # Keep last 20 or whatever's in the variety window span
+    cutoff = now - 600.0
+    while _CAMERA_ROLE_HISTORY and _CAMERA_ROLE_HISTORY[0][0] < cutoff:
+        _CAMERA_ROLE_HISTORY.pop(0)
+    if len(_CAMERA_ROLE_HISTORY) > 20:
+        del _CAMERA_ROLE_HISTORY[:-20]
+
+
 def dispatch_camera_hero(capability_name: str, ttl_s: float) -> bool:
     """cam.hero.<role-slug>.<context> → hero-camera-override.json.
 
     Returns True iff the role-slug resolved to a known camera role.
+
+    2026-04-18 viewer-experience audit: hero-camera was cycling between
+    only 2 of 6 cameras (c920-desk + brio-operator), with 4 cameras
+    never picked. Two new gates:
+      1. ``_CAMERA_MIN_DWELL_S`` — refuse a swap if the same role was
+         just applied within the dwell window (prevents frenetic back-
+         and-forth, cinematic minimum ~12s).
+      2. ``_CAMERA_VARIETY_WINDOW`` — if the proposed role is among the
+         last N applied roles, reject so the pipeline has to surface a
+         less-recent camera. Falls through rather than hard-failing so
+         the pipeline can still select something.
+    Both rules use a module-level history list so they survive across
+    back-to-back recruitment passes without requiring state on the
+    daimonion-side loop.
     """
     parts = capability_name.split(".", 3)
     if len(parts) < 3 or parts[0] != "cam" or parts[1] != "hero":
@@ -100,15 +130,37 @@ def dispatch_camera_hero(capability_name: str, ttl_s: float) -> bool:
             role_slug,
         )
         return False
+    now = time.time()
+    # Min-dwell: refuse the swap if the same role was applied very recently.
+    if _CAMERA_ROLE_HISTORY:
+        last_ts, last_role = _CAMERA_ROLE_HISTORY[-1]
+        if last_role == role and (now - last_ts) < _CAMERA_MIN_DWELL_S:
+            log.info(
+                "camera.hero dwell-gate: %s applied %.1fs ago (< %.0fs), skipping",
+                role,
+                now - last_ts,
+                _CAMERA_MIN_DWELL_S,
+            )
+            return False
+    # Variety window: reject if role is in the last N picks.
+    recent_roles = [r for (_ts, r) in _CAMERA_ROLE_HISTORY[-_CAMERA_VARIETY_WINDOW:]]
+    if role in recent_roles:
+        log.info(
+            "camera.hero variety-gate: %s in recent %s, skipping",
+            role,
+            recent_roles,
+        )
+        return False
     _atomic_write_json(
         _HERO_CAMERA_OVERRIDE,
         {
             "camera_role": role,
             "ttl_s": ttl_s,
-            "set_at": time.time(),
+            "set_at": now,
             "source_capability": capability_name,
         },
     )
+    _record_camera_role(role)
     _mark_recruitment("camera.hero")
     return True
 
