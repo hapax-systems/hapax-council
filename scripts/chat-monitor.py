@@ -253,24 +253,65 @@ class ChatMonitor:
         if self._signals_aggregator is not None:
             threading.Thread(target=self._chat_signals_publish_loop, daemon=True).start()
 
-        # Main chat reading loop
-        try:
-            from chat_downloader import ChatDownloader
+        # Main chat reading loop. When the resolver hands us an
+        # upcoming-but-not-yet-live broadcast id, chat-downloader raises
+        # ``ParsingError: Unable to parse initial video data`` because
+        # there is no chat stream on a broadcast that hasn't started.
+        # That's not a crash — it's the benign "we're early" case.
+        # Back off, sleep, retry — the broadcast will eventually
+        # transition to live and the same id will work.
+        from chat_downloader import ChatDownloader
+        from chat_downloader.errors import (
+            ChatDownloaderError,
+            NoChatReplay,
+            ParsingError,
+            VideoUnavailable,
+        )
 
-            downloader = ChatDownloader()
-            chat = downloader.get_chat(
-                f"https://www.youtube.com/watch?v={self.video_id}",
-                output=None,
-            )
-            for message in chat:
-                if not self._running:
-                    break
-                self._process_message(message)
-        except KeyboardInterrupt:
-            self._running = False
-        except Exception:
-            log.exception("Chat downloader error")
-            self._running = False
+        downloader = ChatDownloader()
+        not_live_retry_s = 30.0
+        not_live_retry_max_s = 300.0
+        transient_retry_s = not_live_retry_s
+        while self._running:
+            try:
+                chat = downloader.get_chat(
+                    f"https://www.youtube.com/watch?v={self.video_id}",
+                    output=None,
+                )
+                log.info("chat-downloader connected; entering message loop")
+                # Reset backoff on successful connect.
+                transient_retry_s = not_live_retry_s
+                for message in chat:
+                    if not self._running:
+                        break
+                    self._process_message(message)
+                # Normal exit from the generator → stream ended or our
+                # session was cancelled. Break rather than retry.
+                break
+            except KeyboardInterrupt:
+                self._running = False
+                break
+            except (ParsingError, NoChatReplay, VideoUnavailable) as exc:
+                # Broadcast exists but chat is not available — typically
+                # because it's upcoming / scheduled / just ended. Wait
+                # with exponential backoff (capped) and retry. Log once
+                # per backoff step to avoid journal spam.
+                log.info(
+                    "chat not available yet (%s); retrying in %.0fs",
+                    type(exc).__name__,
+                    transient_retry_s,
+                )
+                slept = 0.0
+                while slept < transient_retry_s and self._running:
+                    time.sleep(min(5.0, transient_retry_s - slept))
+                    slept += min(5.0, transient_retry_s - slept)
+                transient_retry_s = min(transient_retry_s * 1.5, not_live_retry_max_s)
+            except ChatDownloaderError as exc:
+                log.warning("chat_downloader error: %s; retrying in 60s", exc)
+                time.sleep(60)
+            except Exception:
+                log.exception("Unexpected chat-downloader error; sleeping 60s")
+                time.sleep(60)
 
     def _process_message(self, msg: dict) -> None:
         """Process a single chat message — structural metrics only."""
