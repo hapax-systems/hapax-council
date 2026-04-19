@@ -857,7 +857,7 @@ ACTIVITY_CAPABILITIES = (
     "  visual moment deserves the spotlight.\n"
     "- chat: engage viewers in the livestream chat. Answer, respond, explain.\n"
     "  PAIRS WITH: camera.hero (operator-brio.conversing), preset.bias\n"
-    "  (calm-textural to drop visual noise during conversation),\n"
+    "  (pick the family that keeps visual noise low during conversation),\n"
     "  overlay.foreground for chat_keyword_legend / captions.\n"
     "- music: comment on Oudepode's curated music — vinyl on the turntable\n"
     "  or YouTube queue track. PAIRS WITH: camera.hero (overhead.vinyl-spinning\n"
@@ -866,16 +866,18 @@ ACTIVITY_CAPABILITIES = (
     "  ward.choreography.album-emphasize when album cover should pop.\n"
     "- study: reflect on your own research — Clark & Brennan, phenomenology,\n"
     "  grounding theory. PAIRS WITH: camera.hero (desk-c920.writing-reading\n"
-    "  or coding), preset.bias (calm-textural for focus), overlay.foreground\n"
-    "  on grounding_provenance_ticker, ward.staging.research_panel.show.\n"
+    "  or coding), preset.bias (pick a family that holds attention for\n"
+    "  reading), overlay.foreground on grounding_provenance_ticker,\n"
+    "  ward.staging.research_panel.show.\n"
     "- observe: notice the composed surface. Shaders, triangle layout,\n"
     "  visual effects. PAIRS WITH: camera.hero (room-c920.ambient for the\n"
     "  wide), preset.bias (whatever family currently expresses the stance),\n"
     "  ward.highlight on whichever ward you're calling attention to.\n"
     "- draft / reflect / critique / patch / compose_drop / synthesize /\n"
     "  exemplar_review (HSEA Phase 2): treat like study with sharper focus —\n"
-    "  desk-c920 hero camera, calm-textural preset, grounding ticker\n"
-    "  foregrounded, hothouse panels staged in.\n"
+    "  desk-c920 hero camera, pick a preset that doesn't compete with\n"
+    "  the ticker, grounding ticker foregrounded, hothouse panels staged\n"
+    "  in.\n"
     '- silence: say nothing. Let the music carry. Return {"activity": "silence"}.\n'
     "  EVEN IN SILENCE: emit at least one compositional_impingement saying\n"
     "  what the silent surface should look like (which preset family,\n"
@@ -1360,8 +1362,8 @@ class DirectorLoop:
                 ),
                 (
                     "preset.bias",
-                    "Push the effect graph a notch toward calm-textural — small drift, "
-                    "no new content.",
+                    "Push the effect graph a notch toward a less-dense family — "
+                    "small drift, no new content.",
                     "water",
                     ["pressure_gauge", "activity_variety_log"],
                     "weighted_by_salience",
@@ -1871,27 +1873,49 @@ class DirectorLoop:
             "appreciation paragraph."
         )
 
-        # Stance → preset-family pairing. Aligns the WGSL effect chain
-        # with the director's emotional/cognitive register so the
-        # visuals always feel chosen rather than shuffled. The director's
-        # current stance is already in the perceptual field above; this
-        # section tells it which family to recruit by default.
+        # Preset-family vocabulary. Task #166 Phase 2 (2026-04-20):
+        # the prior hardcoded ``stance → specific-family`` table was the
+        # root cause of the narrative monoculture on `calm-textural` —
+        # the prompt was an expert-system rule in disguise, guaranteeing
+        # the LLM would repeat the same family assignments forever
+        # regardless of signal. Replaced with a neutral enumeration: all
+        # five families are presented without stance preference; the
+        # director picks from the perceptual field directly.
+        #
+        # Per operator memory ``feedback_no_expert_system_rules``:
+        # behavior should emerge from impingement → recruitment → role →
+        # persona; hardcoded cadence/threshold gates are bugs.
+        import random as _random
+
         parts.append("")
-        parts.append("## Stance → Preset Family Pairing")
+        parts.append("## Preset Family Vocabulary")
         parts.append(
-            "The active stance carries an expected visual register. When you "
-            "recruit `preset.bias`, default to the family below unless the "
-            "perceptual signals justify departing from it. Departures are "
-            "fine — they should be felt-necessary, not random."
+            "Five preset families are available for `preset.bias`. Pick the "
+            "family that matches what the current perceptual field is "
+            "actually asking for — not by stance-table, by observed signal. "
+            "The families are presented here in arbitrary order; any "
+            "recurring pattern in your output is a pattern you are "
+            "choosing, not a default you are obeying."
         )
+        _families = [
+            "  - audio-reactive: beat-synced / energy-linked; good when "
+            "something audibly rhythmic is active.",
+            "  - glitch-dense: high-entropy / cut-up / discovery; good for "
+            "SEEKING-stance exploration or critical-stance urgency.",
+            "  - calm-textural: gentle / minimal-movement; good when the "
+            "visual wants to not compete with speech or a held note.",
+            "  - warm-minimal: low-flux backdrop; good for ambient "
+            "continuity without interest-drop.",
+            "  - audio-abstract: slowly-evolving shapes reading as "
+            "listening-back; good for reflective or observing registers.",
+        ]
+        _random.shuffle(_families)
+        parts.extend(_families)
         parts.append(
-            "  - nominal   → audio-reactive (when music is playing) or "
-            "warm-minimal (when not)\n"
-            "  - seeking   → glitch-dense (high-entropy, discovery)\n"
-            "  - cautious  → calm-textural (gentle, minimal-movement)\n"
-            "  - degraded  → warm-minimal (low-flux backdrop)\n"
-            "  - critical  → glitch-dense or stark calm-textural "
-            "(name the urgency or the hold)"
+            "Avoid repeating the same family across consecutive "
+            "preset.bias recruitments unless the field is genuinely "
+            "unchanged. Repetition without signal-change is a pattern "
+            "the director must feel necessary to break."
         )
 
         # Multi-destination guidance. The same impingement may legitimately
