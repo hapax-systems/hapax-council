@@ -86,6 +86,17 @@ def start_compositor(compositor: Any) -> None:
     # runtime-disabled; this probe log would have caught both on day 1.
     _log_feature_probes(compositor)
 
+    # Phase A5 (homage-completion-plan §3.3) — probe HOMAGE-required
+    # fonts at startup so a missing Px437 IBM VGA 8x16 becomes a loud
+    # WARN rather than silently falling back to DejaVu Sans Mono on
+    # every ward render.
+    try:
+        from agents.studio_compositor.text_render import warn_if_missing_homage_fonts
+
+        warn_if_missing_homage_fonts()
+    except Exception:
+        log.exception("warn_if_missing_homage_fonts raised (non-fatal)")
+
     log.info("Building compositor pipeline with %d cameras", len(compositor.config.cameras))
 
     with compositor._camera_status_lock:

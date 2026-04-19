@@ -23,34 +23,113 @@ from agents.studio_compositor.homage.transitional_source import (
 )
 
 
-class _SpyContext:
-    """Delegating wrapper around cairo.Context that records show_text + arc."""
+class _SpyContext(cairo.Context):
+    """cairo.Context subclass that records arc calls.
 
-    def __init__(self, cr: cairo.Context) -> None:
-        self._cr = cr
-        self.show_text_calls: list[str] = []
-        self.arc_calls: int = 0
+    Pango accepts ``cairo.Context`` subclasses (verified), so we can
+    pass this into ``PangoCairo.create_layout(cr)`` without the C-level
+    type check rejecting a duck-typed wrapper. ``__init__`` chains up
+    via ``cairo.Context.__init__`` because the default ``object.__init__``
+    does not accept a surface argument.
 
-    def show_text(self, text):
-        self.show_text_calls.append(text)
-        return self._cr.show_text(text)
+    ``show_text_calls`` is populated by the ``_draw_pango`` / ``render_text``
+    monkey-patches installed by :func:`_render`, not by this class
+    directly — Pango does not call ``cr.show_text`` (the Cairo toy API
+    entry point) at all.
+    """
 
-    def arc(self, *args, **kwargs):
+    def __new__(cls, surface):  # noqa: D401 — pycairo constructs Context via __new__
+        inst = cairo.Context.__new__(cls, surface)
+        inst.show_text_calls = []
+        inst.arc_calls = 0
+        return inst
+
+    def arc(self, *args, **kwargs):  # noqa: D401 — matches cairo.Context signature
         self.arc_calls += 1
-        return self._cr.arc(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._cr, name)
+        return super().arc(*args, **kwargs)
 
 
 def _render(src_cls, w=800, h=60):
     """Render into a fresh surface and return (surface, spy) for inspection."""
+    from unittest.mock import patch
+
+    import agents.studio_compositor.chat_ambient_ward as _caw
+    import agents.studio_compositor.homage.rendering as _hr
+    import agents.studio_compositor.legibility_sources as _ls
+    from agents.studio_compositor import text_render as _tr
+
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
-    cr = cairo.Context(surface)
-    spy = _SpyContext(cr)
-    src = src_cls()
-    src.render(spy, w, h, t=0.0, state={})
-    return surface, spy
+    cr = _SpyContext(surface)
+
+    _real_render = _tr.render_text
+
+    def _spy_render(cr_arg, style, x=0.0, y=0.0):
+        # Record on the context so existing test assertions (which
+        # read ``spy.show_text_calls``) keep working.
+        try:
+            cr_arg.show_text_calls.append(style.text)
+        except AttributeError:
+            pass
+        return _real_render(cr_arg, style, x, y)
+
+    with (
+        patch.object(_tr, "render_text", _spy_render),
+        patch.object(_ls, "_draw_pango", _make_draw_pango_spy(_ls)),
+        patch.object(_caw, "_draw_pango", _make_draw_pango_spy(_caw)),
+        patch.object(_hr, "irc_line_start", _make_irc_line_start_spy(_hr)),
+        patch.object(_hr, "paint_bitchx_header", _make_paint_header_spy(_hr)),
+    ):
+        src = src_cls()
+        src.render(cr, w, h, t=0.0, state={})
+    return surface, cr
+
+
+def _make_draw_pango_spy(module):
+    """Return a spy wrapper around ``module._draw_pango`` that records text.
+
+    Appends the text to the context's ``show_text_calls`` (the spy
+    context carries the recording list). Preserves the float return
+    type so width-threading callers keep working.
+    """
+    original = module._draw_pango
+
+    def _spy_draw(cr, text, x, y, *, font_description, color_rgba):
+        try:
+            cr.show_text_calls.append(text)
+        except AttributeError:
+            pass
+        return original(cr, text, x, y, font_description=font_description, color_rgba=color_rgba)
+
+    return _spy_draw
+
+
+def _make_irc_line_start_spy(module):
+    """Spy wrapper for ``homage.rendering.irc_line_start``."""
+    original = module.irc_line_start
+
+    def _spy_line_start(cr, x, y, pkg):
+        try:
+            cr.show_text_calls.append(pkg.grammar.line_start_marker + " ")
+        except AttributeError:
+            pass
+        return original(cr, x, y, pkg)
+
+    return _spy_line_start
+
+
+def _make_paint_header_spy(module):
+    """Spy wrapper for ``homage.rendering.paint_bitchx_header``."""
+    original = module.paint_bitchx_header
+
+    def _spy_paint(cr, ward_label, pkg, **kwargs):
+        try:
+            cr.show_text_calls.append(pkg.grammar.line_start_marker + " ")
+            cr.show_text_calls.append(ward_label)
+        except AttributeError:
+            pass
+        return original(cr, ward_label, pkg, **kwargs)
+
+    return _spy_paint
 
 
 @pytest.fixture(autouse=True)

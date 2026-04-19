@@ -110,22 +110,53 @@ def _read_latest_intent() -> dict:
     return {}
 
 
-def _select_bitchx_font(cr: cairo.Context, size: int, *, bold: bool = False) -> None:
-    """Apply the active package's primary monospaced font to ``cr``.
+def _bitchx_font_description(size: int, *, bold: bool = False) -> str:
+    """Return a Pango font-description string for the active package.
 
-    Cairo falls back gracefully when the primary font is missing; the
-    guarantee we care about is monospacing, which every entry in the
-    BitchX fallback chain (DejaVu Sans Mono) provides.
+    Phase A5 (homage-completion-plan §3.3): text rendering now routes
+    through Pango (:func:`text_render.render_text`) instead of Cairo's
+    toy ``select_font_face`` API, so ``Px437 IBM VGA 8x16`` resolves
+    through fontconfig rather than silently falling back to DejaVu
+    Sans Mono.
     """
-    import cairo as _c
-
     pkg = get_active_package() or _fallback_package()
-    cr.select_font_face(
-        pkg.typography.primary_font_family,
-        _c.FONT_SLANT_NORMAL,
-        _c.FONT_WEIGHT_BOLD if bold else _c.FONT_WEIGHT_NORMAL,
+    weight = " Bold" if bold else ""
+    return f"{pkg.typography.primary_font_family}{weight} {int(size)}"
+
+
+def _draw_pango(
+    cr: cairo.Context,
+    text: str,
+    x: float,
+    y: float,
+    *,
+    font_description: str,
+    color_rgba: tuple[float, float, float, float],
+) -> float:
+    """Render ``text`` at ``(x, y)`` via Pango. Return advance width.
+
+    The ``y`` coordinate matches the Cairo baseline convention used by
+    the legacy ``cr.show_text`` calls: Pango's ``move_to(x, y)`` places
+    the layout's top-left at ``y``, so we back off by the layout
+    height to approximate baseline-at-y behaviour. Good enough for
+    visual parity with the prior Cairo toy renders; exact baseline
+    parity is not required because every source draws a fresh line
+    (no overstrike).
+    """
+    from agents.studio_compositor.text_render import (
+        TextStyle,
+        measure_text,
+        render_text,
     )
-    cr.set_font_size(size)
+
+    style = TextStyle(
+        text=text,
+        font_description=font_description,
+        color_rgba=color_rgba,
+    )
+    w, h = measure_text(cr, style)
+    render_text(cr, style, x=x, y=y - h)
+    return float(w)
 
 
 def _fallback_package() -> HomagePackage:
@@ -221,46 +252,29 @@ class ActivityHeaderCairoSource(HomageTransitionalSource):
         bright = pkg.resolve_colour("bright")
         content = pkg.resolve_colour("terminal_default")
 
-        _select_bitchx_font(cr, 18, bold=True)
+        bold_font = _bitchx_font_description(18, bold=True)
+        body_font = _bitchx_font_description(13, bold=False)
         x = 12.0
         y = 28.0
 
         # »»» line-start marker (muted)
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
         marker = pkg.grammar.line_start_marker + " "
-        cr.show_text(marker)
-        x += cr.text_extents(marker).x_advance
+        x += _draw_pango(cr, marker, x, y, font_description=bold_font, color_rgba=muted)
 
         # Opening bracket (muted)
-        cr.move_to(x, y)
-        cr.show_text("[")
-        x += cr.text_extents("[").x_advance
+        x += _draw_pango(cr, "[", x, y, font_description=bold_font, color_rgba=muted)
 
         # Activity (bright)
-        cr.set_source_rgba(*bright)
-        cr.move_to(x, y)
-        cr.show_text(activity)
-        x += cr.text_extents(activity).x_advance
+        x += _draw_pango(cr, activity, x, y, font_description=bold_font, color_rgba=bright)
 
         if gloss:
             # pipe separator (muted)
-            cr.set_source_rgba(*muted)
-            cr.move_to(x, y)
-            cr.show_text(" | ")
-            x += cr.text_extents(" | ").x_advance
-            # gloss (content)
-            cr.set_source_rgba(*content)
-            _select_bitchx_font(cr, 13, bold=False)
-            cr.move_to(x, y - 2)
-            cr.show_text(gloss)
-            x += cr.text_extents(gloss).x_advance
-            _select_bitchx_font(cr, 18, bold=True)
+            x += _draw_pango(cr, " | ", x, y, font_description=bold_font, color_rgba=muted)
+            # gloss (content, slightly smaller non-bold)
+            x += _draw_pango(cr, gloss, x, y - 2, font_description=body_font, color_rgba=content)
 
         # Closing bracket (muted)
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text("]")
+        _draw_pango(cr, "]", x, y, font_description=bold_font, color_rgba=muted)
 
 
 # ── 2. Stance indicator ───────────────────────────────────────────────────
@@ -294,23 +308,13 @@ class StanceIndicatorCairoSource(HomageTransitionalSource):
         muted = pkg.resolve_colour("muted")
         stance_rgba = pkg.resolve_colour(_STANCE_ROLE.get(stance, "accent_green"))
 
-        _select_bitchx_font(cr, 13, bold=True)
+        font = _bitchx_font_description(13, bold=True)
         y = canvas_h / 2 + 5
         x = 8.0
 
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text("[+H ")
-        x += cr.text_extents("[+H ").x_advance
-
-        cr.set_source_rgba(*stance_rgba)
-        cr.move_to(x, y)
-        cr.show_text(stance.upper())
-        x += cr.text_extents(stance.upper()).x_advance
-
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text("]")
+        x += _draw_pango(cr, "[+H ", x, y, font_description=font, color_rgba=muted)
+        x += _draw_pango(cr, stance.upper(), x, y, font_description=font, color_rgba=stance_rgba)
+        _draw_pango(cr, "]", x, y, font_description=font, color_rgba=muted)
 
 
 # ── 3. Chat keyword legend ────────────────────────────────────────────────
@@ -353,33 +357,35 @@ class ChatKeywordLegendCairoSource(HomageTransitionalSource):
         content = pkg.resolve_colour("terminal_default")
         accent = pkg.resolve_colour("accent_cyan")
 
-        _select_bitchx_font(cr, 11, bold=True)
-        cr.set_source_rgba(*muted)
-        cr.move_to(8, 16)
-        cr.show_text("-!- Topic (")
-        tx = 8 + cr.text_extents("-!- Topic (").x_advance
-        cr.set_source_rgba(*accent)
-        cr.move_to(tx, 16)
-        cr.show_text("#homage")
-        tx += cr.text_extents("#homage").x_advance
-        cr.set_source_rgba(*muted)
-        cr.move_to(tx, 16)
-        cr.show_text("):")
+        header_font = _bitchx_font_description(11, bold=True)
+        body_font = _bitchx_font_description(10, bold=False)
 
-        _select_bitchx_font(cr, 10, bold=False)
+        tx = 8.0
+        tx += _draw_pango(cr, "-!- Topic (", tx, 16, font_description=header_font, color_rgba=muted)
+        tx += _draw_pango(cr, "#homage", tx, 16, font_description=header_font, color_rgba=accent)
+        _draw_pango(cr, "):", tx, 16, font_description=header_font, color_rgba=muted)
+
         y = 36
         for keyword, meaning in _CHAT_KEYWORDS[:8]:
-            cr.set_source_rgba(*bright)
-            cr.move_to(8, y)
-            cr.show_text(keyword)
-            kw_advance = cr.text_extents(keyword).x_advance
-            cr.set_source_rgba(*muted)
-            cr.move_to(8 + kw_advance, y)
-            cr.show_text(" · ")
-            sep_advance = cr.text_extents(" · ").x_advance
-            cr.set_source_rgba(*content)
-            cr.move_to(8 + kw_advance + sep_advance, y)
-            cr.show_text(meaning)
+            kw_advance = _draw_pango(
+                cr, keyword, 8, y, font_description=body_font, color_rgba=bright
+            )
+            sep_advance = _draw_pango(
+                cr,
+                " · ",
+                8 + kw_advance,
+                y,
+                font_description=body_font,
+                color_rgba=muted,
+            )
+            _draw_pango(
+                cr,
+                meaning,
+                8 + kw_advance + sep_advance,
+                y,
+                font_description=body_font,
+                color_rgba=content,
+            )
             y += 15
 
 
@@ -415,34 +421,20 @@ class GroundingProvenanceTickerCairoSource(HomageTransitionalSource):
         bright = pkg.resolve_colour("bright")
         content = pkg.resolve_colour("terminal_default")
 
-        _select_bitchx_font(cr, 10, bold=False)
+        font = _bitchx_font_description(10, bold=False)
         y = canvas_h / 2 + 4
         x = 8.0
 
         if not prov:
-            cr.set_source_rgba(*muted)
-            cr.move_to(x, y)
-            cr.show_text("*  (ungrounded)")
+            _draw_pango(cr, "*  (ungrounded)", x, y, font_description=font, color_rgba=muted)
             return
 
         # IRC join format: "* <signal> has joined" — one per signal, up to 6.
         for signal in prov[:6]:
             s = str(signal)
-            cr.set_source_rgba(*muted)
-            cr.move_to(x, y)
-            cr.show_text("* ")
-            x += cr.text_extents("* ").x_advance
-
-            cr.set_source_rgba(*bright)
-            cr.move_to(x, y)
-            cr.show_text(s)
-            x += cr.text_extents(s).x_advance
-
-            cr.set_source_rgba(*content)
-            cr.move_to(x, y)
-            cr.show_text("  ")
-            x += cr.text_extents("  ").x_advance
-
+            x += _draw_pango(cr, "* ", x, y, font_description=font, color_rgba=muted)
+            x += _draw_pango(cr, s, x, y, font_description=font, color_rgba=bright)
+            x += _draw_pango(cr, "  ", x, y, font_description=font, color_rgba=content)
             if x > canvas_w - 80:
                 break
 

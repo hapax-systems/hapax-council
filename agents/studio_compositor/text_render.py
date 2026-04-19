@@ -287,3 +287,77 @@ class TextContent:
         self.style = style
         self._hash = new_hash
         return TextChange(changed=True, new_hash=new_hash)
+
+
+# ---------------------------------------------------------------------------
+# Phase A5 (homage-completion-plan): font-availability probes.
+#
+# Pango consults fontconfig (so Px437 IBM VGA 8x16 resolves via the
+# standard TTF install) where Cairo's toy ``select_font_face`` falls
+# back to DejaVu Sans Mono for unknown family names. These helpers let
+# the compositor emit a loud startup WARN when a HOMAGE-required font
+# is missing, so the operator learns at boot rather than noticing a
+# wrong-looking livestream.
+# ---------------------------------------------------------------------------
+
+
+# Fonts required by the HOMAGE BitchX package. Keep in sync with the
+# ``primary_font_family`` on ``BITCHX_PACKAGE`` (see
+# ``agents/studio_compositor/homage/bitchx.py``).
+HOMAGE_REQUIRED_FONTS: tuple[str, ...] = ("Px437 IBM VGA 8x16",)
+
+
+def has_font(family: str) -> bool:
+    """Return True when ``family`` is resolvable via Pango's font map.
+
+    Uses ``PangoCairo.FontMap.get_default()`` to enumerate the available
+    families and compares case-insensitively. Returns False when Pango
+    is unavailable (CI environments without the typelibs) — callers
+    should treat False as "unknown / not available" rather than
+    "definitely missing".
+    """
+    if not _HAS_PANGO:
+        return False
+    try:
+        font_map = PangoCairo.FontMap.get_default()
+        if font_map is None:
+            return False
+        families = font_map.list_families()
+    except Exception:
+        log.debug("has_font: Pango font map enumeration failed", exc_info=True)
+        return False
+    wanted = family.strip().casefold()
+    for fam in families:
+        try:
+            name = fam.get_name()
+        except Exception:
+            continue
+        if name and name.strip().casefold() == wanted:
+            return True
+    return False
+
+
+def warn_if_missing_homage_fonts() -> None:
+    """Emit a loud WARN for each HOMAGE-required font that doesn't resolve.
+
+    Called once at compositor startup. When Pango is unavailable
+    (e.g. CI), logs a single info line and returns — the CI path
+    renders no-op text anyway, so a missing-font WARN there would be
+    noise.
+    """
+    if not _HAS_PANGO:
+        log.info(
+            "warn_if_missing_homage_fonts: Pango unavailable; skipping font availability probe"
+        )
+        return
+    for family in HOMAGE_REQUIRED_FONTS:
+        if has_font(family):
+            log.info("homage-font-probe: %s=available", family)
+        else:
+            log.warning(
+                "homage-font-probe: %s NOT FOUND via Pango/fontconfig — "
+                "BitchX surfaces will fall back to DejaVu Sans Mono. "
+                "Install the TTF (e.g. /usr/share/fonts/TTF/Px437_IBM_VGA_8x16.ttf) "
+                "and restart the compositor.",
+                family,
+            )

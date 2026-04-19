@@ -89,16 +89,43 @@ def _fallback_package() -> HomagePackage:
     return BITCHX_PACKAGE
 
 
-def _select_font(cr: cairo.Context, size: int, *, bold: bool = False) -> None:
-    import cairo as _c
+def _font_description(size: int, *, bold: bool = False) -> str:
+    """Return a Pango font-description string for the active package.
 
+    Phase A5 (homage-completion-plan §3.3): routes text through
+    :func:`text_render.render_text` (Pango) so ``Px437 IBM VGA 8x16``
+    resolves via fontconfig instead of silently falling back to DejaVu
+    Sans Mono under Cairo's toy ``select_font_face`` path.
+    """
     pkg = get_active_package() or _fallback_package()
-    cr.select_font_face(
-        pkg.typography.primary_font_family,
-        _c.FONT_SLANT_NORMAL,
-        _c.FONT_WEIGHT_BOLD if bold else _c.FONT_WEIGHT_NORMAL,
+    weight = " Bold" if bold else ""
+    return f"{pkg.typography.primary_font_family}{weight} {int(size)}"
+
+
+def _draw_pango(
+    cr: cairo.Context,
+    text: str,
+    x: float,
+    y: float,
+    *,
+    font_description: str,
+    color_rgba: tuple[float, float, float, float],
+) -> float:
+    """Render ``text`` at ``(x, y)`` via Pango. Return advance width."""
+    from agents.studio_compositor.text_render import (
+        TextStyle,
+        measure_text,
+        render_text,
     )
-    cr.set_font_size(size)
+
+    style = TextStyle(
+        text=text,
+        font_description=font_description,
+        color_rgba=color_rgba,
+    )
+    w, h = measure_text(cr, style)
+    render_text(cr, style, x=x, y=y - h)
+    return float(w)
 
 
 def _paint_flat_bg(cr: cairo.Context, w: float, h: float, pkg: HomagePackage) -> None:
@@ -245,59 +272,26 @@ class ChatAmbientWard(HomageTransitionalSource):
         t6_rate = counters.get("t6_rate_per_min", 0.0)
         engagement = counters.get("audience_engagement", 0.0)
 
-        _select_font(cr, 14, bold=True)
+        font = _font_description(14, bold=True)
         y = canvas_h * 0.55 + 8.0
         x = 8.0
 
         # »»» line-start marker (muted).
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
         marker = pkg.grammar.line_start_marker + " "
-        cr.show_text(marker)
-        x += cr.text_extents(marker).x_advance
+        x += _draw_pango(cr, marker, x, y, font_description=font, color_rgba=muted)
 
         # ── Cell 1: [Users(#hapax:1/N)] ────────────────────────────────
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text("[Users(")
-        x += cr.text_extents("[Users(").x_advance
-
-        cr.set_source_rgba(*accent_cyan)
-        cr.move_to(x, y)
-        cr.show_text("#hapax")
-        x += cr.text_extents("#hapax").x_advance
-
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text(":")
-        x += cr.text_extents(":").x_advance
-
-        cr.set_source_rgba(*bright)
-        cr.move_to(x, y)
-        cr.show_text("1")
-        x += cr.text_extents("1").x_advance
-
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text("/")
-        x += cr.text_extents("/").x_advance
-
-        cr.set_source_rgba(*bright)
-        cr.move_to(x, y)
+        x += _draw_pango(cr, "[Users(", x, y, font_description=font, color_rgba=muted)
+        x += _draw_pango(cr, "#hapax", x, y, font_description=font, color_rgba=accent_cyan)
+        x += _draw_pango(cr, ":", x, y, font_description=font, color_rgba=muted)
+        x += _draw_pango(cr, "1", x, y, font_description=font, color_rgba=bright)
+        x += _draw_pango(cr, "/", x, y, font_description=font, color_rgba=muted)
         n_text = str(unique_authors)
-        cr.show_text(n_text)
-        x += cr.text_extents(n_text).x_advance
-
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text(")] ")
-        x += cr.text_extents(")] ").x_advance
+        x += _draw_pango(cr, n_text, x, y, font_description=font, color_rgba=bright)
+        x += _draw_pango(cr, ")] ", x, y, font_description=font, color_rgba=muted)
 
         # ── Cell 2: [Mode +v +H] — cadence-aware brightness ────────────
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text("[Mode ")
-        x += cr.text_extents("[Mode ").x_advance
+        x += _draw_pango(cr, "[Mode ", x, y, font_description=font, color_rgba=muted)
 
         # +v: T5 research-keyword rate. Below 0.5/min → muted; above → accent_green blended.
         v_weight = min(1.0, t5_rate / _T5_SATURATION_RATE)
@@ -305,15 +299,8 @@ class ChatAmbientWard(HomageTransitionalSource):
             v_rgba = muted
         else:
             v_rgba = _blend(muted, accent_green, v_weight)
-        cr.set_source_rgba(*v_rgba)
-        cr.move_to(x, y)
-        cr.show_text("+v")
-        x += cr.text_extents("+v").x_advance
-
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text(" ")
-        x += cr.text_extents(" ").x_advance
+        x += _draw_pango(cr, "+v", x, y, font_description=font, color_rgba=v_rgba)
+        x += _draw_pango(cr, " ", x, y, font_description=font, color_rgba=muted)
 
         # +H: T6 citation rate. Same cadence shape, accent_cyan target.
         h_weight = min(1.0, t6_rate / _T6_SATURATION_RATE)
@@ -321,58 +308,32 @@ class ChatAmbientWard(HomageTransitionalSource):
             h_rgba = muted
         else:
             h_rgba = _blend(muted, accent_cyan, h_weight)
-        cr.set_source_rgba(*h_rgba)
-        cr.move_to(x, y)
-        cr.show_text("+H")
-        x += cr.text_extents("+H").x_advance
-
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text("] ")
-        x += cr.text_extents("] ").x_advance
+        x += _draw_pango(cr, "+H", x, y, font_description=font, color_rgba=h_rgba)
+        x += _draw_pango(cr, "] ", x, y, font_description=font, color_rgba=muted)
 
         # ── Cell 3: CP437 rate gauge ───────────────────────────────────
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text("[")
-        x += cr.text_extents("[").x_advance
+        x += _draw_pango(cr, "[", x, y, font_description=font, color_rgba=muted)
 
         gauge_frac = _log_gauge_fraction(t4p_rate)
         lit_cells_float = gauge_frac * _GAUGE_CELL_COUNT
         full_cells = int(lit_cells_float)
         partial_frac = lit_cells_float - full_cells
-        cr.set_source_rgba(*content)
         gauge_text = _GAUGE_GLYPHS[-1] * full_cells
         if full_cells < _GAUGE_CELL_COUNT and partial_frac > 0.0:
             gauge_text += _gauge_glyph_for_fraction(partial_frac)
         # Pad with spaces so the cell width is stable frame-to-frame.
         gauge_text = gauge_text.ljust(_GAUGE_CELL_COUNT)
-        cr.move_to(x, y)
-        cr.show_text(gauge_text)
-        x += cr.text_extents(gauge_text).x_advance
+        x += _draw_pango(cr, gauge_text, x, y, font_description=font, color_rgba=content)
 
-        cr.set_source_rgba(*muted)
-        cr.move_to(x, y)
-        cr.show_text("] ")
-        x += cr.text_extents("] ").x_advance
+        x += _draw_pango(cr, "] ", x, y, font_description=font, color_rgba=muted)
 
         # ── Cell 4 (conditional): [quiet] / [active] ───────────────────
         if engagement < _ENGAGEMENT_QUIET_BELOW:
-            cr.set_source_rgba(*muted)
-            cr.move_to(x, y)
-            cr.show_text("[quiet]")
+            _draw_pango(cr, "[quiet]", x, y, font_description=font, color_rgba=muted)
         elif engagement > _ENGAGEMENT_ACTIVE_ABOVE:
-            cr.set_source_rgba(*muted)
-            cr.move_to(x, y)
-            cr.show_text("[")
-            x += cr.text_extents("[").x_advance
-            cr.set_source_rgba(*bright)
-            cr.move_to(x, y)
-            cr.show_text("active")
-            x += cr.text_extents("active").x_advance
-            cr.set_source_rgba(*muted)
-            cr.move_to(x, y)
-            cr.show_text("]")
+            x += _draw_pango(cr, "[", x, y, font_description=font, color_rgba=muted)
+            x += _draw_pango(cr, "active", x, y, font_description=font, color_rgba=bright)
+            _draw_pango(cr, "]", x, y, font_description=font, color_rgba=muted)
 
 
 __all__ = ["ChatAmbientWard"]

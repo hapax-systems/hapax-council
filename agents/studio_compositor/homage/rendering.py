@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+import warnings
 from typing import TYPE_CHECKING
 
 from agents.studio_compositor.homage import get_active_package
@@ -33,13 +34,50 @@ def active_package() -> HomagePackage:
     return BITCHX_PACKAGE
 
 
-def select_bitchx_font(cr: cairo.Context, size: int, *, bold: bool = False) -> None:
-    """Select the active package's primary font + the requested size.
+def select_bitchx_font_pango(
+    cr: cairo.Context,  # noqa: ARG001 — kept for symmetry with old API; Pango doesn't need it
+    size: int,
+    *,
+    bold: bool = False,
+) -> str:
+    """Return a Pango-compatible font-description string for the active package.
 
-    Cairo falls back gracefully when the primary font is missing. The
-    guarantee we care about is monospacing, which every entry in the
-    BitchX fallback chain provides.
+    Phase A5 (homage-completion-plan §3.3): the old
+    :func:`select_bitchx_font` invoked Cairo's toy ``select_font_face``
+    API, which does not consult fontconfig the way Pango does — it
+    silently falls back to DejaVu Sans Mono for unknown family names.
+    The fix: every HOMAGE ward builds a Pango ``font_description``
+    string from the active package's ``primary_font_family`` and feeds
+    it through :func:`text_render.render_text` (which uses
+    PangoCairo + ``layout.set_font_description``). Pango consults
+    fontconfig, so ``"Px437 IBM VGA 8x16"`` resolves correctly.
+
+    The ``cr`` parameter is accepted (and unused) so call sites can
+    swap ``select_bitchx_font(cr, …)`` → ``select_bitchx_font_pango(cr, …)``
+    as a mechanical replacement.
     """
+    pkg = active_package()
+    weight = " Bold" if bold else ""
+    return f"{pkg.typography.primary_font_family}{weight} {int(size)}"
+
+
+def select_bitchx_font(cr: cairo.Context, size: int, *, bold: bool = False) -> None:
+    """Deprecated: use :func:`select_bitchx_font_pango` + text_render instead.
+
+    The Cairo toy-API path does not consult fontconfig so unknown
+    families (Px437 IBM VGA 8x16) silently degrade to DejaVu Sans Mono.
+    Retained as a shim only for legacy callers not yet migrated off
+    ``cr.show_text``. New code MUST construct a
+    :class:`text_render.TextStyle` with ``font_description`` sourced
+    from :func:`select_bitchx_font_pango` and call
+    :func:`text_render.render_text`.
+    """
+    warnings.warn(
+        "select_bitchx_font is deprecated; use select_bitchx_font_pango + "
+        "text_render.render_text. Cairo toy API does not consult fontconfig.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     import cairo as _c
 
     pkg = active_package()
@@ -157,13 +195,23 @@ def irc_line_start(cr: cairo.Context, x: float, y: float, pkg: HomagePackage) ->
     """Draw the package's line-start marker at (x, y) in the muted role.
 
     Returns the updated x-cursor position.
+
+    Phase A5: uses :func:`text_render.render_text` (Pango) so the
+    marker resolves Px437 IBM VGA 8x16 through fontconfig, not Cairo's
+    toy font selector.
     """
-    muted = pkg.resolve_colour(pkg.grammar.punctuation_colour_role)
+    from agents.studio_compositor.text_render import TextStyle, measure_text, render_text
+
     marker = pkg.grammar.line_start_marker + " "
-    cr.set_source_rgba(*muted)
-    cr.move_to(x, y)
-    cr.show_text(marker)
-    return x + cr.text_extents(marker).x_advance
+    font_desc = select_bitchx_font_pango(cr, 13, bold=False)
+    style = TextStyle(
+        text=marker,
+        font_description=font_desc,
+        color_rgba=pkg.resolve_colour(pkg.grammar.punctuation_colour_role),
+    )
+    w, _h = measure_text(cr, style)
+    render_text(cr, style, x=x, y=y)
+    return x + w
 
 
 def paint_bitchx_header(
@@ -183,21 +231,33 @@ def paint_bitchx_header(
     text so the surface reads as mIRC-contract composition rather than a
     flat techno overlay. Keep ``ward_label`` short (1–3 words) so it
     doesn't collide with body content at small surface widths.
+
+    Phase A5: routes text through Pango (via
+    :func:`text_render.render_text`) so Px437 IBM VGA 8x16 resolves via
+    fontconfig rather than silently falling back to DejaVu Sans Mono.
     """
+    from agents.studio_compositor.text_render import TextStyle, measure_text, render_text
+
     muted = pkg.resolve_colour(pkg.grammar.punctuation_colour_role)
     try:
         accent = pkg.resolve_colour(accent_role)
     except Exception:
         accent = pkg.resolve_colour("bright")
-    select_bitchx_font(cr, font_size, bold=True)
-    cr.set_source_rgba(*muted)
-    cr.move_to(x, y)
+    font_desc = select_bitchx_font_pango(cr, font_size, bold=True)
     marker = pkg.grammar.line_start_marker + " "
-    cr.show_text(marker)
-    cursor_x = x + cr.text_extents(marker).x_advance
-    cr.set_source_rgba(*accent)
-    cr.move_to(cursor_x, y)
-    cr.show_text(ward_label)
+    marker_style = TextStyle(
+        text=marker,
+        font_description=font_desc,
+        color_rgba=muted,
+    )
+    w_marker, _ = measure_text(cr, marker_style)
+    render_text(cr, marker_style, x=x, y=y)
+    label_style = TextStyle(
+        text=ward_label,
+        font_description=font_desc,
+        color_rgba=accent,
+    )
+    render_text(cr, label_style, x=x + w_marker, y=y)
 
 
 def paint_emphasis_border(
@@ -313,5 +373,6 @@ __all__ = [
     "paint_bitchx_header",
     "paint_emphasis_border",
     "select_bitchx_font",
+    "select_bitchx_font_pango",
     "wall_clock_now",
 ]
