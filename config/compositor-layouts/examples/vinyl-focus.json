@@ -1,0 +1,71 @@
+{
+  "name": "vinyl-focus",
+  "description": "Example reference layout showing VinylPlatterCairoSource (HOMAGE follow-on #159) in a PiP. Distinct from the album art panel — this is the spinning platter ward, tinted to the active HomagePackage's palette with rate-proportional motion blur and a BitchX border. Gates on the #127 SPLATTRIBUTION vinyl_playing signal; transparent when no record is playing. Operators cut to vinyl-focus when the music IS the show.",
+  "sources": [
+    {
+      "id": "vinyl_platter",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "VinylPlatterCairoSource",
+        "natural_w": 360,
+        "natural_h": 360
+      },
+      "update_cadence": "rate",
+      "rate_hz": 8.0,
+      "tags": [
+        "homage",
+        "vinyl",
+        "ward"
+      ]
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "pip-vinyl",
+      "geometry": {
+        "kind": "rect",
+        "x": 780,
+        "y": 360,
+        "w": 360,
+        "h": 360,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 15,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "video_out_v4l2_loopback",
+      "geometry": {
+        "kind": "video_out",
+        "x": null,
+        "y": null,
+        "w": null,
+        "h": null,
+        "mask": null,
+        "binding_name": null,
+        "target": "/dev/video42",
+        "render_target": "main"
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 100,
+      "update_cadence": "always"
+    }
+  ],
+  "assignments": [
+    {
+      "source": "vinyl_platter",
+      "surface": "pip-vinyl",
+      "transform": {},
+      "opacity": 1.0,
+      "per_assignment_effects": [],
+      "non_destructive": true
+    }
+  ]
+}

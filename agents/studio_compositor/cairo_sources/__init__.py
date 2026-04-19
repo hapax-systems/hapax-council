@@ -148,6 +148,13 @@ def _register_builtins() -> None:
     # HOMAGE follow-on #121 (2026-04-18) — HARDM dot-matrix avatar readout.
     # 16×16 signal grid, upper-right (1600, 20), 256×256.
     register("HardmDotMatrix", HardmDotMatrix)
+    # HOMAGE follow-on #159 (2026-04-18) — vinyl-platter ward. Registered
+    # but NOT added to the default layout; operator declares a vinyl-focus
+    # layout (see config/compositor-layouts/examples/vinyl-focus.json)
+    # when the platter ward should appear on the stream.
+    from agents.studio_compositor.vinyl_platter import VinylPlatterCairoSource
+
+    register("VinylPlatterCairoSource", VinylPlatterCairoSource)
 
 
 _register_builtins()
