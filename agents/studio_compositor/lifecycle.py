@@ -138,6 +138,20 @@ def start_compositor(compositor: Any) -> None:
 
     compositor._running = True
     compositor._audio_capture.start()
+
+    # CVS #149: register 24c sources on the unified reactivity bus.
+    # Feature-flagged OFF by default; registration happens regardless so
+    # the bus observability surface is live, but consumers only read from
+    # it when ``HAPAX_UNIFIED_REACTIVITY_ACTIVE`` is set.
+    try:
+        from agents.studio_compositor.reactivity_adapters import (
+            register_default_sources,
+        )
+
+        register_default_sources(compositor._audio_capture)
+    except Exception:
+        log.debug("unified-reactivity: register_default_sources failed", exc_info=True)
+
     compositor._write_status("running")
 
     # Activate a default obscuring preset on startup — never show raw feed

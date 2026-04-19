@@ -639,6 +639,28 @@ def fx_tick_callback(compositor: Any) -> bool:
         cached_audio = compositor._audio_capture.get_signals()
     compositor._cached_audio = cached_audio
 
+    # CVS #149: unified reactivity bus tick. When the feature flag is
+    # OFF (default), this is a no-op from the consumer's perspective —
+    # the bus publishes to SHM but fx_tick_callback continues to read
+    # from ``_cached_audio`` (direct AudioCapture path). When ON,
+    # consumers may prefer the bus-blended signals via
+    # ``shared.audio_reactivity.read_shm_snapshot`` or by reading the
+    # bus's ``last_snapshot()`` directly.
+    try:
+        from shared.audio_reactivity import get_bus
+        from shared.audio_reactivity import is_active as _unified_active
+
+        _bus = get_bus()
+        if _bus.sources():
+            _bus.tick(publish=True)
+            if _unified_active():
+                _snapshot = _bus.last_snapshot()
+                if _snapshot is not None:
+                    compositor._unified_reactivity = _snapshot
+    except Exception:
+        # Never let the unified bus crash fx_tick — direct path remains.
+        log.debug("unified-reactivity tick failed", exc_info=True)
+
     tick_governance(compositor, t)
     tick_modulator(compositor, t, energy, b)
     tick_slot_pipeline(compositor, t)
