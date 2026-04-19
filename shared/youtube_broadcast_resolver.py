@@ -87,6 +87,13 @@ def _resolve_uncached(creds: object) -> str | None:
     Returns ``None`` on any failure: HTTP error, no broadcasts, malformed
     response. A single warning is logged per distinct failure mode; the
     caller decides whether to retry (they should, with backoff).
+
+    API shape: ``liveBroadcasts.list`` rejects ``mine=true`` combined with
+    ``broadcastStatus`` as of v3 ("incompatibleParameters" 400). Pull
+    ``mine=true`` with ``status`` in ``part=`` and filter client-side on
+    ``status.lifeCycleStatus``. Selection policy (operator Q1=C): prefer
+    ``live``/``liveStarting`` / ``testing`` (active family); fall through
+    to ``ready`` (upcoming family); nothing else qualifies.
     """
     try:
         youtube = discovery_build("youtube", "v3", credentials=creds, cache_discovery=False)
@@ -94,25 +101,31 @@ def _resolve_uncached(creds: object) -> str | None:
         log.exception("failed to build youtube discovery client")
         return None
 
-    for status in ("active", "upcoming"):
-        try:
-            response = (
-                youtube.liveBroadcasts()
-                .list(part="id,snippet", broadcastStatus=status, mine=True)
-                .execute()
-            )
-        except HttpError as exc:
-            if exc.resp.status == 403:
-                log.warning("liveBroadcasts.list quotaExceeded or auth failure: %s", exc)
-                return None
-            log.warning("liveBroadcasts.list status=%s HTTP %s: %s", status, exc.resp.status, exc)
-            continue
-        except Exception:
-            log.exception("liveBroadcasts.list status=%s failed", status)
-            continue
-        items = response.get("items") or []
-        if items:
-            return items[0].get("id")
+    try:
+        response = (
+            youtube.liveBroadcasts()
+            .list(part="id,snippet,status", mine=True, maxResults=50)
+            .execute()
+        )
+    except HttpError as exc:
+        if exc.resp.status == 403:
+            log.warning("liveBroadcasts.list quotaExceeded or auth failure: %s", exc)
+            return None
+        log.warning("liveBroadcasts.list HTTP %s: %s", exc.resp.status, exc)
+        return None
+    except Exception:
+        log.exception("liveBroadcasts.list failed")
+        return None
+
+    items = response.get("items") or []
+    active_family = ("live", "liveStarting", "testing")
+    upcoming_family = ("ready",)
+
+    for family in (active_family, upcoming_family):
+        for item in items:
+            lifecycle = (item.get("status") or {}).get("lifeCycleStatus")
+            if lifecycle in family:
+                return item.get("id")
     return None
 
 

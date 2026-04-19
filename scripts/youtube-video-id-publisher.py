@@ -38,7 +38,7 @@ log = logging.getLogger("youtube-video-id-publisher")
 
 _POLL_INTERVAL_SECONDS = 60.0
 _VIDEO_ID_PATH = Path("/dev/shm/hapax-compositor/youtube-video-id.txt")
-_YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
+_YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"]
 
 _shutdown = False
 
