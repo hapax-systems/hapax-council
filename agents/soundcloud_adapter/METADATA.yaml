@@ -1,0 +1,29 @@
+module: soundcloud_adapter
+purpose: SoundCloud public-API metadata sync (task #131, Phase 1).
+version: 1
+interface:
+  inputs:
+    - name: user_id
+      type: str
+    - name: limit
+      type: int
+  outputs:
+    - name: tracks_written
+      type: int
+dependencies:
+  runtime:
+    - pydantic
+  optional:
+    - sclib
+    - soundcloud
+  internal:
+    - shared.music_repo
+execution:
+  entry: uv run python -m agents.soundcloud_adapter
+  flags:
+    - name: --auto
+    - name: --stats
+    - name: --user-id
+    - name: --limit
+    - name: -v
+    - name: --verbose

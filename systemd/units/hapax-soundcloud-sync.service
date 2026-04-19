@@ -1,0 +1,18 @@
+[Unit]
+Description=SoundCloud likes/playlists metadata sync (task #131, Phase 1)
+Documentation=file://%h/projects/hapax-council/agents/soundcloud_adapter/__main__.py
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStartPre=/home/hapax/.local/bin/hapax-env-setup
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.soundcloud_adapter --auto
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-soundcloud-sync
+MemoryMax=512M
+CPUQuota=30%

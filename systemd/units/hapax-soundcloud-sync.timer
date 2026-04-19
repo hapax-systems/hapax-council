@@ -1,0 +1,14 @@
+[Unit]
+Description=SoundCloud metadata sync (1h cadence; task #131, Phase 1)
+# Not auto-enabled. Operator runs `systemctl --user enable --now
+# hapax-soundcloud-sync.timer` after setting $HAPAX_SOUNDCLOUD_USER_ID
+# (or $HAPAX_SOUNDCLOUD_USERNAME) and installing an SC client library.
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
