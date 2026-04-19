@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Literal
@@ -34,6 +35,11 @@ _OVERLAY_ALPHA_OVERRIDES = Path("/dev/shm/hapax-compositor/overlay-alpha-overrid
 _RECENT_RECRUITMENT = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
 _YOUTUBE_DIRECTION = Path("/dev/shm/hapax-compositor/youtube-direction.json")
 _STREAM_MODE_INTENT = Path("/dev/shm/hapax-compositor/stream-mode-intent.json")
+
+# Vision Phase 3 (#150): per_camera_person_count hero-gate. Read the
+# daimonion perception-state snapshot (1 Hz writer) so we can reject a
+# hero candidate whose camera shows zero people. Monkeypatched in tests.
+_PERCEPTION_STATE = Path(os.path.expanduser("~/.cache/hapax-daimonion/perception-state.json"))
 
 # Camera-role name mapping — capability suffix → camera role reported by
 # agents/_cameras.py. The capability catalog uses composite labels (e.g.
@@ -85,6 +91,53 @@ def _safe_load_json(path: Path) -> dict:
 _CAMERA_ROLE_HISTORY: list[tuple[float, str]] = []
 _CAMERA_MIN_DWELL_S = 12.0
 _CAMERA_VARIETY_WINDOW = 3
+
+
+def _hero_gate_enabled() -> bool:
+    """Vision Phase 3 (#150) feature flag, default ON per spec §10.
+
+    Accepts "0", "false", "off", "no" (case-insensitive) as disable.
+    Missing env var ⇒ enabled.
+    """
+    val = os.environ.get("HAPAX_VISION_HERO_GATE")
+    if val is None:
+        return True
+    return val.strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _camera_has_people(role: str) -> bool:
+    """Return True iff ``per_camera_person_count[role] > 0`` in the latest
+    perception-state snapshot.
+
+    Fail-open: if the file is missing, unreadable, lacks the key, or the
+    role has no entry, return True (accept the candidate). The gate is
+    purely additive — it only *rejects* when we have positive evidence
+    of an empty room. Absence of evidence is not evidence of absence.
+
+    Vision Phase 3 (#150) spec §6 + plan.
+    """
+    try:
+        raw = _PERCEPTION_STATE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return True
+    except OSError:
+        log.debug("perception-state read failed", exc_info=True)
+        return True
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        log.debug("perception-state JSON decode failed", exc_info=True)
+        return True
+    counts = data.get("per_camera_person_count")
+    if not isinstance(counts, dict) or not counts:
+        # No per-camera vision counts in the snapshot yet — fail open.
+        return True
+    if role not in counts:
+        return True
+    try:
+        return int(counts[role]) > 0
+    except (TypeError, ValueError):
+        return True
 
 
 def _record_camera_role(role: str) -> None:
@@ -149,6 +202,17 @@ def dispatch_camera_hero(capability_name: str, ttl_s: float) -> bool:
             "camera.hero variety-gate: %s in recent %s, skipping",
             role,
             recent_roles,
+        )
+        return False
+    # Vision Phase 3 (#150): per_camera_person_count hero-gate. Kills the
+    # "hero camera picks empty room" regression flagged in the 2026-04-18
+    # viewer-experience audit. Additive — rejects and lets the variety
+    # fallback select a different camera. Dwell/variety history is NOT
+    # updated on rejection, matching the other gates' semantics.
+    if _hero_gate_enabled() and not _camera_has_people(role):
+        log.info(
+            "camera.hero vision-gate: %s has person_count=0, skipping",
+            role,
         )
         return False
     _atomic_write_json(
