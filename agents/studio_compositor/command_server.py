@@ -11,6 +11,8 @@ Supported commands:
 - ``compositor.assignment.set_opacity`` ``{source_id, surface_id, opacity}``
 - ``compositor.layout.save`` — flush :class:`LayoutAutoSaver` immediately
 - ``compositor.layout.reload`` — force a fresh read from disk
+- ``degraded.activate`` ``{reason, ttl_s?}`` — enter DEGRADED-STREAM mode
+- ``degraded.deactivate`` — exit DEGRADED-STREAM mode (task #122)
 
 Errors are structured: ``{status: "error", error: <code>, ...context}``.
 Unknown IDs include a ``hint`` field built via :func:`difflib.get_close_matches`.
@@ -303,10 +305,47 @@ def _handle_reload(server: CommandServer, args: dict[str, Any]) -> dict[str, Any
     return {}
 
 
+def _handle_degraded_activate(server: CommandServer, args: dict[str, Any]) -> dict[str, Any]:
+    """Task #122 — enter DEGRADED-STREAM mode.
+
+    ``args.reason`` is recorded verbatim (operator-facing label).
+    ``args.ttl_s`` is an optional float; defaults to the controller's
+    built-in ``DEFAULT_TTL_S``.
+    """
+    del server  # controller is process-global
+    reason = args.get("reason")
+    if not isinstance(reason, str) or not reason:
+        raise _CommandError({"error": "invalid_reason", "reason": "must be a non-empty string"})
+    ttl_raw = args.get("ttl_s")
+    ttl_kwargs: dict[str, Any] = {}
+    if ttl_raw is not None:
+        if not isinstance(ttl_raw, (int, float)) or isinstance(ttl_raw, bool):
+            raise _CommandError({"error": "invalid_ttl", "reason": "ttl_s must be numeric"})
+        ttl_kwargs["ttl_s"] = float(ttl_raw)
+    from agents.studio_compositor.degraded_mode import get_controller
+
+    try:
+        get_controller().activate(reason, **ttl_kwargs)
+    except ValueError as exc:
+        raise _CommandError({"error": "invalid_ttl", "reason": str(exc)}) from exc
+    return {"state": "degraded", "reason": reason}
+
+
+def _handle_degraded_deactivate(server: CommandServer, args: dict[str, Any]) -> dict[str, Any]:
+    """Task #122 — exit DEGRADED-STREAM mode."""
+    del server, args
+    from agents.studio_compositor.degraded_mode import get_controller
+
+    get_controller().deactivate()
+    return {"state": "normal"}
+
+
 _COMMANDS: dict[str, Callable[[CommandServer, dict[str, Any]], dict[str, Any] | None]] = {
     "compositor.surface.set_geometry": _handle_set_geometry,
     "compositor.surface.set_z_order": _handle_set_z_order,
     "compositor.assignment.set_opacity": _handle_set_opacity,
     "compositor.layout.save": _handle_save,
     "compositor.layout.reload": _handle_reload,
+    "degraded.activate": _handle_degraded_activate,
+    "degraded.deactivate": _handle_degraded_deactivate,
 }

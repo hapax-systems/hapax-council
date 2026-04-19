@@ -20,6 +20,7 @@ Commands
 ``ward pause``            → ``studio.ward.pause``
 ``ward resume``           → ``studio.ward.resume``
 ``safe``                  → ``degraded.activate``
+``safe off``              → ``degraded.deactivate``
 ``sidechat <message>``    → sidechat JSONL append (dispatched separately)
 """
 
@@ -136,7 +137,11 @@ def parse(message: str) -> Parsed:
         return Parsed(kind="command", command=f"studio.ward.{sub}", source=raw)
 
     if verb == "safe":
-        # Trailing text allowed but ignored — a terse panic trigger.
+        # ``safe`` → activate; ``safe off`` → deactivate. Any other
+        # trailing text is treated as the activate form (terse panic
+        # trigger; operator intent is unambiguous).
+        if tail.lower() == "off":
+            return Parsed(kind="command", command="degraded.deactivate", source=raw)
         return Parsed(kind="command", command="degraded.activate", source=raw)
 
     if verb == "sidechat":

@@ -107,6 +107,12 @@ class TestGrammarCommands:
         assert p.kind == "command"
         assert p.command == "degraded.activate"
 
+    def test_safe_off(self) -> None:
+        """Task #122 — ``safe off`` deactivates DEGRADED mode."""
+        p = parse("safe off")
+        assert p.kind == "command"
+        assert p.command == "degraded.deactivate"
+
     def test_sidechat(self) -> None:
         p = parse("sidechat hello there")
         assert p.kind == "sidechat"

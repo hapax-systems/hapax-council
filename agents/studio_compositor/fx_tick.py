@@ -2,13 +2,87 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
+
+log = logging.getLogger(__name__)
+
+
+def _degraded_active() -> bool:
+    """Return True while DEGRADED mode is active (task #122).
+
+    Isolated helper so the import stays lazy — unit-test environments
+    without prometheus/compositor metrics can still exercise fx tick
+    paths without pulling in the metrics registry.
+    """
+    try:
+        from agents.studio_compositor.degraded_mode import get_controller
+
+        return get_controller().is_active()
+    except Exception:
+        log.debug("degraded-mode check failed", exc_info=True)
+        return False
+
+
+def _pin_slots_to_passthrough(compositor: Any) -> None:
+    """Force every non-passthrough slot to passthrough (task #122).
+
+    Called from :func:`tick_slot_pipeline` while DEGRADED mode is
+    active. Uses the same property-set path as
+    :meth:`SlotPipeline.activate_plan` so it honors the recompile
+    diff-check (byte-identical passthrough sets no-op on the Rust
+    side). Clearing the slot_assignments list ensures that the normal
+    tick path does not resume mid-degraded by re-applying preset
+    params from ``_slot_preset_params``.
+    """
+    slot_pipeline = getattr(compositor, "_slot_pipeline", None)
+    if slot_pipeline is None:
+        return
+    try:
+        from agents.effect_graph.pipeline import PASSTHROUGH_SHADER
+    except Exception:
+        log.debug("PASSTHROUGH_SHADER import failed; degraded pin noop", exc_info=True)
+        return
+
+    slots = getattr(slot_pipeline, "_slots", [])
+    assignments = getattr(slot_pipeline, "_slot_assignments", [])
+    last_frag = getattr(slot_pipeline, "_slot_last_frag", [])
+    changed = False
+    for i, slot in enumerate(slots):
+        if i < len(last_frag) and last_frag[i] == PASSTHROUGH_SHADER:
+            continue
+        try:
+            slot.set_property("fragment", PASSTHROUGH_SHADER)
+            if i < len(last_frag):
+                last_frag[i] = PASSTHROUGH_SHADER
+            if i < len(assignments):
+                assignments[i] = None
+            changed = True
+        except Exception:
+            log.debug("degraded pin: set_property failed on slot %d", i, exc_info=True)
+    if changed:
+        log.info("DEGRADED mode: pinned %d fx slots to passthrough", len(slots))
+        try:
+            from agents.studio_compositor.degraded_mode import get_controller
+
+            get_controller().record_hold("fx_chain")
+        except Exception:
+            log.debug("degraded hold record failed", exc_info=True)
 
 
 def tick_governance(compositor: Any, t: float) -> None:
     """Perception-visual governance tick."""
     if compositor._graph_runtime is None or not hasattr(compositor, "_atmospheric_selector"):
+        return
+
+    # Task #122: skip preset-family rotation while degraded. Governance
+    # would otherwise keep swapping presets during a service restart
+    # and the fresh shaders could surface compile errors or partial
+    # plans mid-degraded — exactly the raw failure state we want to
+    # suppress. The slot pinner (tick_slot_pipeline) is the defense
+    # in depth; suppressing the selector here avoids the wasted work.
+    if _degraded_active():
         return
 
     # User override hold: when the user explicitly selects a preset via API,
@@ -149,6 +223,15 @@ def tick_modulator(compositor: Any, t: float, energy: float, b: float) -> None:
 def tick_slot_pipeline(compositor: Any, t: float) -> None:
     """Push time/resolution to active slots."""
     if not compositor._slot_pipeline:
+        return
+
+    # Task #122 DEGRADED mode: pin every slot to passthrough so any
+    # shader-compile errors that would otherwise surface during a
+    # live-change stay invisible. The pin is idempotent — the byte-
+    # identical diff check in the slot-pipeline path avoids Rust-side
+    # recompiles once the slots are already pinned.
+    if _degraded_active():
+        _pin_slots_to_passthrough(compositor)
         return
 
     # A+ Stage 2 audit B3 fix (2026-04-17): width/height pulled from

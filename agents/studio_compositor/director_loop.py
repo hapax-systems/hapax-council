@@ -49,6 +49,21 @@ def _silence_hold_impingement() -> CompositionalImpingement:
     )
 
 
+def _director_degraded_active() -> bool:
+    """Task #122 DEGRADED check for the director tick.
+
+    Lazy import so test harnesses without the metrics registry can
+    still exercise ``DirectorLoop`` paths.
+    """
+    try:
+        from agents.studio_compositor.degraded_mode import get_controller
+
+        return get_controller().is_active()
+    except Exception:
+        log.debug("degraded-mode check failed in director", exc_info=True)
+        return False
+
+
 def _silence_hold_fallback_intent(
     *, activity: str, narrative_text: str, reason: str, tier: str, condition_id: str
 ) -> DirectorIntent:
@@ -940,6 +955,17 @@ class DirectorLoop:
                     continue
                 self._last_perception = now
 
+                # Task #122 DEGRADED mode. During a live-change operation
+                # (service restart, rebuild) the LLM tier may be draining
+                # or warming up — skip the LLM call entirely and emit a
+                # silence-hold fallback intent so the operator no-vacuum
+                # invariant (2026-04-18) still holds. The audio stays
+                # live; only the narrative cadence pauses.
+                if _director_degraded_active():
+                    self._emit_degraded_silence_hold()
+                    time.sleep(1.0)
+                    continue
+
                 # Build unified prompt with all signals + activity capabilities
                 prompt = self._build_unified_prompt()
                 images = self._gather_images()
@@ -1213,6 +1239,46 @@ class DirectorLoop:
             )
         except Exception:
             log.debug("_emit_micromove_fallback failed", exc_info=True)
+
+    def _emit_degraded_silence_hold(self) -> None:
+        """Task #122: emit a silence-hold intent and skip the LLM tick.
+
+        The no-vacuum invariant (2026-04-18) still applies during a
+        degraded live-change — every director tick must produce at
+        least one ``CompositionalImpingement`` so the compositor's
+        affordance pipeline has something to recruit against. We reuse
+        :func:`_silence_hold_fallback_intent` (the parser-error path)
+        with ``reason="degraded"`` so the observability counter at
+        ``hapax_director_vacuum_prevented_total`` distinguishes the
+        live-change hold from ordinary parser failures.
+        """
+        condition_id = _read_research_marker() or "none"
+        try:
+            intent = _silence_hold_fallback_intent(
+                activity="silence",
+                narrative_text="",
+                reason="degraded",
+                tier="narrative",
+                condition_id=condition_id,
+            )
+            _emit_intent_artifacts(intent, condition_id=condition_id)
+        except Exception:
+            log.debug("degraded silence-hold emission failed", exc_info=True)
+        try:
+            from agents.studio_compositor.degraded_mode import get_controller
+
+            get_controller().record_hold("director")
+        except Exception:
+            log.debug("degraded hold record failed", exc_info=True)
+        # Dedicated per-tick counter so dashboards can count director
+        # degraded holds separately from the generic per-surface holds.
+        try:
+            counter = getattr(metrics, "DIRECTOR_DEGRADED_HOLDS_TOTAL", None)
+            if counter is not None:
+                counter.inc()
+        except Exception:
+            log.debug("director degraded holds counter inc failed", exc_info=True)
+        log.info("director DEGRADED silence-hold emitted (LLM call skipped)")
 
     def _maybe_override_activity(self, proposed: str) -> str:
         """Apply Continuous-Loop §3.2 stimmung-modulated override gate.

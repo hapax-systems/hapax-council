@@ -29,6 +29,29 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Task #122 — Gruvbox-dark background for the fallback degraded hold
+# frame when a source has no cached last-good surface to replay. Chosen
+# from ``docs/logos-design-language.md`` §3.1 (Gruvbox Hard Dark ``bg0``
+# = ``#1d2021``) so the idle surface matches the operator's R&D palette
+# rather than stark black.
+_GRUVBOX_BG0_RGB: tuple[float, float, float] = (0x1D / 255.0, 0x20 / 255.0, 0x21 / 255.0)
+
+
+def _degraded_mode_active() -> bool:
+    """Hot-path DEGRADED check for cairo source runners (task #122).
+
+    Lazy import so test envs without the metrics registry can still
+    instantiate a runner.
+    """
+    try:
+        from agents.studio_compositor.degraded_mode import get_controller
+
+        return get_controller().is_active()
+    except Exception:
+        log.debug("degraded-mode check failed in cairo_source", exc_info=True)
+        return False
+
+
 class CairoSource(ABC):
     """Abstract base for Python Cairo content sources.
 
@@ -381,6 +404,74 @@ class CairoSourceRunner:
         """Render exactly one frame inline. Used by tests and one-shot sources."""
         self._render_one_frame()
 
+    def _render_degraded_hold(self) -> None:
+        """Task #122: hold the last-good surface (or paint Gruvbox-dark fallback).
+
+        Behavior:
+
+        - If a cached ``_output_surface`` exists: do nothing. Synchronous
+          consumers keep blitting the cached surface so the stream
+          visually freezes on the last-good frame instead of showing the
+          partial/broken state the source would produce mid-live-change.
+        - If no cache exists: allocate (or reuse) the inactive
+          double-buffered surface, paint Gruvbox-dark bg0, and publish
+          it. Never calls ``self._source.render()``.
+
+        The freshness gauge is marked ``failed`` in both branches so
+        ``age_seconds()`` climbs during the hold — the operator-visible
+        "stream is degraded" signal mirrors the internal state rather
+        than looking healthy while actually frozen.
+        """
+        if self._output_surface is not None:
+            if self._freshness_gauge is not None:
+                self._freshness_gauge.mark_failed()
+            try:
+                from agents.studio_compositor.degraded_mode import get_controller
+
+                get_controller().record_hold(f"cairo_source:{self._source_id}")
+            except Exception:
+                log.debug("degraded hold record failed", exc_info=True)
+            return
+
+        # No cache yet — render a Gruvbox-dark solid fill as the
+        # fallback last-good frame.
+        try:
+            with self._output_lock:
+                dims = (self._natural_w, self._natural_h)
+                active_idx = self._surface_active_idx
+            if self._surface_dims != dims or len(self._surfaces) < 2:
+                self._surfaces = [
+                    cairo.ImageSurface(cairo.FORMAT_ARGB32, dims[0], dims[1]) for _ in range(2)
+                ]
+                active_idx = 0
+                with self._output_lock:
+                    self._surface_active_idx = 0
+                self._surface_dims = dims
+            inactive_idx = 1 - active_idx
+            surface = self._surfaces[inactive_idx]
+            cr = cairo.Context(surface)
+            cr.set_operator(cairo.OPERATOR_SOURCE)
+            cr.set_source_rgba(*_GRUVBOX_BG0_RGB, 1.0)
+            cr.paint()
+            surface.flush()
+            with self._output_lock:
+                self._output_surface = surface
+                self._surface_active_idx = inactive_idx
+        except Exception:
+            log.debug(
+                "CairoSource %s degraded Gruvbox-dark fallback failed",
+                self._source_id,
+                exc_info=True,
+            )
+        if self._freshness_gauge is not None:
+            self._freshness_gauge.mark_failed()
+        try:
+            from agents.studio_compositor.degraded_mode import get_controller
+
+            get_controller().record_hold(f"cairo_source:{self._source_id}")
+        except Exception:
+            log.debug("degraded hold record failed", exc_info=True)
+
     def _loop(self) -> None:
         next_tick = time.monotonic()
         while not self._stop.is_set():
@@ -392,6 +483,14 @@ class CairoSourceRunner:
             self._render_one_frame()
 
     def _render_one_frame(self) -> None:
+        # Task #122 DEGRADED mode. When the stream is degraded (e.g.
+        # during a service restart), skip the source's render() and
+        # re-serve the cached last-good surface. If no cache exists
+        # yet (source has not rendered once), paint a Gruvbox-dark
+        # solid fill so the surface is non-empty and non-broken.
+        if _degraded_mode_active():
+            self._render_degraded_hold()
+            return
         # Phase 7b: skip-if-over-budget. If a budget is configured AND
         # we have a tracker AND the most recent recorded frame for
         # this source exceeded budget, skip this tick. The cached
