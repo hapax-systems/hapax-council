@@ -83,10 +83,31 @@ class HomageTransitionalSource(CairoSource):
         self,
         source_id: str,
         *,
-        initial_state: TransitionState = TransitionState.ABSENT,
+        initial_state: TransitionState = TransitionState.HOLD,
         entering_duration_s: float = 0.4,
         exiting_duration_s: float = 0.3,
     ) -> None:
+        # HOTFIX 2026-04-18 (delta): HomageTransitionalSource previously
+        # defaulted to ``TransitionState.ABSENT``, meaning every Cairo ward
+        # that inherits from this base class silently rendered NOTHING
+        # until the choreographer (``homage/choreographer.py``) explicitly
+        # dispatched an entry transition for that source_id. When the
+        # Phase 12 flip (commit a7922e904) made ``HAPAX_HOMAGE_ACTIVE=1``
+        # the default, every ward not targeted by the choreographer
+        # (token_pole, album, captions, chat_ambient, hardm_dot_matrix,
+        # pressure_gauge, thinking_indicator, whos_here, activity_variety_log,
+        # impingement_cascade, recruitment_candidate_panel) disappeared
+        # from the livestream. ``pip_draw_from_layout`` called
+        # ``blit_scaled`` on each of them, but the cached output surface
+        # was all-zero (see ``render()`` below: ABSENT returns immediately
+        # without painting). Defaulting to HOLD restores the legacy
+        # paint-and-hold semantics so the ward renders unconditionally;
+        # the choreographer can still emit ``ticker-scroll-out`` /
+        # ``ticker-scroll-in`` transitions to temporarily hide or
+        # re-introduce wards per the HOMAGE grammar. Subclasses that
+        # want the ABSENT-by-default behaviour (e.g. time-limited
+        # announcement banners) explicitly pass
+        # ``initial_state=TransitionState.ABSENT``.
         self._source_id = source_id
         self._state: TransitionState = initial_state
         self._pending_transition: TransitionName | None = None

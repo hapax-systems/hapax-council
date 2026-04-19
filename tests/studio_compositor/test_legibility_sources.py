@@ -165,8 +165,16 @@ class TestInheritsHomageTransitionalSource:
         assert cls().source_id == expected_id
 
     def test_fsm_hook_points_available(self):
+        # Hotfix 2026-04-18: HomageTransitionalSource default flipped from
+        # ABSENT to HOLD so un-choreographed wards render paint-and-hold
+        # content. The ABSENT→ENTERING branch of apply_transition is still
+        # exercised by forcing the state back to ABSENT on an existing
+        # instance (the subclass __init__ doesn't expose initial_state).
         src = ls.ActivityHeaderCairoSource()
-        assert src.transition_state is TransitionState.ABSENT
+        # Ward now starts in HOLD (post-hotfix default).
+        assert src.transition_state is TransitionState.HOLD
+        # Force ABSENT to exercise the apply_transition ABSENT→ENTERING path.
+        src._state = TransitionState.ABSENT
         src.apply_transition("ticker-scroll-in")
         assert src.transition_state is TransitionState.ENTERING
 
