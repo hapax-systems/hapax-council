@@ -329,6 +329,42 @@ def start_compositor(compositor: Any) -> None:
         )
         compositor._state_reader_thread.start()
 
+    # FINDING-B remediation (alpha wiring audit 2026-04-19):
+    # HomageChoreographer was defined but never instantiated — `grep -r` of
+    # the agents/ and shared/ trees returns zero import/construction sites.
+    # All 4 homage SHM publishers (active-artefact, pending-transitions,
+    # substrate-package, voice-register) have been frozen at ~02:29Z
+    # because no thread drives reconcile(). This cascades to FINDING-A
+    # (ward_fx_events empty ward_id labels) and FINDING-K (10/11 homage
+    # metrics empty). The ~30-line fix alpha prescribed:
+    # instantiate + schedule reconcile() on a 1Hz GLib timeout, pass the
+    # source registry so substrate declarations are honoured.
+    try:
+        from .homage.choreographer import HomageChoreographer
+        from .homage.rendering import active_package
+
+        compositor._homage_choreographer = HomageChoreographer(
+            source_registry=getattr(compositor, "source_registry", None),
+        )
+
+        def _choreographer_tick() -> bool:
+            if not compositor._running:
+                return False  # stop firing on shutdown
+            try:
+                pkg = active_package()
+                compositor._homage_choreographer.reconcile(pkg)
+            except Exception:
+                log.exception("homage choreographer reconcile failed")
+            return True  # keep firing while compositor is alive
+
+        # 1 Hz reconcile cadence matches the pre-existing SHM publisher
+        # invariants other wards depend on (pending-transitions drain,
+        # substrate broadcast, voice-register rotation, artefact cycle).
+        GLib.timeout_add(1000, _choreographer_tick)
+        log.info("HomageChoreographer instantiated, reconcile scheduled at 1Hz")
+    except Exception:
+        log.exception("HomageChoreographer wiring failed — FINDING-B unresolved")
+
     def _shutdown(signum: int, frame: Any) -> None:
         log.info("Signal %d received, shutting down", signum)
         compositor.stop()
