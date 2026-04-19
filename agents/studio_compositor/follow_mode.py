@@ -58,9 +58,9 @@ _IR_STATE_DIR_DEFAULT = Path.home() / "hapax-state" / "pi-noir"
 # ambient_priority. Repetition penalty is the same magnitude so a
 # settled hero is edged out by an equally-scored alternative, which
 # produces the cut-rotation behaviour the operator asked for.
-_LOCATION_MATCH_BONUS = 3.0
+_LOCATION_MATCH_BONUS = 4.0
 _OPERATOR_VISIBLE_BONUS = 0.3
-_REPETITION_PENALTY = 3.0
+_REPETITION_PENALTY = 3.5
 _DEMO_DESK_OVERHEAD_BONUS = 2.0
 
 # Rolling history window in seconds. "Repetition" = camera was the hero
@@ -85,9 +85,20 @@ _FEATURE_FLAG_ENV = "HAPAX_FOLLOW_MODE_ACTIVE"
 # the controller has a pool of candidates to pick from per location;
 # the tie-breaker is then ambient_priority + operator_visible.
 _LOCATION_ONTOLOGY_HINTS: dict[str, frozenset[str]] = {
-    "desk": frozenset({"hands", "mpc", "desk"}),
+    "desk": frozenset({"hands", "mpc"}),
     "room": frozenset({"room"}),
     "overhead": frozenset({"hands", "mpc", "desk"}),
+}
+
+# Roles excluded from ontology matching per operator location.
+# ``c920-overhead``'s subject_ontology includes "hands"/"mpc" so it
+# would otherwise match the desk hint set — but semantically it's the
+# top-down camera and should NOT pull on operator-at-desk unless the
+# demonstrate-mode bonus is active. Excluding here rather than
+# reshaping the ontology list keeps the production classification
+# payload stable (task #135 contract).
+_LOCATION_ROLE_BLACKLIST: dict[str, frozenset[str]] = {
+    "desk": frozenset({"c920-overhead"}),
 }
 
 
@@ -242,6 +253,7 @@ class FollowModeController:
 
         if operator_location is not None:
             hints = _LOCATION_ONTOLOGY_HINTS.get(operator_location, frozenset())
+            blacklist = _LOCATION_ROLE_BLACKLIST.get(operator_location, frozenset())
             # Special-case c920-overhead for the "overhead" location:
             # its top-down angle is the only camera whose vantage is
             # literally "above the operator's head", and it's the
@@ -253,7 +265,18 @@ class FollowModeController:
                 "c920-room",
                 "brio-room",
             }
-            if ontology_match or role_match_overhead or role_match_room:
+            # Demo bonus bypasses the location blacklist: at desk in
+            # demonstrate activity, c920-overhead gets BOTH the
+            # ontology match (it points at the desk) AND the demo
+            # bonus below. Without activity=demonstrate, the blacklist
+            # keeps overhead from dominating the plain "at desk" case.
+            demo_bypass = (
+                activity == "demonstrate"
+                and operator_location == "desk"
+                and cam.role == "c920-overhead"
+            )
+            blacklisted = cam.role in blacklist and not demo_bypass
+            if not blacklisted and (ontology_match or role_match_overhead or role_match_room):
                 score += _LOCATION_MATCH_BONUS
                 reasons.append(f"location={operator_location}+{_LOCATION_MATCH_BONUS}")
 

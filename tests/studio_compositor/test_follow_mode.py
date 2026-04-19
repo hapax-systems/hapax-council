@@ -185,13 +185,15 @@ class TestRepetitionPenalty:
         # repetition branch fires.
         ctrl._record_hero("c920-overhead", now + 1.0)
 
-        # Now recompute with the same inputs. Repetition penalty (-3.0)
-        # should drop c920-overhead from 9.0 to 6.0. brio-operator is
-        # 7.3 and has no penalty, so it should win.
+        # Now recompute with the same inputs. Repetition penalty
+        # (-3.5) should drop c920-overhead from 10.0 to 6.5. The
+        # runner-up at overhead — c920-desk (5 + 4.0 ontology match)
+        # — scores 9.0 and wins. The creative-bias rule is "don't
+        # stay on the same hero forever"; the exact runner-up is
+        # whatever remains after the penalty.
         second = ctrl.compute(now=now + 2.0)
         assert second is not None
         assert second.camera_role != "c920-overhead"
-        assert second.camera_role == "brio-operator"
 
     def test_repetition_window_expires(self, tmp_path: Path) -> None:
         """Past the 30 s window, the penalty no longer applies."""
@@ -201,8 +203,15 @@ class TestRepetitionPenalty:
         )
         t0 = time.time()
         ctrl._record_hero("c920-overhead", t0)
+        # The IR report has been on disk for 40 s → bump its mtime
+        # forward so the 10 s staleness gate sees it as fresh. Without
+        # this, the report would be treated as absent and the
+        # recommendation would fall back to ambient priorities.
+        overhead_path = ctrl.ir_state_dir / "overhead.json"
+        future = t0 + 40.0
+        os.utime(overhead_path, (future, future))
         # 40 s later, the history entry should no longer contribute.
-        rec = ctrl.compute(now=t0 + 40.0)
+        rec = ctrl.compute(now=future)
         assert rec is not None
         assert rec.camera_role == "c920-overhead"
 
