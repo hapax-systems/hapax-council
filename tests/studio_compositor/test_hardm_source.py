@@ -129,6 +129,22 @@ class TestRender:
         surface = _render_hardm()
         assert any(b != 0 for b in bytes(surface.get_data()[:4096]))
 
+    def test_background_is_gruvbox_bg0(self, tmp_path) -> None:
+        """Aesthetic rework: cells sit on Gruvbox bg0 (#1d2021), not grey.
+
+        Sample a corner pixel that is well away from any cell centre — it
+        should be near-black, not the previous muted-grey background."""
+        surface = _render_hardm()
+        stride = surface.get_stride()
+        data = surface.get_data()
+        # Top-left pixel is the corner of cell (0,0) — far enough from
+        # centre (8,8) that only the outer-glow (~9 px) faint bleed
+        # might reach it. Assert it stays close to bg0.
+        idx = 0 * stride + 0 * 4
+        b, g, r = data[idx], data[idx + 1], data[idx + 2]
+        # bg0 = (0x1d, 0x20, 0x21) in sRGB8 premul-alpha=1.
+        assert r < 60 and g < 60 and b < 60
+
     def test_all_cells_idle_when_file_missing(self, tmp_path) -> None:
         surface = _render_hardm()
         # Muted RGBA from BitchX is (0.39, 0.39, 0.39, 1.0). Interior pixels
@@ -143,32 +159,60 @@ class TestRender:
         _write_signals(tmp_path, {"midi_active": True})
         surface = _render_hardm()
         # Row 0 = midi_active, family=timing → accent_cyan.
-        # BitchX cyan is (0, 0.78, 0.78, 1.0).  Interior should be high in
-        # both B and G channels, near-zero R.  Cairo ARGB32 byte order is
-        # (B, G, R, A) on little-endian.
+        # BitchX cyan is (0, 0.78, 0.78, 1.0).  Cell centre (where the
+        # radial-gradient point is drawn) should be cyan-dominant: B and
+        # G both strong, R near-zero.  Post-pointillism shimmer can vary
+        # absolute intensity, so we assert cyan dominance rather than
+        # precise values.
         b, g, r, a = _cell_pixel(surface, row=0, col=5)
-        assert b > 150
-        assert g > 150
+        assert b > 120
+        assert g > 120
         assert r < 50
         assert a > 200
+
+    def test_halo_gradient_falls_off_from_centre(self, tmp_path) -> None:
+        """Pointillism: the centre pixel is brighter than a pixel a few
+        px away from centre, confirming a radial halo exists rather than
+        a flat-fill rectangle."""
+        _write_signals(tmp_path, {"midi_active": True})
+        surface = _render_hardm()
+        stride = surface.get_stride()
+        data = surface.get_data()
+
+        def _pixel(x: int, y: int) -> tuple[int, int, int]:
+            idx = y * stride + x * 4
+            return (data[idx], data[idx + 1], data[idx + 2])
+
+        # Cell (0, 5) centre is at (88, 8).
+        cx, cy = 5 * CELL_SIZE_PX + CELL_SIZE_PX // 2, 0 * CELL_SIZE_PX + CELL_SIZE_PX // 2
+        centre_b, centre_g, _ = _pixel(cx, cy)
+        edge_b, edge_g, _ = _pixel(cx, cy + 6)  # 6 px below centre
+        # Cyan-dominant channels must fall off outward.
+        assert centre_b > edge_b
+        assert centre_g > edge_g
 
     def test_stress_value_renders_accent_red(self, tmp_path) -> None:
         _write_signals(tmp_path, {"consent_gate": "blocked"})
         surface = _render_hardm()
-        # Row 10 = consent_gate.  "blocked" → accent_red.
+        # Row 10 = consent_gate.  "blocked" → accent_red. Cell centre
+        # must be red-dominant (R channel >> B / G).
         b, g, r, a = _cell_pixel(surface, row=10, col=5)
-        assert r > 150
+        assert r > 100
         assert g < 50
         assert b < 50
+        assert r > b + 50
+        assert r > g + 50
 
     def test_missing_consent_signal_is_stress(self, tmp_path) -> None:
         # Write a payload with no consent_gate key — spec §3 fails closed.
         _write_signals(tmp_path, {"vad_speech": True})
         surface = _render_hardm()
         b, g, r, a = _cell_pixel(surface, row=10, col=5)
-        assert r > 150
+        assert r > 100
         assert g < 50
         assert b < 50
+        assert r > b + 50
+        assert r > g + 50
 
     def test_consent_safe_render_is_noop(self, monkeypatch, tmp_path) -> None:
         # When get_active_package returns None (consent-safe layout),
