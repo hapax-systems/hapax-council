@@ -132,3 +132,63 @@ KNOWN_ROLE_IDS: frozenset[str] = frozenset(
 def is_known_role(role_id: str) -> bool:
     """True iff role_id matches a registered role in the registry."""
     return role_id in KNOWN_ROLE_IDS
+
+
+# ── Anti-personification scope surfacing ──────────────────────────────────
+#
+# LRR Phase 7 §4.3 + anti-personification linter Stage 3 (design doc
+# ``docs/superpowers/specs/2026-04-18-anti-personification-linter-design.md``
+# §4). Each institutional and relational role declares an ``is_not:`` list
+# in ``axioms/roles/registry.yaml``. These utilities surface that negation
+# surface to prompt assemblers that want to pin the current role's scope
+# for the LLM.
+#
+# Keep this loader small: it's a YAML read on demand, cached once per
+# process. Callers should prefer to grab the list, not re-parse YAML.
+
+_ROLE_REGISTRY_PATH = Path(__file__).parent.parent / "axioms" / "roles" / "registry.yaml"
+
+
+@lru_cache(maxsize=1)
+def _load_role_registry() -> dict:
+    """Read the role registry YAML once per process."""
+    import yaml  # local import: keep module import cost low when unused
+
+    return yaml.safe_load(_ROLE_REGISTRY_PATH.read_text(encoding="utf-8"))
+
+
+def reset_role_registry_cache_for_testing() -> None:
+    """Drop the role-registry lru_cache so tests can monkey-patch and reload."""
+    _load_role_registry.cache_clear()
+
+
+def role_is_not(role_id: str) -> tuple[str, ...]:
+    """Return the ``is_not:`` list for a role as an immutable tuple.
+
+    Returns an empty tuple for unknown roles or for structural roles that
+    omit the field. Callers should NOT treat an empty tuple as "has no
+    scope" — structural roles are species-type and not obligated to carry
+    the declarative negation surface.
+    """
+    if not role_id:
+        return ()
+    registry = _load_role_registry()
+    for role in registry.get("roles", []):
+        if role.get("id") == role_id:
+            entries = role.get("is_not") or []
+            return tuple(str(e) for e in entries)
+    return ()
+
+
+def role_scope_line(role_id: str) -> str:
+    """Return a single-line ``Scope: this role is NOT X, Y, Z`` string, or
+    an empty string when the role has no ``is_not:`` list.
+
+    This is the shape prompt assemblers splice in beside the current-role
+    line; it pins the anti-personification scope of the active role
+    without reifying any persona-adjacent framing.
+    """
+    entries = role_is_not(role_id)
+    if not entries:
+        return ""
+    return f"Scope: this role is NOT {', '.join(entries)}."
