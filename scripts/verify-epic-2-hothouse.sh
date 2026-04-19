@@ -73,9 +73,14 @@ spec.loader.exec_module(mod)
 assert mod._playback_rate() == 0.5
 '"
 
-# Phase A — consent fail-closed.
-check "consent fails closed on None overlay" \
-    "uv run python -c 'from agents.studio_compositor.consent_live_egress import should_egress_compose_safe; assert should_egress_compose_safe(None) is True'"
+# Phase A — consent-safe compose gate retired (2026-04-18). face-obscure
+# (#129) is the canonical privacy floor; the legacy fail-closed layout-swap
+# gate is DISABLED by default. The predicate returns False unless
+# HAPAX_CONSENT_EGRESS_GATE=1 restores legacy behavior.
+check "consent gate disabled by default (post-retirement)" \
+    "uv run python -c 'import os; os.environ.pop(\"HAPAX_CONSENT_EGRESS_GATE\", None); from agents.studio_compositor.consent_live_egress import should_egress_compose_safe; assert should_egress_compose_safe(None) is False'"
+check "consent gate fails closed when explicitly enabled" \
+    "uv run python -c 'import os; os.environ[\"HAPAX_CONSENT_EGRESS_GATE\"]=\"1\"; import importlib, agents.studio_compositor.consent_live_egress as cle; importlib.reload(cle); assert cle.should_egress_compose_safe(None) is True'"
 
 # Phase F — color resonance.
 check "color_resonance module exports ColorResonance" \
