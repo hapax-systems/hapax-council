@@ -443,8 +443,17 @@ class OverlayZone:
         self._cached_surface_size = (sw, sh)
 
 
-class OverlayZonesCairoSource(CairoSource):
-    """Phase 3b CairoSource implementation for the content overlay zones.
+class OverlayZonesCairoSource(HomageTransitionalSource):
+    """HOMAGE Phase 11c-batch-3 overlay-zone ward.
+
+    Phase 3b implementation for the content overlay zones, migrated to
+    inherit :class:`HomageTransitionalSource` so zone text participates
+    in the HOMAGE FSM (ABSENT / ENTERING / HOLD / EXITING). Zone text is
+    ward-scope content; the choreographer gates it via ``ticker-scroll-in``
+    / ``ticker-scroll-out`` once ``HAPAX_HOMAGE_ACTIVE=1``. The per-zone
+    chrome (background alpha override, DVD-float / scroll mechanics) is
+    content-adjacent and stays inside ``render_content`` so the full
+    zone visual is owned by the choreographer end-to-end.
 
     Owns the list of :class:`OverlayZone` instances. Every tick ticks each
     zone (cycling folders, reloading files, advancing scroll offsets,
@@ -454,10 +463,17 @@ class OverlayZonesCairoSource(CairoSource):
     """
 
     def __init__(self, zone_configs: list[dict[str, Any]] | None = None) -> None:
+        # HOMAGE spec §4.10: overlay-zone text is ward-scope content, so
+        # initial_state defaults to ABSENT — the choreographer animates
+        # it in via the package's default entry transition on first
+        # activation. Under ``HAPAX_HOMAGE_ACTIVE=0`` the base class
+        # renders content regardless of FSM state, preserving the legacy
+        # paint-and-hold behaviour that existing tests exercise.
+        super().__init__(source_id="overlay_zones")
         configs = zone_configs or ZONES
         self.zones = [OverlayZone(cfg) for cfg in configs]
 
-    def render(
+    def render_content(
         self,
         cr: cairo.Context,
         canvas_w: int,
