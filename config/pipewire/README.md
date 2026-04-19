@@ -90,6 +90,43 @@ state-machine driver; the sink stays at unity gain until then.
 
 See `docs/runbooks/audio-topology.md § 5` for the full ducking matrix.
 
+## Vinyl-on-stream routing (HOMAGE Phase D1 verification)
+
+Vinyl audio reaches the broadcast via the PreSonus Studio 24c analog mix:
+turntable line-out → Studio 24c hardware input → 24c output mix →
+`alsa_output.usb-PreSonus_Studio_24c...` default sink → OBS PipeWire
+capture → RTMP egress. No dedicated vinyl filter-chain preset exists or
+is required; vinyl shares the 24c mix with DAW returns, synth strips, and
+MPC pads.
+
+When the YT-over-24c ducker is installed (`yt-over-24c-duck.conf`, CVS
+#145), vinyl routes through `hapax-24c-ducked` so `AudioDuckingController`
+can pull the backing bed down while YouTube content plays. Install path:
+route the turntable return strip through **Hapax 24c Ducker** per-
+application once the preset is active. See `docs/runbooks/audio-topology.md`
+§2 (sinks) and §5 (ducking matrix) for the authoritative routing table.
+
+Verify vinyl reaches the broadcast:
+
+```fish
+# 1. Confirm the 24c sink is live and the default sink.
+pactl info | grep 'Default Sink'
+pactl list short sinks | grep PreSonus_Studio_24c
+
+# 2. While a record is playing, confirm energy on the default-sink monitor.
+pw-cat --record --target @DEFAULT_MONITOR@ --format s16 --rate 48000 \
+    --channels 2 --latency 512 /tmp/vinyl-probe.wav &
+PID=$!
+sleep 3
+kill $PID
+ffprobe -v error -show_format -show_streams /tmp/vinyl-probe.wav
+# Expect non-silent stream, RMS >> 0; a silent recording means the
+# turntable strip is not routed to the default sink.
+
+# 3. Confirm OBS sees the same energy on its PipeWire capture source
+#    (Audio Mixer → 24c capture channel should show non-silent meters).
+```
+
 ## Troubleshooting
 
 - **Sink does not appear after install:** verify `pipewire.service` and
