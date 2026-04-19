@@ -146,8 +146,12 @@ class TwitchDirector:
         except Exception:
             log.debug("color resonance publish failed", exc_info=True)
 
-        # MIDI-sync album pulse
-        if field.audio.midi.transport_state == "PLAYING":
+        # MIDI-sync album pulse.
+        # #127 SPLATTRIBUTION: gate on derived ``vinyl_playing`` (transport
+        # PLAYING AND beat_position_rate > 0) so a stale transport_state
+        # with a silently-stopped clock source doesn't emit album pulses
+        # against silence.
+        if field.vinyl_playing:
             beat = field.audio.midi.beat_position
             if beat is not None and beat != self._last_beat:
                 self._last_beat = beat
@@ -241,7 +245,9 @@ class TwitchDirector:
             audio = field.audio.contact_mic.desk_energy or 0.0
             if audio >= _SIGNIFICANT_MAGNITUDE:
                 active += 1
-            if field.audio.midi.transport_state == "PLAYING":
+            # #127 SPLATTRIBUTION: pressure counter also tracks real
+            # playback, not just a transport flag that may be stale.
+            if field.vinyl_playing:
                 active += 1
             if field.ir.ir_hand_zone not in (None, ""):
                 active += 1

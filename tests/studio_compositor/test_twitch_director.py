@@ -78,6 +78,14 @@ class TestStanceCadenceGate:
 class TestBeatSyncedAlbumPulse:
     def test_beat_increment_emits_album_foreground(self, tmp_path):
         _write_narrative(tmp_path, stance="nominal")
+        # #127 SPLATTRIBUTION: the MIDI-sync album pulse now gates on
+        # `field.vinyl_playing`, which requires transport=PLAYING AND
+        # tendency.beat_position_rate > 0. Prime the tendency sampler
+        # with a pre-sample at beat_position=0.5 so the subsequent read
+        # at beat_position=1.0 produces a positive rate.
+        _write_perception(tmp_path, beat_position=0.5, transport_state="PLAYING")
+        pf.reset_tendency_cache()
+        pf.build_perceptual_field()
         _write_perception(
             tmp_path,
             beat_position=1.0,
@@ -89,6 +97,9 @@ class TestBeatSyncedAlbumPulse:
 
     def test_same_beat_does_not_emit_twice(self, tmp_path):
         _write_narrative(tmp_path, stance="nominal")
+        _write_perception(tmp_path, beat_position=0.5, transport_state="PLAYING")
+        pf.reset_tendency_cache()
+        pf.build_perceptual_field()
         _write_perception(
             tmp_path,
             beat_position=1.0,

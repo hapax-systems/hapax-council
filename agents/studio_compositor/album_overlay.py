@@ -213,7 +213,16 @@ class AlbumOverlayCairoSource(HomageTransitionalSource):
         # Per-ward visibility + alpha modulation lives in the runner
         # (``cairo_source.CairoSourceRunner._render_one_frame``); this
         # method draws unconditionally.
-        self._refresh_cover()
+        #
+        # #127 SPLATTRIBUTION: gate cover/PiP-effect rotation on the
+        # derived ``vinyl_playing`` signal. When a vinyl is not actually
+        # playing (transport STOPPED or beat_position_rate == 0) the
+        # overlay holds the last known cover/effect rather than rotating
+        # to a stale cover image the compositor left on disk, which
+        # previously produced misattribution during between-sides
+        # silence.
+        if self._vinyl_playing():
+            self._refresh_cover()
         self._refresh_attribution()
 
         if self._surface is None:
@@ -241,6 +250,21 @@ class AlbumOverlayCairoSource(HomageTransitionalSource):
                 self._fx_func(cr, SIZE, SIZE)
 
         cr.restore()
+
+    def _vinyl_playing(self) -> bool:
+        """Consult the derived #127 SPLATTRIBUTION signal.
+
+        Fail-open on error: if the perceptual field can't be built
+        (missing dependency, transient /dev/shm state), allow rotation
+        so we degrade no worse than pre-#127 behavior.
+        """
+        try:
+            from shared.perceptual_field import build_perceptual_field
+
+            return build_perceptual_field().vinyl_playing
+        except Exception:
+            log.debug("vinyl_playing probe failed; allowing rotation", exc_info=True)
+            return True
 
     def _refresh_cover(self) -> None:
         try:

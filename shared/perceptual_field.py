@@ -47,6 +47,18 @@ _WORKING_MODE = Path(os.path.expanduser("~/.cache/hapax/working-mode"))
 _CONSENT_CONTRACTS_DIR = Path(os.path.expanduser("~/projects/hapax-council/axioms/contracts"))
 _OBJECTIVES_DIR = Path(os.path.expanduser("~/Documents/Personal/30-areas/hapax-objectives"))
 
+# HOMAGE Phase 9 (task #115): SHM source paths for the homage sub-field.
+# Governed by research condition ``cond-phase-a-homage-active-001``.
+# The choreographer publishes the active package, current signature-artefact
+# selection, and voice-register choice to these SHM files; the consent-safe
+# flag comes from studio_compositor state. The director reads these back so
+# it can cite homage state in ``grounding_provenance`` under the new
+# research condition.
+_HOMAGE_ACTIVE_ARTEFACT = Path("/dev/shm/hapax-compositor/homage-active-artefact.json")
+_HOMAGE_VOICE_REGISTER = Path("/dev/shm/hapax-compositor/homage-voice-register.json")
+_HOMAGE_SUBSTRATE_PACKAGE = Path("/dev/shm/hapax-compositor/homage-substrate-package.json")
+_HOMAGE_CONSENT_SAFE_FLAG = Path("/dev/shm/hapax-compositor/consent-safe-active.json")
+
 
 # ── Sub-fields ────────────────────────────────────────────────────────────
 
@@ -206,6 +218,41 @@ class TendencyField(BaseModel):
     chat_heating_rate: float | None = None
 
 
+class HomageField(BaseModel):
+    """Active HOMAGE package state (task #115, condition
+    ``cond-phase-a-homage-active-001``).
+
+    Lets the narrative director cite homage state in
+    ``grounding_provenance`` — e.g. "rotated under package=bitchx,
+    register=textmode, consent-safe=False" — without reaching into
+    SHM itself. All fields degrade gracefully: when the choreographer
+    has not yet published state (boot, test harness), every field is
+    None / False and the director simply omits the provenance.
+
+    - ``package_name`` — the active ``HomagePackage.name`` (e.g.
+      ``"bitchx"`` or ``"bitchx_consent_safe"``), read from
+      ``homage-substrate-package.json``. None when HOMAGE is dormant.
+    - ``active_artefact_form`` — the current signature-artefact form
+      (``"quit-quip"``, ``"join-banner"``, ``"motd-block"``,
+      ``"kick-reason"``), read from ``homage-active-artefact.json``.
+      Advances per rotation cycle.
+    - ``voice_register`` — the active CPAL register (``"announcing"``,
+      ``"conversing"``, ``"textmode"``), read from
+      ``homage-voice-register.json``. None when the bridge file is
+      missing.
+    - ``consent_safe_active`` — True iff
+      ``consent-safe-active.json`` exists (studio_compositor's
+      consent gate for ``stream_mode.public_research``).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    package_name: str | None = None
+    active_artefact_form: str | None = None
+    voice_register: str | None = None
+    consent_safe_active: bool = False
+
+
 class PerceptualField(BaseModel):
     """Unified structured perceptual input for the director."""
 
@@ -221,6 +268,39 @@ class PerceptualField(BaseModel):
     presence: PresenceField = Field(default_factory=PresenceField)
     stream_health: StreamHealthField = Field(default_factory=StreamHealthField)
     tendency: TendencyField = Field(default_factory=TendencyField)
+    homage: HomageField = Field(default_factory=HomageField)
+
+    @property
+    def vinyl_playing(self) -> bool:
+        """Derived signal: is a vinyl actually playing right now?
+
+        #127 SPLATTRIBUTION. Music featuring must be decoupled from raw
+        vinyl playback. A single authoritative boolean gates album
+        overlay rotation, track-ID attribution emission, and twitch
+        director "music is playing" framing. When False, opens the
+        Hapax-music-repo path (#130) and SoundCloud passthrough (#131).
+
+        Requires BOTH:
+          1. MIDI transport says PLAYING (from OXI One start/stop
+             messages, <20ms latency callback-driven in
+             ``midi_clock.py::_on_message``).
+          2. ``tendency.beat_position_rate`` > 0 — guards against a
+             stale transport_state that declares PLAYING when the clock
+             source has silently stopped ticking (scratch stop,
+             power-bump, clock-source disconnect).
+
+        Fail-safe: returns False when either signal is missing. That
+        keeps misattribution out of the stream during cold-start /
+        missing-sample windows. Tendency's first-read-after-reset
+        returns None for the rate, so initial ticks correctly report
+        False until a beat has been observed advancing.
+        """
+        if self.audio.midi.transport_state != "PLAYING":
+            return False
+        rate = self.tendency.beat_position_rate
+        if rate is None:
+            return False
+        return rate > 0.0
 
 
 # ── Reader ────────────────────────────────────────────────────────────────
@@ -287,6 +367,57 @@ def _read_active_objective_ids() -> list[str]:
     except Exception:
         pass
     return sorted(ids)
+
+
+def _read_homage() -> HomageField:
+    """Aggregate HOMAGE state from the four SHM files.
+
+    Each read is independent and fail-open: a missing or malformed
+    file contributes a None (or False, for the consent flag) without
+    affecting the other fields. The director's grounding_provenance
+    cite rule degrades to "no homage provenance" when HOMAGE is
+    dormant — not to a crash.
+
+    Task #115 / research condition cond-phase-a-homage-active-001.
+    """
+    # Active package name comes from the substrate-package broadcast;
+    # this is the single source of truth for "which HomagePackage is
+    # active right now," including the consent-safe swap.
+    substrate = _safe_load_json(_HOMAGE_SUBSTRATE_PACKAGE) or {}
+    package_name = substrate.get("package")
+    if not isinstance(package_name, str) or not package_name:
+        package_name = None
+
+    # Signature artefact form — may lag the package swap by up to one
+    # rotation cycle (the choreographer only re-publishes per cycle).
+    artefact = _safe_load_json(_HOMAGE_ACTIVE_ARTEFACT) or {}
+    form = artefact.get("form")
+    if not isinstance(form, str) or not form:
+        form = None
+
+    # Voice register — written by the choreographer on every
+    # reconcile tick.
+    register_payload = _safe_load_json(_HOMAGE_VOICE_REGISTER) or {}
+    register = register_payload.get("register")
+    if not isinstance(register, str) or not register:
+        register = None
+
+    # Consent-safe flag is file-existence, not payload-parsing. The
+    # flag file's presence is the signal; we never trust the contents
+    # (studio_compositor writes a stable shape but we don't depend on
+    # it here).
+    consent_safe_active = False
+    try:
+        consent_safe_active = _HOMAGE_CONSENT_SAFE_FLAG.exists()
+    except OSError:
+        consent_safe_active = False
+
+    return HomageField(
+        package_name=package_name,
+        active_artefact_form=form,
+        voice_register=register,
+        consent_safe_active=consent_safe_active,
+    )
 
 
 def _read_chat() -> ChatField:
@@ -521,6 +652,9 @@ def build_perceptual_field(
         chat_heating_rate=_compute_rate("chat_recent", float(chat.recent_message_count), _clock),
     )
 
+    # ── Homage (task #115, cond-phase-a-homage-active-001) ──────────────
+    homage = _read_homage()
+
     return PerceptualField(
         audio=audio,
         visual=visual,
@@ -532,6 +666,7 @@ def build_perceptual_field(
         presence=presence_field,
         stream_health=StreamHealthField(),
         tendency=tendency,
+        homage=homage,
     )
 
 
