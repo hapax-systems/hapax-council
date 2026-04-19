@@ -210,6 +210,35 @@ def test_default_json_stream_overlay_source_is_registered() -> None:
     assert cls.__name__ == "StreamOverlayCairoSource"
 
 
+def test_default_json_chat_ambient_binds_to_chat_ambient_ward() -> None:
+    """HOMAGE Phase B5 regression pin: chat_ambient binds to ChatAmbientWard.
+
+    Per docs/superpowers/plans/2026-04-19-homage-completion-plan.md §B5
+    and the HOMAGE reckoning §7.2 step 1, the chat_ambient slot must
+    render through the new aggregate-only ChatAmbientWard, NOT the
+    legacy ChatKeywordLegendCairoSource keyword legend. Pinning the
+    binding prevents a silent regression to the legacy class.
+    """
+    from agents.studio_compositor.cairo_sources import get_cairo_source_class
+
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+
+    chat_ambient = next(
+        (s for s in layout.sources if s.id == "chat_ambient"),
+        None,
+    )
+    assert chat_ambient is not None, "chat_ambient source missing from default.json"
+    assert chat_ambient.backend == "cairo"
+    class_name = chat_ambient.params.get("class_name")
+    assert class_name == "ChatAmbientWard", (
+        f"chat_ambient must bind to ChatAmbientWard (HOMAGE B5); got {class_name!r}"
+    )
+    cls = get_cairo_source_class(class_name)
+    assert cls is not None
+    assert cls.__name__ == "ChatAmbientWard"
+
+
 # ---------------------------------------------------------------------------
 # Phase D task 13 — load_layout_or_fallback
 # ---------------------------------------------------------------------------

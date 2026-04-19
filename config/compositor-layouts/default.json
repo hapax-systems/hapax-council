@@ -104,7 +104,7 @@
       "kind": "cairo",
       "backend": "cairo",
       "params": {
-        "class_name": "ChatKeywordLegendCairoSource",
+        "class_name": "ChatAmbientWard",
         "natural_w": 560,
         "natural_h": 40
       },
