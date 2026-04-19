@@ -28,9 +28,18 @@ authority. Update :data:`FAMILY_PRESETS` to reflect taste evolution.
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 from pathlib import Path
+from random import Random
+from typing import Any
+
+from agents.studio_compositor.preset_mutator import (
+    DEFAULT_VARIANCE,
+    mutate_preset,
+    variety_enabled,
+)
 
 log = logging.getLogger(__name__)
 
@@ -166,9 +175,69 @@ def reset_memory() -> None:
     _LAST_PICK.clear()
 
 
+def pick_and_load_mutated(
+    family: str,
+    *,
+    available: list[str] | None = None,
+    last: str | None = None,
+    seed: int | None = None,
+    variance: float = DEFAULT_VARIANCE,
+    mutate: bool | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Pick a preset from ``family``, load its JSON, and (optionally) mutate.
+
+    Thin wrapper tying :func:`pick_from_family` to the Phase 1 parametric
+    mutator (see ``preset_mutator.py``). The director path calls this
+    to get a ready-to-write graph in one hop:
+
+    .. code-block:: python
+
+        hit = pick_and_load_mutated("calm-textural", seed=stance_tick)
+        if hit is not None:
+            preset_name, graph = hit
+            write_graph_mutation(graph)
+
+    Parameters
+    ----------
+    family, available, last
+        Forwarded verbatim to :func:`pick_from_family`.
+    seed
+        Deterministic RNG seed — typically the stance tick index. Same
+        ``(preset_name, seed)`` produces the same mutated graph.
+    variance
+        Jitter fraction; default 0.15 per spec §3.
+    mutate
+        Force mutation on (``True``) or off (``False``). When ``None``
+        (the default), respects the ``HAPAX_PRESET_VARIETY_ACTIVE``
+        feature flag (default ON). Tests and the mutation-disabled
+        fallback path pass ``False``.
+
+    Returns
+    -------
+    tuple[str, dict] | None
+        ``(preset_name, graph_dict)`` on success; ``None`` when no
+        candidate is available, the family is unknown, or the preset
+        file is missing on disk.
+    """
+    preset_name = pick_from_family(family, available=available, last=last)
+    if preset_name is None:
+        return None
+    path = PRESET_DIR / f"{preset_name}.json"
+    if not path.exists():
+        log.warning("pick_and_load_mutated: missing preset file for %r", preset_name)
+        return None
+    graph = json.loads(path.read_text())
+    do_mutate = variety_enabled() if mutate is None else mutate
+    if do_mutate:
+        rng = Random(seed) if seed is not None else Random()
+        graph = mutate_preset(graph, rng=rng, variance=variance)
+    return preset_name, graph
+
+
 __all__ = [
     "FAMILY_PRESETS",
     "family_names",
+    "pick_and_load_mutated",
     "pick_from_family",
     "presets_for_family",
     "reset_memory",
