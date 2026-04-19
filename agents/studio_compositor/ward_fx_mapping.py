@@ -1,0 +1,129 @@
+"""Ward ↔ FX routing tables.
+
+HOMAGE Phase 6 Layer 5. Operator-tunable mapping from WardDomain → FX
+preset family + per-ward audio-reactive flag. Data-driven so the
+operator can tune without touching the reactor code.
+
+Two lookups live here:
+
+* :data:`DOMAIN_PRESET_FAMILY` — WardDomain → preset family name. Fed
+  into :mod:`preset_family_selector` when a ward FSM transition event
+  requests a preset shift to "support" the ward's emergence.
+* :data:`WARD_DOMAIN` — ward_id → WardDomain classification. Every
+  ward known to the compositor is classified here. Unknown wards fall
+  back to ``"perception"`` so callers always get a usable domain.
+* :data:`AUDIO_REACTIVE_WARDS` — wards whose rendering should respond
+  to FX ``audio_kick_onset`` / ``intensity_spike`` events with a
+  brightness/shimmer boost. Currently: ``pressure_gauge``,
+  ``hardm_dot_matrix``, ``token_pole``, ``activity_variety_log``.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from shared.ward_fx_bus import WardDomain
+
+PresetFamily = Literal[
+    "audio-reactive",
+    "calm-textural",
+    "glitch-dense",
+    "warm-minimal",
+    "neutral-ambient",
+]
+
+
+# Domain → preset family. The mapping reflects aesthetic temperament:
+#   communication  → textural (conversations warm the frame)
+#   presence       → warm-minimal (attention without distraction)
+#   token          → glitch-dense (tokens flip hard, FX match the snap)
+#   music          → audio-reactive (obvious)
+#   cognition      → calm-textural (slow reflective)
+#   director       → neutral-ambient (intentional silence between moves)
+#   perception     → calm-textural (default ambient register)
+DOMAIN_PRESET_FAMILY: dict[WardDomain, PresetFamily] = {
+    "communication": "calm-textural",
+    "presence": "warm-minimal",
+    "token": "glitch-dense",
+    "music": "audio-reactive",
+    "cognition": "calm-textural",
+    "director": "neutral-ambient",
+    "perception": "calm-textural",
+}
+
+
+# Ward → domain classification. Hand-authored from the current ward
+# inventory: the Cairo sources under ``cairo_sources/``, the FSM wards
+# in ``homage/``, the overlay zones, and the PiP/youtube wards.
+WARD_DOMAIN: dict[str, WardDomain] = {
+    # Communication surface
+    "chat_ambient": "communication",
+    "captions": "communication",
+    "stream_overlay": "communication",
+    "impingement_cascade": "communication",
+    # Presence
+    "whos_here": "presence",
+    "thinking_indicator": "presence",
+    "pressure_gauge": "presence",
+    # Token
+    "token_pole": "token",
+    # Music
+    "album": "music",
+    "vinyl_platter": "music",
+    "hardm_dot_matrix": "music",
+    # Cognition
+    "activity_variety_log": "cognition",
+    "recruitment_candidate_panel": "cognition",
+    "music_candidate_surfacer": "cognition",
+    # Director
+    "objectives_overlay": "director",
+    "scene_director": "director",
+    "structural_director": "director",
+    # Perception
+    "sierpinski": "perception",
+}
+
+
+AUDIO_REACTIVE_WARDS: frozenset[str] = frozenset(
+    {
+        "pressure_gauge",
+        "hardm_dot_matrix",
+        "token_pole",
+        "activity_variety_log",
+        "vinyl_platter",
+    }
+)
+"""Wards whose render responds to FX audio signals (kick onsets,
+intensity spikes). The reactor modulates these via the ward_properties
+SHM path (``scale_bump_pct`` / ``border_pulse_hz``) so the ward renders
+the beat without hard-coding audio state in every Cairo source."""
+
+
+def domain_for_ward(ward_id: str) -> WardDomain:
+    """Return the classified domain for ``ward_id``.
+
+    Unknown wards default to ``"perception"`` — a safe, low-energy
+    classification that keeps FX modulation in the calm-textural family.
+    """
+    return WARD_DOMAIN.get(ward_id, "perception")
+
+
+def preset_family_for_domain(domain: WardDomain) -> PresetFamily:
+    """Return the preset family biased for ``domain``. Total function."""
+    return DOMAIN_PRESET_FAMILY.get(domain, "neutral-ambient")
+
+
+def is_audio_reactive(ward_id: str) -> bool:
+    """True when the ward participates in FX audio-reactive modulation."""
+    return ward_id in AUDIO_REACTIVE_WARDS
+
+
+__all__ = [
+    "AUDIO_REACTIVE_WARDS",
+    "DOMAIN_PRESET_FAMILY",
+    "PresetFamily",
+    "WARD_DOMAIN",
+    "domain_for_ward",
+    "is_audio_reactive",
+    "preset_family_for_domain",
+]

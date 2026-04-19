@@ -149,6 +149,14 @@ COMP_FX_PASSTHROUGH_SLOTS: Any = None
 # was set. Increments from ``fx_chain.pip_draw_from_layout`` whenever the
 # effective clamp ceiling (0.6) would lower the requested opacity.
 COMP_NONDESTRUCTIVE_CLAMPS_TOTAL: Any = None
+# HOMAGE Phase 6 Layer 5 — ward↔FX bidirectional coupling counters.
+# Incremented by ``shared.ward_fx_bus`` on every publish (ward-side or
+# fx-side) so Grafana can plot the rate of bidirectional traffic,
+# per-ward and per-preset-family. Companion latency histogram observes
+# the transition→response delta so we can alert when coupling falls
+# behind the single-frame budget.
+HAPAX_WARD_FX_EVENTS_TOTAL: Any = None
+HAPAX_WARD_FX_LATENCY_SECONDS: Any = None
 # Task #136 — follow-mode cut counter. Incremented from
 # ``state.py``'s hero-override consumer when follow-mode drives the
 # hero-camera selection (no manual override present). Labelled by
@@ -638,6 +646,29 @@ def _init_metrics() -> None:
         "hapax_director_degraded_holds_total",
         "Director ticks where DEGRADED mode caused the LLM call to be "
         "skipped in favor of a silence-hold fallback intent.",
+        registry=REGISTRY,
+    )
+
+    # HOMAGE Phase 6 Layer 5 — ward↔FX bidirectional events.
+    # ``direction`` ∈ {``ward``, ``fx``}. ``kind`` is the transition (ward
+    # side) or FXEventKind (fx side). ``ward_id`` is populated for ward
+    # publishes and empty for fx. ``preset_family`` is populated only on
+    # fx ``preset_family_change`` events. Cardinality is bounded by the
+    # small ward registry + 4 FXEventKinds + 5 preset families.
+    global HAPAX_WARD_FX_EVENTS_TOTAL
+    HAPAX_WARD_FX_EVENTS_TOTAL = Counter(
+        "hapax_ward_fx_events_total",
+        "Ward↔FX bidirectional coupling events published on the shared bus.",
+        ["direction", "kind", "ward_id", "preset_family"],
+        registry=REGISTRY,
+    )
+    global HAPAX_WARD_FX_LATENCY_SECONDS
+    HAPAX_WARD_FX_LATENCY_SECONDS = Histogram(
+        "hapax_ward_fx_latency_seconds",
+        "Delta between ward↔FX event timestamp and the reactor's response "
+        "handler completing its SHM writes.",
+        ["direction"],
+        buckets=(0.001, 0.002, 0.005, 0.010, 0.020, 0.050, 0.100, 0.200, 0.500, 1.0),
         registry=REGISTRY,
     )
 
