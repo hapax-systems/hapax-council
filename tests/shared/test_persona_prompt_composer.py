@@ -156,3 +156,52 @@ class TestCaching:
         # Just ensure no exception; content is the same file so same string
         second = composer.compose_persona_prompt()
         assert first == second
+
+
+class TestRoleIsNotSurfacing:
+    """Anti-personification linter Stage 3: ``role_is_not`` and
+    ``role_scope_line`` surface the ``is_not:`` field from the role
+    registry to prompt assemblers."""
+
+    def test_role_is_not_returns_tuple_for_institutional_role(self):
+        composer.reset_role_registry_cache_for_testing()
+        entries = composer.role_is_not("executive-function-assistant")
+        assert isinstance(entries, tuple)
+        assert len(entries) > 0
+        # Spot-check the verbatim entries from the registry.
+        assert "therapist" in entries
+
+    def test_role_is_not_returns_tuple_for_relational_role(self):
+        composer.reset_role_registry_cache_for_testing()
+        entries = composer.role_is_not("partner-in-conversation")
+        assert "confidant" in entries
+
+    def test_role_is_not_empty_for_unknown_role(self):
+        composer.reset_role_registry_cache_for_testing()
+        assert composer.role_is_not("not-a-real-role") == ()
+
+    def test_role_is_not_empty_for_empty_arg(self):
+        composer.reset_role_registry_cache_for_testing()
+        assert composer.role_is_not("") == ()
+
+    def test_role_is_not_empty_for_structural_role(self):
+        """Structural roles may omit ``is_not:`` per design. The current
+        registry omits it for both; this test documents the exemption."""
+        composer.reset_role_registry_cache_for_testing()
+        # Both structural roles omit is_not today.
+        assert composer.role_is_not("executive-function-substrate") == ()
+
+    def test_role_scope_line_formats_institutional_role(self):
+        composer.reset_role_registry_cache_for_testing()
+        line = composer.role_scope_line("livestream-host")
+        assert line.startswith("Scope: this role is NOT ")
+        assert line.endswith(".")
+        assert "personality-entertainer" in line
+
+    def test_role_scope_line_empty_for_unknown_role(self):
+        composer.reset_role_registry_cache_for_testing()
+        assert composer.role_scope_line("not-a-real-role") == ""
+
+    def test_role_scope_line_empty_for_structural_role(self):
+        composer.reset_role_registry_cache_for_testing()
+        assert composer.role_scope_line("executive-function-substrate") == ""
