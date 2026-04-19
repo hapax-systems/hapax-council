@@ -35,7 +35,14 @@ logging.basicConfig(
 )
 log = logging.getLogger("hapax-ir-edge")
 
-DEFAULT_WORKSTATION = "http://192.168.68.83:8051"
+# Task #182 fix (2026-04-20): use the mDNS hostname instead of a
+# hardcoded LAN IP so DHCP shuffles don't silence the fleet. The
+# council advertises itself on wlan0 as `hapax-podium-2.local` via
+# avahi (``systemctl status avahi-daemon`` on the council confirms).
+# The `-2` suffix is auto-assigned because another device on the LAN
+# claims the unsuffixed `hapax-podium.local`; use the suffixed form
+# that avahi actually publishes for us.
+DEFAULT_WORKSTATION = "http://hapax-podium-2.local:8051"
 DEFAULT_CAPTURE_SIZE = (1920, 1080)
 MOTION_THRESHOLD = 0.01
 MOTION_TIMEOUT_S = 30.0
