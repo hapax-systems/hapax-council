@@ -318,12 +318,25 @@ class AlbumOverlayCairoSource(HomageTransitionalSource):
             mtime = os.path.getmtime(COVER_PATH)
         except OSError:
             return
-        if mtime == self._surface_mtime:
+        # Wiring-audit smoking gun #1: prior version cached mtime
+        # unconditionally, including when the load returned None (file
+        # mid-write, transient PIL failure, etc). Subsequent ticks then
+        # early-returned because `mtime == self._surface_mtime`, leaving
+        # the cover permanently None until the file mtime changed again.
+        # Fix: skip only when mtime matches AND the surface actually
+        # loaded successfully. If prior load produced None, keep retrying
+        # on every tick.
+        if mtime == self._surface_mtime and self._surface is not None:
             return
 
         from .image_loader import get_image_loader
 
-        self._surface = get_image_loader().load(COVER_PATH)
+        loaded = get_image_loader().load(COVER_PATH)
+        if loaded is None:
+            # Don't update mtime cache on failure — we want to retry
+            # next tick with the same file.
+            return
+        self._surface = loaded
         self._surface_mtime = mtime
         if self._surface is not None:
             log.info(
