@@ -80,7 +80,18 @@ class ProductionStream:
         }
         self._shm_writer(signal)
 
-    def produce_t1(self, *, pcm_data: bytes) -> None:
+    def produce_t1(self, *, pcm_data: bytes, destination_target: str | None = None) -> None:
+        """Produce a T1 presynthesised backchannel.
+
+        ``destination_target`` (when supplied) overrides the audio
+        output's default sink for this utterance only. CPAL passes the
+        resolved sink name (``hapax-livestream`` / ``hapax-private``) from
+        ``destination_channel.resolve_target`` so sidechat-origin
+        acknowledgements land on the operator-private channel without
+        disturbing the livestream subprocess. Passing ``None`` preserves
+        legacy behavior — writes flow to the audio output's constructor
+        default.
+        """
         self._producing = True
         self._current_tier = CorrectionTier.T1_PRESYNTHESIZED
         self._interrupted = False
@@ -89,7 +100,7 @@ class ProductionStream:
             if self._audio_output is not None:
                 if self._on_speaking_changed:
                     self._on_speaking_changed(True)
-                self._audio_output.write(pcm_data)
+                self._write_audio(pcm_data, destination_target=destination_target)
         finally:
             if self._on_speaking_changed:
                 self._on_speaking_changed(False)
@@ -98,11 +109,19 @@ class ProductionStream:
                 self._current_tier = None
             _emit_hardm_emphasis("quiescent")
 
-    def produce_t2(self, *, text: str, pcm_data: bytes | None = None) -> None:
+    def produce_t2(
+        self,
+        *,
+        text: str,
+        pcm_data: bytes | None = None,
+        destination_target: str | None = None,
+    ) -> None:
         """Produce T2 lightweight response (echo/rephrase, discourse marker).
 
         If pcm_data is provided, plays it directly. Otherwise logs the text
         (caller is responsible for synthesis).
+
+        ``destination_target`` behaves identically to :meth:`produce_t1`.
         """
         self._producing = True
         self._current_tier = CorrectionTier.T2_LIGHTWEIGHT
@@ -110,13 +129,38 @@ class ProductionStream:
         _emit_hardm_emphasis("speaking")
         try:
             if pcm_data is not None and self._audio_output is not None:
-                self._audio_output.write(pcm_data)
+                self._write_audio(pcm_data, destination_target=destination_target)
             log.info("T2 production: %s", text[:50])
         finally:
             if not self._interrupted:
                 self._producing = False
                 self._current_tier = None
             _emit_hardm_emphasis("quiescent")
+
+    def _write_audio(self, pcm_data: bytes, *, destination_target: str | None) -> None:
+        """Dispatch a PCM write to the audio output, honouring the per-call sink.
+
+        The CPAL audio output is ``PwAudioOutput`` in production, which
+        accepts ``target=`` as a keyword argument. Test doubles (MagicMock)
+        also accept any kwargs without raising, so passing ``target`` is
+        safe universally. If a caller wraps the audio output in a type
+        that doesn't accept ``target``, we fall back to a positional call
+        so legacy paths keep working.
+        """
+        audio = self._audio_output
+        if audio is None:
+            return
+        if destination_target is None:
+            audio.write(pcm_data)
+            return
+        try:
+            audio.write(pcm_data, target=destination_target)
+        except TypeError:
+            log.debug(
+                "audio output does not accept target=; falling back to default sink",
+                exc_info=True,
+            )
+            audio.write(pcm_data)
 
     def mark_t3_start(self) -> None:
         self._producing = True

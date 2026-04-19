@@ -19,6 +19,10 @@ import logging
 import time
 from pathlib import Path
 
+from agents.hapax_daimonion.cpal.destination_channel import (
+    classify_and_record,
+    resolve_target,
+)
 from agents.hapax_daimonion.cpal.evaluator import CpalEvaluator
 from agents.hapax_daimonion.cpal.formulation_stream import FormulationStream
 from agents.hapax_daimonion.cpal.grounding_bridge import GroundingBridge
@@ -507,6 +511,14 @@ class CpalRunner:
 
         if effect.should_surface:
             log.info("CPAL: impingement surfacing: %s", effect.narrative[:60])
+            # Classify destination BEFORE T0 so both signals (visual and
+            # audio) follow the same routing decision, and so the counter
+            # increments even when T3 ultimately fails. Classification
+            # plus INFO log never touch narrative text — only source tag.
+            register = self._register_bridge.current_register()
+            destination = classify_and_record(impingement, voice_register=register)
+            destination_target = resolve_target(destination)
+
             # T0 visual signal
             self._production.produce_t0(
                 signal_type="impingement_alert",
@@ -521,7 +533,6 @@ class CpalRunner:
                 # before synthesis. Only TEXTMODE carries a non-trivial
                 # hint today (spec §4.8 — ANNOUNCING and CONVERSING are
                 # handled by the persona's baseline prompt).
-                register = self._register_bridge.current_register()
                 register_hint: str | None = (
                     textmode_prompt_prefix() if register == VoiceRegister.TEXTMODE else None
                 )
@@ -529,18 +540,27 @@ class CpalRunner:
                     await self._pipeline.generate_spontaneous_speech(
                         impingement,
                         register_hint=register_hint,
+                        destination_target=destination_target,
                     )
                 except TypeError:
-                    # Older pipelines without the kwarg — fall back to
-                    # the legacy signature rather than dropping the
-                    # impingement.
+                    # Older pipelines without one of the new kwargs — fall
+                    # back through progressively so the impingement is
+                    # never dropped when the signature shifts.
                     log.debug(
-                        "generate_spontaneous_speech lacks register_hint; "
-                        "falling back to positional signature",
+                        "generate_spontaneous_speech rejected kwarg; "
+                        "retrying with narrower signature",
                         exc_info=True,
                     )
                     try:
-                        await self._pipeline.generate_spontaneous_speech(impingement)
+                        await self._pipeline.generate_spontaneous_speech(
+                            impingement,
+                            register_hint=register_hint,
+                        )
+                    except TypeError:
+                        try:
+                            await self._pipeline.generate_spontaneous_speech(impingement)
+                        except Exception:
+                            log.debug("Spontaneous speech failed", exc_info=True)
                     except Exception:
                         log.debug("Spontaneous speech failed", exc_info=True)
                 except Exception:

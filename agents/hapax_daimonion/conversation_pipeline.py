@@ -196,6 +196,7 @@ class ConversationPipeline:
         impingement: object,
         *,
         register_hint: str | None = None,
+        destination_target: str | None = None,
     ) -> None:
         """Generate and speak a spontaneous utterance from an impingement.
 
@@ -209,6 +210,13 @@ class ConversationPipeline:
         TEXTMODE → clipped IRC-style). ``None`` means "use persona
         defaults"; CPAL passes the hint only when the register is not the
         ambient baseline.
+
+        ``destination_target`` is the resolved pw-cat sink name (e.g.
+        ``"hapax-private"``) for this single utterance. CPAL passes the
+        output of ``destination_channel.resolve_target`` here so sidechat
+        replies route to 24c RIGHT without affecting the pipeline's
+        default livestream subprocess. ``None`` preserves legacy routing
+        through the audio output's constructor target.
         """
         if not self._running or self.state == ConvState.SPEAKING:
             return
@@ -273,7 +281,7 @@ class ConversationPipeline:
             text = response.choices[0].message.content.strip()
             if text and "[silence]" not in text.lower():
                 log.info("Spontaneous speech: %s", text[:80])
-                await self._speak_sentence(text)
+                await self._speak_sentence(text, destination_target=destination_target)
             else:
                 log.debug("Cascade recruited speech but LLM chose silence")
         except Exception:
@@ -1718,13 +1726,19 @@ class ConversationPipeline:
 
         self._last_user_topic = lower
 
-    async def _speak_sentence(self, text: str) -> None:
+    async def _speak_sentence(self, text: str, *, destination_target: str | None = None) -> None:
         """Synthesize and play a single sentence/clause.
 
         TTS runs in _tts_executor, audio write runs in _audio_executor.
         Both are single-threaded so clauses play in order, but the async
         loop resumes immediately after synthesis — tokens keep streaming
         from the LLM while audio plays.
+
+        ``destination_target`` (optional) passes a per-utterance pw-cat
+        sink override down to :meth:`_write_audio`. Callers that don't
+        route destination-specifically (conversation turns, bridge
+        phrases, error messages) omit it and fall through to the audio
+        output's default sink.
         """
         if not self._running:
             return
@@ -1780,23 +1794,46 @@ class ConversationPipeline:
                     ao,
                     ec,
                     pcm,
+                    destination_target,
                 )
         except Exception:
             log.debug("TTS/playback failed for: %s", text[:50], exc_info=True)
 
     @staticmethod
-    def _write_audio(audio_output, echo_canceller, pcm: bytes) -> None:
+    def _write_audio(
+        audio_output,
+        echo_canceller,
+        pcm: bytes,
+        destination_target: str | None = None,
+    ) -> None:
         """Write PCM to audio output and feed AEC reference. Runs in _audio_executor.
 
         Reference is fed BEFORE playback so the canceller has the expected
         signal queued when the echo arrives at the microphone (~5-20ms later).
+
+        ``destination_target`` overrides the audio output's default sink
+        for this write only. Used by the sidechat-reply path to route
+        private replies to ``hapax-private`` (24c RIGHT). Writes that do
+        not pass a target remain on the default livestream subprocess.
         """
         try:
             if echo_canceller:
                 echo_canceller.feed_reference(pcm)
             else:
                 log.debug("_write_audio: echo_canceller is None!")
-            audio_output.write(pcm)
+            if destination_target is None:
+                audio_output.write(pcm)
+                return
+            try:
+                audio_output.write(pcm, target=destination_target)
+            except TypeError:
+                # Older audio-output shim that doesn't accept target=;
+                # fall through to the default sink rather than dropping.
+                log.debug(
+                    "audio output lacks target= kwarg; falling back to default sink",
+                    exc_info=True,
+                )
+                audio_output.write(pcm)
         except Exception:
             pass
 
