@@ -43,7 +43,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from agents.studio_compositor.cairo_source import CairoSource
+from agents.studio_compositor.homage.transitional_source import (
+    HomageTransitionalSource,
+    TransitionState,
+)
 from shared.research_marker import MarkerState, read_marker
 
 if TYPE_CHECKING:
@@ -74,8 +77,15 @@ CONDITION_FONT_SIZE_RATIO = 0.065
 reviewer can read the id from a scrubbed frame."""
 
 
-class ResearchMarkerFrameSource(CairoSource):
-    """CairoSource that renders a 3s banner on research-condition transitions.
+class ResearchMarkerFrameSource(HomageTransitionalSource):
+    """HOMAGE Phase 11c-batch-3 — 3s research-condition banner ward.
+
+    Renders a high-opacity fullscreen banner announcing the new
+    ``condition_id`` for ~3 seconds after a research-marker transition,
+    then renders transparent until the next change. Migrated to inherit
+    :class:`HomageTransitionalSource` so the banner participates in the
+    FSM — the banner is ward-scope content (a text overlay), not chrome,
+    and should honour package grammar once ``HAPAX_HOMAGE_ACTIVE=1``.
 
     Internal state:
         ``_last_epoch`` — the most recent epoch observed from the marker.
@@ -88,6 +98,15 @@ class ResearchMarkerFrameSource(CairoSource):
     """
 
     def __init__(self) -> None:
+        # Banner is conditional content (active only for 3s after a
+        # research-marker transition). ``HOLD`` is the natural initial
+        # state because render_content is self-gating via the banner
+        # visibility window — the choreographer doesn't need to toggle
+        # the banner in/out, it just applies package grammar if active.
+        super().__init__(
+            source_id="research_marker_frame",
+            initial_state=TransitionState.HOLD,
+        )
         self._last_epoch: int | None = None
         self._banner_start_t: float | None = None
         self._banner_condition_id: str | None = None
@@ -135,7 +154,7 @@ class ResearchMarkerFrameSource(CairoSource):
         elapsed = current_t - self._banner_start_t
         return 0 <= elapsed < BANNER_VISIBLE_SECONDS
 
-    def render(
+    def render_content(
         self,
         cr: cairo.Context,
         canvas_w: int,
