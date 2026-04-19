@@ -50,6 +50,12 @@ log = logging.getLogger(__name__)
 _PENDING_TRANSITIONS: Path = Path("/dev/shm/hapax-compositor/homage-pending-transitions.json")
 _UNIFORMS_JSON: Path = Path("/dev/shm/hapax-imagination/uniforms.json")
 _SUBSTRATE_PACKAGE_FILE: Path = Path("/dev/shm/hapax-compositor/homage-substrate-package.json")
+# Phase 7 (task #113): voice register file. Read by
+# ``agents.hapax_daimonion.cpal.register_bridge`` before each TTS
+# emission. Choreographer writes on every package swap — including the
+# consent-safe variant swap, so the register stays stable even when the
+# palette goes grey (BitchX consent-safe still declares TEXTMODE).
+_VOICE_REGISTER_FILE: Path = Path("/dev/shm/hapax-compositor/homage-voice-register.json")
 # Phase 12: the consent-live-egress guard writes this file when it flips
 # the compositor into consent-safe layout. The choreographer reads it
 # every reconcile tick and, when present, swaps the active package for
@@ -168,6 +174,7 @@ class Choreographer:
         shader_reading_file: Path = SHADER_READING_PATH,
         substrate_package_file: Path = _SUBSTRATE_PACKAGE_FILE,
         consent_safe_flag_file: Path = _CONSENT_SAFE_FLAG_FILE,
+        voice_register_file: Path = _VOICE_REGISTER_FILE,
         source_registry: object | None = None,
         rng: random.Random | None = None,
     ) -> None:
@@ -176,6 +183,7 @@ class Choreographer:
         self._shader_reading_file = shader_reading_file
         self._substrate_package_file = substrate_package_file
         self._consent_safe_flag_file = consent_safe_flag_file
+        self._voice_register_file = voice_register_file
         # Optional SourceRegistry handle (duck-typed). When provided, the
         # choreographer cross-checks registered backend instances against
         # ``HomageSubstrateSource`` so per-instance substrate declarations
@@ -277,6 +285,12 @@ class Choreographer:
         # even on empty plans — so Reverie picks up hue shifts on every
         # package swap without needing a transition to be scheduled.
         self.broadcast_package_to_substrates(package, substrate_ids=substrate_ids)
+
+        # Phase 7 (task #113): voice-register broadcast to CPAL. Runs
+        # every tick — the consumer's staleness check refuses a file
+        # older than 2s, so silence from here means "choreographer died,
+        # fall back to DEFAULT_REGISTER". Rewriting is cheap.
+        self._broadcast_voice_register(package, now=clock)
 
         planned: list[PlannedTransition] = []
         rejections: list[Rejection] = []
@@ -669,6 +683,40 @@ class Choreographer:
             self._last_package_broadcast = package.name
         except Exception:
             log.debug("failed to broadcast homage substrate package", exc_info=True)
+
+    # ── Phase 7: voice-register publish ─────────────────────────────────
+
+    def _broadcast_voice_register(self, package: HomagePackage, *, now: float) -> None:
+        """Write the active package's voice register to SHM for CPAL.
+
+        Atomic tmp+rename. Co-located with other HOMAGE compositor state
+        so a single ``/dev/shm/hapax-compositor/`` wipe resets both sides
+        of the wire at once. Best-effort: a failure here is non-fatal —
+        CPAL's bridge falls back to the default register when the file
+        is missing or stale.
+
+        Payload:
+          * ``register``: enum value (``announcing`` / ``conversing`` /
+            ``textmode``).
+          * ``package``: source package name for observability / replay.
+          * ``updated_at``: monotonic clock captured by the caller. The
+            bridge uses wall-clock mtime for staleness because monotonic
+            clocks aren't comparable across processes, so this is
+            diagnostic only.
+        """
+        try:
+            target = self._voice_register_file.parent
+            target.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "register": package.voice_register_default.value,
+                "package": package.name,
+                "updated_at": now,
+            }
+            tmp = self._voice_register_file.with_suffix(self._voice_register_file.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.replace(self._voice_register_file)
+        except Exception:
+            log.debug("failed to publish voice register", exc_info=True)
 
 
 __all__ = [

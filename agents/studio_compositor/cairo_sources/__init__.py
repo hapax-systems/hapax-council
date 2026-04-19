@@ -71,6 +71,12 @@ def list_classes() -> list[str]:
 def _register_builtins() -> None:
     from agents.studio_compositor.album_overlay import AlbumOverlayCairoSource
     from agents.studio_compositor.captions_source import CaptionsCairoSource
+
+    # HOMAGE follow-on #123 (2026-04-18) — ChatAmbientWard replaces the
+    # static ChatKeywordLegendCairoSource with a dynamic, aggregate-only
+    # BitchX-grammar chat surface. The legacy class is deliberately
+    # NOT imported here — its registration is removed below.
+    from agents.studio_compositor.chat_ambient_ward import ChatAmbientWard
     from agents.studio_compositor.hardm_source import HardmDotMatrix
     from agents.studio_compositor.hothouse_sources import (
         ActivityVarietyLogCairoSource,
@@ -82,7 +88,6 @@ def _register_builtins() -> None:
     )
     from agents.studio_compositor.legibility_sources import (
         ActivityHeaderCairoSource,
-        ChatKeywordLegendCairoSource,
         GroundingProvenanceTickerCairoSource,
         StanceIndicatorCairoSource,
     )
@@ -102,7 +107,12 @@ def _register_builtins() -> None:
     # Make the directorial intent visible to viewers on every frame.
     register("ActivityHeaderCairoSource", ActivityHeaderCairoSource)
     register("StanceIndicatorCairoSource", StanceIndicatorCairoSource)
-    register("ChatKeywordLegendCairoSource", ChatKeywordLegendCairoSource)
+    # HOMAGE follow-on #123 (2026-04-18) — ChatAmbientWard is the
+    # dynamic, aggregate-only replacement for the static
+    # ChatKeywordLegendCairoSource. The legacy registration is removed;
+    # the legacy class remains in legibility_sources.py until Phase 11
+    # back-compat sweep, but is no longer reachable from a Layout JSON.
+    register("ChatAmbientWard", ChatAmbientWard)
     register(
         "GroundingProvenanceTickerCairoSource",
         GroundingProvenanceTickerCairoSource,

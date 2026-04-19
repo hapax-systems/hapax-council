@@ -128,6 +128,7 @@ COMP_GLFEEDBACK_ACCUM_CLEAR_TOTAL: Any = None
 # in this call (``has_faces=true|false``). Runs on the capture-branch
 # appsink thread — prometheus_client Counter is thread-safe.
 HAPAX_FACE_OBSCURE_FRAME_TOTAL: Any = None
+HAPAX_FACE_OBSCURE_ERRORS_TOTAL: Any = None
 # Drop #41 BT-5 + drop #52 FDL-2/3/4 observability triple: surface the
 # compositor's fd count, per-camera rebuild count, and per-stop teardown
 # duration as scrape-visible metrics so future regressions in the
@@ -346,6 +347,20 @@ def _init_metrics() -> None:
         "Frames passed through the capture-time face obscure stage, "
         "labelled by camera role and whether any faces were obscured.",
         ["camera_role", "has_faces"],
+        registry=REGISTRY,
+    )
+    global HAPAX_FACE_OBSCURE_ERRORS_TOTAL
+    HAPAX_FACE_OBSCURE_ERRORS_TOTAL = Counter(
+        # Beta audit F-AUDIT-1061-2 (2026-04-19): separate error counter from
+        # the frame counter so Grafana can distinguish a quiet camera (no
+        # faces) from a broken pipeline (exception) vs a disabled flag. The
+        # fail-closed full-frame mask from F-AUDIT-1061-1 means every increment
+        # here corresponds to a frame that WAS egressed as full-grey, never
+        # raw.
+        "hapax_face_obscure_errors_total",
+        "Face-obscure pipeline exceptions, per camera role + exception class. "
+        "Every increment corresponds to a fail-closed full-frame mask egressed.",
+        ["camera_role", "exception_class"],
         registry=REGISTRY,
     )
 
@@ -878,6 +893,24 @@ def record_face_obscure_frame(camera_role: str, has_faces: bool) -> None:
     HAPAX_FACE_OBSCURE_FRAME_TOTAL.labels(
         camera_role=camera_role,
         has_faces="true" if has_faces else "false",
+    ).inc()
+
+
+def record_face_obscure_error(camera_role: str, exception_class: str) -> None:
+    """Record a fail-closed face-obscure error (beta audit F-AUDIT-1061-2).
+
+    Called from the exception handler in
+    ``face_obscure_integration.obscure_frame_for_camera`` when the SCRFD/
+    Kalman/OpenCV pipeline raises. Every increment corresponds to a fail-
+    closed full-frame Gruvbox-dark mask egressed — NEVER a raw frame. Grafana
+    should alert on non-zero rate: privacy-critical surfaces must not have
+    a silent broken pipeline. No-op if prometheus_client is unavailable.
+    """
+    if HAPAX_FACE_OBSCURE_ERRORS_TOTAL is None:
+        return
+    HAPAX_FACE_OBSCURE_ERRORS_TOTAL.labels(
+        camera_role=camera_role,
+        exception_class=exception_class,
     ).inc()
 
 

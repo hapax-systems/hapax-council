@@ -25,10 +25,15 @@ from agents.hapax_daimonion.cpal.grounding_bridge import GroundingBridge
 from agents.hapax_daimonion.cpal.impingement_adapter import ImpingementAdapter
 from agents.hapax_daimonion.cpal.perception_stream import PerceptionStream
 from agents.hapax_daimonion.cpal.production_stream import ProductionStream
+from agents.hapax_daimonion.cpal.register_bridge import (
+    VoiceRegisterBridge,
+    textmode_prompt_prefix,
+)
 from agents.hapax_daimonion.cpal.shm_publisher import publish_cpal_state
 from agents.hapax_daimonion.cpal.signal_cache import SignalCache
 from agents.hapax_daimonion.cpal.tier_composer import TierComposer
 from agents.hapax_daimonion.cpal.types import ConversationalRegion, CorrectionTier, GainUpdate
+from shared.voice_register import VoiceRegister
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +81,9 @@ class CpalRunner:
         self._impingement_adapter = ImpingementAdapter()
         self._tier_composer = TierComposer()
         self._signal_cache = SignalCache()
+        # HOMAGE Phase 7 — voice register bridge. Single instance per runner
+        # so the 250ms read-cache is shared across every TTS emission path.
+        self._register_bridge = VoiceRegisterBridge()
 
         # External components
         self._buffer = buffer
@@ -111,6 +119,17 @@ class CpalRunner:
     @property
     def signal_cache(self) -> SignalCache:
         return self._signal_cache
+
+    @property
+    def current_register(self) -> VoiceRegister:
+        """Active voice register published by the HOMAGE choreographer.
+
+        Read-only view for external consumers (tests, the conversation
+        pipeline's spontaneous-speech framing). Falls back to the default
+        register when no HOMAGE package has published, or the file is
+        stale — see ``VoiceRegisterBridge`` for the fail-open contract.
+        """
+        return self._register_bridge.current_register()
 
     def set_pipeline(self, pipeline: object) -> None:
         """Set the conversation pipeline for T3 delegation. Called after pipeline creation."""
@@ -497,8 +516,33 @@ class CpalRunner:
             if self._pipeline is not None and hasattr(
                 self._pipeline, "generate_spontaneous_speech"
             ):
+                # HOMAGE Phase 7: pass the active register's framing
+                # directive to the pipeline so the LLM tunes tonality
+                # before synthesis. Only TEXTMODE carries a non-trivial
+                # hint today (spec §4.8 — ANNOUNCING and CONVERSING are
+                # handled by the persona's baseline prompt).
+                register = self._register_bridge.current_register()
+                register_hint: str | None = (
+                    textmode_prompt_prefix() if register == VoiceRegister.TEXTMODE else None
+                )
                 try:
-                    await self._pipeline.generate_spontaneous_speech(impingement)
+                    await self._pipeline.generate_spontaneous_speech(
+                        impingement,
+                        register_hint=register_hint,
+                    )
+                except TypeError:
+                    # Older pipelines without the kwarg — fall back to
+                    # the legacy signature rather than dropping the
+                    # impingement.
+                    log.debug(
+                        "generate_spontaneous_speech lacks register_hint; "
+                        "falling back to positional signature",
+                        exc_info=True,
+                    )
+                    try:
+                        await self._pipeline.generate_spontaneous_speech(impingement)
+                    except Exception:
+                        log.debug("Spontaneous speech failed", exc_info=True)
                 except Exception:
                     log.debug("Spontaneous speech failed", exc_info=True)
                 finally:

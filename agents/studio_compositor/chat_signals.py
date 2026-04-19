@@ -41,6 +41,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Final
 
+from agents.studio_compositor.chat_classifier import ChatTier
 from agents.studio_compositor.chat_queues import ChatMessage, StructuralSignalQueue
 
 __all__ = [
@@ -56,7 +57,16 @@ DEFAULT_CHAT_SIGNALS_PATH: Final = Path("/dev/shm/hapax-chat-signals.json")
 
 @dataclass(frozen=True)
 class ChatSignals:
-    """Structural aggregate signals emitted per window tick."""
+    """Structural aggregate signals emitted per window tick.
+
+    Task #123 (Chat Ambient Ward, 2026-04-18) extends this with four
+    tier-disaggregated fields — ``t4_plus_rate_per_min``,
+    ``unique_t4_plus_authors_60s``, ``t5_rate_per_min``,
+    ``t6_rate_per_min``. All four are **pure aggregates** derived from
+    the classifier tier labels already on ``ChatMessage.classification``
+    (no new per-author state, no message-body storage). They feed the
+    BitchX-grammar chat-ambient ward in the compositor chrome band.
+    """
 
     window_seconds: float
     window_end_ts: float
@@ -67,6 +77,11 @@ class ChatSignals:
     chat_novelty: float
     high_value_queue_depth: int
     audience_engagement: float
+    # Task #123 — ChatAmbientWard inputs (aggregate only, no identity leak).
+    t4_plus_rate_per_min: float = 0.0
+    unique_t4_plus_authors_60s: int = 0
+    t5_rate_per_min: float = 0.0
+    t6_rate_per_min: float = 0.0
 
 
 def _sigmoid(x: float) -> float:
@@ -163,6 +178,16 @@ class ChatSignalsAggregator:
     Not a daemon in itself. The caller drives ``compute_signals`` on a
     ~30s cadence and optionally invokes ``write_shm`` to publish. Keeping
     the timer external means this module is trivially testable.
+
+    Task #123 (Chat Ambient Ward, 2026-04-18): the aggregator also
+    accumulates per-tier timestamped events via
+    :meth:`record_classification`. The caller invokes this once per
+    classified chat message; the aggregator stores only
+    ``(ts, tier, author_hash)`` tuples — no text, no raw author handle —
+    and prunes to a rolling window on every read. The resulting
+    ``t4_plus_rate_per_min``/``unique_t4_plus_authors_60s``/
+    ``t5_rate_per_min``/``t6_rate_per_min`` fields feed the
+    :class:`ChatAmbientWard` BitchX-grammar ambient chrome row.
     """
 
     def __init__(
@@ -170,13 +195,66 @@ class ChatSignalsAggregator:
         queue: StructuralSignalQueue,
         *,
         output_path: Path | None = None,
+        tier_window_seconds: float = 60.0,
     ) -> None:
         self._queue = queue
         self._output_path = output_path or DEFAULT_CHAT_SIGNALS_PATH
+        self._tier_window_seconds = tier_window_seconds
+        # Each entry: (ts, tier_int, short_author_hash). No text, no raw handle.
+        self._tier_events: list[tuple[float, int, str]] = []
 
     @property
     def output_path(self) -> Path:
         return self._output_path
+
+    def record_classification(
+        self,
+        *,
+        ts: float,
+        tier: ChatTier,
+        author_handle: str,
+    ) -> None:
+        """Record a single classification for tier-disaggregated aggregates.
+
+        The aggregator immediately hashes ``author_handle`` (sha256, first
+        16 hex chars — same discipline as existing author counting) and
+        discards the raw handle. Message text is never accepted.
+        """
+        digest = hashlib.sha256(author_handle.encode("utf-8")).hexdigest()[:16]
+        self._tier_events.append((ts, int(tier), digest))
+
+    def _prune_tier_events(self, *, now: float) -> None:
+        cutoff = now - self._tier_window_seconds
+        # Small window + small arrival rates → list comprehension is fine.
+        self._tier_events = [evt for evt in self._tier_events if evt[0] >= cutoff]
+
+    def _tier_aggregates(self, *, now: float) -> tuple[float, int, float, float]:
+        """Return (t4_plus_rate_per_min, unique_t4_plus_authors_60s, t5_rate_per_min, t6_rate_per_min)."""
+        self._prune_tier_events(now=now)
+        if self._tier_window_seconds <= 0:
+            return 0.0, 0, 0.0, 0.0
+        t4_plus_count = 0
+        t5_count = 0
+        t6_count = 0
+        t4_plus_hashes: set[str] = set()
+        t4_int = int(ChatTier.T4_STRUCTURAL_SIGNAL)
+        t5_int = int(ChatTier.T5_RESEARCH_RELEVANT)
+        t6_int = int(ChatTier.T6_HIGH_VALUE)
+        for _ts, tier_int, author_hash in self._tier_events:
+            if tier_int >= t4_int:
+                t4_plus_count += 1
+                t4_plus_hashes.add(author_hash)
+            if tier_int == t5_int:
+                t5_count += 1
+            elif tier_int == t6_int:
+                t6_count += 1
+        scale = 60.0 / self._tier_window_seconds
+        return (
+            t4_plus_count * scale,
+            len(t4_plus_hashes),
+            t5_count * scale,
+            t6_count * scale,
+        )
 
     def compute_signals(
         self,
@@ -199,6 +277,7 @@ class ChatSignalsAggregator:
             unique_authors_60s=unique_authors,
             high_value_queue_depth=high_value_queue_depth,
         )
+        t4p_rate, t4p_unique, t5_rate, t6_rate = self._tier_aggregates(now=now)
         return ChatSignals(
             window_seconds=window_seconds,
             window_end_ts=now,
@@ -209,6 +288,10 @@ class ChatSignalsAggregator:
             chat_novelty=round(novelty, 4),
             high_value_queue_depth=high_value_queue_depth,
             audience_engagement=round(engagement, 4),
+            t4_plus_rate_per_min=round(t4p_rate, 3),
+            unique_t4_plus_authors_60s=t4p_unique,
+            t5_rate_per_min=round(t5_rate, 3),
+            t6_rate_per_min=round(t6_rate, 3),
         )
 
     def write_shm(self, signals: ChatSignals) -> None:

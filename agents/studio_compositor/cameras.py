@@ -100,11 +100,19 @@ def add_camera_snapshot_branch(
             try:
                 frame = obscure_frame_for_camera(frame, snap_role)
             except Exception as exc:  # noqa: BLE001 — never crash the pipeline
-                log.warning(
-                    "face obscure raised for %s: %s; writing raw frame",
+                # FAIL-CLOSED per beta audit F-AUDIT-1061-1 (2026-04-19):
+                # obscure_frame_for_camera fails closed internally, but this
+                # outer catch covers import errors + numpy-side failures.
+                # Overwrite with solid Gruvbox-dark (BGR 40,40,40) so the JPEG
+                # below cannot possibly leak un-obscured pixels.
+                log.exception(
+                    "face obscure raised outside integration wrapper for %s "
+                    "(%s) — failing closed to full-frame mask",
                     snap_role,
-                    exc,
+                    type(exc).__name__,
                 )
+                frame = np.zeros_like(frame)
+                frame[:, :, :] = (40, 40, 40)
             ok_enc, jpeg = cv2.imencode(
                 ".jpg",
                 frame,

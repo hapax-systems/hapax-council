@@ -17,6 +17,12 @@ from agents.hapax_daimonion.cpal.impingement_adapter import ImpingementAdapter, 
 from agents.hapax_daimonion.cpal.loop_gain import LoopGainController
 from agents.hapax_daimonion.cpal.perception_stream import PerceptionSignals, PerceptionStream
 from agents.hapax_daimonion.cpal.production_stream import ProductionStream
+from agents.hapax_daimonion.cpal.register_bridge import (
+    VoiceRegisterBridge,
+    current_register,
+    frame_text_for_register,
+    textmode_prompt_prefix,
+)
 from agents.hapax_daimonion.cpal.runner import CpalRunner
 from agents.hapax_daimonion.cpal.shm_publisher import publish_cpal_state
 from agents.hapax_daimonion.cpal.signal_cache import SignalCache
@@ -54,5 +60,9 @@ __all__ = [
     "ProductionStream",
     "SignalCache",
     "TierComposer",
+    "VoiceRegisterBridge",
+    "current_register",
+    "frame_text_for_register",
     "publish_cpal_state",
+    "textmode_prompt_prefix",
 ]

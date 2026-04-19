@@ -42,13 +42,22 @@ from agents.studio_compositor.face_obscure_pipeline import (
 from shared.face_obscure_policy import FaceObscurePolicy, resolve_policy
 
 try:
-    # Prometheus counter is best-effort; import failure must not break the
+    # Prometheus counters are best-effort; import failure must not break the
     # capture path (e.g. in unit tests that don't import the full metrics
     # surface).
-    from agents.studio_compositor.metrics import record_face_obscure_frame
+    from agents.studio_compositor.metrics import (
+        record_face_obscure_error,
+        record_face_obscure_frame,
+    )
 except Exception:  # pragma: no cover — defensive
 
     def record_face_obscure_frame(camera_role: str, has_faces: bool) -> None:  # noqa: ARG001
+        """No-op fallback when metrics module is unavailable."""
+        return
+
+    def record_face_obscure_error(  # noqa: ARG001
+        camera_role: str, exception_class: str
+    ) -> None:
         """No-op fallback when metrics module is unavailable."""
         return
 
@@ -162,13 +171,32 @@ def obscure_frame_for_camera(
         pipeline = _get_pipeline(camera_role, source_factory=source_factory)
         bboxes = pipeline.step(frame)
     except Exception as exc:  # noqa: BLE001 — capture path must never crash
-        log.warning(
-            "face obscure pipeline raised for camera=%s: %s; passing frame through",
+        # FAIL-CLOSED per beta audit F-AUDIT-1061-1 2026-04-19: if the pipeline
+        # raises, we cannot trust that faces were masked. A privacy-critical
+        # surface must treat "pipeline broken" as "all faces present" — return
+        # a full-frame Gruvbox-dark mask rather than the raw un-obscured frame.
+        # The face-obscure core module provides the same (40,40,40) BGR fill
+        # used by the rect-obscure path, so the failure is visually consistent.
+        import numpy as np
+
+        from .face_obscure import GRUVBOX_DARK_BGR
+
+        exception_class = type(exc).__name__
+        log.exception(
+            "face obscure pipeline raised for camera=%s (%s) — failing closed to full-frame mask",
             camera_role,
-            exc,
+            exception_class,
         )
-        record_face_obscure_frame(camera_role, has_faces=False)
-        return frame
+        record_face_obscure_error(camera_role, exception_class=exception_class)
+        # Build a full-frame fill matching the input shape/dtype.
+        if frame.ndim == 3:
+            fill = np.zeros_like(frame)
+            fill[:, :, 0] = GRUVBOX_DARK_BGR[0]
+            fill[:, :, 1] = GRUVBOX_DARK_BGR[1]
+            fill[:, :, 2] = GRUVBOX_DARK_BGR[2]
+            return fill
+        # Grayscale or other shapes: solid mean-channel fill (fail-closed still).
+        return np.full_like(frame, GRUVBOX_DARK_BGR[0])
 
     filtered = _filter_by_policy(bboxes, policy=policy, operator_flags=None)
     if not filtered:

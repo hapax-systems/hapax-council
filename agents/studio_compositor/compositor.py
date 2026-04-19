@@ -139,14 +139,17 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_h": 40,
             },
         ),
+        # HOMAGE follow-on #123 (2026-04-18) — ChatAmbientWard replaces
+        # the static ChatKeywordLegendCairoSource. Lower-content-band,
+        # 3–4 BitchX-grammar cells rendering aggregate chat temperature.
         SourceSchema(
-            id="chat_keyword_legend",
+            id="chat_ambient",
             kind="cairo",
             backend="cairo",
             params={
-                "class_name": "ChatKeywordLegendCairoSource",
-                "natural_w": 160,
-                "natural_h": 400,
+                "class_name": "ChatAmbientWard",
+                "natural_w": 560,
+                "natural_h": 40,
             },
         ),
         SourceSchema(

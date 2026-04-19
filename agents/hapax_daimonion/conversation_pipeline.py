@@ -191,12 +191,24 @@ class ConversationPipeline:
             log.exception("Notification delivery failed: %s", title)
             return False
 
-    async def generate_spontaneous_speech(self, impingement: object) -> None:
+    async def generate_spontaneous_speech(
+        self,
+        impingement: object,
+        *,
+        register_hint: str | None = None,
+    ) -> None:
         """Generate and speak a spontaneous utterance from an impingement.
 
         Unlike process_utterance (which transcribes operator audio), this
         bypasses STT and routes directly to LLM with impingement context
         as the intent. Speech is a tool — recruited by the cascade.
+
+        ``register_hint`` is the HOMAGE Phase 7 voice-register directive
+        (spec §4.8). When supplied it is prepended to the user prompt so
+        the LLM's reply lands in the requested tonal register (e.g., BitchX
+        TEXTMODE → clipped IRC-style). ``None`` means "use persona
+        defaults"; CPAL passes the hint only when the register is not the
+        ambient baseline.
         """
         if not self._running or self.state == ConvState.SPEAKING:
             return
@@ -223,6 +235,13 @@ class ConversationPipeline:
                 f"If this warrants a brief, natural remark to the operator, say it in one sentence. "
                 f"If not worth mentioning, respond with exactly: [silence]"
             )
+
+        # HOMAGE Phase 7: prepend register directive when CPAL signals a
+        # non-default register. Prepending to the user prompt (not the
+        # system block) means the directive scopes to this one utterance;
+        # the persona's underlying register posture is unchanged.
+        if register_hint:
+            prompt = f"{register_hint}\n\n{prompt}"
 
         try:
             log.info("Generating spontaneous speech: %s (strength=%.2f)", metric, strength)
