@@ -106,8 +106,12 @@ class TestGeometry:
         assert src.source_id == "hardm_dot_matrix"
 
     def test_fsm_transitions(self) -> None:
+        # Hotfix 2026-04-18: HomageTransitionalSource default flipped from
+        # ABSENT to HOLD. Exercise the ABSENT→ENTERING branch by forcing
+        # state back to ABSENT on the instance.
         src = HardmDotMatrix()
-        assert src.transition_state is TransitionState.ABSENT
+        assert src.transition_state is TransitionState.HOLD
+        src._state = TransitionState.ABSENT
         src.apply_transition("ticker-scroll-in")
         assert src.transition_state is TransitionState.ENTERING
 

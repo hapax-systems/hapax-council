@@ -148,7 +148,13 @@ class TestHookPointsFire:
             self.exit_completes += 1
 
     def test_full_lifecycle_fires_all_four_hooks(self):
-        src = self._HookStub(entering_duration_s=0.1, exiting_duration_s=0.1)
+        # Hotfix 2026-04-18: base default flipped to HOLD; the full-lifecycle
+        # hook sequence needs to start in ABSENT to exercise on_entry_start.
+        src = self._HookStub(
+            initial_state=TransitionState.ABSENT,
+            entering_duration_s=0.1,
+            exiting_duration_s=0.1,
+        )
         src.apply_transition("ticker-scroll-in", now=0.0)
         assert src.entry_starts == 1
         src.tick(now=0.2)
