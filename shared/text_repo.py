@@ -284,7 +284,13 @@ class TextRepo:
             score = entry.priority / 10.0
             if entry.context_keys and ctx:
                 hits = sum(1 for k in entry.context_keys if k in ctx)
-                score += 0.5 * hits
+                # Each context-match hit contributes more than a full
+                # priority-level delta (1.0 = priority 10 worth). This
+                # enforces the documented "context match beats higher
+                # priority unmatched" semantic; the prior 0.5 bonus tied
+                # exactly with a 5-point priority gap and left the
+                # tiebreaker to uuid4 entry.id (see task #168 flake).
+                score += 1.1 * hits
             if (
                 entry.last_shown_ts is not None
                 and ts_now - entry.last_shown_ts < _RECENT_SHOW_WINDOW_S

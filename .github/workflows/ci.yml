@@ -67,10 +67,12 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
-      - name: Install system deps (cairo, gobject)
+      - name: Install system deps (cairo, gobject, gst)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
+          sudo apt-get install -y \
+            libcairo2-dev libgirepository-2.0-dev gobject-introspection \
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra ci
       - name: Run tests
@@ -105,9 +107,8 @@ jobs:
               --ignore=tests/studio_compositor/test_visual_regression_homage.py \
               --ignore=tests/studio_compositor/test_follow_mode.py \
               --ignore=tests/studio_compositor/test_face_obscure_pipeline.py \
-              --deselect=tests/studio_compositor/test_overlay_zones_research_gate.py::TestZoneGate::test_default_always_on \
-              --deselect=tests/shared/test_text_repo.py::TestSelectForContext::test_context_match_beats_higher_priority_unmatched \
               --ignore=tests/test_camera_pipeline_phase2.py \
+              --deselect=tests/studio_compositor/test_overlay_zones_research_gate.py::TestZoneGate::test_default_always_on \
               -m "not llm" -k "not golden and not goldens" \
               -p no:cacheprovider 2>&1 | tee /tmp/pytest-output.txt
           # Parse pytest summary from captured output
