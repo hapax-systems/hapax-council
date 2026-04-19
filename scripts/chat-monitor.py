@@ -185,6 +185,23 @@ class ChatMonitor:
             self._chat_queue = None
             log.debug("ChatQueue unavailable", exc_info=True)
 
+        # Task #146: chat-contribution ledger powers the token-pole
+        # reward mechanic (emoji cascade + #N FROM {count} marker). The
+        # ledger is privacy-first (hashed authors only); cascades are
+        # published to the token-pole ledger JSON so the compositor
+        # source can trigger its EmojiSpewEffect without a direct import
+        # of this script's ChatMonitor.
+        try:
+            from agents.studio_compositor.chat_contribution import (
+                ChatContributionLedger,
+            )
+
+            self._contribution_ledger = ChatContributionLedger()
+            log.info("ChatContributionLedger enabled (task #146)")
+        except Exception:
+            self._contribution_ledger = None
+            log.debug("ChatContributionLedger unavailable", exc_info=True)
+
     def start(self) -> None:
         """Start monitoring chat."""
         self._running = True
@@ -297,6 +314,24 @@ class ChatMonitor:
             except Exception:
                 log.debug("PresetReactor failed on message", exc_info=True)
 
+        # Task #146: chat-contribution ledger. Feed each message, then
+        # check rising-edge threshold to trigger the token-pole cascade
+        # via the ledger JSON. Author name never leaves the ledger; it's
+        # hashed + salted inside record_chat.
+        if self._contribution_ledger is not None and text:
+            try:
+                now_ts = float(timestamp) if timestamp else time.time()
+                self._contribution_ledger.record_chat(
+                    author_name=author or author_id,
+                    message_length=len(text),
+                    ts=now_ts,
+                )
+                snapshot = self._contribution_ledger.cross_reward_threshold(now=now_ts)
+                if snapshot is not None:
+                    self._publish_contribution_cascade(snapshot)
+            except Exception:
+                log.debug("contribution ledger failed", exc_info=True)
+
         # Update viewer count
         unique_recent = len(set(self.author_window))
         from token_ledger import set_active_viewers
@@ -305,6 +340,44 @@ class ChatMonitor:
 
         # Write chat state for overlay
         self._write_state(unique_recent, novel_rate)
+
+    def _publish_contribution_cascade(
+        self,
+        snapshot,  # ContributionSnapshot
+    ) -> None:
+        """Hand the cascade off to the token-pole ledger.
+
+        Writes an ``explosions`` bump and a ``contribution_cascade``
+        payload to ``/dev/shm/hapax-compositor/token-ledger.json`` so
+        the token-pole CairoSource picks up the edge on its next ledger
+        read and triggers its EmojiSpewEffect. The contributor count is
+        the only identity-adjacent number; no names, no raw handles.
+        """
+        try:
+            ledger_path = SHM_DIR / "token-ledger.json"
+            ledger_path.parent.mkdir(parents=True, exist_ok=True)
+            existing: dict = {}
+            if ledger_path.exists():
+                try:
+                    existing = json.loads(ledger_path.read_text())
+                except Exception:
+                    existing = {}
+            existing["explosions"] = int(existing.get("explosions", 0)) + 1
+            existing["contribution_cascade"] = {
+                "explosion_number": snapshot.explosion_number,
+                "contributor_count": snapshot.unique_contributor_count,
+                "ts": time.time(),
+            }
+            tmp = ledger_path.with_suffix(ledger_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(existing))
+            os.replace(tmp, ledger_path)
+            log.info(
+                "token-pole cascade #%d published (contributors=%d)",
+                snapshot.explosion_number,
+                snapshot.unique_contributor_count,
+            )
+        except Exception:
+            log.debug("publish contribution cascade failed", exc_info=True)
 
     def _write_state(self, unique_authors: int, novel_rate: float) -> None:
         """Write current chat metrics to shm."""

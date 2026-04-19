@@ -126,6 +126,137 @@ def _resolve_package() -> HomagePackage:
     return BITCHX_PACKAGE
 
 
+# --- Task #146: chat-contribution reward mechanic ---------------------------
+# Gruvbox-adjacent emoji palette for the spew cascade. Kept small and
+# pre-reviewed so the broadcast stays in register with the BitchX grammar
+# and the #147 governance qualifier (no cheese, no manipulation).
+_EMOJI_PALETTE: tuple[str, ...] = (
+    "💎",  # gem (violet)
+    "⚡",  # lightning (yellow)
+    "🔥",  # fire (red/orange)
+    "⭐",  # star
+    "🌟",  # glowing star
+    "💫",  # dizzy star
+    "✨",  # sparkles
+    "🎵",  # music note
+    "🌀",  # cyclone
+    "☄️",  # comet
+    "💠",  # diamond with dot
+    "🔷",  # blue diamond
+)
+
+# Cascade duration: 60 frames at the 10fps director cadence = 6 seconds.
+# Intentionally brief per task #147 subtle-reward guidance.
+EMOJI_CASCADE_FRAMES = 60
+
+
+# Panel-marker grammar preserved for director-loop / overlay consumers.
+# Only aggregate contributor count — never a name.
+def cascade_marker_text(explosion_number: int, contributor_count: int) -> str:
+    """Format the BitchX-style cascade marker.
+
+    Shape: ``#{N} FROM {count}``. All numeric, all aggregate — the
+    contributor identity is never surfaced at any scale.
+    """
+    return f"#{explosion_number} FROM {contributor_count}"
+
+
+class EmojiSpew:
+    """Single falling emoji in the cascade."""
+
+    __slots__ = ("glyph", "x", "y", "vx", "vy", "alpha", "size", "frames")
+
+    def __init__(self, canvas_w: int, canvas_h: int) -> None:
+        self.glyph = random.choice(_EMOJI_PALETTE)
+        self.x = random.uniform(0.0, float(canvas_w))
+        self.y = random.uniform(-20.0, 10.0)  # spawn along top edge
+        self.vx = random.uniform(-0.6, 0.6)
+        self.vy = random.uniform(1.8, 3.6)
+        self.alpha = 1.0
+        self.size = random.uniform(16.0, 26.0)
+        self.frames = 0
+
+    def tick(self, total_frames: int) -> None:
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += 0.04  # mild gravity
+        self.frames += 1
+        # Linear fade from 1.0 -> 0.0 across the cascade lifetime.
+        self.alpha = max(0.0, 1.0 - (self.frames / max(1, total_frames)))
+
+
+class EmojiSpewEffect:
+    """State + physics for the token-pole reward cascade (task #146).
+
+    Triggered externally via :meth:`trigger`. Advances its own frame
+    counter on every :meth:`tick` and produces an iterable of drawable
+    emoji positions. Terminates cleanly once frames_remaining reaches
+    zero — ``active`` flips false and the emoji list empties.
+    """
+
+    def __init__(
+        self,
+        *,
+        duration_frames: int = EMOJI_CASCADE_FRAMES,
+        spawn_per_tick: int = 3,
+        max_emoji: int = 40,
+    ) -> None:
+        self.duration_frames = duration_frames
+        self.spawn_per_tick = spawn_per_tick
+        self.max_emoji = max_emoji
+        self.active = False
+        self.frames_remaining = 0
+        self.emoji: list[EmojiSpew] = []
+        self.explosion_number = 0
+        self.contributor_count = 0
+
+    def trigger(
+        self,
+        *,
+        explosion_number: int,
+        contributor_count: int,
+    ) -> None:
+        """Arm the cascade. Idempotent: a re-trigger while active restarts."""
+        self.active = True
+        self.frames_remaining = self.duration_frames
+        self.emoji = []
+        self.explosion_number = explosion_number
+        self.contributor_count = contributor_count
+        log.info(
+            "token-pole cascade #%d armed (contributors=%d frames=%d)",
+            explosion_number,
+            contributor_count,
+            self.duration_frames,
+        )
+
+    def tick(self, canvas_w: int, canvas_h: int) -> None:
+        """Advance one frame: spawn, step, cull, maybe terminate."""
+        if not self.active:
+            return
+
+        if self.frames_remaining > 0 and len(self.emoji) < self.max_emoji:
+            for _ in range(self.spawn_per_tick):
+                if len(self.emoji) >= self.max_emoji:
+                    break
+                self.emoji.append(EmojiSpew(canvas_w, canvas_h))
+
+        for e in self.emoji:
+            e.tick(self.duration_frames)
+
+        self.emoji = [e for e in self.emoji if e.alpha > 0.02 and e.y < canvas_h + 30]
+
+        self.frames_remaining -= 1
+        if self.frames_remaining <= 0 and not self.emoji:
+            self.active = False
+            self.frames_remaining = 0
+
+    def marker_text(self) -> str | None:
+        """Return the BitchX grammar marker while active, else None."""
+        if not self.active:
+            return None
+        return cascade_marker_text(self.explosion_number, self.contributor_count)
+
+
 class Particle:
     __slots__ = ("x", "y", "vx", "vy", "role_index", "alpha", "size", "born")
 
@@ -184,6 +315,10 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         cy = NATURAL_SIZE * SPIRAL_CENTER_Y
         max_r = NATURAL_SIZE * SPIRAL_MAX_R
         self._spiral = _build_spiral(cx, cy, max_r, NUM_POINTS)
+        # Task #146 chat-contribution cascade. Drives optional trigger()
+        # calls from the wiring layer (scripts/chat-monitor.py) via a
+        # setter method. Kept as an attribute so tests can poke state.
+        self.emoji_spew = EmojiSpewEffect()
 
     def render_content(
         self,
@@ -214,6 +349,8 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         self._position += diff * 0.06
         self._pulse += 0.1
         self._particles = [p for p in self._particles if p.tick()]
+        # Task #146: advance chat-contribution emoji cascade (if armed).
+        self.emoji_spew.tick(NATURAL_SIZE, NATURAL_SIZE)
 
     def _read_ledger(self) -> None:
         try:
@@ -226,6 +363,14 @@ class TokenPoleCairoSource(HomageTransitionalSource):
                 new_explosions = data.get("explosions", 0)
                 if new_explosions > self._last_explosion_count and self._last_explosion_count > 0:
                     self._spawn_explosion()
+                    # Task #146: if the ledger also carries a
+                    # contribution_cascade payload, fire the emoji spew.
+                    cascade = data.get("contribution_cascade")
+                    if isinstance(cascade, dict):
+                        self.emoji_spew.trigger(
+                            explosion_number=int(cascade.get("explosion_number", new_explosions)),
+                            contributor_count=int(cascade.get("contributor_count", 0)),
+                        )
                 self._last_explosion_count = new_explosions
                 self._explosions = new_explosions
         except (json.JSONDecodeError, OSError):
@@ -408,6 +553,85 @@ class TokenPoleCairoSource(HomageTransitionalSource):
             cr.set_source_rgba(pr, pg, pb, p.alpha)
             cr.arc(p.x, p.y, p.size, 0, 2 * math.pi)
             cr.fill()
+
+        # --- Task #146: chat-contribution emoji cascade ------------------
+        # The cascade draws on top of the particle system so it wins
+        # z-order. Pango is preferred (Noto Color Emoji fallback); when
+        # absent we degrade gracefully to Cairo's text toy API so CI
+        # without Pango doesn't explode.
+        self._draw_emoji_cascade(cr)
+        self._draw_cascade_marker(cr, pkg)
+
+    def _draw_emoji_cascade(self, cr: Any) -> None:
+        """Draw active emoji-spew glyphs using Pango (Noto Color Emoji).
+
+        Falls back to Cairo's toy text API when Pango typelibs are
+        unavailable (CI). No-op when the cascade isn't armed.
+        """
+        if not self.emoji_spew.active or not self.emoji_spew.emoji:
+            return
+        try:
+            from .text_render import _HAS_PANGO
+
+            if _HAS_PANGO:
+                import gi
+
+                gi.require_version("Pango", "1.0")
+                gi.require_version("PangoCairo", "1.0")
+                from gi.repository import Pango, PangoCairo
+
+                for e in self.emoji_spew.emoji:
+                    layout = PangoCairo.create_layout(cr)
+                    font = Pango.FontDescription.from_string(f"Noto Color Emoji {int(e.size)}")
+                    layout.set_font_description(font)
+                    layout.set_text(e.glyph, -1)
+                    cr.save()
+                    cr.move_to(e.x, e.y)
+                    # PangoCairo doesn't honour source-rgba alpha via
+                    # set_source_rgba alone; push a group for the alpha
+                    # multiply.
+                    cr.push_group()
+                    PangoCairo.show_layout(cr, layout)
+                    cr.pop_group_to_source()
+                    cr.paint_with_alpha(e.alpha)
+                    cr.restore()
+                return
+        except Exception:
+            log.debug("emoji cascade Pango path failed", exc_info=True)
+
+        # --- Cairo toy-text fallback ------------------------------------
+        for e in self.emoji_spew.emoji:
+            cr.save()
+            cr.set_font_size(e.size)
+            cr.set_source_rgba(1.0, 1.0, 1.0, e.alpha)
+            cr.move_to(e.x, e.y + e.size)
+            cr.show_text(e.glyph)
+            cr.restore()
+
+    def _draw_cascade_marker(self, cr: Any, pkg: Any) -> None:
+        """Draw ``#{n} FROM {count}`` banner at the top of the panel."""
+        marker = self.emoji_spew.marker_text()
+        if marker is None:
+            return
+        try:
+            from .text_render import TextStyle, render_text
+
+            bright = pkg.palette.bright
+            style = TextStyle(
+                text=marker,
+                font_description="JetBrains Mono Bold 12",
+                color_rgba=bright,
+                outline_offsets=(),
+            )
+            render_text(cr, style, x=6.0, y=4.0)
+        except Exception:
+            # Fallback to toy font so CI without Pango still paints.
+            cr.save()
+            cr.set_font_size(12)
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+            cr.move_to(6, 16)
+            cr.show_text(marker)
+            cr.restore()
 
 
 # The pre-Phase-9 ``TokenPole`` facade has been removed. Rendering now
