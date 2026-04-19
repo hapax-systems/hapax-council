@@ -34,6 +34,11 @@ from agents.studio_compositor.structural_director import StructuralIntent
 @pytest.fixture
 def homage_on(monkeypatch):
     monkeypatch.setenv("HAPAX_HOMAGE_ACTIVE", "1")
+    # Pin the missing-file default to ``sequential`` for these tests —
+    # the cascade-delta default changed to ``weighted_by_salience`` for
+    # live-surface aesthetics, but the Phase 8 tests pin pre-Phase-8
+    # parity semantics on purpose.
+    monkeypatch.setenv("HAPAX_HOMAGE_DEFAULT_ROTATION", "sequential")
 
 
 @pytest.fixture
@@ -43,6 +48,7 @@ def choreographer(tmp_path: Path) -> Choreographer:
         uniforms_file=tmp_path / "uniforms.json",
         consent_safe_flag_file=tmp_path / "consent-safe-none.json",
         structural_intent_file=tmp_path / "structural-intent.json",
+        narrative_structural_intent_file=tmp_path / "narrative-structural-intent.json",
     )
 
 

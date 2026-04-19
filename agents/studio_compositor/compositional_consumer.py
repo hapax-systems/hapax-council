@@ -909,6 +909,273 @@ def dispatch(
     return "unknown"
 
 
+# ── Narrative-tier structural intent dispatch ──────────────────────────────
+#
+# The narrative director (30s cadence) attaches a
+# ``NarrativeStructuralIntent`` envelope on every DirectorIntent. This
+# dispatcher reads it and fans out to the ward-property surface + homage
+# pending-transitions queue without going through Qdrant recruitment,
+# because structural-intent entries are aesthetic directives, not
+# recruitable capabilities. The affordance-pipeline path still owns all
+# named capability recruitment (cam.hero, overlay.*, ward.*-family, etc.).
+# This dispatcher is additive: it accelerates the homage surface's
+# responsiveness so the livestream visibly reacts every narrative tick.
+
+# Per-tick emphasis TTL. The ward-property entry survives for this many
+# seconds before the consumer-side expiry sweep discards it. Slightly
+# longer than the narrative cadence (default 30s) so a dropped tick
+# doesn't leave the surface flat for a whole cycle.
+_STRUCTURAL_EMPHASIS_TTL_S: float = 4.0
+_STRUCTURAL_PLACEMENT_TTL_S: float = 30.0
+
+# Per-tick emphasis envelope. Tuned for "visible, not cartoonish": glow
+# is strong enough to read at 720p; scale_bump is modest so the ward
+# doesn't shift its Sierpinski neighbour; border_pulse stays under the
+# flicker-fatigue threshold the operator flagged on 2026-04-18.
+_STRUCTURAL_EMPHASIS_PROPS: dict[str, float] = {
+    "alpha": 1.0,
+    "glow_radius_px": 14.0,
+    "scale_bump_pct": 0.12,
+    "border_pulse_hz": 2.2,
+}
+
+# Placement-hint → WardProperties field map. ``drift_*`` hints modulate
+# the ward's ambient sine-drift so a "drift_left" hint literally translates
+# to a leftward sinusoidal breath, not a hard position snap. ``scale_*``
+# hints override the ward's ``scale`` field directly. The pulse_center
+# hint triggers a short border-pulse + scale bump at the ward's anchor.
+_PLACEMENT_HINT_TO_PROPS: dict[str, dict[str, float | str]] = {
+    "drift_left": {
+        "drift_type": "sine",
+        "drift_hz": 0.3,
+        "drift_amplitude_px": 14.0,
+        "position_offset_x": -8.0,
+    },
+    "drift_right": {
+        "drift_type": "sine",
+        "drift_hz": 0.3,
+        "drift_amplitude_px": 14.0,
+        "position_offset_x": 8.0,
+    },
+    "drift_up": {
+        "drift_type": "sine",
+        "drift_hz": 0.3,
+        "drift_amplitude_px": 14.0,
+        "position_offset_y": -8.0,
+    },
+    "drift_down": {
+        "drift_type": "sine",
+        "drift_hz": 0.3,
+        "drift_amplitude_px": 14.0,
+        "position_offset_y": 8.0,
+    },
+    "pulse_center": {
+        "border_pulse_hz": 3.2,
+        "scale_bump_pct": 0.10,
+    },
+    "scale_0.8x": {"scale": 0.80},
+    "scale_1.0x": {"scale": 1.00},
+    "scale_1.15x": {"scale": 1.15},
+    "scale_1.3x": {"scale": 1.30},
+}
+
+# Mirror of ``shared.director_intent.WardId`` — used to gate the LLM's
+# ward name against typos. Kept in sync manually; drift between the two
+# literal unions is caught by ``test_structural_intent_dispatch``.
+_VALID_WARD_IDS: frozenset[str] = frozenset(
+    [
+        "chat_ambient",
+        "activity_header",
+        "stance_indicator",
+        "grounding_provenance_ticker",
+        "impingement_cascade",
+        "recruitment_candidate_panel",
+        "thinking_indicator",
+        "pressure_gauge",
+        "activity_variety_log",
+        "whos_here",
+        "token_pole",
+        "album_overlay",
+        "sierpinski",
+        "hardm_dot_matrix",
+        "stream_overlay",
+        "captions",
+        "research_marker_overlay",
+        "chat_keyword_legend",
+        "vinyl_platter",
+        "overlay_zones",
+    ]
+)
+
+# Dispatcher-owned pending transitions file. Same path as the homage
+# family dispatchers — the choreographer drains on every reconcile.
+_HOMAGE_PENDING: Path = Path("/dev/shm/hapax-compositor/homage-pending-transitions.json")
+
+
+def _apply_emphasis(ward_id: str, salience: float = 1.0) -> None:
+    """Bump a ward's highlight envelope for the structural-intent window.
+
+    ``salience`` scales the emphasis depth — at 1.0 the ward lands on
+    the full envelope defined by ``_STRUCTURAL_EMPHASIS_PROPS``; at
+    0.5 the glow + scale-bump + pulse are halved. Always writes alpha
+    at 1.0 so an emphasized ward is never simultaneously dimmed.
+    """
+    if ward_id not in _VALID_WARD_IDS:
+        log.debug("structural_intent: skipping unknown ward_id %s", ward_id)
+        return
+    try:
+        from agents.studio_compositor.ward_properties import (
+            WardProperties,
+            get_specific_ward_properties,
+            set_ward_properties,
+        )
+    except Exception:
+        log.debug("ward_properties import failed", exc_info=True)
+        return
+    current = get_specific_ward_properties(ward_id) or WardProperties()
+    scale = max(0.0, min(1.5, float(salience)))
+    props = {
+        "alpha": 1.0,
+        "glow_radius_px": _STRUCTURAL_EMPHASIS_PROPS["glow_radius_px"] * scale,
+        "scale_bump_pct": _STRUCTURAL_EMPHASIS_PROPS["scale_bump_pct"] * scale,
+        "border_pulse_hz": _STRUCTURAL_EMPHASIS_PROPS["border_pulse_hz"] * scale,
+    }
+    merged = WardProperties(**{**current.__dict__, **props})
+    set_ward_properties(ward_id, merged, _STRUCTURAL_EMPHASIS_TTL_S)
+    _mark_recruitment("structural.emphasis", extra={"ward_id": ward_id})
+
+
+def _apply_placement(ward_id: str, hint: str) -> None:
+    """Translate a placement hint into ward-property fields."""
+    if ward_id not in _VALID_WARD_IDS:
+        return
+    spec = _PLACEMENT_HINT_TO_PROPS.get(hint)
+    if spec is None:
+        log.debug("structural_intent: unknown placement hint %s", hint)
+        return
+    try:
+        from agents.studio_compositor.ward_properties import (
+            WardProperties,
+            get_specific_ward_properties,
+            set_ward_properties,
+        )
+    except Exception:
+        log.debug("ward_properties import failed", exc_info=True)
+        return
+    current = get_specific_ward_properties(ward_id) or WardProperties()
+    merged = WardProperties(**{**current.__dict__, **spec})
+    set_ward_properties(ward_id, merged, _STRUCTURAL_PLACEMENT_TTL_S)
+    _mark_recruitment("structural.placement", extra={"ward_id": ward_id, "hint": hint})
+
+
+def _enqueue_homage_pending(source_id: str, transition: str, salience: float) -> None:
+    """Append a homage pending-transition entry without going through a
+    named capability recruitment. Mirrors ``_append_pending_transition``
+    with a salience hint so ``weighted_by_salience`` rotation mode can
+    score structural-intent dispatches against named recruitments."""
+    now = time.time()
+    current: dict = {}
+    try:
+        if _HOMAGE_PENDING.exists():
+            loaded = json.loads(_HOMAGE_PENDING.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                current = loaded
+    except Exception:
+        log.debug("homage-pending read failed", exc_info=True)
+    transitions = current.get("transitions") if isinstance(current, dict) else None
+    if not isinstance(transitions, list):
+        transitions = []
+    transitions.append(
+        {
+            "source_id": source_id,
+            "transition": transition,
+            "enqueued_at": now,
+            "salience": max(0.0, min(1.0, float(salience))),
+        }
+    )
+    payload = {"transitions": transitions, "updated_at": now}
+    _atomic_write_json(_HOMAGE_PENDING, payload)
+
+
+def dispatch_structural_intent(intent) -> dict[str, int]:
+    """Fan a ``NarrativeStructuralIntent`` out to ward-properties + homage queue.
+
+    Accepts either a ``NarrativeStructuralIntent`` instance or a plain
+    dict (parser-legacy path). Returns a tally
+    ``{"emphasized": N, "dispatched": N, "retired": N, "placed": N}`` for
+    observability. Fail-open: import or parse errors are logged and the
+    tally reflects what landed.
+
+    Writes:
+      * ward-properties.json (per emphasized + placed ward)
+      * homage-pending-transitions.json (per dispatched + retired ward)
+
+    Does NOT write ``homage_rotation_mode`` to the slow structural
+    intent file — the narrative-tier per-tick override is surfaced
+    separately at ``/dev/shm/hapax-compositor/narrative-structural-intent.json``
+    so the choreographer can prefer the fresher signal without
+    overwriting the structural director's long-horizon choice.
+    """
+    tally = {"emphasized": 0, "dispatched": 0, "retired": 0, "placed": 0}
+    try:
+        if hasattr(intent, "model_dump"):
+            data = intent.model_dump()
+        elif isinstance(intent, dict):
+            data = intent
+        else:
+            return tally
+    except Exception:
+        log.debug("structural_intent: model_dump failed", exc_info=True)
+        return tally
+
+    # Publish the rotation-mode override for the choreographer. Atomic
+    # so the choreographer never sees a half-written override.
+    rotation_mode = data.get("homage_rotation_mode")
+    if isinstance(rotation_mode, str) and rotation_mode in (
+        "sequential",
+        "random",
+        "weighted_by_salience",
+        "paused",
+    ):
+        _atomic_write_json(
+            Path("/dev/shm/hapax-compositor/narrative-structural-intent.json"),
+            {
+                "homage_rotation_mode": rotation_mode,
+                "updated_at": time.time(),
+            },
+        )
+
+    for ward_id in data.get("ward_emphasis") or []:
+        if not isinstance(ward_id, str):
+            continue
+        _apply_emphasis(ward_id, salience=1.0)
+        tally["emphasized"] += 1
+
+    for ward_id in data.get("ward_dispatch") or []:
+        if not isinstance(ward_id, str) or ward_id not in _VALID_WARD_IDS:
+            continue
+        # Default package entry transition — ticker-scroll-in under BitchX.
+        _enqueue_homage_pending(ward_id, "ticker-scroll-in", salience=1.0)
+        tally["dispatched"] += 1
+
+    for ward_id in data.get("ward_retire") or []:
+        if not isinstance(ward_id, str) or ward_id not in _VALID_WARD_IDS:
+            continue
+        _enqueue_homage_pending(ward_id, "ticker-scroll-out", salience=1.0)
+        tally["retired"] += 1
+
+    placement = data.get("placement_bias") or {}
+    if isinstance(placement, dict):
+        for ward_id, hint in placement.items():
+            if not isinstance(ward_id, str) or not isinstance(hint, str):
+                continue
+            _apply_placement(ward_id, hint)
+            tally["placed"] += 1
+
+    _mark_recruitment("structural.intent", extra=tally)
+    return tally
+
+
 # ── Recruitment history for fallback gates (random_mode etc.) ──────────────
 
 
@@ -953,6 +1220,7 @@ __all__ = [
     "dispatch_camera_hero",
     "dispatch_preset_bias",
     "dispatch_overlay_emphasis",
+    "dispatch_structural_intent",
     "dispatch_youtube_direction",
     "dispatch_attention_winner",
     "dispatch_stream_mode_transition",
