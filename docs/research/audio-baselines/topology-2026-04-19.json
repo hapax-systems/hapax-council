@@ -1,0 +1,10 @@
+{
+  "audit_at": "2026-04-19T15:56:35-05:00",
+  "violations": [
+    "4.6 LEAK: notification loopback reaches hapax-livestream — operator-private chimes audible to audience"
+  ],
+  "ok": false
+}
+
+=== AUDIO TOPOLOGY VIOLATIONS ===
+ - 4.6 LEAK: notification loopback reaches hapax-livestream — operator-private chimes audible to audience

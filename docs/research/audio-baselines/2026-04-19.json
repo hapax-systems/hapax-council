@@ -1,0 +1,758 @@
+[
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 48,
+    "target": 155,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 51,
+    "target": 155,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 59,
+    "target": 160,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 59,
+    "target": 160,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 154,
+    "target": 62,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 154,
+    "target": 62,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 154,
+    "target": 70,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 154,
+    "target": 70,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 154,
+    "target": 74,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 154,
+    "target": 74,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 76,
+    "target": 155,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 76,
+    "target": 155,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 77,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 77,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 81,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 81,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 123,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 123,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 126,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 126,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 128,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 128,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 124,
+    "target": 67,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 124,
+    "target": 67,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 78,
+    "target": 47,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 328,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 328,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 398,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 398,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 399,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 69,
+    "target": 399,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 357,
+    "target": 47,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 332,
+    "target": 47,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 359,
+    "target": 50,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 325,
+    "target": 160,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 325,
+    "target": 160,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 290,
+    "target": 50,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 129,
+    "target": 318,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 129,
+    "target": 318,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 394,
+    "target": 47,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "<unnamed>",
+    "source": 330,
+    "target": 50,
+    "type": "PipeWire:Interface:Link"
+  },
+  {
+    "media": null,
+    "name": "Dummy-Driver",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": null,
+    "name": "Freewheel-Driver",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "Lavf62.12.100",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "Lavf62.12.100",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "Lavf62.12.100",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Midi/Bridge",
+    "name": "Midi-Bridge",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "alsa_input.usb-046d_HD_Pro_Webcam_C920_2657DFCF-02.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "alsa_input.usb-046d_HD_Pro_Webcam_C920_7B88C71F-02.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "alsa_input.usb-046d_HD_Pro_Webcam_C920_86B6B75F-02.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "alsa_input.usb-046d_Logitech_BRIO_43B0576A-03.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "alsa_input.usb-046d_Logitech_BRIO_5342C819-03.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "alsa_input.usb-046d_Logitech_BRIO_9726C031-03.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "alsa_input.usb-PreSonus_Studio_24c_SC1E24390244-00.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "alsa_output.pci-0000_01_00.1.hdmi-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "alsa_output.usb-PreSonus_Studio_24c_SC1E24390244-00.analog-stereo",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Midi/Bridge",
+    "name": "bluez_midi.server",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "contact_mic",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "echo-cancel-playback",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "echo_cancel_capture",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "echo_cancel_capture",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "echo_cancel_playback",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "echo_cancel_sink",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "echo_cancel_sink",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "echo_cancel_source",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "hapax-livestream",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "hapax-livestream-playback",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "hapax-private",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "hapax-private-playback",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "hapax-vinyl-capture",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "hapax-vinyl-playback",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "hapax-voice-fx-capture",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "hapax-voice-fx-playback",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "input.loopback-3700925-29",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "input.loopback-3700925-30",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "input.loopback.sink.role.assistant",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "input.loopback.sink.role.multimedia",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Sink",
+    "name": "input.loopback.sink.role.notification",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "mixer_master",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "noise-suppress-capture",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "noise-suppress-playback",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "output.loopback.sink.role.assistant",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "output.loopback.sink.role.multimedia",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "output.loopback.sink.role.notification",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "pacat",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "pw-cat",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "pw-cat",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "pw-cat",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "pw-cat",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Output/Audio",
+    "name": "pw-cat",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "pw-cat",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Stream/Input/Audio",
+    "name": "pw-record",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input._sys_devices_virtual_video4linux_video42",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input._sys_devices_virtual_video4linux_video50",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input._sys_devices_virtual_video4linux_video51",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input._sys_devices_virtual_video4linux_video52",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input.pci-0000_09_00.0-usb-0_2_1.0",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input.pci-0000_09_00.0-usb-0_2_1.0",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input.pci-0000_09_00.0-usb-0_3.2_1.0",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input.pci-0000_09_00.0-usb-0_4_1.0",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input.pci-0000_71_00.0-usb-0_1_1.0",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input.pci-0000_71_00.0-usb-0_1_1.0.3",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input.pci-0000_73_00.4-usb-0_1_1.0",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input.pci-0000_73_00.4-usb-0_1_1.0.3",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Video/Source",
+    "name": "v4l2_input.pci-0000_73_00.4-usb-0_2_1.0",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  },
+  {
+    "media": "Audio/Source",
+    "name": "yeti_cancelled",
+    "source": null,
+    "target": null,
+    "type": "PipeWire:Interface:Node"
+  }
+]

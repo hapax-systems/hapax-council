@@ -1,0 +1,15 @@
+# Hapax Pi Edge Heartbeat — oneshot, triggered by timer
+# Install: sudo cp hapax-heartbeat.{service,timer} /etc/systemd/system/
+# Configure: sudo sed -i 's/ir-desk/<role>/' /etc/systemd/system/hapax-heartbeat.service
+# Enable: sudo systemctl enable --now hapax-heartbeat.timer
+[Unit]
+Description=Hapax Pi Edge Heartbeat
+
+[Service]
+Type=oneshot
+User=hapax
+ExecStart=/usr/bin/python3 hapax-heartbeat.py
+WorkingDirectory=%h/hapax-edge
+Environment=WORKSTATION_URL=http://hapax-podium-2.local:8051
+Environment=HEARTBEAT_ROLE=ir-desk
+Environment=HEARTBEAT_SERVICES=hapax-ir-edge

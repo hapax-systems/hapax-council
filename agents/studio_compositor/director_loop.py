@@ -1907,7 +1907,7 @@ class DirectorLoop:
             "  - warm-minimal: low-flux backdrop; good for ambient "
             "continuity without interest-drop.",
             "  - audio-abstract: slowly-evolving shapes reading as "
-            "listening-back; good for reflective or observing registers.",
+            "listening-back; good for reflective or attentive registers.",
         ]
         _random.shuffle(_families)
         parts.extend(_families)

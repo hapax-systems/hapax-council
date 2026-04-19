@@ -1,0 +1,11 @@
+# Hapax Pi Edge Heartbeat Timer — runs every 60s
+[Unit]
+Description=Hapax Pi Edge Heartbeat Timer
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
