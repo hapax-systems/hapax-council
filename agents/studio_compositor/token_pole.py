@@ -21,9 +21,11 @@ pre-Phase-9 ``TokenPole`` wrapper was removed alongside the
 
 from __future__ import annotations
 
+import enum
 import json
 import logging
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -52,16 +54,46 @@ VITRUVIAN_PATH = Path(__file__).parent.parent.parent / "assets" / "vitruvian_man
 # render loop to walk LayoutState.
 NATURAL_SIZE = 300
 
-# Geometry invariants. These MUST stay constant per spec §Preservation
-# Invariants — the navel anchor, the 3-turn spiral, the exponential
-# decay coefficient and the starting-angle offset in ``_build_spiral``
-# are load-bearing for the artefact's identity.
+# Geometry invariants. These define the two path modes available to the
+# token pole. Operator directive 2026-04-19: default path is navel→cranium
+# with the full route visible and traveled/untraveled visually contradistinct,
+# explosion on cranium arrival. SPIRAL retained for regression only.
 SPIRAL_CENTER_X = 0.50
 SPIRAL_CENTER_Y = 0.52  # navel is slightly below center
 SPIRAL_MAX_R = 0.45  # relative to overlay size
 
+# Navel→cranium anchors measured 2026-04-19 from assets/vitruvian_man_overlay.png
+# (500×500 RGBA) via PIL — head crown = widest opaque row within top 1/6 of image.
+# x-axis is effectively vertical (Δx=0.002 = within rounding) so the path is
+# treated as a straight vertical line; the subtle midline arc is deferred.
+NAVEL_X = SPIRAL_CENTER_X  # 0.500
+NAVEL_Y = SPIRAL_CENTER_Y  # 0.520
+CRANIUM_X = 0.498
+CRANIUM_Y = 0.134
+
 NUM_POINTS = 250
 PHI = (1 + math.sqrt(5)) / 2
+
+
+class PathMode(enum.Enum):
+    """Which geometric path the token traverses."""
+
+    SPIRAL = "spiral"
+    NAVEL_TO_CRANIUM = "navel_to_cranium"
+
+
+def _resolve_path_mode() -> PathMode:
+    """Read ``HAPAX_TOKEN_POLE_PATH`` from env with safe fallback.
+
+    Default is NAVEL_TO_CRANIUM per operator directive 2026-04-19.
+    Set ``HAPAX_TOKEN_POLE_PATH=spiral`` to force the legacy spiral
+    path (regression comparison / back-compat).
+    """
+    raw = (os.environ.get("HAPAX_TOKEN_POLE_PATH") or "").strip().lower()
+    if raw == "spiral":
+        return PathMode.SPIRAL
+    return PathMode.NAVEL_TO_CRANIUM
+
 
 # --- Palette role names (HOMAGE spec §4.4) ---------------------------------
 # The token-pole resolves all colour state through the active
@@ -105,6 +137,20 @@ def _build_spiral(cx: float, cy: float, max_r: float, n: int) -> list[tuple[floa
         y = cy + r * math.sin(theta + 0.5)
         points.append((x, y))
     return points
+
+
+def _build_linear_path(size: int, n: int) -> list[tuple[float, float]]:
+    """Linear navel→cranium path in pixel coordinates.
+
+    Produces ``n`` evenly-spaced points from the navel anchor (bottom)
+    to the cranium anchor (top) on the Vitruvian figure. Index 0 is the
+    starting anchor (navel), index n-1 is the terminal anchor (cranium).
+    """
+    x0 = NAVEL_X * size
+    y0 = NAVEL_Y * size
+    x1 = CRANIUM_X * size
+    y1 = CRANIUM_Y * size
+    return [(x0 + (x1 - x0) * (i / (n - 1)), y0 + (y1 - y0) * (i / (n - 1))) for i in range(n)]
 
 
 def _resolve_package() -> HomagePackage:
@@ -310,11 +356,17 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         self._pulse: float = 0.0
         self._bg_surface: Any = None
         self._bg_loaded = False
-        # Build spiral in local natural-size coordinates (origin at 0, 0).
-        cx = NATURAL_SIZE * SPIRAL_CENTER_X
-        cy = NATURAL_SIZE * SPIRAL_CENTER_Y
-        max_r = NATURAL_SIZE * SPIRAL_MAX_R
-        self._spiral = _build_spiral(cx, cy, max_r, NUM_POINTS)
+        # Build the token path in local natural-size coordinates (origin at
+        # 0, 0). Mode selection is env-gated at construction; default is the
+        # navel→cranium linear path per operator directive 2026-04-19.
+        self._path_mode = _resolve_path_mode()
+        if self._path_mode is PathMode.SPIRAL:
+            cx = NATURAL_SIZE * SPIRAL_CENTER_X
+            cy = NATURAL_SIZE * SPIRAL_CENTER_Y
+            max_r = NATURAL_SIZE * SPIRAL_MAX_R
+            self._spiral = _build_spiral(cx, cy, max_r, NUM_POINTS)
+        else:
+            self._spiral = _build_linear_path(NATURAL_SIZE, NUM_POINTS)
         # Task #146 chat-contribution cascade. Drives optional trigger()
         # calls from the wiring layer (scripts/chat-monitor.py) via a
         # setter method. Kept as an attribute so tests can poke state.
@@ -377,8 +429,17 @@ class TokenPoleCairoSource(HomageTransitionalSource):
             pass
 
     def _spawn_explosion(self) -> None:
-        cx = NATURAL_SIZE * SPIRAL_CENTER_X
-        cy = NATURAL_SIZE * SPIRAL_CENTER_Y
+        # Explode at the path's terminal anchor — cranium in linear mode,
+        # spiral centre (navel) in legacy spiral mode. For the operator-
+        # directed NAVEL_TO_CRANIUM path this fires at the head-crown
+        # when the token reaches it; feels like completion rather than
+        # a burst at the starting anchor.
+        if self._path_mode is PathMode.NAVEL_TO_CRANIUM:
+            cx = NATURAL_SIZE * CRANIUM_X
+            cy = NATURAL_SIZE * CRANIUM_Y
+        else:
+            cx = NATURAL_SIZE * SPIRAL_CENTER_X
+            cy = NATURAL_SIZE * SPIRAL_CENTER_Y
         for _ in range(60):
             self._particles.append(Particle(cx, cy))
 
