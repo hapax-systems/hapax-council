@@ -25,18 +25,54 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import cairo
 
 from agents.studio_compositor.homage import get_active_package
 from agents.studio_compositor.homage.transitional_source import HomageTransitionalSource
 
-if TYPE_CHECKING:
-    import cairo
-
 log = logging.getLogger(__name__)
+
+
+# ── Synthwave / pointillism render constants (aesthetic rework 2026-04-19) ─
+# Operator directive: "dynamic synthwave/bitchX pointillism, points of
+# compelling light, never totally stable, shimmering, techno-ethereal,
+# precise yet diffuse". No solid filled squares: each cell renders as a
+# centre point with a soft radial falloff halo.
+
+# Gruvbox bg0 (#1d2021) — cells sit on a near-black ground so the
+# emissive glow reads as light-on-dark, not paint-on-grey. Chosen to
+# stay within the Gruvbox Hard Dark palette governed by
+# ``docs/logos-design-language.md``.
+_GRUVBOX_BG0: tuple[float, float, float, float] = (0x1D / 255.0, 0x20 / 255.0, 0x21 / 255.0, 1.0)
+
+# Shimmer controls. Each cell's luminance is multiplied by
+# ``SHIMMER_BASELINE + SHIMMER_AMPLITUDE * sin(t * SHIMMER_ANGULAR_FREQ + phase)``
+# with a per-cell phase so the grid is "never totally stable" but the
+# grid structure (row→signal) stays legible. Angular-frequency 2.0
+# rad/s ≈ 0.32 Hz — slow enough to read as shimmer rather than flicker.
+SHIMMER_BASELINE: float = 0.85
+SHIMMER_AMPLITUDE: float = 0.15
+SHIMMER_ANGULAR_FREQ: float = 2.0
+
+# Halo geometry (cell is 16 px; centre at 8,8). A tight centre dot
+# carries the signal colour; the halo diffuses it outward. Outer glow
+# bleeds faintly into neighbouring cells so the grid feels gaseous
+# rather than gridded.
+_CENTRE_DOT_RADIUS_PX: float = 2.5
+_HALO_RADIUS_PX: float = 6.5
+_OUTER_GLOW_RADIUS_PX: float = 9.0
+_OUTER_GLOW_ALPHA: float = 0.12
+
+# Scanline — a faint horizontal line every 4 rows hints at CRT raster
+# without converting the surface into a retro-terminal pastiche.
+_SCANLINE_EVERY_N_ROWS: int = 4
+_SCANLINE_ALPHA: float = 0.10
 
 
 # ── Grid geometry (package-invariant per spec §2) ─────────────────────────
@@ -614,12 +650,13 @@ class HardmDotMatrix(HomageTransitionalSource):
 
         signals = _read_signals()
 
-        # Flat background so cells sit on the CP437 skeleton rather than
-        # floating against the shader surface. Uses the package's
-        # ``background`` role — no hardcoded hex.
-        bg_rgba = pkg.resolve_colour("background")
+        # Near-black Gruvbox bg0 ground. Synthwave pointillism reads as
+        # emissive light against a dark field — the palette ``background``
+        # role is reserved for packages that composite onto bright
+        # surfaces. HARDM's ground is fixed so the shimmer stays coherent
+        # across package swaps.
         cr.save()
-        cr.set_source_rgba(*bg_rgba)
+        cr.set_source_rgba(*_GRUVBOX_BG0)
         cr.rectangle(0, 0, SURFACE_W, SURFACE_H)
         cr.fill()
         cr.restore()
@@ -632,7 +669,11 @@ class HardmDotMatrix(HomageTransitionalSource):
         emphasis = _read_emphasis_state()
         speaking = emphasis == "speaking"
 
-        # Paint 256 cells. Row-major: cell_0 = top-left.
+        # Paint 256 cells as radial-gradient points of light. Row-major:
+        # cell_0 = top-left. Centre-dot carries the signal colour at full
+        # intensity; the halo diffuses outward with an alpha falloff; an
+        # outer glow bleeds faintly into neighbours for the "techno-
+        # ethereal" bloom the operator asked for.
         for row in range(GRID_ROWS):
             signal_name = _signal_for_row(row)
             value = signals.get(signal_name) if signal_name else None
@@ -644,17 +685,58 @@ class HardmDotMatrix(HomageTransitionalSource):
                 b = min(1.0, b * SPEAKING_BRIGHTNESS_MULT)
             cell_alpha = a * alpha
             for col in range(GRID_COLS):
-                x = col * CELL_SIZE_PX
-                y = row * CELL_SIZE_PX
-                # 1 px muted-grey rule between cells (CP437-thin, §2).
-                cr.set_source_rgba(r, g, b, cell_alpha)
-                cr.rectangle(
-                    x + 1,
-                    y + 1,
-                    CELL_SIZE_PX - 2,
-                    CELL_SIZE_PX - 2,
+                # Per-cell shimmer phase — unique, reproducible.
+                cell_phase = row * 0.31 + col * 0.17
+                shimmer = SHIMMER_BASELINE + SHIMMER_AMPLITUDE * math.sin(
+                    t * SHIMMER_ANGULAR_FREQ + cell_phase
                 )
+                sr = r * shimmer
+                sg = g * shimmer
+                sb = b * shimmer
+
+                cx = col * CELL_SIZE_PX + CELL_SIZE_PX / 2.0
+                cy = row * CELL_SIZE_PX + CELL_SIZE_PX / 2.0
+
+                # Outer glow — low-alpha bleed into neighbours.
+                cr.save()
+                outer = cairo.RadialGradient(cx, cy, 0.0, cx, cy, _OUTER_GLOW_RADIUS_PX)
+                outer.add_color_stop_rgba(0.0, sr, sg, sb, _OUTER_GLOW_ALPHA * cell_alpha)
+                outer.add_color_stop_rgba(1.0, sr, sg, sb, 0.0)
+                cr.set_source(outer)
+                cr.arc(cx, cy, _OUTER_GLOW_RADIUS_PX, 0, 2 * math.pi)
                 cr.fill()
+                cr.restore()
+
+                # Halo — the diffuse body of the point, alpha falloff.
+                cr.save()
+                halo = cairo.RadialGradient(cx, cy, 0.0, cx, cy, _HALO_RADIUS_PX)
+                halo.add_color_stop_rgba(0.0, sr, sg, sb, cell_alpha)
+                halo.add_color_stop_rgba(0.55, sr, sg, sb, cell_alpha * 0.45)
+                halo.add_color_stop_rgba(1.0, sr, sg, sb, 0.0)
+                cr.set_source(halo)
+                cr.arc(cx, cy, _HALO_RADIUS_PX, 0, 2 * math.pi)
+                cr.fill()
+                cr.restore()
+
+                # Centre dot — the precise point at full signal intensity.
+                # Drawn last so the sampled centre pixel is the signal
+                # colour, not a halo-blend of it.
+                cr.save()
+                cr.set_source_rgba(sr, sg, sb, cell_alpha)
+                cr.arc(cx, cy, _CENTRE_DOT_RADIUS_PX, 0, 2 * math.pi)
+                cr.fill()
+                cr.restore()
+
+        # Subtle scanlines — every Nth row, a 1px horizontal line at low
+        # alpha. Keeps the grid from feeling aseptic; reads as a hint at
+        # CRT raster without converting the surface to retro-terminal.
+        cr.save()
+        cr.set_source_rgba(1.0, 1.0, 1.0, _SCANLINE_ALPHA)
+        for scan_row in range(0, GRID_ROWS, _SCANLINE_EVERY_N_ROWS):
+            y = scan_row * CELL_SIZE_PX + CELL_SIZE_PX // 2
+            cr.rectangle(0, y, SURFACE_W, 1)
+            cr.fill()
+        cr.restore()
 
 
 __all__ = [
