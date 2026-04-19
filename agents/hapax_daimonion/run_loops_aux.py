@@ -533,3 +533,118 @@ async def ntfy_callback(daemon: VoiceDaemon, notification) -> None:
         notification.title,
         notification.priority,
     )
+
+
+# --- Operator sidechat consumer (task #132) -------------------------------
+#
+# Private, LOCAL-ONLY channel for the operator to whisper
+# notes/commands to Hapax during a livestream, separate from public twitch
+# chat. Each sidechat message is enqueued as an Impingement with
+# PATTERN_MATCH type, priority-boosted strength, and a channel="sidechat"
+# tag so downstream consumers can attribute-route it.
+#
+# Cursor file: `sidechat-cursor-daimonion.txt`. Atomic tmp+rename, identical
+# pattern to `impingement-cursor-daimonion-*.txt`.
+#
+# Privacy: the sidechat JSONL is NEVER copied to twitch/YouTube/chat
+# surfaces — see `shared.operator_sidechat` module docstring and the
+# `tests/shared/test_operator_sidechat.py::TestEgressPin` regression pin.
+
+_SIDECHAT_CURSOR_PATH = Path.home() / ".cache" / "hapax" / "sidechat-cursor-daimonion.txt"
+
+# Priority boost relative to an "ordinary" impingement. The operator
+# directly whispering something is a strong signal — they are present,
+# engaged, and explicit — so we bias strength upward. The +2 in the spec
+# is on a 1..N priority ladder; we translate to a strength multiplier
+# that keeps the final value in the 0..1 range.
+_SIDECHAT_STRENGTH = 0.9
+
+
+def _load_sidechat_cursor() -> float:
+    """Load last-seen ts cursor, or 0.0 on missing / malformed file."""
+    try:
+        raw = _SIDECHAT_CURSOR_PATH.read_text(encoding="utf-8").strip()
+        return float(raw) if raw else 0.0
+    except (FileNotFoundError, ValueError, OSError):
+        return 0.0
+
+
+def _save_sidechat_cursor(ts: float) -> None:
+    """Persist cursor atomically (tmp + rename)."""
+    try:
+        _SIDECHAT_CURSOR_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SIDECHAT_CURSOR_PATH.with_suffix(".txt.tmp")
+        tmp.write_text(f"{ts}", encoding="utf-8")
+        tmp.replace(_SIDECHAT_CURSOR_PATH)
+    except OSError:
+        log.debug("Failed to persist sidechat cursor", exc_info=True)
+
+
+async def sidechat_consumer_loop(daemon: VoiceDaemon) -> None:
+    """Tail the operator sidechat JSONL and enqueue each line as an Impingement.
+
+    Messages appear in ``/dev/shm/hapax-compositor/operator-sidechat.jsonl``
+    via :func:`shared.operator_sidechat.append_sidechat`. Each parsed
+    message becomes a PATTERN_MATCH impingement with:
+
+    * ``source = "operator.sidechat"``
+    * ``strength = _SIDECHAT_STRENGTH`` (priority-boosted)
+    * ``content = {"narrative": <text>, "channel": "sidechat",
+       "msg_id": <id>, "role": <role>}``
+    * ``interrupt_token = "operator_sidechat"`` so the affordance
+      pipeline's pattern-match branch can lift it above background noise.
+
+    The cursor is a last-seen ``ts`` (float), persisted at
+    ``~/.cache/hapax/sidechat-cursor-daimonion.txt`` so a daemon restart
+    doesn't replay the whole backlog. We advance after each successfully
+    enqueued message, not at end-of-batch, so a crash mid-batch
+    re-processes only the unhandled tail.
+    """
+    from shared.impingement import Impingement, ImpingementType
+    from shared.operator_sidechat import SIDECHAT_PATH, tail_sidechat
+
+    cursor_ts = _load_sidechat_cursor()
+    log.info(
+        "Sidechat consumer started (cursor_ts=%.3f, path=%s)",
+        cursor_ts,
+        SIDECHAT_PATH,
+    )
+
+    while daemon._running:
+        try:
+            new_msgs = list(tail_sidechat(since_ts=cursor_ts))
+            for msg in new_msgs:
+                imp = Impingement(
+                    timestamp=msg.ts,
+                    source="operator.sidechat",
+                    type=ImpingementType.PATTERN_MATCH,
+                    strength=_SIDECHAT_STRENGTH,
+                    content={
+                        "narrative": msg.text,
+                        "channel": "sidechat",
+                        "msg_id": msg.msg_id,
+                        "role": msg.role,
+                    },
+                    interrupt_token="operator_sidechat",
+                )
+                try:
+                    # Dispatch through the affordance pipeline on a thread
+                    # so the async loop doesn't block on embedding /
+                    # Qdrant I/O. Mirrors the main impingement loop.
+                    candidates = await asyncio.to_thread(daemon._affordance_pipeline.select, imp)
+                    log.info(
+                        "Sidechat → %d candidate(s): %s",
+                        len(candidates),
+                        msg.text[:80],
+                    )
+                except Exception:
+                    log.debug("Sidechat dispatch error (non-fatal)", exc_info=True)
+
+                cursor_ts = max(cursor_ts, msg.ts)
+                _save_sidechat_cursor(cursor_ts)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            log.debug("Sidechat consumer error (non-fatal)", exc_info=True)
+
+        await asyncio.sleep(0.5)

@@ -44,6 +44,7 @@ RECREATE_TASKS: frozenset[str] = frozenset(
         "cpal_runner",
         "cpal_impingement_loop",
         "impingement_consumer_loop",
+        "sidechat_consumer_loop",
         "actuation_loop",
     }
 )
@@ -263,6 +264,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         impingement_consumer_loop,
         ntfy_callback,
         proactive_delivery_loop,
+        sidechat_consumer_loop,
     )
 
     log.info("Hapax Daimonion daemon starting (backend=%s)", daemon.cfg.backend)
@@ -415,7 +417,17 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "impingement_consumer_loop",
         lambda: impingement_consumer_loop(daemon),
     )
-    log.info("CPAL runner + impingement consumers (CPAL + affordance) started")
+    # Operator sidechat — private LOCAL-ONLY channel for the operator to
+    # whisper notes/commands to Hapax during a livestream. Tails
+    # /dev/shm/hapax-compositor/operator-sidechat.jsonl and enqueues
+    # each message as a pattern-matched Impingement with priority boost.
+    # See run_loops_aux.sidechat_consumer_loop for semantics, task #132.
+    _make_task(
+        daemon,
+        "sidechat_consumer_loop",
+        lambda: sidechat_consumer_loop(daemon),
+    )
+    log.info("CPAL runner + impingement consumers (CPAL + affordance + sidechat) started")
 
     if daemon.cfg.mc_enabled or daemon.cfg.obs_enabled:
         _make_task(daemon, "actuation_loop", lambda: actuation_loop(daemon))

@@ -1,0 +1,79 @@
+#!/usr/bin/env -S uv run python
+"""hapax-sidechat — operator → Hapax private sidechat writer (task #132).
+
+Writes a single operator message to the private sidechat JSONL at
+``/dev/shm/hapax-compositor/operator-sidechat.jsonl``. The daimonion
+``sidechat_consumer_loop`` tails the file and enqueues each line as a
+priority-boosted Impingement.
+
+Usage::
+
+    hapax-sidechat "message text here"
+    hapax-sidechat --role hapax "reply from Hapax"
+    echo "piped text" | hapax-sidechat --stdin
+
+Bind to a Hyprland keybinding for one-keystroke whisper entry, or invoke
+from the terminal during a livestream.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from shared.operator_sidechat import SIDECHAT_PATH, append_sidechat  # noqa: E402
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "text",
+        nargs="*",
+        help="Message body. Joined with spaces if multiple args. Omit with --stdin.",
+    )
+    p.add_argument(
+        "--role",
+        choices=("operator", "hapax"),
+        default="operator",
+        help="Author role. Defaults to 'operator'.",
+    )
+    p.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read message text from stdin instead of positional args.",
+    )
+    p.add_argument(
+        "--path",
+        type=Path,
+        default=None,
+        help="Override sidechat JSONL path (tests only). Defaults to canonical SIDECHAT_PATH.",
+    )
+    args = p.parse_args()
+
+    if args.stdin:
+        text = sys.stdin.read().strip()
+    else:
+        text = " ".join(args.text).strip()
+
+    if not text:
+        print("hapax-sidechat: empty message rejected", file=sys.stderr)
+        return 2
+
+    try:
+        msg = append_sidechat(text, role=args.role, path=args.path)
+    except Exception as exc:
+        print(f"hapax-sidechat: {exc}", file=sys.stderr)
+        return 1
+
+    target = args.path if args.path is not None else SIDECHAT_PATH
+    print(f"ok msg_id={msg.msg_id} ts={msg.ts:.3f} path={target}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
