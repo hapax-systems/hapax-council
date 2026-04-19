@@ -22,6 +22,7 @@ from typing import Any
 
 import cairo
 
+from .homage.rendering import active_package, paint_bitchx_header
 from .homage.transitional_source import HomageTransitionalSource
 
 log = logging.getLogger(__name__)
@@ -309,7 +310,9 @@ class AlbumOverlayCairoSource(HomageTransitionalSource):
         self._attrib_mtime = mtime
 
     def _draw_attrib(self, cr: cairo.Context) -> None:
-        """Draw splattribution text above the album cover.
+        """Draw splattribution text above the album cover with a BitchX
+        ``»»» ALBUM`` header so the ward reads as active mIRC-contract
+        composition rather than a bare caption.
 
         Phase 3c: delegates to the shared text_render helper. The text is
         measured first so we can position it above the cover origin.
@@ -329,6 +332,24 @@ class AlbumOverlayCairoSource(HomageTransitionalSource):
         )
         _w, h = measure_text(cr, style)
         render_text(cr, style, x=0, y=-h - 5)
+        # BitchX-grammar header (cascade-delta 2026-04-18): prepend a
+        # ``»»» ALBUM`` line above the splattribution so the album ward
+        # carries the mIRC-contract grammar uniformly with the rest of
+        # the surface. The header sits one line above the attribution
+        # block; fails silently if the active package resolution raises.
+        try:
+            pkg = active_package()
+            paint_bitchx_header(
+                cr,
+                "ALBUM",
+                pkg,
+                accent_role="accent_magenta",
+                x=0.0,
+                y=-h - 20,
+                font_size=10,
+            )
+        except Exception:
+            log.debug("album bitchx header failed", exc_info=True)
 
 
 # The pre-Phase-9 ``AlbumOverlay`` facade was removed in Phase 9 Task 29.

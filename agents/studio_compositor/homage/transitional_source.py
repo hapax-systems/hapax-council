@@ -278,9 +278,16 @@ class HomageTransitionalSource(CairoSource):
           - EXITING: ``render_exiting()`` with progress.
           - A violation is logged if the choreographer has not emitted a
             transition for this source in the current tick (spec §4.9).
+
+        Cascade-delta (2026-04-18): after rendering content, paint the
+        ward-properties emphasis border if the narrative director's
+        structural_intent has nominated this ward. This is what makes
+        the structural-intent surface visibly active — the operator's
+        "unavoidable evidence of active thoughtful manipulation".
         """
         if not _feature_flag_active():
             self.render_content(cr, canvas_w, canvas_h, t, state)
+            self._maybe_paint_emphasis(cr, canvas_w, canvas_h, t)
             return
 
         self.tick()
@@ -291,6 +298,7 @@ class HomageTransitionalSource(CairoSource):
 
         if self._state is TransitionState.HOLD:
             self.render_content(cr, canvas_w, canvas_h, t, state)
+            self._maybe_paint_emphasis(cr, canvas_w, canvas_h, t)
             return
 
         progress = self._progress(now=time.monotonic())
@@ -298,6 +306,38 @@ class HomageTransitionalSource(CairoSource):
             self.render_entering(cr, canvas_w, canvas_h, t, state, progress)
         elif self._state is TransitionState.EXITING:
             self.render_exiting(cr, canvas_w, canvas_h, t, state, progress)
+        self._maybe_paint_emphasis(cr, canvas_w, canvas_h, t)
+
+    def _maybe_paint_emphasis(
+        self,
+        cr: cairo.Context,
+        canvas_w: int,
+        canvas_h: int,
+        t: float,
+    ) -> None:
+        """Best-effort glow-border overlay driven by ``ward-properties.json``.
+
+        Called after ``render_content`` / ``render_entering`` /
+        ``render_exiting`` so the emphasis border sits on top of the
+        ward's own artwork. Cairo or import errors are swallowed —
+        emphasis polish must never break a ward's primary render path.
+        """
+        try:
+            from agents.studio_compositor.homage.rendering import (
+                active_package,
+                paint_emphasis_border,
+            )
+
+            paint_emphasis_border(
+                cr,
+                canvas_w,
+                canvas_h,
+                active_package(),
+                ward_id=self._source_id,
+                t=t,
+            )
+        except Exception:
+            log.debug("_maybe_paint_emphasis failed for %s", self._source_id, exc_info=True)
 
     # ── Utilities ───────────────────────────────────────────────────────
 
