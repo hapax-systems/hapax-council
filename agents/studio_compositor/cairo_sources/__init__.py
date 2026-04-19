@@ -74,8 +74,9 @@ def _register_builtins() -> None:
 
     # HOMAGE follow-on #123 (2026-04-18) — ChatAmbientWard replaces the
     # static ChatKeywordLegendCairoSource with a dynamic, aggregate-only
-    # BitchX-grammar chat surface. The legacy class is deliberately
-    # NOT imported here — its registration is removed below.
+    # BitchX-grammar chat surface. HOTFIX 2026-04-19: ChatKeywordLegendCairoSource
+    # is still referenced by existing layout JSONs (default.json + garage-door
+    # .json); re-register it under both names until the layouts catch up.
     from agents.studio_compositor.chat_ambient_ward import ChatAmbientWard
     from agents.studio_compositor.hardm_source import HardmDotMatrix
     from agents.studio_compositor.hothouse_sources import (
@@ -88,6 +89,7 @@ def _register_builtins() -> None:
     )
     from agents.studio_compositor.legibility_sources import (
         ActivityHeaderCairoSource,
+        ChatKeywordLegendCairoSource,
         GroundingProvenanceTickerCairoSource,
         StanceIndicatorCairoSource,
     )
@@ -108,11 +110,12 @@ def _register_builtins() -> None:
     register("ActivityHeaderCairoSource", ActivityHeaderCairoSource)
     register("StanceIndicatorCairoSource", StanceIndicatorCairoSource)
     # HOMAGE follow-on #123 (2026-04-18) — ChatAmbientWard is the
-    # dynamic, aggregate-only replacement for the static
-    # ChatKeywordLegendCairoSource. The legacy registration is removed;
-    # the legacy class remains in legibility_sources.py until Phase 11
-    # back-compat sweep, but is no longer reachable from a Layout JSON.
+    # dynamic, aggregate-only replacement. HOTFIX 2026-04-19: both
+    # classes are registered until layout JSONs migrate to ChatAmbientWard.
+    # Once the migration lands (separate PR), ChatKeywordLegendCairoSource
+    # can be removed.
     register("ChatAmbientWard", ChatAmbientWard)
+    register("ChatKeywordLegendCairoSource", ChatKeywordLegendCairoSource)
     register(
         "GroundingProvenanceTickerCairoSource",
         GroundingProvenanceTickerCairoSource,

@@ -100,18 +100,19 @@
       ]
     },
     {
-      "id": "chat_keyword_legend",
+      "id": "chat_ambient",
       "kind": "cairo",
       "backend": "cairo",
       "params": {
-        "class_name": "ChatAmbientWard",
-        "natural_w": 160,
-        "natural_h": 400
+        "class_name": "ChatKeywordLegendCairoSource",
+        "natural_w": 560,
+        "natural_h": 40
       },
       "update_cadence": "rate",
       "rate_hz": 2.0,
       "tags": [
-        "legibility"
+        "legibility",
+        "chat"
       ]
     },
     {
@@ -646,7 +647,7 @@
       "per_assignment_effects": []
     },
     {
-      "source": "chat_keyword_legend",
+      "source": "chat_ambient",
       "surface": "chat-legend-right",
       "transform": {},
       "opacity": 1.0,
