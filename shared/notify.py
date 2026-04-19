@@ -218,7 +218,32 @@ def send_notification(
 
     Returns:
         True if notification was delivered via at least one channel.
+
+    **Speech-safety defence-in-depth**: notifications are operator-visible
+    surfaces that can end up screenshotted / shared. Route title + message
+    through :func:`shared.speech_safety.censor` so the same
+    substitution pool protects them as the TTS path. Zero cost when
+    content is clean; substitution on the rare hit.
     """
+    # Speech-safety gate: operator-visible surfaces share the
+    # monetization-safety invariant with TTS. See
+    # docs/research/2026-04-20-audit-synthesis-final.md §4.
+    try:
+        from shared.speech_safety import censor as _censor_speech
+
+        title_r = _censor_speech(title)
+        message_r = _censor_speech(message)
+        if title_r.was_modified or message_r.was_modified:
+            _log.warning(
+                "notify safety-gate: redacted %d title-token(s) + %d message-token(s)",
+                title_r.hit_count,
+                message_r.hit_count,
+            )
+            title = title_r.text
+            message = message_r.text
+    except Exception:
+        _log.debug("notify: speech_safety censor import/call failed", exc_info=True)
+
     # IFC boundary gate: suppress notifications carrying person-adjacent data
     # when consent has not been granted. Currently all callers pass None (no label),
     # so no notifications are suppressed. Gate is structural for future use.

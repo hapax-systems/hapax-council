@@ -772,17 +772,19 @@ def _publish_yt_audio_active(active: bool) -> None:
 
     Mirror of ``agents.studio_compositor.audio_ducking.set_yt_audio_active``
     — duplicated inline to avoid the agents/ import path under system
-    Python. Only writes when the boolean changes, keeping the tmp+rename
-    churn minimal.
+    Python.
 
     The AudioDuckingController watches this file to flip its
-    ``yt_active`` gauge and drive voice-vs-music ducking. Before this
-    hook shipped, the file had no producer (wiring-audit §2.6 / §9.4,
-    smoking gun #4) so ducking state was stuck at ``normal=1`` forever.
+    ``yt_active`` gauge and drive voice-vs-music ducking.
+
+    **Task #183 fix (2026-04-20)**: writes on EVERY tick, not just on
+    state-change. Previously the file was written only on edge
+    transitions, so consumers couldn't use mtime as a liveness signal
+    — a dead producer left the last boolean stale forever. Writing
+    every tick (idempotent tmp+rename) keeps mtime fresh so downstream
+    readers can staleness-check the producer.
     """
     global _yt_audio_last_written
-    if active == _yt_audio_last_written:
-        return
     try:
         _YT_AUDIO_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = _YT_AUDIO_STATE_FILE.with_suffix(".tmp")
