@@ -41,6 +41,18 @@ from agents.studio_compositor.face_obscure_pipeline import (
 )
 from shared.face_obscure_policy import FaceObscurePolicy, resolve_policy
 
+try:
+    # Prometheus counter is best-effort; import failure must not break the
+    # capture path (e.g. in unit tests that don't import the full metrics
+    # surface).
+    from agents.studio_compositor.metrics import record_face_obscure_frame
+except Exception:  # pragma: no cover — defensive
+
+    def record_face_obscure_frame(camera_role: str, has_faces: bool) -> None:  # noqa: ARG001
+        """No-op fallback when metrics module is unavailable."""
+        return
+
+
 if TYPE_CHECKING:
     import numpy as np
 else:
@@ -141,6 +153,9 @@ def obscure_frame_for_camera(
     if policy is FaceObscurePolicy.DISABLED:
         # Flag OFF or policy explicitly DISABLED — pass-through. §11 of the
         # spec requires this to be byte-identical to pre-feature behavior.
+        # Still record the metric so Grafana can tell a quiet camera from
+        # a disabled capture path.
+        record_face_obscure_frame(camera_role, has_faces=False)
         return frame
 
     try:
@@ -152,11 +167,14 @@ def obscure_frame_for_camera(
             camera_role,
             exc,
         )
+        record_face_obscure_frame(camera_role, has_faces=False)
         return frame
 
     filtered = _filter_by_policy(bboxes, policy=policy, operator_flags=None)
     if not filtered:
+        record_face_obscure_frame(camera_role, has_faces=False)
         return frame
+    record_face_obscure_frame(camera_role, has_faces=True)
     return _OBSCURER.obscure(frame, filtered)
 
 

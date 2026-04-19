@@ -5,12 +5,26 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import cv2
 
 from .config import SNAPSHOT_DIR
+from .face_obscure_integration import obscure_frame_for_camera
 from .models import CameraSpec, TileRect
 
+if TYPE_CHECKING:
+    import numpy as np
+else:
+    import numpy as np  # noqa: TC002 — needed at runtime for buffer reshape
+
 log = logging.getLogger(__name__)
+
+# JPEG quality for the obscured snapshot. Matches the previous `jpegenc
+# quality=75` setting so downstream consumers see the same size/quality
+# budget; the Python re-encode replaces the GStreamer ``jpegenc`` element
+# so we can run face obscuring on the raw BGR buffer first.
+_JPEG_QUALITY = 75
 
 
 def add_camera_snapshot_branch(
@@ -32,18 +46,24 @@ def add_camera_snapshot_branch(
     scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
     snap_w = min(cam.width, 640)
     snap_h = min(cam.height, 360)
+    # Task #129 Stage 3: force BGR output so the appsink callback can hand a
+    # contiguous HxWx3 uint8 array to ``obscure_frame_for_camera`` + cv2
+    # without an extra convert pass. Previously the chain terminated in
+    # ``jpegenc`` and emitted a JPEG blob; we now encode in Python after the
+    # obscure stage so downstream tees read only obscured bytes.
     scale_caps.set_property(
-        "caps", Gst.Caps.from_string(f"video/x-raw,width={snap_w},height={snap_h}")
+        "caps",
+        Gst.Caps.from_string(
+            f"video/x-raw,format=BGR,width={snap_w},height={snap_h}",
+        ),
     )
-    encoder = Gst.ElementFactory.make("jpegenc", f"camsnap-jpeg-{role}")
-    encoder.set_property("quality", 75)
     appsink = Gst.ElementFactory.make("appsink", f"camsnap-sink-{role}")
     appsink.set_property("sync", False)
     appsink.set_property("async", False)
     appsink.set_property("drop", True)
     appsink.set_property("max-buffers", 1)
 
-    chain = [queue, convert, rate, rate_caps, scale, scale_caps, encoder, appsink]
+    chain = [queue, convert, rate, rate_caps, scale, scale_caps, appsink]
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     snap_role = cam.role
@@ -54,20 +74,57 @@ def add_camera_snapshot_branch(
             return 1
         buf = sample.get_buffer()
         ok, mapinfo = buf.map(compositor._Gst.MapFlags.READ)
-        if ok:
+        if not ok:
+            return 0
+        try:
+            expected = snap_w * snap_h * 3
+            # Some drivers pad rows; guard against it rather than assuming.
+            if mapinfo.size < expected:
+                log.warning(
+                    "camsnap buffer underflow for %s: size=%d expected=%d",
+                    snap_role,
+                    mapinfo.size,
+                    expected,
+                )
+                return 0
+            # Build a numpy view over the mapped buffer, then copy because
+            # the buffer is unmapped on exit.
+            frame = np.frombuffer(mapinfo.data, dtype=np.uint8, count=expected).reshape(
+                (snap_h, snap_w, 3)
+            )
+            # Task #129 Stage 3 — irreversible face obscure BEFORE egress.
+            # This is the live privacy-leak fix: all downstream tees
+            # (content injector → Reverie → pip-ur, director LLM snapshots,
+            # OBS V4L2 loopback, RTMP, HLS) read ``cam-<role>.jpg`` so the
+            # JPEG written below must already be obscured.
             try:
-                tmp = SNAPSHOT_DIR / f"{snap_role}.jpg.tmp"
-                final = SNAPSHOT_DIR / f"{snap_role}.jpg"
-                data = bytes(mapinfo.data)
-                fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
-                try:
-                    written = os.write(fd, data)
-                finally:
-                    os.close(fd)
-                if written == len(data):
-                    tmp.rename(final)
+                frame = obscure_frame_for_camera(frame, snap_role)
+            except Exception as exc:  # noqa: BLE001 — never crash the pipeline
+                log.warning(
+                    "face obscure raised for %s: %s; writing raw frame",
+                    snap_role,
+                    exc,
+                )
+            ok_enc, jpeg = cv2.imencode(
+                ".jpg",
+                frame,
+                [int(cv2.IMWRITE_JPEG_QUALITY), _JPEG_QUALITY],
+            )
+            if not ok_enc:
+                log.warning("camsnap imencode failed for %s", snap_role)
+                return 0
+            data = jpeg.tobytes()
+            tmp = SNAPSHOT_DIR / f"{snap_role}.jpg.tmp"
+            final = SNAPSHOT_DIR / f"{snap_role}.jpg"
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+            try:
+                written = os.write(fd, data)
             finally:
-                buf.unmap(mapinfo)
+                os.close(fd)
+            if written == len(data):
+                tmp.rename(final)
+        finally:
+            buf.unmap(mapinfo)
         return 0
 
     appsink.set_property("emit-signals", True)

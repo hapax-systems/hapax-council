@@ -122,6 +122,12 @@ COMP_MUSIC_DUCKED: Any = None
 HAPAX_IMAGINATION_SHADER_ROLLBACK_TOTAL: Any = None
 COMP_GLFEEDBACK_RECOMPILE_TOTAL: Any = None
 COMP_GLFEEDBACK_ACCUM_CLEAR_TOTAL: Any = None
+# Task #129 Stage 3 — per-camera face-obscure observability. Increments
+# every time ``face_obscure_integration.obscure_frame_for_camera`` is
+# called, labelled by camera role and whether any bboxes were obscured
+# in this call (``has_faces=true|false``). Runs on the capture-branch
+# appsink thread — prometheus_client Counter is thread-safe.
+HAPAX_FACE_OBSCURE_FRAME_TOTAL: Any = None
 # Drop #41 BT-5 + drop #52 FDL-2/3/4 observability triple: surface the
 # compositor's fd count, per-camera rebuild count, and per-stop teardown
 # duration as scrape-visible metrics so future regressions in the
@@ -325,6 +331,21 @@ def _init_metrics() -> None:
         "Number of times activate_plan triggered an accumulation-buffer clear "
         "(paired with recompile_total: every real shader change clears both "
         "accum FBOs in the Rust plugin).",
+        registry=REGISTRY,
+    )
+
+    # Task #129 Stage 3 — per-camera face-obscure counter. Labelled by
+    # camera role and a ``has_faces`` flag so dashboards can both track
+    # the raw call volume per camera and verify that the detector is
+    # actually firing (``has_faces="true"`` rate should track expected
+    # operator/guest presence). See
+    # ``face_obscure_integration.obscure_frame_for_camera``.
+    global HAPAX_FACE_OBSCURE_FRAME_TOTAL
+    HAPAX_FACE_OBSCURE_FRAME_TOTAL = Counter(
+        "hapax_face_obscure_frame_total",
+        "Frames passed through the capture-time face obscure stage, "
+        "labelled by camera role and whether any faces were obscured.",
+        ["camera_role", "has_faces"],
         registry=REGISTRY,
     )
 
@@ -841,6 +862,23 @@ def record_tts_client_timeout() -> None:
     if COMP_TTS_CLIENT_TIMEOUT_TOTAL is None:
         return
     COMP_TTS_CLIENT_TIMEOUT_TOTAL.inc()
+
+
+def record_face_obscure_frame(camera_role: str, has_faces: bool) -> None:
+    """Record a capture-time face-obscure call (task #129 Stage 3).
+
+    Called from ``face_obscure_integration.obscure_frame_for_camera`` on every
+    invocation, regardless of whether the feature flag is on — a disabled
+    stage is still observable as ``has_faces="false"`` so Grafana can alert
+    if the counter ever flat-lines across all cameras. No-op if
+    prometheus_client is unavailable.
+    """
+    if HAPAX_FACE_OBSCURE_FRAME_TOTAL is None:
+        return
+    HAPAX_FACE_OBSCURE_FRAME_TOTAL.labels(
+        camera_role=camera_role,
+        has_faces="true" if has_faces else "false",
+    ).inc()
 
 
 # Lazy-initialised subprocess command cache for the VRAM poll so we only
