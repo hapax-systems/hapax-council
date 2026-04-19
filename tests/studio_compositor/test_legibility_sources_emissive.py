@@ -178,11 +178,16 @@ class TestActivityHeaderEmissive:
             f"missing_burst={burst_letters - glyph_set}"
         )
 
-        # Default ("steady") — no suffix. Rotation-specific letters that do
-        # NOT appear in the header chrome ('>>> [ACTIVITY|X]') must be absent.
-        # Use letters that aren't in the default chrome: R, O, N, U, S —
-        # absent from '>>> [ACTIVITY|X]' (A, C, I, T, V, Y, X and chevrons
-        # only). If any of these appear, the rotation suffix rendered.
+        # Default ("steady") — no suffix. Instead of trying to pick letters
+        # that are unique to the rotation suffix (brittle — the default
+        # chrome renders "[ACTIVITY|X] :: [STANCE:NOMINAL]" and similar
+        # which contains many letters), compare TOTAL GLYPH COUNT between
+        # the two modes. The burst suffix adds ~15 glyphs (":: [ROTATION:
+        # BURST]" = ~14 chars, doubled for halo+body = ~28 glyph calls);
+        # if the steady render has significantly fewer glyphs than the
+        # burst render captured above, the suffix was skipped correctly.
+        burst_glyph_count = len(glyphs)
+
         ward2 = ls.ActivityHeaderCairoSource()
         with (
             patch.object(ls, "_read_narrative_state", return_value={"activity": "x"}),
@@ -192,11 +197,13 @@ class TestActivityHeaderEmissive:
         ):
             glyphs.clear()
             _render_ward(ward2, 800, 56, t=0.0)
-        glyph_set = set(glyphs)
-        rotation_only_letters = {"R", "O", "N", "U", "S"}
-        assert not rotation_only_letters.intersection(glyph_set), (
+        steady_glyph_count = len(glyphs)
+
+        # Steady should be materially shorter — at least 10 fewer glyph
+        # calls than burst (conservative floor; actual delta is ~28).
+        assert steady_glyph_count < burst_glyph_count - 10, (
             f"rotation suffix present when mode is default; "
-            f"unexpected_letters={rotation_only_letters & glyph_set}"
+            f"steady_glyphs={steady_glyph_count}, burst_glyphs={burst_glyph_count}"
         )
 
     def test_emissive_primitives_are_invoked(self):

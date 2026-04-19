@@ -40,56 +40,61 @@ requires_pango = pytest.mark.skipif(
 )
 
 
+# HOMAGE Phase A4 rewrote stream_overlay format helpers to BitchX grammar:
+#   >>> [FX|<chain>]    >>> [VIEWERS|<count>]    >>> [CHAT|<status>]
+# Tests updated accordingly.
+
+
 def test_format_preset_known_value():
-    assert so._format_preset("chain") == "FX: chain"
+    assert so._format_preset("chain") == ">>> [FX|chain]"
 
 
 def test_format_preset_empty_falls_back():
-    assert so._format_preset("") == "FX: —"
+    assert so._format_preset("") == ">>> [FX|—]"
 
 
 def test_format_preset_truncates_long_values():
-    assert so._format_preset("a" * 50) == "FX: " + "a" * 20
+    assert so._format_preset("a" * 50) == ">>> [FX|" + "a" * 20 + "]"
 
 
 def test_format_viewers_singular():
-    assert so._format_viewers({"active_viewers": 1}) == "● 1 viewer"
+    assert so._format_viewers({"active_viewers": 1}) == ">>> [VIEWERS|1]"
 
 
 def test_format_viewers_plural():
-    assert so._format_viewers({"active_viewers": 42}) == "● 42 viewers"
+    assert so._format_viewers({"active_viewers": 42}) == ">>> [VIEWERS|42]"
 
 
 def test_format_viewers_missing_falls_back():
-    assert so._format_viewers({}) == "● — viewers"
+    assert so._format_viewers({}) == ">>> [VIEWERS|—]"
 
 
 def test_format_viewers_rejects_non_int():
-    assert so._format_viewers({"active_viewers": "infinite"}) == "● — viewers"
+    assert so._format_viewers({"active_viewers": "infinite"}) == ">>> [VIEWERS|—]"
 
 
 def test_format_viewers_rejects_negative():
-    assert so._format_viewers({"active_viewers": -3}) == "● — viewers"
+    assert so._format_viewers({"active_viewers": -3}) == ">>> [VIEWERS|—]"
 
 
 def test_format_chat_idle_on_empty_dict():
-    assert so._format_chat({}) == "░ chat idle"
+    assert so._format_chat({}) == ">>> [CHAT|idle]"
 
 
 def test_format_chat_idle_on_zero_messages():
-    assert so._format_chat({"total_messages": 0, "unique_authors": 0}) == "░ chat idle"
+    assert so._format_chat({"total_messages": 0, "unique_authors": 0}) == ">>> [CHAT|idle]"
 
 
 def test_format_chat_quiet_on_single_author():
-    assert so._format_chat({"total_messages": 5, "unique_authors": 1}) == "░ chat quiet (5)"
+    assert so._format_chat({"total_messages": 5, "unique_authors": 1}) == ">>> [CHAT|quiet 5]"
 
 
 def test_format_chat_active_on_multiple_authors():
-    assert so._format_chat({"total_messages": 17, "unique_authors": 4}) == "░ 4 talking (17)"
+    assert so._format_chat({"total_messages": 17, "unique_authors": 4}) == ">>> [CHAT|4t/17m]"
 
 
 def test_format_chat_rejects_non_int_fields():
-    assert so._format_chat({"total_messages": "x", "unique_authors": 2}) == "░ chat idle"
+    assert so._format_chat({"total_messages": "x", "unique_authors": 2}) == ">>> [CHAT|idle]"
 
 
 def test_read_text_missing_file(tmp_path: Path):
