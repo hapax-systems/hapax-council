@@ -1,0 +1,15 @@
+[Unit]
+Description=KDEConnect phone-push bridge for council command registry
+After=graphical-session.target kdeconnect.service
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.kdeconnect_bridge
+WorkingDirectory=/home/hapax/projects/hapax-council
+Environment=HAPAX_LOG_LEVEL=INFO
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

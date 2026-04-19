@@ -263,7 +263,7 @@ def system_prompt(
     declaration + tool descriptions + policy block.
 
     Legacy path (HAPAX_PERSONA_LEGACY=1): returns the pre-Phase-7 hard-coded
-    personality-coded prompt for emergency revert.
+    prompt (NOT a personality — it is the deprecated revert target).
 
     Args:
         guest_mode: Partner is not the operator. Limits tool scope.

@@ -38,6 +38,17 @@ jobs:
       - uses: astral-sh/ruff-action@v3
         with:
           args: "format --check"
+      # Task #155 Stage 5 — anti-personification fail-loud CI gate.
+      # Scans axioms/**/*.md and prompt-surface modules; exits non-zero
+      # on any deny-list finding that survives the carve-out windows.
+      - name: Install system deps (cairo, gobject)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
+      - run: uv sync --extra ci
+      - name: Anti-personification linter
+        run: uv run python scripts/lint_personification.py
+
 
   typecheck:
     runs-on: ubuntu-latest

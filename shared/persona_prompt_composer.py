@@ -80,7 +80,12 @@ _COMPRESSED_FRAGMENT = (
 )
 
 
-def compose_persona_prompt(role_id: str | None = None, *, compressed: bool = False) -> str:
+def compose_persona_prompt(
+    role_id: str | None = None,
+    *,
+    compressed: bool = False,
+    enforce: bool = True,
+) -> str:
     """Return the persona-description fragment, optionally with a current-role line.
 
     Args:
@@ -93,6 +98,14 @@ def compose_persona_prompt(role_id: str | None = None, *, compressed: bool = Fal
             description-of-being would exhaust the context budget. The
             compressed fragment preserves the description-of-being frame
             (architectural state, not inner life) in minimal form.
+        enforce: When True (default), run the anti-personification linter in
+            fail mode over the composed fragment and raise
+            :class:`shared.anti_personification_linter.AntiPersonificationViolation`
+            if any deny-list pattern matches outside a carve-out window. This
+            turns every prompt surface that routes through this composer
+            (voice pipeline + director loop) into a fail-loud boundary. The
+            flag is exposed for harnesses that need to inspect a violation
+            shape without raising.
 
     Returns:
         The persona fragment as a string. When ``role_id`` is provided,
@@ -102,9 +115,15 @@ def compose_persona_prompt(role_id: str | None = None, *, compressed: bool = Fal
     context block (e.g. between ``## Identity`` and ``## Tools``).
     """
     fragment = _COMPRESSED_FRAGMENT if compressed else _load_fragment()
-    if role_id:
-        return f"{fragment}\n\nCurrent role instance: {role_id}"
-    return fragment
+    out = f"{fragment}\n\nCurrent role instance: {role_id}" if role_id else fragment
+    if enforce:
+        # Local import avoids import-cycle risk and keeps module import cost
+        # flat when the linter is not needed (tests that construct a
+        # composer without touching prompt surfaces).
+        from shared.anti_personification_linter import lint_text
+
+        lint_text(out, path="<compose_persona_prompt>", lint_mode="fail")
+    return out
 
 
 # Known role ids from axioms/roles/registry.yaml. Exposed so callers

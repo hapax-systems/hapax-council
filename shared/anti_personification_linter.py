@@ -40,17 +40,40 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
 __all__ = [
     "Finding",
+    "AntiPersonificationViolation",
     "DENY_PATTERNS",
     "REJECTION_KEYWORDS",
     "REJECTION_WINDOW",
     "lint_text",
     "lint_path",
 ]
+
+
+LintMode = Literal["warn", "fail"]
+
+
+class AntiPersonificationViolation(Exception):
+    """Raised by `lint_text` / `lint_path` when `lint_mode="fail"` and any
+    deny-list pattern matches outside a carve-out window.
+
+    Carries the full list of `Finding` objects on the `.findings` attribute so
+    the caller can render a structured error without re-running the scan.
+    """
+
+    def __init__(self, findings: list[Finding]) -> None:
+        self.findings = findings
+        preview = "; ".join(
+            f"{f.file_path}:{f.line}:{f.col} {f.rule_id} ({f.matched_text!r})" for f in findings[:3]
+        )
+        if len(findings) > 3:
+            preview += f" ... (+{len(findings) - 3} more)"
+        super().__init__(f"anti-personification: {len(findings)} finding(s): {preview}")
 
 
 # ---------------------------------------------------------------------------
@@ -184,14 +207,21 @@ def _carve_out(text: str, match_start: int, rule_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def lint_text(text: str, path: str = "") -> list[Finding]:
+def lint_text(text: str, path: str = "", lint_mode: LintMode = "warn") -> list[Finding]:
     """Scan `text` for deny-list hits, respecting the context-window allow-list.
 
     A file-level `anti-personification: allow` pragma short-circuits the scan.
+
+    `lint_mode`:
+      - ``"warn"`` (default, backward compatible) — return the list of findings.
+      - ``"fail"`` — raise :class:`AntiPersonificationViolation` carrying the
+        findings if any deny-list pattern matches outside a carve-out window.
+        Returns ``[]`` on clean input.
     """
     if _FILE_LEVEL_PRAGMA.search(text):
         return []
 
+    severity = "error" if lint_mode == "fail" else "warn"
     findings: list[Finding] = []
     for family, patterns in DENY_PATTERNS.items():
         for rule_id, pattern in patterns:
@@ -207,9 +237,11 @@ def lint_text(text: str, path: str = "") -> list[Finding]:
                         col=col,
                         rule_id=f"{family}.{rule_id}",
                         matched_text=match.group(0),
-                        severity="warn",
+                        severity=severity,
                     )
                 )
+    if lint_mode == "fail" and findings:
+        raise AntiPersonificationViolation(findings)
     return findings
 
 
@@ -359,11 +391,14 @@ def _load_file_scope_allowlist() -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def lint_path(path: Path | str) -> list[Finding]:
+def lint_path(path: Path | str, lint_mode: LintMode = "warn") -> list[Finding]:
     """Lint a single file. Dispatches on suffix (.py, .md, .yaml/.yml).
 
     Unknown suffixes fall back to raw text scanning. Path-level suppressions
     from `axioms/anti_personification_allowlist.yaml` short-circuit the scan.
+
+    `lint_mode` mirrors :func:`lint_text`: ``"warn"`` returns findings,
+    ``"fail"`` raises :class:`AntiPersonificationViolation` if any survive.
     """
     p = Path(path)
     resolved = str(p.resolve(strict=False))
@@ -381,11 +416,16 @@ def lint_path(path: Path | str) -> list[Finding]:
 
     extractor = _EXTRACTORS.get(p.suffix)
     if extractor is None:
-        return lint_text(source, path=str(p))
+        # For unknown suffixes we always collect in warn mode and translate
+        # mode semantics here so fragment relocation below sees raw findings.
+        raw = lint_text(source, path=str(p), lint_mode="warn")
+        if lint_mode == "fail" and raw:
+            raise AntiPersonificationViolation(raw)
+        return raw
 
     findings: list[Finding] = []
     for fragment, frag_line, frag_col in extractor(source):  # type: ignore[operator]
-        for f in lint_text(fragment, path=str(p)):
+        for f in lint_text(fragment, path=str(p), lint_mode="warn"):
             # Relocate the fragment-local line/col to file coordinates.
             # For Markdown/YAML the fragment IS the whole source (frag_line=1,
             # frag_col=0) so coordinates pass through unchanged. For Python
@@ -400,7 +440,9 @@ def lint_path(path: Path | str) -> list[Finding]:
                     col=absolute_col,
                     rule_id=f.rule_id,
                     matched_text=f.matched_text,
-                    severity=f.severity,
+                    severity="error" if lint_mode == "fail" else f.severity,
                 )
             )
+    if lint_mode == "fail" and findings:
+        raise AntiPersonificationViolation(findings)
     return findings
