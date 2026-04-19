@@ -170,26 +170,30 @@ class TestRender:
         assert r < 50
         assert a > 200
 
-    def test_halo_gradient_falls_off_from_centre(self, tmp_path) -> None:
-        """Pointillism: the centre pixel is brighter than a pixel a few
-        px away from centre, confirming a radial halo exists rather than
-        a flat-fill rectangle."""
+    def test_active_cells_render_cp437_block_glyphs(self, tmp_path) -> None:
+        """Aesthetic rework (2026-04-20): cells render CP437 block glyphs
+        at full level, not radial halos. Asserting the cell's interior is
+        the accent colour across more than a single pixel — a halo falloff
+        would place cyan only at the centre, while a block glyph fills
+        the cell uniformly.
+        """
         _write_signals(tmp_path, {"midi_active": True})
         surface = _render_hardm()
         stride = surface.get_stride()
         data = surface.get_data()
 
-        def _pixel(x: int, y: int) -> tuple[int, int, int]:
-            idx = y * stride + x * 4
-            return (data[idx], data[idx + 1], data[idx + 2])
-
-        # Cell (0, 5) centre is at (88, 8).
-        cx, cy = 5 * CELL_SIZE_PX + CELL_SIZE_PX // 2, 0 * CELL_SIZE_PX + CELL_SIZE_PX // 2
-        centre_b, centre_g, _ = _pixel(cx, cy)
-        edge_b, edge_g, _ = _pixel(cx, cy + 6)  # 6 px below centre
-        # Cyan-dominant channels must fall off outward.
-        assert centre_b > edge_b
-        assert centre_g > edge_g
+        # Cell (0, 5) spans columns 80..95, rows 0..15. Sample 3 pixels
+        # across the glyph body; ALL should be cyan-dominant if we're
+        # rendering a full block. A halo would only light one.
+        cyan_count = 0
+        for dx in (7, 8, 9):
+            cx = 5 * CELL_SIZE_PX + dx
+            cy = 0 * CELL_SIZE_PX + 8
+            idx = cy * stride + cx * 4
+            b, g, r = data[idx], data[idx + 1], data[idx + 2]
+            if b > 100 and g > 100 and r < 80:
+                cyan_count += 1
+        assert cyan_count >= 2  # at least 2 of 3 pixels cyan-dominant
 
     def test_stress_value_renders_accent_red(self, tmp_path) -> None:
         _write_signals(tmp_path, {"consent_gate": "blocked"})
@@ -270,26 +274,35 @@ class TestClassifier:
 
 class TestPaletteSwap:
     def test_cell_colours_follow_active_package(self, monkeypatch, tmp_path) -> None:
-        """Swap in a stubbed package with a distinctive muted role and
-        assert the rendered cell uses that package's RGBA, not BitchX's."""
-        _write_signals(tmp_path, {"midi_active": False})  # row 0 idle
+        """Swap in a stubbed package with a distinctive accent-cyan role
+        and assert an active cell uses that package's RGBA. The aesthetic
+        rework paints idle cells blank (block_idx=0) except where the RD
+        underlay boosts them, so the test pins on an ACTIVE signal where
+        the glyph is guaranteed to render at the package's family-accent
+        colour.
+        """
+        _write_signals(tmp_path, {"midi_active": True})  # row 0 active
+
+        class _StubTypography:
+            primary_font_family = "Px437 IBM VGA 8x16"
 
         class _StubPkg:
             name = "stub"
+            typography = _StubTypography()
 
             def resolve_colour(self, role):  # noqa: D401 — imitates HomagePackage
-                if role == "muted":
-                    # Bright pink muted — obviously not BitchX grey.
+                if role == "accent_cyan":
+                    # Bright pink accent — obviously not BitchX cyan.
                     return (1.0, 0.0, 0.5, 1.0)
                 if role == "background":
-                    return (0.0, 0.0, 0.0, 0.0)
-                return (0.0, 0.0, 0.0, 0.0)
+                    return (0.0, 0.0, 0.0, 1.0)
+                return (0.39, 0.39, 0.39, 1.0)
 
         monkeypatch.setattr(hs, "get_active_package", lambda: _StubPkg())
 
         surface = _render_hardm()
         b, g, r, a = _cell_pixel(surface, row=0, col=5)
-        # Pink muted: R=255, G=0, B=128 (cairo premul; check the signature).
+        # Pink accent on active cell: R dominant, G near zero.
         assert r > 200
         assert g < 50
 
