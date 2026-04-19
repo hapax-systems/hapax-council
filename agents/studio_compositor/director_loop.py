@@ -1610,7 +1610,13 @@ class DirectorLoop:
         try:
             from shared.perceptual_field import build_perceptual_field
 
-            pfield = build_perceptual_field(recent_reactions=list(self._reaction_history[-8:]))
+            pfield = build_perceptual_field(
+                recent_reactions=[
+                    entry
+                    for entry in self._reaction_history[-8:]
+                    if "Silence hold:" not in (entry or "")
+                ]
+            )
             parts.append("")
             parts.append("## Perceptual Field")
             parts.append(
@@ -1657,11 +1663,23 @@ class DirectorLoop:
             pass
 
         # ─── Layer 3: Recent reactions (last 8, timestamped thread) ─
+        # Silence-hold impingement narratives are COMPOSITIONAL directives
+        # (e.g. "Silence hold: maintain the current surface...") meant for
+        # the visual pipeline — NOT prior things Hapax actually said. If
+        # they leak into "Recent Reactions" the LLM latches onto "hold"
+        # and riffs more meta-state narration. Filter them out.
+        # Operator directive 2026-04-19: stop narrating META-STATE.
         if self._reaction_history:
-            parts.append("")
-            parts.append("## Recent Reactions")
-            for entry in self._reaction_history[-8:]:
-                parts.append(f"- {entry}")
+            filtered = [
+                entry
+                for entry in self._reaction_history[-8:]
+                if "Silence hold:" not in (entry or "")
+            ]
+            if filtered:
+                parts.append("")
+                parts.append("## Recent Reactions")
+                for entry in filtered:
+                    parts.append(f"- {entry}")
 
         # ─── Research objectives (LRR Phase 8 §3.3 integration) ──
         try:
@@ -1815,7 +1833,7 @@ class DirectorLoop:
             "so the highest-salience ward wins.\n"
             "  - ward_emphasis: 1–3 ward_ids to brighten + glow + pulse "
             "for ~4s. Pick wards actually relevant to the current move. "
-            'Valid ids: chat_ambient, activity_header, '
+            "Valid ids: chat_ambient, activity_header, "
             "stance_indicator, grounding_provenance_ticker, "
             "impingement_cascade, recruitment_candidate_panel, "
             "thinking_indicator, pressure_gauge, activity_variety_log, "
@@ -1829,7 +1847,7 @@ class DirectorLoop:
             "  - ward_retire (optional): 0–2 ward_ids to quiet out "
             "(FSM HOLD → EXITING). Pair with ward_dispatch for a swap.\n"
             "  - placement_bias (optional): per-ward placement hint map, "
-            "e.g. {\"album\": \"scale_1.15x\", \"token_pole\": "
+            'e.g. {"album": "scale_1.15x", "token_pole": '
             '"drift_left"}. Hints: drift_left, drift_right, drift_up, '
             "drift_down, pulse_center, scale_0.8x, scale_1.0x, "
             "scale_1.15x, scale_1.3x."
@@ -1869,6 +1887,47 @@ class DirectorLoop:
                 )
         except Exception:
             log.debug("scope nudge failed", exc_info=True)
+        # Operator directive 2026-04-19 — keep this block PROMINENT and
+        # near the narrative_text definition. The director was caught
+        # narrating its own pipeline state ("we are in a holding pattern")
+        # as if it were audience-appropriate content. narrative_text is
+        # what a HOST says to viewers — never stage directions, never
+        # meta-state, never canned reverence.
+        parts.append("")
+        parts.append("## BANNED NARRATION — DO NOT SPEAK THESE")
+        parts.append(
+            "BANNED NARRATION — never speak these out loud (operator directive 2026-04-19):\n"
+            "\n"
+            "  META-STATE NARRATION (treating the stream as its own subject):\n"
+            '    - "we are in a holding pattern"\n'
+            '    - "let me pause for a moment"\n'
+            '    - "let\'s take a moment to appreciate"\n'
+            '    - "let\'s continue to appreciate"\n'
+            '    - "holding the surface"\n'
+            '    - "silence hold"\n'
+            "    - Any variant describing the pipeline's own state, director decisions,\n"
+            "      activity transitions, or cognitive-system operations as audience content.\n"
+            "\n"
+            "  CANNED APPRECIATION (reverent-art-critic filler):\n"
+            '    - "the subtle beats of..."\n'
+            '    - "the captivating rhythm of..."\n'
+            '    - "as the vinyl spins..."\n'
+            '    - Generic adjectives: "subtle", "captivating", "intricate", "beautiful"\n'
+            "      when not grounded in a specific observation you just made.\n"
+            "\n"
+            "  STAGE DIRECTIONS AS SPEECH:\n"
+            '    - Do not announce what you are about to do ("let me show...")\n'
+            "    - Do not explain what the compositor is doing\n"
+            "    - Do not narrate rotation modes, ward emphasis, or FX state\n"
+            "\n"
+            "WHAT TO DO INSTEAD:\n"
+            "  You are a host making a livestream, not a system announcer. Your narrative\n"
+            "  should be grounded in something SPECIFIC you just perceived in the last\n"
+            "  ~5 seconds: a sound you heard, a motion you saw, a lyric you caught, a\n"
+            "  beat that hit, the timbre of a pad, the way a sample loops, a face\n"
+            "  expression on camera. Be concrete. Be crunchy. Be blunt. Be a host, not\n"
+            "  a narrator."
+        )
         parts.append("")
         parts.append("## Images")
         parts.append("Two images attached. First: the current video frame.")
