@@ -642,13 +642,58 @@ def _write_last_override_at(path: Path, ts: float) -> None:
 
 
 def _read_album_info() -> str:
+    """Concrete album/track grounding string for the music narrative prompt.
+
+    Anti-repetition fix (2026-04-19): the LLM was looping on generic
+    appreciation-bot openers because the prompt gave it nothing specific
+    to ground in. Extending this to surface the deck's playback rate,
+    derived RPM, and the rate-compensated BPM gives the model concrete
+    fields it can actually reference instead of falling back to
+    "subtle beats" / "captivating narrative" / "as the vinyl spins".
+    """
     try:
-        if ALBUM_STATE_FILE.exists():
-            data = json.loads(ALBUM_STATE_FILE.read_text())
-            artist = data.get("artist", "unknown")
-            title = data.get("title", "unknown")
-            track = data.get("current_track", "")
-            return f"{title} by {artist}" + (f", track: {track}" if track else "")
+        if not ALBUM_STATE_FILE.exists():
+            return "unknown"
+        data = json.loads(ALBUM_STATE_FILE.read_text())
+        artist = data.get("artist", "unknown")
+        title = data.get("title", "unknown")
+        track = data.get("current_track", "")
+        base = f"{title} by {artist}" + (f", track: {track}" if track else "")
+        extras: list[str] = []
+        # Vinyl playback rate / RPM (from shared.vinyl_rate; nominal deck = 33⅓).
+        try:
+            from shared.vinyl_rate import normalized_bpm_signal, read_vinyl_playback_rate
+
+            rate = read_vinyl_playback_rate()
+            observed_rpm = 33.333 * rate if rate > 0 else 0.0
+            extras.append(f"rate={rate:.3f}× (~{observed_rpm:.1f} rpm)")
+            bpm = normalized_bpm_signal()
+            if bpm is not None:
+                extras.append(f"~{bpm:.0f} bpm (rate-compensated)")
+        except Exception:
+            log.debug("vinyl rate/bpm probe failed in album info", exc_info=True)
+        # Track position estimate, if the album-state writer has produced one
+        # (album-identifier may grow this field; tolerate absence).
+        try:
+            elapsed = data.get("track_elapsed_s")
+            duration = data.get("track_duration_s")
+            if isinstance(elapsed, (int, float)):
+
+                def _fmt(s: float) -> str:
+                    s = max(0.0, float(s))
+                    m = int(s // 60)
+                    sec = int(s - m * 60)
+                    return f"{m}m{sec:02d}s"
+
+                if isinstance(duration, (int, float)) and duration > 0:
+                    extras.append(f"t={_fmt(elapsed)}/{_fmt(duration)}")
+                else:
+                    extras.append(f"t={_fmt(elapsed)}")
+        except Exception:
+            log.debug("track-position probe failed in album info", exc_info=True)
+        if extras:
+            return f"{base} [{'; '.join(extras)}]"
+        return base
     except Exception:
         log.warning("album info read failed — defaulting to 'unknown'", exc_info=True)
     return "unknown"
@@ -1042,7 +1087,11 @@ class DirectorLoop:
                 # overlap means it's effectively the same thought — fall
                 # back to a micromove so the viewer gets a fresh visual
                 # instead of a restated paragraph.
-                if text and self._narrative_too_similar(text):
+                # Music narratives use the music-only history (track-aware
+                # dedup); everything else uses the general history. The
+                # 2026-04-19 fix tightens both paths to Jaccard 0.35 +
+                # 3-shingle n-gram match against history of 15.
+                if text and self._narrative_too_similar(text, music_specific=(activity == "music")):
                     log.info(
                         "director narrative too similar to recent — emitting micromove fallback"
                     )
@@ -1067,7 +1116,7 @@ class DirectorLoop:
                     intent = intent.model_copy(update={"activity": activity})
 
                 if text:
-                    self._remember_narrative(text)
+                    self._remember_narrative(text, activity=activity)
 
                 _emit_intent_artifacts(intent, condition_id=condition_id)
 
@@ -1099,50 +1148,145 @@ class DirectorLoop:
                 log.exception("Director loop error")
             time.sleep(0.5)
 
-    def _narrative_too_similar(self, candidate: str) -> bool:
+    # Anti-repetition tuning (2026-04-19, music-narrative loop fix):
+    # Operator audit found three different vinyl tracks all framed with the
+    # same "Let's take a moment / appreciate / subtle beats" template — the
+    # 0.60 / history=5 Jaccard wasn't catching the loop because the differing
+    # track names diluted the word overlap below threshold. New defaults:
+    #   - 0.35 Jaccard catches looser thematic re-statement
+    #   - 15-deep history so a re-statement can't just outwait the window
+    #   - 3-shingle ≥4-char-word n-gram pass catches verbatim phrase re-use;
+    #     additionally a bigram-overlap pass catches template re-use across
+    #     tracks ("subtle beats of <track A>" vs "subtle beats of <track B>"
+    #     share the bigram (subtle, beats) plus typically (let's, take) /
+    #     (appreciate, the) / similar — multiple bigram matches across
+    #     paragraphs that wouldn't otherwise overlap is the template
+    #     fingerprint).
+    _NARRATIVE_DEDUP_HISTORY_LEN: int = 15
+    _NARRATIVE_DEDUP_JACCARD: float = 0.35
+    _NARRATIVE_DEDUP_SHINGLE_K: int = 3
+    _NARRATIVE_DEDUP_BIGRAM_K: int = 2
+    _NARRATIVE_DEDUP_BIGRAM_MIN_MATCHES: int = 2
+    _NARRATIVE_SHINGLE_MIN_WORD_LEN: int = 4
+    _MUSIC_NARRATIVE_HISTORY_LEN: int = 10
+
+    @staticmethod
+    def _narrative_word_set(text: str) -> set[str]:
+        """Lowercased ≥4-char content tokens with punctuation stripped."""
+        words = (w.lower().strip(".,!?;:'\"") for w in (text or "").split())
+        return {w for w in words if len(w) >= 4}
+
+    @classmethod
+    def _narrative_word_seq(cls, text: str) -> list[str]:
+        """Ordered ≥4-char content tokens, used for shingle dedup."""
+        out: list[str] = []
+        for raw in (text or "").split():
+            tok = raw.lower().strip(".,!?;:'\"")
+            if len(tok) >= cls._NARRATIVE_SHINGLE_MIN_WORD_LEN:
+                out.append(tok)
+        return out
+
+    @classmethod
+    def _narrative_shingles(cls, text: str) -> set[tuple[str, ...]]:
+        """k-shingles over content tokens (default k=3)."""
+        seq = cls._narrative_word_seq(text)
+        k = cls._NARRATIVE_DEDUP_SHINGLE_K
+        if len(seq) < k:
+            return set()
+        return {tuple(seq[i : i + k]) for i in range(len(seq) - k + 1)}
+
+    @classmethod
+    def _narrative_bigrams(cls, text: str) -> set[tuple[str, str]]:
+        """2-shingles over content tokens — used for template-fragment
+        repeat detection. Multiple matching bigrams across two otherwise
+        distinct paragraphs is the fingerprint of opener-template re-use.
+        """
+        seq = cls._narrative_word_seq(text)
+        k = cls._NARRATIVE_DEDUP_BIGRAM_K
+        if len(seq) < k:
+            return set()
+        return {(seq[i], seq[i + 1]) for i in range(len(seq) - k + 1)}
+
+    def _narrative_too_similar(self, candidate: str, *, music_specific: bool = False) -> bool:
         """Return True if ``candidate`` is effectively a restatement of a
         recent narrative.
 
-        Uses a word-set Jaccard similarity on the last 5 emitted
-        narratives. Threshold 0.6 — empirically tuned against the
-        sim-5 dup cluster ("The tension in this deposition scene is
-        palpable. The silence..." repeated 6× of 10 emissions). Higher
-        thresholds missed the duplicates; lower thresholds were
-        rejecting legitimate same-topic-different-angle ticks.
+        Two-stage dedup:
+          1. Jaccard on lowercased ≥4-char word sets. Threshold 0.35.
+          2. 3-shingle n-gram match on the ordered ≥4-char word stream.
+             Catches template re-use ("the subtle beats of <track>") even
+             when the variable token (track name) drops Jaccard below
+             threshold.
+
+        ``music_specific=True`` runs the check against the music-only
+        history (``_recent_music_narratives``) so the LLM stops looping
+        on track-by-track variations even though the surrounding
+        non-music narratives are heterogeneous enough not to repeat.
+        Falls back to the general history if the music history is empty.
         """
         try:
             if not candidate or len(candidate) < 40:
                 return False
-            recent = list(getattr(self, "_recent_narratives", []))
+            if music_specific:
+                recent = list(getattr(self, "_recent_music_narratives", []))
+                if not recent:
+                    recent = list(getattr(self, "_recent_narratives", []))
+            else:
+                recent = list(getattr(self, "_recent_narratives", []))
             if not recent:
                 return False
-            cand_words = set(w.lower().strip(".,!?;:'\"") for w in candidate.split())
-            cand_words = {w for w in cand_words if len(w) >= 4}
+            cand_words = self._narrative_word_set(candidate)
             if len(cand_words) < 8:
                 return False
+            cand_shingles = self._narrative_shingles(candidate)
+            cand_bigrams = self._narrative_bigrams(candidate)
             for prior in recent:
-                prior_words = set(w.lower().strip(".,!?;:'\"") for w in prior.split())
-                prior_words = {w for w in prior_words if len(w) >= 4}
+                prior_words = self._narrative_word_set(prior)
                 if not prior_words:
                     continue
                 intersection = len(cand_words & prior_words)
                 union = len(cand_words | prior_words)
                 jaccard = intersection / union if union else 0.0
-                if jaccard >= 0.6:
+                if jaccard >= self._NARRATIVE_DEDUP_JACCARD:
                     return True
+                if cand_shingles:
+                    prior_shingles = self._narrative_shingles(prior)
+                    if cand_shingles & prior_shingles:
+                        return True
+                if cand_bigrams:
+                    prior_bigrams = self._narrative_bigrams(prior)
+                    shared = cand_bigrams & prior_bigrams
+                    if len(shared) >= self._NARRATIVE_DEDUP_BIGRAM_MIN_MATCHES:
+                        return True
             return False
         except Exception:
             log.debug("narrative similarity check raised", exc_info=True)
             return False
 
-    def _remember_narrative(self, text: str) -> None:
-        """Append a narrative to the rolling de-dupe history (last 5)."""
+    def _remember_narrative(self, text: str, *, activity: str | None = None) -> None:
+        """Append a narrative to the rolling de-dupe history.
+
+        Maintains two histories:
+          - ``_recent_narratives``: last ``_NARRATIVE_DEDUP_HISTORY_LEN``
+            (default 15) of all emitted narratives.
+          - ``_recent_music_narratives``: last
+            ``_MUSIC_NARRATIVE_HISTORY_LEN`` (default 10) of music-activity
+            narratives only — so the music-loop dedup stays track-aware
+            even when intervening non-music ticks would otherwise flush
+            the relevant prior text out of the general window.
+        """
         try:
             history = list(getattr(self, "_recent_narratives", []))
             history.append(text)
-            if len(history) > 5:
-                history = history[-5:]
+            if len(history) > self._NARRATIVE_DEDUP_HISTORY_LEN:
+                history = history[-self._NARRATIVE_DEDUP_HISTORY_LEN :]
             self._recent_narratives = history
+            if activity == "music":
+                music_history = list(getattr(self, "_recent_music_narratives", []))
+                music_history.append(text)
+                if len(music_history) > self._MUSIC_NARRATIVE_HISTORY_LEN:
+                    music_history = music_history[-self._MUSIC_NARRATIVE_HISTORY_LEN :]
+                self._recent_music_narratives = music_history
         except Exception:
             log.debug("narrative remember failed", exc_info=True)
 
@@ -1519,7 +1663,11 @@ class DirectorLoop:
         if other_titles:
             parts.append(f"Also in rotation: {other_titles}.")
         if _vinyl_is_playing():
-            parts.append(f"On the turntable: {album_info}.")
+            # Music signal block — concrete grounding the host narrative
+            # is required to reference instead of falling back to generic
+            # appreciation. ``album_info`` now carries rate/RPM/BPM/track
+            # position when those signals are available (2026-04-19).
+            parts.append(f"Current music signal: {album_info}.")
         parts.append(f"Time: {datetime.now().strftime('%H:%M')}.")
 
         # ─── HARDM anchor status (task #160) ───────────────────────
@@ -1707,6 +1855,37 @@ class DirectorLoop:
             "tendency and stage the move ahead of the signal change."
         )
         parts.append(ACTIVITY_CAPABILITIES)
+
+        # ─── Music-activity host discipline ────────────────────────
+        # Operator audit 2026-04-19: three different vinyl tracks all
+        # narrated with the same "Let's take a moment to appreciate the
+        # captivating narrative of <track>" template. This section
+        # supplements the BANNED NARRATION block (further down, near the
+        # narrative_text definition) with positive "what to do instead"
+        # guidance specifically for the ``music`` activity, so the LLM
+        # lands on concrete perceived detail instead of audio-tour-
+        # narrator filler. Pinned by
+        # tests/studio_compositor/test_music_narrative_dedup.py.
+        parts.append("")
+        parts.append("## Music narrative discipline (banned openers)")
+        parts.append(
+            "When you pick the ``music`` activity, your narrative MUST "
+            "open with a SPECIFIC observation about this track right now: "
+            "a rhythm change, a lyric you caught, a sample you recognise, "
+            "a timbre that stuck out, the way the bass sits in the mix, "
+            "whether the beat is sparse or dense, what mood the production "
+            "is reaching for, the way the rate-shift colours the pitch "
+            "if the deck is on the wrong RPM. Be concrete. Name instruments "
+            "by hearing. Ambient-aware. Permission to be crunchy / informal "
+            "/ blunt. You are a livestream host, not a museum docent. The "
+            "BANNED NARRATION block below enumerates the phrases to avoid "
+            '("let\'s take a moment to appreciate", "as the vinyl spins", '
+            '"the subtle beats of...", "the captivating rhythm of..."). '
+            "If you cannot ground a music narrative in something specific "
+            "you just heard, pick a different activity — silence is a "
+            "voice choice and is preferable to another recycled "
+            "appreciation paragraph."
+        )
 
         # Stance → preset-family pairing. Aligns the WGSL effect chain
         # with the director's emotional/cognitive register so the
