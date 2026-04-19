@@ -1443,6 +1443,47 @@ class DirectorLoop:
             parts.append(f"On the turntable: {album_info}.")
         parts.append(f"Time: {datetime.now().strftime('%H:%M')}.")
 
+        # ─── HARDM anchor status (task #160) ───────────────────────
+        # Research doc: docs/research/hardm-communicative-anchoring.md.
+        # Deterministic prefix — lets grounded beats reference HARDM
+        # without re-discovering its state every prompt.
+        try:
+            from agents.studio_compositor import hardm_source as _hs
+
+            bias = _hs.current_salience_bias(emit_metric=False)
+            emphasis = _hs._read_emphasis_state()
+            if bias > _hs.UNSKIPPABLE_BIAS:
+                hardm_state = "emphasized"
+            elif emphasis == "speaking":
+                hardm_state = "visible"
+            else:
+                hardm_state = "quiescent"
+            parts.append(f"HARDM is {hardm_state}; bias={bias:.2f}; emphasis={emphasis}.")
+        except Exception:
+            pass
+
+        # ─── Operator cue — point-at-hardm (task #160) ─────────────
+        try:
+            from agents.studio_compositor import hardm_source as _hs
+
+            cue_path = _hs.OPERATOR_CUE_FILE
+            if cue_path.exists():
+                cue = json.loads(cue_path.read_text(encoding="utf-8"))
+                if isinstance(cue, dict) and cue.get("cue") == "point-at-hardm":
+                    cell = cue.get("cell")
+                    signal_name = cue.get("signal_name") or "?"
+                    if isinstance(cell, int):
+                        parts.append(
+                            f"Operator cue: reference HARDM cell {cell} "
+                            f"({signal_name}) in your next narrative beat."
+                        )
+                try:
+                    cue_path.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         # ─── Chat state ───────────────────────────────────────────
         try:
             chat_recent_path = SHM_DIR / "chat-recent.json"

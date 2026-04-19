@@ -287,6 +287,15 @@ class Choreographer:
         # Consume: the choreographer owns these after read.
         self._clear_pending()
 
+        # Task #160 — HARDM communicative anchoring. When the weighted
+        # salience bias exceeds the unskippable threshold and no HARDM
+        # transition is already pending this tick, synthesize one at
+        # the current bias salience so HARDM reliably locks into
+        # rotation during voice / self-referential narrative / guest
+        # consent / SEEKING stance. Best-effort: import errors and
+        # evaluation failures silently fall through.
+        pending = self._maybe_enqueue_hardm_anchor(package, pending, clock)
+
         # Phase 8 (task #114): fetch the structural director's rotation
         # mode so the FSM-advancing slice can be gated (paused) or
         # re-ordered (weighted_by_salience) without the structural
@@ -440,6 +449,50 @@ class Choreographer:
                 self._pending_file.unlink()
         except Exception:
             log.debug("failed to clear homage-pending-transitions", exc_info=True)
+
+    # ── Task #160: HARDM communicative-anchoring anchor ───────────────
+
+    def _maybe_enqueue_hardm_anchor(
+        self,
+        package: HomagePackage,
+        pending: list[PendingTransition],
+        now: float,
+    ) -> list[PendingTransition]:
+        """Synthesize a HARDM entry when bias > unskippable threshold.
+
+        The synthetic entry joins the pending list at the current salience
+        score. It is skipped (not re-synthesized) when a HARDM entry is
+        already present this tick, so real recruitments retain priority.
+        Evaluation cost is small (four SHM reads, bounded scan); failure
+        falls open to the unmodified pending list.
+        """
+        try:
+            from agents.studio_compositor.hardm_source import (
+                UNSKIPPABLE_BIAS,
+                current_salience_bias,
+            )
+        except Exception:
+            log.debug("hardm_source import failed; skipping anchor", exc_info=True)
+            return pending
+        try:
+            bias = current_salience_bias()
+        except Exception:
+            log.debug("current_salience_bias raised; skipping anchor", exc_info=True)
+            return pending
+        if bias <= UNSKIPPABLE_BIAS:
+            return pending
+        # Dedupe: a real producer entry this tick wins.
+        for entry in pending:
+            if entry.source_id == "hardm_dot_matrix":
+                return pending
+        transition = package.transition_vocabulary.default_entry
+        synthetic = PendingTransition(
+            source_id="hardm_dot_matrix",
+            transition=transition,
+            enqueued_at=now,
+            salience=bias,
+        )
+        return [*pending, synthetic]
 
     # ── Phase 8: structural-director rotation-mode readback ────────────
 

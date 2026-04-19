@@ -39,6 +39,11 @@ RENDER_FPS = 10
 ZONES: list[dict[str, Any]] = [
     {
         "id": "main",
+        # Task #126: prefer the Hapax-managed text repo
+        # (``shared.text_repo``). Obsidian folder remains as a seed /
+        # fallback — the zone drops to folder-scan whenever the repo is
+        # empty or missing, so the transition is reversible.
+        "use_text_repo": True,
         "folder": "~/Documents/Personal/30-areas/stream-overlays/",
         "suffixes": (".md", ".txt", ".ansi"),
         "cycle_seconds": 15,
@@ -51,6 +56,7 @@ ZONES: list[dict[str, Any]] = [
     },
     {
         "id": "research",
+        "use_text_repo": True,
         "folder": "~/Documents/Personal/30-areas/stream-overlays/research/",
         "suffixes": (".md", ".txt", ".ansi"),
         "cycle_seconds": 20,
@@ -64,6 +70,9 @@ ZONES: list[dict[str, Any]] = [
         # objective window; outside of that the audience doesn't need it
         # and the main zone owns the space.
         "active_when_activities": ("study",),
+        # Text-repo context keys: entries tagged study/research/rnd score
+        # higher while the research gate is open.
+        "text_repo_context": ("study", "research"),
     },
     {
         "id": "lyrics",
@@ -169,6 +178,15 @@ class OverlayZone:
         self._active_when_activities: tuple[str, ...] = tuple(active_when)
         self._gate_last_check: float = 0
         self._gate_open: bool = not self._active_when_activities
+        # Task #126: Hapax-managed text repo as primary content source.
+        # When the repo is empty / missing, ``_tick_repo`` falls through
+        # to the legacy folder scan so the Obsidian content keeps
+        # rendering until the repo is seeded.
+        self._use_text_repo: bool = bool(config.get("use_text_repo", False))
+        self._text_repo_context: tuple[str, ...] = tuple(config.get("text_repo_context", ()))
+        self._text_repo: Any = None  # Lazy init — avoids import at class load
+        self._text_repo_last_load: float = 0.0
+        self._text_repo_entry_id: str | None = None
 
     def tick(self) -> None:
         now = time.monotonic()
@@ -180,7 +198,11 @@ class OverlayZone:
             self._pango_markup = ""
             self._cached_surface = None
             return
-        if self.folder:
+        if self._use_text_repo and self._tick_repo(now):
+            # Repo produced content — done for this tick. Falls through
+            # to folder-scan only when the repo is empty/missing.
+            pass
+        elif self.folder:
             self._tick_folder(now)
         elif self.file:
             self._tick_file()
@@ -235,6 +257,96 @@ class OverlayZone:
 
         self.x = int(self._float_x)
         self.y = int(self._float_y)
+
+    def _tick_repo(self, now: float) -> bool:
+        """Try to pull content from the Hapax-managed text repo.
+
+        Returns ``True`` when an entry was surfaced (so the caller should
+        skip the folder-scan path). Returns ``False`` when the repo is
+        empty, missing, or the import fails — the caller then falls
+        through to :meth:`_tick_folder` so the Obsidian content keeps
+        rendering as a fallback.
+        """
+        try:
+            from shared.text_repo import TextRepo
+        except Exception:
+            return False
+
+        # Reload the repo on a cycle-aligned cadence so operator
+        # ``add-text`` sidechat writes show up without reading JSONL
+        # every frame.
+        if self._text_repo is None:
+            self._text_repo = TextRepo()
+        reload_interval = max(float(self.cycle_seconds), 1.0)
+        if now - self._text_repo_last_load > reload_interval or not len(self._text_repo):
+            try:
+                self._text_repo.load()
+            except Exception:
+                log.debug("Overlay zone '%s' text repo load failed", self.id, exc_info=True)
+                return False
+            self._text_repo_last_load = now
+        if not len(self._text_repo):
+            return False
+
+        # Cycle timer drives reselection — same cadence as folder scan.
+        if self._cycle_start == 0 or self._text_repo_entry_id is None:
+            entry = self._text_repo.select_for_context(
+                activity=self._text_repo_context[0] if self._text_repo_context else "",
+                stance=self._text_repo_context[1] if len(self._text_repo_context) > 1 else "",
+                scene=self._text_repo_context[2] if len(self._text_repo_context) > 2 else "",
+                now=now,
+            )
+            if entry is None:
+                return False
+            self._text_repo_entry_id = entry.id
+            self._cycle_start = now
+            self._apply_repo_entry(entry)
+            try:
+                self._text_repo.mark_shown(entry.id, when=now)
+            except Exception:
+                log.debug("mark_shown failed for %s", entry.id, exc_info=True)
+            return True
+        elif now - self._cycle_start >= self.cycle_seconds:
+            entry = self._text_repo.select_for_context(
+                activity=self._text_repo_context[0] if self._text_repo_context else "",
+                stance=self._text_repo_context[1] if len(self._text_repo_context) > 1 else "",
+                scene=self._text_repo_context[2] if len(self._text_repo_context) > 2 else "",
+                now=now,
+            )
+            if entry is not None and entry.id != self._text_repo_entry_id:
+                self._text_repo_entry_id = entry.id
+                self._cycle_start = now
+                self._apply_repo_entry(entry)
+                try:
+                    self._text_repo.mark_shown(entry.id, when=now)
+                except Exception:
+                    log.debug("mark_shown failed for %s", entry.id, exc_info=True)
+            return True
+        # Mid-cycle: keep rendering the current entry (already applied).
+        return True
+
+    def _apply_repo_entry(self, entry: Any) -> None:
+        """Set pango_markup from a :class:`TextEntry`, matching folder-scan semantics."""
+        body = entry.body or ""
+        content_hash = hash(("repo", entry.id, body))
+        if content_hash == self._content_hash:
+            return
+        # Entries already carry inline Pango markup (seeded from .md via
+        # parse_overlay_content) or plain text — both are Pango-safe when
+        # passed through the same escaping path used by text files.
+        self._pango_markup = parse_overlay_content(body, is_ansi=False)
+        self._content_hash = content_hash
+        self._cached_surface = None
+        self._is_image = False
+        self._image_surface = None
+        if self._scroll:
+            self._scroll_offset = 0.0
+        log.debug(
+            "Overlay zone '%s' loaded repo entry %s (%d chars)",
+            self.id,
+            entry.id,
+            len(body),
+        )
 
     def _tick_folder(self, now: float) -> None:
         folder = Path(self.folder).expanduser()

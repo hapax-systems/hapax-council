@@ -156,6 +156,20 @@ try:
         "Signature artefacts emitted, labelled by package + form.",
         ("package", "form"),
     )
+    # HARDM communicative-anchoring metrics — task #160.
+    _hardm_salience_bias = Gauge(
+        "hapax_hardm_salience_bias",
+        "HARDM weighted presence bias in [0, 1]. >0.7 → unskippable.",
+    )
+    _hardm_emphasis_state = Gauge(
+        "hapax_hardm_emphasis_state",
+        "HARDM emphasis state: 1 if speaking, 0 if quiescent.",
+    )
+    _hardm_operator_cue_total = Counter(
+        "hapax_hardm_operator_cue_total",
+        "Sidechat point-at-hardm cues issued, labelled by cell.",
+        ("cell",),
+    )
 
     _METRICS_AVAILABLE = True
 except Exception:  # pragma: no cover — prometheus_client missing at install time
@@ -319,6 +333,40 @@ def emit_homage_signature_artefact(package: str, form: str) -> None:
         _homage_signature_artefact_emitted_total.labels(package=package, form=form).inc()
     except Exception:
         log.warning("emit_homage_signature_artefact failed", exc_info=True)
+
+
+def emit_hardm_salience_bias(value: float) -> None:
+    """Record the HARDM salience bias (task #160).
+
+    Gauge in ``[0, 1]``. Called on every ``current_salience_bias()``
+    evaluation in ``agents/studio_compositor/hardm_source.py``.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _hardm_salience_bias.set(float(value))
+    except Exception:
+        log.warning("emit_hardm_salience_bias failed", exc_info=True)
+
+
+def emit_hardm_emphasis_state(speaking: bool) -> None:
+    """Record the HARDM emphasis state (task #160). 1=speaking, 0=quiescent."""
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _hardm_emphasis_state.set(1.0 if speaking else 0.0)
+    except Exception:
+        log.warning("emit_hardm_emphasis_state failed", exc_info=True)
+
+
+def emit_hardm_operator_cue(cell: int) -> None:
+    """Record a sidechat ``point-at-hardm <cell>`` cue (task #160)."""
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _hardm_operator_cue_total.labels(cell=str(cell)).inc()
+    except Exception:
+        log.warning("emit_hardm_operator_cue failed", exc_info=True)
 
 
 def emit_random_mode_pick(chosen_via: str) -> None:

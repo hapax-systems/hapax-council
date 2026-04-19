@@ -21,6 +21,29 @@ log = logging.getLogger(__name__)
 _DEFAULT_VISUAL_PATH = Path("/dev/shm/hapax-conversation/visual-signal.json")
 
 
+def _emit_hardm_emphasis(state: str) -> None:
+    """Publish the HARDM emphasis signal (task #160).
+
+    Best-effort, fire-and-forget: any error is swallowed so the TTS
+    production path never blocks on SHM write failures. Imported lazily
+    to avoid the CPAL module pulling in the compositor package at
+    import time (test environments without compositor extras still
+    work).
+    """
+    try:
+        from agents.studio_compositor.hardm_source import write_emphasis
+
+        write_emphasis(state)
+    except Exception:
+        log.debug("hardm emphasis emit failed for %s", state, exc_info=True)
+    try:
+        from shared.director_observability import emit_hardm_emphasis_state
+
+        emit_hardm_emphasis_state(state == "speaking")
+    except Exception:
+        log.debug("hardm emphasis metric emit failed", exc_info=True)
+
+
 class ProductionStream:
     """Tier-composed output with interruption support."""
 
@@ -61,6 +84,7 @@ class ProductionStream:
         self._producing = True
         self._current_tier = CorrectionTier.T1_PRESYNTHESIZED
         self._interrupted = False
+        _emit_hardm_emphasis("speaking")
         try:
             if self._audio_output is not None:
                 if self._on_speaking_changed:
@@ -72,6 +96,7 @@ class ProductionStream:
             if not self._interrupted:
                 self._producing = False
                 self._current_tier = None
+            _emit_hardm_emphasis("quiescent")
 
     def produce_t2(self, *, text: str, pcm_data: bytes | None = None) -> None:
         """Produce T2 lightweight response (echo/rephrase, discourse marker).
@@ -82,6 +107,7 @@ class ProductionStream:
         self._producing = True
         self._current_tier = CorrectionTier.T2_LIGHTWEIGHT
         self._interrupted = False
+        _emit_hardm_emphasis("speaking")
         try:
             if pcm_data is not None and self._audio_output is not None:
                 self._audio_output.write(pcm_data)
@@ -90,15 +116,18 @@ class ProductionStream:
             if not self._interrupted:
                 self._producing = False
                 self._current_tier = None
+            _emit_hardm_emphasis("quiescent")
 
     def mark_t3_start(self) -> None:
         self._producing = True
         self._current_tier = CorrectionTier.T3_FULL_FORMULATION
         self._interrupted = False
+        _emit_hardm_emphasis("speaking")
 
     def mark_t3_end(self) -> None:
         self._producing = False
         self._current_tier = None
+        _emit_hardm_emphasis("quiescent")
 
     def interrupt(self) -> None:
         if self._producing:
@@ -106,6 +135,7 @@ class ProductionStream:
             self._interrupted = True
         self._producing = False
         self._current_tier = None
+        _emit_hardm_emphasis("quiescent")
 
     def yield_to_operator(self) -> None:
         self.interrupt()
