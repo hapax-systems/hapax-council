@@ -1,6 +1,7 @@
 {
   "name": "Silhouette",
   "description": "High contrast",
+  "tags": ["intimate", "portrait", "minimal"],
   "transition_ms": 500,
   "nodes": {
     "threshold": {

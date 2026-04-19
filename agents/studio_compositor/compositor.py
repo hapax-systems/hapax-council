@@ -508,6 +508,9 @@ class StudioCompositor:
         self._overlay_canvas_size: tuple[int, int] = (config.output_width, config.output_height)
         self._tile_layout: dict[str, TileRect] = {}
         self._state_reader_thread: threading.Thread | None = None
+        # Task #150 Phase 1 — scene classifier background thread. Created
+        # lazily in ``start_layout_only`` when the feature flag is on.
+        self._scene_classifier_thread: Any = None
         self._GLib: Any = None
         self._Gst: Any = None
         self._active_profile_name: str = ""
@@ -990,6 +993,19 @@ class StudioCompositor:
                 "runtime layout mutation via window.__logos / MCP is unavailable"
             )
 
+        # Task #150 Phase 1 — start the scene classifier thread when
+        # HAPAX_SCENE_CLASSIFIER_ACTIVE is set. Flag-gated; returns None
+        # (and logs) when inactive, so this is safe by default.
+        try:
+            from agents.studio_compositor.scene_classifier import (
+                maybe_start_scene_classifier,
+            )
+
+            self._scene_classifier_thread = maybe_start_scene_classifier()
+        except Exception:
+            log.exception("failed to start scene_classifier thread")
+            self._scene_classifier_thread = None
+
     def start(self) -> None:
         """Build and start the pipeline."""
         self.start_layout_only()
@@ -1000,6 +1016,13 @@ class StudioCompositor:
 
     def stop(self) -> None:
         """Stop the pipeline cleanly."""
+        thread = getattr(self, "_scene_classifier_thread", None)
+        if thread is not None:
+            try:
+                thread.stop()
+            except Exception:
+                log.exception("scene_classifier thread stop failed")
+            self._scene_classifier_thread = None
         if self._command_server is not None:
             try:
                 self._command_server.stop()

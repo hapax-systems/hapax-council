@@ -1,6 +1,7 @@
 {
   "name": "Kaleidoscope Dream",
   "description": "Kaleidoscope dream",
+  "tags": ["rotation", "spiral", "geometric"],
   "transition_ms": 500,
   "nodes": {
     "kaleidoscope": {

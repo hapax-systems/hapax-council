@@ -1,6 +1,7 @@
 {
   "name": "Thermal IR",
   "description": "FLIR iron bow thermography",
+  "tags": ["electric", "detail", "macro"],
   "transition_ms": 500,
   "nodes": {
     "thermal": {

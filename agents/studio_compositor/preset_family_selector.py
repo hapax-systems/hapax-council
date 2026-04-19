@@ -41,6 +41,22 @@ from agents.studio_compositor.preset_mutator import (
     variety_enabled,
 )
 
+# Task #150 Phase 1 — scene → preset-tag bias. When the scene classifier
+# publishes a classification, :func:`pick_with_scene_bias` can weight the
+# within-family selection toward presets whose ``tags`` metadata matches
+# the scene. Table values are sets of preset tags that the scene favors.
+# ``mixed-activity`` / ``empty-room`` / None → no bias (uniform pick).
+SCENE_TAG_BIAS: dict[str, tuple[str, ...]] = {
+    "person-face-closeup": ("intimate", "portrait"),
+    "hands-manipulating-gear": ("textural", "macro", "detail"),
+    "turntables-playing": ("rotation", "spiral"),
+    "outboard-synth-detail": ("electric", "geometric"),
+    "room-wide-ambient": ("atmospheric",),
+    "screen-only": ("minimal",),
+    "empty-room": (),
+    "mixed-activity": (),
+}
+
 log = logging.getLogger(__name__)
 
 PRESET_DIR = Path(__file__).parent.parent.parent / "presets"
@@ -175,6 +191,110 @@ def reset_memory() -> None:
     _LAST_PICK.clear()
 
 
+def _preset_tags(preset_name: str) -> tuple[str, ...]:
+    """Return the ``tags`` array for ``preset_name``, or empty tuple.
+
+    Reads the preset JSON from :data:`PRESET_DIR` and extracts the
+    optional ``tags`` field. Missing / malformed / missing-field preset
+    files all fall through to ``()`` so callers can treat them as
+    untagged (uniform weight).
+    """
+    path = PRESET_DIR / f"{preset_name}.json"
+    if not path.exists():
+        return ()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return ()
+    tags = data.get("tags") if isinstance(data, dict) else None
+    if not isinstance(tags, list):
+        return ()
+    return tuple(str(t) for t in tags if isinstance(t, str))
+
+
+def pick_with_scene_bias(
+    family: str,
+    scene: str | None,
+    rng: Random | None = None,
+    *,
+    available: list[str] | None = None,
+    last: str | None = None,
+) -> str | None:
+    """Pick a preset from ``family`` with optional scene-based weighting.
+
+    Task #150 Phase 1. After the family has been picked (upstream, via
+    the director's stance-table recruitment), this chooses a specific
+    preset within the family. When ``scene`` matches a key in
+    :data:`SCENE_TAG_BIAS`, presets in the family whose ``tags`` overlap
+    with the scene's favored tags get ``+1`` weight per matching tag.
+    Presets with no matches keep weight ``1.0``. An unknown scene, a
+    scene that maps to no tags (``mixed-activity``, ``empty-room``), or
+    ``scene=None`` all skip the bias entirely and fall through to
+    :func:`pick_from_family`.
+
+    Parameters
+    ----------
+    family
+        Family name (key of :data:`FAMILY_PRESETS`). Unknown family →
+        ``None``.
+    scene
+        Scene label published by :mod:`scene_classifier`, or ``None``
+        when the classifier is off / stale.
+    rng
+        Optional :class:`random.Random` instance. When ``None``, the
+        module-global ``random`` is used; tests pass a seeded instance
+        for determinism.
+    available, last
+        Passed through to the underlying candidate filter + non-repeat
+        memory; see :func:`pick_from_family`.
+
+    Returns
+    -------
+    str | None
+        A preset name from the family, or ``None`` when the family is
+        unknown OR every member was filtered out by ``available``.
+    """
+    if family not in FAMILY_PRESETS:
+        log.warning("pick_with_scene_bias: unknown family %r", family)
+        return None
+
+    favored = SCENE_TAG_BIAS.get(scene, ()) if scene else ()
+    if not favored:
+        # No bias to apply — fall through to the legacy non-repeat pick.
+        return pick_from_family(family, available=available, last=last)
+
+    candidates = list(FAMILY_PRESETS[family])
+    if available is not None:
+        avail_set = set(available)
+        candidates = [p for p in candidates if p in avail_set]
+    if not candidates:
+        log.warning(
+            "pick_with_scene_bias: no candidates for family %r after filtering "
+            "(family list: %s; available: %s)",
+            family,
+            FAMILY_PRESETS[family],
+            None if available is None else len(available),
+        )
+        return None
+
+    last_seen = last if last is not None else _LAST_PICK.get(family)
+    non_repeat = [p for p in candidates if p != last_seen]
+    pool = non_repeat if non_repeat else candidates
+
+    favored_set = set(favored)
+    weights: list[float] = []
+    for preset in pool:
+        tags = set(_preset_tags(preset))
+        overlap = len(tags & favored_set)
+        # Base weight 1.0; +1 per matching tag.
+        weights.append(1.0 + float(overlap))
+
+    chooser = rng if rng is not None else random
+    pick = chooser.choices(pool, weights=weights, k=1)[0]
+    _LAST_PICK[family] = pick
+    return pick
+
+
 def pick_and_load_mutated(
     family: str,
     *,
@@ -236,9 +356,11 @@ def pick_and_load_mutated(
 
 __all__ = [
     "FAMILY_PRESETS",
+    "SCENE_TAG_BIAS",
     "family_names",
     "pick_and_load_mutated",
     "pick_from_family",
+    "pick_with_scene_bias",
     "presets_for_family",
     "reset_memory",
 ]

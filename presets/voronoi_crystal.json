@@ -1,6 +1,7 @@
 {
   "name": "Voronoi Crystal",
   "description": "Voronoi crystal",
+  "tags": ["geometric", "textural", "detail"],
   "transition_ms": 500,
   "nodes": {
     "voronoi": {

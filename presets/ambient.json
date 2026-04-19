@@ -1,6 +1,7 @@
 {
   "name": "Ambient",
   "description": "Warm atmospheric wash",
+  "tags": ["atmospheric", "minimal"],
   "transition_ms": 1000,
   "nodes": {
     "colorgrade": {
