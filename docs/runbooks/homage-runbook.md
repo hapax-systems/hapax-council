@@ -126,9 +126,11 @@ All 16 keys must appear (`midi_active`, `vad_speech`, `watch_hr`,
   (`perception-state.json`, `narrative-state.json`,
   `stimmung-state.json`, `uniforms.json`, `homage-active.json`) are
   non-fatal; they map to `False` / `None` defaults.
-- **Signals stuck / stale.** Check file mtime; if older than ~3 s the
-  ward's staleness cutoff (1 s) will flip cells to stress. Restart
-  the timer: `systemctl --user restart hapax-hardm-publisher.timer`.
+- **Signals stuck / stale.** Check file mtime; if older than 3 s the
+  ward's staleness cutoff (`STALENESS_CUTOFF_S` in
+  ``agents/studio_compositor/hardm_source.py``) drops the payload and
+  every cell reverts to idle. Restart the timer:
+  `systemctl --user restart hapax-hardm-publisher.timer`.
 - **`consent_gate` always `null`.** The publisher imports
   `shared.consent.ConsentRegistry` best-effort; if the import fails
   the cell shows idle instead of stress. This is intentional

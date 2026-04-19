@@ -15,6 +15,7 @@ Pins:
 from __future__ import annotations
 
 import json
+import time
 
 import cairo
 import pytest
@@ -26,11 +27,13 @@ from agents.studio_compositor.hardm_source import (
     GRID_COLS,
     GRID_ROWS,
     SIGNAL_NAMES,
+    STALENESS_CUTOFF_S,
     SURFACE_H,
     SURFACE_W,
     TOTAL_CELLS,
     HardmDotMatrix,
     _classify_cell,
+    _read_signals,
 )
 from agents.studio_compositor.homage import BITCHX_PACKAGE
 from agents.studio_compositor.homage.transitional_source import (
@@ -46,9 +49,10 @@ def _redirect_signal_file(monkeypatch, tmp_path):
     return tmp_path
 
 
-def _write_signals(tmp_path, signals: dict) -> None:
+def _write_signals(tmp_path, signals: dict, generated_at: float | None = None) -> None:
+    ts = time.time() if generated_at is None else generated_at
     (tmp_path / "hardm-cell-signals.json").write_text(
-        json.dumps({"generated_at": 0, "signals": signals})
+        json.dumps({"generated_at": ts, "signals": signals})
     )
 
 
@@ -259,3 +263,58 @@ def test_bitchx_package_renders_smoke(tmp_path) -> None:
     surface = _render_hardm()
     # 256×256 surface, nonzero data somewhere.
     assert any(b != 0 for b in bytes(surface.get_data()[: SURFACE_W * 16]))
+
+
+# ── Staleness cutoff regression (beta audit F-AUDIT-1062-2) ──────────────
+
+
+class TestStaleness:
+    """Pins the 3 s staleness cutoff against the 2 s publisher cadence.
+
+    The HARDM publisher timer (``hapax-hardm-publisher.timer``) fires
+    every 2 s with ``AccuracySec=500ms``. The consumer's staleness cutoff
+    must sit above 2 s + jitter so routine scheduling never drops a
+    payload — we pin 3 s (50 % margin) per beta audit F-AUDIT-1062-2.
+    """
+
+    def test_cutoff_is_three_seconds(self) -> None:
+        # Guard against accidental regression to 1.0 (prior runbook value).
+        assert STALENESS_CUTOFF_S == 3.0
+
+    def test_cutoff_exceeds_publisher_cadence(self) -> None:
+        # Publisher cadence is 2 s (OnUnitActiveSec=2s). Cutoff must leave
+        # comfortable headroom so jitter doesn't flicker cells to idle.
+        publisher_cadence_s = 2.0
+        assert publisher_cadence_s * 1.25 < STALENESS_CUTOFF_S
+
+    def test_fresh_payload_passes_through(self, tmp_path) -> None:
+        now = 1_000_000.0
+        _write_signals(tmp_path, {"midi_active": True}, generated_at=now - 0.5)
+        signals = _read_signals(tmp_path / "hardm-cell-signals.json", now=now)
+        assert signals == {"midi_active": True}
+
+    def test_payload_just_inside_cutoff_passes(self, tmp_path) -> None:
+        now = 1_000_000.0
+        _write_signals(
+            tmp_path, {"midi_active": True}, generated_at=now - (STALENESS_CUTOFF_S - 0.01)
+        )
+        signals = _read_signals(tmp_path / "hardm-cell-signals.json", now=now)
+        assert signals == {"midi_active": True}
+
+    def test_stale_payload_is_dropped(self, tmp_path) -> None:
+        now = 1_000_000.0
+        _write_signals(
+            tmp_path, {"midi_active": True}, generated_at=now - (STALENESS_CUTOFF_S + 0.5)
+        )
+        signals = _read_signals(tmp_path / "hardm-cell-signals.json", now=now)
+        # Past the cutoff → empty dict so every cell renders idle, not stress.
+        assert signals == {}
+
+    def test_missing_generated_at_is_not_stale(self, tmp_path) -> None:
+        # Legacy / stub payloads without ``generated_at`` shouldn't be
+        # misclassified as stale — fall through to the normal path.
+        (tmp_path / "hardm-cell-signals.json").write_text(
+            json.dumps({"signals": {"midi_active": True}})
+        )
+        signals = _read_signals(tmp_path / "hardm-cell-signals.json", now=1_000_000.0)
+        assert signals == {"midi_active": True}

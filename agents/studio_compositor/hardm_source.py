@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -107,16 +108,27 @@ _SIGNAL_FAMILY_ROLE: dict[str, str] = {
 
 SIGNAL_FILE: Path = Path("/dev/shm/hapax-compositor/hardm-cell-signals.json")
 
+# Staleness cutoff for the signal payload. The publisher timer fires every
+# 2 s (``hapax-hardm-publisher.timer``); this 3 s cutoff gives a 50 %
+# margin for publisher cold-start / IO latency so cells don't flicker to
+# stress during routine scheduling jitter. See beta audit F-AUDIT-1062-2.
+STALENESS_CUTOFF_S: float = 3.0
+
 
 # ── Consumer ──────────────────────────────────────────────────────────────
 
 
-def _read_signals(path: Path | None = None) -> dict[str, Any]:
+def _read_signals(path: Path | None = None, now: float | None = None) -> dict[str, Any]:
     """Read the signal payload. Returns ``{}`` on any failure.
 
     Default path resolves from ``SIGNAL_FILE`` at *call time* so tests
     (and any runtime override) can monkeypatch the module-level constant
     without having to thread a path through the render call.
+
+    Staleness: if the payload's ``generated_at`` is older than
+    :data:`STALENESS_CUTOFF_S`, return ``{}`` (all cells render idle)
+    rather than surfacing arbitrarily old values. ``now`` is injectable
+    for deterministic tests; defaults to ``time.time()``.
     """
     target = path if path is not None else SIGNAL_FILE
     try:
@@ -128,6 +140,11 @@ def _read_signals(path: Path | None = None) -> dict[str, Any]:
         return {}
     if not isinstance(data, dict):
         return {}
+    generated_at = data.get("generated_at")
+    if isinstance(generated_at, (int, float)):
+        current = now if now is not None else time.time()
+        if current - float(generated_at) > STALENESS_CUTOFF_S:
+            return {}
     signals = data.get("signals")
     if not isinstance(signals, dict):
         return {}
@@ -290,6 +307,7 @@ __all__ = [
     "HardmDotMatrix",
     "SIGNAL_FILE",
     "SIGNAL_NAMES",
+    "STALENESS_CUTOFF_S",
     "SURFACE_H",
     "SURFACE_W",
     "TOTAL_CELLS",
