@@ -15,12 +15,24 @@ discarded at read time.
 Write path: :func:`set_ward_properties` performs an atomic upsert
 (tmp+rename, same idiom as ``compositional_consumer``). Writers are the
 ``ward.*`` dispatchers in :mod:`compositional_consumer`.
+
+Render path (cascade-delta 2026-04-18, operator directive
+"deeply felt and in-your-face impact"): :func:`ward_render_scope` wraps
+every HOMAGE-participating Cairo source and now applies the emphasis
+envelope (glow_radius_px, border_pulse_hz, scale_bump_pct) on top of
+the source's content. Without this, structural-intent emphasis writes
+to ward-properties.json were silently dropped at render time — the
+surface still looked like "flat text-on-black rectangles" even when
+the director was actively bumping emphasis every tick. The scope now
+renders the source into a group, then overlays a radial glow + pulsing
+border + optional scale bump, so emphasized wards visibly shimmer.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
@@ -203,12 +215,12 @@ def clear_ward_properties_cache() -> None:
 
 
 @contextmanager
-def ward_render_scope(cr: Any, ward_id: str):
+def ward_render_scope(cr: Any, ward_id: str, *, canvas_w: int = 0, canvas_h: int = 0):
     """Context manager that wraps a Cairo source's per-tick draw with ward modulation.
 
     Usage::
 
-        with ward_render_scope(cr, "token_pole") as props:
+        with ward_render_scope(cr, "token_pole", canvas_w=w, canvas_h=h) as props:
             if props is None:
                 return  # ward is hidden, skip the entire draw
             # ... normal drawing into ``cr`` ...
@@ -218,28 +230,163 @@ def ward_render_scope(cr: Any, ward_id: str):
     - If ``visible`` is false, yields ``None`` so the caller can short-
       circuit and the cairo surface stays transparent (the gst mixer
       composites nothing visible).
-    - If ``alpha < 1.0``, pushes a Cairo group around the draw so the
-      caller's full composition fades uniformly when the group is
-      popped + painted with alpha.
+    - If any of {``alpha < 1.0``, ``glow_radius_px > 0``,
+      ``border_pulse_hz > 0``, ``scale_bump_pct > 0``} the draw is
+      wrapped in a Cairo group. On exit the group is popped back to
+      source and composited with the alpha-modulated emphasis envelope:
+      a radial glow border, a pulsing rectangular outline, and an
+      optional scale-bump around the surface centre.
     - Otherwise yields ``props`` directly with no extra Cairo state.
 
     Cairo source authors call this once at the top of their
     ``render()`` to honor the dispatched per-ward properties without
-    re-implementing the visibility + alpha plumbing each time.
+    re-implementing the visibility + alpha plumbing each time. The
+    ``canvas_w`` / ``canvas_h`` kwargs let the scope compute the border
+    rectangle; callers that can't pass them (legacy sites) see a no-op
+    border and only the alpha path runs — previous behaviour.
     """
     props = resolve_ward_properties(ward_id)
     if not props.visible:
         yield None
         return
-    use_group = props.alpha < 0.999
-    if use_group:
+    needs_emphasis = (
+        props.alpha < 0.999
+        or props.glow_radius_px > 0.1
+        or props.border_pulse_hz > 0.01
+        or props.scale_bump_pct > 0.001
+    )
+    if needs_emphasis:
         cr.push_group()
     try:
         yield props
     finally:
-        if use_group:
+        if not needs_emphasis:
+            return
+        try:
             cr.pop_group_to_source()
-            cr.paint_with_alpha(max(0.0, min(1.0, props.alpha)))
+            effective_alpha = max(0.0, min(1.0, props.alpha))
+            if props.scale_bump_pct > 0.001 and canvas_w > 0 and canvas_h > 0:
+                # Scale-bump renders the source content around its centre
+                # without breaking the outer dimensions. push/pop
+                # preserves the surface for the glow + border pass below.
+                scale = 1.0 + max(0.0, min(0.5, float(props.scale_bump_pct)))
+                cx = canvas_w * 0.5
+                cy = canvas_h * 0.5
+                cr.save()
+                cr.translate(cx, cy)
+                cr.scale(scale, scale)
+                cr.translate(-cx, -cy)
+                cr.paint_with_alpha(effective_alpha)
+                cr.restore()
+            else:
+                cr.paint_with_alpha(effective_alpha)
+
+            if canvas_w <= 0 or canvas_h <= 0:
+                return
+            # Radial glow — a soft emissive border that falls off toward
+            # the ward's centre. Render-time only: we paint a strip along
+            # each edge using cairo's radial gradient. Colour is taken
+            # from glow_color_rgba so emphasis reads as warm identity,
+            # not UI highlight.
+            if props.glow_radius_px > 0.1:
+                _paint_emissive_glow(
+                    cr,
+                    float(canvas_w),
+                    float(canvas_h),
+                    float(props.glow_radius_px),
+                    props.glow_color_rgba,
+                )
+            # Border pulse — alpha-modulated rectangular stroke whose
+            # opacity tracks a sinusoid at ``border_pulse_hz`` Hz. The
+            # stroke radius is half the glow radius so the pulse rides
+            # on top of the glow as a crisp edge.
+            if props.border_pulse_hz > 0.01:
+                _paint_border_pulse(
+                    cr,
+                    float(canvas_w),
+                    float(canvas_h),
+                    float(props.border_pulse_hz),
+                    props.border_color_rgba,
+                )
+        except Exception:
+            log.debug("ward_render_scope emphasis overlay failed", exc_info=True)
+
+
+def _paint_emissive_glow(
+    cr: Any,
+    w: float,
+    h: float,
+    radius: float,
+    rgba: tuple[float, float, float, float],
+) -> None:
+    """Paint a soft emissive glow along the ward's rectangular perimeter.
+
+    Implementation: four linear gradients (one per edge) where each
+    gradient fades from the full accent colour (at the edge) to alpha=0
+    at ``radius`` pixels in. The four gradients composite into an
+    even glow without the geometric artefacts of a single radial
+    gradient. Alpha-modulated by a slow sinusoid so the glow shimmers
+    rather than sitting static — matches the HARDM aesthetic (never
+    totally stable, precise yet diffuse).
+    """
+    import cairo as _c  # local import: helpers live outside hot test paths
+
+    r = float(max(0.0, min(radius, min(w, h) * 0.5)))
+    if r <= 0.1:
+        return
+    r_red, g, b, a_base = rgba
+    # Slow shimmer — 0.30 Hz so the glow breathes rather than flickers.
+    shimmer = 0.85 + 0.15 * math.sin(time.monotonic() * 2.0 * math.pi * 0.30)
+    peak_alpha = float(max(0.0, min(1.0, a_base * 0.75 * shimmer)))
+
+    def _edge(x0: float, y0: float, x1: float, y1: float, fx: float, fy: float) -> None:
+        # Gradient axis goes from the edge inward by ``r`` px.
+        grad = _c.LinearGradient(x0, y0, x0 + fx * r, y0 + fy * r)
+        grad.add_color_stop_rgba(0.0, r_red, g, b, peak_alpha)
+        grad.add_color_stop_rgba(1.0, r_red, g, b, 0.0)
+        cr.save()
+        cr.set_source(grad)
+        # Rectangle along the edge, r px wide on the inward side.
+        if fx != 0:  # left or right edge
+            cr.rectangle(x0, y0, fx * r, y1 - y0)
+        else:  # top or bottom edge
+            cr.rectangle(x0, y0, x1 - x0, fy * r)
+        cr.fill()
+        cr.restore()
+
+    # Top edge
+    _edge(0.0, 0.0, w, 0.0, 0.0, 1.0)
+    # Bottom edge
+    _edge(0.0, h, w, h, 0.0, -1.0)
+    # Left edge
+    _edge(0.0, 0.0, 0.0, h, 1.0, 0.0)
+    # Right edge
+    _edge(w, 0.0, w, h, -1.0, 0.0)
+
+
+def _paint_border_pulse(
+    cr: Any,
+    w: float,
+    h: float,
+    hz: float,
+    rgba: tuple[float, float, float, float],
+) -> None:
+    """Stroke the ward's rectangular outline with a sinusoidally pulsing alpha.
+
+    The pulse frequency is ``hz``; the baseline / amplitude are chosen so
+    the border is always legibly present (min alpha 0.30) but visibly
+    modulates (max alpha 1.00). Line width is 2 px for screen-clear
+    visibility at 720p. No rounded corners — HOMAGE grammar refuses.
+    """
+    r, g, b, a_base = rgba
+    phase = math.sin(time.monotonic() * 2.0 * math.pi * float(hz))
+    pulse_alpha = 0.30 + 0.70 * (phase * 0.5 + 0.5)
+    cr.save()
+    cr.set_source_rgba(r, g, b, max(0.0, min(1.0, a_base * pulse_alpha)))
+    cr.set_line_width(2.0)
+    cr.rectangle(1.0, 1.0, max(0.0, w - 2.0), max(0.0, h - 2.0))
+    cr.stroke()
+    cr.restore()
 
 
 # ── Internals ──────────────────────────────────────────────────────────────

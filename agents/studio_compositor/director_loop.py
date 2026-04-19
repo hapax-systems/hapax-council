@@ -68,18 +68,38 @@ def _silence_hold_fallback_intent(
     *, activity: str, narrative_text: str, reason: str, tier: str, condition_id: str
 ) -> DirectorIntent:
     """Construct a parser fallback DirectorIntent that satisfies the operator
-    no-vacuum invariant (2026-04-18) by attaching a silence-hold impingement."""
+    no-vacuum invariant (2026-04-18) by attaching a silence-hold impingement.
+
+    Cascade-delta (2026-04-18): the silence-hold now also populates a
+    ``structural_intent`` so the homage surface keeps breathing during
+    parser-error / degraded ticks. Without it, every LLM failure left
+    the surface as a static techno overlay for the entire narrative
+    cadence — exactly what the operator flagged.
+    """
+    from shared.director_intent import NarrativeStructuralIntent
     from shared.director_observability import emit_vacuum_prevented
 
     try:
         emit_vacuum_prevented(reason=reason, tier=tier, condition_id=condition_id)
     except Exception:
         log.debug("emit_vacuum_prevented failed", exc_info=True)
+    # Baseline: emphasise the thinking indicator + stance so viewers see
+    # the system is alive even when the LLM has failed. ``paused`` mode
+    # intentionally NOT used here — we want visible motion while
+    # degraded, not frozen ward state.
+    try:
+        structural = NarrativeStructuralIntent(
+            homage_rotation_mode="weighted_by_salience",
+            ward_emphasis=["thinking_indicator", "stance_indicator"],
+        )
+    except Exception:
+        structural = NarrativeStructuralIntent()
     return DirectorIntent(
         activity=activity,  # type: ignore[arg-type]
         stance=Stance.NOMINAL,
         narrative_text=narrative_text,
         compositional_impingements=[_silence_hold_impingement()],
+        structural_intent=structural,
     )
 
 
@@ -342,6 +362,21 @@ def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
     # behavior, not of observability.
     if not _director_model_legacy_mode():
         _emit_compositional_impingements(intent, condition_id=condition_id)
+        # Cascade-delta (2026-04-18) — dispatch the narrative-tier
+        # structural intent straight to ward-properties + the homage
+        # pending-transitions queue so the surface visibly shifts every
+        # tick. Unlike compositional_impingements, this bypasses Qdrant
+        # recruitment because structural directives are aesthetic, not
+        # recruitable capabilities. Fail-open: dispatch errors log and
+        # do not block the tick.
+        try:
+            from agents.studio_compositor.compositional_consumer import (
+                dispatch_structural_intent,
+            )
+
+            dispatch_structural_intent(intent.structural_intent)
+        except Exception:
+            log.debug("dispatch_structural_intent failed", exc_info=True)
 
 
 def _default_tts_socket_path() -> Path:
@@ -1174,42 +1209,76 @@ class DirectorLoop:
         consumer, affordance pipeline, research log) treat it uniformly.
         """
         try:
-            from shared.director_intent import CompositionalImpingement, DirectorIntent
+            from shared.director_intent import (
+                CompositionalImpingement,
+                DirectorIntent,
+                NarrativeStructuralIntent,
+            )
 
-            micromove_cycle = [
+            # Cascade-delta (2026-04-18): each micromove now pairs a
+            # compositional impingement with a concrete structural_intent
+            # (ward_emphasis + rotation mode) so even fallback ticks
+            # visibly shift the homage surface. Without this, the LLM
+            # going quiet collapsed the surface to a static techno
+            # overlay — the exact failure mode the operator flagged.
+            micromove_cycle: list[tuple[str, str, str, list[str], str]] = [
                 (
                     "overlay.emphasis",
                     "Fade the grounding-provenance ticker back up to full so the "
                     "perceptual-field sources stay legibly attributed.",
                     "air",
+                    ["grounding_provenance_ticker"],
+                    "sequential",
                 ),
                 (
                     "preset.bias",
                     "Push the effect graph a notch toward calm-textural — small drift, "
                     "no new content.",
                     "water",
+                    ["pressure_gauge", "activity_variety_log"],
+                    "weighted_by_salience",
                 ),
                 (
                     "overlay.emphasis",
                     "Pulse the stance indicator so the current stance reads as active "
                     "rather than frozen.",
                     "earth",
+                    ["stance_indicator", "activity_header"],
+                    "sequential",
                 ),
                 (
                     "camera.hero",
                     "Keep the current hero camera but nudge its framing weight — a small "
                     "gesture, not a cut.",
                     "earth",
+                    ["hardm_dot_matrix"],
+                    "weighted_by_salience",
                 ),
                 (
                     "overlay.emphasis",
                     "Dim the chrome half a step so the reverie breathes.",
                     "void",
+                    ["impingement_cascade", "recruitment_candidate_panel"],
+                    "random",
+                ),
+                (
+                    "ward.highlight",
+                    "Brighten the album face for a beat so the music stays legible.",
+                    "fire",
+                    ["album", "token_pole"],
+                    "weighted_by_salience",
+                ),
+                (
+                    "overlay.emphasis",
+                    "Sweep emphasis across the chat-ambient ward so conversation reads.",
+                    "air",
+                    ["chat_ambient_ward", "captions_source"],
+                    "sequential",
                 ),
             ]
             idx = int(getattr(self, "_micromove_cycle_idx", 0)) % len(micromove_cycle)
             self._micromove_cycle_idx = idx + 1
-            family, narrative, material = micromove_cycle[idx]
+            family, narrative, material, wards_to_emphasize, rotation = micromove_cycle[idx]
             try:
                 impingement = CompositionalImpingement(
                     narrative=narrative,
@@ -1222,20 +1291,30 @@ class DirectorLoop:
                 log.debug("micromove impingement construct failed", exc_info=True)
                 return
             try:
+                structural = NarrativeStructuralIntent(
+                    homage_rotation_mode=rotation,  # type: ignore[arg-type]
+                    ward_emphasis=wards_to_emphasize,
+                )
+            except Exception:
+                log.debug("micromove structural_intent construct failed", exc_info=True)
+                structural = NarrativeStructuralIntent()
+            try:
                 intent = DirectorIntent(
                     activity="observe",
                     narrative_text=f"[micromove:{reason}] {narrative}",
                     grounding_provenance=[],
                     compositional_impingements=[impingement],
+                    structural_intent=structural,
                 )
             except Exception:
                 log.debug("micromove DirectorIntent construct failed", exc_info=True)
                 return
             _emit_intent_artifacts(intent, condition_id=condition_id)
             log.info(
-                "director micromove fallback emitted: reason=%s family=%s",
+                "director micromove fallback emitted: reason=%s family=%s wards=%s",
                 reason,
                 family,
+                wards_to_emphasize,
             )
         except Exception:
             log.debug("_emit_micromove_fallback failed", exc_info=True)
@@ -1713,6 +1792,57 @@ class DirectorLoop:
             "compatible with calm pacing; it is incompatible with stasis."
         )
 
+        # Structural-intent surface (2026-04-18, cascade-delta). Operator
+        # directive: "active thoughtful manipulation should be UNAVOIDABLE
+        # to livestream viewers". Every narrative tick MUST declare at
+        # least one ward to emphasize or a rotation-mode choice so the
+        # homage surface visibly changes shape each cadence rather than
+        # sitting as a static techno overlay with dumb containers.
+        parts.append("")
+        parts.append("## Structural intent — homage surface (mandatory this tick)")
+        parts.append(
+            "The compositor reads ``structural_intent`` every tick and "
+            "translates it to ward-property + homage-choreographer moves "
+            "directly (no Qdrant recruitment — aesthetic directives are "
+            "not recruitable). Make choices visible every tick:"
+        )
+        parts.append(
+            "  - homage_rotation_mode: choose one of "
+            "sequential | random | weighted_by_salience | paused. "
+            "``paused`` only when the operator is in delicate work and "
+            "the surface should stop shifting; default to "
+            "``weighted_by_salience`` when the perceptual field is busy "
+            "so the highest-salience ward wins.\n"
+            "  - ward_emphasis: 1–3 ward_ids to brighten + glow + pulse "
+            "for ~4s. Pick wards actually relevant to the current move. "
+            'Valid ids: chat_ambient, activity_header, '
+            "stance_indicator, grounding_provenance_ticker, "
+            "impingement_cascade, recruitment_candidate_panel, "
+            "thinking_indicator, pressure_gauge, activity_variety_log, "
+            "whos_here, token_pole, album_overlay, sierpinski, "
+            "hardm_dot_matrix, stream_overlay, captions, "
+            "research_marker_overlay, chat_keyword_legend, vinyl_platter, "
+            "overlay_zones.\n"
+            "  - ward_dispatch (optional): 0–2 ward_ids to freshly "
+            "bring in (FSM ABSENT → ENTERING). Use sparingly — a "
+            "dispatch is a bigger surface move than an emphasis.\n"
+            "  - ward_retire (optional): 0–2 ward_ids to quiet out "
+            "(FSM HOLD → EXITING). Pair with ward_dispatch for a swap.\n"
+            "  - placement_bias (optional): per-ward placement hint map, "
+            "e.g. {\"album\": \"scale_1.15x\", \"token_pole\": "
+            '"drift_left"}. Hints: drift_left, drift_right, drift_up, '
+            "drift_down, pulse_center, scale_0.8x, scale_1.0x, "
+            "scale_1.15x, scale_1.3x."
+        )
+        parts.append(
+            "**Default on quiet ticks:** "
+            '{"homage_rotation_mode": "weighted_by_salience", '
+            '"ward_emphasis": ["<the ward the narrative most belongs to>"], '
+            '"ward_dispatch": [], "ward_retire": [], "placement_bias": {}}. '
+            "Never emit an empty structural_intent — idle is the cardinal "
+            "sin (above); the surface must visibly move with you."
+        )
+
         # Viewer-audit (2026-04-18): after 4 consecutive react narratives
         # the LLM was looping the same paragraph about the same video.
         # Insert an explicit "change the subject" rider when we've spent
@@ -1764,7 +1894,14 @@ class DirectorLoop:
             '      "material": "<water|fire|earth|air|void>",\n'
             '      "salience": 0.0..1.0\n'
             "    }\n"
-            "  ]\n"
+            "  ],\n"
+            '  "structural_intent": {\n'
+            '    "homage_rotation_mode": "<sequential|random|weighted_by_salience|paused>",\n'
+            '    "ward_emphasis": ["<ward_id>", ...],\n'
+            '    "ward_dispatch": ["<ward_id>", ...],\n'
+            '    "ward_retire": ["<ward_id>", ...],\n'
+            '    "placement_bias": {"<ward_id>": "<hint>"}\n'
+            "  }\n"
             "}"
         )
         parts.append(

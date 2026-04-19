@@ -563,7 +563,19 @@ class CairoSourceRunner:
             from .ward_properties import ward_render_scope
 
             ward_gated = False
-            with ward_render_scope(cr, self._source_id) as _ward_props:
+            # Cascade-delta (2026-04-18): passing canvas_w/canvas_h lets
+            # ward_render_scope composite the emphasis overlay (glow,
+            # border-pulse, scale-bump) around the source's render
+            # without each source re-implementing the plumbing. Without
+            # this, structural-intent emphasis was written to
+            # ward-properties.json but never surfaced on the livestream —
+            # the flat-text-on-black look the operator flagged.
+            with ward_render_scope(
+                cr,
+                self._source_id,
+                canvas_w=self._natural_w,
+                canvas_h=self._natural_h,
+            ) as _ward_props:
                 if _ward_props is None:
                     ward_gated = True
                 else:

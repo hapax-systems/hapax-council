@@ -3,13 +3,21 @@
 The director's role is the livestream's meta-structure communication device
 (memory `feedback_director_grounding.md`). Its output is structured intent,
 not capability invocations: a declared activity + stance + narrative utterance
-+ compositional impingements. The impingements go through AffordancePipeline;
-capabilities recruit from there. This keeps unified-semantic-recruitment
-intact (no bypass paths — spec
++ compositional impingements + per-tick structural intent. The impingements
+go through AffordancePipeline; capabilities recruit from there. The structural
+intent drives the ward-property surface directly (rotation mode, per-ward
+emphasis / dispatch / retire / placement-bias) so the director visibly shapes
+the livestream surface every tick without waiting for the slow (90s) structural
+tier. This keeps unified-semantic-recruitment intact (no bypass paths — spec
 `docs/superpowers/specs/2026-04-02-unified-semantic-recruitment-design.md`).
 
 Epic: volitional grounded director (PR #1017, spec
 `docs/superpowers/specs/2026-04-17-volitional-grounded-director-design.md`).
+Homage-surface activation (2026-04-18, cascade-delta): `NarrativeStructuralIntent`
+lets the fast narrative tier drive ward-level rotation / emphasis / dispatch /
+placement every tick so the homage surface becomes aesthetically active —
+spec §4.13 + operator directive "unavoidable evidence of active thoughtful
+manipulation".
 """
 
 from __future__ import annotations
@@ -157,10 +165,163 @@ class CompositionalImpingement(BaseModel):
         return stripped
 
 
+# Per-tick rotation strategy the narrative director chooses to drive the
+# homage choreographer. Matches
+# ``agents.studio_compositor.structural_director.HomageRotationMode``;
+# re-declared here to avoid the compositor → shared import cycle.
+NarrativeHomageRotationMode = Literal[
+    "sequential",
+    "random",
+    "weighted_by_salience",
+    "paused",
+]
+
+
+# Canonical ward-id set the narrative director may target. Widening this
+# literal requires updating the ward_registry + ward-property consumer.
+# Limited to the 18 legible wards on the surface (chat_ambient_ward,
+# activity_header, stance_indicator, grounding_provenance_ticker,
+# impingement_cascade, recruitment_candidate_panel, thinking_indicator,
+# pressure_gauge, activity_variety_log, whos_here, token_pole, album,
+# sierpinski, hardm_dot_matrix, stream_overlay, captions_source,
+# research_marker_overlay, hothouse_keyword_legend) so a typo in the LLM
+# output collapses to an empty emphasis list rather than writing a stray
+# ward-properties entry.
+WardId = Literal[
+    "chat_ambient",
+    "activity_header",
+    "stance_indicator",
+    "grounding_provenance_ticker",
+    "impingement_cascade",
+    "recruitment_candidate_panel",
+    "thinking_indicator",
+    "pressure_gauge",
+    "activity_variety_log",
+    "whos_here",
+    "token_pole",
+    "album_overlay",
+    "sierpinski",
+    "hardm_dot_matrix",
+    "stream_overlay",
+    "captions",
+    "research_marker_overlay",
+    "chat_keyword_legend",
+    "vinyl_platter",
+    "overlay_zones",
+]
+
+
+# Placement-hint vocabulary a narrative structural-intent entry may attach
+# to a ward_id. Each hint is translated by the compositional consumer into
+# a ``WardProperties`` field: ``drift_*`` / ``position_offset_*`` / ``scale``.
+# Unknown hints are dropped silently (fail-open; the empty string survives
+# as the default no-op).
+WardPlacementHint = Literal[
+    "none",
+    "drift_left",
+    "drift_right",
+    "drift_up",
+    "drift_down",
+    "pulse_center",
+    "scale_0.8x",
+    "scale_1.0x",
+    "scale_1.15x",
+    "scale_1.3x",
+]
+
+
+class NarrativeStructuralIntent(BaseModel):
+    """Per-tick structural intent the narrative director declares.
+
+    Distinct from the slow (90s) ``structural_director.StructuralIntent``:
+    the narrative tier runs every ``HAPAX_NARRATIVE_CADENCE_S`` (default
+    30s) and can therefore make the homage surface visibly active on a
+    much tighter loop. Consumers:
+
+    1. The ward-property manager reads ``ward_emphasis`` and bumps
+       ``glow_radius_px``, ``alpha``, ``scale_bump_pct``, and
+       ``border_pulse_hz`` on each listed ward for a short window
+       (default ~4s decay).
+    2. The choreographer's pending-transitions queue receives
+       ``homage.emergence`` entries for ``ward_dispatch`` and
+       ``homage.recede`` entries for ``ward_retire``.
+    3. ``placement_bias`` maps per-ward position hints into the ward's
+       ``drift_*`` / ``scale`` overrides.
+    4. ``homage_rotation_mode`` flows through to the choreographer as an
+       every-tick override of the structural director's slower mode.
+
+    Missing fields default to empty / ``"sequential"`` so legacy parser
+    output (LLMs that don't know the new field) degrade gracefully.
+    """
+
+    homage_rotation_mode: NarrativeHomageRotationMode | None = Field(
+        default=None,
+        description=(
+            "Per-tick override of the homage choreographer's rotation "
+            "strategy. None → leave the slow structural tier's choice in "
+            "place (fail-open to the default). sequential/random/"
+            "weighted_by_salience/paused match the choreographer."
+        ),
+    )
+    ward_emphasis: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ward ids to emphasize this tick. Each entry gets "
+            "glow_radius_px + alpha=1.0 + scale_bump + border_pulse "
+            "for a ~4s decaying window. Typo / unknown ward ids are "
+            "dropped at the consumer."
+        ),
+    )
+    ward_dispatch: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ward ids to freshly dispatch (FSM ABSENT → ENTERING). The "
+            "consumer enqueues a homage.emergence pending transition."
+        ),
+    )
+    ward_retire: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ward ids to retire (FSM HOLD → EXITING). The consumer "
+            "enqueues a homage.recede pending transition."
+        ),
+    )
+    placement_bias: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-ward placement hint. Keys are ward_ids; values are "
+            "drift_left / drift_right / drift_up / drift_down / "
+            "pulse_center / scale_0.8x / scale_1.0x / scale_1.15x / "
+            "scale_1.3x. Unknown hints silently dropped."
+        ),
+    )
+
+    @field_validator("ward_emphasis", "ward_dispatch", "ward_retire")
+    @classmethod
+    def _cap_list_len(cls, v: list[str]) -> list[str]:
+        """Cap ward lists at 4 to prevent a pathological LLM emission
+        from bumping every ward simultaneously."""
+        if not isinstance(v, list):
+            return []
+        return [entry for entry in v[:4] if isinstance(entry, str) and entry]
+
+    @field_validator("placement_bias")
+    @classmethod
+    def _cap_placement_bias(cls, v: dict[str, str]) -> dict[str, str]:
+        """Cap placement_bias at 4 entries + stringify values."""
+        if not isinstance(v, dict):
+            return {}
+        out: dict[str, str] = {}
+        for key, value in list(v.items())[:4]:
+            if isinstance(key, str) and isinstance(value, str) and key and value:
+                out[key] = value
+        return out
+
+
 class DirectorIntent(BaseModel):
     """One directorial move — what the narrative director emits per tick.
 
-    The fields split into three groups:
+    The fields split into four groups:
 
     - *What Hapax senses* (`grounding_provenance`) — the PerceptualField
       signal names this move grounds in. Empty list is allowed (the
@@ -175,6 +336,10 @@ class DirectorIntent(BaseModel):
       where 'do nothing interesting' is acceptable"). If the LLM returned
       no impingements, the parser / micromove fallback is responsible for
       populating one before DirectorIntent construction.
+    - *What structural surface moves Hapax wants this tick* (`structural_intent`) —
+      ward-level emphasis / dispatch / retire / placement-bias + homage
+      rotation-mode override. Consumed by the compositor's ward-property
+      manager + choreographer (see ``compositional_consumer``).
     """
 
     grounding_provenance: list[str] = Field(
@@ -211,6 +376,16 @@ class DirectorIntent(BaseModel):
             "At least one is required per tick (operator invariant 2026-04-18). "
             "Parser-error / silence paths must populate a silence-hold micromove "
             "before constructing DirectorIntent."
+        ),
+    )
+    structural_intent: NarrativeStructuralIntent = Field(
+        default_factory=NarrativeStructuralIntent,
+        description=(
+            "Per-tick homage surface directives. Ward emphasis + "
+            "dispatch + retire + placement-bias + rotation-mode "
+            "override. Defaults to an empty container so legacy LLM "
+            "output (pre-field) deserializes cleanly; the consumer "
+            "no-ops on an empty container."
         ),
     )
 
