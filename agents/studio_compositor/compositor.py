@@ -534,6 +534,16 @@ class StudioCompositor:
         self._overlay_zone_manager = OverlayZoneManager(budget_tracker=self._budget_tracker)
         self._audio_capture = CompositorAudioCapture()
 
+        # CVS #145 — bidirectional 24c audio ducking controller. Runs on
+        # its own background thread polling VAD + YT-audio state files at
+        # 30 ms cadence. Feature-flag-gated at dispatch level (no
+        # PipeWire changes unless ``HAPAX_AUDIO_DUCKING_ACTIVE=1``), but
+        # the state-machine ticks regardless so
+        # ``hapax_audio_ducking_state{state=...}`` tracks reality
+        # continuously for Grafana. Instantiated lazily at start_compositor
+        # time — see ``lifecycle.py``.
+        self._audio_ducking: Any | None = None
+
         self._graph_runtime = init_graph_runtime(self)
 
         # Phase 2c: LayoutStore — loads Source/Surface/Assignment layouts.

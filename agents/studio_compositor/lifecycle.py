@@ -139,6 +139,22 @@ def start_compositor(compositor: Any) -> None:
     compositor._running = True
     compositor._audio_capture.start()
 
+    # CVS #145 — instantiate + start the bidirectional 24c audio ducking
+    # controller. Even with ``HAPAX_AUDIO_DUCKING_ACTIVE`` off, the FSM
+    # ticks and publishes ``hapax_audio_ducking_state{state=...}`` so
+    # Grafana can observe the state trajectory without the PipeWire
+    # gains being dispatched. Without this wiring the gauge is frozen
+    # at startup value (normal=1, others=0) forever — an 8th E2E smoketest
+    # flagged the missing runtime updates at :9482.
+    try:
+        from .audio_ducking import AudioDuckingController
+
+        compositor._audio_ducking = AudioDuckingController()
+        compositor._audio_ducking.start()
+        log.info("AudioDuckingController started (CVS #145) — state gauge live")
+    except Exception:
+        log.exception("AudioDuckingController start failed (non-fatal)")
+
     # CVS #149: register 24c sources on the unified reactivity bus.
     # Feature-flagged OFF by default; registration happens regardless so
     # the bus observability surface is live, but consumers only read from
@@ -340,6 +356,15 @@ def stop_compositor(compositor: Any) -> None:
         compositor.loop.quit()
 
     compositor._audio_capture.stop()
+
+    # CVS #145 — tear down the bidirectional ducker thread.
+    ducker = getattr(compositor, "_audio_ducking", None)
+    if ducker is not None:
+        try:
+            ducker.stop()
+        except Exception:
+            log.exception("AudioDuckingController stop raised during shutdown")
+
     compositor._write_status("stopped")
 
 
