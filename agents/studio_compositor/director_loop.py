@@ -699,22 +699,93 @@ def _read_album_info() -> str:
     return "unknown"
 
 
-# Threshold: album-state confidence above which we treat vinyl as actually
-# playing. Below this (or if state is missing / stale), the prompt must not
-# claim vinyl is spinning — that's a hallucination the LLM will pick up on.
+# Threshold: album-state confidence above which we treat the album-COVER
+# as visually identified (NOT the same as "platter is spinning"). Below
+# this (or if state is missing / stale), the prompt must not claim vinyl
+# is spinning — that's a hallucination the LLM will pick up on.
+#
+# Task #185 (2026-04-20): confidence in album-state.json is the LLM's
+# COVER-identification confidence — the IR overhead camera saw something
+# the LLM thinks is an album, and ACRCloud fingerprinted whatever audio
+# was in the mixer. Neither signal proves the platter is physically
+# spinning. Operator reported Hapax claiming vinyl-playing when it is
+# not. Fix: require a second signal (recent hand-on-turntable activity
+# OR an operator manual override flag) before claiming vinyl-playing.
 _VINYL_CONFIDENCE_THRESHOLD = 0.5
 _VINYL_STATE_STALE_S = 300.0
+# Hand-on-turntable activity is the load-bearing "this is really live
+# vinyl" signal. Window is 120 s: operator doesn't need to re-touch the
+# deck every moment, but a >2 min absence of scratch/queue/swap activity
+# is the strongest near-online hint we have that the platter isn't
+# actively being DJ'd.
+_TURNTABLE_ACTIVE_STALE_S = 120.0
+# Manual override flag. Operator can `touch` to force-claim vinyl-playing
+# during the rare case where the platter spins passively without any
+# hand-deck contact AND cover identification drifts stale. Cheap
+# operator escape hatch. Consumed below as a short-circuit.
+_VINYL_OPERATOR_OVERRIDE_FLAG = Path("/dev/shm/hapax-compositor/vinyl-operator-active.flag")
+
+
+def _hand_on_turntable_recent() -> bool:
+    """Return True iff perception saw a turntable-zone hand recently.
+
+    Reads ~/.cache/hapax-daimonion/perception-state.json. The
+    ``ir_hand_zone`` field is "turntable" when the Pi-6 overhead IR
+    camera sees the operator's hand over the deck. Stale perception
+    state (age > :data:`_TURNTABLE_ACTIVE_STALE_S`) returns False —
+    we must not fake-claim vinyl-playing off a 10-min-old hand cue.
+    """
+    try:
+        perception_path = Path.home() / ".cache/hapax-daimonion/perception-state.json"
+        if not perception_path.exists():
+            return False
+        age = time.time() - perception_path.stat().st_mtime
+        if age > _TURNTABLE_ACTIVE_STALE_S:
+            return False
+        data = json.loads(perception_path.read_text())
+        hand_zone = data.get("ir_hand_zone") or ""
+        hand_activity = data.get("ir_hand_activity") or ""
+        # Either current zone is turntable, OR recent scratch activity
+        # (scratching = hand + non-idle + turntable zone, classified by
+        # contact_mic_ir cross-modal fusion).
+        if "turntable" in str(hand_zone).lower():
+            return True
+        if str(hand_activity).lower() in {"scratching", "scratch"}:
+            return True
+    except Exception:
+        log.debug("hand-on-turntable check failed", exc_info=True)
+    return False
 
 
 def _vinyl_is_playing() -> bool:
-    """True iff album-state.json reports a recent, high-confidence album.
+    """True iff we have strong evidence the platter is spinning.
 
-    album-identifier.py writes album-state.json when ACRCloud identifies the
-    vinyl that's currently playing. If the file is missing, stale, or
-    confidence is low, vinyl is not reliably playing and we must not frame
-    the livestream as "Oudepode is spinning vinyl".
+    Three-signal gate (all are short-circuit paths; any one enables):
+
+    1. Operator override flag present at
+       :data:`_VINYL_OPERATOR_OVERRIDE_FLAG` — escape hatch for the
+       passive-play case where the operator wants to assert vinyl is
+       spinning without touching the deck.
+    2. Album cover identified (confidence >= threshold, mtime fresh)
+       AND recent hand-on-turntable perception within
+       :data:`_TURNTABLE_ACTIVE_STALE_S`. The conjunction is load-
+       bearing: cover identification alone is not a playing signal
+       (album-identifier keeps writing state when the cover is in the
+       IR field but the platter is idle).
+    3. (No third path — if the cover is stale / unidentified AND no
+       hand activity recent AND no override, vinyl is NOT playing.)
+
+    Task #185 fix; operator reported Hapax claiming vinyl-playing when
+    it was not. The prior impl trusted only the cover-confidence field,
+    which is the LLM's certainty about the COVER identity, not the
+    platter's spinning state.
     """
     try:
+        # Path 1: operator override flag. Fast + cheap.
+        if _VINYL_OPERATOR_OVERRIDE_FLAG.exists():
+            return True
+
+        # Path 2: cover visible AND recent hand activity on the deck.
         if not ALBUM_STATE_FILE.exists():
             return False
         age = time.time() - ALBUM_STATE_FILE.stat().st_mtime
@@ -722,7 +793,11 @@ def _vinyl_is_playing() -> bool:
             return False
         data = json.loads(ALBUM_STATE_FILE.read_text())
         conf = float(data.get("confidence") or 0.0)
-        return conf >= _VINYL_CONFIDENCE_THRESHOLD
+        if conf < _VINYL_CONFIDENCE_THRESHOLD:
+            return False
+
+        # Cover visible — require the second signal before claiming playing.
+        return _hand_on_turntable_recent()
     except Exception:
         log.debug("vinyl-playing check failed", exc_info=True)
         return False

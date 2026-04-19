@@ -18,42 +18,84 @@ from agents.studio_compositor import director_loop
 
 
 class TestVinylDecoupling:
-    """Prompt framing must adapt to whether vinyl is actually playing."""
+    """Prompt framing must adapt to whether vinyl is actually playing.
+
+    Task #185 (2026-04-20): ``_vinyl_is_playing`` now requires a
+    second signal beyond cover-identification. Either:
+      1. Operator override flag present, OR
+      2. Cover identified AND recent hand-on-turntable activity.
+    Cover alone is insufficient — the LLM's cover-ID confidence does
+    not prove the platter is spinning.
+    """
+
+    def _set_override(self, tmp_path, monkeypatch, active: bool) -> None:
+        """Redirect the operator-override flag to a tmp location."""
+        flag = tmp_path / "vinyl-operator-active.flag"
+        if active:
+            flag.touch()
+        monkeypatch.setattr(director_loop, "_VINYL_OPERATOR_OVERRIDE_FLAG", flag)
 
     def test_vinyl_not_playing_when_state_missing(self, tmp_path, monkeypatch):
         missing = tmp_path / "absent-album-state.json"
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", missing)
+        self._set_override(tmp_path, monkeypatch, active=False)
+        monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: False)
         assert director_loop._vinyl_is_playing() is False
 
     def test_vinyl_not_playing_when_confidence_low(self, tmp_path, monkeypatch):
         state = tmp_path / "album-state.json"
         state.write_text(json.dumps({"artist": "X", "title": "Y", "confidence": 0.1}))
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
+        self._set_override(tmp_path, monkeypatch, active=False)
+        monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
         assert director_loop._vinyl_is_playing() is False
 
     def test_vinyl_not_playing_when_state_stale(self, tmp_path, monkeypatch):
         state = tmp_path / "album-state.json"
         state.write_text(json.dumps({"artist": "X", "title": "Y", "confidence": 0.9}))
-        # Force mtime to 10 minutes ago — past the 5-min staleness cutoff.
         import os
 
         old = state.stat().st_mtime - 600
         os.utime(state, (old, old))
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
+        self._set_override(tmp_path, monkeypatch, active=False)
+        monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
         assert director_loop._vinyl_is_playing() is False
 
-    def test_vinyl_playing_when_confident_and_fresh(self, tmp_path, monkeypatch):
+    def test_vinyl_NOT_playing_cover_alone_no_hand_activity(self, tmp_path, monkeypatch):
+        """Task #185 regression: cover identified + fresh, but no hand-on-turntable.
+        Prior implementation returned True; new impl returns False."""
+        state = tmp_path / "album-state.json"
+        state.write_text(json.dumps({"artist": "Bobby Konders", "title": "M1", "confidence": 0.9}))
+        monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
+        self._set_override(tmp_path, monkeypatch, active=False)
+        monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: False)
+        assert director_loop._vinyl_is_playing() is False
+
+    def test_vinyl_playing_when_cover_AND_recent_hand_activity(self, tmp_path, monkeypatch):
         state = tmp_path / "album-state.json"
         state.write_text(
             json.dumps({"artist": "Bobby Konders", "title": "Massive Sounds", "confidence": 0.82})
         )
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
+        self._set_override(tmp_path, monkeypatch, active=False)
+        monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
+        assert director_loop._vinyl_is_playing() is True
+
+    def test_vinyl_playing_via_operator_override_flag(self, tmp_path, monkeypatch):
+        """Operator-override short-circuits — no cover, no hand activity needed."""
+        missing = tmp_path / "absent-album-state.json"
+        monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", missing)
+        self._set_override(tmp_path, monkeypatch, active=True)
+        monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: False)
         assert director_loop._vinyl_is_playing() is True
 
     def test_framing_when_vinyl_playing(self, tmp_path, monkeypatch):
         state = tmp_path / "album-state.json"
         state.write_text(json.dumps({"artist": "Bobby Konders", "title": "M1", "confidence": 0.9}))
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
+        self._set_override(tmp_path, monkeypatch, active=False)
+        monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
         framing = director_loop._curated_music_framing("yt-title", "yt-channel")
         assert "spinning vinyl" in framing
         assert "Bobby Konders" in framing
