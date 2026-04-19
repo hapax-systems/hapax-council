@@ -45,6 +45,7 @@ from agents.hapax_daimonion.conversation_helpers import (
     _stimmung_downgrade,  # noqa: F401 — re-exported for external consumers
     _strip_emoji,
 )
+from shared.persona_prompt_composer import compose_persona_prompt
 
 log = logging.getLogger(__name__)
 
@@ -332,13 +333,12 @@ class ConversationPipeline:
         self._emit("conversation_end", turns=self.turn_count)
         log.info("Conversation pipeline stopped (%d turns)", self.turn_count)
 
-    # Compressed prompt for LOCAL tier — gemma3:4b can't follow complex instructions.
-    # ~200 tokens instead of ~1300. Just enough personality to not be generic.
-    _LOCAL_SYSTEM_PROMPT = (
-        "You are Hapax, a voice assistant for the operator (system architect, hip-hop producer). "
-        "Be brief (1-2 sentences), warm, direct, genuinely helpful. Dry wit welcome. "
-        "Never condescend. Answer first, then reasoning if needed. "
-        "Don't say 'I'm just an AI' or hedge unnecessarily."
+    # Compressed prompt for LOCAL tier — small models cannot absorb the full
+    # description-of-being without blowing the context budget. Route through
+    # compose_persona_prompt(compressed=True) so the same Phase 7 architectural
+    # framing flows through every tier; only the fidelity differs.
+    _LOCAL_SYSTEM_PROMPT = compose_persona_prompt(
+        role_id="partner-in-conversation", compressed=True
     )
 
     def _update_system_context(self) -> None:
@@ -1003,10 +1003,9 @@ class ConversationPipeline:
                     {
                         "role": "system",
                         "content": (
-                            "You are Hapax, a voice assistant. Be warm, brief, and casual. "
-                            "1-2 short sentences max. Match the operator's energy — if they're "
-                            "just checking in, keep it light. Don't volunteer system status "
-                            "or technical details unless specifically asked."
+                            compose_persona_prompt(
+                                role_id="partner-in-conversation", compressed=True
+                            )
                             + (f"\n\n{phenom}" if phenom else "")
                         ),
                     },

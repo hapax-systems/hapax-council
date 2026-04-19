@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .cairo_source import CairoSource, CairoSourceRunner
+from .cairo_source import CairoSourceRunner
 from .overlay_parser import parse_overlay_content
 
 if TYPE_CHECKING:

@@ -184,10 +184,22 @@ class SourceRegistry:
                 budget_tracker=budget_tracker,
             )
         if source.backend == "shm_rgba":
+            from agents.studio_compositor.homage.substrate_source import (
+                SUBSTRATE_SOURCE_REGISTRY,
+            )
             from agents.studio_compositor.shm_rgba_reader import ShmRgbaReader
 
             shm_path = source.params.get("shm_path")
             if not shm_path:
                 raise UnknownBackendError(f"shm_rgba source {source.id}: missing params.shm_path")
-            return ShmRgbaReader(Path(shm_path))
+            # HOMAGE #124: the Reverie ``external_rgba`` slot is the
+            # always-on generative substrate — its backend carries the
+            # ``HomageSubstrateSource`` marker so the choreographer
+            # filters it out of the transition queue. Non-Reverie
+            # shm_rgba sources (e.g. future YouTube slot PRs) stay
+            # opt-out-by-default.
+            is_substrate = source.id in SUBSTRATE_SOURCE_REGISTRY or bool(
+                source.params.get("is_substrate")
+            )
+            return ShmRgbaReader(Path(shm_path), is_substrate=is_substrate)
         raise UnknownBackendError(f"unknown backend: {source.backend}")

@@ -37,11 +37,24 @@ class ShmRgbaReader:
     ``frame_id`` that increments on every producer write.
     """
 
-    def __init__(self, path: Path) -> None:
+    # HOMAGE #124 substrate marker (defaulted to False at the class level so
+    # only ShmRgbaReader instances explicitly constructed with
+    # ``is_substrate=True`` — today: the Reverie ``external_rgba`` slot —
+    # are treated as always-on substrate. See
+    # ``docs/superpowers/specs/2026-04-18-reverie-substrate-preservation-design.md``
+    # and ``agents/studio_compositor/homage/substrate_source.py``.
+    is_substrate: bool = False
+
+    def __init__(self, path: Path, *, is_substrate: bool = False) -> None:
         self._path = Path(path)
         self._sidecar_path = self._path.with_suffix(self._path.suffix + ".json")
         self._cached_surface: cairo.ImageSurface | None = None
         self._cached_frame_id: int | None = None
+        # Instance-level override of the class default. Setting it on the
+        # instance (not just the class) means ``isinstance(reader,
+        # HomageSubstrateSource)`` evaluates correctly per-instance —
+        # non-substrate ShmRgbaReader instances never match the Protocol.
+        self.is_substrate = is_substrate
         # Phase 6 H23: lazy GStreamer appsrc for the main-layer path.
         # Built on first ``gst_appsrc()`` call; the sidecar is re-read at
         # build time to pick up the natural dimensions. Phase 6b will add

@@ -9,8 +9,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 log = logging.getLogger(__name__)
+
+# Preferred source when echo-cancellation is known to be active.
+# See docs/runbooks/audio-topology.md and spec 2026-04-18-audio-pathways-audit-design.md.
+_AEC_SOURCE_NAME = "echo_cancel_capture"
+# Fallback when HAPAX_AEC_ACTIVE is not set — the raw Yeti source.
+# Users keep this until the PipeWire drop-in is installed and verified.
+_RAW_YETI_PATTERN = "alsa_input.usb-Blue_Microphones_Yeti"
+
+
+def _resolve_default_source() -> str:
+    """Pick the default pw-cat target based on the AEC env flag.
+
+    Operator flips ``HAPAX_AEC_ACTIVE=1`` after installing
+    ``config/pipewire/hapax-echo-cancel.conf`` and verifying with
+    ``scripts/audio-topology-check.sh``. Off by default so daimonion
+    does not chase a virtual source that is not yet in the graph.
+    """
+    if os.environ.get("HAPAX_AEC_ACTIVE", "").strip() == "1":
+        return _AEC_SOURCE_NAME
+    return _RAW_YETI_PATTERN
 
 
 class AudioInputStream:
@@ -23,12 +44,12 @@ class AudioInputStream:
 
     def __init__(
         self,
-        source_name: str = "echo_cancel_capture",
+        source_name: str | None = None,
         sample_rate: int = 16000,
         frame_ms: int = 30,
         queue_maxsize: int = 300,
     ) -> None:
-        self._source_name = source_name
+        self._source_name = source_name if source_name is not None else _resolve_default_source()
         self._sample_rate = sample_rate
         self._frame_ms = frame_ms
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=queue_maxsize)

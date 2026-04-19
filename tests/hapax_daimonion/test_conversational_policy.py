@@ -38,11 +38,16 @@ class TestOperatorStyle:
         assert "Conversational Policy" in policy
         assert "truthful" in policy  # Grice quality maxim
 
-    def test_interview_personality_archetype(self):
+    def test_operator_style_is_architectural_state(self):
+        """Stage 2 refactor: operator style describes what the substrate does,
+        not what it feels. No archetype, no personality framing."""
         policy = get_policy()
-        assert "Socrates" in policy
-        assert "Hodgman" in policy
-        assert "Sean Carroll" in policy
+        assert "executive-function prosthetic" in policy
+        assert "system architect" in policy
+        # Must NOT carry personification drift
+        assert "Socrates" not in policy
+        assert "archetype" not in policy
+        assert "personality" not in policy
 
     def test_dysfluency_guidance(self):
         """Critical ADHD accommodation: never interrupt pauses."""
@@ -58,12 +63,12 @@ class TestOperatorStyle:
     def test_proactivity_directives(self):
         policy = get_policy()
         assert "open loops" in policy
-        assert "Context restoration" in policy
+        assert "Restore context" in policy
 
     def test_productive_intensity_not_pathologized(self):
         policy = get_policy()
         assert "DO NOT pathologize" in policy
-        assert "angular double-edged behaviors" in policy
+        assert "24-hour work sprints" in policy
 
     def test_low_attack_interruptions(self):
         policy = get_policy()
@@ -71,11 +76,11 @@ class TestOperatorStyle:
 
     def test_epistemic_honesty(self):
         policy = get_policy()
-        assert "Epistemic honesty" in policy
+        assert "Mark genuine uncertainty" in policy
 
-    def test_no_empty_rhetoric(self):
+    def test_no_filler(self):
         policy = get_policy()
-        assert "No empty rhetoric" in policy
+        assert "No corporate filler" in policy
 
 
 # ── Environmental Modulation ────────────────────────────────────────────────
@@ -163,7 +168,7 @@ class TestGuestPolicy:
         assert "Guest mode" in policy
         assert "Dignity floor" in policy
         # Should NOT contain operator style
-        assert "Socrates" not in policy
+        assert "executive-function prosthetic" not in policy
 
     def test_consented_guest_moderate_formality(self):
         env = FakeEnv(consent_phase="consented", face_count=2)
@@ -171,10 +176,10 @@ class TestGuestPolicy:
         assert "consented guest" in policy
         assert "Moderate formality" in policy
         # Should still have operator style
-        assert "Socrates" in policy
+        assert "executive-function prosthetic" in policy
 
     def test_consented_guest_not_creepy(self):
-        """Interview: 'be friendly but not creepy about the setup.'"""
+        """Consented-guest branch: 'not creepy about the setup.'"""
         env = FakeEnv(consent_phase="consented", face_count=2)
         policy = get_policy(env=env)
         assert "not creepy" in policy.lower()
@@ -184,12 +189,12 @@ class TestGuestPolicy:
         policy = get_policy(env=env)
         assert "Dignity floor only" in policy
         # Should NOT have operator style
-        assert "Socrates" not in policy
+        assert "executive-function prosthetic" not in policy
 
     def test_no_guest_full_profile(self):
         env = FakeEnv(consent_phase="no_guest")
         policy = get_policy(env=env)
-        assert "Socrates" in policy  # full operator style present
+        assert "executive-function prosthetic" in policy  # full operator style present
 
     def test_operator_alone_no_guest_rules(self):
         env = FakeEnv(consent_phase="no_guest", face_count=1)
@@ -218,7 +223,7 @@ class TestPolicyFormat:
         env = FakeEnv(activity_mode="coding")
         policy = get_policy(env=env)
         assert "Baseline:" in policy
-        assert "Socrates" in policy  # operator style
+        assert "executive-function prosthetic" in policy  # operator style
         assert "Environment:" in policy
 
 

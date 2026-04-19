@@ -140,6 +140,12 @@ try:
         "Pending transitions the choreographer rejected, by reason.",
         ("reason",),
     )
+    _homage_choreographer_substrate_skip_total = Counter(
+        "hapax_homage_choreographer_substrate_skip_total",
+        "Pending transitions skipped by the choreographer because the "
+        "named source is marked as HomageSubstrateSource (always-on).",
+        ("source",),
+    )
     _homage_violation_total = Counter(
         "hapax_homage_violation_total",
         "Paste / anti-pattern violations detected at render time.",
@@ -276,6 +282,23 @@ def emit_homage_choreographer_rejection(reason: str) -> None:
         log.warning("emit_homage_choreographer_rejection failed", exc_info=True)
 
 
+def emit_homage_choreographer_substrate_skip(source: str) -> None:
+    """Record that a pending transition was skipped because the named
+    source is always-on substrate (HomageSubstrateSource protocol).
+
+    Non-zero rate on this counter indicates a design violation: something
+    in the system is trying to schedule transitions for the substrate,
+    which should never happen. Grafana panel sits next to
+    ``hapax_homage_choreographer_rejection_total``.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _homage_choreographer_substrate_skip_total.labels(source=source).inc()
+    except Exception:
+        log.warning("emit_homage_choreographer_substrate_skip failed", exc_info=True)
+
+
 def emit_homage_violation(package: str, kind: str) -> None:
     """Record a paste / anti-pattern violation. Kind is free-form but
     convention follows ``AntiPatternKind`` literal (emoji, anti-aliased,
@@ -318,6 +341,7 @@ __all__ = [
     "canonicalize_grounding_signal",
     "emit_director_intent",
     "emit_homage_choreographer_rejection",
+    "emit_homage_choreographer_substrate_skip",
     "emit_homage_package_active",
     "emit_homage_package_inactive",
     "emit_homage_signature_artefact",

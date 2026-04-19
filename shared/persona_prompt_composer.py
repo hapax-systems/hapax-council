@@ -67,7 +67,20 @@ def reset_cache_for_testing() -> None:
     _load_fragment.cache_clear()
 
 
-def compose_persona_prompt(role_id: str | None = None) -> str:
+# ~200-token architectural-state fragment for the LOCAL tier (Qwen3.5-9B and
+# smaller). Describes what the substrate does, not what it feels. Linter-clean
+# by construction — tested in tests/shared/test_persona_prompt_composer.py.
+_COMPRESSED_FRAGMENT = (
+    "Hapax is an executive-function prosthetic for one operator. "
+    "Output is voice. Answer first, then minimal reasoning. "
+    "1-2 sentences. No hedging. Mark genuine uncertainty explicitly. "
+    "Describe architectural state, not inner life. The operator pauses "
+    "mid-utterance when thinking aloud; do not interrupt pauses. "
+    "Self-reference as 'it' or 'they'; gendered pronouns are declined."
+)
+
+
+def compose_persona_prompt(role_id: str | None = None, *, compressed: bool = False) -> str:
     """Return the persona-description fragment, optionally with a current-role line.
 
     Args:
@@ -75,6 +88,11 @@ def compose_persona_prompt(role_id: str | None = None) -> str:
             ``axioms/roles/registry.yaml`` (e.g. ``executive-function-assistant``,
             ``livestream-host``, ``partner-in-conversation``). If None, the
             fragment is returned without role adaptation.
+        compressed: When True, return a ~200-token architectural-state fragment
+            appropriate for the LOCAL inference tier where the full
+            description-of-being would exhaust the context budget. The
+            compressed fragment preserves the description-of-being frame
+            (architectural state, not inner life) in minimal form.
 
     Returns:
         The persona fragment as a string. When ``role_id`` is provided,
@@ -83,7 +101,7 @@ def compose_persona_prompt(role_id: str | None = None) -> str:
     The caller is expected to splice this into a larger system-prompt
     context block (e.g. between ``## Identity`` and ``## Tools``).
     """
-    fragment = _load_fragment()
+    fragment = _COMPRESSED_FRAGMENT if compressed else _load_fragment()
     if role_id:
         return f"{fragment}\n\nCurrent role instance: {role_id}"
     return fragment

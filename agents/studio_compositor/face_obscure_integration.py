@@ -1,0 +1,166 @@
+"""Capture-time facial-obscuring entry point (task #129).
+
+Thin function-oriented wrapper that glues the three independently-tested
+layers together so ``camera_pipeline.py`` / ``snapshots.py`` can wire the
+obscure stage in with a single call:
+
+    from agents.studio_compositor.face_obscure_integration import (
+        obscure_frame_for_camera,
+    )
+    jpeg_in = obscure_frame_for_camera(frame, camera_role="operator")
+
+Reads the feature flag and policy from env on every call via
+:func:`shared.face_obscure_policy.resolve_policy` — the layers below the
+integration helper stay policy-agnostic so the flag can be toggled at runtime
+(systemd ``EnvironmentFile`` reload) without restarting the compositor.
+
+State is kept per-camera in a module-level dict so repeat calls for the same
+role share a single SCRFD instance + Kalman buffer. The helper is safe to
+call from multiple camera loops concurrently at the python level because
+each role has its own pipeline instance; InsightFace's ONNX runtime session
+is itself thread-safe for ``run()``.
+
+Stage 2 scope: the bbox source is the real SCRFD detector by default. The
+YOLO11n fallback + fail-closed rectangle painter (plan Task 4 / §3.6) is
+deferred — the current helper degrades to pass-through if carry-forward
+expires, and Stage 3 will upgrade this to a fail-closed full-frame mask.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+from agents.studio_compositor.face_obscure import BBox, FaceObscurer
+from agents.studio_compositor.face_obscure_pipeline import (
+    CadencedBboxPipeline,
+    FaceBboxSource,
+    ScrfdFaceBboxSource,
+)
+from shared.face_obscure_policy import FaceObscurePolicy, resolve_policy
+
+if TYPE_CHECKING:
+    import numpy as np
+else:
+    import numpy as np  # noqa: TC002
+
+log = logging.getLogger(__name__)
+
+
+# Per-camera pipeline cache. Keys are camera role strings (e.g. ``"operator"``,
+# ``"desk"``, ``"room"``). Each pipeline owns its own SCRFD wrapper + Kalman.
+_PIPELINES: dict[str, CadencedBboxPipeline] = {}
+_PIPELINES_LOCK = threading.Lock()
+
+# Single shared obscurer — it's stateless and its config is constant.
+_OBSCURER = FaceObscurer()
+
+
+def _build_default_source(camera_role: str) -> FaceBboxSource:
+    """Construct the production SCRFD bbox source for a given camera role."""
+    return ScrfdFaceBboxSource(camera_role=camera_role)
+
+
+def _get_pipeline(
+    camera_role: str,
+    source_factory: Callable[[str], FaceBboxSource] | None = None,
+) -> CadencedBboxPipeline:
+    """Return the cached pipeline for ``camera_role``, creating one if needed.
+
+    ``source_factory`` lets tests inject a stub source without monkey-patching
+    the module; in production the caller passes ``None`` and we build a real
+    SCRFD source.
+    """
+    with _PIPELINES_LOCK:
+        pipe = _PIPELINES.get(camera_role)
+        if pipe is None:
+            factory = source_factory or _build_default_source
+            source = factory(camera_role)
+            pipe = CadencedBboxPipeline(source=source)
+            _PIPELINES[camera_role] = pipe
+        return pipe
+
+
+def _filter_by_policy(
+    bboxes: list[BBox],
+    *,
+    policy: FaceObscurePolicy,
+    operator_flags: list[bool] | None,
+) -> list[BBox]:
+    """Apply :class:`FaceObscurePolicy` to the predicted bbox set.
+
+    Stage 2 treats every bbox as non-operator because the bbox pipeline does
+    not propagate per-face operator flags (the detector computes them but the
+    carry-forward layer doesn't track them). ``OBSCURE_NON_OPERATOR`` behaves
+    as ``ALWAYS_OBSCURE`` until Stage 3 threads operator flags through
+    ``KalmanCarryForward``. This is a conservative choice — it over-obscures
+    the operator, not under-obscures guests.
+    """
+    if policy is FaceObscurePolicy.DISABLED:
+        return []
+    if policy is FaceObscurePolicy.ALWAYS_OBSCURE:
+        return bboxes
+    # OBSCURE_NON_OPERATOR: fall back to obscuring everyone in Stage 2.
+    if operator_flags is None:
+        return bboxes
+    return [b for b, is_op in zip(bboxes, operator_flags, strict=False) if not is_op]
+
+
+def obscure_frame_for_camera(
+    frame: np.ndarray,
+    camera_role: str,
+    *,
+    env: dict[str, str] | None = None,
+    source_factory: Callable[[str], FaceBboxSource] | None = None,
+) -> np.ndarray:
+    """Obscure faces on ``frame`` for the given camera role.
+
+    This is the single integration surface for ``camera_pipeline.py`` /
+    ``snapshots.py``. It is pure with respect to its inputs (aside from the
+    per-camera pipeline cache, which is an implementation detail for
+    amortizing SCRFD load).
+
+    Args:
+        frame: HxWxC uint8 BGR frame straight from the V4L2 / GStreamer
+            capture path. Must not be ``None``.
+        camera_role: Canonical role string. Used to key the pipeline cache
+            and to tell SCRFD whether this is the operator cam for ReID.
+        env: Optional env mapping for testing the feature flag.
+        source_factory: Optional callable that returns a :class:`FaceBboxSource`
+            for a given role — lets tests avoid loading SCRFD.
+
+    Returns:
+        A new ndarray with detected face regions masked per the active
+        policy, or the original ``frame`` unchanged when the flag is OFF /
+        policy is DISABLED / no faces detected. Callers should always use
+        the returned frame downstream.
+    """
+    policy = resolve_policy(env)
+    if policy is FaceObscurePolicy.DISABLED:
+        # Flag OFF or policy explicitly DISABLED — pass-through. §11 of the
+        # spec requires this to be byte-identical to pre-feature behavior.
+        return frame
+
+    try:
+        pipeline = _get_pipeline(camera_role, source_factory=source_factory)
+        bboxes = pipeline.step(frame)
+    except Exception as exc:  # noqa: BLE001 — capture path must never crash
+        log.warning(
+            "face obscure pipeline raised for camera=%s: %s; passing frame through",
+            camera_role,
+            exc,
+        )
+        return frame
+
+    filtered = _filter_by_policy(bboxes, policy=policy, operator_flags=None)
+    if not filtered:
+        return frame
+    return _OBSCURER.obscure(frame, filtered)
+
+
+def reset_pipeline_cache() -> None:
+    """Drop all per-camera pipelines (tests + service-reload boundary)."""
+    with _PIPELINES_LOCK:
+        _PIPELINES.clear()

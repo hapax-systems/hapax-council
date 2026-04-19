@@ -27,12 +27,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from agents.studio_compositor.homage.substrate_source import (
+    SUBSTRATE_SOURCE_REGISTRY,
+    HomageSubstrateSource,
+)
+from shared.homage_coupling import (
+    SHADER_READING_PATH,
+    ShaderCouplingReading,
+    hold_multiplier,
+    read_shader_reading,
+)
 from shared.homage_package import HomagePackage, TransitionName
 
 log = logging.getLogger(__name__)
 
 _PENDING_TRANSITIONS: Path = Path("/dev/shm/hapax-compositor/homage-pending-transitions.json")
 _UNIFORMS_JSON: Path = Path("/dev/shm/hapax-imagination/uniforms.json")
+_SUBSTRATE_PACKAGE_FILE: Path = Path("/dev/shm/hapax-compositor/homage-substrate-package.json")
 
 
 def _feature_flag_active() -> bool:
@@ -121,11 +132,43 @@ class Choreographer:
         *,
         pending_file: Path = _PENDING_TRANSITIONS,
         uniforms_file: Path = _UNIFORMS_JSON,
+        shader_reading_file: Path = SHADER_READING_PATH,
+        substrate_package_file: Path = _SUBSTRATE_PACKAGE_FILE,
+        source_registry: object | None = None,
     ) -> None:
         self._pending_file = pending_file
         self._uniforms_file = uniforms_file
+        self._shader_reading_file = shader_reading_file
+        self._substrate_package_file = substrate_package_file
+        # Optional SourceRegistry handle (duck-typed). When provided, the
+        # choreographer cross-checks registered backend instances against
+        # ``HomageSubstrateSource`` so per-instance substrate declarations
+        # are respected alongside the static SUBSTRATE_SOURCE_REGISTRY.
+        self._source_registry = source_registry
         self._last_netsplit_burst_ts: float | None = None
         self._rotation_phase: float = 0.0
+        self._last_package_broadcast: str | None = None
+
+    # ── Phase 6: shader → ward reverse-path ─────────────────────────────
+
+    def read_shader_coupling(self) -> ShaderCouplingReading | None:
+        """Poll the Phase 6 shader feedback file.
+
+        Returns ``None`` when the publisher has not written yet, the
+        file is unreadable, or its contents are malformed. Callers must
+        treat ``None`` as "default timer pacing" — never as an error.
+        """
+        return read_shader_reading(self._shader_reading_file)
+
+    def hold_pacing_multiplier(self, *, now: float) -> float:
+        """Current ward-hold pacing multiplier from shader feedback.
+
+        ``> 1.0`` → extend holds (high shader energy, let GPU breathe).
+        ``< 1.0`` → shorten holds (high drift, break feedback lock-in).
+        ``1.0``  → neutral / default timer pacing.
+        """
+        reading = self.read_shader_coupling()
+        return hold_multiplier(reading, now=now)
 
     # ── Public surface ──────────────────────────────────────────────────
 
@@ -145,6 +188,22 @@ class Choreographer:
         pending = self._read_pending()
         # Consume: the choreographer owns these after read.
         self._clear_pending()
+
+        # HOMAGE #124 — substrate filter. Sources flagged as always-on
+        # (``HomageSubstrateSource``, e.g. Reverie) never enter the FSM
+        # so we drop their pending entries before the entry/exit/modify
+        # partition. Skipped entries are counter-emitted so any non-zero
+        # rate surfaces in Grafana as a design violation.
+        substrate_ids = self._resolve_substrate_ids()
+        skipped_substrate = [p for p in pending if p.source_id in substrate_ids]
+        pending = [p for p in pending if p.source_id not in substrate_ids]
+        for p in skipped_substrate:
+            self._emit_substrate_skip(p.source_id)
+
+        # Package-palette broadcast to substrate sources. Always runs —
+        # even on empty plans — so Reverie picks up hue shifts on every
+        # package swap without needing a transition to be scheduled.
+        self.broadcast_package_to_substrates(package, substrate_ids=substrate_ids)
 
         planned: list[PlannedTransition] = []
         rejections: list[Rejection] = []
@@ -322,6 +381,98 @@ class Choreographer:
                 emit_homage_choreographer_rejection(rejection.reason)
         except Exception:
             log.debug("homage metric emission failed", exc_info=True)
+
+    # ── HOMAGE #124: substrate preservation ─────────────────────────────
+
+    def _resolve_substrate_ids(self) -> frozenset[str]:
+        """Return the set of source_ids currently flagged as substrate.
+
+        Union of:
+          * the static ``SUBSTRATE_SOURCE_REGISTRY`` (spec §4 table), and
+          * any backend registered with ``self._source_registry`` that
+            satisfies ``HomageSubstrateSource`` at runtime.
+
+        The resolution is cheap and runs once per ``reconcile()`` call.
+        """
+        ids: set[str] = set(SUBSTRATE_SOURCE_REGISTRY)
+        registry = self._source_registry
+        if registry is None:
+            return frozenset(ids)
+        # Duck-typed: SourceRegistry exposes ``ids()`` and
+        # ``_backends`` (Phase 11b). Fall back gracefully if not.
+        backends = getattr(registry, "_backends", None)
+        if not isinstance(backends, dict):
+            return frozenset(ids)
+        for source_id, backend in backends.items():
+            try:
+                # ``runtime_checkable`` Protocol isinstance only checks
+                # attribute *presence*, not value. We additionally gate
+                # on truthiness so only instances that explicitly set
+                # ``is_substrate=True`` are classified as substrate.
+                if isinstance(backend, HomageSubstrateSource) and bool(
+                    getattr(backend, "is_substrate", False)
+                ):
+                    ids.add(source_id)
+            except Exception:
+                log.debug("substrate isinstance check failed for %s", source_id, exc_info=True)
+        return frozenset(ids)
+
+    def _emit_substrate_skip(self, source_id: str) -> None:
+        """Non-fatal metric hook for substrate-filtered pending entries."""
+        try:
+            from shared.director_observability import (
+                emit_homage_choreographer_substrate_skip,
+            )
+        except Exception:
+            return
+        try:
+            emit_homage_choreographer_substrate_skip(source_id)
+        except Exception:
+            log.debug("homage substrate-skip metric emission failed", exc_info=True)
+
+    def broadcast_package_to_substrates(
+        self,
+        package: HomagePackage,
+        *,
+        substrate_ids: frozenset[str] | None = None,
+    ) -> None:
+        """Broadcast palette-hint payload to substrate sources.
+
+        Writes ``/dev/shm/hapax-compositor/homage-substrate-package.json``
+        with the active package's name, resolved palette accent hue, and
+        the list of substrate source_ids that should consume the hint.
+        Reverie reads this file (or the mirrored ``custom[4]`` uniform
+        slot) to tint its output without FSM gating.
+
+        Idempotent under repeated calls with the same package — the file
+        is only rewritten when the package name changes, so inotify
+        watchers don't see spurious events on every reconcile tick.
+        """
+        if substrate_ids is None:
+            substrate_ids = self._resolve_substrate_ids()
+        if self._last_package_broadcast == package.name:
+            # Same package as last call; atomic-refresh is unnecessary.
+            # Still rewrite if the file was externally deleted so
+            # downstream readers recover after /dev/shm wipes.
+            if self._substrate_package_file.exists():
+                return
+        try:
+            self._substrate_package_file.parent.mkdir(parents=True, exist_ok=True)
+            hue = 180.0 if package.name == "bitchx" else 0.0
+            payload = {
+                "package": package.name,
+                "palette_accent_hue_deg": hue,
+                "custom_slot_index": package.coupling_rules.custom_slot_index,
+                "substrate_source_ids": sorted(substrate_ids),
+            }
+            tmp = self._substrate_package_file.with_suffix(
+                self._substrate_package_file.suffix + ".tmp"
+            )
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.replace(self._substrate_package_file)
+            self._last_package_broadcast = package.name
+        except Exception:
+            log.debug("failed to broadcast homage substrate package", exc_info=True)
 
 
 __all__ = [
