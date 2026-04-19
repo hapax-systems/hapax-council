@@ -1,0 +1,32 @@
+# Anti-personification linter suppressions.
+#
+# Consumed by shared/anti_personification_linter.py (`_load_file_scope_allowlist`).
+# Every entry MUST carry a `reason:`. Additions require operator sign-off and
+# are reviewed under governance.
+#
+# Scope values:
+#   file                    — whole file is skipped (bypass everything)
+#   context-window-handled  — no code effect, audit breadcrumb that the
+#                             ±200-char rejection-context carve-out covers
+#                             this path (listed for traceability)
+#   rule_id                 — (reserved for future per-rule suppression)
+#
+# Source: docs/superpowers/specs/2026-04-18-anti-personification-linter-design.md §3
+
+suppressions:
+  - path: docs/superpowers/specs/2026-04-15-lrr-phase-7-persona-spec-design.md
+    reason: "Superseded 2026-04-15 spec — kept for history, cites forbidden patterns as rejections"
+    scope: file
+
+  - path: axioms/persona/hapax-description-of-being.md
+    reason: "§6 rejection block quotes forbidden phrases as examples; covered by ±200-char carve-out"
+    scope: context-window-handled
+
+  - path: axioms/persona/hapax-description-of-being.prompt.md
+    reason: "Cites 'I feel wonder' as forbidden example per research §2; covered by ±200-char carve-out"
+    scope: context-window-handled
+
+  - path: agents/studio_compositor/director_loop.py
+    reason: "HAPAX_PERSONA_LEGACY emergency-revert path cites forbidden phrases in docstrings (research §6, gated by opt-out env var)"
+    rule_id: inner-state-claim
+    scope: file
