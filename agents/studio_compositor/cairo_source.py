@@ -162,6 +162,13 @@ class CairoSourceRunner:
         self._surface_dims: tuple[int, int] = (0, 0)
         self._frame_count = 0
         self._last_render_ms = 0.0
+        # Phase C1 (homage-completion-plan §2): per-ward render cadence
+        # gauge. We retain the monotonic timestamp of the previous
+        # successful render and compute ``1.0 / (now - prev)`` after
+        # every subsequent successful render. ``None`` until the first
+        # render — the gauge stays unpublished until we have a real
+        # interval measurement rather than emitting a fabricated value.
+        self._last_successful_render_at: float | None = None
         # Phase 7: budget enforcement. Defaults preserve pre-Phase-7
         # behavior — no tracker, no budget, no skips.
         self._budget_tracker = budget_tracker
@@ -598,6 +605,33 @@ class CairoSourceRunner:
             self._surface_active_idx = inactive_idx
         self._frame_count += 1
         self._last_render_ms = (time.monotonic() - t0) * 1000.0
+        # Phase C1 (homage-completion-plan §2): publish the
+        # ``hapax_homage_render_cadence_hz`` gauge with the instantaneous
+        # rate computed from the monotonic delta between consecutive
+        # successful renders. Skipped when the ward was gated
+        # (``visible=False``) — a gated tick is not a real render so
+        # the gauge retains its previous value. Failure is silently
+        # swallowed: the gauge is diagnostic and must not propagate
+        # into the streaming-thread hot path.
+        if not ward_gated:
+            now_ts = time.monotonic()
+            prev_ts = self._last_successful_render_at
+            self._last_successful_render_at = now_ts
+            if prev_ts is not None:
+                delta = now_ts - prev_ts
+                if delta > 0:
+                    try:
+                        from shared.director_observability import (
+                            emit_homage_render_cadence,
+                        )
+
+                        emit_homage_render_cadence(self._source_id, 1.0 / delta)
+                    except Exception:
+                        log.debug(
+                            "emit_homage_render_cadence failed for %s",
+                            self._source_id,
+                            exc_info=True,
+                        )
         # Skip the freshness publish when the ward was gated (visible=False).
         # A transparent buffer is technically "published" but operationally
         # it represents "deliberately hidden", not "source healthy and

@@ -347,7 +347,7 @@ class Choreographer:
         if rotation_mode == "paused":
             payload = self._compute_payload(package, planned, clock)
             self._publish_payload(package, payload)
-            self._emit_metrics(package, planned, rejections)
+            self._emit_metrics(package, planned, rejections, rotation_mode=rotation_mode)
             return ReconcileResult(tuple(planned), tuple(rejections), payload)
 
         entries = [p for p in pending if p.transition in _ENTRY]
@@ -400,7 +400,7 @@ class Choreographer:
             planned.append(PlannedTransition(p.source_id, p.transition, "modify", clock))
 
         # Metrics (spec §6) — best-effort, non-fatal.
-        self._emit_metrics(package, planned, rejections)
+        self._emit_metrics(package, planned, rejections, rotation_mode=rotation_mode)
 
         # HOMAGE Phase 6 Layer 5 — publish WardEvent per planned
         # transition so the ward↔FX reactor can bias preset families /
@@ -715,20 +715,60 @@ class Choreographer:
         package: HomagePackage,
         planned: list[PlannedTransition],
         rejections: list[Rejection],
+        *,
+        rotation_mode: str | None = None,
     ) -> None:
-        """Best-effort Prometheus metric emission. Non-fatal on failure."""
+        """Best-effort Prometheus metric emission. Non-fatal on failure.
+
+        Phase C1 (homage-completion-plan §2) extended this to emit the
+        full framework-spec §6 surface: transition counter (now labelled
+        with ward + phase), active-package one-hot gauge, rotation-mode
+        one-hot gauge, and substrate saturation target gauge. The spec
+        §7.3 verification protocol reads all of these on :9482.
+        """
         try:
             from shared.director_observability import (
+                emit_homage_active_package,
                 emit_homage_choreographer_rejection,
                 emit_homage_package_active,
+                emit_homage_rotation_mode,
+                emit_homage_substrate_saturation_target,
                 emit_homage_transition,
             )
         except Exception:
             return
         try:
             emit_homage_package_active(package.name)
+            emit_homage_active_package(package.name)
+            # Phase C1: rotation-mode one-hot gauge. Callers that do
+            # not pass rotation_mode (e.g. the ``paused`` early-return
+            # path above passes it implicitly via kwarg) still produce
+            # a correct emission — ``None`` drops the one-hot update
+            # so stale values don't become sticky.
+            if isinstance(rotation_mode, str) and rotation_mode:
+                emit_homage_rotation_mode(rotation_mode)
+            # Phase C1: substrate saturation target. Read from the
+            # package's signature conventions when available; packages
+            # that don't declare one default to 1.0 (full saturation)
+            # so the metric always reflects a meaningful value.
+            saturation = getattr(
+                package.signature_conventions,
+                "substrate_saturation_target",
+                1.0,
+            )
+            try:
+                emit_homage_substrate_saturation_target(float(saturation))
+            except (TypeError, ValueError):
+                emit_homage_substrate_saturation_target(1.0)
             for plan in planned:
-                emit_homage_transition(package.name, plan.transition)
+                # Phase C1 expanded label set: (package, ward,
+                # transition_name, phase).
+                emit_homage_transition(
+                    package.name,
+                    plan.transition,
+                    ward=plan.source_id,
+                    phase=plan.phase,
+                )
             for rejection in rejections:
                 emit_homage_choreographer_rejection(rejection.reason)
         except Exception:
