@@ -50,3 +50,8 @@ class IrDetectionReport(BaseModel):
     ir_brightness: int = 0
     inference_ms: int = 0
     biometrics: IrBiometrics = Field(default_factory=IrBiometrics)
+    # #143 — activity-gated cadence (cadence_controller).  Server-side fusion
+    # uses ``cadence_state`` / ``cadence_interval_s`` to scale staleness cutoffs
+    # relative to the cadence the Pi is currently running at.
+    cadence_state: str = "IDLE"
+    cadence_interval_s: float = 3.0

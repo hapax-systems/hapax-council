@@ -21,7 +21,8 @@ EDGE_STATE_DIR = HAPAX_HOME / "hapax-state" / "edge"
 
 _VALID_ROLES = {"desk", "room", "overhead"}
 _last_post_time: dict[str, float] = {}
-_RATE_LIMIT_S = 1.0
+# #143 — HOT-cadence Pis post at 0.5s; tighten the rate limit to accommodate.
+_RATE_LIMIT_S = 0.4
 
 
 @router.post("/{role}/ir")
@@ -52,6 +53,24 @@ async def receive_ir_detection(
         log.warning("Failed to write IR state for role=%s", role, exc_info=True)
         raise HTTPException(status_code=500, detail="State file write failed") from exc
 
+    # #143 — persist a compact cadence snapshot so dashboards and fusion
+    # code can read the Pi's current cadence without parsing the whole report.
+    cadence_file = state_dir / f"{role}-cadence.json"
+    cadence_tmp = cadence_file.with_suffix(".tmp")
+    try:
+        cadence_payload = json.dumps(
+            {
+                "role": role,
+                "cadence_state": getattr(report, "cadence_state", "IDLE"),
+                "cadence_interval_s": getattr(report, "cadence_interval_s", 3.0),
+                "ts": report.ts,
+            }
+        )
+        cadence_tmp.write_text(cadence_payload)
+        cadence_tmp.rename(cadence_file)
+    except OSError:
+        log.debug("cadence snapshot write failed", exc_info=True)
+
     bus = getattr(request.app.state, "event_bus", None)
     if bus:
         from logos.event_bus import FlowEvent
@@ -81,6 +100,32 @@ async def receive_heartbeat(hostname: str, request: Request) -> JSONResponse:
     except OSError as exc:
         log.warning("Failed to write heartbeat for %s", hostname, exc_info=True)
         raise HTTPException(status_code=500, detail="Write failed") from exc
+
+    # #143 — heartbeat may carry a cadence snapshot (`cadence_state`,
+    # `cadence_interval_s`, `role`). Persist it alongside the IR cadence file
+    # so a Pi whose IR POST has been stale can still keep its cadence state
+    # visible to the server.
+    if isinstance(body, dict):
+        role = body.get("role")
+        if role in _VALID_ROLES and "cadence_state" in body:
+            try:
+                IR_STATE_DIR.mkdir(parents=True, exist_ok=True)
+                cadence_file = IR_STATE_DIR / f"{role}-cadence.json"
+                cadence_tmp = cadence_file.with_suffix(".tmp")
+                cadence_tmp.write_text(
+                    json.dumps(
+                        {
+                            "role": role,
+                            "cadence_state": body.get("cadence_state", "IDLE"),
+                            "cadence_interval_s": body.get("cadence_interval_s", 3.0),
+                            "source": "heartbeat",
+                            "hostname": hostname,
+                        }
+                    )
+                )
+                cadence_tmp.rename(cadence_file)
+            except OSError:
+                log.debug("heartbeat cadence snapshot failed", exc_info=True)
 
     return JSONResponse({"status": "ok"})
 

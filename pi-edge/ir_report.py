@@ -18,6 +18,8 @@ def build_report(
     grey: np.ndarray,
     inference_ms: int,
     biometrics_snapshot: dict,
+    cadence_state: str = "IDLE",
+    cadence_interval_s: float = 3.0,
 ) -> IrDetectionReport:
     """Build detection report from inference results."""
     return IrDetectionReport(
@@ -49,4 +51,6 @@ def build_report(
         ir_brightness=int(np.mean(grey)),
         inference_ms=inference_ms,
         biometrics=IrBiometrics(**biometrics_snapshot),
+        cadence_state=cadence_state,
+        cadence_interval_s=cadence_interval_s,
     )

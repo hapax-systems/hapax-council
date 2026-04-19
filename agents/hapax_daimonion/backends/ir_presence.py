@@ -57,6 +57,27 @@ IR_STALE_S = 10.0  # Pi reports older than this are discarded (P3 staleness safe
 
 _DESK_CONFIDENCE_BONUS = 0.1
 
+# #143 — cadence-aware staleness cutoffs.
+# Each Pi reports its current cadence state; we accept reports up to
+# ``_STALE_MULTIPLIER`` times the Pi's post interval before declaring stale.
+# QUIESCENT Pis (10s interval) tolerate ~50s staleness; HOT Pis (500ms) tighten
+# to the 3s floor.
+_STALE_MULTIPLIER: float = 5.0
+_MIN_STALE_S: float = 3.0
+_MAX_STALE_S: float = 60.0
+
+
+def _staleness_cutoff_for(cadence_interval_s: float | None) -> float:
+    """Scale the staleness cutoff with the reported cadence interval.
+
+    Used by ``IrPresenceBackend._read_with_cadence_staleness`` to interpret
+    staleness relative to the Pi's actual post rate, not a fixed assumption.
+    """
+    if cadence_interval_s is None or cadence_interval_s <= 0:
+        return IR_STALE_S
+    cutoff = cadence_interval_s * _STALE_MULTIPLIER
+    return max(_MIN_STALE_S, min(_MAX_STALE_S, cutoff))
+
 
 class IrPresenceBackend:
     """PerceptionBackend that fuses Pi NoIR state files into 14 signals."""
@@ -119,7 +140,7 @@ class IrPresenceBackend:
 
     def contribute(self, behaviors: dict[str, Behavior]) -> None:
         now = time.monotonic()
-        reports = read_all_ir_reports(state_dir=self._state_dir, max_age_seconds=IR_STALE_S)
+        reports = self._read_with_cadence_staleness()
         self._fuse(reports, now)
         for key, behavior in self._behaviors.items():
             behaviors[key] = behavior
@@ -171,6 +192,49 @@ class IrPresenceBackend:
         if self._cl_ok >= 5 and self._cl_degraded:
             self._cl_degraded = False
             log.info("Control law [ir_perception]: recovered")
+
+    def _read_with_cadence_staleness(self) -> dict[str, dict[str, object]]:
+        """Load Pi NoIR reports, scaling the staleness cutoff per Pi.
+
+        #143 — fetch each report with a permissive ceiling, then re-filter per
+        role using the cadence state declared inside the report. QUIESCENT Pis
+        tolerate ~50s staleness; HOT Pis tighten to the 3s floor.
+        """
+        raw = read_all_ir_reports(state_dir=self._state_dir, max_age_seconds=_MAX_STALE_S)
+        kept: dict[str, dict[str, object]] = {}
+        for role, report in raw.items():
+            cadence_interval = report.get("cadence_interval_s")
+            cadence_interval_f: float | None
+            try:
+                cadence_interval_f = (
+                    float(cadence_interval) if cadence_interval is not None else None
+                )
+            except (TypeError, ValueError):
+                cadence_interval_f = None
+            cutoff = _staleness_cutoff_for(cadence_interval_f)
+            age = self._report_age(role)
+            if age is None or age <= cutoff:
+                kept[role] = report
+            else:
+                log.debug(
+                    "IR %s STALE under cadence-aware cutoff (age=%.1fs > %.1fs, state=%s)",
+                    role,
+                    age,
+                    cutoff,
+                    report.get("cadence_state", "?"),
+                )
+        return kept
+
+    def _report_age(self, role: str) -> float | None:
+        """Best-effort age of a report based on state-file mtime."""
+        from agents.hapax_daimonion.ir_signals import IR_STATE_DIR
+
+        state_dir = self._state_dir or IR_STATE_DIR
+        path = state_dir / f"{role}.json"
+        try:
+            return time.time() - path.stat().st_mtime
+        except OSError:
+            return None
 
     def _fuse(self, reports: dict[str, dict[str, object]], now: float) -> None:
         """Fuse all Pi reports into behavior values."""

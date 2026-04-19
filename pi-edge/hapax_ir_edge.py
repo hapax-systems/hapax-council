@@ -20,6 +20,7 @@ from pathlib import Path
 import cv2
 import httpx
 import numpy as np  # noqa: TC002 — Pi-side code
+from cadence_controller import CadenceController, load_config
 from ir_album import detect_album_cover, extract_album_crop
 from ir_biometrics import BiometricTracker
 from ir_hands import detect_hands_nir, detect_screens_nir
@@ -38,7 +39,12 @@ DEFAULT_WORKSTATION = "http://192.168.68.80:8051"
 DEFAULT_CAPTURE_SIZE = (1920, 1080)
 MOTION_THRESHOLD = 0.01
 MOTION_TIMEOUT_S = 30.0
+# #143 — fallback POST interval.  The cadence controller drives the real post
+# rate; this is only used when the controller is unavailable (e.g. test mode).
 POST_INTERVAL_S = 2.0
+
+# Metric label for prometheus scraping: hapax_ir_cadence_state{pi_role="..."}.
+_METRIC_PATH = Path.home() / "hapax-edge" / "metrics" / "cadence.prom"
 
 
 class IrEdgeDaemon:
@@ -67,6 +73,8 @@ class IrEdgeDaemon:
         self._yolo = YoloDetector()
         self._face = FaceLandmarkDetector()
         self._biometrics = BiometricTracker(fps=30.0)
+        # #143 — activity-gated cadence controller.
+        self._cadence = CadenceController(config=load_config())
 
         self._client = httpx.AsyncClient(
             base_url=workstation_url,
@@ -194,16 +202,29 @@ class IrEdgeDaemon:
             # rPPG: only update when face landmarks produced head_pose data
             self._update_rppg(persons, grey)
 
+            # #143 — feed cadence controller with observed activity and let it
+            # decide the post/sleep interval for this tick.
+            hand_count = sum(1 for h in hands if h)
+            person_count = len(persons)
+            self._cadence.record_activity(
+                persons=person_count,
+                hands=hand_count,
+                motion_delta=motion_delta,
+            )
+            self._cadence.evaluate()
+
             now = time.monotonic()
-            if now - last_post >= POST_INTERVAL_S:
+            cadence_interval_s = self._cadence.get_sleep_duration()
+            if now - last_post >= cadence_interval_s:
                 report = self._build_report(
                     motion_delta, persons, hands, screens, grey, inference_ms
                 )
                 await self._post_report(report)
                 last_post = now
+                self._write_cadence_metric()
 
             elapsed = time.monotonic() - t0
-            sleep_time = max(0.05, (1.0 / 5.0) - elapsed)
+            sleep_time = max(0.05, cadence_interval_s - elapsed)
             await asyncio.sleep(sleep_time)
 
     def _compute_motion(self, grey: np.ndarray) -> float:
@@ -261,7 +282,35 @@ class IrEdgeDaemon:
             grey,
             inference_ms,
             self._biometrics.snapshot(),
+            cadence_state=self._cadence.state,
+            cadence_interval_s=self._cadence.get_sleep_duration(),
         )
+
+    def _write_cadence_metric(self) -> None:
+        """Write a prometheus textfile exposing current cadence state.
+
+        Textfile format so node_exporter's textfile collector can scrape it;
+        avoids running a prometheus_client HTTP server on the Pi.
+        """
+        try:
+            _METRIC_PATH.parent.mkdir(parents=True, exist_ok=True)
+            snap = self._cadence.snapshot()
+            state_num = {"QUIESCENT": 0, "IDLE": 1, "ACTIVE": 2, "HOT": 3}.get(
+                self._cadence.state, 1
+            )
+            lines = [
+                "# HELP hapax_ir_cadence_state Current cadence state "
+                "(0=QUIESCENT, 1=IDLE, 2=ACTIVE, 3=HOT).",
+                "# TYPE hapax_ir_cadence_state gauge",
+                f'hapax_ir_cadence_state{{pi_role="{self._role}"}} {state_num}',
+                "# HELP hapax_ir_cadence_interval_seconds Active post interval (s).",
+                "# TYPE hapax_ir_cadence_interval_seconds gauge",
+                f'hapax_ir_cadence_interval_seconds{{pi_role="{self._role}"}} {snap["interval_s"]}',
+                "",
+            ]
+            _METRIC_PATH.write_text("\n".join(lines))
+        except OSError:
+            log.debug("cadence metric write failed", exc_info=True)
 
     async def _post_report(self, report: IrDetectionReport) -> None:
         """POST detection report to workstation."""
