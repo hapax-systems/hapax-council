@@ -144,6 +144,13 @@ COMP_FX_PASSTHROUGH_SLOTS: Any = None
 # was set. Increments from ``fx_chain.pip_draw_from_layout`` whenever the
 # effective clamp ceiling (0.6) would lower the requested opacity.
 COMP_NONDESTRUCTIVE_CLAMPS_TOTAL: Any = None
+# Task #136 — follow-mode cut counter. Incremented from
+# ``state.py``'s hero-override consumer when follow-mode drives the
+# hero-camera selection (no manual override present). Labelled by
+# ``from_role`` and ``to_role`` so Grafana can answer "which transitions
+# is follow-mode actually making" and verify the creative-bias scoring
+# isn't getting stuck on one camera.
+HAPAX_FOLLOW_MODE_CUTS_TOTAL: Any = None
 # Last value the mirror published, so we can detect rollback events
 # (the gauge → counter delta must be non-negative since the underlying
 # Rust counter is monotonic across imagination process lifetime).
@@ -591,6 +598,15 @@ def _init_metrics() -> None:
         registry=REGISTRY,
     )
 
+    global HAPAX_FOLLOW_MODE_CUTS_TOTAL
+    HAPAX_FOLLOW_MODE_CUTS_TOTAL = Counter(
+        "hapax_follow_mode_cuts_total",
+        "Hero-camera cuts driven by the follow-mode controller (no manual "
+        "override present). Labelled by the previous and new hero role.",
+        ["from_role", "to_role"],
+        registry=REGISTRY,
+    )
+
 
 _init_metrics()
 
@@ -914,6 +930,24 @@ def record_face_obscure_frame(camera_role: str, has_faces: bool) -> None:
     HAPAX_FACE_OBSCURE_FRAME_TOTAL.labels(
         camera_role=camera_role,
         has_faces="true" if has_faces else "false",
+    ).inc()
+
+
+def record_follow_mode_cut(from_role: str, to_role: str) -> None:
+    """Task #136 — count a follow-mode-driven hero camera cut.
+
+    Called from ``state.py``'s hero-override consumer when the
+    fallback path (no manual override) applied the follow-mode
+    recommendation. ``from_role`` may be ``""`` on the very first
+    cut (before any hero was set); Grafana should treat that as a
+    'cold-start' label rather than a missing value. No-op if
+    prometheus_client is unavailable.
+    """
+    if HAPAX_FOLLOW_MODE_CUTS_TOTAL is None:
+        return
+    HAPAX_FOLLOW_MODE_CUTS_TOTAL.labels(
+        from_role=from_role or "",
+        to_role=to_role,
     ).inc()
 
 

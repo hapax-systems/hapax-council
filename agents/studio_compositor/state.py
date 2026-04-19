@@ -8,13 +8,28 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import metrics as _metrics
 from .config import PERCEPTION_STATE_PATH, SNAPSHOT_DIR
 from .effects import try_graph_preset
+from .follow_mode import FollowModeController, read_follow_mode_recommendation
 from .layout import compute_tile_layout
 from .models import OverlayData
 from .profiles import apply_camera_profile, evaluate_active_profile
 
 log = logging.getLogger(__name__)
+
+# Task #136 — follow-mode controller singleton. One instance per
+# compositor process; reused by the state reader loop at 2 Hz. The
+# controller keeps a 30-s rolling hero-history in memory so the
+# repetition penalty works across ticks.
+_FOLLOW_MODE_CONTROLLER: FollowModeController | None = None
+
+
+def _get_follow_mode_controller() -> FollowModeController:
+    global _FOLLOW_MODE_CONTROLLER
+    if _FOLLOW_MODE_CONTROLLER is None:
+        _FOLLOW_MODE_CONTROLLER = FollowModeController()
+    return _FOLLOW_MODE_CONTROLLER
 
 
 def process_livestream_control(compositor: Any, snapshot_dir: Path | None = None) -> bool:
@@ -432,6 +447,22 @@ def state_reader_loop(compositor: Any) -> None:
             except Exception:
                 log.debug("stream-mode-intent consumer failed", exc_info=True)
 
+        # Task #136 — follow-mode tick at ~2 Hz (every 5th 100 ms loop iter).
+        # The controller reads IR fleet + camera classifications and
+        # publishes follow-mode-recommendation.json. Always runs; the
+        # HAPAX_FOLLOW_MODE_ACTIVE feature flag gates whether the
+        # recommendation is *honoured* downstream (see follow-mode
+        # fallback in the hero-override block below), not whether it's
+        # computed.
+        follow_tick_counter = getattr(compositor, "_follow_mode_tick_counter", 0) + 1
+        compositor._follow_mode_tick_counter = follow_tick_counter
+        if follow_tick_counter >= 5:
+            compositor._follow_mode_tick_counter = 0
+            try:
+                _get_follow_mode_controller().tick()
+            except Exception:
+                log.debug("follow-mode tick failed", exc_info=True)
+
         # hero-camera-override.json consumer (meta-structural audit fix #4).
         # compositional_consumer.dispatch_camera_hero writes this file when
         # the affordance pipeline recruits a `cam.hero.<role>.<context>`
@@ -439,7 +470,16 @@ def state_reader_loop(compositor: Any) -> None:
         # recruitment was writing into the void. Applying the override
         # here (inside the 1s state-reader loop) converts a recruited
         # hero-camera selection into an actual layout-mode change.
+        #
+        # Task #136 follow-mode fallback: when the manual override is
+        # absent or expired AND follow-mode is active AND a fresh
+        # recommendation exists, use the recommended role instead of
+        # leaving the hero untouched. Manual override always wins when
+        # present — follow-mode is only the fallback source.
         hero_override_path = Path("/dev/shm/hapax-compositor/hero-camera-override.json")
+        override_camera_role: str | None = None
+        override_set_at = 0.0
+        override_source = ""
         if hero_override_path.exists():
             try:
                 payload = json.loads(hero_override_path.read_text(encoding="utf-8"))
@@ -447,25 +487,51 @@ def state_reader_loop(compositor: Any) -> None:
                 ttl_s = float(payload.get("ttl_s", 30.0))
                 camera_role = payload.get("camera_role")
                 if isinstance(camera_role, str) and camera_role and (time.time() - set_at) <= ttl_s:
-                    requested_mode = f"hero/{camera_role}"
-                    current_mode = getattr(compositor, "_layout_mode", "balanced")
-                    last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
-                    if requested_mode != current_mode and set_at > last_applied:
-                        compositor._hero_override_last_applied_set_at = set_at
-                        GLib = compositor._GLib
-                        if GLib:
-                            GLib.idle_add(
-                                lambda m=requested_mode: apply_layout_mode(compositor, m) or False
-                            )
-                        else:
-                            apply_layout_mode(compositor, requested_mode)
-                        log.info(
-                            "hero-camera-override applied: role=%s mode=%s",
-                            camera_role,
-                            requested_mode,
-                        )
+                    override_camera_role = camera_role
+                    override_set_at = set_at
+                    override_source = "manual"
             except Exception:
                 log.debug("hero-camera-override consumer failed", exc_info=True)
+        if override_camera_role is None:
+            # Follow-mode fallback. ``read_follow_mode_recommendation``
+            # returns None when the flag is off, the file is missing,
+            # expired, or active=False — all of which mean "leave the
+            # hero as-is".
+            fm_rec = read_follow_mode_recommendation()
+            if fm_rec is not None:
+                override_camera_role = fm_rec.camera_role
+                override_set_at = fm_rec.ts
+                override_source = "follow_mode"
+        if override_camera_role is not None:
+            try:
+                requested_mode = f"hero/{override_camera_role}"
+                current_mode = getattr(compositor, "_layout_mode", "balanced")
+                last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
+                if requested_mode != current_mode and override_set_at > last_applied:
+                    previous_role = ""
+                    if isinstance(current_mode, str) and current_mode.startswith("hero/"):
+                        previous_role = current_mode.split("/", 1)[1]
+                    compositor._hero_override_last_applied_set_at = override_set_at
+                    GLib = compositor._GLib
+                    if GLib:
+                        GLib.idle_add(
+                            lambda m=requested_mode: apply_layout_mode(compositor, m) or False
+                        )
+                    else:
+                        apply_layout_mode(compositor, requested_mode)
+                    if override_source == "follow_mode":
+                        try:
+                            _metrics.record_follow_mode_cut(previous_role, override_camera_role)
+                        except Exception:
+                            log.debug("record_follow_mode_cut failed", exc_info=True)
+                    log.info(
+                        "hero-camera-override applied: role=%s mode=%s source=%s",
+                        override_camera_role,
+                        requested_mode,
+                        override_source,
+                    )
+            except Exception:
+                log.debug("hero-camera-override apply failed", exc_info=True)
 
         # Livestream control (from daimonion affordance dispatch)
         try:
