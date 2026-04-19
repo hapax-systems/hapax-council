@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax Rust GStreamer plugins — rebuild + install from source
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CARGO_TARGET_DIR=%h/projects/hapax-council/gst-plugin-glfeedback/target
+SyslogIdentifier=hapax-rebuild-gst-plugins
+TimeoutStartSec=300
+
+# Rebuilds Rust gst plugins (cargo build --release) and installs them to
+# /usr/lib/gstreamer-1.0 via sudo, then restarts affected services.
+# Covers the gap that rebuild-services.sh (Python-only) does not close.
+# See scripts/rebuild-gst-plugins.sh for behaviour and env overrides.
+ExecStart=%h/projects/hapax-council/scripts/rebuild-gst-plugins.sh

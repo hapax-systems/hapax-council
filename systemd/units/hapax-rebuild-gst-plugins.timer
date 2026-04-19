@@ -1,0 +1,10 @@
+[Unit]
+Description=Rebuild Hapax Rust gst plugins (10 min check)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
