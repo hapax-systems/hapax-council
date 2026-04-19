@@ -18,6 +18,44 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Task #157 — non-destructive overlay ceiling. When an assignment sets
+# ``non_destructive=True`` the rendered alpha is clamped below this
+# value so that the underlying camera content retains at least
+# ``1.0 - NONDESTRUCTIVE_ALPHA_CEILING`` visibility. 0.6 chosen so the
+# operator-facing video remains ≥0.4 visible under any informational ward.
+NONDESTRUCTIVE_ALPHA_CEILING: float = 0.6
+
+
+def apply_nondestructive_clamp(
+    requested_alpha: float,
+    non_destructive: bool,
+    source_id: str,
+) -> float:
+    """Clamp ``requested_alpha`` for a non-destructive assignment.
+
+    Returns ``min(requested_alpha, NONDESTRUCTIVE_ALPHA_CEILING)`` when
+    ``non_destructive`` is True, otherwise ``requested_alpha`` unchanged.
+    When the clamp actually lowers the alpha, increments
+    ``metrics.COMP_NONDESTRUCTIVE_CLAMPS_TOTAL`` labelled with
+    ``source=source_id`` so Grafana can attribute defence events per
+    ward. Metric emission is best-effort; any import or label failure
+    is swallowed so the hot render path never raises for observability.
+    """
+    if not non_destructive:
+        return requested_alpha
+    if requested_alpha <= NONDESTRUCTIVE_ALPHA_CEILING:
+        return requested_alpha
+    try:
+        from . import metrics as _metrics
+
+        counter = _metrics.COMP_NONDESTRUCTIVE_CLAMPS_TOTAL
+        if counter is not None:
+            counter.labels(source=source_id).inc()
+    except Exception:
+        log.debug("nondestructive-clamp metric emit failed", exc_info=True)
+    return NONDESTRUCTIVE_ALPHA_CEILING
+
+
 def blit_scaled(
     cr: cairo.Context,
     src: cairo.ImageSurface,
@@ -96,11 +134,19 @@ def pip_draw_from_layout(
             continue
         if src is None:
             continue
+        # Task #157: clamp alpha to the non-destructive ceiling when the
+        # assignment opts in, so informational wards cannot visually
+        # destroy the camera content underneath them.
+        effective_alpha = apply_nondestructive_clamp(
+            assignment.opacity,
+            assignment.non_destructive,
+            assignment.source,
+        )
         blit_scaled(
             cr,
             src,
             surface_schema.geometry,
-            opacity=assignment.opacity,
+            opacity=effective_alpha,
             blend_mode=surface_schema.blend_mode,
         )
 

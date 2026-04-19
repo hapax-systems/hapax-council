@@ -202,6 +202,17 @@ class Assignment(BaseModel):
     transform: dict[str, float] = Field(default_factory=dict)
     opacity: float = Field(1.0, ge=0.0, le=1.0)
     per_assignment_effects: list[str] = Field(default_factory=list)
+    non_destructive: bool = Field(
+        default=False,
+        description=(
+            "Task #157: when True, the compositor clamps this assignment's "
+            "rendered alpha to a ceiling of 0.6 so the underlying video "
+            "content stays at least 0.4 visible. Wards and other "
+            "informational overlays that composite over camera PiPs set "
+            "this flag so the camera underneath remains recognizable. "
+            "Default False keeps existing layouts byte-identical."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

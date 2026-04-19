@@ -139,6 +139,11 @@ COMP_CAMERA_REBUILD_TOTAL: Any = None
 COMP_PIPELINE_TEARDOWN_DURATION_MS: Any = None
 COMP_SOURCE_RENDER_DURATION_MS: Any = None
 COMP_FX_PASSTHROUGH_SLOTS: Any = None
+# Task #157 — per-source count of frames whose assignment alpha was
+# clamped below the requested value because ``Assignment.non_destructive``
+# was set. Increments from ``fx_chain.pip_draw_from_layout`` whenever the
+# effective clamp ceiling (0.6) would lower the requested opacity.
+COMP_NONDESTRUCTIVE_CLAMPS_TOTAL: Any = None
 # Last value the mirror published, so we can detect rollback events
 # (the gauge → counter delta must be non-negative since the underlying
 # Rust counter is monotonic across imagination process lifetime).
@@ -567,6 +572,22 @@ def _init_metrics() -> None:
     COMP_TTS_CLIENT_TIMEOUT_TOTAL = Counter(
         "compositor_tts_client_timeout_total",
         "Times the compositor's daimonion TTS UDS client hit its readall timeout.",
+        registry=REGISTRY,
+    )
+
+    # Task #157 — non-destructive overlay alpha clamp. Incremented once
+    # per frame per source when a ``non_destructive=True`` assignment's
+    # requested alpha exceeds the 0.6 clamp ceiling. A zero rate means
+    # every informational ward is already authored below the ceiling;
+    # a persistent rate means the clamp is actively defending camera
+    # legibility from ward opacity drift. Labelled by source_id so
+    # dashboards can attribute defence events per ward.
+    global COMP_NONDESTRUCTIVE_CLAMPS_TOTAL
+    COMP_NONDESTRUCTIVE_CLAMPS_TOTAL = Counter(
+        "hapax_compositor_nondestructive_clamps_total",
+        "Frames where a non_destructive assignment had its alpha clamped "
+        "below the requested value, per source.",
+        ["source"],
         registry=REGISTRY,
     )
 

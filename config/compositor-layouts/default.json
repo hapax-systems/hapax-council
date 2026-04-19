@@ -609,7 +609,8 @@
       "surface": "pip-ul",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": true
     },
     {
       "source": "reverie",
@@ -623,7 +624,8 @@
       "surface": "pip-ll",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": true
     },
     {
       "source": "stream_overlay",
@@ -637,21 +639,24 @@
       "surface": "activity-header-top",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": true
     },
     {
       "source": "stance_indicator",
       "surface": "stance-indicator-tr",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": true
     },
     {
       "source": "chat_ambient",
       "surface": "chat-legend-right",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": true
     },
     {
       "source": "grounding_provenance_ticker",
