@@ -356,7 +356,7 @@ _FALLBACK_LAYOUT = Layout(
         # Volitional-director Phase 4 assignments.
         Assignment(source="activity_header", surface="activity-header-top"),
         Assignment(source="stance_indicator", surface="stance-indicator-tr"),
-        Assignment(source="chat_keyword_legend", surface="chat-legend-right"),
+        Assignment(source="chat_ambient", surface="chat-legend-right"),
         Assignment(source="grounding_provenance_ticker", surface="grounding-ticker-bl"),
         # Epic 2 Phase C hothouse assignments.
         Assignment(
