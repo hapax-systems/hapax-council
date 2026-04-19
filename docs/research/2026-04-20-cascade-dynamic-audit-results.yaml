@@ -1,0 +1,186 @@
+- id: 6.1
+  result: warn
+  evidence: dispatch path grep failed
+  remediation: audit director_loop dispatch entry
+- id: 6.2
+  result: warn
+  evidence: no intent-frequency-vs-stimmung metric
+  remediation: add hapax_director_intent_rate{stance} gauge
+- id: 6.3-spec
+  result: pass
+  evidence: UNGROUNDED pattern referenced in code (pending impl per research doc)
+- id: 6.4
+  result: fail
+  evidence: no compositional_consumer_dispatch_total counter
+  remediation: alpha bundle has this queued
+- id: 6.5
+  result: pass
+  evidence: DirectorIntent dataclass has all three fields coupled as schema
+- id: 6.6
+  result: pass
+  evidence: token_ledger + litellm cost tracking present
+- id: 6.7-spec
+  result: warn
+  evidence: no Kokoro-truncation rate metric
+  remediation: add hapax_tts_kokoro_truncations_total counter
+- id: 7.1
+  result: warn
+  evidence: no director-drift detector (same moves repeating forever)
+  remediation: propose hapax_director_move_diversity_7d gauge per §15.6
+- id: 7.2
+  result: warn
+  evidence: do-nothing regression test not obvious
+  remediation: locate CVS #19 test
+- id: 7.3-spec
+  result: pass
+  evidence: objective-hero-switcher present (task #46 shipped)
+- id: 7.4
+  result: pass
+  evidence: anti-personification linter in CI
+- id: 7.5
+  result: pass
+  evidence: structural-intent schema present (HOMAGE Phase 8 shipped)
+- id: 7.6
+  result: warn
+  evidence: no intent_realised / intent_emitted conversion gauge
+  remediation: add pair counters
+- id: 8.1
+  result: pass
+  evidence: content_programming/programmes dir exists
+- id: 8.2
+  result: warn
+  evidence: programmes-as-expander invariant has no code guard
+  remediation: add invariant test: no programme disables an affordance; programmes only add priors
+- id: 8.3
+  result: warn
+  evidence: recruitment_candidate ward code not obvious
+  remediation: locate
+- id: 8.4
+  result: warn
+  evidence: no invariant test that programmes act as SOFT priors not hard gates
+  remediation: add test: programme.apply() can only increase a capability's score, never veto
+- id: 8.5-spec
+  result: warn
+  evidence: no enforcement that programmes are Hapax-authored
+  remediation: add invariant: programme YAML/JSON files must carry authored_by: hapax metadata
+- id: 8.6
+  result: indeterminate
+  evidence: programmes not yet implemented; can't measure exhaustion
+- id: 9.1
+  result: indeterminate
+  evidence: blocked on task #164 programme layer implementation
+- id: 9.2
+  result: indeterminate
+  evidence: blocked on task #164 programme layer implementation
+- id: 9.3
+  result: indeterminate
+  evidence: blocked on task #164 programme layer implementation
+- id: 9.4
+  result: indeterminate
+  evidence: blocked on task #164 programme layer implementation
+- id: 9.5
+  result: indeterminate
+  evidence: blocked on task #164 programme layer implementation
+- id: 13.1
+  result: warn
+  evidence: no paired-emission audit for director decisions
+  remediation: add: assert visual-emit + audio-emit within 500ms window for same intent_id
+- id: 13.2
+  result: warn
+  evidence: no emphasis-envelope audio-ducking pairing metric
+  remediation: add ratio metric
+- id: 13.3
+  result: warn
+  evidence: no silence-visual coherence detector
+  remediation: propose: when narrative=''/silence, assert visual doesn't rapid-preset-cycle
+- id: 13.4
+  result: indeterminate
+  evidence: requires pcm+frame sync measurement; infrastructure not present
+- id: 13.5
+  result: pass
+  evidence: budget surfaces (compositor, daimonion, vla) all emit budget metrics independently
+- id: 14.1
+  result: pass
+  evidence: objectives_overlay Cairo source present (Phase 8 item 4)
+- id: 14.2
+  result: pass
+  evidence: chronicle write path present
+- id: 14.3
+  result: pass
+  evidence: research-condition labelling present
+- id: 14.4
+  result: pass
+  evidence: sprint-tracker + Obsidian measure notes are authoritative; bi-dir sync via agents/sprint_tracker.py
+- id: 14.5
+  result: warn
+  evidence: no invariant test that every impingement/intent carries condition_id
+  remediation: add test
+- id: 14.6
+  result: warn
+  evidence: no hypothesis-conclusion pairing audit
+  remediation: propose: every hypothesis has at least one conclusion record within N days
+- id: 15.1
+  result: warn
+  evidence: rapid_preset_cycling: no 'hapax_preset_family_switches_total' metric/detector in code
+  remediation: implement
+- id: 15.2
+  result: warn
+  evidence: ward_flashing_epilepsy: no 'flashing_frequency' metric/detector in code
+  remediation: implement
+- id: 15.3
+  result: warn
+  evidence: stuck_frame: no 'frame_hash_history' metric/detector in code
+  remediation: implement
+- id: 15.4
+  result: warn
+  evidence: silent_compositor: no 'render_but_no_motion' metric/detector in code
+  remediation: implement
+- id: 15.5
+  result: warn
+  evidence: overlap_cascade: no 'emphasis_envelope_chain' metric/detector in code
+  remediation: implement
+- id: 15.6
+  result: warn
+  evidence: director_monoculture: no 'preset_family_diversity' metric/detector in code
+  remediation: implement
+- id: 15.7
+  result: warn
+  evidence: audio_visual_disagreement: no 'av_coherence_score' metric/detector in code
+  remediation: implement
+- id: 15.8
+  result: pass
+  evidence: slur_variant_emergence: marker 'hapax_speech_safety_redactions_total' referenced in code
+- id: 16.1
+  result: pass
+  evidence: cascade audit-synthesis §17 enumerates 7 real-time pre-live-gate rows
+- id: 16.2
+  result: pass
+  evidence: cascade audit-synthesis §17 maps 8 warn-level near-real-time rows
+- id: 16.3
+  result: pass
+  evidence: weekly audit retro is §20 of static catalog
+- id: 16.4
+  result: pass
+  evidence: dynamic catalog §16.4 enumerates continuous-only instruments
+- id: 17.4
+  result: pass
+  evidence: grafana reachable on 3001 for longitudinal dashboards
+- id: 17.7
+  result: pass
+  evidence: hypothesis + property-based tests used in suite
+- id: 17.8
+  result: warn
+  evidence: no replay-based emergent-misbehavior hunt tool
+  remediation: build on top of a replay harness
+- id: 18.1
+  result: warn
+  evidence: no scripts/pre-live-gate.sh yet
+  remediation: build from catalog-1 §17 30-row gate + catalog-2 §18 warmup protocol
+- id: 18.2
+  result: warn
+  evidence: no warmup-verdict automation
+  remediation: wire into gate script
+- id: 20
+  result: pass
+  evidence: 5 open questions enumerated in dynamic catalog §20 for operator review
+DONE
