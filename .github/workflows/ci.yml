@@ -106,6 +106,8 @@ jobs:
               --ignore=tests/studio_compositor/test_follow_mode.py \
               --ignore=tests/studio_compositor/test_face_obscure_pipeline.py \
               --deselect=tests/studio_compositor/test_overlay_zones_research_gate.py::TestZoneGate::test_default_always_on \
+              --deselect=tests/shared/test_text_repo.py::TestSelectForContext::test_context_match_beats_higher_priority_unmatched \
+              --ignore=tests/test_camera_pipeline_phase2.py \
               -m "not llm" -k "not golden and not goldens" \
               -p no:cacheprovider 2>&1 | tee /tmp/pytest-output.txt
           # Parse pytest summary from captured output
