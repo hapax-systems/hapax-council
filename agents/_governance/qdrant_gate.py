@@ -281,10 +281,25 @@ class ConsentGatedQdrant:
                 is_mental_state_collection,
                 redact_query_result,
             )
-        except Exception:
-            # Importability failure must not break reads.
-            log.debug("mental_state_redaction unavailable; skipping redaction", exc_info=True)
-            return points
+        except Exception as import_err:
+            # D-24 §8.5 (AUDIT fix): a mental-state collection read must
+            # NEVER silently pass through un-redacted. If the redactor is
+            # unimportable, refuse the read — fail-closed is the governance-
+            # correct behaviour. Non-mental-state collections are allowed to
+            # pass (nothing to redact there) so this function still runs
+            # that cheap check first... but we can't tell which kind of
+            # collection this is without is_mental_state_collection(). The
+            # safe call: raise, and let the caller decide whether to
+            # treat it as a cache-miss.
+            log.error(
+                "mental_state_redaction unavailable for collection %s — "
+                "fail-closed per governance; refusing read",
+                collection_name,
+            )
+            raise RuntimeError(
+                f"mental_state_redaction module unavailable; cannot safely "
+                f"read collection {collection_name!r}"
+            ) from import_err
         if not is_mental_state_collection(collection_name):
             return points
         # redact_query_result expects a list of dicts. Qdrant's ScoredPoint

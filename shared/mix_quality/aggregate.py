@@ -36,6 +36,7 @@ Reference: docs/research/2026-04-20-mixquality-skeleton-design.md §3
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 # Pass bands — the design doc §2 table as constants. Consumers displaying
@@ -101,8 +102,14 @@ def _loudness_to_band(lufs: float | None) -> float | None:
     Within tolerance → 1.0; beyond tolerance → linearly falls off to
     0.0 over a 6 dB span from the tolerance edge. 6 dB is "obviously
     too loud / too soft" by broadcast convention.
+
+    NaN guard (D-24 §10.3): pyloudnorm returns NaN on degenerate audio
+    windows (DC-only, all-zero, single-sample). NaN would propagate
+    through aggregate_mix_quality and turn the top-level gauge into
+    NaN — both hard to alert on and hard to interpret. Treat NaN as
+    "no data" — same as lufs=None.
     """
-    if lufs is None:
+    if lufs is None or math.isnan(lufs):
         return None
     offset = abs(lufs - LOUDNESS_TARGET_LUFS)
     if offset <= LOUDNESS_TOLERANCE_LUFS:
