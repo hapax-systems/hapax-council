@@ -252,7 +252,7 @@
         "natural_h": 256
       },
       "update_cadence": "rate",
-      "rate_hz": 4.0,
+      "rate_hz": 15.0,
       "tags": [
         "homage",
         "avatar"
@@ -617,7 +617,8 @@
       "surface": "pip-ur",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "album",
@@ -632,7 +633,8 @@
       "surface": "pip-lr",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "activity_header",
@@ -663,63 +665,72 @@
       "surface": "grounding-ticker-bl",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "captions",
       "surface": "captions_strip",
       "transform": {},
       "opacity": 0.9,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "impingement_cascade",
       "surface": "impingement-cascade-midright",
       "transform": {},
       "opacity": 0.92,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "recruitment_candidate_panel",
       "surface": "recruitment-candidate-top",
       "transform": {},
       "opacity": 0.92,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "thinking_indicator",
       "surface": "thinking-indicator-tr",
       "transform": {},
       "opacity": 0.92,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "pressure_gauge",
       "surface": "pressure-gauge-ul",
       "transform": {},
       "opacity": 0.92,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "activity_variety_log",
       "surface": "activity-variety-log-mid",
       "transform": {},
       "opacity": 0.9,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "whos_here",
       "surface": "whos-here-tr",
       "transform": {},
       "opacity": 0.92,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     },
     {
       "source": "hardm_dot_matrix",
       "surface": "hardm-dot-matrix-ur",
       "transform": {},
       "opacity": 0.92,
-      "per_assignment_effects": []
+      "per_assignment_effects": [],
+      "non_destructive": false
     }
   ]
 }
