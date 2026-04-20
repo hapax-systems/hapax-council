@@ -474,8 +474,15 @@ class AffordancePipeline:
         # blocked; medium-risk requires a programme opt-in. D-26 (plan
         # Phase 5) wires the active-programme lookup so opt-ins set on the
         # current Programme actually reach the gate. Low/none pass unchanged.
+        # D-17: quiet_frame subscriber install. install() is no-op unless
+        # HAPAX_QUIET_FRAME_AUTO=1 in env — keeps test imports from
+        # accidentally enabling the wire. Idempotent (register_assess_listener
+        # dedupes), so calling on every select() is cheap and avoids module-
+        # import-time side effects.
+        from shared.governance import quiet_frame_subscriber
         from shared.governance.monetization_safety import GATE as _MONET_GATE
 
+        quiet_frame_subscriber.install()
         candidates = _MONET_GATE.candidate_filter(
             candidates, programme=self._active_programme_cached()
         )

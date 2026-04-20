@@ -55,6 +55,31 @@ _AUDIT_ENABLED = os.environ.get("HAPAX_DEMONET_AUDIT", "1") != "0"
 _SAMPLE_LOW = float(os.environ.get("HAPAX_EGRESS_AUDIT_SAMPLE_LOW", "0.1"))
 _SAMPLE_HIGH = float(os.environ.get("HAPAX_EGRESS_AUDIT_SAMPLE_HIGH", "1.0"))
 
+# D-17: In-process subscriber API so cross-cutting consumers (quiet_frame
+# subscriber, future telemetry) can react to gate decisions without
+# coupling the gate to those consumers. Each listener is called with
+# (assessment, capability_name, programme_id) after the audit write.
+# Listener exceptions are caught + logged; never propagate.
+from collections.abc import Callable
+
+_AssessListener = Callable[["RiskAssessment", str | None, str | None], None]
+_assess_listeners: list[_AssessListener] = []
+
+
+def register_assess_listener(listener: _AssessListener) -> None:
+    """Register an in-process callback fired after every gate decision.
+
+    Callback signature: ``(assessment, capability_name, programme_id)``.
+    Called from inside ``_record_and_return()`` after the egress audit
+    write. Listener exceptions are caught + logged; the gate's
+    correctness cannot depend on listener side effects succeeding.
+
+    Idempotent — re-registering the same callable is a no-op so a module
+    that reloads (e.g. in tests) doesn't end up firing twice.
+    """
+    if listener not in _assess_listeners:
+        _assess_listeners.append(listener)
+
 
 class SurfaceKind(StrEnum):
     """Where the rendered output would land if emitted.
@@ -181,6 +206,15 @@ def _record_and_return(
             )
         except Exception:  # noqa: BLE001 — audit must never break the gate
             _log.warning("egress audit write failed", exc_info=True)
+    # D-17: in-process listeners (quiet_frame subscriber, telemetry, etc.)
+    # fire on EVERY decision (no sampling) so transition observers see the
+    # full sequence. Each listener wrapped in try/except — listener faults
+    # cannot break the gate.
+    for listener in _assess_listeners:
+        try:
+            listener(assessment, capability_name, programme_id)
+        except Exception:  # noqa: BLE001 — listener faults must not break gate
+            _log.warning("assess listener %s raised; continuing", listener.__name__, exc_info=True)
     return assessment
 
 
