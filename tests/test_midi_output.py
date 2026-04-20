@@ -21,6 +21,7 @@ class TestMidiOutputSendCC:
     def test_send_cc_opens_port_and_sends(self) -> None:
         mock_port = MagicMock()
         with patch("agents.hapax_daimonion.midi_output.mido") as mock_mido:
+            mock_mido.get_output_names.return_value = ["Evil Pet"]
             mock_mido.open_output.return_value = mock_port
             mock_msg = MagicMock()
             mock_mido.Message.return_value = mock_msg
@@ -37,6 +38,7 @@ class TestMidiOutputSendCC:
     def test_send_cc_reuses_port(self) -> None:
         mock_port = MagicMock()
         with patch("agents.hapax_daimonion.midi_output.mido") as mock_mido:
+            mock_mido.get_output_names.return_value = ["Test"]
             mock_mido.open_output.return_value = mock_port
             mock_mido.Message.return_value = MagicMock()
 
