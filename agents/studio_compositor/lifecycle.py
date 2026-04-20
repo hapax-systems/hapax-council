@@ -315,7 +315,21 @@ def start_compositor(compositor: Any) -> None:
             with compositor._camera_status_lock:
                 any_active = any(s == "active" for s in compositor._camera_status.values())
             v4l2_alive = compositor.v4l2_frame_seen_within(20.0)
-            if any_active and v4l2_alive and compositor._running:
+            # Director liveness gate (Phase 1 per
+            # docs/research/2026-04-20-livestream-halt-investigation.md §6).
+            # 180s = 6 PERCEPTION_INTERVAL ticks. A single-tick LLM timeout
+            # doesn't trigger (existing micromove fallback handles it);
+            # sustained silence does. Recovers from TabbyAPI hangs, CUDA
+            # context loss, LiteLLM gateway deadlock, _call_activity_llm
+            # urlopen blocking past timeout, and any director-thread
+            # deadlock — all classes of failure invisible to systemd.
+            try:
+                from .director_loop import director_intent_age
+
+                director_alive = director_intent_age() < 180.0
+            except Exception:
+                director_alive = True  # fail-open if module not yet imported
+            if any_active and v4l2_alive and director_alive and compositor._running:
                 sd_notify_watchdog()
                 try:
                     from . import metrics
@@ -328,11 +342,21 @@ def start_compositor(compositor: Any) -> None:
                             else 9999.0
                         )
                         metrics.V4L2SINK_LAST_FRAME_AGE.set(age)
+                    if metrics.DIRECTOR_LAST_INTENT_AGE is not None:
+                        try:
+                            from .director_loop import director_intent_age as _dia
+
+                            metrics.DIRECTOR_LAST_INTENT_AGE.set(min(_dia(), 9999.0))
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             elif any_active and not v4l2_alive:
                 sd_notify_status("DEGRADED — v4l2sink silent for >20s")
                 log.warning("v4l2sink stall detected — withholding watchdog ping")
+            elif any_active and v4l2_alive and not director_alive:
+                sd_notify_status("DEGRADED — director silent for >180s")
+                log.warning("director loop silent for >180s — withholding watchdog ping")
             return compositor._running  # keep firing while compositor is alive
 
         # 20s interval keeps us well under the 60s WatchdogSec.

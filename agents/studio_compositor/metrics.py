@@ -101,6 +101,8 @@ COMP_UPTIME: Any = None
 COMP_WATCHDOG_LAST_FED: Any = None
 V4L2SINK_LAST_FRAME_AGE: Any = None
 V4L2SINK_FRAMES_TOTAL: Any = None
+DIRECTOR_LAST_INTENT_AGE: Any = None
+DIRECTOR_INTENT_TOTAL: Any = None
 COMP_CAMERAS_TOTAL: Any = None
 COMP_CAMERAS_HEALTHY: Any = None
 COMP_PIPELINE_RESTARTS_TOTAL: Any = None
@@ -192,6 +194,8 @@ def _init_metrics() -> None:
     global COMP_WATCHDOG_LAST_FED
     global V4L2SINK_LAST_FRAME_AGE
     global V4L2SINK_FRAMES_TOTAL
+    global DIRECTOR_LAST_INTENT_AGE
+    global DIRECTOR_INTENT_TOTAL
     global COMP_CAMERAS_TOTAL
     global COMP_CAMERAS_HEALTHY
     global COMP_PIPELINE_RESTARTS_TOTAL
@@ -432,6 +436,18 @@ def _init_metrics() -> None:
     V4L2SINK_FRAMES_TOTAL = Counter(
         "studio_compositor_v4l2sink_frames_total",
         "Cumulative buffers crossing the v4l2sink sink pad",
+        registry=REGISTRY,
+    )
+    # Phase 1 director liveness watchdog per
+    # docs/research/2026-04-20-livestream-halt-investigation.md §6.
+    DIRECTOR_LAST_INTENT_AGE = Gauge(
+        "studio_compositor_director_last_intent_seconds_ago",
+        "Seconds since the director last emitted a parsed LLM intent (excluding micromove fallbacks)",
+        registry=REGISTRY,
+    )
+    DIRECTOR_INTENT_TOTAL = Counter(
+        "studio_compositor_director_intent_total",
+        "Cumulative parsed LLM intents emitted",
         registry=REGISTRY,
     )
     COMP_CAMERAS_TOTAL = Gauge(

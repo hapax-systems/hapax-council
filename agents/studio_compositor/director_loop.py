@@ -320,11 +320,40 @@ def _maybe_rotate_jsonl(path: Path) -> None:
         log.warning("JSONL rotation failed", exc_info=True)
 
 
+# Director liveness watchdog state (Phase 1 stall detection per
+# docs/research/2026-04-20-livestream-halt-investigation.md §6).
+# Module-level because _emit_intent_artifacts is module-level and
+# the watchdog tick in lifecycle.py reads via director_intent_age()
+# without needing a compositor handle. Updated by every successful
+# parsed-LLM intent emission. The watchdog gate is set at 180s
+# (6× 30s PERCEPTION_INTERVAL) — a single-tick LLM timeout doesn't
+# trigger; only sustained silence does. Closes the same coverage gap
+# as the v4l2sink stall watchdog (alpha e2175469a).
+_last_real_intent_monotonic: float = 0.0
+_last_any_intent_monotonic: float = 0.0
+
+
+def director_intent_age() -> float:
+    """Seconds since last parsed-LLM intent emission. inf if never emitted.
+
+    Read by lifecycle._watchdog_tick to gate systemd WATCHDOG=1 ping.
+    Excludes micromove fallbacks — fallbacks mask LLM hangs, so the
+    watchdog must see real LLM output to consider the loop alive.
+    """
+    if _last_real_intent_monotonic == 0.0:
+        return float("inf")
+    return time.monotonic() - _last_real_intent_monotonic
+
+
 def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
     """Write the intent to JSONL + narrative-state SHM + Prometheus + DMN stream.
 
     Non-fatal: any IO error is logged but does not block the director loop.
     """
+    global _last_real_intent_monotonic, _last_any_intent_monotonic
+    _now_mono = time.monotonic()
+    _last_real_intent_monotonic = _now_mono
+    _last_any_intent_monotonic = _now_mono
     try:
         _DIRECTOR_INTENT_JSONL.parent.mkdir(parents=True, exist_ok=True)
         _maybe_rotate_jsonl(_DIRECTOR_INTENT_JSONL)
