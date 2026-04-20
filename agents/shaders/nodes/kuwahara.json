@@ -1,0 +1,1 @@
+{"node_type": "kuwahara", "backend": "wgsl_render", "glsl_fragment": "kuwahara.frag", "inputs": {"in": "frame"}, "outputs": {"out": "frame"}, "params": {"radius": {"type": "float", "default": 3.0, "min": 1.0, "max": 8.0}, "width": {"type": "float", "default": 1920.0}, "height": {"type": "float", "default": 1080.0}}, "temporal": false}
