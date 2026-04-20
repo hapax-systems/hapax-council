@@ -13,6 +13,7 @@ import logging
 
 import numpy as np
 
+from shared.speech_lexicon import apply_lexicon as _speech_lexicon_apply
 from shared.speech_safety import censor as _speech_safety_censor
 
 log = logging.getLogger(__name__)
@@ -71,9 +72,10 @@ class TTSManager:
                 redaction.hit_count,
                 use_case,
             )
+        lexicon = _speech_lexicon_apply(redaction.text)
         tier = select_tier(use_case)
         log.debug("TTS tier=%s for use_case=%s", tier, use_case)
-        return self._synthesize_kokoro(redaction.text)
+        return self._synthesize_kokoro(lexicon.text)
 
     def _synthesize_kokoro(self, text: str) -> bytes:
         """Synthesize via Kokoro, returning PCM int16 bytes."""

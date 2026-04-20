@@ -49,11 +49,14 @@ def generate_voice_segment_kokoro(
     """Generate a single voice segment using Kokoro 82M TTS."""
     from kokoro import KPipeline
 
+    from shared.speech_lexicon import apply_lexicon
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    pronounced = apply_lexicon(text).text
     pipeline = KPipeline(lang_code="a")
     chunks: list[bytes] = []
-    for _graphemes, _phonemes, audio in pipeline(text, voice=voice):
+    for _graphemes, _phonemes, audio in pipeline(pronounced, voice=voice):
         if audio is not None:
             if hasattr(audio, "numpy"):
                 audio = audio.numpy()
