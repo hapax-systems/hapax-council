@@ -24,6 +24,25 @@ def _ensure_mido() -> Any:
     return mido
 
 
+def _resolve_port_name(mido_mod: Any, configured: str) -> str | None:
+    """Match ``configured`` against live mido port names, tolerating the
+    trailing ALSA client number that drifts across reboots / USB replugs.
+
+    Tries exact match first, then prefix match on everything before the
+    trailing ``" N:M"`` client-id segment, then substring fallback.
+    """
+    names = list(mido_mod.get_output_names())
+    if configured in names:
+        return configured
+    for name in names:
+        if name.rsplit(" ", 1)[0] == configured.rsplit(" ", 1)[0]:
+            return name
+    for name in names:
+        if configured in name:
+            return name
+    return None
+
+
 class MidiOutput:
     """Send MIDI CC messages to external hardware."""
 
@@ -53,11 +72,29 @@ class MidiOutput:
         self._port.send(msg)
 
     def _open_port(self) -> None:
-        """Lazy-open the MIDI output port."""
+        """Lazy-open the MIDI output port.
+
+        Uses substring matching so the configured name survives ALSA client
+        renumbering on reboot (e.g. ``"MIDI Dispatch:MIDI Dispatch MIDI 1
+        56:0"`` → ``"MIDI Dispatch:MIDI Dispatch MIDI 1 62:0"`` after a
+        USB replug). An empty ``port_name`` falls through to mido's
+        default picker.
+        """
         try:
             m = _ensure_mido()
-            name = self._port_name or None  # None = mido picks first available
-            self._port = m.open_output(name)
+            if self._port_name:
+                resolved = _resolve_port_name(m, self._port_name)
+                if resolved is None:
+                    log.warning(
+                        "MIDI port %r not found among %s — vocal chain disabled",
+                        self._port_name,
+                        m.get_output_names(),
+                    )
+                    self._init_failed = True
+                    return
+                self._port = m.open_output(resolved)
+            else:
+                self._port = m.open_output(None)
             log.info("MIDI output opened: %s", self._port.name)
         except OSError as exc:
             log.warning("No MIDI output available (%s) — vocal chain disabled", exc)

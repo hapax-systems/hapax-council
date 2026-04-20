@@ -200,12 +200,12 @@ class DaimonionConfig(BaseModel):
     midi_port_name: str = "OXI One"
     midi_beats_per_bar: int = 4
 
-    # MIDI output (vocal chain). Defaults to the physical 24c MIDI endpoint
-    # that reaches Evil Pet + Torso S-4. Empty or missing port name falls back
-    # to mido's "first available" which on Arch typically lands on the
-    # kernel ``MIDI Dispatch`` loopback — silently swallowing CCs. Operator
-    # can override via env or config to any port shown by ``aconnect -l``.
-    midi_output_port: str = "Studio 24c MIDI 1"
+    # MIDI output (vocal chain). Defaults to the Erica Synths MIDI Dispatch
+    # (USB → CalDigit dock) which fans MIDI out to Evil Pet + Torso S-4.
+    # MidiOutput tolerates the trailing ALSA client-id segment so this
+    # configured name survives reboots / USB replugs that shift the number.
+    # Empty falls through to mido's "first available" picker.
+    midi_output_port: str = "MIDI Dispatch:MIDI Dispatch MIDI 1"
     midi_evil_pet_channel: int = 0  # 0-indexed MIDI channel
     midi_s4_channel: int = 1  # 0-indexed MIDI channel
 
