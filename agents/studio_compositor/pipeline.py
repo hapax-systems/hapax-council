@@ -218,6 +218,21 @@ def build_pipeline(compositor: Any) -> Any:
     except Exception:
         log.debug("v4l2sink: qos property not supported", exc_info=True)
 
+    # v4l2sink frame-push heartbeat probe (Phase 1 stall detection).
+    # Increments compositor._v4l2_frame_count and updates
+    # _v4l2_last_frame_monotonic on every buffer that crosses the sink
+    # pad. The watchdog tick conjoins v4l2_frame_seen_within(20.0) with
+    # the existing camera-active gate, so the systemd WatchdogSec=60s
+    # fires when the v4l2sink branch stalls — even if cameras are still
+    # live. Closes the same coverage gap that allowed the 2026-04-14
+    # 78-min silent stall + the 2026-04-20 stall. Ref:
+    # docs/research/2026-04-20-v4l2sink-stall-prevention.md §7-§8.
+    def _v4l2_buffer_probe(pad: Any, info: Any) -> Any:
+        compositor._on_v4l2_frame_pushed()
+        return Gst.PadProbeReturn.OK
+
+    sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _v4l2_buffer_probe)
+
     for el in [queue_v4l2, convert_out, sink_caps, identity, sink]:
         pipeline.add(el)
 

@@ -500,6 +500,14 @@ class StudioCompositor:
         self._running = False
         self._camera_status: dict[str, str] = {}
         self._camera_status_lock = threading.Lock()
+        # v4l2sink heartbeat (Phase 1 stall detection). Updated by
+        # pipeline.py's BUFFER probe on the v4l2sink's static sink pad
+        # — fires on every frame pushed. Read by lifecycle.py's
+        # watchdog tick to gate the systemd WATCHDOG=1 ping.
+        # Ref: docs/research/2026-04-20-v4l2sink-stall-prevention.md §7.
+        self._v4l2_frame_count: int = 0
+        self._v4l2_last_frame_monotonic: float = 0.0
+        self._v4l2_lock = threading.Lock()
         self._recording_status: dict[str, str] = {}
         self._recording_status_lock = threading.Lock()
         self._element_to_role: dict[str, str] = {}
@@ -751,6 +759,27 @@ class StudioCompositor:
                 old, new, _ = message.parse_state_changed()
                 log.debug("Pipeline state: %s -> %s", old.value_nick, new.value_nick)
         return True
+
+    def _on_v4l2_frame_pushed(self) -> None:
+        """Called from the v4l2sink BUFFER probe (streaming-thread hot path).
+
+        Records the monotonic time of the most recent v4l2sink push so
+        ``v4l2_frame_seen_within`` can gate the systemd watchdog. Cheap;
+        held lock is uncontended in practice (one writer, one reader at
+        ~20s intervals). Ref: docs/research/2026-04-20-v4l2sink-stall-
+        prevention.md §7-§8.
+        """
+        now = time.monotonic()
+        with self._v4l2_lock:
+            self._v4l2_frame_count += 1
+            self._v4l2_last_frame_monotonic = now
+
+    def v4l2_frame_seen_within(self, seconds: float) -> bool:
+        """True iff v4l2sink pushed a frame within the last ``seconds``."""
+        with self._v4l2_lock:
+            if self._v4l2_last_frame_monotonic == 0.0:
+                return False
+            return (time.monotonic() - self._v4l2_last_frame_monotonic) < seconds
 
     def _write_status(self, state: str) -> None:
         if not self._status_dir_exists:

@@ -303,19 +303,36 @@ def start_compositor(compositor: Any) -> None:
         sd_notify_status(f"{cameras_active}/{len(compositor._camera_status)} cameras live")
 
         def _watchdog_tick() -> bool:
-            # Liveness gate: at least one camera currently flagged active.
-            # The per-camera GStreamer watchdog (2s timeout) marks offline on
-            # stalls, so "any active" = "at least one producer still flowing".
+            # Conjoin two liveness gates: (1) at least one camera is
+            # active (existing); (2) v4l2sink pushed a frame within the
+            # last 20s (Phase 1 stall detection). Either silent for >20s
+            # and the watchdog ping stops; systemd WatchdogSec=60s then
+            # SIGABRTs the unit. Closes the same coverage gap that
+            # allowed the 2026-04-14 78-min silent stall + 2026-04-20
+            # stall — cameras stayed live but v4l2sink branch went
+            # silent to OBS. Ref:
+            # docs/research/2026-04-20-v4l2sink-stall-prevention.md §8.
             with compositor._camera_status_lock:
                 any_active = any(s == "active" for s in compositor._camera_status.values())
-            if any_active and compositor._running:
+            v4l2_alive = compositor.v4l2_frame_seen_within(20.0)
+            if any_active and v4l2_alive and compositor._running:
                 sd_notify_watchdog()
                 try:
                     from . import metrics
 
                     metrics.mark_watchdog_fed()
+                    if metrics.V4L2SINK_LAST_FRAME_AGE is not None:
+                        age = (
+                            time.monotonic() - compositor._v4l2_last_frame_monotonic
+                            if compositor._v4l2_last_frame_monotonic > 0
+                            else 9999.0
+                        )
+                        metrics.V4L2SINK_LAST_FRAME_AGE.set(age)
                 except Exception:
                     pass
+            elif any_active and not v4l2_alive:
+                sd_notify_status("DEGRADED — v4l2sink silent for >20s")
+                log.warning("v4l2sink stall detected — withholding watchdog ping")
             return compositor._running  # keep firing while compositor is alive
 
         # 20s interval keeps us well under the 60s WatchdogSec.

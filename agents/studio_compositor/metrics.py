@@ -99,6 +99,8 @@ CAM_IN_FALLBACK: Any = None
 COMP_BOOT_TIMESTAMP: Any = None
 COMP_UPTIME: Any = None
 COMP_WATCHDOG_LAST_FED: Any = None
+V4L2SINK_LAST_FRAME_AGE: Any = None
+V4L2SINK_FRAMES_TOTAL: Any = None
 COMP_CAMERAS_TOTAL: Any = None
 COMP_CAMERAS_HEALTHY: Any = None
 COMP_PIPELINE_RESTARTS_TOTAL: Any = None
@@ -188,6 +190,8 @@ def _init_metrics() -> None:
     global COMP_BOOT_TIMESTAMP
     global COMP_UPTIME
     global COMP_WATCHDOG_LAST_FED
+    global V4L2SINK_LAST_FRAME_AGE
+    global V4L2SINK_FRAMES_TOTAL
     global COMP_CAMERAS_TOTAL
     global COMP_CAMERAS_HEALTHY
     global COMP_PIPELINE_RESTARTS_TOTAL
@@ -416,6 +420,18 @@ def _init_metrics() -> None:
     COMP_WATCHDOG_LAST_FED = Gauge(
         "studio_compositor_watchdog_last_fed_seconds_ago",
         "Seconds since last WATCHDOG=1 was sent to systemd",
+        registry=REGISTRY,
+    )
+    # Phase 1 v4l2sink stall detection. Per
+    # docs/research/2026-04-20-v4l2sink-stall-prevention.md §13.1.
+    V4L2SINK_LAST_FRAME_AGE = Gauge(
+        "studio_compositor_v4l2sink_last_frame_seconds_ago",
+        "Seconds since the v4l2sink BUFFER probe last fired",
+        registry=REGISTRY,
+    )
+    V4L2SINK_FRAMES_TOTAL = Counter(
+        "studio_compositor_v4l2sink_frames_total",
+        "Cumulative buffers crossing the v4l2sink sink pad",
         registry=REGISTRY,
     )
     COMP_CAMERAS_TOTAL = Gauge(
