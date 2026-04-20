@@ -171,6 +171,47 @@ that conf wires the S-4 stereo content into the livestream tap;
 this conf exposes the underlying device's pro-audio capability so
 the router has individually-addressable destinations.
 
+## YT bed loudness normalisation (B2 / H#13)
+
+`yt-loudnorm.conf` creates a stereo `hapax-yt-loudnorm` sink that
+operators route YouTube media-bed sources through BEFORE the
+voice-over-ytube ducker. Targets -16 LUFS integrated / -1.5 dBTP
+true-peak per audit spec §3.4.
+
+Signal chain:
+
+```
+YT browser/OBS media source → hapax-yt-loudnorm (this conf) →
+  hapax-ytube-ducked (voice-over-ytube-duck.conf) → default stereo
+```
+
+Install (deploy both confs together):
+
+```fish
+cp config/pipewire/yt-loudnorm.conf ~/.config/pipewire/pipewire.conf.d/
+cp config/pipewire/voice-over-ytube-duck.conf ~/.config/pipewire/pipewire.conf.d/
+systemctl --user restart pipewire pipewire-pulse wireplumber
+pactl list short sinks | grep -E "hapax-yt-loudnorm|hapax-ytube-ducked"
+```
+
+In OBS / browser: select **Hapax YT Loudnorm** as the YT media source's
+audio output. Loudnorm chains automatically into the ducker.
+
+Tuning starts at threshold -14 dB / ratio 4:1 — heavier than the
+voice chain because YT inputs land hotter and uploader variance is
+wider. Limiter ceiling -1.5 dBTP leaves 0.5 dB headroom under the
+voice chain (-1.0 dB) so the bed can never out-peak the operator.
+
+Measure the output LUFS:
+
+```fish
+pw-cat --record --target hapax-yt-loudnorm.monitor --format s16 \
+    --rate 48000 --channels 2 --latency 1024 /tmp/yt-bed-30s.wav &
+PID=$!; sleep 30; kill $PID
+ffmpeg -i /tmp/yt-bed-30s.wav -af loudnorm=print_format=summary -f null -
+# "Input Integrated" should land near -16 LUFS.
+```
+
 ## Troubleshooting
 
 - **Sink does not appear after install:** verify `pipewire.service` and
