@@ -520,6 +520,24 @@ LITELLM_KEY = ""
 # the director strips images before the call.
 DIRECTOR_MODEL = os.environ.get("HAPAX_DIRECTOR_MODEL", "local-fast")
 
+# Director watchdog Phase 2 (§8.2): process-wide single-flight lock keyed on
+# the LLM route. Prevents director + structural-director (also `local-fast`
+# per agents/studio_compositor/structural_director.py:333) from racing on
+# the same TabbyAPI cache — two concurrent 8K+ token prompts saturate the
+# 16K cache_size and queue subsequent jobs, the dominant timeout cause per
+# docs/research/2026-04-20-livestream-halt-investigation.md §8.1. Acquired
+# non-blocking inside _call_activity_llm; on contention the call returns
+# empty and the existing micromove fallback path handles the tick.
+_DIRECTOR_LLM_LOCK = threading.Lock()
+
+# §7.1: speak the micromove on opportunistic timeout. Gate on a counter so
+# a sustained timeout doesn't spam the broadcast — speak the first 1 of
+# every N micromove ticks. N=5 means under sustained timeout the audience
+# hears one micromove utterance every ~150s (5 × 30s perception interval),
+# which is enough to signal life without filling the surface with stock
+# narratives.
+_MICROMOVE_SPEAK_EVERY_N = 5
+
 # Routes known to accept ``image_url`` content in the OpenAI-compatible
 # messages body. Anything else → images stripped at the call site.
 MULTIMODAL_ROUTES: frozenset[str] = frozenset(
@@ -1449,6 +1467,20 @@ class DirectorLoop:
             idx = int(getattr(self, "_micromove_cycle_idx", 0)) % len(micromove_cycle)
             self._micromove_cycle_idx = idx + 1
             family, narrative, material, wards_to_emphasize, rotation = micromove_cycle[idx]
+            # §7.1: speak the micromove on opportunistic timeout. Gate so a
+            # sustained timeout doesn't spam the broadcast — speak the first
+            # 1 of every _MICROMOVE_SPEAK_EVERY_N micromove ticks. Placed
+            # BEFORE the impingement/intent construction because the speak
+            # is independent of those Pydantic models — narrative is set
+            # the moment the cycle slot is picked. Speak failure is logged
+            # and swallowed so micromove emission downstream is unaffected.
+            speak_count = int(getattr(self, "_micromove_spoken_count", 0))
+            self._micromove_spoken_count = speak_count + 1
+            if reason == "llm_empty" and speak_count % _MICROMOVE_SPEAK_EVERY_N == 0:
+                try:
+                    self._speak_activity(narrative, "observe")
+                except Exception:
+                    log.debug("micromove speak failed", exc_info=True)
             try:
                 impingement = CompositionalImpingement(
                     narrative=narrative,
@@ -2283,11 +2315,37 @@ class DirectorLoop:
 
         Wrapped in hapax_span("stream", "reaction") so per-reaction scores
         (tokens, coherence, activity) are tagged with stream-experiment.
+
+        Director watchdog Phase 2 (§8.2): non-blocking acquire on
+        ``_DIRECTOR_LLM_LOCK`` — if a prior call is in flight (typically
+        the structural-director on the same `local-fast` route), return
+        empty so the caller's existing micromove fallback fires. The
+        empty-return path is identical to a normal LLM timeout, so the
+        broadcast still gets a compositional impingement on every tick.
         """
         key = _get_litellm_key()
         if not key:
             return ""
 
+        if not _DIRECTOR_LLM_LOCK.acquire(blocking=False):
+            from shared.director_observability import emit_director_tick_skipped_in_flight
+
+            emit_director_tick_skipped_in_flight(reason="lock_held")
+            log.info(
+                "director tick skipped: prior LLM call still in flight (route=%s)",
+                DIRECTOR_MODEL,
+            )
+            return ""
+
+        try:
+            return self._call_activity_llm_locked(prompt, images, key)
+        finally:
+            _DIRECTOR_LLM_LOCK.release()
+
+    def _call_activity_llm_locked(self, prompt: str, images: list | None, key: str) -> str:
+        """Body of _call_activity_llm split out so the lock acquire/release
+        wrap is unambiguous. All return paths from this method are still
+        covered by the parent's try/finally release."""
         content: list[dict] = []
         # Only forward images when the configured route is known multimodal.
         # Text-only routes (e.g. local Qwen3.5-9B) timeout or error when fed

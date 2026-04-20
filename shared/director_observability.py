@@ -142,6 +142,16 @@ try:
         "random_mode preset picks, labelled by selection path.",
         ("chosen_via",),
     )
+    # Director watchdog Phase 2 (§8 single-flight): counts ticks where the
+    # director was about to call the LLM but the prior call had not yet
+    # returned. Each increment is one tick the director silently skipped
+    # (the existing micromove-fallback path now fires on the empty-string
+    # return, so the broadcast still gets a compositional impingement).
+    _director_tick_skipped_in_flight_total = Counter(
+        "hapax_director_tick_skipped_in_flight_total",
+        "Director ticks skipped because the prior LLM call was still in flight.",
+        ("reason",),
+    )
     # HOMAGE framework metrics — spec §6.
     # Registered against the compositor's CollectorRegistry (when the
     # compositor package is importable) so the :9482 scrape surface
@@ -326,6 +336,18 @@ def emit_parse_failure(tier: str, condition_id: str) -> None:
         _intent_parse_failure_total.labels(condition_id=condition_id, director_tier=tier).inc()
     except Exception:
         log.warning("emit_parse_failure failed", exc_info=True)
+
+
+def emit_director_tick_skipped_in_flight(reason: str = "lock_held") -> None:
+    """Director watchdog Phase 2 (§8): increment when a tick is skipped
+    because the prior LLM call hadn't returned. Default reason='lock_held'.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _director_tick_skipped_in_flight_total.labels(reason=reason).inc()
+    except Exception:
+        log.warning("emit_director_tick_skipped_in_flight failed", exc_info=True)
 
 
 def emit_vacuum_prevented(reason: str, tier: str, condition_id: str) -> None:
