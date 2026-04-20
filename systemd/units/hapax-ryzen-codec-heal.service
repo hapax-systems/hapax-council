@@ -1,0 +1,24 @@
+[Unit]
+Description=Ryzen HDA codec pin-routing heal — non-blocking post-pipewire
+# Runs AFTER pipewire is up, never blocks pipewire startup. Replaces the
+# earlier ExecStartPost-on-pipewire drop-in that created a circular dep
+# (heal script called pactl which required pipewire running; when pipewire
+# was still coming up, pactl would hang and pipewire would time out
+# waiting for the ExecStartPost).
+#
+# This unit is ordered After=pipewire + wants pipewire so it fires once
+# pipewire is ACTIVE. Inside the script, there's already a 15s wait
+# loop for the Ryzen card to enumerate; if it never shows (host
+# without Ryzen HDA), clean-exit 0.
+After=pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/.local/bin/hapax-ryzen-codec-heal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-ryzen-codec-heal
+
+[Install]
+WantedBy=default.target
