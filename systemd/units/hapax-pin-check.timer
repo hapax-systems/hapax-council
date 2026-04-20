@@ -1,0 +1,22 @@
+[Unit]
+Description=Hapax Ryzen pin-glitch probe — every 120s
+Documentation=file://%h/projects/hapax-council/scripts/hapax-pin-check-probe.sh
+
+[Timer]
+# 30s after boot — pipewire needs a beat to settle before the first
+# probe (otherwise the sink state read can race the wireplumber
+# default-sink election).
+OnBootSec=30s
+# 120s cadence — tight enough that the 5s silence threshold inside
+# the detector accumulates quickly (3 ticks ≈ 6 min to fire from
+# clean state); loose enough that the pw-cat capture's ~500ms cost
+# is negligible.
+OnUnitActiveSec=120s
+# Bunch on resume + boot but don't pile up if the system was
+# suspended for hours — the live detector wants ONE fresh tick after
+# wake, not a stampede of catch-up ticks.
+AccuracySec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
