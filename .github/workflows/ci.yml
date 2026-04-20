@@ -67,12 +67,13 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
-      - name: Install system deps (cairo, gobject, gst)
+      - name: Install system deps (cairo, gobject, gst, pango)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libcairo2-dev libgirepository-2.0-dev gobject-introspection \
-            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
+            gir1.2-pango-1.0
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency, audit 4.7 PR #1109)
         run: |
           # Install system-wide so fontconfig's /usr/share/fonts scan picks it up.
@@ -93,9 +94,9 @@ jobs:
         # Pango consults fontconfig but has its own per-process cache; a
         # Pango-level probe confirms the HARDM render path will see the
         # font, not just fontconfig. If this fails, HARDM tests render
-        # blank cells silently, so fail loud here.
+        # blank cells silently, so fail loud here with diagnostic output.
         run: |
-          uv run python -c 'from agents.studio_compositor.text_render import has_font; assert has_font("Px437 IBM VGA 8x16"), "Pango cannot resolve Px437 IBM VGA 8x16"; print("Pango resolves Px437 IBM VGA 8x16: OK")'
+          uv run python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
       - name: Run tests
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
