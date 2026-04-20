@@ -456,6 +456,50 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
       done
     fi
   fi
+
+  # ── D-30 Phase 4: Obsidian SSOT — claimed task + top offered ──
+  # Surfaces the canonical CC-task state from the operator's vault so
+  # sessions onboard with their claim + the next-up queue.
+  CC_TASKS_VAULT="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+  CC_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-${ROLE}"
+  if [ -d "$CC_TASKS_VAULT" ]; then
+    echo ""
+    echo "CC-TASK SSOT (Obsidian-canonical):"
+    if [ -f "$CC_CLAIM_FILE" ]; then
+      CLAIMED_ID=$(head -n1 "$CC_CLAIM_FILE" | tr -d '[:space:]')
+      CLAIMED_NOTE=$(ls "$CC_TASKS_VAULT/active/${CLAIMED_ID}-"*.md 2>/dev/null | head -1)
+      if [ -n "$CLAIMED_NOTE" ]; then
+        CLAIMED_TITLE=$(grep '^title:' "$CLAIMED_NOTE" | head -1 | sed 's/^title: *//; s/^"//; s/"$//')
+        CLAIMED_STATUS=$(grep '^status:' "$CLAIMED_NOTE" | head -1 | sed 's/^status: *//')
+        echo "  Claimed: $CLAIMED_ID [$CLAIMED_STATUS] $CLAIMED_TITLE"
+      else
+        echo "  Claimed: $CLAIMED_ID (note missing in vault — re-claim or check moved-to-closed)"
+      fi
+    else
+      echo "  Claimed: (none — see top-offered below; cc-claim <task_id> to start)"
+    fi
+    # Top 5 offered tasks by WSJF descending. Pure-grep approach so we
+    # don't add a python dep to the SessionStart preamble.
+    if [ -d "$CC_TASKS_VAULT/active" ]; then
+      OFFERED_LINES=$(
+        for note in "$CC_TASKS_VAULT/active/"*.md; do
+          [ -f "$note" ] || continue
+          grep -q '^status: offered$' "$note" 2>/dev/null || continue
+          WSJF=$(grep '^wsjf:' "$note" | head -1 | sed 's/^wsjf: *//' | tr -d '[:space:]')
+          ID=$(grep '^task_id:' "$note" | head -1 | sed 's/^task_id: *//' | tr -d '[:space:]')
+          TITLE=$(grep '^title:' "$note" | head -1 | sed 's/^title: *//; s/^"//; s/"$//')
+          # Clamp WSJF to 0 if missing/empty for sort stability.
+          [ -z "$WSJF" ] && WSJF=0.0
+          printf '%s\t%s\t%s\n' "$WSJF" "$ID" "$TITLE"
+        done | sort -t'	' -k1,1 -nr | head -5
+      )
+      if [ -n "$OFFERED_LINES" ]; then
+        echo "  Top offered (by WSJF):"
+        echo "$OFFERED_LINES" | awk -F'\t' '{printf "    [%.1f] %s — %s\n", $1, $2, $3}'
+      fi
+    fi
+    echo "  Dashboard: open Obsidian → 20-projects/hapax-cc-tasks/_dashboard/cc-active"
+  fi
 fi
 
 # Seed auto-memory directory if missing
