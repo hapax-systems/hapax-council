@@ -628,6 +628,84 @@ class IntelligibilityBudget:
         projected_cost = loss_per_min * (self.lookahead_s / 60.0)
         return self.remaining(now) >= projected_cost
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-safe dict for SHM persistence.
+
+        Tier values serialise as their int values; caller reconstructs
+        via ``from_dict``. Spans compact to ``[start, end, tier_int]``
+        tuples so readers don't depend on our field names.
+        """
+        return {
+            "window_s": self.window_s,
+            "budget_units": self.budget_units,
+            "lookahead_s": self.lookahead_s,
+            "spans": [[s, e, int(t)] for s, e, t in self._spans],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> IntelligibilityBudget:
+        """Reconstruct from the ``to_dict`` shape.
+
+        Malformed span entries (wrong length, out-of-range tier,
+        non-finite timestamps) are dropped silently — the budget
+        shouldn't reject valid future writes just because an earlier
+        one corrupted the file. Caller can observe the drop via
+        ``len(self._spans)`` vs the raw input.
+        """
+        raw_spans = data.get("spans", [])
+        spans: list[tuple[float, float, VoiceTier]] = []
+        for row in raw_spans:
+            if not isinstance(row, list) or len(row) != 3:
+                continue
+            start, end, tier_int = row
+            try:
+                tier = VoiceTier(int(tier_int))
+            except (ValueError, TypeError):
+                continue
+            try:
+                start_f, end_f = float(start), float(end)
+            except (TypeError, ValueError):
+                continue
+            if end_f < start_f:
+                continue
+            spans.append((start_f, end_f, tier))
+        budget = cls(
+            window_s=float(data.get("window_s", 600.0)),
+            budget_units=float(data.get("budget_units", 3.0)),
+            lookahead_s=float(data.get("lookahead_s", 15.0)),
+        )
+        budget._spans = spans
+        return budget
+
+    def save(self, path: Path) -> None:
+        """Atomic tmp+rename write so readers never see half-written JSON."""
+        import json
+        import os
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.to_dict(), sort_keys=True))
+        os.replace(tmp, path)
+
+    @classmethod
+    def load(cls, path: Path) -> IntelligibilityBudget:
+        """Read from disk; empty budget on missing/corrupt file.
+
+        Fail-safe: if the file doesn't exist or is corrupt, return a
+        fresh budget with default bounds. The director never sees a
+        half-loaded state that might silently permit an over-budget
+        tier.
+        """
+        import json
+
+        try:
+            data = json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return cls()
+        if not isinstance(data, dict):
+            return cls()
+        return cls.from_dict(data)
+
     def clamp_tier(self, tier: VoiceTier, now: float) -> VoiceTier:
         """Downshift ``tier`` until it fits remaining budget. Never below UNADORNED."""
         current = tier

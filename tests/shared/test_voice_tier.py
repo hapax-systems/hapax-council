@@ -556,6 +556,67 @@ class TestIntelligibilityBudget:
         with pytest.raises(ValueError, match="end_ts"):
             b.record(100.0, 50.0, VoiceTier.MEMORY)
 
+    def test_to_dict_roundtrip(self) -> None:
+        """Serialised budget reconstructs losslessly."""
+        b = IntelligibilityBudget(window_s=300.0, budget_units=1.5, lookahead_s=10.0)
+        b.record(0.0, 30.0, VoiceTier.MEMORY)
+        b.record(60.0, 90.0, VoiceTier.UNDERWATER)
+        data = b.to_dict()
+        reloaded = IntelligibilityBudget.from_dict(data)
+        assert reloaded.window_s == 300.0
+        assert reloaded.budget_units == 1.5
+        assert reloaded.lookahead_s == 10.0
+        # Consumed() matches before and after round-trip.
+        assert reloaded.consumed(now=100.0) == pytest.approx(b.consumed(now=100.0))
+
+    def test_save_and_load(self, tmp_path: Path) -> None:
+        """Atomic write + load yields an equivalent budget."""
+        from shared.voice_tier import VoiceTier as _VT
+
+        b = IntelligibilityBudget()
+        b.record(0.0, 60.0, _VT.GRANULAR_WASH)
+        path = tmp_path / "intelligibility.json"
+        b.save(path)
+        loaded = IntelligibilityBudget.load(path)
+        assert loaded.consumed(now=60.0) == pytest.approx(b.consumed(now=60.0))
+
+    def test_load_missing_file_returns_fresh(self, tmp_path: Path) -> None:
+        path = tmp_path / "nonexistent.json"
+        loaded = IntelligibilityBudget.load(path)
+        assert loaded.consumed(now=100.0) == 0.0
+        assert loaded.budget_units == 3.0  # default
+
+    def test_load_corrupt_file_returns_fresh(self, tmp_path: Path) -> None:
+        path = tmp_path / "corrupt.json"
+        path.write_text("{not valid json")
+        loaded = IntelligibilityBudget.load(path)
+        assert loaded.consumed(now=100.0) == 0.0
+
+    def test_load_non_dict_returns_fresh(self, tmp_path: Path) -> None:
+        """Top-level array (wrong shape) doesn't crash."""
+        path = tmp_path / "wrong-shape.json"
+        path.write_text("[1, 2, 3]")
+        loaded = IntelligibilityBudget.load(path)
+        assert loaded.budget_units == 3.0
+
+    def test_from_dict_drops_malformed_spans(self) -> None:
+        """Corrupt span entries are filtered without rejecting the whole budget."""
+        data = {
+            "window_s": 600.0,
+            "budget_units": 3.0,
+            "lookahead_s": 15.0,
+            "spans": [
+                [0.0, 60.0, 3],  # valid
+                "garbage",  # dropped
+                [0.0, 60.0, 99],  # tier out of range, dropped
+                [100.0, 50.0, 3],  # inverted, dropped
+                [0.0, 60.0],  # wrong length, dropped
+                [30.0, 90.0, 4],  # valid
+            ],
+        }
+        budget = IntelligibilityBudget.from_dict(data)
+        assert len(budget._spans) == 2
+
 
 class TestTierFromName:
     def test_canonical_names(self) -> None:
