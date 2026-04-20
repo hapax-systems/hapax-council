@@ -184,3 +184,42 @@ Live artifacts:
 
 Phases 2–4 (echo-cancel module, voice-embedding gate, regression
 smoke) tracked in `docs/superpowers/plans/2026-04-20-audio-pathways-audit-plan.md`.
+
+### Phase 2 + Phase 3 ship (2026-04-20)
+
+Phase 2 — PipeWire echo-cancel virtual source consumer:
+
+- `ecefe6a22` — feat(audio): #134 Phase 2 — PipeWire echo-cancel
+  virtual source consumer
+- `agents/hapax_daimonion/audio_input.py::resolve_source` walks the
+  operator-priority list, picks the first source `pw-cli` reports as
+  live; falls back to the raw Yeti pattern when echo_cancel_capture
+  is absent (degraded posture preserves daimonion bootability).
+- `agents/hapax_daimonion/config.py::DaimonionConfig.audio_input_source`
+  is now `list[str]`; legacy single-string form auto-wraps to a
+  1-element list with a deprecation warning (backward compat).
+- Live PipeWire conf at `config/pipewire/hapax-echo-cancel.conf`
+  (WebRTC AEC backend per §7 Q2 default; capture target = Yeti;
+  reference = default sink).
+
+Phase 3 — Voice-embedding ducking gate + metrics:
+
+- `047ab974c` — feat(audio): #134 Phase 3 — voice-embedding ducking
+  gate + metrics
+- `agents/hapax_daimonion/voice_gate.py::should_duck` composes the
+  decision: VAD-active + embedding match >= 0.75 → duck high-conf;
+  0.4–0.75 → duck low-conf with caveat; <0.4 → no duck (phantom
+  detected). Thresholds env-tunable per spec §6 line 124.
+- `shared/director_observability.py` adds 4 metric families:
+  `hapax_audio_ducking_triggered_total{reason}`,
+  `hapax_audio_phantom_vad_detected_total`,
+  `hapax_audio_echo_cancel_active`,
+  `hapax_audio_source_active{source_name}`.
+
+Phase 4 (regression smoke + Rode #133 hand-off) is operator-walked;
+the runbook at `docs/runbooks/audio-topology.md` already covers the
+Rode adapter wiring (see §9). The `voice_gate` decision helper
+unblocks Rode source-priority work — `audio_input_source` priority
+list extends naturally to
+`["echo_cancel_capture", "Rode_Wireless_Pro", "Yeti"]` once the
+Rode adapter publishes its source name to pw-cli.
