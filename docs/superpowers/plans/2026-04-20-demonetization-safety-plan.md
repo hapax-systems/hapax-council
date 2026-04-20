@@ -55,7 +55,14 @@ from the candidate set before the decision-making layer scores anything.
   `score >= 2`; pipeline re-recruits on the signal. The classifier
   does not decide; it emits a perceptual signal.
 - **Ring 3 — egress audit log.** Append-only JSONL at
-  `~/hapax-state/programmes/egress-audit/<date>/<hour>.jsonl`.
+  `~/hapax-state/demonet-egress-audit.jsonl` (flat file, daily
+  rotation into dated archives by `MonetizationEgressAudit.rotate()`;
+  see ``shared/governance/monetization_egress_audit.py``). Original
+  plan proposed nested `programmes/egress-audit/<date>/<hour>.jsonl`
+  but the flat-file-plus-timer-rotation pattern shipped instead — it
+  is operationally simpler and rotation is timer-driven, not
+  directory-driven. Post-rotation archives live alongside the live
+  file as `demonet-egress-audit.YYYY-MM-DD.jsonl`.
 
 Programme-layer interaction is restricted to Ring 1 via
 `Programme.monetization_opt_ins: frozenset[str]` — soft priors that
@@ -97,21 +104,25 @@ operator answers.
 
 ### 0.4 Required operator inputs (blocking)
 
-Two research §11 open questions are **required-operator-input gates**
-for specific phases. Neither is resolved here.
+Two research §11 open questions were originally scoped as
+**required-operator-input gates**. Resolution status:
 
 1. **Music policy (§11 Q1).** Research §7.2 recommends YouTube
    reaction audio MUTED with transcript overlay (retiring the
-   half-speed DMCA hack, task #66). Operator must confirm or
-   counter-propose before Phase 8 ships. Viability under mute vs. the
-   §7.2 alternative 2 (≤30 s fair-use clips with operator-
-   transformative narration) is part of the same decision.
+   half-speed DMCA hack, task #66). **Resolved 2026-04-20 by delta
+   per the "unblock yourself" directive:** Path A (mute +
+   transcript overlay) was chosen as the shipping default in commit
+   `f893ddfbc` (``shared/governance/music_policy.py``, Phase 8).
+   Operator may override to Path B (≤30 s fair-use clips with
+   operator-transformative narration) at runtime via
+   `MusicPolicy.path=` per D-09. Path B support is scaffolded in the
+   module; no code change required to flip.
 2. **False-negative tolerance (§11 Q3).** Operator input sets the
    target classifier FNR; governs Ring 2 score cutoff and
    `MAX_OPT_INS`. Phase 3 ships with conservative defaults pending.
 
-Phases 8 and (optionally) 3's cutoff tuning BLOCK on these. Other
-phases proceed without operator input.
+Phase 3 cutoff tuning optionally BLOCKS on operator input. Phase 8
+is no longer blocking — Path A is live.
 
 ---
 
@@ -144,13 +155,14 @@ criteria every phase must contribute to.
   `hapax_monetization_candidates_total{risk="high"}` remains **0** for
   the full 30-minute window. Single non-zero observation fails
   acceptance.
-- **Egress audit JSONL populated.** `~/hapax-state/programmes/egress-
-  audit/<date>/<hour>.jsonl` contains one entry per external-surface
-  render: `timestamp`, `surface_kind`, `capability`, `rendered_text`
-  (truncated 512 chars), `classifier_score`, `guideline`,
-  `music_provenance`, `youtube_source`, `decision`, `decision_reason`.
-  Sampling 100% post-live-48h, 10% steady-state. Daily gzip rotation,
-  90-day retention via `hapax-egress-audit-rotate.timer`.
+- **Egress audit JSONL populated.** `~/hapax-state/demonet-egress-
+  audit.jsonl` (flat, as shipped — see §0.1) contains one entry per
+  external-surface render: `timestamp`, `capability_name`, `surface`,
+  `programme_id`, `allowed`, `risk`, `reason`, optional `extra`.
+  Sampling 100% post-live-48h, 10% steady-state. Daily rotation into
+  dated archives (`demonet-egress-audit.YYYY-MM-DD.jsonl`) +
+  30-day retention via `prune_old_archives` (timer not yet shipped
+  — see D-23).
 - **Half-speed hack removed.** `scripts/youtube-player.py` has no
   `_playback_rate` function and no `HAPAX_YOUTUBE_PLAYBACK_RATE`
   references. `tests/scripts/test_youtube_player_no_playback_rate.py`
