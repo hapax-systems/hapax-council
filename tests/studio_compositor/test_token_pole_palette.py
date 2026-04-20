@@ -67,6 +67,14 @@ def _render_surface(active_package_getter) -> cairo.ImageSurface:
 
     Patches ``time.monotonic``, the ledger path, and the package
     resolver so the render is deterministic and palette-scoped.
+
+    Forces SPIRAL path mode regardless of the process-level
+    ``HAPAX_TOKEN_POLE_PATH`` (task #186 default flipped to
+    ``NAVEL_TO_CRANIUM``). The palette-routing contract this suite
+    pins is path-agnostic, but the glyph-centre and trail assertions
+    are coordinate-specific — they sample the spiral curve. Patching
+    the path-mode resolver is lower-churn than rewriting every test
+    to accept either coordinate system.
     """
     nonexistent_ledger = Path("/nonexistent/hapax-compositor/token-ledger.json")
     random.seed(0)
@@ -76,6 +84,7 @@ def _render_surface(active_package_getter) -> cairo.ImageSurface:
         patch.object(tp, "LEDGER_FILE", nonexistent_ledger),
         patch.object(tp.time, "monotonic", return_value=1_000_000.0),
         patch.object(tp, "get_active_package", active_package_getter),
+        patch.object(tp, "_resolve_path_mode", return_value=tp.PathMode.SPIRAL),
     ):
         source = tp.TokenPoleCairoSource()
         # Advance along the spiral so a trail + glyph exist to sample.
