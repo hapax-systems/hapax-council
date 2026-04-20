@@ -131,13 +131,22 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
     # Collect ALL capability records for batch indexing
     _all_records: list[CapabilityRecord] = []
 
-    # Speech production
+    # Speech production — Hapax TTS emission to livestream.
+    # Tagged medium-risk: speech_safety (shared/speech_safety.py) redacts
+    # slurs pre-TTS, persona constrains register, but the LLM remains
+    # the source of record for potentially monetization-eligible
+    # phrases. Programme monetization_opt_ins gates broadcast.
     _all_records.append(
         CapabilityRecord(
             name="speech_production",
             description=SPEECH_DESCRIPTION,
             daemon="hapax_daimonion",
-            operational=OperationalProperties(requires_gpu=True, medium="auditory"),
+            operational=OperationalProperties(
+                requires_gpu=True,
+                medium="auditory",
+                monetization_risk="medium",
+                risk_reason="LLM-generated speech; speech_safety filters slurs pre-TTS but LLM output is source-of-record. Programme opt-in gates broadcast surfaces.",
+            ),
         )
     )
 

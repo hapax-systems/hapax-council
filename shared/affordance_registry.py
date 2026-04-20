@@ -468,7 +468,11 @@ KNOWLEDGE_AFFORDANCES = [
         description=("Search the open web for current information and real-time knowledge"),
         daemon="discovery",
         operational=OperationalProperties(
-            latency_class="slow", requires_network=True, consent_required=True
+            latency_class="slow",
+            requires_network=True,
+            consent_required=True,
+            monetization_risk="medium",
+            risk_reason="Third-party web content; may contain brand-name / trademarked / copyrighted text. Requires Programme opt-in for broadcast surfaces.",
         ),
     ),
     CapabilityRecord(
@@ -476,7 +480,11 @@ KNOWLEDGE_AFFORDANCES = [
         description="Look up encyclopedic knowledge on a topic from Wikipedia",
         daemon="discovery",
         operational=OperationalProperties(
-            latency_class="slow", requires_network=True, consent_required=True
+            latency_class="slow",
+            requires_network=True,
+            consent_required=True,
+            monetization_risk="low",
+            risk_reason="Wikipedia text is CC-BY-SA licensed; monetization-safe for short excerpts but flag low for prudence.",
         ),
     ),
     CapabilityRecord(
@@ -488,6 +496,8 @@ KNOWLEDGE_AFFORDANCES = [
             requires_network=True,
             consent_required=True,
             medium="visual",
+            monetization_risk="high",
+            risk_reason="Open-web image search returns arbitrary third-party imagery; Content-ID fingerprint risk + potential graphic content. Blocked unconditionally from broadcast; operator must resolve images via a curated pipeline instead.",
         ),
     ),
 ]
@@ -513,7 +523,11 @@ SOCIAL_AFFORDANCES = [
         name="social.phone_media",
         description="Sense what media is currently playing on the phone",
         daemon="perception",
-        operational=OperationalProperties(latency_class="slow"),
+        operational=OperationalProperties(
+            latency_class="slow",
+            monetization_risk="medium",
+            risk_reason="Phone media metadata (song/podcast/video titles) may surface third-party copyrighted titles; broadcasting those titles is generally safe (fair use) but Programme should opt in for confidence.",
+        ),
     ),
     CapabilityRecord(
         name="social.sms_activity",
@@ -602,7 +616,11 @@ WORLD_AFFORDANCES = [
         description="Sense current news headlines for broad situational awareness",
         daemon="discovery",
         operational=OperationalProperties(
-            latency_class="slow", requires_network=True, consent_required=True
+            latency_class="slow",
+            requires_network=True,
+            consent_required=True,
+            monetization_risk="medium",
+            risk_reason="Third-party headlines may include brand-name / political / graphic content. Programme opt-in required for any broadcast surface.",
         ),
     ),
     CapabilityRecord(
@@ -724,7 +742,12 @@ CONTENT_AFFORDANCES = [
             " in the visual field"
         ),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="slow", medium="visual"),
+        operational=OperationalProperties(
+            latency_class="slow",
+            medium="visual",
+            monetization_risk="medium",
+            risk_reason="LLM-generated text on visible surface; passes speech_safety but Ring 2 classifier needed for full coverage. Programme opt-in governs broadcast surfaces.",
+        ),
     ),
     CapabilityRecord(
         name="content.waveform_viz",
