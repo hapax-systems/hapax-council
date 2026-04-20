@@ -326,10 +326,56 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
         / "impingement-cursor-daimonion-affordance.txt",
     )
 
+    # Vocal chain decay timer — elapsed real time since the last `decay()` call.
+    # Ticked on a monotonic clock inside the main loop (1 Hz target). The
+    # VocalChainCapability was previously dead code: instantiated in
+    # init_pipeline but never activated. Phase 1 wires both halves:
+    #   (a) `activate_from_impingement(imp)` on every impingement below
+    #   (b) `decay(elapsed_s)` on a 1 Hz cadence in this loop
+    import time as _voc_time
+
+    _last_vocal_decay_monotonic = _voc_time.monotonic()
+    _VOCAL_DECAY_INTERVAL_S = 1.0
+
     while daemon._running:
         try:
             _world_enabled = _world_routing_enabled()  # cache per poll cycle
+
+            # Vocal chain decay tick — runs at most once per second regardless of
+            # impingement volume. Skip entirely if MIDI output never opened
+            # (e.g. 24c MIDI port absent at boot) so we don't churn counters
+            # with no-op CC writes.
+            _now_mono = _voc_time.monotonic()
+            if _now_mono - _last_vocal_decay_monotonic >= _VOCAL_DECAY_INTERVAL_S:
+                _elapsed = _now_mono - _last_vocal_decay_monotonic
+                _last_vocal_decay_monotonic = _now_mono
+                _vocal_chain = getattr(daemon, "_vocal_chain", None)
+                if (
+                    _vocal_chain is not None
+                    and getattr(_vocal_chain._midi, "is_open", lambda: True)()
+                ):
+                    try:
+                        _vocal_chain.decay(_elapsed)
+                    except Exception:
+                        log.warning("Vocal chain decay failed", exc_info=True)
+
             for imp in consumer.read_new():
+                # Vocal chain activation — drives Evil Pet + S-4 CC params
+                # from impingement narratives. Reads the capability's 9-dim
+                # table (vocal_chain.DIMENSIONS) and emits MIDI CCs via the
+                # Studio 24c MIDI 1 port configured in DaimonionConfig.
+                # Fail-open: capability may be absent if init_pipeline is
+                # exercising a partial daemon (tests, etc.).
+                _vocal_chain = getattr(daemon, "_vocal_chain", None)
+                if (
+                    _vocal_chain is not None
+                    and getattr(_vocal_chain._midi, "is_open", lambda: True)()
+                ):
+                    try:
+                        _vocal_chain.activate_from_impingement(imp)
+                    except Exception:
+                        log.warning("Vocal chain activation failed", exc_info=True)
+
                 try:
                     candidates = await asyncio.to_thread(daemon._affordance_pipeline.select, imp)
                     for c in candidates:

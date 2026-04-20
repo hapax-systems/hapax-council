@@ -68,3 +68,13 @@ class MidiOutput:
         if self._port is not None:
             self._port.close()
             self._port = None
+
+    def is_open(self) -> bool:
+        """Return True if the MIDI port is open and accepting messages.
+
+        False means either the port has never been opened yet, or a prior
+        open attempt latched off (port absent). Callers (the impingement
+        consumer loop) use this to skip activation entirely when the
+        hardware isn't connected — no noisy log spam, no pointless work.
+        """
+        return self._port is not None and not self._init_failed
