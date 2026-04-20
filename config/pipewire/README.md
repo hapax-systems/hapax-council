@@ -148,6 +148,29 @@ Route S-4 USB output through the loopback by selecting **S-4 Content**
 as the sink target in pavucontrol or via a wireplumber rule pinning
 `alsa_input.usb-Elektron_*` → `hapax-s4-content`.
 
+## S-4 USB device profile pin (dual-fx-routing Phase 1)
+
+`s4-usb-sink.conf` is a wireplumber-style `monitor.alsa.rules` block
+that pins the Elektron Torso S-4 USB audio device to its `pro-audio`
+ALSA profile. Without this rule, the default `analog-stereo` profile
+collapses everything to a single stereo pair and the dual-FX router
+(`agents/hapax_daimonion/voice_path.py`) cannot address S-4 tracks
+1-4 independently.
+
+Install + verify (with the S-4 plugged in):
+
+```fish
+cp config/pipewire/s4-usb-sink.conf ~/.config/pipewire/pipewire.conf.d/
+systemctl --user restart pipewire pipewire-pulse wireplumber
+pactl list short cards | grep -i torso
+pactl list cards | grep -A 3 'Active Profile' | grep -i 'pro-audio'
+```
+
+Complementary to `hapax-s4-loopback.conf` (evilpet-s4-routing Phase 1):
+that conf wires the S-4 stereo content into the livestream tap;
+this conf exposes the underlying device's pro-audio capability so
+the router has individually-addressable destinations.
+
 ## Troubleshooting
 
 - **Sink does not appear after install:** verify `pipewire.service` and
