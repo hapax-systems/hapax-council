@@ -96,7 +96,9 @@ def pick_substitute(offending: str) -> str:
     # strength is not required; the only goal is replay-stability.
     import hashlib
 
-    digest = hashlib.md5(offending.casefold().encode("utf-8")).digest()  # noqa: S324 — not for security
+    digest = hashlib.md5(  # noqa: S324 — not for security
+        offending.casefold().encode("utf-8"), usedforsecurity=False
+    ).digest()
     idx = digest[0] % len(REDACTION_SUBSTITUTE_POOL)
     return REDACTION_SUBSTITUTE_POOL[idx]
 
