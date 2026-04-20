@@ -209,9 +209,23 @@ Currently NEEDS_RESEARCH; will re-rank as READY when alpha returns the spec disp
 
 **Files to touch:** `docs/superpowers/plans/2026-04-20-demonetization-safety-plan.md` (§0.1 + §0.4); `~/dotfiles/workspace-CLAUDE.md` (Shared Infrastructure section).
 
-### §4.6 D-17 — Wire `quiet_frame` into production caller (WSJF 7.0) — PARTIAL
+### §4.6 D-17 — Wire `quiet_frame` into production caller (WSJF 7.0) — PARTIAL + SPEC-MISMATCH
 
 **STATE 2026-04-20T17:30Z:** AUDIT §7.1 partially closed by `31d32a29c` (CLI shipped). `Grep quiet_frame` returns 2 production sites (CLI + module). Director_loop wire pending; **AUTHORIZED §10.9 as alpha-PR**. Idempotency: `activate_quiet_frame()` is dedup-safe per D-20 (`a6ef02fbe`); deactivate-when-not-active returns gracefully per CLI exit-code 1 contract.
+
+**STATE 2026-04-20T18:00Z (alpha investigation):** ATTEMPTED to ship director_loop wire; FOUND ARCHITECTURAL MISMATCH. AUDIT spec assumed `agents/studio_compositor/director_loop.py` knows about MonetizationRiskGate — verified incorrect: director_loop has zero references to monetization_safety / risk_gate. The gate is called via `shared/governance/ring2_gate_helper.ring2_assess()` from `shared/affordance_pipeline.py::AffordancePipeline.select()`. Director makes broadcast/composition decisions but does not directly consult the risk gate.
+
+**Re-spec required.** Two architecturally-clean wire options:
+
+1. **Observer hook in ring2_gate_helper.** Wrap `ring2_assess()` so when `RiskAssessment.allowed=False`, fire `activate_quiet_frame(reason=f"risk-gate blocked {capability}")`. Requires transition-detection (HISTORY) for de-activation: track BLOCKED→ALLOWED edges. Module-level state with lock.
+
+2. **Subscribe via monetization_egress_audit.** The audit already records every gate decision. Add a side-effect hook: when audit records a BLOCKED record, also activate quiet_frame (with cooldown). Cleanest separation per gate's "no I/O in hot path" docstring (`monetization_safety.py:130-132`). Same transition-detection requirement.
+
+**Why a wire wasn't shipped this turn:** Both options require understanding the Programme-store → broadcast-loop feedback path. The studio compositor / director / broadcast loop must READ the Programme store for `activate_quiet_frame()` to actually change broadcast behavior — otherwise it's a no-op store mutation. That feedback wire may not exist; needs verification before downstream wiring is meaningful.
+
+**Recommended next research dispatch:** scope a 30-min investigation into "what consumes ProgrammePlanStore.active() — i.e. when quiet_frame is ACTIVE, what changes operationally?" If nothing, D-17 has a hidden prerequisite (Programme-store consumer in broadcast loop). If something, ship Option 2 (egress-audit observer).
+
+**Files to NOT touch this iteration:** `agents/studio_compositor/director_loop.py` (architectural mismatch); pick a re-spec'd entry point above only after the consumer-side wire is verified to exist.
 
 **Action:** AUDIT §7.1 — `shared/governance/quiet_frame.py` ships with zero production callers. Wire two entry points:
 
