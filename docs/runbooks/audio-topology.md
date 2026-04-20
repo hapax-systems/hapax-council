@@ -264,6 +264,66 @@ systemctl --user enable hapax-rode-wireless-adapter.service
 and remove the tag file — the resolver falls back to Yeti on missing
 tag, so no daimonion state is affected.
 
+### 9.1 Source priority and the two-layer resolver (audit-pathways T4.3)
+
+Two layers cooperate to pick the live capture source. Documented here
+because they look adjacent but are NOT the same priority system —
+operator confusion about why a Rode plug-in didn't immediately swap a
+running pw-cat is almost always the wrong layer being inspected.
+
+**Layer A — `DEFAULT_SOURCE_PRIORITY` (`agents/hapax_daimonion/audio_input.py`):**
+
+A static, ordered list of pw-cli node names the daimonion's main
+capture path tries in order. First match in the live PipeWire graph
+wins. Current default:
+
+```python
+DEFAULT_SOURCE_PRIORITY = [
+    "echo_cancel_capture",                                           # AEC virtual source
+    "alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo",  # raw Yeti fallback
+]
+```
+
+The Rode is NOT in this list because the AEC source is the
+authoritative voice path when present (it consumes Yeti underneath +
+ducks against the playback monitor). Plan §T4.3 recommended extending
+to `["echo_cancel_capture", "Rode_Wireless_Pro", "Yeti"]`; this is a
+follow-on if/when the Rode is enrolled into the AEC source's capture
+chain (currently, AEC is hard-wired to Yeti via the conf in
+`config/pipewire/hapax-echo-cancel.conf`).
+
+**Layer B — `voice-source.txt` tag file (`stt_source_resolver.py`):**
+
+A live tag the rode_wireless_adapter writes (`rode` | `yeti` |
+`contact-mic`) every 5 s based on PipeWire enumeration. The STT
+resolver reads this file (5 s cache) to override the static priority
+when the Rode is physically present. This layer is for
+**display + STT routing**, not for the capture pipeline itself.
+
+**Rule of thumb:** if you want the daimonion to use the Rode for STT,
+plug it in and verify `voice-source.txt` flips. If you want the AEC
+echo-cancel chain to use the Rode as its noisy-mic input, you have to
+edit `config/pipewire/hapax-echo-cancel.conf` and restart the
+PipeWire user units — the chain does not dynamically swap capture
+targets.
+
+### 9.2 Bayesian presence cross-check
+
+The presence engine (`agents/hapax_daimonion/presence_engine.py`)
+fuses heterogeneous signals into a single posterior. Rode presence
+is currently a **secondary** indicator (the Rode being on-body is
+strong evidence of operator presence) but the Rode-RSSI sub-signal
+is NOT yet wired into `PresenceEngine`. Open follow-on:
+
+- `Rode_RSSI` from `pw-cli list-objects | grep rode` — likelihood
+  ratio TBD (operator empirical)
+- Cross-check with `ir_body_heat` (already wired): when both fire,
+  bump posterior; when Rode says "present" but IR says "no body
+  heat for 30s," log a contradiction (operator may have left the
+  Rode at the desk while stepping away).
+
+Wire-up is an open task; T4.3 names it as the audit-pathways follow-on.
+
 ## 10. Related
 
 - Spec: `docs/superpowers/specs/2026-04-18-audio-pathways-audit-design.md`
