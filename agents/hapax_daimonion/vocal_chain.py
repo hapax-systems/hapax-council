@@ -18,6 +18,55 @@ from agents._impingement import Impingement
 log = logging.getLogger(__name__)
 
 
+class _VocalChainMetrics:
+    """Prometheus counters for vocal-chain CC activity. Fail-soft on registry errors."""
+
+    def __init__(self) -> None:
+        self._cc_sent: Any = None
+        self._activation: Any = None
+        try:
+            from prometheus_client import REGISTRY, Counter
+        except ImportError:
+            return
+        for name, doc, labels, attr in (
+            (
+                "hapax_vocal_chain_cc_sent_total",
+                "MIDI CCs emitted by vocal chain per device and dimension",
+                ["device", "dimension"],
+                "_cc_sent",
+            ),
+            (
+                "hapax_vocal_chain_activation_total",
+                "Dimension activations by source family",
+                ["dimension", "source"],
+                "_activation",
+            ),
+        ):
+            try:
+                setattr(self, attr, Counter(name, doc, labels))
+            except ValueError:
+                setattr(self, attr, REGISTRY._names_to_collectors.get(name))  # noqa: SLF001
+
+    def inc_cc(self, device: str, dimension: str) -> None:
+        if self._cc_sent is None:
+            return
+        try:
+            self._cc_sent.labels(device=device, dimension=dimension).inc()
+        except Exception:
+            log.debug("vocal_chain cc counter inc failed", exc_info=True)
+
+    def inc_activation(self, dimension: str, source: str) -> None:
+        if self._activation is None:
+            return
+        try:
+            self._activation.labels(dimension=dimension, source=source).inc()
+        except Exception:
+            log.debug("vocal_chain activation counter inc failed", exc_info=True)
+
+
+_metrics = _VocalChainMetrics()
+
+
 @dataclass(frozen=True)
 class CCMapping:
     """Maps an activation level to a specific MIDI CC on a specific device."""
@@ -274,6 +323,7 @@ class VocalChainCapability:
             return
         self._levels[dimension_name] = max(0.0, min(1.0, level))
         self._activation_level = max(self._levels.values())
+        _metrics.inc_activation(dimension_name, impingement.source.split(".", 1)[0] or "unknown")
         self._send_dimension_cc(dimension_name)
 
     def get_dimension_level(self, dimension_name: str) -> float:
@@ -310,3 +360,4 @@ class VocalChainCapability:
             value = cc_value_from_level(level, mapping.breakpoints)
             channel = self._evil_pet_ch if mapping.device == "evil_pet" else self._s4_ch
             self._midi.send_cc(channel=channel, cc=mapping.cc, value=value)
+            _metrics.inc_cc(mapping.device, dimension_name)
