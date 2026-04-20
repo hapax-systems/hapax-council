@@ -1,0 +1,142 @@
+#!/usr/bin/env python
+"""hapax-quiet-frame — operator CLI for the demonet quiet-frame programme.
+
+Activates or deactivates the safety-hold programme shipped in
+`shared.governance.quiet_frame`. When active, the quiet frame blocks
+all medium-risk capabilities and caps voice tier at a quiet band —
+operator intervention after a Content-ID strike or ambiguous guideline
+call.
+
+Usage:
+
+    hapax-quiet-frame activate             # default 15-min duration
+    hapax-quiet-frame activate --duration 3600 --reason 'CID hit'
+    hapax-quiet-frame deactivate
+    hapax-quiet-frame status
+
+Exit codes:
+    0 — action succeeded (or status printed)
+    1 — action failed (e.g. deactivate when not active)
+    2 — usage / argument error
+
+Reference:
+    docs/superpowers/handoff/2026-04-20-delta-wsjf-reorganization.md §4.6 D-17
+    shared/governance/quiet_frame.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+# Ensure the repo root is on sys.path when invoked as a script.
+_REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO))
+
+from shared.governance.quiet_frame import (  # noqa: E402
+    QUIET_FRAME_DEFAULT_DURATION_S,
+    QUIET_FRAME_PROGRAMME_ID,
+    activate_quiet_frame,
+    deactivate_quiet_frame,
+)
+from shared.programme import ProgrammeStatus  # noqa: E402
+from shared.programme_store import ProgrammePlanStore  # noqa: E402
+
+
+def _resolve_store(args: argparse.Namespace) -> ProgrammePlanStore:
+    """Honour --store-path override; else default_store()."""
+    if getattr(args, "store_path", None):
+        return ProgrammePlanStore(path=Path(args.store_path))
+    return ProgrammePlanStore()
+
+
+def cmd_activate(args: argparse.Namespace) -> int:
+    store = _resolve_store(args)
+    programme = activate_quiet_frame(
+        store,
+        duration_s=args.duration,
+        reason=args.reason,
+    )
+    print(
+        f"quiet-frame ACTIVE id={programme.programme_id} "
+        f"duration={programme.planned_duration_s:.0f}s "
+        f"started_at={programme.actual_started_at}"
+    )
+    if args.reason:
+        print(f"reason: {args.reason}")
+    return 0
+
+
+def cmd_deactivate(args: argparse.Namespace) -> int:
+    store = _resolve_store(args)
+    programme = deactivate_quiet_frame(store)
+    if programme is None:
+        print("quiet-frame was not active; no change", file=sys.stderr)
+        return 1
+    print(f"quiet-frame COMPLETED id={programme.programme_id} ended_at={programme.actual_ended_at}")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    store = _resolve_store(args)
+    programme = store.get(QUIET_FRAME_PROGRAMME_ID)
+    if programme is None:
+        print("quiet-frame: never activated")
+        return 0
+    active_now = programme.status == ProgrammeStatus.ACTIVE
+    print(f"quiet-frame: status={programme.status.value}")
+    print(f"  planned_duration_s = {programme.planned_duration_s}")
+    if programme.actual_started_at:
+        print(f"  started_at         = {programme.actual_started_at}")
+    if programme.actual_ended_at:
+        print(f"  ended_at           = {programme.actual_ended_at}")
+    print(f"  active_now         = {active_now}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="hapax-quiet-frame",
+        description="Activate / deactivate the demonet quiet-frame programme",
+    )
+    p.add_argument(
+        "--store-path",
+        type=str,
+        default=None,
+        help="Override ProgrammePlanStore path (default: ~/hapax-state/programmes.jsonl)",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_activate = sub.add_parser("activate", help="Engage the quiet frame")
+    p_activate.add_argument(
+        "--duration",
+        type=float,
+        default=QUIET_FRAME_DEFAULT_DURATION_S,
+        help=f"Duration in seconds (default {QUIET_FRAME_DEFAULT_DURATION_S})",
+    )
+    p_activate.add_argument(
+        "--reason",
+        type=str,
+        default="",
+        help="Operator-provided rationale (Content-ID hit, guideline ambiguity, etc.)",
+    )
+    p_activate.set_defaults(func=cmd_activate)
+
+    p_deactivate = sub.add_parser("deactivate", help="Release the quiet frame")
+    p_deactivate.set_defaults(func=cmd_deactivate)
+
+    p_status = sub.add_parser("status", help="Report current quiet-frame state")
+    p_status.set_defaults(func=cmd_status)
+
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
