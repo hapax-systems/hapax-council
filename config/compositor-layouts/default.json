@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "description": "Default studio compositor layout \u2014 post-epic operator defaults. Reverie upper-right, Vitruvian Man (token_pole) upper-left, album lower-left, chat stats (stream_overlay) lower-right. These assignments are a starting point; Hapax content programming ultimately drives which sources feed which quadrants via the affordance pipeline + command registry. Phase 4/5 legibility surfaces added (activity_header, stance_indicator, chat_keyword_legend, grounding_provenance_ticker, captions_strip) per volitional-director epic \u00a73.5.",
+  "description": "Default studio compositor layout \u2014 post-epic operator defaults. Reverie upper-right, Vitruvian Man (token_pole) upper-left, album lower-left, chat stats (stream_overlay) lower-right. These assignments are a starting point; Hapax content programming ultimately drives which sources feed which quadrants via the affordance pipeline + command registry. Phase 4/5 legibility surfaces added (activity_header, stance_indicator, chat_keyword_legend, grounding_provenance_ticker) per volitional-director epic \u00a73.5. Captions ward removed 2026-04-20 per operator (no captions on broadcast).",
   "sources": [
     {
       "id": "token_pole",
@@ -129,21 +129,6 @@
       "tags": [
         "legibility",
         "research"
-      ]
-    },
-    {
-      "id": "captions",
-      "kind": "cairo",
-      "backend": "cairo",
-      "params": {
-        "class_name": "CaptionsCairoSource",
-        "natural_w": 1920,
-        "natural_h": 120
-      },
-      "update_cadence": "rate",
-      "rate_hz": 5.0,
-      "tags": [
-        "legibility"
       ]
     },
     {
@@ -330,24 +315,6 @@
       "effect_chain": [],
       "blend_mode": "over",
       "z_order": 10,
-      "update_cadence": "always"
-    },
-    {
-      "id": "captions_strip",
-      "geometry": {
-        "kind": "rect",
-        "x": 40,
-        "y": 930,
-        "w": 1840,
-        "h": 110,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 20,
       "update_cadence": "always"
     },
     {
@@ -665,14 +632,6 @@
       "surface": "grounding-ticker-bl",
       "transform": {},
       "opacity": 1.0,
-      "per_assignment_effects": [],
-      "non_destructive": false
-    },
-    {
-      "source": "captions",
-      "surface": "captions_strip",
-      "transform": {},
-      "opacity": 0.9,
       "per_assignment_effects": [],
       "non_destructive": false
     },
