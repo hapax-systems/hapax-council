@@ -147,12 +147,24 @@ class ProgrammeConstraintEnvelope(BaseModel):
 
     @field_validator("capability_bias_positive")
     @classmethod
-    def _positive_bias_at_least_one(cls, v: dict[str, float]) -> dict[str, float]:
+    def _positive_bias_in_band(cls, v: dict[str, float]) -> dict[str, float]:
+        # Audit B3 / Medium #18: positive bias is clamped to [1.0, 5.0].
+        # The lower bound is the architectural axiom (positive bias is a
+        # MULTIPLIER, never an attenuator — that's negative's job). The
+        # upper bound prevents saturation: a 5x boost is "very strong
+        # soft prior" without dominating the score and reducing the
+        # programme to a hard whitelist.
         for name, mult in v.items():
             if not math.isfinite(mult) or mult < 1.0:
                 raise ValueError(
                     f"capability_bias_positive[{name!r}]={mult!r} — must be >= 1.0. "
                     "Values below 1.0 belong in capability_bias_negative."
+                )
+            if mult > 5.0:
+                raise ValueError(
+                    f"capability_bias_positive[{name!r}]={mult!r} — must be <= 5.0. "
+                    "Soft priors are bounded multipliers; a value above 5.0 saturates "
+                    "the score and reduces the programme to a hard whitelist."
                 )
         return v
 

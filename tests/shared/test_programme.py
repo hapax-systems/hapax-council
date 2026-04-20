@@ -87,6 +87,21 @@ class TestConstraintEnvelopeSoftPriors:
         with pytest.raises(ValueError):
             ProgrammeConstraintEnvelope(capability_bias_positive={"cap": float("inf")})
 
+    def test_positive_bias_accepted_up_to_five(self) -> None:
+        """Audit B3 / Medium #18: positive bias clamped to [1.0, 5.0]."""
+        env = ProgrammeConstraintEnvelope(capability_bias_positive={"strong": 5.0})
+        assert env.capability_bias_positive == {"strong": 5.0}
+
+    def test_positive_bias_above_five_rejected(self) -> None:
+        """Audit B3 / Medium #18: 5.1× saturates the score and reduces
+        the soft prior to a de-facto whitelist."""
+        with pytest.raises(ValueError, match="<= 5.0"):
+            ProgrammeConstraintEnvelope(capability_bias_positive={"saturating": 5.1})
+
+    def test_positive_bias_far_above_five_rejected(self) -> None:
+        with pytest.raises(ValueError, match="<= 5.0"):
+            ProgrammeConstraintEnvelope(capability_bias_positive={"saturating": 1000.0})
+
 
 class TestConstraintEnvelopeOtherPriors:
     def test_ward_emphasis_rate_non_negative(self) -> None:
@@ -143,7 +158,9 @@ class TestBiasComposition:
         """The architectural axiom: no envelope can strictly exclude a capability."""
         env = ProgrammeConstraintEnvelope(
             capability_bias_negative={"rarely_used": 0.01},
-            capability_bias_positive={"preferred": 10.0},
+            # Audit B3 / Medium #18: positive bias clamped to [1.0, 5.0]; use
+            # 5.0 as the strongest legal preference.
+            capability_bias_positive={"preferred": 5.0},
         )
         assert env.expands_candidate_set("rarely_used") is True
         assert env.expands_candidate_set("preferred") is True
