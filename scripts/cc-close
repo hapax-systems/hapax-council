@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]
+#
+# Close out a vault cc-task: rewrite frontmatter (status: done by
+# default; completed_at: now), move the note from active/ to closed/,
+# and clear the session's claim file.
+#
+# Symlink to ~/.local/bin/cc-close for quick access:
+#   ln -sf ~/projects/hapax-council/scripts/cc-close ~/.local/bin/cc-close
+
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]" >&2
+  exit 1
+fi
+
+task_id="$1"; shift
+pr=""
+final_status="done"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --pr) pr="$2"; shift 2 ;;
+    --status) final_status="$2"; shift 2 ;;
+    *) echo "cc-close: unknown arg '$1'" >&2; exit 1 ;;
+  esac
+done
+
+case "$final_status" in
+  done|withdrawn|superseded) ;;
+  *) echo "cc-close: --status must be done, withdrawn, or superseded (got '$final_status')" >&2; exit 1 ;;
+esac
+
+role="${CLAUDE_ROLE:-}"
+
+vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+note_path=""
+for candidate in "$vault_root/active/$task_id-"*.md; do
+  if [[ -f "$candidate" ]]; then
+    note_path="$candidate"
+    break
+  fi
+done
+if [[ -z "$note_path" ]]; then
+  echo "cc-close: task '$task_id' not in $vault_root/active/ (already closed?)" >&2
+  exit 2
+fi
+
+if ! command -v python3 &>/dev/null; then
+  echo "cc-close: python3 missing; cannot rewrite frontmatter" >&2
+  exit 3
+fi
+
+python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" <<'PYEOF'
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:])
+text = path.read_text(encoding="utf-8")
+now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)
+text = re.sub(
+    r"^completed_at:.*$", f"completed_at: {now}", text, count=1, flags=re.MULTILINE
+)
+text = re.sub(
+    r"^updated_at:.*$", f"updated_at: {now}", text, count=1, flags=re.MULTILINE
+)
+if pr:
+    text = re.sub(r"^pr:.*$", f"pr: {pr}", text, count=1, flags=re.MULTILINE)
+log_line = f"- {now} {role or 'session'} closed as {final_status}"
+if pr:
+    log_line += f" (PR #{pr})"
+log_line += " (cc-close)\n"
+text = text.replace("## Session log\n", f"## Session log\n{log_line}", 1)
+
+# Move from active/ to closed/.
+new_path = path.parent.parent / "closed" / path.name
+new_path.parent.mkdir(parents=True, exist_ok=True)
+tmp = new_path.with_suffix(new_path.suffix + ".tmp")
+tmp.write_text(text, encoding="utf-8")
+tmp.replace(new_path)
+path.unlink()
+print(f"cc-close: moved '{task_id}' to closed/, status={final_status}")
+PYEOF
+
+# Clear the claim file if it points at this task.
+if [[ -n "$role" ]]; then
+  claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+  if [[ -f "$claim_file" ]] && [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
+    rm -f "$claim_file"
+    echo "cc-close: cleared claim file for role '$role'"
+  fi
+fi

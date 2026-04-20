@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# cc-claim <task_id>
+#
+# Claim a vault cc-task for the current session. Atomic: rewrites the
+# task note frontmatter (status: offered → claimed; assigned_to:
+# unassigned → $CLAUDE_ROLE; claimed_at: now), then writes the
+# session's claim file at ~/.cache/hapax/cc-active-task-{role}.
+#
+# After this, the next file-mutating tool call passes through the
+# cc-task-gate hook (which auto-transitions claimed → in_progress).
+#
+# Operator can also pre-claim a task by hand-editing the frontmatter
+# in Obsidian; this script just adds the claim file the hook reads.
+#
+# Symlink to ~/.local/bin/cc-claim for quick access:
+#   ln -sf ~/projects/hapax-council/scripts/cc-claim ~/.local/bin/cc-claim
+
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: cc-claim <task_id>" >&2
+  exit 1
+fi
+
+task_id="$1"
+role="${CLAUDE_ROLE:-}"
+if [[ -z "$role" ]]; then
+  echo "cc-claim: CLAUDE_ROLE env var not set" >&2
+  exit 1
+fi
+
+vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+note_path=""
+for candidate in "$vault_root/active/$task_id-"*.md; do
+  if [[ -f "$candidate" ]]; then
+    note_path="$candidate"
+    break
+  fi
+done
+if [[ -z "$note_path" ]]; then
+  echo "cc-claim: task '$task_id' not found in $vault_root/active/" >&2
+  echo "browse offered tasks: $vault_root/_dashboard/cc-offered.md" >&2
+  exit 2
+fi
+
+if ! command -v python3 &>/dev/null; then
+  echo "cc-claim: python3 missing; cannot rewrite frontmatter" >&2
+  exit 3
+fi
+
+# Verify status is offered + assigned_to is unassigned, then transition.
+python3 - "$note_path" "$role" "$task_id" <<'PYEOF'
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path, role, task_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+text = path.read_text(encoding="utf-8")
+now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+# Sanity: bail if status isn't offered (operator may have already claimed it
+# manually, or it's in_progress from another session).
+status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
+if status_match and status_match.group(1) not in ("offered",):
+    print(
+        f"cc-claim: refusing to claim '{task_id}' — current status is '{status_match.group(1)}', not 'offered'",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+
+assigned_match = re.search(r"^assigned_to:\s*(\S+)$", text, flags=re.MULTILINE)
+if assigned_match and assigned_match.group(1) not in ("unassigned",):
+    print(
+        f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_match.group(1)}'",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+
+text = re.sub(r"^status:.*$", "status: claimed", text, count=1, flags=re.MULTILINE)
+text = re.sub(
+    r"^assigned_to:.*$", f"assigned_to: {role}", text, count=1, flags=re.MULTILINE
+)
+text = re.sub(
+    r"^claimed_at:.*$", f"claimed_at: {now}", text, count=1, flags=re.MULTILINE
+)
+text = re.sub(
+    r"^updated_at:.*$", f"updated_at: {now}", text, count=1, flags=re.MULTILINE
+)
+text = text.replace(
+    "## Session log\n",
+    f"## Session log\n- {now} {role} claimed (cc-claim)\n",
+    1,
+)
+
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text(text, encoding="utf-8")
+tmp.replace(path)
+print(f"cc-claim: claimed task '{task_id}' for role '{role}'")
+PYEOF
+
+# Write the per-role claim file the hook reads.
+mkdir -p "$HOME/.cache/hapax"
+echo "$task_id" > "$HOME/.cache/hapax/cc-active-task-$role"
+echo "cc-claim: wrote ~/.cache/hapax/cc-active-task-$role"
