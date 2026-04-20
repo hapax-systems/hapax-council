@@ -4,8 +4,12 @@ All camera roles, resolutions, aliases, and classification live here.
 Consumers import from this module rather than hardcoding camera lists.
 
 Camera classes:
-  brio   — Logitech Brio 4K, 1920x1080 @ 30fps, high-quality person sensing
+  brio   — Logitech Brio 4K, 1280x720 @ 30fps, high-quality person sensing
   c920   — Logitech C920, 1280x720, environment/object sensing
+
+All cameras are pinned at 720p30 MJPEG. USB 2.0 isoc bandwidth at 1080p
+saturates a host controller with more than one UVC device — see
+docs/research/2026-04-14-brio-operator-h4-closeout-usb-topology-verdict.md.
 
 With 6 cameras (3 Brio + 3 C920), the system covers multiple perspectives
 of the workspace. Any Brio-class camera can run person enrichment classifiers
@@ -36,18 +40,19 @@ class CameraSpec:
 # ── Camera registry ───────────────────────────────────────────────────
 
 CAMERAS: tuple[CameraSpec, ...] = (
-    # Brio cameras — high-res, person enrichment capable
+    # Brio cameras — 720p30 MJPEG (USB 2.0 isoc budget constraint),
+    # person enrichment capable
     CameraSpec(
-        "brio-operator", "operator", 1920, 1080, "brio", True, position=(1.5, 0.8, 1.2), yaw_deg=180
+        "brio-operator", "operator", 1280, 720, "brio", True, position=(1.5, 0.8, 1.2), yaw_deg=180
     ),
     CameraSpec(
-        "brio-room", "room-brio", 1920, 1080, "brio", True, position=(0.0, 3.0, 1.5), yaw_deg=90
+        "brio-room", "room-brio", 1280, 720, "brio", True, position=(0.0, 3.0, 1.5), yaw_deg=90
     ),
     CameraSpec(
         "brio-synths",
         "synths-brio",
-        1920,
-        1080,
+        1280,
+        720,
         "brio",
         True,
         position=(3.0, 2.0, 1.8),
@@ -131,8 +136,13 @@ def resolve_role(camera: str) -> str:
 
 
 def resolution(camera: str) -> tuple[int, int]:
-    """Get resolution for a camera by short or full name. Defaults to 1920x1080."""
-    return RESOLUTIONS.get(camera, (1920, 1080))
+    """Get resolution for a camera by short or full name. Defaults to 1280x720.
+
+    1080p default is forbidden — USB 2.0 isoc bandwidth cannot
+    accommodate multiple UVC devices at 1080p on the same host
+    controller. See module docstring.
+    """
+    return RESOLUTIONS.get(camera, (1280, 720))
 
 
 def can_enrich_persons(camera: str) -> bool:

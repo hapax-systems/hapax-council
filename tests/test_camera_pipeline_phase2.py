@@ -107,6 +107,29 @@ class TestCameraPipelineConstruction:
         assert cam.is_playing() is False
 
 
+class TestPipelineManagerBandwidthGuard:
+    def test_build_rejects_1080p_spec(self, gst):
+        from agents.studio_compositor.pipeline_manager import PipelineManager
+
+        Gst, GLib = gst
+        good = _make_spec("cam-ok", width=1280, height=720)
+        bad = _make_spec("cam-1080p", width=1920, height=1080)
+        pm = PipelineManager(specs=[good, bad], gst=Gst, glib=GLib, fps=30)
+        with pytest.raises(ValueError, match="exceeds 720p"):
+            pm.build()
+
+    def test_build_accepts_720p_specs(self, gst):
+        from agents.studio_compositor.pipeline_manager import PipelineManager
+
+        Gst, GLib = gst
+        specs = [_make_spec("cam-720p", width=1280, height=720)]
+        pm = PipelineManager(specs=specs, gst=Gst, glib=GLib, fps=30)
+        try:
+            pm.build()  # must not raise
+        finally:
+            pm.stop()
+
+
 class TestPipelineManagerSwap:
     def test_build_with_missing_devices_yields_offline(self, gst):
         from agents.studio_compositor.pipeline_manager import PipelineManager

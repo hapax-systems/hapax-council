@@ -63,8 +63,15 @@ class CameraStateMachine:
     States: HEALTHY -> DEGRADED -> OFFLINE -> RECOVERING -> HEALTHY
             with escalation to DEAD after MAX_CONSECUTIVE_FAILURES.
 
-    Exponential backoff: delay(n) = min(60, 2^n). Reset on RecoverySucceeded
-    or DeviceAdded. Operator-only exit from DEAD via OperatorRearm.
+    Exponential backoff: delay(n) = min(60, 2^n). The failure counter
+    increments on any failure path (RECOVERY_FAILED, mid-stream
+    PIPELINE_ERROR / FRAME_FLOW_STALE / WATCHDOG_FIRED) and resets only
+    on operator action (OPERATOR_FORCE_RECONNECT, DEVICE_ADDED,
+    OPERATOR_REARM) or sustained frame flow (FRAME_FLOW_OBSERVED while
+    HEALTHY). RECOVERY_SUCCEEDED alone does NOT reset — GStreamer can
+    reach PLAYING then fail on the first buffer (e.g., USB isoc
+    bandwidth exhaustion), in which case the reconnect loop would
+    otherwise run forever at 1 Hz without ever escalating to DEAD.
     """
 
     def __init__(
@@ -141,6 +148,13 @@ class CameraStateMachine:
                 EventKind.FRAME_FLOW_STALE,
                 EventKind.PIPELINE_ERROR,
             ):
+                # Mid-stream failure: pipeline reached PLAYING but can't
+                # hold the stream (e.g., USB isoc bandwidth rejection on
+                # first buffer). Count toward the DEAD budget so
+                # exponential backoff escalates.
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    return CameraState.DEAD
                 return CameraState.DEGRADED
             if e == EventKind.DEVICE_REMOVED:
                 return CameraState.OFFLINE
@@ -148,6 +162,10 @@ class CameraStateMachine:
                 self._consecutive_failures = 0
                 return CameraState.RECOVERING
             if e == EventKind.FRAME_FLOW_OBSERVED:
+                # Sustained-success signal from the frame-flow watchdog
+                # (post grace window). This — not RECOVERY_SUCCEEDED — is
+                # what resets the failure counter.
+                self._consecutive_failures = 0
                 return CameraState.HEALTHY
             return None
 
@@ -173,7 +191,10 @@ class CameraStateMachine:
 
         if s == CameraState.RECOVERING:
             if e == EventKind.RECOVERY_SUCCEEDED:
-                self._consecutive_failures = 0
+                # Pipeline reached PLAYING but no frames are guaranteed
+                # yet. Do not reset _consecutive_failures — that happens
+                # when the watchdog reports sustained FRAME_FLOW_OBSERVED
+                # in HEALTHY.
                 return CameraState.HEALTHY
             if e == EventKind.RECOVERY_FAILED:
                 self._consecutive_failures += 1

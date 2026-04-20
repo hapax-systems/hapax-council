@@ -32,7 +32,7 @@ SHARED="auto_exposure=1,exposure_dynamic_framerate=0,power_line_frequency=2"
 SHARED="$SHARED,white_balance_automatic=0,white_balance_temperature=4800"
 SHARED="$SHARED,backlight_compensation=0,brightness=128,contrast=128,saturation=128"
 
-# --- BRIO (hero/operator) — 1080p, larger sensor, low gain ---
+# --- BRIO (hero/operator) — 720p MJPEG, larger sensor, low gain ---
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index0
 if [ -e "$DEV" ]; then
   v4l2_soft "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
@@ -64,7 +64,7 @@ if [ -e "$DEV" ]; then
   echo "c920-overhead: configured (gain=140, exposure=333, sharpness=110)"
 fi
 
-# --- BRIO-room (full room view, 1080p) ---
+# --- BRIO-room (full room view, 720p MJPEG) ---
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0
 if [ -e "$DEV" ]; then
   v4l2_soft "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
@@ -72,7 +72,7 @@ if [ -e "$DEV" ]; then
   echo "brio-room: configured (sharpness=128, exposure=333)"
 fi
 
-# --- BRIO-synths (overhead synth corner, 1080p) ---
+# --- BRIO-synths (overhead synth corner, 720p MJPEG) ---
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0
 if [ -e "$DEV" ]; then
   v4l2_soft "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"

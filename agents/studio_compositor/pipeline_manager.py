@@ -99,6 +99,7 @@ class PipelineManager:
     def build(self) -> None:
         """Instantiate + start all producer + fallback pipelines and
         per-camera state machines."""
+        self._assert_specs_under_720p(self._specs)
         with self._lock:
             for spec in self._specs:
                 # Phase 4: register metrics labels before anything else so
@@ -171,6 +172,28 @@ class PipelineManager:
                     self._schedule_reconnect(spec.role, _REBUILD_DELAY_S)
 
         self._start_supervisor()
+
+    # -------------------------------------------------- 720p bandwidth guard
+
+    @staticmethod
+    def _assert_specs_under_720p(specs: list[CameraSpec]) -> None:
+        """Fail-loud check: USB 2.0 isoc bandwidth cannot accommodate any
+        UVC device at 1080p alongside another UVC device on the same host
+        controller — the BRIO's altsetting reservation starves every
+        neighbour. Refuse to build the pipeline if any spec is above
+        720p, before a single bandwidth probe hits the kernel.
+
+        See docs/research/2026-04-14-brio-operator-h4-closeout-usb-topology-verdict.md.
+        """
+        max_w, max_h = 1280, 720
+        over = [s for s in specs if s.width > max_w or s.height > max_h]
+        if over:
+            roles = ", ".join(f"{s.role}={s.width}x{s.height}" for s in over)
+            raise ValueError(
+                f"camera spec exceeds 720p bandwidth budget: {roles}. "
+                f"All cameras must be ≤ {max_w}x{max_h} MJPEG. "
+                f"USB 2.0 isoc contention will kick a neighbour offline."
+            )
 
     # ---------------------------------------------------------------- consumer
 
@@ -488,6 +511,17 @@ class PipelineManager:
                 continue
             age = self.get_last_frame_age(role)
             if age <= STALENESS_THRESHOLD_S:
+                # Sustained-success signal: post grace window, frames
+                # flowing at the pad probe. Dispatch resets the state
+                # machine's failure counter so a truly recovered camera
+                # doesn't accumulate toward DEAD on the next glitch.
+                sm.dispatch(
+                    Event(
+                        EventKind.FRAME_FLOW_OBSERVED,
+                        reason=f"pad-probe age {age:.2f}s",
+                        source="watchdog",
+                    )
+                )
                 continue
             log.warning(
                 "frame-flow watchdog: role=%s last_frame_age=%.2fs > %.2fs — dispatching FRAME_FLOW_STALE",

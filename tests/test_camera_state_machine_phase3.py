@@ -47,26 +47,39 @@ def make_sm(
 
 
 class TestHealthyTransitions:
-    def test_frame_flow_observed_stays_healthy(self) -> None:
-        sm = make_sm()
+    def test_frame_flow_observed_stays_healthy_and_resets_counter(self) -> None:
+        sm = make_sm(consecutive_failures=6)
         sm.dispatch(Event(EventKind.FRAME_FLOW_OBSERVED))
         assert sm.state == CameraState.HEALTHY
+        assert sm.consecutive_failures == 0
 
-    def test_watchdog_fired_to_degraded(self) -> None:
+    def test_watchdog_fired_to_degraded_increments_counter(self) -> None:
         sm = make_sm()
         sm.dispatch(Event(EventKind.WATCHDOG_FIRED, reason="2s stall"))
         assert sm.state == CameraState.DEGRADED
+        assert sm.consecutive_failures == 1
         assert sm._swap_fb_calls  # type: ignore[attr-defined]
 
-    def test_frame_flow_stale_to_degraded(self) -> None:
+    def test_frame_flow_stale_to_degraded_increments_counter(self) -> None:
         sm = make_sm()
         sm.dispatch(Event(EventKind.FRAME_FLOW_STALE))
         assert sm.state == CameraState.DEGRADED
+        assert sm.consecutive_failures == 1
 
-    def test_pipeline_error_to_degraded(self) -> None:
+    def test_pipeline_error_to_degraded_increments_counter(self) -> None:
         sm = make_sm()
         sm.dispatch(Event(EventKind.PIPELINE_ERROR, reason="EIO"))
         assert sm.state == CameraState.DEGRADED
+        assert sm.consecutive_failures == 1
+
+    def test_mid_stream_failure_at_budget_transitions_to_dead(self) -> None:
+        # Regression pin for the 2026-04-20 reconnect storm: PLAYING-then-
+        # fail on first buffer (USB isoc bandwidth rejection) used to
+        # reset the counter every cycle via RECOVERY_SUCCEEDED, so the
+        # FSM never escalated. HEALTHY + PIPELINE_ERROR must now count.
+        sm = make_sm(consecutive_failures=MAX_CONSECUTIVE_FAILURES - 1)
+        sm.dispatch(Event(EventKind.PIPELINE_ERROR, reason="Internal data stream error."))
+        assert sm.state == CameraState.DEAD
 
     def test_device_removed_straight_to_offline(self) -> None:
         sm = make_sm()
@@ -118,12 +131,28 @@ class TestOfflineTransitions:
 
 
 class TestRecoveringTransitions:
-    def test_recovery_succeeded_to_healthy_and_resets_counter(self) -> None:
+    def test_recovery_succeeded_to_healthy_does_not_reset_counter(self) -> None:
+        # Reaching PLAYING is not proof of sustained frame flow — the
+        # reset happens only when the frame-flow watchdog observes live
+        # frames post-grace (FRAME_FLOW_OBSERVED).
         sm = make_sm(start=CameraState.RECOVERING, consecutive_failures=4)
         sm.dispatch(Event(EventKind.RECOVERY_SUCCEEDED))
         assert sm.state == CameraState.HEALTHY
-        assert sm.consecutive_failures == 0
+        assert sm.consecutive_failures == 4
         assert sm._swap_primary_calls  # type: ignore[attr-defined]
+
+    def test_playing_then_immediate_error_accumulates_failures(self) -> None:
+        # Exact scenario from the 2026-04-20 reconnect storm: USB isoc
+        # bandwidth rejection arrives on the first buffer after PLAYING.
+        # The cycle RECOVERING→HEALTHY→DEGRADED→OFFLINE→RECOVERING must
+        # grow the counter each pass so exponential backoff engages.
+        sm = make_sm(start=CameraState.RECOVERING, consecutive_failures=0)
+        for _ in range(3):
+            sm.dispatch(Event(EventKind.RECOVERY_SUCCEEDED))
+            sm.dispatch(Event(EventKind.PIPELINE_ERROR, reason="bandwidth"))
+            sm.dispatch(Event(EventKind.PIPELINE_ERROR, reason="not-negotiated"))
+            sm.dispatch(Event(EventKind.BACKOFF_ELAPSED))
+        assert sm.consecutive_failures >= 3
 
     def test_recovery_failed_to_offline_increments_counter(self) -> None:
         sm = make_sm(start=CameraState.RECOVERING, consecutive_failures=0)
