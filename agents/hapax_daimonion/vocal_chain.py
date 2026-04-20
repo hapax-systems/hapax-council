@@ -233,6 +233,8 @@ class VocalChainCapability:
         evil_pet_channel: int = 0,
         s4_channel: int = 1,
         decay_rate: float = 0.02,
+        *,
+        route_switcher: Any | None = None,
     ) -> None:
         self._midi = midi_output
         self._evil_pet_ch = evil_pet_channel
@@ -240,6 +242,14 @@ class VocalChainCapability:
         self._decay_rate = decay_rate
         self._levels: dict[str, float] = {name: 0.0 for name in DIMENSIONS}
         self._activation_level = 0.0
+        # Dual-FX Phase 5: current PipeWire routing path, tracked so tier
+        # transitions only invoke the pactl switcher when the path actually
+        # changes (DRY → EVIL_PET, etc.). None = not-yet-initialised; the
+        # first apply_tier() sets it.
+        self._current_path: Any | None = None
+        # Injectable for tests. Production callers leave this None and the
+        # default shared.audio_route_switcher.apply_switch is used.
+        self._route_switcher = route_switcher
 
     @property
     def name(self) -> str:
@@ -356,6 +366,9 @@ class VocalChainCapability:
         self,
         tier: Any,
         impingement: Impingement | None = None,
+        *,
+        path_override: Any | None = None,
+        route_audio: bool = True,
     ) -> None:
         """Apply a VoiceTier profile — set 9 dim levels + emit extra CCs.
 
@@ -365,11 +378,26 @@ class VocalChainCapability:
         pipeline. Deactivates first so no stale dim levels from a prior
         tier bleed into the new one.
 
+        Dual-FX Phase 5: before emitting CCs, resolves the target
+        VoicePath for the tier (via ``agents.hapax_daimonion.voice_path
+        .select_voice_path``) and switches the PipeWire default sink
+        when the path has changed. Order: route-switch first so the
+        Evil Pet / S-4 CCs land on the sink that's actually carrying
+        the audio. Route switches only fire on path transitions; a
+        same-path retier skips the pactl call entirely.
+
         Args:
             tier: a VoiceTier enum value (from shared.voice_tier).
             impingement: Optional Impingement for telemetry attribution.
                 If None, a synthetic one is constructed with
                 ``source="voice_tier"``.
+            path_override: Operator override for tier→path selection.
+                When set, bypasses ``select_voice_path`` and uses this
+                value directly. Intended for the hapax-voice-tier CLI's
+                ``--path`` flag.
+            route_audio: When False, skip the pactl switch and just emit
+                MIDI CCs. Used by tests and by paths where the caller
+                has already acquired the route (e.g. mutex Phase 3).
         """
         from shared.voice_tier import apply_tier as _apply_tier_fn
 
@@ -387,8 +415,56 @@ class VocalChainCapability:
                 content={"metric": f"tier_{int(tier)}"},
             )
 
+        if route_audio:
+            self._maybe_switch_route(tier, path_override)
+
         self.deactivate()
         _apply_tier_fn(tier, vocal_chain=self, midi_output=self._midi, impingement=impingement)
+
+    def _maybe_switch_route(self, tier: Any, path_override: Any | None) -> None:
+        """Resolve the tier's VoicePath and switch PipeWire routing if it changed.
+
+        No-ops silently when:
+        - the tier's path matches ``self._current_path`` (saves pactl calls)
+        - the path lookup raises (missing config, tier not in map)
+        - the pactl call raises (subprocess failure tolerated so a
+          broken audio graph doesn't block voice MIDI entirely)
+        """
+        try:
+            from agents.hapax_daimonion.voice_path import (
+                load_paths,
+                select_voice_path,
+            )
+        except Exception:
+            return
+        try:
+            path = path_override if path_override is not None else select_voice_path(tier)
+        except Exception:
+            log.debug("voice_path resolution failed", exc_info=True)
+            return
+        if path == self._current_path:
+            return
+        # Resolve the sink from the loaded path config.
+        try:
+            paths = load_paths()
+            sink = paths[path].sink
+        except Exception:
+            log.debug("voice_path sink lookup failed", exc_info=True)
+            return
+        switcher = self._route_switcher
+        if switcher is None:
+            try:
+                from shared.audio_route_switcher import apply_switch as _apply_switch
+            except Exception:
+                return
+            switcher = _apply_switch
+        try:
+            switcher(sink)
+        except Exception:
+            log.warning("pactl route switch failed; continuing with MIDI", exc_info=True)
+            return
+        self._current_path = path
+        log.info("vocal_chain route switched to %s (sink=%s)", path, sink)
 
     def _send_dimension_cc(self, dimension_name: str) -> None:
         """Send MIDI CC messages for a dimension at its current level."""
