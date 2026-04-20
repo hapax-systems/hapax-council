@@ -8,9 +8,17 @@ but a capability that gets activated by contextual need.
 from __future__ import annotations
 
 import logging
+from collections import deque
 
 from agents._capability import CapabilityCategory, ResourceTier, SystemContext
 from agents._impingement import Impingement
+
+# Phase 6 (D-28): bound the pending queue. The F5 short-circuit retirement
+# means activate() is now called via the affordance pipeline path; CPAL still
+# owns surfacing through its impingement adapter (the queue is informational,
+# not a TTS trigger). A bounded deque prevents memory growth from
+# never-drained recruitments without changing recruitment semantics.
+_PENDING_MAXLEN: int = 100
 
 log = logging.getLogger("voice.capability")
 
@@ -36,7 +44,7 @@ class SpeechProductionCapability:
 
     def __init__(self) -> None:
         self._activation_level = 0.0
-        self._pending: list[Impingement] = []
+        self._pending: deque[Impingement] = deque(maxlen=_PENDING_MAXLEN)
 
     @property
     def name(self) -> str:
@@ -115,5 +123,5 @@ class SpeechProductionCapability:
     def consume_pending(self) -> Impingement | None:
         """Consume the next pending speech request."""
         if self._pending:
-            return self._pending.pop(0)
+            return self._pending.popleft()
         return None

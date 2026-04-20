@@ -488,10 +488,20 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 )
                             continue
 
-                        # speech_production is owned by CPAL. Skipping here avoids
-                        # double-firing spontaneous speech when the adapter has
-                        # already set should_surface on the same impingement.
-                        if c.capability_name == "speech_production":
+                        # Phase 6 (D-28): F5 short-circuit retired. Pipeline-
+                        # scored speech now flows through the normal recruitment
+                        # path so Thompson learning sees speech_production
+                        # activations. Surfacing decisions still belong to CPAL
+                        # (via the impingement adapter's programme-aware
+                        # threshold + ALWAYS_SURFACE_AT override) — the
+                        # capability's `activate()` only queues the impingement
+                        # to a bounded buffer; it does not call TTS directly.
+                        # Defensive: speech_production may still be skipped only
+                        # when the daemon has no _speech_production attached
+                        # (mid-rebuild state). All other code paths feed it.
+                        if c.capability_name == "speech_production" and not hasattr(
+                            daemon, "_speech_production"
+                        ):
                             continue
 
                         if c.capability_name == "system_awareness":

@@ -29,6 +29,7 @@ from agents.hapax_daimonion.cpal.grounding_bridge import GroundingBridge
 from agents.hapax_daimonion.cpal.impingement_adapter import ImpingementAdapter
 from agents.hapax_daimonion.cpal.perception_stream import PerceptionStream
 from agents.hapax_daimonion.cpal.production_stream import ProductionStream
+from agents.hapax_daimonion.cpal.programme_context import default_provider
 from agents.hapax_daimonion.cpal.register_bridge import (
     VoiceRegisterBridge,
     textmode_prompt_prefix,
@@ -125,7 +126,9 @@ class CpalRunner:
             production=self._production,
         )
         self._grounding = GroundingBridge(ledger=grounding_ledger)
-        self._impingement_adapter = ImpingementAdapter()
+        # Phase 6: programme-aware should_surface threshold via the
+        # default_provider that reads the canonical programme store.
+        self._impingement_adapter = ImpingementAdapter(programme_provider=default_provider)
         self._tier_composer = TierComposer()
         self._signal_cache = SignalCache()
         # HOMAGE Phase 7 — voice register bridge. Single instance per runner
