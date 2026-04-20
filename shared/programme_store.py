@@ -45,6 +45,13 @@ log = logging.getLogger(__name__)
 
 DEFAULT_STORE_PATH: Final[Path] = Path.home() / "hapax-state" / "programmes.jsonl"
 
+# D-24 §9.4 — warn when the store grows past this size. The full-
+# file rewrite on every mutation is O(N); a 10MB store implies
+# ≥50k programme records and ~100ms full-rewrite latency. Past
+# that point, SQLite becomes the right storage (see future
+# migration note in _rewrite).
+_STORE_SIZE_WARN_BYTES: Final[int] = 10 * 1024 * 1024  # 10 MiB
+
 
 class ProgrammePlanStore:
     """File-backed store for Programme instances.
@@ -218,6 +225,21 @@ class ProgrammePlanStore:
             for p in programmes:
                 f.write(p.model_dump_json() + "\n")
         os.replace(tmp, self.path)
+        # D-24 §9.4 — warn once per rewrite when the store grows large.
+        # Full-file rewrite is O(N); past 10 MiB the per-mutation
+        # latency becomes operator-noticeable and SQLite is the right
+        # migration. This is a soft warning — never blocks the write.
+        try:
+            size = self.path.stat().st_size
+            if size > _STORE_SIZE_WARN_BYTES:
+                log.warning(
+                    "programme_store: %s is %.1f MiB — consider SQLite migration "
+                    "(rewrite latency grows linearly with record count)",
+                    self.path,
+                    size / (1024 * 1024),
+                )
+        except OSError:
+            pass
 
 
 def default_store() -> ProgrammePlanStore:
