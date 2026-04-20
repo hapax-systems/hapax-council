@@ -97,25 +97,43 @@ def _classify_node_kind(props: dict[str, Any]) -> NodeKind | None:
 
     Returns ``None`` for nodes this inspector doesn't model — e.g.
     ``media.class="Stream/*"`` application streams, client nodes.
+
+    Heuristic notes (#216 inspector classification patch):
+
+    PipeWire rarely sets ``factory.name`` on nodes spawned by module
+    loaders (``filter-chain``, ``loopback``); the factory lives on the
+    module record, not the exposed node. So we fall back to name-
+    pattern matching for the hapax-* family of virtual nodes:
+
+    - A hapax-* node whose media.class is Audio/Sink AND whose name
+      does NOT end in ``-capture`` or ``-playback`` is treated as a
+      LOOPBACK (client-facing sink side of a loopback module).
+    - A hapax-* node whose name ends in ``-capture`` and whose media.
+      class is Audio/Sink is treated as a FILTER_CHAIN (client-facing
+      sink side of a filter-chain that processes captured audio).
+    - Stream/* media.class nodes are always skipped — they're the
+      internal pair of a filter-chain or loopback, not the primary
+      node the descriptor declares.
+
+    This yields correct classification for every ``hapax-*`` node we
+    ship plus the ``support.null-audio-sink`` / loopback / ALSA
+    primitives. Future module types (e.g. ``stream-split``) that
+    don't fit this taxonomy would need new heuristics.
     """
     media_class = props.get("media.class", "")
     factory = props.get("factory.name", "")
+    name = props.get("node.name", "")
     # Null-sink tap.
     if factory == "support.null-audio-sink":
         return NodeKind.TAP
-    # Loopback module.
-    if factory == "loopback" or "loopback" in props.get("node.name", ""):
-        # Only classify as loopback if the node is a sink side of the
-        # loopback (the API exposes two nodes, capture+playback). We
-        # take the sink side as the canonical loopback for descriptor
-        # purposes; the playback side is its pair.
+    # Explicit loopback / filter-chain factories (when PipeWire sets
+    # them — rare but honoured).
+    if factory == "filter-chain":
+        return NodeKind.FILTER_CHAIN
+    if factory == "loopback" or "loopback" in name:
         if media_class == "Audio/Sink":
             return NodeKind.LOOPBACK
         return None
-    # Filter-chain module — PipeWire labels these as Audio/Source or
-    # Audio/Sink depending on which side the client speaks to.
-    if factory == "filter-chain":
-        return NodeKind.FILTER_CHAIN
     # ALSA endpoints.
     if factory == "api.alsa.pcm.source" or media_class == "Audio/Source":
         if props.get("api.alsa.path"):
@@ -123,6 +141,26 @@ def _classify_node_kind(props: dict[str, Any]) -> NodeKind | None:
     if factory == "api.alsa.pcm.sink" or media_class == "Audio/Sink":
         if props.get("api.alsa.path"):
             return NodeKind.ALSA_SINK
+    # Factory-less hapax-* virtual nodes — name-pattern heuristic.
+    # Skip -playback suffix always (filter-chain / loopback internal
+    # pair; descriptor declares the -capture side or bare sink as
+    # primary).
+    if name.endswith("-playback"):
+        return None
+    # Skip Stream/Output (playback stream) but NOT Stream/Input —
+    # some filter-chain / loopback capture sides expose as Stream/
+    # Input/Audio rather than Audio/Sink.
+    if media_class == "Stream/Output/Audio":
+        return None
+    if name.startswith("hapax-") and name.endswith("-capture"):
+        # Capture side of a filter-chain (or occasionally a loopback).
+        # The diff's kind-mismatch report surfaces disagreement with
+        # the descriptor; the audit call sees them paired by
+        # pipewire_name regardless.
+        return NodeKind.FILTER_CHAIN
+    if name.startswith("hapax-") and media_class == "Audio/Sink":
+        # Bare hapax-<name> sink: canonical loopback pattern.
+        return NodeKind.LOOPBACK
     return None
 
 

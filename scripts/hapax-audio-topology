@@ -179,26 +179,49 @@ def cmd_diff(args: argparse.Namespace) -> int:
 def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
     """Compare two descriptors; print report + return True if drift detected.
 
-    Structural comparison only — matches on node id (not pw-dump internal
-    id). Edge matching is source/target-based since Phase 4 live-graph
-    edges don't carry ports.
+    Matches nodes by ``pipewire_name`` (the only identifier stable
+    between a hand-authored descriptor and a live pw-dump-derived one).
+    Matching by ``Node.id`` used to produce false-positive drift for
+    every descriptor node because the inspector's ``_id_from_name``
+    derives IDs differently from operator hand-authored kebab-case
+    (#216 inspector classification gap — fixed by matching on the
+    authoritative pipewire_name instead).
+
+    Kind mismatches surface as a separate WARNING rather than as
+    "missing on left + extra on right" noise — when a node IS present
+    in both by pipewire_name, a kind disagreement means the inspector's
+    classification heuristic missed the mark, not that the operator's
+    config and the running graph have drifted.
     """
-    a_ids = {n.id: n for n in a.nodes}
-    b_ids = {n.id: n for n in b.nodes}
-    added = b_ids.keys() - a_ids.keys()
-    removed = a_ids.keys() - b_ids.keys()
+    a_by_name = {n.pipewire_name: n for n in a.nodes}
+    b_by_name = {n.pipewire_name: n for n in b.nodes}
+    added_names = b_by_name.keys() - a_by_name.keys()
+    removed_names = a_by_name.keys() - b_by_name.keys()
+    shared_names = a_by_name.keys() & b_by_name.keys()
 
     drift = False
-    if added:
+    if added_names:
         drift = True
         print("+ nodes only in right (live extras):")
-        for node_id in sorted(added):
-            print(f"  + {_format_node(b_ids[node_id]).strip()}")
-    if removed:
+        for name in sorted(added_names):
+            print(f"  + {_format_node(b_by_name[name]).strip()}")
+    if removed_names:
         drift = True
         print("- nodes only in left (expected but missing):")
-        for node_id in sorted(removed):
-            print(f"  - {_format_node(a_ids[node_id]).strip()}")
+        for name in sorted(removed_names):
+            print(f"  - {_format_node(a_by_name[name]).strip()}")
+
+    kind_mismatches = []
+    for name in sorted(shared_names):
+        if a_by_name[name].kind != b_by_name[name].kind:
+            kind_mismatches.append((name, a_by_name[name].kind, b_by_name[name].kind))
+    if kind_mismatches:
+        # Kind mismatch is NOT drift — the node exists, just classified
+        # differently. Common when inspector's _classify_node_kind
+        # heuristic misses hapax-* non-factory nodes. Report as INFO.
+        print("~ nodes present with kind mismatch (inspector classification only):")
+        for name, left_kind, right_kind in kind_mismatches:
+            print(f"  ~ {name}: descriptor={left_kind.value} live={right_kind.value}")
 
     a_edges = {(e.source, e.target) for e in a.edges}
     b_edges = {(e.source, e.target) for e in b.edges}
