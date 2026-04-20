@@ -300,6 +300,16 @@ class ProgrammeSuccessCriteria(BaseModel):
         return self
 
 
+ProgrammeAuthorship = Literal["hapax", "operator"]
+
+# D-26a (demonet plan §Phase 5 lines 354-358): operator-authored
+# programmes may opt-in up to MAX_OPT_INS medium-risk capabilities.
+# Hapax-authored programmes may not opt in to ANY medium-risk
+# capability (the exception path is reserved for explicit operator
+# consent per the bilateral-contract pattern; consent_gate analog).
+MAX_OPT_INS: int = 3
+
+
 class Programme(BaseModel):
     programme_id: str
     role: ProgrammeRole
@@ -308,6 +318,15 @@ class Programme(BaseModel):
 
     actual_started_at: float | None = None
     actual_ended_at: float | None = None
+
+    # Authorship axis (D-26a / demonet Phase 5 line 359-367). Defaults
+    # to "hapax" per memory `feedback_hapax_authors_programmes` — the
+    # operator does NOT write show outlines / cue sheets. The one
+    # exception is `constraints.monetization_opt_ins`, where expanding
+    # candidacy beyond the safe set requires operator consent;
+    # operator-authored Programmes signal that consent by carrying
+    # `authorship="operator"` and may set up to MAX_OPT_INS opt-ins.
+    authorship: ProgrammeAuthorship = "hapax"
 
     constraints: ProgrammeConstraintEnvelope = Field(default_factory=ProgrammeConstraintEnvelope)
     content: ProgrammeContent = Field(default_factory=ProgrammeContent)
@@ -352,6 +371,38 @@ class Programme(BaseModel):
             and self.actual_ended_at < self.actual_started_at
         ):
             raise ValueError("actual_ended_at precedes actual_started_at")
+        return self
+
+    @model_validator(mode="after")
+    def _opt_ins_authorship_invariant(self) -> Programme:
+        """D-26a (demonet plan §Phase 5 lines 354-358): authorship gates
+        the monetization_opt_ins set.
+
+          - Hapax-authored: opt-ins MUST be empty. Hapax cannot
+            unilaterally expand candidacy past the safe set; that
+            requires operator consent (parallel to consent-gate's
+            bilateral-contract requirement).
+          - Operator-authored: opt-ins capped at MAX_OPT_INS so a single
+            programme can't unbound the safe set.
+
+        High-risk capabilities are blocked regardless of authorship by
+        the gate's short-circuit at `monetization_safety.py:169`; this
+        validator only governs medium-risk opt-ins.
+        """
+        opt_ins = self.constraints.monetization_opt_ins
+        if self.authorship == "hapax" and opt_ins:
+            raise ValueError(
+                f"Programme {self.programme_id!r}: hapax-authored programmes "
+                f"may not set monetization_opt_ins (got {sorted(opt_ins)!r}). "
+                "Set authorship='operator' to signal explicit operator consent "
+                "(per demonet plan §Phase 5 + memory feedback_hapax_authors_programmes)."
+            )
+        if self.authorship == "operator" and len(opt_ins) > MAX_OPT_INS:
+            raise ValueError(
+                f"Programme {self.programme_id!r}: operator-authored opt-ins "
+                f"exceed MAX_OPT_INS={MAX_OPT_INS} (got {len(opt_ins)}). "
+                "Trim the set or split into multiple programmes."
+            )
         return self
 
     @property

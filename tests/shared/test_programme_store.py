@@ -137,6 +137,7 @@ class TestMonetizationOptInsRoundTrip:
             planned_duration_s=60.0,
             parent_show_id="test",
             constraints=env,
+            authorship="operator",  # D-26a: opt-ins require operator authorship
         )
         store.add(p)
         reloaded = store.get("showcase-with-opt-ins")

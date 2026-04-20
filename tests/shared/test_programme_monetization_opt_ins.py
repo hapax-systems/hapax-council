@@ -47,6 +47,8 @@ def _programme_with_opt_ins(opt_ins: set[str]) -> Programme:
         planned_duration_s=60.0,
         parent_show_id="test-show",
         constraints=ProgrammeConstraintEnvelope(monetization_opt_ins=opt_ins),
+        # D-26a: opt-ins require operator authorship per demonet §Phase 5.
+        authorship="operator" if opt_ins else "hapax",
     )
 
 
