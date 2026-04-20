@@ -66,6 +66,7 @@ class CpalRunner:
         conversation_pipeline: object | None = None,
         echo_canceller: object | None = None,
         daemon: object | None = None,
+        music_policy: object | None = None,
     ) -> None:
         # Streams
         self._perception = PerceptionStream(buffer=buffer)
@@ -97,6 +98,20 @@ class CpalRunner:
         self._echo_canceller = echo_canceller
         self._pipeline = conversation_pipeline  # T3 delegate
         self._daemon = daemon
+
+        # D-18 (proof-of-wiring): music policy evaluator. Default is
+        # NullMusicDetector → always returns detected=False → no behavior
+        # change. Operator swaps in a real detector when one exists; the
+        # wire (this attribute + the per-tick evaluate() call) is what was
+        # missing per AUDIT §7.1. The Prometheus counter
+        # `hapax_demonet_music_policy_mutes_total` (D-23) lights up when
+        # decisions cross the mute threshold.
+        if music_policy is None:
+            from shared.governance.music_policy import default_policy
+
+            music_policy = default_policy()
+        self._music_policy = music_policy
+        self._music_mute_active = False  # tracks transition for logging
 
         # State
         self._running = False
@@ -186,6 +201,34 @@ class CpalRunner:
         """Signal the runner to stop."""
         self._running = False
 
+    def _evaluate_music_policy(self, frame: object) -> None:
+        """D-18 wire: call music_policy.evaluate() per tick + log transitions.
+
+        Behavior intentionally narrow for the proof-of-wiring ship:
+          - Always call evaluate() so the gate is exercised on every tick
+          - Log the BLOCKED↔ALLOWED transition (mute boundary) for journalctl
+            visibility; the per-decision Prometheus counter is incremented
+            inside MusicPolicy.evaluate() itself (D-23).
+          - Do NOT mute production yet — D-18b is the production-mute
+            integration that activates when a real (non-Null) detector is
+            wired. Decoupling the wire from the mute action means swapping
+            in a detector with false-positives won't suddenly drop legitimate
+            Hapax speech.
+          - Failure inside evaluate() is fail-CLOSED to should_mute=True
+            (D-23); we log the transition same as a real detection.
+        """
+        try:
+            decision = self._music_policy.evaluate(frame)
+        except Exception:
+            log.warning("music_policy.evaluate raised — gate skipped this tick", exc_info=True)
+            return
+        if decision.should_mute and not self._music_mute_active:
+            log.info("music policy → MUTE: %s", decision.reason)
+            self._music_mute_active = True
+        elif not decision.should_mute and self._music_mute_active:
+            log.info("music policy → ALLOWED: %s", decision.reason)
+            self._music_mute_active = False
+
     async def _tick(self, dt: float) -> None:
         """Run one cognitive tick."""
         # 1. Update perception from buffer state
@@ -193,6 +236,15 @@ class CpalRunner:
         vad_prob = self._get_vad_prob()
         self._perception.update(frame, vad_prob=vad_prob)
         signals = self._perception.signals
+
+        # 1b. D-18: music policy evaluation. With the default
+        # NullMusicDetector, decision.should_mute is always False — wire is
+        # established without behavior change. Behavior activates when the
+        # operator swaps in a real detector. Failures inside evaluate() are
+        # already logged + Prometheus-counted there (D-23 fail-closed
+        # detector wrap); we just log the transition to make state visible
+        # in journalctl. Production-mute integration is D-18b (deferred).
+        self._evaluate_music_policy(frame)
 
         # 2. Track accumulated silence (C: I1)
         if signals.speech_active or self._processing_utterance:
