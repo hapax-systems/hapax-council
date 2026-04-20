@@ -1,0 +1,19 @@
+{
+  "director_intent_records": 116,
+  "generated_at": "2026-04-20T21:52:57.616378+00:00",
+  "material_entropy_bits": 0.0,
+  "material_histogram": {
+    "water": 10
+  },
+  "per_preset_activation_count": "NA",
+  "preset_bias_impingements": 10,
+  "preset_family_entropy_bits": 0.0,
+  "preset_family_histogram": {
+    "calm-textural": 2
+  },
+  "recent_10_cosine_min_distance_mean": "NA",
+  "recruitment_log_present": false,
+  "schema_version": 1,
+  "structural_intent_records": 2,
+  "window_s": 3600
+}
