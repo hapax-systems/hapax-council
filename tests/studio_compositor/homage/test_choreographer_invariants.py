@@ -39,6 +39,16 @@ def choreographer(tmp_path: Path) -> Choreographer:
         # Phase 12: isolate from any live /dev/shm consent-safe flag so
         # CI / dev-machine residue can't flip the reconciled package.
         consent_safe_flag_file=tmp_path / "consent-safe-none.json",
+        # Belt-and-braces: isolate the rotation-mode reader from /dev/shm
+        # residue. Other tests in the suite (e2e programme layer,
+        # structural director programme tests) have historically written
+        # `homage_rotation_mode: "paused"` to the default
+        # /dev/shm/hapax-structural/intent.json path; without these
+        # overrides the choreographer's _read_rotation_mode() picks up
+        # the residue, takes the paused early-return branch, and every
+        # invariant test below gets empty planned + empty rejections.
+        structural_intent_file=tmp_path / "structural-intent.json",
+        narrative_structural_intent_file=tmp_path / "narrative-structural-intent.json",
     )
 
 

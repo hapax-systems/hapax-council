@@ -365,10 +365,22 @@ class TestProgrammeLayerE2E:
                 f"{prog.programme_id!r}: composed={composed} != target={target}"
             )
 
-    def test_structural_director_stamps_programme_id(self, store, show_id: str) -> None:
+    def test_structural_director_stamps_programme_id(
+        self, store, show_id: str, tmp_path, monkeypatch
+    ) -> None:
         """Phase 5 invariant: emitted StructuralIntent carries the active
         programme's id during its window.
         """
+        # Pre-existing leak: director.tick_once() writes
+        # homage_rotation_mode=paused to /dev/shm/hapax-structural/intent.json
+        # (the module's hard-coded path), which the choreographer's
+        # default _STRUCTURAL_INTENT_FILE then reads in subsequent
+        # invariant tests, silently flipping them all to the paused
+        # early-return branch and producing empty plans. Redirect the
+        # writes to tmp_path so the test stays self-contained.
+        monkeypatch.setattr(sd, "_STRUCTURAL_INTENT_PATH", tmp_path / "intent.json")
+        monkeypatch.setattr(sd, "_STRUCTURAL_INTENT_JSONL", tmp_path / "structural-intent.jsonl")
+
         payload = _three_programme_plan_payload(show_id)
         planner = ProgrammePlanner(llm_fn=_stub_llm(payload))
         plan = planner.plan(show_id=show_id)

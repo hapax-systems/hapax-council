@@ -48,6 +48,14 @@ def choreographer(tmp_path: Path) -> Choreographer:
         substrate_package_file=tmp_path / "homage-substrate-package.json",
         # Phase 12: isolate from any live /dev/shm consent-safe flag.
         consent_safe_flag_file=tmp_path / "consent-safe-none.json",
+        # Belt-and-braces: isolate the rotation-mode reader from /dev/shm
+        # residue. See tests/studio_compositor/homage/test_choreographer_invariants.py
+        # for the full rationale — a leaky e2e test was writing
+        # `homage_rotation_mode: "paused"` to the default
+        # /dev/shm/hapax-structural/intent.json path, silently flipping
+        # every consumer test through the paused early-return branch.
+        structural_intent_file=tmp_path / "structural-intent.json",
+        narrative_structural_intent_file=tmp_path / "narrative-structural-intent.json",
     )
 
 
