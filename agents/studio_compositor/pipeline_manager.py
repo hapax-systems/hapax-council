@@ -488,6 +488,17 @@ class PipelineManager:
                 continue
             age = self.get_last_frame_age(role)
             if age <= STALENESS_THRESHOLD_S:
+                # Sustained-success signal: post grace window, frames
+                # flowing at the pad probe. Dispatch resets the state
+                # machine's failure counter so a truly recovered camera
+                # doesn't accumulate toward DEAD on the next glitch.
+                sm.dispatch(
+                    Event(
+                        EventKind.FRAME_FLOW_OBSERVED,
+                        reason=f"pad-probe age {age:.2f}s",
+                        source="watchdog",
+                    )
+                )
                 continue
             log.warning(
                 "frame-flow watchdog: role=%s last_frame_age=%.2fs > %.2fs — dispatching FRAME_FLOW_STALE",
