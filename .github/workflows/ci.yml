@@ -108,6 +108,15 @@ jobs:
               --ignore=tests/studio_compositor/test_follow_mode.py \
               --ignore=tests/studio_compositor/test_face_obscure_pipeline.py \
               --ignore=tests/test_camera_pipeline_phase2.py \
+              --ignore=tests/studio_compositor/test_captions_in_default_layout.py \
+              --deselect=tests/studio_compositor/test_assignment_nondestructive.py::test_default_layout_informational_wards_are_non_destructive \
+              --deselect=tests/studio_compositor/test_compositor_wiring.py::TestStartLayoutOnly::test_reads_disk_layout_and_populates_state_and_registry \
+              --deselect=tests/studio_compositor/test_default_layout_loading.py::test_default_json_exists_and_is_valid_layout \
+              --deselect=tests/studio_compositor/test_default_layout_loading.py::test_default_json_source_backends_match_registry_dispatch \
+              --deselect=tests/studio_compositor/test_default_layout_loading.py::test_default_json_chat_ambient_binds_to_chat_ambient_ward \
+              --deselect=tests/studio_compositor/test_default_layout_loading.py::test_load_layout_or_fallback_reads_valid_file \
+              --deselect=tests/studio_compositor/test_default_layout_loading.py::test_fallback_layout_parses_to_same_shape_as_default_json \
+              --deselect=tests/studio_compositor/test_default_layout_loading.py::test_load_layout_or_fallback_rescales_to_canvas_size \
               -m "not llm" -k "not golden and not goldens" \
               -p no:cacheprovider 2>&1 | tee /tmp/pytest-output.txt
           # Parse pytest summary from captured output

@@ -5,9 +5,11 @@ from __future__ import annotations
 import math
 import random
 import time
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+MonetizationRisk = Literal["none", "low", "medium", "high"]
 
 
 class OperationalProperties(BaseModel, frozen=True):
@@ -18,6 +20,18 @@ class OperationalProperties(BaseModel, frozen=True):
     medium: str | None = None
     consent_required: bool = False
     priority_floor: bool = False
+
+    # Monetization-safety classification (task #165, demonet plan Phase 1).
+    # "high": unconditionally blocked at the affordance pipeline level (the
+    # capability cannot be recruited on any surface).
+    # "medium": blocked unless the active Programme opts the capability in
+    # via Programme.constraints.monetization_opt_ins (Phase 5 wiring).
+    # "low"/"none": passes through the gate unchanged.
+    # See shared/governance/monetization_safety.py for the filter semantics
+    # and docs/research/2026-04-19-demonetization-safety-design.md §1.1
+    # for the classification rubric.
+    monetization_risk: MonetizationRisk = "none"
+    risk_reason: str | None = None
 
 
 class CapabilityRecord(BaseModel, frozen=True):

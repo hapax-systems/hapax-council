@@ -199,6 +199,8 @@ class AffordancePipeline:
                             "consent_required": record.operational.consent_required,
                             "priority_floor": record.operational.priority_floor,
                             "medium": record.operational.medium,
+                            "monetization_risk": record.operational.monetization_risk,
+                            "risk_reason": record.operational.risk_reason,
                             "activation_summary": self._activation.get(
                                 record.name, ActivationState()
                             ).to_summary(),
@@ -421,6 +423,15 @@ class AffordancePipeline:
         # Consent gate — closes the audit-surfaced enforcement gap. See
         # _consent_allows() for the rationale and fail-closed semantics.
         candidates = [c for c in candidates if self._consent_allows(c)]
+        if not candidates:
+            return []
+        # Monetization-risk gate (task #165, plan Phase 1). High-risk always
+        # blocked; medium-risk requires a programme opt-in (wired in plan
+        # Phase 5). Low/none pass unchanged. Programme context plumbs through
+        # the pipeline in plan Phase 5; Phase 1 passes None.
+        from shared.governance.monetization_safety import GATE as _MONET_GATE
+
+        candidates = _MONET_GATE.candidate_filter(candidates, programme=None)
         if not candidates:
             return []
         now = time.time()
