@@ -65,18 +65,40 @@ Written to `/run/user/1000/hapax-secrets.env` (tmpfs, 0600). All services declar
 
 ## Resource Isolation
 
-| Service | MemoryMax | OOMScoreAdjust | Nice | CPUWeight |
-|---------|-----------|----------------|------|-----------|
-| hapax-daimonion | 8G | -500 | -10 | default |
-| hapax-logos | 4G | default | default | default |
-| studio-compositor | 4G | default | default | 500 |
-| visual-layer-aggregator | 1G | default | default | default |
-| logos-api | 1G | default | default | default |
-| officium-api | 512M | default | default | default |
-| studio-fx-output | 512M | default | 10 | default |
-| hapax-watch-receiver | 256M | default | default | default |
+**Per-service caps** (MemoryMax / OOMScoreAdjust):
 
-System-level OOM overrides: earlyoom (-1000), docker (-900), pipewire/wireplumber (-900), ollama (-500).
+| Service | MemoryMax | OOMScoreAdjust | Notes |
+|---------|-----------|----------------|-------|
+| hapax-daimonion | 16G | -500 | GPU STT models, grows under conversation load |
+| studio-compositor | 6G | -800 | livestream critical |
+| hapax-imagination | 4G | -800 | wgpu visual surface |
+| hapax-rebuild-logos | 12G | default | transient cargo+rustc wgpu build |
+| hapax-rebuild-services | 6G | default | transient python rebuild cascade |
+| album-identifier | 4G | -800 | IR vision + audio track recognition |
+| youtube-player | 2G | default | ffmpeg children |
+| chat-monitor | 2G | -800 | YouTube Live chat analysis |
+| logos-api | 1G | -800 | FastAPI :8051 |
+| visual-layer-aggregator | 1G | -800 | perception pipeline |
+| hapax-reverie | 1G | -800 | visual expression daemon |
+| hapax-dmn | 1G | -800 | cognitive substrate |
+| officium-api | 512M | -800 | FastAPI :8050 |
+| hapax-content-resolver | 512M | -800 | content resolver |
+| hapax-watch-receiver | 256M | -800 | Wear OS biometrics |
+| hapax-recent-impingements | 128M | -800 | salience overlay producer |
+
+**System-wide memory infrastructure:**
+
+- **Swap topology**: zram (31G zstd, priority=100) as tier-1 + `/samples/swapfile` (32G, priority=5) as tier-2 backstop. Total 63G swap on 62G RAM.
+- **Kernel reclaim tuning** (`/etc/sysctl.d/99-hapax-memory.conf`):
+  - `vm.min_free_kbytes=524288` — 512MB allocation buffer (raised from default 66MB) to prevent cascade OOM under transient spikes
+  - `vm.watermark_scale_factor=100` — kswapd reclaims at 1% pressure (default 10 is too late under zram+heavy-IO)
+  - `vm.swappiness=150` — tuned for zram zstd compression
+- **earlyoom** (`/etc/default/earlyoom`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
+  - `--prefer`: `cargo|rustc|ld.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap` (expendable targets for OOM)
+  - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-logos|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
+- **System-level OOM overrides**: earlyoom (-1000), docker (-900), pipewire/wireplumber (-900).
+
+**Design principle**: prevent global OOM by bounding the transient memory spikers (cargo builds, ffmpeg) and giving kernel reclaim a larger buffer. Critical stack services are additionally protected via `OOMScoreAdjust=-500/-800` so the kernel strongly prefers killing unbounded leaf processes (interactive Claude sessions, transient tools) over the stack in a true crisis. Interactive Claude sessions run in `session-N.scope` under `user-1000.slice` (not `user@1000.service`) and are intentionally left uncapped + unprotected — they are the designated sacrifice target.
 
 ## Ollama GPU Isolation
 
