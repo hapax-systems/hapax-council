@@ -11,6 +11,9 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
+from agents.reverie.programme_context import ProgrammeProvider
+from agents.reverie.substrate_palette import compute_substrate_saturation
+
 log = logging.getLogger("reverie.uniforms")
 
 UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
@@ -175,6 +178,9 @@ def write_uniforms(
     trace_center: tuple[float, float],
     trace_radius: float,
     reduction: float = 1.0,
+    *,
+    programme_provider: ProgrammeProvider | None = None,
+    transition_energy: float = 0.0,
 ) -> None:
     """Compute and write merged uniforms to uniforms.json."""
     chain_params = visual_chain.compute_param_deltas()
@@ -256,6 +262,18 @@ def write_uniforms(
     # saturation is authoritative (no chain amplification can override).
     # Missing / malformed broadcast falls through without damping.
     _apply_homage_package_damping(uniforms, _read_homage_substrate_package())
+
+    # Programme-layer Phase 8 — programme-owned saturation centre. When an
+    # active programme carries a `reverie_saturation_target`, compose it
+    # with stimmung + transition_energy and override `color.saturation`.
+    # Programme target overrides BitchX saturation but leaves hue/brightness
+    # damping intact (those are package-scoped, not programme-scoped).
+    # `programme_provider=None` short-circuits to existing behaviour so
+    # pre-Phase-8 callers (and the homage damping tests) stay untouched.
+    if programme_provider is not None:
+        composed = compute_substrate_saturation(programme_provider(), stimmung, transition_energy)
+        if composed is not None:
+            uniforms["color.saturation"] = composed
 
     # Write all scalar overrides to uniforms.json. The Rust pipeline parses this
     # as HashMap<String, f64> — non-scalar values (arrays) must be excluded or

@@ -128,6 +128,7 @@ class ReverieMixer:
         from agents._capability import SystemContext
         from agents.reverie._uniforms import write_uniforms
         from agents.reverie.governance import read_consent_phase
+        from agents.reverie.programme_context import default_provider as programme_provider
 
         ctx = self._context.assemble()
         self._pipeline.set_seeking(ctx.stimmung_stance == "seeking")
@@ -152,6 +153,7 @@ class ReverieMixer:
                 self._trace_strength,
                 self._trace_center,
                 self._trace_radius,
+                programme_provider=programme_provider,
             )
             return
 
@@ -188,6 +190,7 @@ class ReverieMixer:
             self._trace_center,
             self._trace_radius,
             reduction,
+            programme_provider=programme_provider,
         )
 
         # 8b. Chronicle: detect param shifts (dead zone 0.05)
