@@ -1,7 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { Handle, Position, type NodeProps, NodeResizer } from "@xyflow/react";
-import { ChainBuilder } from "../ChainBuilder";
-import { SequenceBar } from "../SequenceBar";
 import { useStudioGraph } from "../../../stores/studioGraphStore";
 
 export interface OutputNodeData {
@@ -187,7 +185,7 @@ function OutputNodeInner({ data, selected }: NodeProps) {
 }
 
 /** Fullscreen overlay — true borderless fullscreen via Tauri window API.
- *  Controls (chain builder + sequence bar) always visible at the bottom. */
+ *  Video fills the entire viewport; controls hidden (esc to exit). */
 function FullscreenOverlay({ onClose }: { onClose: () => void }) {
   const imgRef = useRef<HTMLImageElement>(null);
 
@@ -260,20 +258,6 @@ function FullscreenOverlay({ onClose }: { onClose: () => void }) {
           draggable={false}
           style={{ width: "100%", height: "100%", objectFit: "contain" }}
         />
-      </div>
-
-      {/* Controls — always visible at bottom */}
-      <div
-        style={{
-          flexShrink: 0,
-          display: "flex",
-          flexDirection: "column",
-          background: "rgba(29,32,33,0.9)",
-          borderTop: "1px solid #3c3836",
-        }}
-      >
-        <SequenceBar />
-        <ChainBuilder />
       </div>
 
       {/* Top bar — minimal, just exit hint */}

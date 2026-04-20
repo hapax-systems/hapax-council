@@ -62,14 +62,18 @@ SPIRAL_CENTER_X = 0.50
 SPIRAL_CENTER_Y = 0.52  # navel is slightly below center
 SPIRAL_MAX_R = 0.45  # relative to overlay size
 
-# Navel→cranium anchors measured 2026-04-19 from assets/vitruvian_man_overlay.png
-# (500×500 RGBA) via PIL — head crown = widest opaque row within top 1/6 of image.
+# Navel→cranium anchors measured 2026-04-20 from assets/vitruvian_man_overlay.png
+# (500×500 RGBA) by sweeping alpha-row widths from the top: the head silhouette
+# emerges at y≈36 (norm 0.072) where width jumps from ~124 (circle border only)
+# to ~196 (head crown becoming visible). The earlier "widest row in top 1/6"
+# heuristic picked y=81 (0.162) — that's the cheek/chin level, not the crown,
+# producing a path that ended at the chin (operator complaint 2026-04-20).
 # x-axis is effectively vertical (Δx=0.002 = within rounding) so the path is
 # treated as a straight vertical line; the subtle midline arc is deferred.
 NAVEL_X = SPIRAL_CENTER_X  # 0.500
 NAVEL_Y = SPIRAL_CENTER_Y  # 0.520
 CRANIUM_X = 0.498
-CRANIUM_Y = 0.134
+CRANIUM_Y = 0.072
 
 NUM_POINTS = 250
 PHI = (1 + math.sqrt(5)) / 2

@@ -53,6 +53,7 @@ class HomageSubstrateSource(Protocol):
 SUBSTRATE_SOURCE_REGISTRY: tuple[str, ...] = (
     "reverie_external_rgba",
     "reverie",
+    "album",
 )
 """Authoritative list of ward IDs flagged as substrate.
 
