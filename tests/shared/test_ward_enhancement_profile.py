@@ -46,3 +46,63 @@ def test_ward_enhancement_profile_album_round_trip():
     data = profile.model_dump()
     profile2 = WardEnhancementProfile(**data)
     assert profile2 == profile
+
+
+EXPECTED_WARDS = frozenset(
+    {
+        "token_pole",
+        "album",
+        "stream_overlay",
+        "sierpinski",
+        "activity_header",
+        "stance_indicator",
+        "impingement_cascade",
+        "recruitment_candidate_panel",
+        "thinking_indicator",
+        "pressure_gauge",
+        "activity_variety_log",
+        "whos_here",
+        "hardm_dot_matrix",
+        "reverie",
+    }
+)
+
+
+def test_ward_enhancement_profile_registry_all_wards():
+    """Registry loads every expected ward from the YAML config."""
+    from shared.ward_enhancement_profile import WardEnhancementProfileRegistry
+
+    registry = WardEnhancementProfileRegistry.load_from_yaml(
+        "config/ward_enhancement_profiles.yaml"
+    )
+
+    assert set(registry.profiles.keys()) == EXPECTED_WARDS
+    for ward_id in EXPECTED_WARDS:
+        profile = registry.profiles[ward_id]
+        assert profile.recognizability_invariant
+        assert profile.use_case_acceptance_test
+
+
+def test_ward_enhancement_profile_registry_lookup():
+    """Registry provides .get() lookup by ward_id and .list_wards() enumeration."""
+    from shared.ward_enhancement_profile import WardEnhancementProfileRegistry
+
+    registry = WardEnhancementProfileRegistry.load_from_yaml(
+        "config/ward_enhancement_profiles.yaml"
+    )
+
+    album = registry.get("album")
+    assert album is not None
+    assert album.ward_id == "album"
+    assert "ocr_accuracy" in album.recognizability_tests
+
+    assert registry.get("nonexistent_ward") is None
+    assert set(registry.list_wards()) == EXPECTED_WARDS
+
+
+def test_ward_enhancement_profile_registry_missing_file():
+    """Missing YAML raises FileNotFoundError with a clear message."""
+    from shared.ward_enhancement_profile import WardEnhancementProfileRegistry
+
+    with pytest.raises(FileNotFoundError, match="not found"):
+        WardEnhancementProfileRegistry.load_from_yaml("config/does_not_exist.yaml")

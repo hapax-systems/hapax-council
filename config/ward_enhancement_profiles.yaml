@@ -1,0 +1,342 @@
+# Ward Enhancement Profiles Registry
+#
+# Spec: docs/superpowers/specs/2026-04-20-homage-ward-umbrella-design.md §4
+# Loaded by: shared.ward_enhancement_profile.WardEnhancementProfileRegistry
+#
+# Every enhancement PR touching any ward must satisfy the ward's profile:
+# recognizability invariant + use-case acceptance test + category allow/deny.
+# Edit this file in-repo; registry reloads on compositor restart.
+
+wards:
+
+  token_pole:
+    recognizability_invariant: >-
+      Vitruvian silhouette + token motion legible; face must not emerge
+      (HARDM binding); particle burst never resolves into face-like
+      clustering.
+    recognizability_tests:
+      - silhouette_edge_iou
+      - token_motion_legibility
+      - pearson_face_correlation
+    use_case_acceptance_test: >-
+      Operator sees token progress at >=80% accuracy; burst never reads
+      as facial expression.
+    acceptance_test_harness: tests/studio_compositor/test_token_pole_acceptance.py
+    accepted_enhancement_categories:
+      - edge_detect
+      - halftone
+      - chromatic_aberration
+    rejected_enhancement_categories:
+      - lens_distortion
+      - perspective
+      - kuwahara
+    spatial_dynamism_approved: true
+    oq_02_bound_applicable: true
+    hardm_binding: true
+    cvs_bindings:
+      - "CVS #8 non-manipulation"
+      - "CVS #16 anti-personification"
+
+  album:
+    recognizability_invariant: >-
+      Album title >=80% OCR; dominant contours edge-IoU >=0.65;
+      palette delta-E <=40 CIELAB; no humanoid bulges.
+    recognizability_tests:
+      - ocr_accuracy
+      - edge_iou
+      - palette_delta_e
+      - pearson_face_correlation
+    use_case_acceptance_test: >-
+      Operator/audience identify album at glance; title extractable.
+    acceptance_test_harness: tests/studio_compositor/test_album_acceptance.py
+    accepted_enhancement_categories:
+      - posterize
+      - kuwahara
+      - halftone
+      - palette_extract
+      - edge_detect
+      - chromatic_aberration
+      - scanlines
+      - film_grain
+    rejected_enhancement_categories:
+      - lens_distortion
+      - perspective
+      - depth_of_field
+    spatial_dynamism_approved: true
+    oq_02_bound_applicable: true
+    hardm_binding: false
+    cvs_bindings:
+      - "CVS #16 anti-personification"
+
+  stream_overlay:
+    recognizability_invariant: >-
+      Text readable >=95% of time; `>>>` prefix + bracket format persists.
+    recognizability_tests:
+      - ocr_accuracy
+      - format_preservation
+    use_case_acceptance_test: >-
+      Viewer reads status without squinting; format survives enhancement.
+    acceptance_test_harness: tests/studio_compositor/test_stream_overlay_acceptance.py
+    accepted_enhancement_categories:
+      - scanlines
+      - chromatic_aberration
+    rejected_enhancement_categories:
+      - halftone
+      - posterize
+      - kuwahara
+    spatial_dynamism_approved: false
+    oq_02_bound_applicable: true
+    hardm_binding: false
+    cvs_bindings: []
+
+  sierpinski:
+    recognizability_invariant: >-
+      Triangle geometry legible; no face clusters (Pearson <0.6);
+      YouTube frames never composite into face.
+    recognizability_tests:
+      - geometric_legibility
+      - pearson_face_correlation
+    use_case_acceptance_test: >-
+      Viewer sees pure geometry, not character.
+    acceptance_test_harness: tests/studio_compositor/test_sierpinski_acceptance.py
+    accepted_enhancement_categories:
+      - edge_detect
+      - halftone
+      - film_grain
+      - rd
+    rejected_enhancement_categories:
+      - glitch
+      - kuwahara
+    spatial_dynamism_approved: true
+    oq_02_bound_applicable: true
+    hardm_binding: true
+    cvs_bindings:
+      - "CVS #16 anti-personification"
+
+  activity_header:
+    recognizability_invariant: >-
+      Activity label legible; rotation mode readable as discrete token;
+      flash != expression.
+    recognizability_tests:
+      - ocr_accuracy
+      - format_preservation
+    use_case_acceptance_test: >-
+      Operator confirms activity state without tooltip.
+    acceptance_test_harness: tests/studio_compositor/test_activity_header_acceptance.py
+    accepted_enhancement_categories:
+      - scanlines
+      - chromatic_aberration
+      - bloom
+    rejected_enhancement_categories:
+      - posterize
+      - kuwahara
+      - halftone
+    spatial_dynamism_approved: false
+    oq_02_bound_applicable: true
+    hardm_binding: false
+    cvs_bindings: []
+
+  stance_indicator:
+    recognizability_invariant: >-
+      Stance value legible; `+H` prefix persists; pulse periodic not
+      emotional.
+    recognizability_tests:
+      - ocr_accuracy
+      - format_preservation
+    use_case_acceptance_test: >-
+      Operator reads stance from pulse rhythm alone.
+    acceptance_test_harness: tests/studio_compositor/test_stance_indicator_acceptance.py
+    accepted_enhancement_categories:
+      - scanlines
+      - chromatic_aberration
+    rejected_enhancement_categories:
+      - posterize
+      - kuwahara
+    spatial_dynamism_approved: false
+    oq_02_bound_applicable: true
+    hardm_binding: false
+    cvs_bindings:
+      - "CVS #8 non-manipulation"
+
+  impingement_cascade:
+    recognizability_invariant: >-
+      Salience bars interpretable as magnitude; no face clusters at
+      rows 4-6/10-12; decay monotonic.
+    recognizability_tests:
+      - bar_magnitude_legibility
+      - pearson_face_correlation
+      - decay_monotonicity
+    use_case_acceptance_test: >-
+      Observer understands signal priority from bar height; no
+      'expression' reads.
+    acceptance_test_harness: tests/studio_compositor/test_impingement_acceptance.py
+    accepted_enhancement_categories:
+      - halftone
+      - film_grain
+      - chromatic_aberration
+    rejected_enhancement_categories:
+      - kuwahara
+      - glitch
+      - bloom
+    spatial_dynamism_approved: true
+    oq_02_bound_applicable: true
+    hardm_binding: true
+    cvs_bindings:
+      - "CVS #16 anti-personification"
+
+  recruitment_candidate_panel:
+    recognizability_invariant: >-
+      Family tokens distinct; recency bars read as time-position;
+      age tail decays smoothly.
+    recognizability_tests:
+      - token_distinctness
+      - bar_legibility
+      - decay_smoothness
+    use_case_acceptance_test: >-
+      Operator glances to see recent recruitment without reading label.
+    acceptance_test_harness: tests/studio_compositor/test_recruitment_candidate_acceptance.py
+    accepted_enhancement_categories:
+      - halftone
+      - film_grain
+    rejected_enhancement_categories:
+      - kuwahara
+      - glitch
+    spatial_dynamism_approved: true
+    oq_02_bound_applicable: false
+    hardm_binding: false
+    cvs_bindings: []
+
+  thinking_indicator:
+    recognizability_invariant: >-
+      Label legible; dot breathing periodic; glyph != distress.
+    recognizability_tests:
+      - ocr_accuracy
+      - breathing_periodicity
+    use_case_acceptance_test: >-
+      Operator infers LLM status from breathing rate/phase.
+    acceptance_test_harness: tests/studio_compositor/test_thinking_indicator_acceptance.py
+    accepted_enhancement_categories:
+      - scanlines
+      - chromatic_aberration
+    rejected_enhancement_categories:
+      - halftone
+      - kuwahara
+      - glitch
+    spatial_dynamism_approved: false
+    oq_02_bound_applicable: true
+    hardm_binding: false
+    cvs_bindings:
+      - "CVS #8 non-manipulation"
+
+  pressure_gauge:
+    recognizability_invariant: >-
+      Cell count legible; gradient monotonic; threshold colors !=
+      emotion.
+    recognizability_tests:
+      - cell_count_legibility
+      - gradient_monotonicity
+    use_case_acceptance_test: >-
+      Operator reads stimmung from color + cell count without
+      consulting numeric value.
+    acceptance_test_harness: tests/studio_compositor/test_pressure_gauge_acceptance.py
+    accepted_enhancement_categories:
+      - bloom
+      - chromatic_aberration
+      - scanlines
+    rejected_enhancement_categories:
+      - posterize
+      - kuwahara
+      - halftone
+    spatial_dynamism_approved: false
+    oq_02_bound_applicable: true
+    hardm_binding: false
+    cvs_bindings:
+      - "CVS #8 non-manipulation"
+
+  activity_variety_log:
+    recognizability_invariant: >-
+      Cell count constant; scroll speed legible; no face-like
+      clustering.
+    recognizability_tests:
+      - cell_count_preservation
+      - scroll_legibility
+      - pearson_face_correlation
+    use_case_acceptance_test: >-
+      Observer understands activity history from cell patterns.
+    acceptance_test_harness: tests/studio_compositor/test_activity_variety_log_acceptance.py
+    accepted_enhancement_categories:
+      - halftone
+      - film_grain
+      - chromatic_aberration
+    rejected_enhancement_categories:
+      - kuwahara
+      - glitch
+      - posterize
+    spatial_dynamism_approved: true
+    oq_02_bound_applicable: false
+    hardm_binding: false
+    cvs_bindings: []
+
+  whos_here:
+    recognizability_invariant: >-
+      Count accurate + readable; `hapax:` prefix persists; glyphs !=
+      emoji/hand-wave.
+    recognizability_tests:
+      - ocr_accuracy
+      - format_preservation
+    use_case_acceptance_test: >-
+      Operator/audience glance to see audience size.
+    acceptance_test_harness: tests/studio_compositor/test_whos_here_acceptance.py
+    accepted_enhancement_categories:
+      - scanlines
+      - chromatic_aberration
+    rejected_enhancement_categories:
+      - halftone
+      - kuwahara
+      - posterize
+    spatial_dynamism_approved: false
+    oq_02_bound_applicable: true
+    hardm_binding: false
+    cvs_bindings:
+      - "CVS #16 anti-personification"
+
+  hardm_dot_matrix:
+    recognizability_invariant: >-
+      Grid != face (Pearson <0.6); cell count constant; glow-through-
+      scrim bloom asymmetry non-negotiable.
+    recognizability_tests:
+      - pearson_face_correlation
+      - cell_count_preservation
+      - bloom_asymmetry
+    use_case_acceptance_test: >-
+      Observer sees abstract grid, not stylized face.
+    acceptance_test_harness: tests/studio_compositor/test_hardm_dot_matrix_acceptance.py
+    accepted_enhancement_categories:
+      - halftone
+      - film_grain
+      - rd
+    rejected_enhancement_categories:
+      - kuwahara
+      - glitch
+      - posterize
+    spatial_dynamism_approved: true
+    oq_02_bound_applicable: true
+    hardm_binding: true
+    cvs_bindings:
+      - "CVS #8 non-manipulation"
+      - "CVS #16 anti-personification"
+
+  reverie:
+    recognizability_invariant: >-
+      Reverie orthogonal to ward enhancement; OQ-02 brightness ceiling
+      <=0.55.
+    recognizability_tests: []
+    use_case_acceptance_test: >-
+      Reverie's depth-field substrate legible; scrim effects uniform.
+    acceptance_test_harness: tests/studio_compositor/test_reverie_acceptance.py
+    accepted_enhancement_categories: []
+    rejected_enhancement_categories: []
+    spatial_dynamism_approved: false
+    oq_02_bound_applicable: true
+    hardm_binding: false
+    cvs_bindings: []

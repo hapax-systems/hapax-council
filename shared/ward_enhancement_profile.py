@@ -10,6 +10,9 @@ Reference:
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -112,3 +115,33 @@ class WardEnhancementProfile(BaseModel):
             "non-manipulation + anti-personification."
         ),
     )
+
+
+class WardEnhancementProfileRegistry:
+    """In-memory registry of ward enhancement profiles loaded from YAML.
+
+    The YAML config at ``config/ward_enhancement_profiles.yaml`` is the
+    operator-editable declarative binding of ward → profile. Ward IDs
+    become top-level keys under ``wards:``; each entry's fields match
+    ``WardEnhancementProfile``.
+    """
+
+    def __init__(self, profiles: dict[str, WardEnhancementProfile]) -> None:
+        self.profiles = profiles
+
+    @classmethod
+    def load_from_yaml(cls, yaml_path: str | Path) -> WardEnhancementProfileRegistry:
+        path = Path(yaml_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Ward enhancement profile config not found: {path}")
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        profiles: dict[str, WardEnhancementProfile] = {}
+        for ward_id, ward_data in (data.get("wards") or {}).items():
+            profiles[ward_id] = WardEnhancementProfile(ward_id=ward_id, **(ward_data or {}))
+        return cls(profiles)
+
+    def get(self, ward_id: str) -> WardEnhancementProfile | None:
+        return self.profiles.get(ward_id)
+
+    def list_wards(self) -> list[str]:
+        return list(self.profiles.keys())
