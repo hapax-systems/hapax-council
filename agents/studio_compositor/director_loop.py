@@ -966,6 +966,25 @@ class DirectorLoop:
         self._audio_control: SlotAudioControl | None = None
         self._running = False
         self._thread = None
+        # D-01 Phase 3b consumer: voice-tier impingements from daimonion's
+        # vocal_chain.emit_voice_tier_impingement() (producer wire is delta-
+        # zone, may not be active yet; consumer ships first per architecture
+        # spec docs/research/2026-04-20-d01-director-impingement-consumer-
+        # architecture.md). When the producer wire lands, the director's
+        # per-tick consume picks up tier transitions and updates the state
+        # written to /dev/shm/hapax-director/voice-tier-state.json — read
+        # by the salience-emphasis loop (Phase 8 item 11) and the camera-
+        # profile selector (Phase 8 item 5). Phase 8 scoring extension
+        # ships the tier-compatibility term at weight 0.0 (passive
+        # observable; promote after observation).
+        from shared.impingement_consumer import ImpingementConsumer
+
+        self._voice_tier_consumer = ImpingementConsumer(
+            _DMN_IMPINGEMENTS_FILE,
+            cursor_path=Path("/dev/shm/hapax-director/impingement-cursor-director.txt"),
+        )
+        self._current_voice_tier: int | None = None  # VoiceTier int value
+        self._current_programme_band: tuple[int, int] | None = None
         self._load_memory()
 
     def _load_memory(self) -> None:
@@ -1165,6 +1184,11 @@ class DirectorLoop:
                         ).start()
 
                 now = time.monotonic()
+                # D-01 Phase 3b: drain voice-tier impingements once per loop
+                # iteration (NOT once per perception interval — tier
+                # transitions can land between perception ticks and the
+                # state file should reflect the latest tier promptly).
+                self._consume_voice_tier_impingements()
                 if now - self._last_perception < PERCEPTION_INTERVAL:
                     time.sleep(0.5)
                     continue
@@ -1520,6 +1544,62 @@ class DirectorLoop:
             )
         except Exception:
             log.debug("_emit_micromove_fallback failed", exc_info=True)
+
+    def _consume_voice_tier_impingements(self) -> None:
+        """D-01 Phase 3b: drain VoiceTierImpingement records from the bus.
+
+        Updates ``self._current_voice_tier`` + ``self._current_programme_band``
+        and writes ``/dev/shm/hapax-director/voice-tier-state.json`` so the
+        salience-emphasis loop (Phase 8 item 11) and camera-profile
+        selector (Phase 8 item 5) can read the latest tier without
+        knowing about the impingement bus.
+
+        Per architecture spec §3.4 — Option A (per-tick poll). 30-s latency
+        ceiling acceptable for all currently-named consumer side-effects.
+        Failures are logged + swallowed; voice-tier state is best-effort
+        and the director's tick must not break on a malformed impingement.
+        """
+        try:
+            new_imps = self._voice_tier_consumer.read_new()
+        except Exception:
+            log.debug("voice-tier consumer read_new failed", exc_info=True)
+            return
+        if not new_imps:
+            return
+        from shared.typed_impingements import VoiceTierImpingement
+
+        latest_tier_imp: VoiceTierImpingement | None = None
+        for imp in new_imps:
+            try:
+                payload = VoiceTierImpingement.try_from(imp)
+            except Exception:
+                continue
+            if payload is None:
+                continue
+            latest_tier_imp = payload
+        if latest_tier_imp is None:
+            return
+        self._current_voice_tier = int(latest_tier_imp.tier)
+        self._current_programme_band = latest_tier_imp.programme_band
+        # Best-effort state-file write for salience-emphasis + camera-profile
+        # consumers. tmp+rename keeps the file atomic so a partial write
+        # doesn't surface to readers.
+        state_path = Path("/dev/shm/hapax-director/voice-tier-state.json")
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state = {
+                "tier": self._current_voice_tier,
+                "programme_band": list(self._current_programme_band),
+                "voice_path": latest_tier_imp.voice_path,
+                "monetization_risk": latest_tier_imp.monetization_risk,
+                "excursion": latest_tier_imp.excursion,
+                "ts": time.time(),
+            }
+            tmp = state_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(state), encoding="utf-8")
+            tmp.replace(state_path)
+        except OSError:
+            log.warning("voice-tier state write failed", exc_info=True)
 
     def _emit_degraded_silence_hold(self) -> None:
         """Task #122: emit a silence-hold intent and skip the LLM tick.
