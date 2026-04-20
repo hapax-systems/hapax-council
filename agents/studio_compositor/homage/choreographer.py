@@ -203,6 +203,7 @@ class Choreographer:
         narrative_structural_intent_file: Path = _NARRATIVE_STRUCTURAL_INTENT_FILE,
         source_registry: object | None = None,
         rng: random.Random | None = None,
+        programme_provider=None,
     ) -> None:
         self._pending_file = pending_file
         self._uniforms_file = uniforms_file
@@ -212,6 +213,14 @@ class Choreographer:
         self._voice_register_file = voice_register_file
         self._structural_intent_file = structural_intent_file
         self._narrative_structural_intent_file = narrative_structural_intent_file
+        # Phase 11 of the programme-layer plan: programme priors act as a
+        # SOFT default rotation-mode source — slotted between structural
+        # intent (which Phase 5 already feeds programme context into) and
+        # the absolute default. Structural / narrative intents always win
+        # over programme priors, preserving the grounding-expansion
+        # property: even a `paused`-priored programme cannot prevent the
+        # structural director from emitting `burst` under pressure.
+        self._programme_provider = programme_provider
         # Optional SourceRegistry handle (duck-typed). When provided, the
         # choreographer cross-checks registered backend instances against
         # ``HomageSubstrateSource`` so per-instance substrate declarations
@@ -600,7 +609,44 @@ class Choreographer:
         if structural_mode is not None:
             return structural_mode
 
+        # 3) Programme prior — Phase 11. Active programme's
+        # ``homage_rotation_modes[0]`` acts as a soft default when no
+        # director intent file exists. Structural + narrative intents
+        # always win above; this is purely a better default than the
+        # absolute fallback when programme context is available.
+        programme_mode = self._read_rotation_mode_from_programme()
+        if programme_mode is not None:
+            return programme_mode
+
         return default_mode
+
+    def _read_rotation_mode_from_programme(
+        self,
+    ) -> Literal["sequential", "random", "weighted_by_salience", "paused"] | None:
+        """Pick the first prior mode from the active programme, if any.
+
+        Returns ``None`` when no provider is wired, the provider returns
+        ``None``, the provider raises, the programme has no rotation
+        priors, or the first prior is an unknown value. Defensive in
+        every direction — programme lookup must never break the
+        choreographer's per-tick cycle.
+        """
+        if self._programme_provider is None:
+            return None
+        try:
+            prog = self._programme_provider()
+        except Exception:
+            log.debug("programme_provider raised", exc_info=True)
+            return None
+        if prog is None:
+            return None
+        modes = prog.constraints.homage_rotation_modes
+        if not modes:
+            return None
+        first = modes[0]
+        if first in ("sequential", "random", "weighted_by_salience", "paused"):
+            return first  # type: ignore[return-value]
+        return None
 
     @staticmethod
     def _default_rotation_mode() -> Literal[
