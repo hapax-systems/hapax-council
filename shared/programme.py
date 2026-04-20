@@ -122,6 +122,17 @@ class ProgrammeConstraintEnvelope(BaseModel):
     # integration.md.
     voice_tier_band_prior: tuple[int, int] | None = None
 
+    # Monetization opt-ins — Phase 5 of the demonet plan. The set of
+    # capability names the programme has explicitly opted in to
+    # despite their medium-risk classification (see
+    # docs/governance/monetization-risk-classification.md §medium).
+    # The MonetizationRiskGate admits medium-risk capabilities only
+    # when their name appears in this set for the active programme;
+    # high-risk capabilities are blocked regardless (governance-side
+    # policy). Validator rejects known-invalid tokens (whitespace,
+    # empty strings) at envelope construction.
+    monetization_opt_ins: set[str] = Field(default_factory=set)
+
     @field_validator("capability_bias_negative")
     @classmethod
     def _negative_bias_strictly_positive(cls, v: dict[str, float]) -> dict[str, float]:
@@ -174,6 +185,22 @@ class ProgrammeConstraintEnvelope(BaseModel):
             )
         if low > high:
             raise ValueError(f"voice_tier_band_prior={v!r} — low ({low}) must be ≤ high ({high}).")
+        return v
+
+    @field_validator("monetization_opt_ins")
+    @classmethod
+    def _opt_ins_well_formed(cls, v: set[str]) -> set[str]:
+        for name in v:
+            if not isinstance(name, str):
+                raise ValueError(
+                    f"monetization_opt_ins element {name!r} must be a string capability name"
+                )
+            stripped = name.strip()
+            if not stripped or stripped != name:
+                raise ValueError(
+                    f"monetization_opt_ins element {name!r} — must be non-empty "
+                    "and contain no leading/trailing whitespace"
+                )
         return v
 
     @field_validator("surface_threshold_prior", "reverie_saturation_target")
@@ -304,6 +331,18 @@ class Programme(BaseModel):
         if not math.isfinite(v) or v <= 0.0:
             raise ValueError("planned_duration_s must be > 0")
         return v
+
+    @property
+    def monetization_opt_ins(self) -> set[str]:
+        """Delegate to ``constraints.monetization_opt_ins``.
+
+        ``MonetizationRiskGate._ProgrammeLike`` protocol expects the set
+        directly on the Programme object. Rather than require callers
+        to unwrap ``.constraints`` (which would leak envelope structure
+        into the gate's signature), Programme exposes the opt-ins at
+        the top level as a read-only view. Demonet Phase 5.
+        """
+        return self.constraints.monetization_opt_ins
 
     @model_validator(mode="after")
     def _end_after_start(self) -> Programme:
