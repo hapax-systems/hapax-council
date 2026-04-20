@@ -61,8 +61,8 @@ nodes:
   - id: livestream-loopback
     kind: loopback
     pipewire_name: hapax-livestream
-    description: Hapax Livestream → Ryzen analog (→ L6 ch 5 via hardware)
-    target_object: alsa_output.pci-0000_73_00.6.analog-stereo
+    description: Hapax Livestream → livestream-duck → Ryzen analog (→ L6 ch 5 via hardware)
+    target_object: hapax-livestream-duck
     channels:
       count: 2
       positions: [FL, FR]
@@ -75,6 +75,27 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+
+  # ─── Broadcast-bound TTS duck (audio-normalization PR-2) ──────────
+  # filter_chain interposed between hapax-livestream and the Ryzen
+  # analog sink. Default gain 1.0 (no-op pass-through); when
+  # tts_active=true is published to /dev/shm/hapax-compositor/voice-state.json
+  # the consumer (PR-3 TtsDuckController) drops gain to 0.316 (~ -10 dB)
+  # via PipeWire control-interface socket. Strategy doc §4.2 row 1.
+  - id: livestream-duck
+    kind: filter_chain
+    pipewire_name: hapax-livestream-duck
+    description: TTS-driven ducker on the broadcast path (hapax-livestream → Ryzen)
+    target_object: alsa_output.pci-0000_73_00.6.analog-stereo
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      duck_signal_path: /dev/shm/hapax-compositor/voice-state.json
+      duck_key: tts_active
+      duck_gain_db: -10.0
+      default_gain: 1.0
+      duck_gain: 0.316
 
   # ─── Vinyl-to-stream loopback (D-03 follow-up #217) ──────────────
   # Virtual sink that accepts vinyl-source audio (Handytraxx, Korg,
@@ -116,7 +137,13 @@ edges:
     makeup_gain_db: 12.0
 
   # Virtual sinks → Ryzen (software mix at the hardware sink).
+  # Audio-normalization PR-2: livestream path now interposes the
+  # livestream-duck filter_chain between hapax-livestream and the
+  # Ryzen sink so PR-3's TtsDuckController can attenuate -10 dB
+  # while TTS is playing without touching private-loopback.
   - source: livestream-loopback
+    target: livestream-duck
+  - source: livestream-duck
     target: ryzen-analog-out
   - source: private-loopback
     target: ryzen-analog-out
