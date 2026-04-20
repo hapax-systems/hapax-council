@@ -424,3 +424,44 @@ class Programme(BaseModel):
     def validate_soft_priors_only(self) -> None:
         """Re-run the envelope validators — callable by consumers as a self-check."""
         ProgrammeConstraintEnvelope.model_validate(self.constraints.model_dump())
+
+
+class ProgrammePlan(BaseModel):
+    """A 2-5 programme sequence emitted by the Hapax planner (Phase 3).
+
+    The planner LLM emits this at show-start and at each programme
+    boundary; the ProgrammePlanStore persists each Programme; the
+    ProgrammeManager walks them.
+
+    The ``plan_author`` is a `Literal` pinned to ``"hapax-director-planner"``
+    — the operator does NOT write programme plans (per memory
+    ``feedback_hapax_authors_programmes``). The validator rejects any
+    other authorship token at construction so a vault-supplied JSON
+    masquerading as a plan is unambiguously rejected.
+
+    All programmes in a plan share the parent ``show_id``; the
+    cross-reference invariant catches mistyped shows at construction.
+    """
+
+    plan_id: str
+    show_id: str
+    plan_author: Literal["hapax-director-planner"] = "hapax-director-planner"
+    programmes: list[Programme] = Field(min_length=1, max_length=5)
+    created_at: float = Field(default_factory=time.time)
+
+    @field_validator("plan_id", "show_id")
+    @classmethod
+    def _nonempty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("id must be non-empty")
+        return v
+
+    @model_validator(mode="after")
+    def _programmes_share_show(self) -> ProgrammePlan:
+        for p in self.programmes:
+            if p.parent_show_id != self.show_id:
+                raise ValueError(
+                    f"programme {p.programme_id!r} has parent_show_id="
+                    f"{p.parent_show_id!r} but plan show_id={self.show_id!r}"
+                )
+        return self
