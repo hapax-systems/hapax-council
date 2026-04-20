@@ -269,6 +269,37 @@ try:
         ("cell",),
     )
 
+    # Audio-pathways Phase 3 (#134) — voice-embedding ducking gate metrics.
+    # Spec docs/superpowers/specs/2026-04-18-audio-pathways-audit-design.md §3.2.
+    _audio_ducking_triggered = Counter(
+        "hapax_audio_ducking_triggered_total",
+        (
+            "VAD ducking decisions, labelled by reason: "
+            "vad_and_embedding (high-confidence operator speech), "
+            "vad_only_fallback (VAD fired but embedding match below "
+            "high threshold), no_duck_phantom (VAD fired but embedding "
+            "match below low threshold — phantom VAD detected)."
+        ),
+        ("reason",),
+    )
+    _audio_echo_cancel_active = Gauge(
+        "hapax_audio_echo_cancel_active",
+        "1 iff the WebRTC echo-cancel virtual source is the active capture.",
+    )
+    _audio_phantom_vad_detected = Counter(
+        "hapax_audio_phantom_vad_detected_total",
+        (
+            "Count of VAD trigger events the embedding gate identified as "
+            "phantom (likely YouTube crossfeed or other non-operator "
+            "voice). >0 = the gate is doing its job."
+        ),
+    )
+    _audio_source_active = Gauge(
+        "hapax_audio_source_active",
+        "1.0 for the audio source the daimonion currently consumes; 0 for others.",
+        ("source_name",),
+    )
+
     _METRICS_AVAILABLE = True
 except Exception:  # pragma: no cover — prometheus_client missing at install time
     log.info("prometheus_client unavailable — director observability metrics are no-ops")
@@ -537,6 +568,65 @@ def emit_homage_choreographer_rejection(reason: str) -> None:
         _homage_choreographer_rejection_total.labels(reason=reason).inc()
     except Exception:
         log.warning("emit_homage_choreographer_rejection failed", exc_info=True)
+
+
+def emit_audio_ducking_decision(reason: str) -> None:
+    """Record a ducking-trigger decision. Audio-pathways Phase 3 (#134).
+
+    Reason taxonomy:
+      - ``vad_and_embedding`` — VAD fired AND embedding match >= 0.75
+        → duck fired with high confidence
+      - ``vad_only_fallback`` — VAD fired AND 0.4 <= embedding_match < 0.75
+        → duck fired, low confidence (operator may be speaking through
+        room noise)
+      - ``no_duck_phantom`` — VAD fired AND embedding_match < 0.4
+        → duck NOT fired, phantom VAD detected (likely YouTube
+        crossfeed or other non-operator voice)
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _audio_ducking_triggered.labels(reason=reason).inc()
+        if reason == "no_duck_phantom":
+            _audio_phantom_vad_detected.inc()
+    except Exception:
+        log.warning("emit_audio_ducking_decision failed", exc_info=True)
+
+
+def emit_audio_echo_cancel_active(active: bool) -> None:
+    """Set the echo-cancel-active gauge. Audio-pathways Phase 3 (#134)."""
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _audio_echo_cancel_active.set(1.0 if active else 0.0)
+    except Exception:
+        log.warning("emit_audio_echo_cancel_active failed", exc_info=True)
+
+
+def emit_audio_source_active(source_name: str) -> None:
+    """Mark the named audio source active (1.0). Audio-pathways Phase 3 (#134).
+
+    Other source-name labels keep their previously-set values; the
+    Prometheus consumer takes the labelled-1.0 series as the current
+    source. Use ``emit_audio_source_inactive(name)`` to zero a stale
+    label when switching.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _audio_source_active.labels(source_name=source_name).set(1.0)
+    except Exception:
+        log.warning("emit_audio_source_active failed", exc_info=True)
+
+
+def emit_audio_source_inactive(source_name: str) -> None:
+    """Mark the named audio source inactive (0.0). Audio-pathways Phase 3 (#134)."""
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _audio_source_active.labels(source_name=source_name).set(0.0)
+    except Exception:
+        log.warning("emit_audio_source_inactive failed", exc_info=True)
 
 
 def emit_homage_choreographer_substrate_skip(source: str) -> None:
