@@ -294,6 +294,33 @@ class TestAudit:
         assert "live nodes:     0" in result.stdout
 
 
+class TestWatchdog:
+    def test_dry_run_prints_commands(self) -> None:
+        """Dry-run must emit both pactl commands and not exec."""
+        result = _run(["watchdog", "--dry-run"])
+        assert result.returncode == 0
+        assert "pactl set-card-profile alsa_card.pci-0000_73_00.6 off" in result.stdout
+        assert (
+            "pactl set-card-profile alsa_card.pci-0000_73_00.6 output:analog-stereo"
+            in result.stdout
+        )
+
+    def test_dry_run_custom_card(self) -> None:
+        result = _run(
+            [
+                "watchdog",
+                "--card",
+                "alsa_card.custom",
+                "--profile",
+                "output:hdmi-stereo",
+                "--dry-run",
+            ]
+        )
+        assert result.returncode == 0
+        assert "alsa_card.custom" in result.stdout
+        assert "output:hdmi-stereo" in result.stdout
+
+
 class TestInvalidDescriptor:
     def test_dangling_edge_exits_1(self, tmp_path: Path) -> None:
         bad = _write_yaml(

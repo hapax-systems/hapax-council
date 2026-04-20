@@ -275,6 +275,49 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_watchdog(args: argparse.Namespace) -> int:
+    """Run the Ryzen HDA codec pin-routing-stale recovery sequence.
+
+    See ``reference_ryzen_codec_pin_glitch`` memory / research §5 of
+    2026-04-20-unified-audio-architecture-design.md. The Ryzen codec's
+    pin multiplexer silently desynchronises from PipeWire after a
+    PipeWire restart that also enumerates a new USB audio device
+    (operator report: S-4 plug-in 2026-04-20). ``pactl`` reports the
+    sink as RUNNING and unmuted but physical output stays silent until
+    the card profile is toggled off and back on.
+
+    This subcommand runs the known-good recovery. Intentionally thin
+    — no RMS monitoring yet (deferred to a proper watchdog loop).
+    Operator invokes this when voice goes silent post-restart; CI
+    doesn't run it.
+
+    With ``--dry-run``, prints the pactl commands without executing.
+    """
+    card = args.card or "alsa_card.pci-0000_73_00.6"
+    profile = args.profile or "output:analog-stereo"
+    commands = [
+        ["pactl", "set-card-profile", card, "off"],
+        ["pactl", "set-card-profile", card, profile],
+    ]
+    if args.dry_run:
+        for cmd in commands:
+            print(" ".join(cmd))
+        return 0
+
+    import subprocess
+    import time as _time
+
+    for cmd in commands:
+        print("$ " + " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            print(f"error: {result.stderr}", file=sys.stderr)
+            return 1
+        _time.sleep(0.2)  # let the codec settle between toggles
+    print(f"pin-routing recovery applied to {card} → {profile}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="hapax-audio-topology",
@@ -321,6 +364,28 @@ def main() -> int:
         help="Saved pw-dump JSON path instead of invoking pw-dump live.",
     )
     p_audit.set_defaults(func=cmd_audit)
+
+    p_watchdog = sub.add_parser(
+        "watchdog",
+        help=(
+            "Run the Ryzen HDA codec pin-routing recovery "
+            "(see reference_ryzen_codec_pin_glitch memory)."
+        ),
+    )
+    p_watchdog.add_argument(
+        "--card",
+        help="ALSA card id to reset (default: alsa_card.pci-0000_73_00.6).",
+    )
+    p_watchdog.add_argument(
+        "--profile",
+        help="Profile to re-activate (default: output:analog-stereo).",
+    )
+    p_watchdog.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the pactl commands without executing.",
+    )
+    p_watchdog.set_defaults(func=cmd_watchdog)
 
     args = parser.parse_args()
     return args.func(args)
