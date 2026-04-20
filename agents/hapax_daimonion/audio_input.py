@@ -71,7 +71,15 @@ def resolve_source(
     """
     if not candidates:
         return fallback
-    nodes = pw_cli()
+    try:
+        nodes = pw_cli()
+    except Exception:
+        # Fail-open: a raising runner (pw-cli missing, subprocess
+        # failure, etc.) must not crash the daimonion's startup. Same
+        # posture as an empty pw-cli output → degrade to fallback so
+        # the wake word path stays alive against the raw mic.
+        log.warning("pw-cli runner raised; falling back to %s", fallback, exc_info=True)
+        return fallback
     if not nodes:
         log.warning("pw-cli output empty; falling back to %s", fallback)
         return fallback
