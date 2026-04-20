@@ -147,6 +147,19 @@ class TestSpeakMicromoveGate:
         # Other reasons must NOT trigger speech (visual-only fallback).
         mock_speak.assert_not_called()
 
+    def test_micromove_actually_emits_intent_artifacts(self) -> None:
+        """Regression pin for the DirectorIntent.stance bug: pre-fix the
+        construction always raised ValidationError and the fallback
+        emitted nothing — every llm_empty tick was a silent no-op
+        violation of the operator no-vacuum invariant."""
+        director = _make_director()
+        with patch.object(dl_mod, "_emit_intent_artifacts") as mock_emit:
+            director._emit_micromove_fallback(reason="llm_empty", condition_id="test")
+        mock_emit.assert_called_once()
+        # Verify the constructed intent has the stance field set.
+        intent = mock_emit.call_args.args[0]
+        assert intent.stance is not None
+
     def test_speak_failure_does_not_break_micromove_emission(self) -> None:
         """Speak failure must NOT raise out of _emit_micromove_fallback —
         suppression of speak fault is the contract. (The downstream

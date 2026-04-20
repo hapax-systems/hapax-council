@@ -1525,8 +1525,18 @@ class DirectorLoop:
                 log.debug("micromove structural_intent construct failed", exc_info=True)
                 structural = NarrativeStructuralIntent()
             try:
+                # Stance defaults to NOMINAL — micromoves are baseline
+                # output, not a self-assessment shift. Without this the
+                # entire fallback path silently fails Pydantic validation
+                # (DirectorIntent.stance is a required field; pre-fix this
+                # construction always raised ValidationError, was caught,
+                # and the fallback emitted nothing — operator no-vacuum
+                # invariant was violated for every llm_empty tick).
+                from shared.stimmung import Stance as _Stance
+
                 intent = DirectorIntent(
                     activity="observe",
+                    stance=_Stance.NOMINAL,
                     narrative_text=f"[micromove:{reason}] {narrative}",
                     grounding_provenance=[],
                     compositional_impingements=[impingement],
