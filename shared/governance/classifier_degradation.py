@@ -146,10 +146,18 @@ def classify_with_fallback(
     3. ``mode=None`` (default) consults env: ``FAIL_OPEN_ENV=="1"``
        means FAIL_OPEN, otherwise FAIL_CLOSED.
 
-    Timeout enforcement is the classifier's responsibility — it raises
-    ``ClassifierTimeout`` when the backend call exceeds its budget.
-    ``timeout_s`` is forwarded to the classifier contract for callers
-    that surface it on the Classifier Protocol (not required).
+    **Timeout enforcement is POST-HOC and best-effort** (D-24 §8.6).
+    The classifier contract ``classify()`` has no built-in deadline —
+    we check ``elapsed > timeout_s`` *after* the call returns and
+    synthesize a ``ClassifierTimeout`` raise. This means a genuinely-
+    hung classifier (e.g. a TabbyAPI request that never completes)
+    will block this call indefinitely; only an overly-slow-but-
+    completing classifier triggers the synthetic timeout. Hard
+    deadline enforcement (via ``signal.alarm`` or async cancellation)
+    is out of scope here — the per-classifier implementation is
+    responsible for its own hard timeouts. The ``timeout_s`` argument
+    is forwarded to the classifier contract for callers that surface
+    it on the Classifier Protocol (not required).
 
     ``audit_writer`` (D-23) is an optional ``MonetizationEgressAudit``-
     like object; when provided, every decision (success or fallback)

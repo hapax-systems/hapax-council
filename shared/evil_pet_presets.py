@@ -45,12 +45,16 @@ log = logging.getLogger(__name__)
 
 EVIL_PET_MIDI_CHANNEL: Final[int] = 0  # channel 1 on the wire
 
-# Voice-safe base scene — mirrors scripts/evil-pet-configure-base.py §3.8.
-# Applied as the starting point for every non-granular preset so a
-# recall into e.g. "hapax-tier-2" brings a fresh voice-safe slate plus
-# tier-specific overrides, not an unpredictable hold-over from whatever
-# state the engine was in.
-_BASE_SCENE: Final[dict[int, int]] = {
+# Voice-safe base scene — applied as the starting point for every
+# non-granular preset so a recall into e.g. "hapax-tier-2" brings a
+# fresh voice-safe slate plus tier-specific overrides, not an
+# unpredictable hold-over from whatever state the engine was in.
+#
+# D-24 §11.3: promoted from a private _BASE_SCENE to a public module
+# constant so scripts/evil-pet-configure-base.py and other callers
+# can reference the single source of truth rather than duplicating
+# the same 16 CC values across files.
+BASE_SCENE: Final[dict[int, int]] = {
     11: 0,  # Grains volume → 0 (granular off)
     85: 0,  # Overtone volume → 0
     40: 95,  # Mix → 75% wet
@@ -87,7 +91,7 @@ class EvilPetPreset:
 
 def _tier_preset(tier: VoiceTier) -> EvilPetPreset:
     """Build a voice-tier preset: base scene + tier's cc_overrides."""
-    ccs = dict(_BASE_SCENE)
+    ccs = dict(BASE_SCENE)
     profile = TIER_CATALOG[tier]
     for _device, _channel, cc, value, _note in profile.cc_overrides:
         ccs[cc] = value
@@ -104,7 +108,7 @@ def _tier_preset(tier: VoiceTier) -> EvilPetPreset:
 # daimonion-side dependency; the values are load-bearing governance
 # (Content ID defeat thresholds per Smitelli 2020).
 _MODE_D_CCS: Final[dict[int, int]] = {
-    **_BASE_SCENE,
+    **BASE_SCENE,
     11: 120,  # Grains volume → 94% (engine fully engaged)
     40: 127,  # Mix → 100% wet (kill dry signal)
     80: 64,  # Filter type → bandpass (confirm)
@@ -129,7 +133,7 @@ PRESETS: Final[dict[str, EvilPetPreset]] = {
         EvilPetPreset(
             name="hapax-bypass",
             description="Voice-safe bypass — base scene, grains off, voice-friendly reverb",
-            ccs=_BASE_SCENE,
+            ccs=BASE_SCENE,
         ),
     )
 }
