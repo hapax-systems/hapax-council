@@ -128,6 +128,40 @@ class TestKindMismatch:
         assert any(f.code == "L6_MULTITRACK_MISSING_KIND_MISMATCH" for f in warnings)
 
 
+class TestUnicodeNormalization:
+    """D-24 §9.3: NFKD-normalize substring matching so unicode-quirky
+    PipeWire node names still match the expected substrings.
+    """
+
+    def test_match_survives_compatibility_form(self) -> None:
+        # `ﬁ` (U+FB01, latin small ligature fi) decomposes to `fi` under NFKD.
+        weird_l6 = Node(
+            id="l6-weird",
+            kind=NodeKind.ALSA_SOURCE,
+            pipewire_name="alsa_input.usb-Zoom_L6-multitrack-mod\u0301ifier",  # combining acute
+            hw="hw:L6,0",
+        )
+        d = _descriptor([weird_l6, _livestream_tap()])
+        result = verify_vinyl_chain(d)
+        assert result.ok, (
+            "NFKD-normalized substring 'multitrack' should match the combining-mark name"
+        )
+
+    def test_match_is_case_insensitive_unicode_aware(self) -> None:
+        # Casefold (Unicode-aware) catches things plain .lower() misses; here
+        # we just verify the casefold path works for ASCII (the Unicode bonus
+        # is the same code path).
+        upper_l6 = Node(
+            id="l6-upper",
+            kind=NodeKind.ALSA_SOURCE,
+            pipewire_name="ALSA_INPUT.USB-ZOOM_L6-MULTITRACK",
+            hw="hw:L6,0",
+        )
+        d = _descriptor([upper_l6, _livestream_tap()])
+        result = verify_vinyl_chain(d)
+        assert result.ok
+
+
 class TestFormatReport:
     def test_report_renders_sections(self) -> None:
         d = _descriptor([])

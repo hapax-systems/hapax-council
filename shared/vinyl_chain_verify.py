@@ -1,5 +1,12 @@
 """Vinyl broadcast signal-chain verifier — software-side wiring (#195).
 
+D-24 §9.3: PipeWire node names can contain unicode (smart quotes,
+combining marks, etc.) depending on hardware naming. Substring matching
+uses ``unicodedata.normalize('NFKD', ...)`` + lowercase before
+comparison so "Korg HandyTraxx" matches "korg handytraxx" and Unicode
+look-alikes don't silently fail.
+
+
 Alpha handoff Tier 4 #16. The vinyl broadcast chain's hardware topology
 (Handytraxx → Evil Pet + Torso S-4 → L6 → PipeWire → RTMP) is operator-
 owned per
@@ -39,6 +46,7 @@ Reference:
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -100,6 +108,23 @@ _EXPECTED_NODES: list[tuple[str, NodeKind, VinylChainSeverity, str, str]] = [
 ]
 
 
+def _normalize(s: str) -> str:
+    """NFKD-normalize + casefold for unicode-robust substring matching.
+
+    PipeWire node names can carry compatibility forms (e.g. fullwidth
+    characters, ligatures, smart quotes); NFKD decomposes those to
+    their canonical components. ``casefold()`` is the Unicode-aware
+    equivalent of ``lower()`` and handles non-ASCII case correctly
+    (e.g. German ß → ss).
+    """
+    return unicodedata.normalize("NFKD", s).casefold()
+
+
+def _norm_match(needle: str, haystack: str) -> bool:
+    """``needle in haystack`` after NFKD normalization on both sides."""
+    return _normalize(needle) in _normalize(haystack)
+
+
 def verify_vinyl_chain(
     descriptor: TopologyDescriptor,
     *,
@@ -125,7 +150,7 @@ def verify_vinyl_chain(
     result = VinylChainVerification()
 
     for substring, kind, severity, code, remediation in _EXPECTED_NODES:
-        matches = [n for n in descriptor.nodes if substring.lower() in n.pipewire_name.lower()]
+        matches = [n for n in descriptor.nodes if _norm_match(substring, n.pipewire_name)]
         if not matches:
             result.add(
                 VinylChainFinding(
@@ -161,7 +186,7 @@ def verify_vinyl_chain(
     if mode_d_active:
         handytraxx_substrings = ("korg", "handytraxx", "line-in")
         found_source = any(
-            any(s in n.pipewire_name.lower() for s in handytraxx_substrings)
+            any(_norm_match(s, n.pipewire_name) for s in handytraxx_substrings)
             for n in descriptor.nodes
         )
         if not found_source:
@@ -183,7 +208,7 @@ def verify_vinyl_chain(
     if s4_expected:
         s4_substrings = ("torso", "s-4", "s4")
         found_s4 = any(
-            any(s in n.pipewire_name.lower() for s in s4_substrings) for n in descriptor.nodes
+            any(_norm_match(s, n.pipewire_name) for s in s4_substrings) for n in descriptor.nodes
         )
         if not found_s4:
             result.add(
