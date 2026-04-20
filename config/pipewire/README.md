@@ -127,6 +127,27 @@ ffprobe -v error -show_format -show_streams /tmp/vinyl-probe.wav
 #    (Audio Mixer → 24c capture channel should show non-silent meters).
 ```
 
+## S-4 USB content loopback (evilpet-s4-routing Phase 1, R3)
+
+`hapax-s4-loopback.conf` exposes a stereo virtual sink
+(`hapax-s4-content`) that the Elektron Torso S-4 (or any USB-direct
+content source) writes to. The loopback forwards into
+`hapax-livestream-tap` so OBS sees S-4 content alongside L6 main mix
+and vinyl, without serial processing through the Evil Pet (R3 =
+parallel path per spec §4).
+
+Install + verify:
+
+```fish
+cp config/pipewire/hapax-s4-loopback.conf ~/.config/pipewire/pipewire.conf.d/
+systemctl --user restart pipewire pipewire-pulse wireplumber
+pactl list short sinks | grep hapax-s4-content
+```
+
+Route S-4 USB output through the loopback by selecting **S-4 Content**
+as the sink target in pavucontrol or via a wireplumber rule pinning
+`alsa_input.usb-Elektron_*` → `hapax-s4-content`.
+
 ## Troubleshooting
 
 - **Sink does not appear after install:** verify `pipewire.service` and

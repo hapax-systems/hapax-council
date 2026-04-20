@@ -141,3 +141,57 @@ def test_livestream_duck_conf_file_exists() -> None:
     assert "hapax-livestream-duck" in text
     assert "filter-chain" in text
     assert "alsa_output.pci-0000_73_00.6.analog-stereo" in text
+
+
+# ── evilpet-s4-routing Phase 1: S-4 USB loopback descriptor ───────────
+
+
+def test_canonical_has_s4_loopback_node() -> None:
+    """The S-4 USB content loopback must be present (R3 routing).
+
+    Plan Phase 1 / spec §4 R3: stereo loopback ``hapax-s4-content``
+    routes S-4 USB output to ``hapax-livestream-tap`` as a parallel
+    content path (NOT serial after Evil Pet).
+    """
+    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+    s4 = d.node_by_id("s4-loopback")
+    assert s4 is not None, "s4-loopback node missing — evilpet-s4 Phase 1 unshipped"
+    assert s4.kind == "loopback"
+    assert s4.pipewire_name == "hapax-s4-content"
+
+
+def test_s4_loopback_targets_livestream_tap() -> None:
+    """S-4 must land on hapax-livestream-tap, not Evil Pet capture (R3 = parallel)."""
+    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+    s4 = d.node_by_id("s4-loopback")
+    assert s4.target_object == "hapax-livestream-tap"
+
+
+def test_s4_loopback_is_stereo() -> None:
+    """S-4 carries stereo content — FL+FR, count 2."""
+    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+    s4 = d.node_by_id("s4-loopback")
+    assert s4.channels.count == 2
+    assert list(s4.channels.positions) == ["FL", "FR"]
+
+
+def test_s4_loopback_carries_format_params() -> None:
+    """S-4 USB stream specifies S32 / 48 kHz so PipeWire negotiates
+    the loopback at the device's native format without resampling."""
+    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+    s4 = d.node_by_id("s4-loopback")
+    assert s4.params["audio.format"] == "S32"
+    assert s4.params["audio.rate"] == 48000
+
+
+def test_s4_loopback_conf_file_exists() -> None:
+    """config/pipewire/hapax-s4-loopback.conf is the deployable conf
+    the operator drops into ~/.config/pipewire/pipewire.conf.d/."""
+    conf_path = (
+        Path(__file__).resolve().parents[2] / "config" / "pipewire" / "hapax-s4-loopback.conf"
+    )
+    assert conf_path.exists(), "PipeWire conf file for s4-loopback missing"
+    text = conf_path.read_text()
+    assert "hapax-s4-content" in text
+    assert "hapax-livestream-tap" in text
+    assert "libpipewire-module-loopback" in text

@@ -111,6 +111,25 @@ nodes:
       count: 2
       positions: [FL, FR]
 
+  # ─── S-4 USB loopback (evilpet-s4-routing Phase 1, R3 path) ──────
+  # Stereo virtual sink that the Elektron Torso S-4 USB output (or
+  # any USB-direct content source) writes to. Forwards to the
+  # livestream-tap as a parallel path (NOT serial after Evil Pet) per
+  # spec §4 R3. Operator selects ``hapax-s4-content`` as the S-4
+  # USB sink target via wireplumber rule or pavucontrol. Conf:
+  # config/pipewire/hapax-s4-loopback.conf.
+  - id: s4-loopback
+    kind: loopback
+    pipewire_name: hapax-s4-content
+    description: S-4 USB stereo content → hapax-livestream-tap (parallel to Evil Pet)
+    target_object: hapax-livestream-tap
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      audio.format: S32
+      audio.rate: 48000
+
   # ─── Hardware endpoints ───────────────────────────────────────────
   - id: ryzen-analog-out
     kind: alsa_sink
