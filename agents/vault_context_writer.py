@@ -140,13 +140,28 @@ def _append_to_daily(entry: str) -> bool:
     today = datetime.now().strftime("%Y-%m-%d")
     path = f"40-calendar/daily/{today}.md"
 
-    # Read current content — localhost Obsidian REST API uses self-signed cert
-    resp = requests.get(
-        f"{OBSIDIAN_API}/vault/{path}",
-        headers={"Authorization": f"Bearer {api_key}", "Accept": "text/markdown"},
-        verify=False,  # noqa: S501  # nosec B501 - localhost self-signed
-        timeout=5,
-    )
+    # Read current content — localhost Obsidian REST API uses self-signed cert.
+    # Connection failures (Obsidian desktop not running) are expected and
+    # non-fatal — return False + info-log so the systemd unit exits clean
+    # rather than triggering notify-failure on every 15-min tick when the
+    # operator happens to have Obsidian closed.
+    try:
+        resp = requests.get(
+            f"{OBSIDIAN_API}/vault/{path}",
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "text/markdown"},
+            verify=False,  # noqa: S501  # nosec B501 - localhost self-signed
+            timeout=5,
+        )
+    except requests.exceptions.ConnectionError:
+        log.info(
+            "Obsidian API unreachable at %s — skipping this tick "
+            "(open Obsidian to resume context writes)",
+            OBSIDIAN_API,
+        )
+        return False
+    except requests.exceptions.Timeout:
+        log.info("Obsidian API timed out — skipping this tick")
+        return False
 
     if resp.status_code == 404:
         log.info("Daily note doesn't exist yet — skipping")
@@ -175,17 +190,21 @@ def _append_to_daily(entry: str) -> bool:
     lines.insert(insert_idx, entry)
     new_content = "\n".join(lines)
 
-    # Write back via PUT — localhost Obsidian REST API uses self-signed cert
-    resp = requests.put(
-        f"{OBSIDIAN_API}/vault/{path}",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "text/markdown",
-        },
-        data=new_content.encode("utf-8"),
-        verify=False,  # noqa: S501  # nosec B501 - localhost self-signed
-        timeout=5,
-    )
+    # Write back via PUT — localhost Obsidian REST API uses self-signed cert.
+    try:
+        resp = requests.put(
+            f"{OBSIDIAN_API}/vault/{path}",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "text/markdown",
+            },
+            data=new_content.encode("utf-8"),
+            verify=False,  # noqa: S501  # nosec B501 - localhost self-signed
+            timeout=5,
+        )
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        log.info("Obsidian API unavailable during PUT: %s — skipping", type(e).__name__)
+        return False
 
     if resp.status_code in (200, 204):
         log.info("Appended context to daily note")
