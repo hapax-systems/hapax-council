@@ -539,6 +539,21 @@ def state_reader_loop(compositor: Any) -> None:
         except Exception:
             log.exception("process_livestream_control raised (non-fatal)")
 
+        # Preset recruitment consumer — closes director→chain mutation loop.
+        # Director emits ``preset.bias = <family>`` impingement; AffordancePipeline
+        # recruits ``fx.family.<family>``; this consumer reads the recruitment
+        # and writes graph-mutation.json to actually change the chain. Without
+        # it the director's recruitment is observable but inert (chain stays
+        # on whatever activated at boot). 8s cooldown protects against thrash.
+        # Per operator directive 2026-04-20: 'no random_mode; all effects
+        # recruited by Hapax via director loop and content programming'.
+        try:
+            from .preset_recruitment_consumer import process_preset_recruitment
+
+            process_preset_recruitment()
+        except Exception:
+            log.exception("process_preset_recruitment raised (non-fatal)")
+
         # Vinyl mode toggle (Stream Deck / API)
         vinyl_path = SNAPSHOT_DIR / "vinyl-mode.txt"
         if vinyl_path.exists():
