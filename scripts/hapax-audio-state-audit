@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 """Audit audio-router state surfaces (Phase A4 of evilpet-s4-dynamic-dual-processor-plan).
 
-Checks presence + freshness + JSON validity of the four state surfaces
-the dynamic router agent (Phase B3) will depend on:
+Checks presence + freshness + JSON validity of the state surfaces the
+dynamic router agent (Phase B3) will depend on. Two categories:
 
-  - /dev/shm/hapax-stimmung/current.json         (stance + 6-dim vector)
-  - /dev/shm/hapax-voice-tier-current.json       (active voice tier)
-  - /dev/shm/hapax-programme/current.json        (active programme role + opt-ins)
-  - /dev/shm/hapax-compositor/evil-pet-state.json (MIDI ownership ledger)
+**continuous** — a daemon / systemd timer is expected to keep the file
+fresh. Absence or staleness is a regression.
 
-Exits 0 if all surfaces healthy. Exits 1 with a report of stale or
-missing surfaces. Per-surface staleness budgets follow the spec:
-stimmung 30s, voice-tier 60s, programme 300s, evil-pet-state 15s.
+**on_demand** — written only when a specific claim path fires (operator
+CLI invocation, granular-engine claimant active). Absence is normal
+when nothing has claimed; existence should still be fresh.
+
+Surfaces:
+  - /dev/shm/hapax-stimmung/state.json          continuous (stance + dims)
+  - /dev/shm/hapax-compositor/voice-tier-override.json
+                                                on_demand (hapax-voice-tier CLI)
+  - /dev/shm/hapax-compositor/evil-pet-state.json
+                                                on_demand (granular claimant)
+
+Exits 0 if all surfaces healthy or on-demand-missing. Exits 1 if a
+continuous surface is stale/missing/invalid, or if an on-demand
+surface exists but is unparseable.
 
 Usage:
     hapax-audio-state-audit [--json]
-
-The --json flag emits a machine-readable report for consumption by
-health_monitor or other tooling.
 """
 
 from __future__ import annotations
@@ -28,15 +34,26 @@ import sys
 import time
 from pathlib import Path
 
-SURFACES: list[tuple[str, float, str]] = [
-    ("/dev/shm/hapax-stimmung/current.json", 30.0, "stimmung stance + 6-dim vector"),
-    ("/dev/shm/hapax-voice-tier-current.json", 60.0, "active voice tier"),
+# (path, budget_seconds, category, description)
+SURFACES: list[tuple[str, float, str, str]] = [
     (
-        "/dev/shm/hapax-programme/current.json",
-        300.0,
-        "active programme role + monetization opt-ins",
+        "/dev/shm/hapax-stimmung/state.json",
+        30.0,
+        "continuous",
+        "stimmung stance + 6-dim vector (writer: VLA)",
     ),
-    ("/dev/shm/hapax-compositor/evil-pet-state.json", 15.0, "Evil Pet MIDI ownership ledger"),
+    (
+        "/dev/shm/hapax-compositor/voice-tier-override.json",
+        600.0,
+        "on_demand",
+        "active voice-tier override (writer: hapax-voice-tier CLI)",
+    ),
+    (
+        "/dev/shm/hapax-compositor/evil-pet-state.json",
+        15.0,
+        "on_demand",
+        "Evil Pet granular-engine ownership (writer: vocal_chain / vinyl_chain when claimed)",
+    ),
 ]
 
 
@@ -44,19 +61,24 @@ def audit() -> tuple[list[dict], int]:
     now = time.time()
     results: list[dict] = []
     exit_code = 0
-    for path_s, budget_s, description in SURFACES:
+    for path_s, budget_s, category, description in SURFACES:
         path = Path(path_s)
         entry: dict = {
             "path": path_s,
             "description": description,
+            "category": category,
             "budget_s": budget_s,
             "status": "healthy",
             "issues": [],
         }
         if not path.exists():
-            entry["status"] = "missing"
-            entry["issues"].append("file does not exist")
-            exit_code = 1
+            if category == "on_demand":
+                entry["status"] = "absent_ok"
+                entry["issues"].append("on-demand writer has not fired; no claim active")
+            else:
+                entry["status"] = "missing"
+                entry["issues"].append("file does not exist")
+                exit_code = 1
         else:
             try:
                 age = now - path.stat().st_mtime
@@ -64,7 +86,8 @@ def audit() -> tuple[list[dict], int]:
                 if age > budget_s:
                     entry["status"] = "stale"
                     entry["issues"].append(f"age {age:.1f}s exceeds budget {budget_s}s")
-                    exit_code = 1
+                    if category == "continuous":
+                        exit_code = 1
             except OSError as e:
                 entry["status"] = "unreadable"
                 entry["issues"].append(f"stat failed: {e}")
@@ -87,12 +110,13 @@ def audit() -> tuple[list[dict], int]:
 
 def format_human(results: list[dict]) -> str:
     lines = []
-    healthy = sum(1 for r in results if r["status"] == "healthy")
-    lines.append(f"Audio router state surface audit — {healthy}/{len(results)} healthy")
+    healthy = sum(1 for r in results if r["status"] in ("healthy", "absent_ok"))
+    lines.append(f"Audio router state surface audit — {healthy}/{len(results)} OK")
     lines.append("")
     for r in results:
         badge = {
             "healthy": "OK   ",
+            "absent_ok": "IDLE ",
             "stale": "STALE",
             "missing": "MISS ",
             "invalid_json": "JSON ",
@@ -100,7 +124,8 @@ def format_human(results: list[dict]) -> str:
         }.get(r["status"], "?????")
         age = r.get("age_s")
         age_suffix = f" (age={age}s)" if age is not None else ""
-        lines.append(f"  [{badge}] {r['path']}{age_suffix}")
+        cat_suffix = f" [{r['category']}]"
+        lines.append(f"  [{badge}] {r['path']}{age_suffix}{cat_suffix}")
         lines.append(f"          {r['description']} (budget={r['budget_s']}s)")
         for issue in r["issues"]:
             lines.append(f"          ! {issue}")

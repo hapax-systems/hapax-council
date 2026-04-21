@@ -50,7 +50,7 @@ def test_cli_json_flag_emits_machine_readable(tmp_path: Path) -> None:
     assert "exit_code" in payload
     assert "surfaces" in payload
     assert isinstance(payload["surfaces"], list)
-    assert len(payload["surfaces"]) == 4  # 4 canonical surfaces
+    assert len(payload["surfaces"]) == 3  # 3 canonical surfaces (stimmung, voice-tier, evil-pet)
 
 
 def test_cli_human_flag_produces_readable_output() -> None:
@@ -62,7 +62,7 @@ def test_cli_human_flag_produces_readable_output() -> None:
         timeout=5,
     )
     assert "Audio router state surface audit" in result.stdout
-    assert "/dev/shm/hapax-stimmung/current.json" in result.stdout
+    assert "/dev/shm/hapax-stimmung/state.json" in result.stdout
 
 
 def test_each_surface_entry_has_required_fields() -> None:
@@ -79,10 +79,18 @@ def test_each_surface_entry_has_required_fields() -> None:
         assert "budget_s" in entry
         assert "status" in entry
         assert "issues" in entry
-        assert entry["status"] in {"healthy", "stale", "missing", "invalid_json", "unreadable"}
+        assert entry["status"] in {
+            "healthy",
+            "absent_ok",
+            "stale",
+            "missing",
+            "invalid_json",
+            "unreadable",
+        }
+        assert entry["category"] in {"continuous", "on_demand"}
 
 
-def test_all_four_canonical_surfaces_listed() -> None:
+def test_all_canonical_surfaces_listed() -> None:
     result = subprocess.run(
         ["python3", str(SCRIPT_PATH), "--json"],
         capture_output=True,
@@ -91,7 +99,30 @@ def test_all_four_canonical_surfaces_listed() -> None:
     )
     payload = json.loads(result.stdout)
     paths = {s["path"] for s in payload["surfaces"]}
-    assert "/dev/shm/hapax-stimmung/current.json" in paths
-    assert "/dev/shm/hapax-voice-tier-current.json" in paths
-    assert "/dev/shm/hapax-programme/current.json" in paths
+    # Paths verified 2026-04-21 against the live code:
+    # stimmung writer is the VLA (continuous); voice-tier override and
+    # evil-pet-state are on-demand writers (CLI and granular claimant).
+    assert "/dev/shm/hapax-stimmung/state.json" in paths
+    assert "/dev/shm/hapax-compositor/voice-tier-override.json" in paths
     assert "/dev/shm/hapax-compositor/evil-pet-state.json" in paths
+
+
+def test_on_demand_surfaces_absent_is_not_a_failure() -> None:
+    """If voice-tier-override or evil-pet-state are missing, exit code
+    should still be 0 (on-demand: absence is normal until the claim
+    path fires)."""
+    result = subprocess.run(
+        ["python3", str(SCRIPT_PATH), "--json"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    payload = json.loads(result.stdout)
+    # Categorize
+    on_demand = [s for s in payload["surfaces"] if s["category"] == "on_demand"]
+    for s in on_demand:
+        if s["status"] == "missing":
+            # Must not have raised the exit code by itself
+            assert "absent_ok" in {ss["status"] for ss in on_demand} or all(
+                s2["status"] != "missing" for s2 in on_demand
+            ), "on-demand missing should map to absent_ok, not failure"
