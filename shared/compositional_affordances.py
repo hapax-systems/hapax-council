@@ -124,6 +124,18 @@ _PRESET_FAMILY: list[CapabilityRecord] = [
         "fx.family.neutral-ambient",
         "neutral baseline visuals for default fallback moments without strong directional cue, coherent and unobtrusive backdrop",
     ),
+    # Phase 6 of preset-variety-plan (task #166): the recruitment target
+    # for ``content.too-similar-recently`` impingements emitted by
+    # ``AffordancePipeline._maybe_emit_perceptual_distance_impingement``
+    # when the recency window's mean cosine similarity crosses 0.85.
+    # Lets the surface SEE that it's been clustering and reach for
+    # something perceptually distant if the moment allows. The
+    # impingement is a fact, not a rule — the pipeline still scores
+    # this against whatever else recruits.
+    _record(
+        "novelty.shift",
+        "widen the perceptual register; reach for a perceptually-distant preset family from what has recently fired, when the surface has been clustering",
+    ),
 ]
 
 # ── Overlay emphasis affordances ───────────────────────────────────────────

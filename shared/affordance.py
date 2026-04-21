@@ -200,3 +200,34 @@ class _RecencyTracker(BaseModel):
             if sim > max_sim:
                 max_sim = sim
         return max(0.0, min(1.0, 1.0 - max_sim))
+
+    def cluster_similarity(self) -> float:
+        """Return the mean pairwise cosine similarity across the window.
+
+        Phase 6 of preset-variety-plan: when this metric crosses 0.85,
+        the pipeline emits a ``content.too-similar-recently`` impingement
+        so the surface can SEE that it's been clustering and recruit a
+        ``novelty.shift`` move if context allows. Returns ``0.0`` for
+        windows of size <2 (no clustering possible). Pairs whose vectors
+        differ in dimension or are zero-norm are skipped silently.
+        """
+        if len(self.entries) < 2:
+            return 0.0
+        sims: list[float] = []
+        for i in range(len(self.entries)):
+            _name_i, vec_i = self.entries[i]
+            norm_i = sum(v * v for v in vec_i) ** 0.5
+            if norm_i == 0.0:
+                continue
+            for j in range(i + 1, len(self.entries)):
+                _name_j, vec_j = self.entries[j]
+                if len(vec_j) != len(vec_i):
+                    continue
+                norm_j = sum(v * v for v in vec_j) ** 0.5
+                if norm_j == 0.0:
+                    continue
+                dot = sum(a * b for a, b in zip(vec_i, vec_j, strict=True))
+                sims.append(dot / (norm_i * norm_j))
+        if not sims:
+            return 0.0
+        return max(0.0, min(1.0, sum(sims) / len(sims)))
