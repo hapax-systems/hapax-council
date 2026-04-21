@@ -168,6 +168,41 @@ Two automated systems prevent disk exhaustion:
 
 Prunes reproducible caches: Docker build cache (168h+), dangling images, uv cache, pacman cache, stale worktree `.venv` dirs (7d+), leaked wav files in `/tmp` and `~/.cache/hapax/tmp-wav/`, Chrome crash reports, `__pycache__` (7d+), perception logs (7d), systemd journal (7d).
 
+### Ryzen pin-glitch watchdog (`hapax-pin-check.timer` — every 120s)
+
+The Ryzen HDA codec's pin multiplexer silently desynchronises from
+PipeWire after a restart that enumerates a new USB audio device
+(operator report 2026-04-20: S-4 plug-in). `pactl` reports the sink
+RUNNING + unmuted but physical output stays silent until the card
+profile is toggled off and back on.
+
+`scripts/hapax-pin-check-probe.sh` (driven by `hapax-pin-check.timer`,
+120s cadence) reads the sink's State + active-input count + monitor
+RMS dB on every tick and hands the probe to `hapax-audio-topology
+pin-check`. The CLI's stateful detector accumulates silent ticks in
+`/run/user/$UID/hapax-pin-glitch-state.json`; when 5 s of sustained
+RUNNING-but-silent crosses the threshold, `--auto-fix` invokes the
+known-good recovery (`pactl set-card-profile … off → output:analog-stereo`).
+
+Install:
+
+```fish
+install -m644 systemd/units/hapax-pin-check.service \
+    ~/.config/systemd/user/hapax-pin-check.service
+install -m644 systemd/units/hapax-pin-check.timer \
+    ~/.config/systemd/user/hapax-pin-check.timer
+systemctl --user daemon-reload
+systemctl --user enable --now hapax-pin-check.timer
+```
+
+Override defaults via env (typically in `~/.config/environment.d/`):
+`HAPAX_PIN_CHECK_SINK`, `HAPAX_PIN_CHECK_CARD`, `HAPAX_PIN_CHECK_PROFILE`,
+`HAPAX_PIN_CHECK_AUTO_FIX` (default 1), `HAPAX_PIN_CHECK_CAPTURE_S` (0.5).
+
+Detection module: `shared/audio_pin_glitch.py`. CLI subcommand:
+`scripts/hapax-audio-topology pin-check`. Memory:
+`reference_ryzen_codec_pin_glitch`.
+
 ### CLAUDE.md Audit (`claude-md-audit.timer` — monthly)
 
 Runs `scripts/monthly-claude-md-audit.sh` on a monthly cadence. Sweeps every workspace CLAUDE.md (council beta worktree + sibling repos + workspace root + dotfiles symlinks) through `check-claude-md-rot.sh` (default + `--strict`) and `check-vscode-sister-extensions.sh`. Posts to ntfy on findings; silent on success. Operator can run by hand at any time. Spec: `docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md`.
