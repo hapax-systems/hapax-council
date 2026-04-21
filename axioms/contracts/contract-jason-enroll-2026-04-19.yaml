@@ -1,0 +1,22 @@
+id: contract-jason-enroll-2026-04-19
+parties:
+  - operator
+  - jason_kleeberger
+scope:
+  - face_enrollment
+direction: one_way
+visibility_mechanism: enrollment_ceremony
+created_at: '2026-04-19T03:50:00'
+# META-CONTRACT: consent-to-enroll — permits a SINGLE-FRAME capture of
+# Jason's face from brio-operator camera for embedding extraction (InsightFace
+# ArcFace or equivalent). Embedding stored LOCALLY ONLY at
+# ~/hapax-state/face-enrollments/jason_kleeberger.npz — never egressed.
+# Purpose: upgrade consent verification from filesystem declaration to
+# biometric match, so per-person consent gates can require a matching
+# face in frame before activating guest-specific scope.
+# scope: face_enrollment (single-shot enrollment capture, not ongoing tracking)
+# direction: one_way (operator captures, Jason does not gain visibility into Hapax)
+# visibility_mechanism: enrollment_ceremony (one-time ritual, not continuous)
+principal_class: adult
+relationship: operator_sibling
+expires_after: single_enrollment_event

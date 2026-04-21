@@ -1,0 +1,23 @@
+id: contract-jason-2026-04-19
+parties:
+  - operator
+  - jason_kleeberger
+scope:
+  - audio
+  - presence
+  - transcription
+  - video
+direction: one_way
+visibility_mechanism: on_request
+created_at: '2026-04-19T03:25:00'
+# Guest consent: Jason Kleeberger (operator's younger brother).
+# Active for the duration of this visit.
+# Permits the system to perceive and interact with Jason during livestream.
+# Does NOT permit profiling, behavioral modeling, or persistent data accumulation
+# beyond ephemeral session state (per interpersonal_transparency axiom).
+# Scope covers audio, video, presence sensing, transcription — full livestream presence.
+# direction=one_way: guest input only; no persistent state about guest egresses.
+# visibility_mechanism=on_request: system surfaces Jason's presence only when
+# operator narrative invokes it; default posture is quiet presence.
+principal_class: adult
+relationship: operator_sibling
