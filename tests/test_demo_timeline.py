@@ -100,8 +100,19 @@ class TestTerrainRecipesExist:
 class TestKokoroVoiceSegment:
     """Test TTS voice segment generation via Kokoro."""
 
-    def test_generate_voice_segment_kokoro(self, tmp_path: Path):
-        """Mock KPipeline and verify WAV output."""
+    def test_generate_voice_segment_kokoro(self, tmp_path: Path, monkeypatch):
+        """Mock KPipeline and verify WAV output.
+
+        ``KPipeline`` is imported INSIDE generate_voice_segment_kokoro
+        (lazy import to keep startup cheap). The real ``kokoro``
+        package has a torch-version-sensitive internal import that
+        fails on this environment, so we stub the entire module via
+        sys.modules — the lazy `from kokoro import KPipeline` then
+        picks up our stubbed module's KPipeline factory.
+        """
+        import sys
+        import types
+
         import numpy as np
 
         from agents.demo_pipeline.voice import generate_voice_segment_kokoro
@@ -110,11 +121,14 @@ class TestKokoroVoiceSegment:
         mock_pipeline = MagicMock()
         mock_pipeline.return_value = iter([("hi", "haɪ", audio)])
 
-        with patch("agents.demo_pipeline.voice.KPipeline", return_value=mock_pipeline):
-            output = tmp_path / "test_kokoro.wav"
-            generate_voice_segment_kokoro("Hello", output)
-            assert output.exists()
-            assert output.stat().st_size > 0
+        fake_kokoro = types.ModuleType("kokoro")
+        fake_kokoro.KPipeline = MagicMock(return_value=mock_pipeline)
+        monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+
+        output = tmp_path / "test_kokoro.wav"
+        generate_voice_segment_kokoro("Hello", output)
+        assert output.exists()
+        assert output.stat().st_size > 0
 
     def test_get_wav_duration(self, tmp_path: Path):
         """Test WAV duration measurement."""
