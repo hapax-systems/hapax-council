@@ -28,18 +28,25 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Final
+from typing import TYPE_CHECKING, Any, Final
 
+if TYPE_CHECKING:
+    from mido.ports import BaseOutput
+
+# Runtime import is best-effort so the module loads on systems without
+# mido (the daemon's safety-clamp layer downgrades to single-engine when
+# ``is_s4_reachable()`` returns False — see ``policy.apply_safety_clamps``).
+# Annotations stay typed via the TYPE_CHECKING import + string forms; the
+# runtime symbols below are deliberately untyped so MagicMock instances
+# from tests pass through cleanly.
 try:
     import mido
     from mido import Message
-    from mido.ports import BaseOutput
 
     _MIDO_AVAILABLE = True
 except ImportError:
-    mido = None  # type: ignore[assignment]
-    Message = None  # type: ignore[assignment, misc]
-    BaseOutput = None  # type: ignore[assignment, misc]
+    mido: Any = None  # type: ignore[no-redef]
+    Message: Any = None  # type: ignore[no-redef]
     _MIDO_AVAILABLE = False
 
 log = logging.getLogger(__name__)
