@@ -108,7 +108,63 @@ class SelectionCandidate(BaseModel):
     base_level: float = 0.0
     context_boost: float = 0.0
     thompson_score: float = 0.0
+    # Preset-variety Phase 3 (task #166): perceptual-distance to the rolling
+    # window of recently-applied capabilities. Higher = more novel; 0.0
+    # means an embedding identical to one already in the window.
+    # AffordancePipeline folds this into ``combined`` via W_RECENCY when
+    # ``HAPAX_AFFORDANCE_RECENCY_WEIGHT`` is non-zero.
+    recency_distance: float = 0.0
     cost_weight: float = 1.0
     combined: float = 0.0
     suppressed: bool = False
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class _RecencyTracker(BaseModel):
+    """Rolling window of recently-applied capability embeddings.
+
+    Per preset-variety plan §3 (task #166): tracks the last ``window_size``
+    recruitment outcomes by ``(capability_name, embedding)`` so the
+    pipeline can score each new candidate by its perceptual distance to
+    the window. The novelty signal is purely additive — recency is a
+    SCORING INPUT folded into ``combined``, never a filter.
+
+    Distance metric: ``1 - max_cosine_sim`` over the window. An empty
+    window returns ``1.0`` (max novelty), which means recency contributes
+    its full weight to a candidate when no history exists yet.
+    """
+
+    window_size: int = 10
+    entries: list[tuple[str, list[float]]] = Field(default_factory=list)
+
+    def record_apply(self, name: str, embedding: list[float] | None) -> None:
+        """Append an applied capability + embedding; truncate to window_size."""
+        if not embedding:
+            return
+        self.entries.append((name, list(embedding)))
+        if len(self.entries) > self.window_size:
+            self.entries = self.entries[-self.window_size :]
+
+    def distance(self, embedding: list[float] | None) -> float:
+        """Return ``1 - max cosine similarity`` over the window.
+
+        Returns ``1.0`` (max novelty) when the window is empty or the
+        candidate embedding is missing/zero-norm.
+        """
+        if not self.entries or not embedding:
+            return 1.0
+        max_sim = 0.0
+        norm_a = sum(v * v for v in embedding) ** 0.5
+        if norm_a == 0.0:
+            return 1.0
+        for _name, vec in self.entries:
+            if len(vec) != len(embedding):
+                continue
+            norm_b = sum(v * v for v in vec) ** 0.5
+            if norm_b == 0.0:
+                continue
+            dot = sum(a * b for a, b in zip(embedding, vec, strict=True))
+            sim = dot / (norm_a * norm_b)
+            if sim > max_sim:
+                max_sim = sim
+        return max(0.0, min(1.0, 1.0 - max_sim))
