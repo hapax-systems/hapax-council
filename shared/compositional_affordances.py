@@ -572,6 +572,32 @@ _TRANSITION: list[CapabilityRecord] = [
 ]
 
 
+# ── GEM (Graffiti Emphasis Mural) affordances ────────────────────────────
+# The gem.* IntentFamily literals (``gem.emphasis``, ``gem.composition``)
+# in ``shared/director_intent.py`` were added 2026-04-21 to unblock the
+# director's Pydantic schema for GEM intents. The catalog records below
+# satisfy the family-completeness audit (every IntentFamily must have at
+# least one capability) and give the recruitment pipeline targets for
+# gem.* impingements emitted by the producer at
+# ``agents/hapax_daimonion/gem_producer.py``. The descriptions are
+# placeholders — lssh-002 (P0 GEM rendering redesign) will rework the
+# actual visual contract; the catalog rows here keep the
+# wiring-completeness invariant green in the meantime.
+
+_GEM: list[CapabilityRecord] = [
+    _record(
+        "gem.emphasis.event-marker",
+        "stamps a CP437 graffiti glyph onto the GEM ward to mark the moment "
+        "an event lands — the visual punctuation that says 'this just happened'",
+    ),
+    _record(
+        "gem.composition.theme-shift",
+        "rewrites the GEM ward's standing composition when the room's subject "
+        "shifts — the murals's own way of saying 'we are doing a different thing now'",
+    ),
+]
+
+
 # ── Catalog ────────────────────────────────────────────────────────────────
 
 COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
@@ -584,6 +610,7 @@ COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
     + _WARD_AFFORDANCES
     + _HOMAGE_AFFORDANCES
     + _TRANSITION
+    + _GEM
 )
 
 

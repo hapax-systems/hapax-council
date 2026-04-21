@@ -92,8 +92,21 @@ def test_find_slot(pipeline, compiler):
     assert pipeline.find_slot_for_node("nope") is None
 
 
+def _is_graph_preset(p: Path) -> bool:
+    """Same shape filter as ``tests/effect_graph/test_smoke.py``: skip
+    metadata files like ``shader_intensity_bounds.json`` that live in
+    ``presets/`` but are not EffectGraph instances."""
+    if p.name.startswith("_"):
+        return False
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return isinstance(raw, dict) and "nodes" in raw and "edges" in raw
+
+
 def test_all_presets_fit(pipeline, compiler):
-    for p in sorted(p for p in PRESETS_DIR.glob("*.json") if not p.name.startswith("_")):
+    for p in sorted(p for p in PRESETS_DIR.glob("*.json") if _is_graph_preset(p)):
         g = EffectGraph(**json.loads(p.read_text()))
         plan = compiler.compile(g)
         shader_steps = [s for s in plan.steps if s.node_type != "output" and s.shader_source]

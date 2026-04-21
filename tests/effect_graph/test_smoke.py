@@ -967,7 +967,11 @@ class TestPresetParsing:
 
     @pytest.fixture(scope="class")
     def preset_files(self) -> list[Path]:
-        return sorted(p for p in PRESETS_DIR.glob("*.json") if not p.name.startswith("_"))
+        # Use the ``_is_graph_preset`` shape filter (defined above) so
+        # config files like ``presets/shader_intensity_bounds.json`` —
+        # which lives in ``presets/`` but carries no ``nodes`` / ``edges``
+        # — don't break parsing.
+        return sorted(p for p in PRESETS_DIR.glob("*.json") if _is_graph_preset(p))
 
     def test_preset_count(self, preset_files: list[Path]):
         assert len(preset_files) >= 28, f"Expected >=28 presets, got {len(preset_files)}"
