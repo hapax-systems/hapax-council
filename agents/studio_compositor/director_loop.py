@@ -2356,19 +2356,37 @@ class DirectorLoop:
             "dispatch is a bigger surface move than an emphasis.\n"
             "  - ward_retire (optional): 0–2 ward_ids to quiet out "
             "(FSM HOLD → EXITING). Pair with ward_dispatch for a swap.\n"
-            "  - placement_bias (optional): per-ward placement hint map, "
-            'e.g. {"album": "scale_1.15x", "token_pole": '
-            '"drift_left"}. Hints: drift_left, drift_right, drift_up, '
-            "drift_down, pulse_center, scale_0.8x, scale_1.0x, "
-            "scale_1.15x, scale_1.3x."
+            "  - placement_bias: per-ward placement hint map. **Pair with "
+            "ward_emphasis whenever you set one** — if a ward is worth "
+            "calling out, it's worth giving viewers a spatial cue about "
+            "where to look. The recent live-stream audit (lssh-004) "
+            "found this field empty on 1000/1000 consecutive ticks; "
+            "every empty placement_bias is a missed chance to direct "
+            "attention. Hint vocabulary: drift_left, drift_right, "
+            "drift_up, drift_down, pulse_center, scale_0.8x, "
+            "scale_1.0x, scale_1.15x, scale_1.3x."
+        )
+        parts.append(
+            "**placement_bias worked examples** — one per common move:\n"
+            "  - Music is the subject and you emphasized album_overlay → "
+            '`{"album_overlay": "scale_1.15x"}`\n'
+            "  - Operator is hands-on at the desk, you emphasized "
+            'activity_header → `{"activity_header": "drift_up"}` '
+            "(pull viewers' eyes toward the activity badge)\n"
+            "  - Token cascade just hit, emphasizing token_pole → "
+            '`{"token_pole": "pulse_center"}`\n'
+            "  - Stance just shifted, emphasizing stance_indicator → "
+            '`{"stance_indicator": "drift_left"}`'
         )
         parts.append(
             "**Default on quiet ticks:** "
             '{"homage_rotation_mode": "weighted_by_salience", '
             '"ward_emphasis": ["<the ward the narrative most belongs to>"], '
-            '"ward_dispatch": [], "ward_retire": [], "placement_bias": {}}. '
-            "Never emit an empty structural_intent — idle is the cardinal "
-            "sin (above); the surface must visibly move with you."
+            '"ward_dispatch": [], "ward_retire": [], '
+            '"placement_bias": {"<that same ward>": "<a hint that fits the move>"}}. '
+            "Never emit an empty structural_intent or empty "
+            "placement_bias — idle is the cardinal sin (above); the "
+            "surface must visibly move with you, including spatially."
         )
 
         # Viewer-audit (2026-04-18): after 4 consecutive react narratives
