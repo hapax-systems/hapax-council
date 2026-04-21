@@ -46,6 +46,7 @@ RECREATE_TASKS: frozenset[str] = frozenset(
         "impingement_consumer_loop",
         "sidechat_consumer_loop",
         "actuation_loop",
+        "gem_producer_loop",
     }
 )
 LOG_AND_CONTINUE_TASKS: frozenset[str] = frozenset()
@@ -427,7 +428,17 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "sidechat_consumer_loop",
         lambda: sidechat_consumer_loop(daemon),
     )
-    log.info("CPAL runner + impingement consumers (CPAL + affordance + sidechat) started")
+    # GEM producer — Hapax authors the Graffiti Emphasis Mural ward by
+    # tailing gem.* impingements and writing /dev/shm/hapax-compositor/
+    # gem-frames.json. Phase 3 of the GEM activation plan.
+    from agents.hapax_daimonion.gem_producer import gem_producer_loop
+
+    _make_task(
+        daemon,
+        "gem_producer_loop",
+        lambda: gem_producer_loop(daemon),
+    )
+    log.info("CPAL runner + impingement consumers (CPAL + affordance + sidechat + gem) started")
 
     if daemon.cfg.mc_enabled or daemon.cfg.obs_enabled:
         _make_task(daemon, "actuation_loop", lambda: actuation_loop(daemon))

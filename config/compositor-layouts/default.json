@@ -128,7 +128,25 @@
       "rate_hz": 4.0,
       "tags": [
         "legibility",
-        "communication"
+        "communication",
+        "deprecating"
+      ]
+    },
+    {
+      "id": "gem",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "GemCairoSource",
+        "natural_w": 1840,
+        "natural_h": 240
+      },
+      "update_cadence": "rate",
+      "rate_hz": 4.0,
+      "tags": [
+        "homage",
+        "expression",
+        "graffiti-emphasis-mural"
       ]
     },
     {
@@ -460,6 +478,24 @@
       "update_cadence": "always"
     },
     {
+      "id": "gem-mural-bottom",
+      "geometry": {
+        "kind": "rect",
+        "x": 40,
+        "y": 820,
+        "w": 1840,
+        "h": 240,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 30,
+      "update_cadence": "always"
+    },
+    {
       "id": "grounding-ticker-bl",
       "geometry": {
         "kind": "rect",
@@ -662,10 +698,10 @@
       "non_destructive": true
     },
     {
-      "source": "captions",
-      "surface": "captions_strip",
+      "source": "gem",
+      "surface": "gem-mural-bottom",
       "transform": {},
-      "opacity": 0.92,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false
     },

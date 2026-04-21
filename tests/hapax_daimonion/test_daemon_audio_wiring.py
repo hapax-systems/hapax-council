@@ -129,14 +129,17 @@ class TestAudioLoopBackgroundTask:
         with patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
-        # Should have 9 tasks but NOT 10 (no audio loop since inactive):
+        # Should have 10 tasks but NOT 11 (no audio loop since inactive):
         # proactive delivery, ntfy, workspace monitor, perception,
         # ambient_refresh, cpal_runner, cpal_impingement,
-        # affordance_impingement, sidechat_consumer (task #132 — added
-        # after the original count). The affordance_impingement loop
-        # owns notification/studio/world Thompson learning + cross-modal +
-        # system awareness + capability discovery; see
-        # run_loops_aux.impingement_consumer_loop. The sidechat consumer
-        # tails /dev/shm/hapax-compositor/operator-sidechat.jsonl per
-        # run_loops_aux.sidechat_consumer_loop.
-        assert tracking.total_appended == 9
+        # affordance_impingement, sidechat_consumer (task #132), and
+        # gem_producer (GEM activation Phase 3 — tails gem.* impingements
+        # and writes /dev/shm/hapax-compositor/gem-frames.json). The
+        # affordance_impingement loop owns notification/studio/world
+        # Thompson learning + cross-modal + system awareness + capability
+        # discovery; see run_loops_aux.impingement_consumer_loop. The
+        # sidechat consumer tails operator-sidechat.jsonl per
+        # run_loops_aux.sidechat_consumer_loop. The gem_producer tails
+        # the impingement bus and authors the GEM ward per
+        # gem_producer.gem_producer_loop.
+        assert tracking.total_appended == 10
