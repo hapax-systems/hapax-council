@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import random
 import time
 import uuid
@@ -27,10 +28,23 @@ COLLECTION_NAME = "affordances"
 DEFAULT_TOP_K = 10
 SUPPRESSION_FACTOR = 0.3
 THRESHOLD = 0.05
-W_SIMILARITY = 0.50
-W_BASE_LEVEL = 0.20
-W_CONTEXT = 0.10
-W_THOMPSON = 0.20
+# Score formula weights. Preset-variety Phase 3 (task #166) renormalizes
+# from 0.50/0.20/0.10/0.20 → 0.45/0.18/0.09/0.18/0.10 to fold in
+# ``recency_distance`` as a perceptual-novelty term. The 0.10 weight is
+# small enough that strong narrative still wins, but large enough to
+# break ties in favor of perceptually-distant options.
+W_SIMILARITY = 0.45
+W_BASE_LEVEL = 0.18
+W_CONTEXT = 0.09
+W_THOMPSON = 0.18
+# Operator-runtime override of recency-distance weight. Default 0.10
+# (Phase 3 lands active). Set to "0" to disable the term without
+# redeploy. Read once per ``select()`` call so flips take effect on
+# the next recruitment.
+RECENCY_WEIGHT_ENV = "HAPAX_AFFORDANCE_RECENCY_WEIGHT"
+W_RECENCY_DEFAULT = 0.10
+# Recency tracker rolling window size (capabilities, not embeddings).
+RECENCY_WINDOW_SIZE = 10
 # Consent contract registry refresh window. Cheap to refresh (4 yaml files)
 # but pipeline.select() is hot-pathed (per-frame in reverie mixer, per-impingement
 # in run_loops_aux), so we cache for 60s instead of reading every call.
@@ -132,6 +146,13 @@ def embed_batch_safe(texts: list[str], prefix: str = "search_document") -> list[
 class AffordancePipeline:
     def __init__(self) -> None:
         self._activation: dict[str, ActivationState] = {}
+        # Preset-variety Phase 3: rolling window of recently-applied
+        # (capability_name, embedding) pairs. Updated when a winner is
+        # selected in ``select()``; queried at scoring time to compute
+        # each candidate's ``recency_distance``.
+        from shared.affordance import _RecencyTracker
+
+        self._recency = _RecencyTracker(window_size=RECENCY_WINDOW_SIZE)
         self._embed_cache = EmbeddingCache()
         self._interrupt_handlers: dict[str, list[InterruptHandler]] = {}
         self._seeking: bool = False
@@ -554,11 +575,23 @@ class AffordancePipeline:
         if not candidates:
             return []
         now = time.time()
+        # Preset-variety Phase 3: read recency weight per-call so operator
+        # flips take effect on the next recruitment.
+        try:
+            w_recency = float(os.environ.get(RECENCY_WEIGHT_ENV, W_RECENCY_DEFAULT))
+        except (TypeError, ValueError):
+            w_recency = W_RECENCY_DEFAULT
         for c in candidates:
             state = self._activation.get(c.capability_name, ActivationState())
             c.base_level = self._normalize_base_level(state.base_level(now))
             c.context_boost = self._compute_context_boost(c.capability_name, context)
             c.thompson_score = state.thompson_sample()
+            # Recency distance: novelty against the rolling window of
+            # recently-applied capabilities. The candidate's embedding
+            # may live on its payload or on the impingement; fall back to
+            # the impingement embedding if the candidate has none.
+            candidate_embedding = c.payload.get("embedding") or embedding
+            c.recency_distance = self._recency.distance(candidate_embedding)
             cost = 0.3 if c.payload.get("requires_gpu") else 0.0
             if c.payload.get("latency_class") == "slow":
                 cost = max(cost, 0.5)
@@ -568,6 +601,7 @@ class AffordancePipeline:
                 + W_BASE_LEVEL * c.base_level
                 + W_CONTEXT * c.context_boost
                 + W_THOMPSON * c.thompson_score
+                + w_recency * c.recency_distance
             ) * c.cost_weight
         # Phase 4 of programme-layer plan (D-28): apply programme bias as
         # SOFT PRIOR multiplier on the composed score. Per
@@ -595,6 +629,12 @@ class AffordancePipeline:
         survivors.sort(key=lambda c: -c.combined)
         self._log_cascade(impingement, survivors)
         winner = survivors[0] if survivors else None
+        # Preset-variety Phase 3: feed the winner into the recency tracker
+        # so the next ``select()`` call scores its peers as more novel.
+        # No-op when no winner emerged.
+        if winner is not None:
+            winner_embedding = winner.payload.get("embedding") or embedding
+            self._recency.record_apply(winner.capability_name, winner_embedding)
         self._metrics.record_selection(
             impingement_source=impingement.source,
             impingement_metric=impingement.content.get("metric", ""),
