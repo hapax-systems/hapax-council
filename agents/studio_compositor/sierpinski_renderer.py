@@ -59,6 +59,20 @@ log = logging.getLogger(__name__)
 YT_FRAME_DIR = Path("/dev/shm/hapax-compositor")
 RENDER_FPS = 10
 
+# Phase 2 of yt-content-reverie-sierpinski-separation (2026-04-21).
+# The reverie mixer's affordance pipeline writes this state file when
+# ``content.yt.feature`` recruits at a director scene cut-point. The
+# Sierpinski renderer reads it each tick and elevates the named slot's
+# opacity for FEATURED_TTL_S seconds before reverting to the
+# active-slot-only highlight (``set_active_slot``). Stays in
+# ``hapax-compositor`` SHM because Sierpinski is part of the studio
+# compositor process; reverie writes from a sister process.
+FEATURED_YT_SLOT_FILE = Path("/dev/shm/hapax-compositor/featured-yt-slot")
+FEATURED_TTL_S = 6.0
+FEATURED_OPACITY_BOOST = 1.0  # max opacity when featured (vs 0.9 active, 0.4 idle)
+FEATURED_FALLBACK_OPACITY = 0.9  # active-slot opacity (legacy default)
+FEATURED_IDLE_OPACITY = 0.4  # non-active opacity (legacy default)
+
 # Synthwave palette (neon pink, cyan, purple)
 COLORS = [
     (1.0, 0.2, 0.6),  # neon pink
@@ -82,6 +96,14 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         self._frame_mtimes: dict[int, float] = {}
         self._active_slot = 0
         self._audio_energy = 0.0
+        # Phase 2 yt-feature state — most-recent featured-yt-slot read.
+        # Refreshed each tick from FEATURED_YT_SLOT_FILE; the value here
+        # decays to "no feature" once its `ts` is older than
+        # FEATURED_TTL_S so a stale write doesn't pin a slot forever.
+        self._featured_slot_id: int | None = None
+        self._featured_ts: float = 0.0
+        self._featured_level: float = 0.0
+        self._featured_file_mtime: float = 0.0
         # Drop #42 SIERP-1: cache triangle geometry + inscribed rects
         # keyed on canvas size. Triangle vertices and the 4 inscribed
         # rects (3 corners + 1 center void) are deterministic in
@@ -97,6 +119,64 @@ class SierpinskiCairoSource(HomageTransitionalSource):
 
     def set_audio_energy(self, energy: float) -> None:
         self._audio_energy = energy
+
+    def _refresh_featured_yt_slot(self) -> None:
+        """Phase 2 yt-feature: read FEATURED_YT_SLOT_FILE if it changed.
+
+        mtime-gated so we re-parse JSON only when the file actually
+        rolled over. Tolerates absent / malformed file (the feature
+        flag stays cleared, slots fall back to the legacy
+        active-slot-only highlight).
+        """
+        try:
+            mtime = FEATURED_YT_SLOT_FILE.stat().st_mtime
+        except (OSError, FileNotFoundError):
+            return
+        if mtime <= self._featured_file_mtime:
+            return
+        self._featured_file_mtime = mtime
+        try:
+            import json as _json
+
+            data = _json.loads(FEATURED_YT_SLOT_FILE.read_text())
+        except (OSError, ValueError):
+            return
+        try:
+            self._featured_slot_id = int(data.get("slot_id"))
+            self._featured_ts = float(data.get("ts", 0.0))
+            self._featured_level = float(data.get("level", 1.0))
+        except (TypeError, ValueError):
+            self._featured_slot_id = None
+            return
+
+    def _slot_opacity(self, slot_id: int) -> float:
+        """Resolve the per-slot opacity given current featured + active state.
+
+        Precedence (highest first):
+          1. **Featured + within TTL** — slot is the recently-featured one
+             and the write is < FEATURED_TTL_S old. Returns
+             FEATURED_OPACITY_BOOST scaled by the recruited level.
+          2. **Active slot** — director's per-tick highlight (legacy
+             behaviour, unchanged).
+          3. **Idle** — non-active slot (legacy 0.4).
+
+        The featured + active layers compose: featuring elevates ABOVE
+        the active highlight; declining featured falls back to active or
+        idle as appropriate.
+        """
+        if self._featured_slot_id is not None and slot_id == self._featured_slot_id:
+            import time as _time
+
+            age = _time.time() - self._featured_ts
+            if 0.0 <= age <= FEATURED_TTL_S:
+                # Lerp inside the boost band: at level=1.0 -> full boost,
+                # at level=0.0 -> active opacity (still visible).
+                return FEATURED_FALLBACK_OPACITY + (
+                    FEATURED_OPACITY_BOOST - FEATURED_FALLBACK_OPACITY
+                ) * max(0.0, min(1.0, self._featured_level))
+        if slot_id == self._active_slot:
+            return FEATURED_FALLBACK_OPACITY
+        return FEATURED_IDLE_OPACITY
 
     def render_content(
         self,
@@ -114,13 +194,19 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         assert self._cached_corner_rects is not None
         assert self._cached_center_rect is not None
 
+        # Phase 2 yt-feature: refresh featured-slot state once per tick
+        # from the SHM file the reverie mixer writes when
+        # content.yt.feature is recruited. The TTL guard inside makes a
+        # stale write decay rather than pin the boost indefinitely.
+        self._refresh_featured_yt_slot()
+
         # Load and draw video frames in corner triangles. Rects are
         # from the geometry cache; triangles are only needed for the
         # line work below, which reads them directly from
         # self._cached_all_triangles.
         for slot_id in range(3):
             frame_surface = self._load_frame(slot_id)
-            opacity = 0.9 if slot_id == self._active_slot else 0.4
+            opacity = self._slot_opacity(slot_id)
             rect = self._cached_corner_rects[slot_id]
             self._draw_video_in_triangle(cr, frame_surface, rect, opacity)
 

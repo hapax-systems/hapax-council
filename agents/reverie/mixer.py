@@ -300,6 +300,21 @@ class ReverieMixer:
                 self._pipeline.record_outcome(name, success=True, context=ctx)
                 self._apply_shader_impingement(imp)
                 break
+            elif name == "content.yt.feature":
+                # Phase 2 of yt-content-reverie-sierpinski-separation
+                # (2026-04-21). Pulls slot_id from impingement.content
+                # (director sets it at scene cut-points) and writes
+                # featured-yt-slot for Sierpinski to elevate. Distinct
+                # from generic content.* below — this branch never falls
+                # through to camera/content-resolver, since YT featuring
+                # is a state-file write, not a source production.
+                slot_id = imp.content.get("slot_id", 0)
+                if self._content_router.activate_youtube(slot_id, c.combined):
+                    self._recruited_content_count += 1
+                self._chronicle_technique(name, c.combined)
+                ctx = {"source": imp.source, "metric": imp.content.get("metric", "")}
+                self._pipeline.record_outcome(name, success=True, context=ctx)
+                break
             elif name.startswith("content."):
                 narrative = self._extract_narrative(imp)
                 if self._content_router.camera_for_affordance(name):

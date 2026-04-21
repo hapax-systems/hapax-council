@@ -145,6 +145,51 @@ class ContentCapabilityRouter:
         tmp.rename(manifest_path)
         return True
 
+    def activate_youtube(self, slot_id: int, level: float) -> bool:
+        """Phase 2 of yt-content-reverie-sierpinski-separation (2026-04-21).
+
+        Mark a YT slot as the featured slot at a scene cut-point. Writes
+        ``/dev/shm/hapax-compositor/featured-yt-slot`` (atomic tmp+rename)
+        with ``{"slot_id": int, "level": float, "ts": float}``. The studio
+        compositor's Sierpinski renderer reads this file each tick and
+        elevates the named slot's opacity in the triangular composition.
+
+        Validates ``slot_id`` is a non-negative integer; level is clamped
+        into ``[0.0, 1.0]``. Out-of-range or unparseable slot_id is rejected
+        with a debug log, not raised, because director recruitment is
+        best-effort: a malformed impingement must NOT crash the mixer.
+
+        Returns True iff the file was written; False on validation failure.
+        """
+        import time as _time
+
+        try:
+            slot_int = int(slot_id)
+        except (TypeError, ValueError):
+            log.debug("activate_youtube: rejecting non-integer slot_id %r", slot_id)
+            return False
+        if slot_int < 0:
+            log.debug("activate_youtube: rejecting negative slot_id %d", slot_int)
+            return False
+        clamped_level = max(0.0, min(1.0, float(level)))
+
+        target = self._compositor / "featured-yt-slot"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "slot_id": slot_int,
+                "level": clamped_level,
+                "ts": _time.time(),
+            }
+            tmp = target.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload))
+            tmp.replace(target)
+            log.info("YT featured: slot=%d level=%.2f", slot_int, clamped_level)
+            return True
+        except OSError:
+            log.warning("activate_youtube: write to %s failed", target, exc_info=True)
+            return False
+
     def activate_content(self, affordance_name: str, narrative: str, level: float) -> bool:
         """Activate a content capability — dispatches to the appropriate resolver.
 

@@ -773,6 +773,25 @@ CONTENT_AFFORDANCES = [
         daemon="reverie",
         operational=OperationalProperties(latency_class="fast", medium="visual"),
     ),
+    # Phase 2 of yt-content-reverie-sierpinski-separation (2026-04-21).
+    # Hapax-authored YT featuring affordance — director impingements at
+    # scene cut-points score this above threshold; the reverie mixer
+    # dispatches to ``ContentCapabilityRouter.activate_youtube`` which
+    # writes ``/dev/shm/hapax-compositor/featured-yt-slot``. The studio
+    # compositor's Sierpinski renderer reads that file and elevates the
+    # named slot's opacity in the triangular composition. Distinct from
+    # Phase 1 which only routes raw bindings — this is the first-class
+    # fronting mechanism on par with ward.position, camera.hero, etc.
+    CapabilityRecord(
+        name="content.yt.feature",
+        description=(
+            "Elevate a YouTube video thumbnail to attention-peak presence "
+            "at a scene cut-point so the broadcast video reads as featured "
+            "rather than ambient backdrop"
+        ),
+        daemon="reverie",
+        operational=OperationalProperties(latency_class="fast", medium="visual"),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
