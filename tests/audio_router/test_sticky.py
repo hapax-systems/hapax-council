@@ -3,6 +3,7 @@
 Verifies the 10 s stick window, operator sticky override, and correct
 precedence between sticky state and automatic tier flows.
 """
+
 from __future__ import annotations
 
 from agents.audio_router import DEFAULT_STICK_WINDOW_S, StickyTracker

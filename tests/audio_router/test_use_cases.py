@@ -6,6 +6,7 @@ Tests are hardware-independent; they exercise the policy layers only.
 Full router tests (MIDI emit, /dev/shm watch) arrive when the tick
 loop ships with B1/B2 hardware.
 """
+
 from __future__ import annotations
 
 from agents.audio_router import (
@@ -214,8 +215,7 @@ def test_uc9_multiple_mild_impingements_do_not_stack() -> None:
     """MAX composition prevents mild events from stacking into T5+."""
     state = _state(
         impingements=[
-            ImpingementDelta(source=f"mild_{i}", salience=0.3, tier_shift=1)
-            for i in range(5)
+            ImpingementDelta(source=f"mild_{i}", salience=0.3, tier_shift=1) for i in range(5)
         ],
     )
     intent = arbitrate(state)

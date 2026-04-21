@@ -14,6 +14,7 @@ not a lock).
 The tracker is stateful — the router keeps a single instance and
 calls it each tick. Hardware-independent; pure state machine.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

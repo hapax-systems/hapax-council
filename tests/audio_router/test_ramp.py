@@ -4,6 +4,7 @@
 that the router should use when transitioning tiers. Ramp time scales
 inversely with stimmung velocity and is clamped to [0.2, 2.5] seconds.
 """
+
 from __future__ import annotations
 
 from agents.audio_router import compute_ramp_seconds
