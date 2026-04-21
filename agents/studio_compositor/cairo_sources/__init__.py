@@ -155,6 +155,12 @@ def _register_builtins() -> None:
     from agents.studio_compositor.vinyl_platter import VinylPlatterCairoSource
 
     register("VinylPlatterCairoSource", VinylPlatterCairoSource)
+    # GEM (Graffiti Emphasis Mural) — 15th HOMAGE ward, operator-directed
+    # 2026-04-19 (b6ec4a723). Replaces captions in the lower-band
+    # geometry. See docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md.
+    from agents.studio_compositor.gem_source import GemCairoSource
+
+    register("GemCairoSource", GemCairoSource)
 
 
 _register_builtins()
