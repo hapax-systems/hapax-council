@@ -109,6 +109,19 @@ class TestSearchDocumentsHandler:
 
 
 class TestGetCalendarTodayHandler:
+    @pytest.fixture(autouse=True)
+    def _stream_private(self):
+        """LRR Phase 6 §4.F: handle_get_calendar_today fail-closed
+        redacts to a broadcast-safe stub when _stream_is_publicly_visible
+        returns True. Tests of the actual API path need to mock the
+        gate to False; the privacy-redaction path is exercised by
+        the dedicated TestPrivacyGate suite (if/when added)."""
+        with patch(
+            "agents.hapax_daimonion.tools._stream_is_publicly_visible",
+            return_value=False,
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_returns_events(self, mock_fn_params):
         from agents.hapax_daimonion.tools import handle_get_calendar_today
@@ -178,6 +191,18 @@ class TestGetCalendarTodayHandler:
 
 
 class TestSearchEmailsHandler:
+    @pytest.fixture(autouse=True)
+    def _stream_private(self):
+        """Same broadcast-safe redaction gate as TestGetCalendarTodayHandler.
+        handle_search_emails fail-closes to _BROADCAST_SAFE_EMAIL_STUB
+        when stream is publicly visible; mock the gate to False so the
+        actual qdrant/gmail paths can be tested."""
+        with patch(
+            "agents.hapax_daimonion.tools._stream_is_publicly_visible",
+            return_value=False,
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_qdrant_search_default(self, mock_fn_params, mock_qdrant, mock_embed):
         from agents.hapax_daimonion.tools import handle_search_emails
