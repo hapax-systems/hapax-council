@@ -273,6 +273,21 @@ async def run_inner(daemon: VoiceDaemon) -> None:
     log.info("Hapax Daimonion daemon starting (backend=%s)", daemon.cfg.backend)
     daemon._loop = asyncio.get_running_loop()
 
+    # FINDING-F (wiring audit, 2026-04-20): voice-state.json must exist
+    # at startup so the compositor-side DuckController has a known
+    # baseline. VadStatePublisher only writes on UserStarted/Stopped
+    # frames, which require an active conversation pipeline, which
+    # requires an open session — so a quiet-operator startup leaves
+    # the file ABSENT and the duck never differentiates speech from
+    # silence. Write False here so the file exists; the publisher
+    # overwrites on real VAD events.
+    try:
+        from agents.studio_compositor.vad_ducking import publish_vad_state
+
+        publish_vad_state(False)
+    except Exception:
+        log.debug("Failed to publish initial vad_state baseline", exc_info=True)
+
     await daemon.hotkey.start()
 
     # Preload STT + TTS models
