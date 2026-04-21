@@ -39,7 +39,12 @@ from agents.studio_compositor.z_plane_constants import (
 log = logging.getLogger(__name__)
 
 CURRENT_PATH: Path = Path("/dev/shm/hapax-imagination/current.json")
-STALENESS_S: float = 10.0
+# Imagination loop writes ``current.json`` at LLM cadence — empirically
+# 30s–15min between fragments depending on TabbyAPI completion + reverberation.
+# The 10s default that shipped with Phase 2 left the modulator in stale-fallback
+# almost continuously; 120s tracks the long tail of fragment cadence.
+STALENESS_S: float = 120.0
+STALENESS_ENV: str = "HAPAX_WARD_MODULATOR_STALENESS_S"
 WARD_PROPERTIES_TTL_S: float = 0.4
 TICK_EVERY_N: int = 6
 ENABLE_ENV: str = "HAPAX_WARD_MODULATOR_ACTIVE"
@@ -105,7 +110,7 @@ class WardStimmungModulator:
             log.debug("modulator: current.json read failed", exc_info=True)
             return None
         ts = raw.get("timestamp")
-        if isinstance(ts, (int, float)) and (time.time() - float(ts)) > STALENESS_S:
+        if isinstance(ts, (int, float)) and (time.time() - float(ts)) > _staleness_cutoff():
             return None
         dims = raw.get("dimensions")
         if not isinstance(dims, dict):
@@ -151,6 +156,17 @@ class WardStimmungModulator:
 
 def _modulator_enabled() -> bool:
     return os.environ.get(ENABLE_ENV, "0") == "1"
+
+
+def _staleness_cutoff() -> float:
+    raw = os.environ.get(STALENESS_ENV)
+    if raw is None:
+        return STALENESS_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return STALENESS_S
+    return value if value > 0.0 else STALENESS_S
 
 
 def _safe_float(value: Any, default: float) -> float:
@@ -217,6 +233,7 @@ def _emit_z_plane_counts() -> None:
 __all__ = [
     "CURRENT_PATH",
     "ENABLE_ENV",
+    "STALENESS_ENV",
     "STALENESS_S",
     "TICK_EVERY_N",
     "WARD_PROPERTIES_TTL_S",

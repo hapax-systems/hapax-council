@@ -52,8 +52,10 @@ def test_dims_read_fail_returns_none(enabled: None, current_path: Path) -> None:
 
 
 def test_stale_dims_skipped(enabled: None, current_path: Path) -> None:
-    """``timestamp`` 15s in the past → modulator treats as stale."""
-    _write_current(current_path, {"depth": 1.0, "coherence": 0.5}, ts_offset=-15.0)
+    """``timestamp`` past STALENESS_S → modulator treats as stale."""
+    _write_current(
+        current_path, {"depth": 1.0, "coherence": 0.5}, ts_offset=-(_wsm.STALENESS_S + 5.0)
+    )
     mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
     with (
         patch.object(_wsm, "set_ward_properties") as setter,
@@ -62,6 +64,41 @@ def test_stale_dims_skipped(enabled: None, current_path: Path) -> None:
         mod.maybe_tick()
     setter.assert_not_called()
     stale_emit.assert_called_once()
+
+
+def test_staleness_env_override_extends_cutoff(
+    enabled: None, current_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``HAPAX_WARD_MODULATOR_STALENESS_S`` env extends the cutoff."""
+    monkeypatch.setenv(_wsm.STALENESS_ENV, "300")
+    # Default 120s would treat -180s as stale; with override 300s it is fresh.
+    _write_current(current_path, {"depth": 0.5, "coherence": 0.5}, ts_offset=-180.0)
+    mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
+    with (
+        patch.object(_wsm, "set_ward_properties") as setter,
+        patch.object(_wsm, "_emit_modulator_stale") as stale_emit,
+    ):
+        mod.maybe_tick()
+    stale_emit.assert_not_called()
+    assert setter.called
+
+
+def test_staleness_env_invalid_falls_back_to_default(
+    enabled: None, current_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Garbage env value falls back to ``STALENESS_S`` rather than raising."""
+    monkeypatch.setenv(_wsm.STALENESS_ENV, "not-a-number")
+    _write_current(
+        current_path, {"depth": 0.5, "coherence": 0.5}, ts_offset=-(_wsm.STALENESS_S + 5.0)
+    )
+    mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
+    with (
+        patch.object(_wsm, "set_ward_properties") as setter,
+        patch.object(_wsm, "_emit_modulator_stale") as stale_emit,
+    ):
+        mod.maybe_tick()
+    stale_emit.assert_called_once()
+    setter.assert_not_called()
 
 
 def test_default_plane_wards_untouched(enabled: None, current_path: Path) -> None:
@@ -160,7 +197,9 @@ def test_default_z_plane_applied_when_ward_has_no_override(
     enabled: None, current_path: Path
 ) -> None:
     """Spec §4 default plane assignment fires for wards in WARD_Z_PLANE_DEFAULTS
-    when no explicit override exists."""
+    when no explicit override exists. Modulator only iterates WARD_DOMAIN, so
+    defaults mapped for wards not in that registry are not exercised here."""
+    from agents.studio_compositor.ward_fx_mapping import WARD_DOMAIN
     from agents.studio_compositor.z_plane_constants import WARD_Z_PLANE_DEFAULTS
 
     _write_current(current_path, {"depth": 1.0, "coherence": 0.5})
@@ -175,8 +214,9 @@ def test_default_z_plane_applied_when_ward_has_no_override(
         patch.object(_wsm, "set_ward_properties", side_effect=_capture),
     ):
         mod.maybe_tick()
-    # Each defaults-mapped ward should now have its mapped z_plane on disk.
-    for ward_id, expected_plane in WARD_Z_PLANE_DEFAULTS.items():
+    in_scope = {ward: plane for ward, plane in WARD_Z_PLANE_DEFAULTS.items() if ward in WARD_DOMAIN}
+    assert in_scope, "expected at least one defaults-mapped ward in WARD_DOMAIN"
+    for ward_id, expected_plane in in_scope.items():
         assert ward_id in captured, f"{ward_id} missing from modulator writes"
         assert captured[ward_id].z_plane == expected_plane
 
