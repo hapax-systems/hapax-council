@@ -118,12 +118,24 @@ class AudioInputStream:
 
     def __init__(
         self,
-        source_name: str | None = None,
+        source_name: str | list[str] | None = None,
         sample_rate: int = 16000,
         frame_ms: int = 30,
         queue_maxsize: int = 300,
     ) -> None:
-        self._source_name = source_name if source_name is not None else _resolve_default_source()
+        # Accept the post-2026-04-18 audio-pathways list[str] priority form
+        # AND the legacy single-string form. A list lands here whenever the
+        # daemon passes DaimonionConfig.audio_input_source straight through
+        # — without the resolve_source call below, the list would be
+        # *cmd-unpacked into asyncio.create_subprocess_exec, which raises
+        # "expected str, bytes or os.PathLike object, not list" every retry
+        # and silently kills audio capture.
+        if source_name is None:
+            self._source_name = _resolve_default_source()
+        elif isinstance(source_name, list):
+            self._source_name = resolve_source(source_name)
+        else:
+            self._source_name = source_name
         self._sample_rate = sample_rate
         self._frame_ms = frame_ms
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=queue_maxsize)

@@ -134,3 +134,48 @@ class TestEchoCancelConf:
         # The mic the AEC reads from. Substring match — the device-id
         # suffix may rotate per kernel boot but "Yeti" stays stable.
         assert "Yeti" in text
+
+
+# ── AudioInputStream init paths ────────────────────────────────────────
+
+
+class TestAudioInputStreamSourceArgShape:
+    """Constructor accepts the audio-pathways list[str] form, not just str.
+
+    The bug this regression-pins: daemon.py passes
+    cfg.audio_input_source (a list) straight to AudioInputStream, which
+    used to type-annotate ``source_name: str | None`` and store the list
+    verbatim. The list was then *cmd-unpacked into
+    asyncio.create_subprocess_exec, raising
+    ``expected str, bytes or os.PathLike object, not list`` every retry
+    and silently killing audio capture.
+    """
+
+    def test_list_form_resolves_to_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The regression pin: pass a list, get a string back. Anything
+        else (a list stored as ``self._source_name``) crashes pw-cat at
+        the *cmd unpack."""
+        from agents.hapax_daimonion import audio_input as ai_mod
+
+        monkeypatch.setattr(
+            ai_mod,
+            "resolve_source",
+            lambda candidates, **_: "echo_cancel_capture",
+        )
+        stream = ai_mod.AudioInputStream(source_name=["echo_cancel_capture", "fallback_x"])
+        assert isinstance(stream._source_name, str)
+        assert stream._source_name == "echo_cancel_capture"
+
+    def test_str_form_passes_through_unchanged(self) -> None:
+        from agents.hapax_daimonion.audio_input import AudioInputStream
+
+        stream = AudioInputStream(source_name="my_explicit_source")
+        assert stream._source_name == "my_explicit_source"
+
+    def test_none_form_uses_default_resolver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents.hapax_daimonion import audio_input as ai_mod
+
+        monkeypatch.delenv("HAPAX_AEC_ACTIVE", raising=False)
+        stream = ai_mod.AudioInputStream(source_name=None)
+        # Default resolver returns _RAW_YETI_PATTERN when AEC env is off.
+        assert stream._source_name == ai_mod._RAW_YETI_PATTERN
