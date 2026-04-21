@@ -113,6 +113,17 @@ _PRESET_FAMILY: list[CapabilityRecord] = [
         "fx.family.warm-minimal",
         "warm minimal fields that sit quietly as a backdrop for conversation or focused work",
     ),
+    # Phase 5 of preset-variety-plan (task #166): the neutral-ambient
+    # family lives in FAMILY_PRESETS as the default fallback but was
+    # never registered as a capability — so the affordance pipeline
+    # could not surface it via Qdrant retrieval, only via the
+    # dispatcher's hard-coded fallback path. Closing the gap so
+    # recruitment can actually choose neutral-ambient when narrative
+    # justifies it.
+    _record(
+        "fx.family.neutral-ambient",
+        "neutral baseline visuals for default fallback moments without strong directional cue, coherent and unobtrusive backdrop",
+    ),
 ]
 
 # ── Overlay emphasis affordances ───────────────────────────────────────────
