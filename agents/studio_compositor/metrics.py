@@ -140,6 +140,15 @@ COMP_GLFEEDBACK_ACCUM_CLEAR_TOTAL: Any = None
 # absent, no signal," which led to a phantom architectural finding.
 WARD_BLIT_TOTAL: Any = None
 WARD_BLIT_SKIPPED_TOTAL: Any = None
+# FINDING-W deepening (2026-04-21): per-ward source-surface dimensions.
+# Gauge labelled by ward holds the most recent source-surface
+# width × height (in pixels²) the post-FX cairooverlay just blitted.
+# Distinguishes "ward is blitting a transparent / 1×1 / canvas-sized
+# empty surface" from "ward is blitting real pixels". Combined with
+# WARD_BLIT_TOTAL rate, identifies the per-ward render-vs-content gap
+# the wiring audit's visual sweep flagged. Updated from
+# fx_chain.pip_draw_from_layout once per blit.
+WARD_SOURCE_SURFACE_PIXELS: Any = None
 # Task #129 Stage 3 — per-camera face-obscure observability. Increments
 # every time ``face_obscure_integration.obscure_frame_for_camera`` is
 # called, labelled by camera role and whether any bboxes were obscured
@@ -228,6 +237,7 @@ def _init_metrics() -> None:
     global HAPAX_IMAGINATION_SHADER_ROLLBACK_TOTAL
     global WARD_BLIT_TOTAL
     global WARD_BLIT_SKIPPED_TOTAL
+    global WARD_SOURCE_SURFACE_PIXELS
 
     if not _PROMETHEUS_AVAILABLE:
         return
@@ -385,6 +395,17 @@ def _init_metrics() -> None:
             "alpha_clamped_to_zero"
         ),
         ["ward", "reason"],
+        registry=REGISTRY,
+    )
+    WARD_SOURCE_SURFACE_PIXELS = Gauge(
+        "studio_compositor_ward_source_surface_pixels",
+        (
+            "Most recent source-surface width × height (px²) the post-FX "
+            "cairooverlay blitted per ward. Pairs with ward_blit_total: a "
+            "non-zero blit rate alongside a near-zero pixel area indicates "
+            "the source is producing a degenerate (1×1 / empty) surface."
+        ),
+        ["ward"],
         registry=REGISTRY,
     )
 

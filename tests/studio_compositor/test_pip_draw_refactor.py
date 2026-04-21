@@ -407,3 +407,67 @@ def test_skip_emits_alpha_clamped_to_zero_reason(monkeypatch) -> None:
     pip_draw_from_layout(cr, state, registry)
 
     assert ("muted", "alpha_clamped_to_zero") in skip_reasons
+
+
+# ── FINDING-W deepening: per-ward source-surface dimensions gauge ────
+
+
+def test_blit_records_source_surface_pixels(monkeypatch) -> None:
+    """Each successful blit calls
+    ``WARD_SOURCE_SURFACE_PIXELS.labels(ward=…).set(w*h)`` so the audit
+    can distinguish "blitting a 1×1 empty surface" from "blitting real
+    content" without inspecting cairo internals from the metric scrape.
+    """
+    set_calls: list[tuple[str, float]] = []
+
+    class _Gauge:
+        def __init__(self) -> None:
+            self._kw: dict = {}
+
+        def labels(self, **kwargs):  # type: ignore[no-untyped-def]
+            self._kw = kwargs
+            return self
+
+        def set(self, value: float) -> None:
+            set_calls.append((self._kw.get("ward", ""), float(value)))
+
+    from agents.studio_compositor import metrics
+
+    monkeypatch.setattr(metrics, "WARD_SOURCE_SURFACE_PIXELS", _Gauge(), raising=False)
+
+    state = LayoutState(_layout_with_two_rect_surfaces())
+    registry = SourceRegistry()
+    # Two distinct surface sizes to confirm we record actual w*h, not a constant.
+    registry.register("red", _CannedBackend(_solid_surface(20, 30, (1.0, 0.0, 0.0))))
+    registry.register("green", _CannedBackend(_solid_surface(40, 50, (0.0, 1.0, 0.0))))
+
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
+    cr = _paint_black(canvas)
+    pip_draw_from_layout(cr, state, registry)
+
+    by_ward = dict(set_calls)
+    assert by_ward.get("red") == 20 * 30
+    assert by_ward.get("green") == 40 * 50
+
+
+def test_blit_observability_does_not_break_on_metric_failure(monkeypatch) -> None:
+    """If the metric module raises (e.g. uninitialized state, double-init),
+    the render path must NOT raise — observability is fail-open per
+    FINDING-R/-W policy."""
+    from agents.studio_compositor import fx_chain, metrics
+
+    class _BrokenGauge:
+        def labels(self, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("broken")
+
+    monkeypatch.setattr(metrics, "WARD_SOURCE_SURFACE_PIXELS", _BrokenGauge(), raising=False)
+
+    state = LayoutState(_layout_with_two_rect_surfaces())
+    registry = SourceRegistry()
+    registry.register("red", _CannedBackend(_solid_surface(10, 10, (1.0, 0.0, 0.0))))
+    registry.register("green", _CannedBackend(_solid_surface(10, 10, (0.0, 1.0, 0.0))))
+
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
+    cr = _paint_black(canvas)
+    # Must not raise — render path is the contract, observability is best-effort.
+    fx_chain.pip_draw_from_layout(cr, state, registry)

@@ -163,6 +163,12 @@ def pip_draw_from_layout(
             blend_mode=surface_schema.blend_mode,
         )
         _emit_blit_success(assignment.source)
+        _record_blit_observability(
+            assignment.source,
+            src,
+            surface_schema.geometry,
+            effective_alpha,
+        )
 
 
 def _emit_blit_skip(ward_id: str, reason: str) -> None:
@@ -185,6 +191,68 @@ def _emit_blit_success(ward_id: str) -> None:
             metrics.WARD_BLIT_TOTAL.labels(ward=ward_id).inc()
     except Exception:
         pass
+
+
+# Rate-limit per-ward DEBUG logs so a long capture session doesn't flood
+# the journal. Logging cadence is one line per ward per ~10s of frame
+# delivery (300 frames at 30fps); the prometheus gauge is the always-on
+# observability surface — DEBUG log is opt-in via journalctl --priority.
+_DEBUG_LOG_PERIOD_FRAMES: int = 300
+_debug_log_counters: dict[str, int] = {}
+
+
+def _record_blit_observability(
+    ward_id: str,
+    src: cairo.ImageSurface,
+    geom: SurfaceGeometry,
+    effective_alpha: float,
+) -> None:
+    """FINDING-W deepening: record per-ward source-surface dimensions
+    plus rate-limited DEBUG logging.
+
+    The post-FX cairooverlay reports 16/16 wards blitting at full
+    cadence, yet the wiring audit's visual sweep flagged 9/16 as not
+    visible. The gap is "blit happens but the source surface is empty
+    or 1×1". Per-ward gauge surfaces the actual surface dimensions so
+    Grafana / curl can attribute "blitting nothing" to specific wards.
+
+    Fail-open in two senses: the metric or log import can fail without
+    breaking the render path, and the cairo surface accessors can raise
+    on a degenerate / freed surface — both swallowed at DEBUG level.
+    """
+    try:
+        from agents.studio_compositor import metrics as _metrics
+
+        if _metrics.WARD_SOURCE_SURFACE_PIXELS is not None:
+            try:
+                src_w = src.get_width()
+                src_h = src.get_height()
+                _metrics.WARD_SOURCE_SURFACE_PIXELS.labels(ward=ward_id).set(float(src_w * src_h))
+            except Exception:
+                log.debug("ward source-surface gauge: surface size read failed", exc_info=True)
+    except Exception:
+        log.debug("ward source-surface gauge: metric import failed", exc_info=True)
+
+    if not log.isEnabledFor(logging.DEBUG):
+        return
+    counter = _debug_log_counters.get(ward_id, 0) + 1
+    _debug_log_counters[ward_id] = counter
+    if counter % _DEBUG_LOG_PERIOD_FRAMES != 1:
+        return
+    try:
+        log.debug(
+            "ward-blit ward=%s rect=(%s,%s,%s,%s) src=%dx%d alpha=%.2f",
+            ward_id,
+            geom.x or 0,
+            geom.y or 0,
+            geom.w or 0,
+            geom.h or 0,
+            src.get_width(),
+            src.get_height(),
+            effective_alpha,
+        )
+    except Exception:
+        log.debug("ward-blit DEBUG log raised", exc_info=True)
 
 
 def _pip_draw(compositor: Any, cr: Any) -> None:
