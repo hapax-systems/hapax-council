@@ -48,6 +48,7 @@ RECREATE_TASKS: frozenset[str] = frozenset(
         "actuation_loop",
         "gem_producer_loop",
         "programme_manager_loop",
+        "salience_publish_loop",
     }
 )
 LOG_AND_CONTINUE_TASKS: frozenset[str] = frozenset()
@@ -451,9 +452,21 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "programme_manager_loop",
         lambda: programme_manager_loop(daemon),
     )
+    # Salience-router exploration-signal republish — keeps the
+    # apperception-style writer-fresh signal alive during quiet operator
+    # periods. Live regression: the writer goes dead the moment the
+    # operator stops talking, because route() is the only publish call
+    # site.
+    from agents.hapax_daimonion.salience_publish_loop import salience_publish_loop
+
+    _make_task(
+        daemon,
+        "salience_publish_loop",
+        lambda: salience_publish_loop(daemon),
+    )
     log.info(
         "CPAL runner + impingement consumers "
-        "(CPAL + affordance + sidechat + gem) + programme manager started"
+        "(CPAL + affordance + sidechat + gem) + programme manager + salience publish started"
     )
 
     if daemon.cfg.mc_enabled or daemon.cfg.obs_enabled:
