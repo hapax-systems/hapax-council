@@ -1,0 +1,46 @@
+{
+    "_meta": {
+        "version": 1,
+        "description": "Per-shader-family maximum strength bounds. Enforced at preset-compile time by agents/effect_graph/wgsl_compiler.py via shared.shader_bounds.clamp_params. Rationale + governance: docs/superpowers/amendments/2026-04-21-pixel-sort-intensity-cap.md. Live evidence: docs/research/evidence/2026-04-21-pixel-sort-dominance.png.",
+        "authored": "2026-04-21",
+        "integration_contract": "HOMAGE umbrella spec §11 governance table (OQ-03-candidate row); nebulous scrim substrate semantics.",
+    },
+    "node_caps": {
+        "pixel_sort": {
+            "max_strength": 0.55,
+            "spatial_coverage_max_pct": 0.40,
+            "clamp_params": ["strength", "intensity", "pixel_sort_strength", "threshold"],
+        },
+        "glfeedback": {
+            "max_strength": 0.70,
+            "spatial_coverage_max_pct": 0.60,
+            "clamp_params": ["strength", "intensity", "feedback_amount"],
+        },
+        "colorgrade": {"max_strength": 1.00, "spatial_coverage_max_pct": 1.00, "clamp_params": []},
+        "drift": {
+            "max_strength": 0.80,
+            "spatial_coverage_max_pct": 1.00,
+            "clamp_params": ["strength", "amplitude"],
+        },
+        "feedback": {
+            "max_strength": 0.75,
+            "spatial_coverage_max_pct": 0.80,
+            "clamp_params": ["strength", "feedback_amount", "decay"],
+        },
+        "rd": {
+            "max_strength": 0.85,
+            "spatial_coverage_max_pct": 1.00,
+            "clamp_params": ["feed_rate", "kill_rate", "intensity"],
+        },
+        "noise": {
+            "max_strength": 0.60,
+            "spatial_coverage_max_pct": 0.70,
+            "clamp_params": ["strength", "amplitude", "intensity"],
+        },
+        "breath": {
+            "max_strength": 0.90,
+            "spatial_coverage_max_pct": 1.00,
+            "clamp_params": ["strength", "intensity"],
+        },
+    },
+}

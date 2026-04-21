@@ -150,6 +150,15 @@ def _build_passes_for_target(
                 uniforms[key] = float(enum_vals.index(value)) if value in enum_vals else 0.0
             # Skip non-numeric values without a known enum mapping
 
+        # Shader-intensity cap (Phase 1 of 2026-04-21 pixel-sort
+        # dominance amendment). Clamp per-family max_strength on the
+        # declared parameter names so preset authoring cannot push a
+        # single shader past the substrate-vs-foreground threshold.
+        # Bounds file: presets/shader_intensity_bounds.json.
+        from shared.shader_bounds import clamp_params as _clamp_shader_params
+
+        uniforms, _was_clamped = _clamp_shader_params(step.node_type, uniforms)
+
         # Content compositing nodes need 4 content texture slot inputs.
         # Opt-in via the requires_content_slots flag in the node manifest JSON
         # (declarative — no hardcoded node type tuple).
