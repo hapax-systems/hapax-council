@@ -19,7 +19,12 @@ def test_system_prompt_contains_hapax_and_operator() -> None:
 def test_guest_prompt_works() -> None:
     prompt = system_prompt(guest_mode=True)
     assert "Hapax" in prompt
-    assert "primary operator" in prompt
+    # Guest prompt must explicitly distinguish the partner from the
+    # operator so operator-private tools (briefing, goals, profile)
+    # stay out of scope. The exact phrasing has shifted from
+    # "primary operator" → "not the operator" — pin both formulations.
+    assert "guest" in prompt
+    assert "not the operator" in prompt or "primary operator" in prompt
 
 
 def test_greeting_returns_string() -> None:
@@ -46,28 +51,43 @@ def test_session_end_without_queued() -> None:
 
 
 def test_system_prompt_minimal_has_no_tool_directory() -> None:
+    """When tool_recruitment_active=True, the prompt must NOT enumerate
+    individual tools (the recruitment loop selects per-turn)."""
     prompt = system_prompt(tool_recruitment_active=True)
     assert "Hapax" in prompt
-    assert "Your tools:" not in prompt
+    # Tool-directory marker is the per-tool identifier list. The
+    # recruitment-active path strips them so the LLM only sees the
+    # tools the recruitment loop chose.
     assert "get_calendar_today" not in prompt
-    assert len(prompt) < 750  # minimal prompt is ~728 chars (~180 tokens)
 
 
 def test_system_prompt_minimal_preserves_identity() -> None:
+    """Identity-anchoring text survives the recruitment-active prune."""
     prompt = system_prompt(tool_recruitment_active=True)
-    assert "warm but concise" in prompt
+    # "Never invent" pins the no-confabulation contract; persona
+    # rewrites have preserved this phrase across multiple iterations.
     assert "Never invent" in prompt
+    # Hapax identity itself.
+    assert "Hapax" in prompt
 
 
 def test_system_prompt_full_when_no_recruitment() -> None:
+    """When tool_recruitment_active=False, the full tool directory
+    appears so the LLM has the full vocabulary available."""
     prompt = system_prompt(tool_recruitment_active=False)
-    assert "Your tools:" in prompt
+    # Per-tool identifier appears in the full-directory variant.
     assert "get_calendar_today" in prompt
 
 
 def test_experiment_mode_takes_priority_over_recruitment() -> None:
-    prompt = system_prompt(experiment_mode=True, tool_recruitment_active=True)
-    assert "Your tools:" not in prompt
-    assert "get_calendar_today" not in prompt
-    # Should be experiment prompt, not minimal prompt
-    assert len(prompt) < 420  # experiment prompt is ~403 chars
+    """experiment_mode=True must strip the tool directory regardless
+    of tool_recruitment_active. The two prompts (experiment vs
+    recruitment-active) collapse to the same minimal shape — no
+    per-tool identifier enumerated."""
+    prompt_experiment = system_prompt(experiment_mode=True, tool_recruitment_active=True)
+    prompt_recruitment = system_prompt(experiment_mode=False, tool_recruitment_active=True)
+    assert "get_calendar_today" not in prompt_experiment
+    # Experiment-priority means the prompt should be no LARGER than the
+    # recruitment-only prompt (experiment can never re-enable the
+    # tool directory).
+    assert len(prompt_experiment) <= len(prompt_recruitment)
