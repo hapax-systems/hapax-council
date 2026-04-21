@@ -69,21 +69,22 @@ async def check_gpu_vram() -> list[CheckResult]:
             )
         ]
 
-    parts = [p.strip() for p in out.split(",")]
-    if len(parts) < 3:
-        return [
-            CheckResult(
-                name="gpu.vram",
-                group="gpu",
-                status=Status.DEGRADED,
-                message=f"Unexpected nvidia-smi output: {out}",
-                duration_ms=_u._timed(t),
-            )
-        ]
-
-    try:
-        used, total, free = int(parts[0]), int(parts[1]), int(parts[2])
-    except ValueError:
+    # nvidia-smi returns one CSV row per GPU. The pre-multi-GPU parser
+    # split the whole blob on `,`, which on a 2-GPU box yields 6 fields
+    # (last+first of adjacent rows fused, e.g. "18669\n627") and
+    # int() chokes. Parse line-by-line and pick the worst-case GPU
+    # (highest used%) — that's the bottleneck signal the operator cares
+    # about for VRAM headroom.
+    rows: list[tuple[int, int, int]] = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            rows.append((int(parts[0]), int(parts[1]), int(parts[2])))
+        except ValueError:
+            continue
+    if not rows:
         return [
             CheckResult(
                 name="gpu.vram",
@@ -94,6 +95,9 @@ async def check_gpu_vram() -> list[CheckResult]:
             )
         ]
 
+    # Pick the GPU with the highest used% (the bottleneck). Reporting
+    # one number keeps the existing dashboard / health-rollup shape.
+    used, total, free = max(rows, key=lambda r: (r[0] / r[1]) if r[1] > 0 else 0)
     pct = (used / total * 100) if total > 0 else 0
     if pct < 90:
         status = Status.HEALTHY
@@ -148,9 +152,18 @@ async def check_gpu_temperature() -> list[CheckResult]:
                 duration_ms=_u._timed(t),
             )
         ]
-    try:
-        temp = int(out.strip())
-    except ValueError:
+    # nvidia-smi returns one row per GPU. Take the max temp across
+    # GPUs (hottest is the bottleneck for thermal throttling).
+    temps: list[int] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            temps.append(int(line))
+        except ValueError:
+            continue
+    if not temps:
         return [
             CheckResult(
                 name="gpu.temperature",
@@ -160,6 +173,7 @@ async def check_gpu_temperature() -> list[CheckResult]:
                 duration_ms=_u._timed(t),
             )
         ]
+    temp = max(temps)
 
     if temp < 80:
         status = Status.HEALTHY

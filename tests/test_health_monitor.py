@@ -282,6 +282,60 @@ class TestGpuChecks:
             results = await check_gpu_temperature()
         assert results[0].status == Status.DEGRADED
 
+    @pytest.mark.asyncio
+    async def test_gpu_vram_multi_gpu_picks_worst_case(self):
+        """nvidia-smi returns one row per GPU. The check must parse line-by-
+        line and report the worst (highest used %) — pre-fix the parser
+        treated multi-GPU output as a single CSV blob and choked.
+        Live regression seen 2026-04-21 on 2-GPU box."""
+        from agents.health_monitor import check_gpu_vram
+
+        # GPU 0 (RTX 3090): 5448/24576 (~22% used) — bottleneck
+        # GPU 1 (RTX 5060 Ti): 627/16311 (~3.8% used) — idle
+        with (
+            patch(
+                "agents.health_monitor.checks.gpu._nvidia_smi", new_callable=AsyncMock
+            ) as mock_smi,
+            patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock_http,
+        ):
+            mock_smi.return_value = (0, "5448, 24576, 18669\n627, 16311, 15225", "")
+            mock_http.return_value = (200, '{"models": []}')
+            results = await check_gpu_vram()
+        assert results[0].status == Status.HEALTHY
+        # Worst-case (GPU 0) reported in message
+        assert "5448MiB" in results[0].message
+        assert "24576MiB" in results[0].message
+
+    @pytest.mark.asyncio
+    async def test_gpu_temp_multi_gpu_picks_max(self):
+        """nvidia-smi returns one row per GPU. Take max temp across GPUs
+        (hottest = thermal bottleneck). Pre-fix the parser used int(out.strip())
+        which choked on '40\\n29' multi-line output."""
+        from agents.health_monitor import check_gpu_temperature
+
+        # GPU 0 at 40C, GPU 1 at 29C → max is 40C → HEALTHY
+        with patch("agents.health_monitor.checks.gpu._nvidia_smi", new_callable=AsyncMock) as mock:
+            mock.return_value = (0, "40\n29", "")
+            results = await check_gpu_temperature()
+        assert results[0].status == Status.HEALTHY
+        assert "40°C" in results[0].message
+
+    @pytest.mark.asyncio
+    async def test_gpu_vram_unparseable_returns_degraded(self):
+        from agents.health_monitor import check_gpu_vram
+
+        with (
+            patch(
+                "agents.health_monitor.checks.gpu._nvidia_smi", new_callable=AsyncMock
+            ) as mock_smi,
+            patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock_http,
+        ):
+            mock_smi.return_value = (0, "garbage\nmore garbage", "")
+            mock_http.return_value = (200, '{"models": []}')
+            results = await check_gpu_vram()
+        assert results[0].status == Status.DEGRADED
+        assert "Cannot parse VRAM" in results[0].message
+
 
 class TestSystemdChecks:
     @pytest.mark.asyncio
