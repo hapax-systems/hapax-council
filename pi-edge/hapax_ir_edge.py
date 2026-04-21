@@ -35,17 +35,46 @@ logging.basicConfig(
 )
 log = logging.getLogger("hapax-ir-edge")
 
-# Task #182 fix (2026-04-20): use the mDNS hostname instead of a
-# hardcoded LAN IP so DHCP shuffles don't silence the fleet. The
-# council advertises itself on wlan0 as `hapax-podium-2.local` via
-# avahi (``systemctl status avahi-daemon`` on the council confirms).
-# The `-2` suffix is auto-assigned because another device on the LAN
-# claims the unsuffixed `hapax-podium.local`; use the suffixed form
-# that avahi actually publishes for us.
-DEFAULT_WORKSTATION = "http://hapax-podium-2.local:8051"
+# Use the mDNS hostname instead of a hardcoded LAN IP so DHCP shuffles
+# don't silence the fleet. The council advertises itself as
+# ``hapax-podium.local`` via avahi-daemon
+# (``systemctl is-active avahi-daemon`` confirms; ``avahi-browse -atrp``
+# shows the published name).
+#
+# 2026-04-21 audit: an earlier comment claimed avahi assigned a `-2`
+# suffix because another device on the LAN claimed the unsuffixed name.
+# Live verification on Pi-1 disproved that — ``ping hapax-podium.local``
+# resolves to the council's wlan0 IP cleanly. Pi-1 + Pi-2 had been
+# silently dropping POSTs against the broken `-2` URL for ~21h until
+# the IR Pi fleet revival on 2026-04-21.
+DEFAULT_WORKSTATION = "http://hapax-podium.local:8051"
 DEFAULT_CAPTURE_SIZE = (1920, 1080)
 MOTION_THRESHOLD = 0.01
 MOTION_TIMEOUT_S = 30.0
+
+# Per-role rotation correction (2026-04-21). Pi NoIR cameras are mounted
+# at non-standard angles "out of necessity" per operator. Captured frames
+# are rotated by ``ROLE_ROTATION_CW_DEG[role]`` degrees clockwise via
+# cv2.rotate before downstream processing (YOLO, hand detection, screen
+# detection, debug-frame save) so every consumer sees an upright image.
+#
+# Live verification 2026-04-21:
+# * desk: head-on portrait, captured 90° CCW → +90° CW corrects
+# * room: wide-angle, captured 90° CCW → +90° CW corrects
+# * overhead: top-down (no correction needed; verify when Pi-6 reachable)
+#
+# Rotation values must be one of {0, 90, 180, 270}; cv2.rotate has no
+# arbitrary-angle path. Daemon ignores other values and logs a warning.
+ROLE_ROTATION_CW_DEG: dict[str, int] = {
+    "desk": 90,
+    "room": 90,
+    "overhead": 0,
+}
+_CV2_ROTATE_FOR: dict[int, int] = {
+    90: cv2.ROTATE_90_CLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
 # #143 — fallback POST interval.  The cadence controller drives the real post
 # rate; this is only used when the controller is unavailable (e.g. test mode).
 POST_INTERVAL_S = 2.0
@@ -144,6 +173,19 @@ class IrEdgeDaemon:
         os.unlink(path)
         if color is None:
             return cv2.cvtColor(empty, cv2.COLOR_GRAY2BGR), empty
+        # Per-role rotation correction (2026-04-21). Cameras are mounted
+        # at non-standard angles; rotate captured frames upright before
+        # downstream processing so YOLO + hand detection + saved debug
+        # frames all share a single upright reference.
+        rotation_deg = ROLE_ROTATION_CW_DEG.get(self._role, 0)
+        if rotation_deg in _CV2_ROTATE_FOR:
+            color = cv2.rotate(color, _CV2_ROTATE_FOR[rotation_deg])
+        elif rotation_deg != 0:
+            log.warning(
+                "ignoring unsupported ROLE_ROTATION_CW_DEG[%s]=%d (must be 0/90/180/270)",
+                self._role,
+                rotation_deg,
+            )
         grey = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
         return color, grey
 
