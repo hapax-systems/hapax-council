@@ -162,6 +162,42 @@ def material_histogram(director_records: list[dict[str, Any]]) -> Counter[str]:
     return hist
 
 
+def per_preset_activation_count(records: list[dict]) -> Counter:
+    """Count winning capabilities across the recruitment-log window.
+
+    The recruitment log records one line per ``select()`` winner via
+    ``AffordancePipeline._persist_recruitment_winner``. The counter is
+    the bedrock for the ``colorgrade_halftone_ratio`` plus per-family
+    activation telemetry.
+    """
+    hist: Counter = Counter()
+    for rec in records:
+        name = rec.get("capability_name")
+        if isinstance(name, str) and name:
+            hist[name] += 1
+    return hist
+
+
+def colorgrade_halftone_ratio(per_preset: Counter) -> float | str:
+    """Compute the ``colorgrade:halftone`` activation ratio.
+
+    Plan §1: research §1 flagged a ~30:1 colorgrade-to-halftone
+    activation imbalance at baseline. Phase 9 acceptance pulls this
+    ratio under 10:1. ``halftone`` is the post-Phase-5 family that
+    should now be reachable via Qdrant; if it has zero activations we
+    return ``"INF"`` (string) so the comparator can mark it FAIL with
+    a legible reason rather than emitting a ``ZeroDivisionError``.
+    Returns ``"NA"`` when neither family fired.
+    """
+    cg = sum(c for name, c in per_preset.items() if "colorgrade" in name)
+    ht = sum(c for name, c in per_preset.items() if "halftone" in name)
+    if cg == 0 and ht == 0:
+        return "NA"
+    if ht == 0:
+        return "INF"
+    return cg / ht
+
+
 def build_baseline(
     *,
     structural_log: Path = DEFAULT_STRUCTURAL_LOG,
@@ -180,6 +216,15 @@ def build_baseline(
     mat_hist = material_histogram(director)
     bias_count = preset_bias_impingement_count(director)
 
+    if recruitment_present:
+        recruitment = load_jsonl_window(recruitment_log, now=now, window_s=window_s)
+        per_preset = per_preset_activation_count(recruitment)
+        cg_ht_ratio: Any = colorgrade_halftone_ratio(per_preset)
+    else:
+        recruitment = []
+        per_preset = Counter()
+        cg_ht_ratio = "NA"
+
     return {
         "schema_version": 1,
         "generated_at": datetime.fromtimestamp(now, tz=UTC).isoformat(),
@@ -192,12 +237,15 @@ def build_baseline(
         "material_histogram": dict(mat_hist),
         "material_entropy_bits": shannon_entropy(mat_hist),
         "recruitment_log_present": recruitment_present,
-        # Per-preset activation count + recent-10 cosine-min-distance
-        # mean require the recruitment log; emit NA when absent so
-        # Phase 9's diff path knows the gap was structural, not a bug
-        # in this baseline run.
-        "per_preset_activation_count": "NA" if not recruitment_present else None,
-        "recent_10_cosine_min_distance_mean": "NA" if not recruitment_present else None,
+        "recruitment_records": len(recruitment),
+        # Per-preset activation count + colorgrade:halftone ratio
+        # computed from the recruitment log when present (Phase 1 /
+        # Phase 9 acceptance metrics). recent_10_cosine_min_distance_mean
+        # requires per-recruitment embedding snapshots — separate
+        # workstream; emit NA until that's wired.
+        "per_preset_activation_count": dict(per_preset) if recruitment_present else "NA",
+        "colorgrade_halftone_ratio": cg_ht_ratio,
+        "recent_10_cosine_min_distance_mean": "NA",
     }
 
 

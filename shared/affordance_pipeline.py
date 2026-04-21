@@ -55,6 +55,16 @@ PERCEPTUAL_IMPINGEMENT_COOLDOWN_S: float = 30.0
 # Where impingements land — same SHM file the daimonion + reverie + dmn
 # consumers tail (see ``shared/sensor_protocol.IMPINGEMENTS_FILE``).
 _PERCEPTUAL_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
+# Persistent recruitment log — per-winner record consumed by
+# ``scripts/measure-preset-variety-baseline.py`` to compute
+# ``per_preset_activation_count`` + ``colorgrade_halftone_ratio``
+# (preset-variety plan Phase 1 / Phase 9). Path mirrors the default
+# the baseline script reads from. Append-only; operator rotates
+# manually if needed (~80 bytes/line × ~5/sec ≈ 35 MB/day).
+RECRUITMENT_LOG_FILE = Path.home() / "hapax-state" / "affordance" / "recruitment-log.jsonl"
+# Operator-runtime override of recruitment-log writing.
+# Set ``HAPAX_RECRUITMENT_LOG=0`` to disable (default-on).
+RECRUITMENT_LOG_ENV = "HAPAX_RECRUITMENT_LOG"
 # Preset-variety Phase 4: Thompson posterior decay on non-recruitment.
 # 0.999 ≈ 700-tick half-life (gentle); 1.0 disables. Operator-tunable.
 THOMPSON_DECAY_ENV = "HAPAX_AFFORDANCE_THOMPSON_DECAY"
@@ -1108,6 +1118,41 @@ class AffordancePipeline:
         self._cascade_log.append(entry)
         if len(self._cascade_log) > 100:
             self._cascade_log = self._cascade_log[-50:]
+        # Persist the WINNER (top-1) to the recruitment log for the
+        # preset-variety baseline / Phase 9 measurement script. Only the
+        # top winner is logged — survivors[1:] are tied for ranking but
+        # only the top is "applied". Fail-open; logging errors must not
+        # break the recruitment hot path.
+        self._persist_recruitment_winner(entry)
+
+    def _persist_recruitment_winner(self, entry: dict[str, Any]) -> None:
+        """Append the cascade entry's top winner to ``recruitment-log.jsonl``.
+
+        Lightweight payload (no embeddings) — enough to compute the
+        per-preset activation count + colorgrade:halftone ratio that the
+        Phase 1 baseline script tries to load. Disabled by setting
+        ``HAPAX_RECRUITMENT_LOG=0``.
+        """
+        if os.environ.get(RECRUITMENT_LOG_ENV, "1") == "0":
+            return
+        winners = entry.get("winners") or []
+        if not winners:
+            return
+        top = winners[0]
+        line = {
+            "timestamp": entry["timestamp"],
+            "capability_name": top.get("name", ""),
+            "similarity": top.get("similarity", 0.0),
+            "combined": top.get("combined", 0.0),
+            "impingement_source": entry.get("source", ""),
+            "impingement_metric": entry.get("metric", ""),
+        }
+        try:
+            RECRUITMENT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with RECRUITMENT_LOG_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(line) + "\n")
+        except OSError:
+            pass
 
     @property
     def recent_cascades(self) -> list[dict[str, Any]]:

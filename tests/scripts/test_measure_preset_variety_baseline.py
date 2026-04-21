@@ -198,19 +198,73 @@ class TestBuildBaseline:
         assert baseline["recruitment_log_present"] is False
         assert baseline["per_preset_activation_count"] == "NA"
 
-    def test_recruitment_log_present_drops_na(self, tmp_path: Path) -> None:
+    def test_recruitment_log_present_emits_per_preset_count(self, tmp_path: Path) -> None:
+        """When recruitment-log.jsonl exists, per_preset_activation_count
+        is computed from the log records (not NA)."""
         recruitment = tmp_path / "recruitment.jsonl"
-        recruitment.write_text("")
+        recruitment.write_text(
+            json.dumps({"timestamp": 1000.0, "capability_name": "fx.family.calm-textural"})
+            + "\n"
+            + json.dumps({"timestamp": 1001.0, "capability_name": "fx.family.calm-textural"})
+            + "\n"
+            + json.dumps({"timestamp": 1002.0, "capability_name": "node.colorgrade"})
+        )
         baseline = mod.build_baseline(
             structural_log=tmp_path / "missing-s.jsonl",
             director_log=tmp_path / "missing-d.jsonl",
             recruitment_log=recruitment,
             window_s=60.0,
-            now=1000.0,
+            now=1010.0,
         )
         assert baseline["recruitment_log_present"] is True
-        # When log present we don't yet compute; field is None (not "NA")
-        assert baseline["per_preset_activation_count"] is None
+        assert baseline["recruitment_records"] == 3
+        assert baseline["per_preset_activation_count"] == {
+            "fx.family.calm-textural": 2,
+            "node.colorgrade": 1,
+        }
+
+
+# ── per_preset_activation_count + colorgrade_halftone_ratio ──────────
+
+
+class TestPerPresetActivationCount:
+    def test_counts_capability_name_field(self) -> None:
+        records = [
+            {"capability_name": "node.colorgrade"},
+            {"capability_name": "node.colorgrade"},
+            {"capability_name": "fx.family.glitch-dense"},
+        ]
+        result = mod.per_preset_activation_count(records)
+        assert result == Counter({"node.colorgrade": 2, "fx.family.glitch-dense": 1})
+
+    def test_skips_records_without_name(self) -> None:
+        records = [
+            {"capability_name": "x"},
+            {"timestamp": 1.0},  # no capability_name
+            {"capability_name": ""},  # empty string
+            {"capability_name": None},  # not a string
+        ]
+        result = mod.per_preset_activation_count(records)
+        assert result == Counter({"x": 1})
+
+
+class TestColorgradeHalftoneRatio:
+    def test_ratio_when_both_present(self) -> None:
+        per_preset = Counter({"node.colorgrade": 30, "node.halftone": 5})
+        assert mod.colorgrade_halftone_ratio(per_preset) == 6.0
+
+    def test_inf_string_when_halftone_zero(self) -> None:
+        per_preset = Counter({"node.colorgrade": 30})
+        assert mod.colorgrade_halftone_ratio(per_preset) == "INF"
+
+    def test_na_when_neither_present(self) -> None:
+        per_preset = Counter({"node.drift": 5})
+        assert mod.colorgrade_halftone_ratio(per_preset) == "NA"
+
+    def test_substring_match_picks_up_qualified_names(self) -> None:
+        """`node.colorgrade.x` and `node.halftone.y` count too."""
+        per_preset = Counter({"node.colorgrade.warm": 10, "node.halftone.fast": 2})
+        assert mod.colorgrade_halftone_ratio(per_preset) == 5.0
 
 
 # ── write_baseline ──────────────────────────────────────────────────
