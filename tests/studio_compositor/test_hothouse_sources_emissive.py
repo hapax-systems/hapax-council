@@ -105,6 +105,11 @@ def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(hs, "_PRESENCE_STATE", absent / "presence.json")
     monkeypatch.setattr(hs, "_RECENT_RECRUITMENT", absent / "recent-recruitment.json")
     monkeypatch.setattr(hs, "_YOUTUBE_VIEWER_COUNT", absent / "youtube-viewer-count.txt")
+    # FINDING-V Phase 6 added _RECENT_IMPINGEMENTS for the cascade
+    # overlay; without isolating it the impingement-cascade golden
+    # reads /dev/shm/hapax-compositor/recent-impingements.json from
+    # the live producer service and the render drifts.
+    monkeypatch.setattr(hs, "_RECENT_IMPINGEMENTS", absent / "recent-impingements.json")
     return tmp_path
 
 
