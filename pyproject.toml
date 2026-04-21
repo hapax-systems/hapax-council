@@ -46,6 +46,9 @@ dependencies = [
     "opencv-python-headless>=4.13.0.92",
     "chat-downloader>=0.2.8",
     "sdnotify>=0.3.2",
+    "imagehash>=4.3.2",
+    "pytesseract>=0.3.13",
+    "scikit-image>=0.26.0",
 ]
 
 [project.optional-dependencies]
