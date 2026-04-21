@@ -38,7 +38,7 @@ class RtmpOutputBin:
         gst: Any,
         video_tee: Any,
         rtmp_location: str = "rtmp://127.0.0.1:1935/studio",
-        bitrate_kbps: int = 6000,
+        bitrate_kbps: int = 9000,
         gop_size: int = 30,
         audio_target: str | None = None,
     ) -> None:
@@ -158,7 +158,7 @@ class RtmpOutputBin:
             # Stage 0 holds at 3000 but loosens substantially at 9000).
             # Per docs/research/2026-04-20-tauri-decommission-freed-
             # resources.md §11.
-            encoder.set_property("preset", 5)  # 5 = p5 (slow/high-quality)
+            encoder.set_property("preset", 7)  # 7 = p7 (slowest/highest-quality)
             # A+ Stage 0: tune=ull (ultra low latency). ll keeps lookahead
             # buffer for quality; at CBR the buffer gains nothing since
             # bitrate is pinned. ull disables B-frames, lookahead, reorder.

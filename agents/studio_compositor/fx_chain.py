@@ -89,10 +89,22 @@ def blit_scaled(
     cr.scale(sx, sy)
     cr.set_source_surface(src, 0, 0)
     pattern = cr.get_source()
+    # Crispness pass (2026-04-21, Tier A of the livestream-crispness
+    # research): pick the sharpest filter appropriate for the scale.
+    # sx=sy=1.0 → FILTER_NEAREST (pixel-exact, zero interpolation cost).
+    # Otherwise FILTER_BEST (bicubic; sharpest for non-integer scales).
+    # Prior FILTER_BILINEAR softens text edges even at 1:1. Fallback
+    # chain handles older cairo builds that may reject BEST.
     try:
-        pattern.set_filter(cairo.FILTER_BILINEAR)
+        if abs(sx - 1.0) < 1e-6 and abs(sy - 1.0) < 1e-6:
+            pattern.set_filter(cairo.FILTER_NEAREST)
+        else:
+            pattern.set_filter(cairo.FILTER_BEST)
     except Exception:
-        log.debug("cairo FILTER_BILINEAR unavailable on this pattern", exc_info=True)
+        try:
+            pattern.set_filter(cairo.FILTER_BILINEAR)
+        except Exception:
+            log.debug("cairo filter selection failed on this pattern", exc_info=True)
     if blend_mode == "plus":
         cr.set_operator(cairo.OPERATOR_ADD)
     else:
