@@ -191,6 +191,40 @@ def _parse_intent_from_llm(
             tier=tier,
             condition_id=condition_id,
         )
+    # Prose fallback. Local models (Qwen3.5 via TabbyAPI etc.) sometimes
+    # emit markdown-formatted prose like:
+    #   **Activity:** music
+    #   **Stance:** nominal
+    #   **Narrative Text:** The track's rhythm carries...
+    # instead of JSON, even when the prompt demands JSON. Scrape the
+    # load-bearing fields with a permissive regex before giving up to
+    # silence. Preserves the operator no-vacuum invariant when the LLM
+    # goes off-schema. Observed 2026-04-21 after TabbyAPI restart —
+    # every director tick produced prose, all hit parser_non_dict, Hapax
+    # went silent. This fallback turns the prose into a legacy-shape
+    # dict that the downstream path can still use.
+    if obj is None:
+        import re as _re
+
+        # In `**Activity:** music` the colon lives INSIDE the bold pair,
+        # so the regex has to tolerate asterisks + whitespace on either
+        # side of the `:`. `[\s*]*` absorbs both.
+        m_activity = _re.search(
+            r"Activity[\s*]*[:：][\s*]*(\w+)",
+            text,
+            _re.IGNORECASE,
+        )
+        m_narrative = _re.search(
+            r"Narrative[ _]?[Tt]ext[\s*]*[:：][\s*]*(.+?)(?=\n\s*[*A-Za-z _]+[:：]|\Z)",
+            text,
+            _re.DOTALL | _re.IGNORECASE,
+        )
+        if m_activity or m_narrative:
+            obj = {}
+            if m_activity:
+                obj["activity"] = m_activity.group(1).strip().lower()
+            if m_narrative:
+                obj["narrative_text"] = m_narrative.group(1).strip().rstrip("*").strip()
     if not isinstance(obj, dict):
         emit_parse_failure(tier=tier, condition_id=condition_id)
         return _silence_hold_fallback_intent(

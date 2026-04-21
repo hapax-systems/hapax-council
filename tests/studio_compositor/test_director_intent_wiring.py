@@ -139,6 +139,45 @@ class TestParseIntentFromLlm:
         assert intent.activity == "react"
         assert intent.narrative_text == "no fences here"
 
+    def test_prose_markdown_fallback_extracts_fields(self):
+        """Qwen3.5 and other local models occasionally emit markdown prose
+        instead of JSON, like:
+
+            **Activity:** music
+            **Stance:** nominal
+            **Narrative Text:** The track's rhythm carries a unique energy.
+
+        Before this regex fallback every such response fell through to
+        parser_non_dict → silence fallback → broadcast narrative empty.
+        Observed 2026-04-21 post-TabbyAPI-restart.
+        """
+        prose = (
+            "**Activity:** music\n"
+            "**Stance:** nominal\n"
+            "**Narrative Text:** The track's rhythm carries a unique, "
+            "almost tribal energy through intricate hand drums."
+        )
+        intent = dl._parse_intent_from_llm(prose)
+        assert intent.activity == "music"
+        assert "tribal energy" in intent.narrative_text
+
+    def test_prose_without_markdown_bold(self):
+        """Plain 'Key: value' form without **bold** should also parse."""
+        prose = (
+            "Activity: observe\n"
+            "Stance: cautious\n"
+            "Narrative Text: a slow drift across the visual field"
+        )
+        intent = dl._parse_intent_from_llm(prose)
+        assert intent.activity == "observe"
+        assert "slow drift" in intent.narrative_text
+
+    def test_prose_fallback_does_not_swallow_garbage(self):
+        """Non-JSON, non-keyed text should still silence-fallback."""
+        intent = dl._parse_intent_from_llm("just a paragraph of text nothing parsable")
+        assert intent.activity == "silence"
+        assert intent.narrative_text == ""
+
 
 class TestEmitIntentArtifacts:
     @pytest.fixture
