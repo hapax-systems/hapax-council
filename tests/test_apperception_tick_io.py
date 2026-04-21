@@ -132,6 +132,65 @@ class TestShmWrite:
         tick._write_shm([], event_count=0)  # should not raise
 
 
+# ── Exploration Writer Tests ─────────────────────────────────────────────────
+
+
+class TestExplorationWriter:
+    """Apperception MUST publish exploration signal every tick — even when
+    no events surfaced — or the health monitor flags
+    `exploration_apperception` as DEGRADED ('Writer absent') in perpetuity.
+    Live regression seen 2026-04-21 (Stack Health: FAILED, 100/110 healthy).
+    """
+
+    def test_init_creates_exploration_tracker(self, tick_env: dict):
+        from shared.apperception_tick import ApperceptionTick
+
+        tick = ApperceptionTick()
+        assert tick._exploration is not None, (
+            "ApperceptionTick must construct an ExplorationTrackerBundle "
+            "for the apperception component"
+        )
+
+    def test_tick_publishes_exploration_signal(
+        self, tick_env: dict, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Even with zero events, tick() must publish a signal — the
+        signal is what the health monitor's exploration_apperception
+        check reads. Mocks the publisher to verify the call shape
+        without touching /dev/shm."""
+        from unittest.mock import MagicMock
+
+        from shared.apperception_tick import ApperceptionTick
+
+        captured: list = []
+        monkeypatch.setattr(
+            "shared.exploration_tracker.publish_exploration_signal",
+            lambda sig: captured.append(sig),
+        )
+
+        tick = ApperceptionTick()
+        # Force a quiet tick — no events.
+        tick._collect_events = MagicMock(return_value=[])
+        tick._read_stimmung = MagicMock(return_value=("nominal", {}))
+        tick.tick()
+
+        assert captured, (
+            "publish_exploration_signal was NOT called during a quiet "
+            "tick — apperception writer would stay silent and the "
+            "health check would flag DEGRADED in perpetuity"
+        )
+        sig = captured[0]
+        assert sig.component == "apperception"
+
+    def test_tick_helper_without_exploration_attr_does_not_crash(self, tick_env: dict):
+        """The _make_tick helper bypasses __init__; tick() must remain
+        defensive via getattr() so it doesn't AttributeError."""
+        tick = _make_tick(tick_env)
+        # No _exploration attribute set on this manually-constructed tick.
+        assert not hasattr(tick, "_exploration")
+        tick.tick()  # must not raise
+
+
 # ── Model Persistence Tests ──────────────────────────────────────────────────
 
 

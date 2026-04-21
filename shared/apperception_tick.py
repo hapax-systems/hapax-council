@@ -71,6 +71,32 @@ class ApperceptionTick:
         except (OSError, RuntimeError):
             log.debug("Failed to ensure apperception collection", exc_info=True)
 
+        # Exploration tracker — publishes the apperception writer's
+        # signal to /dev/shm/hapax-exploration/apperception.json on
+        # every tick. Without this the health monitor flags
+        # `exploration_apperception` as DEGRADED ("Writer absent") in
+        # perpetuity. The duplicate cascade in agents/_apperception.py
+        # has the tracker but is vestigial; production routes through
+        # this module via the VLA aggregator. See
+        # agents/health_monitor/checks/exploration.py
+        # COMPONENT_OWNERS["apperception"] = "visual-layer-aggregator".
+        try:
+            from shared.exploration_tracker import ExplorationTrackerBundle
+
+            self._exploration: object | None = ExplorationTrackerBundle(
+                component="apperception",
+                edges=["trigger_novelty"],
+                traces=["cascade_frequency"],
+                neighbors=["dmn_pulse", "stimmung"],
+                kappa=0.005,
+                t_patience=120.0,
+                sigma_explore=0.05,
+            )
+        except Exception:
+            log.debug("ExplorationTrackerBundle unavailable", exc_info=True)
+            self._exploration = None
+        self._prev_event_count: float = 0.0
+
     def tick(self) -> None:
         """Run one apperception cycle. Call this every 3-5 seconds."""
         self._tick_seq += 1
@@ -86,6 +112,30 @@ class ApperceptionTick:
                     pending_actions.append(result.action)
 
         self._write_shm(pending_actions, event_count=len(events))
+
+        # Publish exploration signal even when no events surfaced — the
+        # health monitor expects a fresh apperception.json every tick,
+        # not just on retained apperceptions. Without this, quiet ticks
+        # leave the writer DEGRADED in `Stack Health: FAILED` reports.
+        # ``getattr`` so test helpers that bypass __init__ don't trip
+        # on the new attribute.
+        exploration = getattr(self, "_exploration", None)
+        if exploration is not None:
+            try:
+                event_count = float(len(events))
+                coherence = float(getattr(self._cascade.model, "coherence", 0.5))
+                exploration.feed_habituation(
+                    "trigger_novelty",
+                    event_count,
+                    getattr(self, "_prev_event_count", 0.0),
+                    5.0,
+                )
+                exploration.feed_interest("cascade_frequency", event_count, 5.0)
+                exploration.feed_error(1.0 - coherence)
+                exploration.compute_and_publish()
+                self._prev_event_count = event_count
+            except Exception:
+                log.debug("Failed to publish apperception exploration signal", exc_info=True)
 
         now = time.monotonic()
         if now - self._last_flush >= 60.0:
