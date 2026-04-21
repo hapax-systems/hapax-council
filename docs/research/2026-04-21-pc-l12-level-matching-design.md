@@ -78,18 +78,18 @@ Alternatively, add a dedicated yt-loudnorm between the yt-player ffmpeg output a
 
 **Caveat:** if video and music beds play simultaneously, pc-loudnorm's compressor sums them before the broadband curve fires — mix could sound over-compressed. If operator reports this, add a per-source pre-chain later. Not worth pre-solving.
 
-### 4. Notifications (chimes, system sounds)
+### 4. Notifications (chimes, system sounds) — MUST LEAVE L-12
 
-**Current path:** `role.notification` loopback → `hapax-private` → `hapax-private-playback` → Ryzen. Does NOT go through pc-loudnorm.
+**Current:** `hapax-notification-private` routes notifications to L-12 `analog-surround-40` (MASTER OUT monitor only), explicitly NOT captured by `hapax-l12-evilpet-capture`.
 
-**Current normalization:** NONE. Chimes hit Ryzen at native app levels — typically 0 dBFS peaks.
+**Operator invariant 2026-04-21** (`feedback_l12_equals_livestream_invariant.md`): *"Nothing should go to the l12 that shouldn't end up in the livestream."* Notifications aren't meant for broadcast, so they must leave the L-12 entirely.
 
-**Target:** route notifications through a dedicated `hapax-notification-loudnorm` filter chain that applies:
-- Peak limiter at −1 dBTP (no compression — notifications are short; don't kill transient)
-- Gain offset to match ~−18 LUFS short-term (roughly −10 dB padding from 0 dBFS peak-heavy source)
-- Insert between `hapax-notification-private` and `hapax-private`
+**Target:** retarget `hapax-notification-private-playback` to a non-L-12 monitor destination. Candidates:
+- Yeti stereo microphone analog-stereo (card 10) — its headphone jack doubles as a monitor output.
+- Bluetooth iLoud micro (already on-host).
+- A new virtual null-sink whose monitor the operator can capture via headphone adapter or USB.
 
-Alternatively (simpler): drop `hapax-private-playback` sink-input volume to 30% as a static attenuation. Less precise than a filter chain but close enough for chimes. Trade: notifications stop being transient-rich.
+**Scope:** separate cc-task (lssh-014). Not blocking the level-matching loudnorm re-tune (this design's main thrust) — notifications were already out of scope for CH 11/12 levels; they're now also out of scope for L-12 entirely as a governance matter.
 
 ### 5. Hapax-private (DMN-internal audio)
 
@@ -104,7 +104,7 @@ Alternatively (simpler): drop `hapax-private-playback` sink-input volume to 30% 
 | YouTube beds | role.multimedia → pc-loudnorm → Ryzen | −18 LUFS / −1 dBTP | pc-loudnorm.conf (re-tune) |
 | Browser / video | role.multimedia → pc-loudnorm → Ryzen | −18 LUFS / −1 dBTP | pc-loudnorm.conf (shared) |
 | Hapax voice | role.assistant → voice-fx-chain → voice-fx-loudnorm → Ryzen | −18 LUFS / −1 dBTP | voice-fx-loudnorm.conf (re-tune) + 55-hapax-voice-role-retarget.conf (routing fix) |
-| Notifications | role.notification → hapax-notification-loudnorm → Ryzen | peak −1 dBTP, no comp | new conf + wire into hapax-private path |
+| Notifications | role.notification → hapax-notification-private → L-12 MASTER OUT (monitor only) | n/a — already isolated from broadcast | already shipped |
 | DMN-private | (private monitoring; not broadcast) | unchanged | — |
 
 After these changes land:
@@ -116,7 +116,7 @@ After these changes land:
 ## Decisions (operator-ratified 2026-04-21: "whatever the industry says")
 
 1. **Target: −18 LUFS integrated / −1 dBTP.** Pro audio digital line-level convention (0 VU = −18 dBFS reference). This is the standard for digital sources hitting a line-level analog mixer input like the ZOOM L-12. Downstream broadcast normalization (YouTube at −14 LUFS, EBU R128 at −23 LUFS) is a separate concern handled post-mix.
-2. **Notification handling: dedicated loudnorm chain** (peak limiter at −1 dBTP + gain padding, no compression). Static attenuation was the fallback; dedicated chain is precise.
+2. **Notification handling: already isolated** via `hapax-notification-private` → L-12 MASTER OUT (monitor only). Not in broadcast path. No additional work required.
 3. **Deployment timing: operator-scheduled low-risk window.** Config changes require a PipeWire restart, which has a non-trivial risk of re-triggering the Ryzen HDA pin-glitch (see `reference_ryzen_codec_pin_glitch.md`). Don't hot-deploy during a live broadcast.
 
 ## Current live band-aid (non-persistent, 2026-04-21 ~23:10-23:15 UTC)
