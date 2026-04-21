@@ -1032,6 +1032,49 @@ def dispatch_homage_expand(capability_name: str) -> bool:
     return True
 
 
+def dispatch_novelty_shift(capability_name: str, ttl_s: float) -> bool:
+    """novelty.shift → recent-recruitment marker only.
+
+    Phase 6 of preset-variety-plan (#1168) registers ``novelty.shift``
+    as a recruitment target for ``content.too-similar-recently``
+    impingements. It has no SHM side effect of its own — the
+    recruitment marker is itself the signal: downstream consumers (the
+    affordance pipeline's ``recency_distance`` term) read the marker
+    to perturb the next pick away from the recent cluster. So the
+    dispatcher only needs to record the recruitment.
+    """
+    del capability_name  # unused; the recruitment timestamp is the signal
+    _mark_recruitment("novelty.shift", extra={"ttl_s": ttl_s})
+    return True
+
+
+def dispatch_transition(capability_name: str, ttl_s: float) -> bool:
+    """transition.* → recent-recruitment marker for the live consumer.
+
+    Phase 7b of preset-variety-plan (#1177) wires ``transition.*``
+    primitives into ``preset_recruitment_consumer``, which consults
+    ``recent-recruitment.json`` for the latest fresh transition before
+    falling back to uniform sampling. Like ``novelty.shift`` the marker
+    IS the side effect; the primitive runs at the next chain change.
+    """
+    _mark_recruitment(capability_name, extra={"ttl_s": ttl_s})
+    return True
+
+
+def dispatch_gem(capability_name: str, ttl_s: float) -> bool:
+    """gem.* → recent-recruitment marker.
+
+    The GEM producer (``agents/hapax_daimonion/gem_producer.py``) tails
+    the impingement bus; the recruitment marker is the signal it reads
+    to decide which gem.emphasis.* / gem.composition.* keyframe to
+    render. lssh-002 (P0 GEM rendering redesign) will define the live
+    visual contract; the dispatcher here keeps the catalog-completeness
+    invariant green and the recruitment surface alive.
+    """
+    _mark_recruitment(capability_name, extra={"ttl_s": ttl_s})
+    return True
+
+
 def dispatch(
     record: RecruitmentRecord,
 ) -> Literal[
@@ -1054,6 +1097,9 @@ def dispatch(
     "homage.cycle",
     "homage.recede",
     "homage.expand",
+    "novelty.shift",
+    "transition",
+    "gem",
     "unknown",
 ]:
     """Route a recruitment record to the correct dispatcher.
@@ -1107,6 +1153,12 @@ def dispatch(
         return "homage.recede" if dispatch_homage_recede(name) else "unknown"
     if name.startswith("homage.expand."):
         return "homage.expand" if dispatch_homage_expand(name) else "unknown"
+    if name == "novelty.shift":
+        return "novelty.shift" if dispatch_novelty_shift(name, record.ttl_s) else "unknown"
+    if name.startswith("transition."):
+        return "transition" if dispatch_transition(name, record.ttl_s) else "unknown"
+    if name.startswith("gem."):
+        return "gem" if dispatch_gem(name, record.ttl_s) else "unknown"
     log.warning("unknown compositional capability family: %s", name)
     return "unknown"
 

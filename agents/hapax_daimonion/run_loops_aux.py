@@ -196,6 +196,21 @@ _COMPOSITIONAL_PREFIXES: tuple[str, ...] = (
     "stream.mode.",
     "ward.",
     "homage.",
+    # Phase 6 of preset-variety-plan (#1168): novelty.shift recruits when
+    # the perceptual-distance impingement fires (recency cluster sim
+    # ≥0.85). Without this prefix the catalog-prefix wiring test rejects
+    # the registered capability.
+    "novelty.",
+    # Phase 7 of preset-variety-plan (#1176/#1177): five transition.*
+    # capabilities recruited per chain change, dispatched to primitives
+    # via preset_recruitment_consumer's background-thread runner.
+    "transition.",
+    # GEM (Graffiti Emphasis Mural) — gem.emphasis.* and
+    # gem.composition.* recruited from director impingements; producer
+    # at agents/hapax_daimonion/gem_producer.py renders CP437 keyframes.
+    # Catalog rows are placeholders until lssh-002 (P0 GEM rendering
+    # redesign).
+    "gem.",
 )
 
 

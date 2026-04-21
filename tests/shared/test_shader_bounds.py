@@ -14,13 +14,20 @@ def _write_bounds(path: Path, caps: dict) -> None:
 
 
 def test_load_bounds_returns_node_caps_from_production_file() -> None:
-    """Production bounds file ships with pixel_sort cap — regression pin."""
+    """Production bounds file ships with pixel_sort cap — regression pin.
+
+    Tier D of the 2026-04-21 livestream-crispness research tightened
+    pixel_sort from 0.55 → 0.45 max_strength and 0.40 → 0.35 spatial
+    coverage to reduce shader density competing with ward chrome.
+    Updated assertions track the production file; reverting the bounds
+    requires reverting both the JSON and these expectations together.
+    """
     load_bounds.cache_clear()
     bounds = load_bounds()
     assert "pixel_sort" in bounds
     cap = bounds["pixel_sort"]
-    assert cap.max_strength == 0.55
-    assert cap.spatial_coverage_max_pct == 0.40
+    assert cap.max_strength == 0.45
+    assert cap.spatial_coverage_max_pct == 0.35
     assert "strength" in cap.clamp_params
 
 
