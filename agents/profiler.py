@@ -1496,15 +1496,29 @@ def apply_curation(
             if source_facts and op.new_key and op.new_value is not None:
                 # Use highest confidence from sources, or the explicit override
                 best_confidence = op.new_confidence or max(f.confidence for f in source_facts)
-                # Combine sources
-                all_sources = ", ".join(sorted({f.source for f in source_facts}))
+                # Source field is a *single* identifier per the field
+                # description ("config:~/.claude/CLAUDE.md"). Joining N
+                # sources with ", " produces a multi-KB pseudo-path that
+                # downstream Path(source).exists() chokes on with OSError 36
+                # when these facts ride into Qdrant payloads. Mirror the
+                # dedup pattern at line ~556 instead — count-style
+                # summary in source, full provenance in evidence.
+                unique_sources = sorted({f.source for f in source_facts})
+                merged_source = (
+                    unique_sources[0]
+                    if len(unique_sources) == 1
+                    else f"{len(unique_sources)} sources"
+                )
                 fact_map[op.new_key] = ProfileFact(
                     dimension=curation.dimension,
                     key=op.new_key,
                     value=op.new_value,
                     confidence=best_confidence,
-                    source=all_sources,
-                    evidence=f"Merged from: {', '.join(op.keys)}. {op.reason}",
+                    source=merged_source,
+                    evidence=(
+                        f"Merged from: {', '.join(op.keys)}. {op.reason}\n"
+                        f"sources: {', '.join(unique_sources)}"
+                    ),
                 )
 
         elif op.action == "update":

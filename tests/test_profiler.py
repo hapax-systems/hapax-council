@@ -587,6 +587,100 @@ def test_apply_curation_merge():
     assert "Merged from" in curated[0].evidence
 
 
+def test_apply_curation_merge_distinct_sources_summarized():
+    """When merged facts come from different sources, the merged
+    fact's ``source`` field must be a count summary, NOT a comma-joined
+    pseudo-path. Joining produced multi-KB strings that hit OSError 36
+    downstream when Path(source).exists() ran in knowledge_maint."""
+    fact_a = ProfileFact(
+        dimension="technical_skills",
+        key="primary_editor",
+        value="vim",
+        confidence=0.8,
+        source="config:~/.config/vim/vimrc",
+        evidence="found vimrc",
+    )
+    fact_b = ProfileFact(
+        dimension="technical_skills",
+        key="editor_choice",
+        value="vim",
+        confidence=0.7,
+        source="memory:editor_pref",
+        evidence="operator stated preference",
+    )
+    fact_c = ProfileFact(
+        dimension="technical_skills",
+        key="ide_preference",
+        value="vim",
+        confidence=0.6,
+        source="transcript:session-2026-04-15",
+        evidence="said in session",
+    )
+    curation = DimensionCuration(
+        dimension="technical_skills",
+        operations=[
+            CurationOp(
+                action="merge",
+                keys=["primary_editor", "editor_choice", "ide_preference"],
+                reason="Same editor preference",
+                new_key="primary_editor",
+                new_value="vim",
+                new_confidence=0.9,
+            ),
+        ],
+        health_score=0.9,
+    )
+    curated, _ = apply_curation([fact_a, fact_b, fact_c], curation)
+    assert len(curated) == 1
+    merged = curated[0]
+    # Source is a single short identifier, not a comma-joined pseudo-path.
+    assert merged.source == "3 sources"
+    assert ", " not in merged.source  # the bug: prior code joined here
+    # Full provenance lives in evidence.
+    assert "config:~/.config/vim/vimrc" in merged.evidence
+    assert "memory:editor_pref" in merged.evidence
+    assert "transcript:session-2026-04-15" in merged.evidence
+
+
+def test_apply_curation_merge_single_source_preserved():
+    """When all merged facts share one source identifier, the merged
+    fact carries that identifier verbatim — no count-style summary
+    when there's only one source to summarize."""
+    fact_a = ProfileFact(
+        dimension="hardware",
+        key="cpu_a",
+        value="Ryzen 9",
+        confidence=0.9,
+        source="config:~/.config/sysinfo",
+        evidence="evidence A",
+    )
+    fact_b = ProfileFact(
+        dimension="hardware",
+        key="cpu_b",
+        value="Ryzen 9",
+        confidence=0.85,
+        source="config:~/.config/sysinfo",
+        evidence="evidence B",
+    )
+    curation = DimensionCuration(
+        dimension="hardware",
+        operations=[
+            CurationOp(
+                action="merge",
+                keys=["cpu_a", "cpu_b"],
+                reason="duplicate",
+                new_key="cpu",
+                new_value="Ryzen 9",
+                new_confidence=0.95,
+            ),
+        ],
+        health_score=0.9,
+    )
+    curated, _ = apply_curation([fact_a, fact_b], curation)
+    assert len(curated) == 1
+    assert curated[0].source == "config:~/.config/sysinfo"
+
+
 def test_apply_curation_update_key():
     facts = [
         _make_fact("hardware", "gpu_type", "RTX 3090", 0.9),
