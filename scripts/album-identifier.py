@@ -810,7 +810,17 @@ def main() -> None:
             tint_idx = int(hash_hex[:2], 16) % len(tints)
             dark, light = tints[tint_idx]
             colored = ImageOps.colorize(img, dark, light)
-            colored.save(str(ALBUM_COVER_FILE), format="PNG")
+            # Atomic write — PIL's Image.save writes incrementally, so
+            # the compositor's ImageLoader can hit a half-written PNG and
+            # raise cairo IOError. Write to a sibling tmp file then
+            # os.replace into place; POSIX rename is atomic so readers
+            # see either the old PNG or the new one, never partial bytes.
+            # Source of the "ImageLoader: failed to decode" pattern in
+            # studio-compositor logs (documented in
+            # docs/research/2026-04-13/post-option-a-stability/phase-1-long-duration-stability.md).
+            tmp_path = ALBUM_COVER_FILE.with_suffix(".png.tmp")
+            colored.save(str(tmp_path), format="PNG")
+            os.replace(tmp_path, ALBUM_COVER_FILE)
             log.info(
                 "Album cover saved (%dx%d) tint=%d (deterministic per hash)",
                 colored.size[0],
