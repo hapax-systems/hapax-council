@@ -1,0 +1,18 @@
+[Unit]
+Description=iLoud Micro Monitor BT keep-alive (silent A2DP stream)
+Documentation=file:///home/hapax/.local/bin/hapax-iloud-keepalive
+After=pipewire.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=/home/hapax/.local/bin/hapax-iloud-keepalive
+Restart=always
+RestartSec=5
+# Low priority — this is a helper, must never preempt real audio
+Nice=10
+# Keep it lean — no need for many resources
+MemoryHigh=32M
+
+[Install]
+WantedBy=default.target

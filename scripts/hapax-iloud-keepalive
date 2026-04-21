@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Silent keep-alive stream for iLoud Micro Monitor BT sink.
+#
+# Streams -90 dBFS pink-ish noise continuously into the iLoud BT sink
+# so A2DP transport never idles and the speaker never auto-standbys.
+# -90 dBFS is inaudible on any playback chain but keeps the codec
+# packets flowing. Uses python to synthesize silence-floor noise so we
+# don't need a noise file on disk.
+#
+# Reconnects every 30s if pw-cat exits (e.g., on BT disconnect/reconnect
+# cycle). On long outage waits for bluez_output.EB_06_EF_26_3F_AE.1
+# to come back before retrying.
+#
+# Operator invariant: iLoud must survive arbitrary silence. Do not
+# replace this with a cron job or one-shot.
+
+set -euo pipefail
+
+TARGET="bluez_output.EB_06_EF_26_3F_AE.1"
+# -90 dBFS ≈ 1 sample out of 32767. Use 1 as amplitude => peak sample 1.
+GEN_CMD='python3 -c "import sys,struct,os,random
+random.seed()
+# 48 kHz stereo s16, alternating +/-1 dither noise = -90 dBFS floor
+while True:
+    chunk = bytes()
+    for _ in range(4800):  # 0.1s chunks
+        l = random.choice([-1, 0, 1])
+        r = random.choice([-1, 0, 1])
+        chunk += struct.pack(\"<hh\", l, r)
+    try:
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+    except BrokenPipeError:
+        os._exit(0)
+"'
+
+while true; do
+    if ! pactl list sinks short 2>/dev/null | grep -q "$TARGET"; then
+        # iLoud sink not present — wait for it
+        sleep 5
+        continue
+    fi
+    # Stream quiet dither into the sink; blocks until sink goes away or EOF
+    eval "$GEN_CMD" | pw-cat --playback \
+        --target "$TARGET" \
+        --format=s16 --rate=48000 --channels=2 --raw - \
+        2>/dev/null || true
+    # sink dropped — loop and wait for it to come back
+    sleep 2
+done
