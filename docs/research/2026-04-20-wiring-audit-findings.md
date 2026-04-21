@@ -215,21 +215,29 @@ itself needs corrections (called out as meta-findings below).
 | VLA visual frame | `/dev/shm/hapax-visual/frame.{jpg,rgba}` | ✅ | mtime fresh (10:49) |
 | VLA stimmung | `/dev/shm/hapax-stimmung/state.json` (NOT `current.json` as audit) | ✅ | mtime fresh; 14 dimension keys present |
 | Director INTENT | `~/hapax-state/stream-experiment/director-intent.jsonl` | ✅ | mtime fresh (10:48) |
-| IR Pi NoIR fleet | `~/hapax-state/pi-noir/{desk,overhead,room}.json` (NOT `{ir-*}.json` as audit) | ❌ | All present but mtime 2026-04-17T12:11 (~2 d stale). See FINDING-G. |
+| IR Pi NoIR fleet | `~/hapax-state/pi-noir/{desk,overhead,room}.json` (NOT `{ir-*}.json` as audit) | ✅ | All refreshing ~3s cadence (verified 2026-04-21T09:58Z). FINDING-G resolved. |
 | Daimonion impingement cursors | `~/.cache/hapax/impingement-cursor-daimonion-{cpal,affordance}.txt` (NOT `/dev/shm/hapax-daimonion/` as audit) | ✅ | both present mtime fresh; `run_inner.py:398` + `run_loops_aux.py:326` confirm |
 
-### ❌ FINDING-G — IR Pi NoIR fleet has been dark for ~2 days
+### ✅ FINDING-G — IR Pi NoIR fleet dark for ~2 days — RESOLVED 2026-04-21
 
-- **Severity:** HIGH (presence detection fed by IR is fully degraded; the 3-Pi fusion that gates many higher-level signals is reading 2-day-old data)
-- **Where:** `~/hapax-state/pi-noir/{desk,overhead,room}.json`, all mtime 2026-04-17T12:11 (≥ 49 h old)
-- **Logos health endpoint correlation:** `connectivity.pi.hapax-pi4` and `connectivity.pi.hapax-pi5` BOTH currently `failed`. Pi-4 and Pi-5 are sentinel + rag-edge respectively (not IR-bearing) — but the fact that the OTHER pis are also silent on the IR endpoint suggests a fleet-wide issue (network / cron / heartbeat / API endpoint contract)
-- **Likely causes (must enumerate before fix):**
-  1. Pi edge daemons crashed and weren't restarted (auto-restart via systemd not configured per Pi)
-  2. Logos API `/api/pi/{role}/ir` endpoint contract changed and Pi POSTs are 4xx-ing
-  3. Network: `192.168.68.0/22` LAN issue affecting all 5 pis simultaneously
-  4. The daemons are alive but `~/hapax-state/pi-noir/` write failed (filesystem / quota issue)
-  5. SD card wear-out on multiple pis at once (less likely given correlation)
-- **Investigation step:** ssh each pi (`ssh hapax@192.168.68.{74,52,78}`), `systemctl --user status hapax-ir-edge`, journal tail, and verify whether the daemon thinks it's POSTing successfully. Then verify the receiving endpoint contract.
+- **Severity (re-rated):** LOW (fleet was dark when audit ran; data has since recovered
+  — likely transient daemon stall + restart, or Pi network blip during the audit window)
+- **Verification (2026-04-21T09:58Z):** all three IR-bearing pi-noir files refreshing
+  every ~3s (audit cadence per `IR Perception` in CLAUDE.md):
+  ```
+  ~/hapax-state/pi-noir/desk.json      09:58  hapax-pi1 desk     {persons:[],hands:4,...}
+  ~/hapax-state/pi-noir/overhead.json  09:58  hapax-pi6 overhead
+  ~/hapax-state/pi-noir/room.json      09:58  hapax-pi2 room
+  ```
+- **Daemon liveness check (Pi-1 + Pi-2 ssh):** `hapax-ir-edge.service` is a SYSTEM
+  unit (not `--user`), running since 01:37 today on both Pi-1 and Pi-2. Pi-6 SSH
+  refusing connections currently (port 22 likely fronted by a different sshd config),
+  but its `overhead.json` is still updating — the IR daemon is running and POSTing.
+- **Audit-doc paths corrected:** `systemctl --user status hapax-ir-edge` was the wrong
+  invocation — daemon runs under SYSTEM systemd. Use `systemctl status hapax-ir-edge`.
+- **Cause-list disposition:** likely cause #1 (transient daemon crash); auto-recovery
+  came from manual restart or a downstream watchdog. No code-level intervention required
+  beyond updating health-monitor docs to use the correct systemctl scope.
 
 ### Meta-finding M-1 — audit doc §3 has 3 path errors (worth fixing)
 
