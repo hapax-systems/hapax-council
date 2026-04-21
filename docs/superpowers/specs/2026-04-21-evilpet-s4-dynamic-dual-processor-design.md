@@ -237,7 +237,15 @@ class AudioRouterState(BaseModel):
     capability_health: dict[str, float]  # tier → reliability [0..1]
 ```
 
-Each surface has a dedicated writer (stimmung, voice-tier, programme, VAD) and publishes to either `/dev/shm/hapax-*/current.json` (for live state) or is computed by the router on read (for budget / health).
+Each surface has a dedicated writer and publishes to a canonical `/dev/shm` path. Paths verified against live code 2026-04-21:
+
+- `/dev/shm/hapax-stimmung/state.json` — stimmung + 6-dim vector (VLA writer, continuous)
+- `/dev/shm/hapax-compositor/voice-tier-override.json` — voice-tier override (hapax-voice-tier CLI, on-demand)
+- `/dev/shm/hapax-compositor/evil-pet-state.json` — granular-engine ownership ledger (vocal_chain / vinyl_chain when claimed, on-demand)
+
+ProgrammeManager state is in-memory + RAG-persisted; the dynamic router reads ProgrammeManager directly rather than via a `/dev/shm` file. VAD state is consumed by the voice-gate upstream (alpha's B1) and is not a state-surface of the router.
+
+"On-demand" surfaces are absent when no claim is active; the audit CLI distinguishes this from "missing" (continuous surface that should exist but doesn't) — see `scripts/hapax-audio-state-audit`.
 
 ### §6.2 Three-layer policy
 
