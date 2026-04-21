@@ -31,7 +31,7 @@ ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/project
 # unexplained restarts during queue 023 research while alpha was editing
 # the compositor on a feature branch. rebuild-service.sh runs the
 # branch-check and skips the deploy on feature branches instead.
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-compositor.service --watch "agents/studio_compositor/ agents/effect_graph/ shared/ config/compositor-layouts/" --sha-key compositor
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-compositor.service --watch "agents/studio_compositor/ agents/effect_graph/ agents/shaders/nodes/ presets/ shared/ config/compositor-layouts/" --sha-key compositor
 
 # ── Gap 2 (round-4 Phase 6 coverage expansion): 8 daemons that previously
 # had no rebuild coverage. The editing-then-restart pattern was manual for
