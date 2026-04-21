@@ -33,7 +33,23 @@ async def _handle_rag_ingest(*, path: str) -> str:
         return f"skipped:{Path(path).name}"
 
     file_path = Path(path)
-    success, error = await asyncio.to_thread(ingest_file, file_path)
+    # ingest_file lazy-loads docling inside get_converter()/get_chunker(),
+    # so a venv missing docling raises ModuleNotFoundError from inside the
+    # to_thread call rather than at the import above. Catch it here too —
+    # this is the same intent as the import guard, just at the right call
+    # site. Without this, logos-api logs WARNING "Ingest failed: ... No
+    # module named 'docling'" for every triggered file (saw 14 in the last
+    # hour with the rag-ingest service legitimately handling the ingest in
+    # its own venv).
+    try:
+        success, error = await asyncio.to_thread(ingest_file, file_path)
+    except (ImportError, ModuleNotFoundError) as exc:
+        _log.debug(
+            "Skipping reactive ingest of %s (docling not in this venv): %s",
+            file_path.name,
+            exc,
+        )
+        return f"skipped:{file_path.name}"
     if success:
         _log.info("Ingested RAG source: %s", file_path.name)
         return f"ingested:{file_path.name}"

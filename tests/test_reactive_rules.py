@@ -316,6 +316,18 @@ class TestRagSourceRule:
             with pytest.raises(RuntimeError, match="Ingest failed"):
                 await _handle_rag_ingest(path="/rag-sources/gmail/msg.md")
 
+    async def test_handler_skips_when_docling_missing_at_call_time(self):
+        """The docling ModuleNotFoundError raised lazily inside ingest_file
+        (via get_converter / get_chunker) must not propagate as an Ingest
+        failure — it's the same condition the import-time guard handles."""
+        with patch(
+            "asyncio.to_thread",
+            new=AsyncMock(side_effect=ModuleNotFoundError("No module named 'docling'")),
+        ):
+            result = await _handle_rag_ingest(path="/rag-sources/obsidian/note.md")
+        assert "skipped:" in result
+        assert "note.md" in result
+
 
 # ── TestQuietWindowScheduler ────────────────────────────────────────────
 
