@@ -45,6 +45,16 @@ RECENCY_WEIGHT_ENV = "HAPAX_AFFORDANCE_RECENCY_WEIGHT"
 W_RECENCY_DEFAULT = 0.10
 # Recency tracker rolling window size (capabilities, not embeddings).
 RECENCY_WINDOW_SIZE = 10
+# Preset-variety Phase 6: perceptual-distance impingement emission.
+# Mean pairwise cosine sim across the recency window crossing this
+# threshold triggers a ``content.too-similar-recently`` impingement.
+PERCEPTUAL_CLUSTER_THRESHOLD: float = 0.85
+# Cooldown between perceptual-distance impingement emissions per pipeline
+# instance — keeps a sustained-cluster window from spamming the bus.
+PERCEPTUAL_IMPINGEMENT_COOLDOWN_S: float = 30.0
+# Where impingements land — same SHM file the daimonion + reverie + dmn
+# consumers tail (see ``shared/sensor_protocol.IMPINGEMENTS_FILE``).
+_PERCEPTUAL_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 # Preset-variety Phase 4: Thompson posterior decay on non-recruitment.
 # 0.999 ≈ 700-tick half-life (gentle); 1.0 disables. Operator-tunable.
 THOMPSON_DECAY_ENV = "HAPAX_AFFORDANCE_THOMPSON_DECAY"
@@ -157,6 +167,9 @@ class AffordancePipeline:
         from shared.affordance import _RecencyTracker
 
         self._recency = _RecencyTracker(window_size=RECENCY_WINDOW_SIZE)
+        # Preset-variety Phase 6: track when we last emitted a
+        # perceptual-distance impingement to enforce the cooldown.
+        self._last_perceptual_emission_at: float = 0.0
         self._embed_cache = EmbeddingCache()
         self._interrupt_handlers: dict[str, list[InterruptHandler]] = {}
         self._seeking: bool = False
@@ -639,6 +652,10 @@ class AffordancePipeline:
         if winner is not None:
             winner_embedding = winner.payload.get("embedding") or embedding
             self._recency.record_apply(winner.capability_name, winner_embedding)
+            # Phase 6: emit perceptual-distance impingement when the
+            # window has clustered above threshold. Cooldown bounded so
+            # a sustained cluster doesn't spam the bus.
+            self._maybe_emit_perceptual_distance_impingement()
         # Preset-variety Phase 4: decay Thompson posterior on every
         # non-recruited candidate so dormant capabilities recover toward
         # the Beta(2, 1) prior. Disabled by setting the env to "1.0".
@@ -1014,6 +1031,62 @@ class AffordancePipeline:
         key = (cue_value, capability_name)
         current = self._context_associations.get(key, 0.0)
         self._context_associations[key] = max(-1.0, min(4.0, current + delta))
+
+    def _maybe_emit_perceptual_distance_impingement(self) -> None:
+        """Phase 6: emit ``content.too-similar-recently`` when the recency
+        window has clustered above ``PERCEPTUAL_CLUSTER_THRESHOLD``.
+
+        Anti-repetition as IMPINGEMENT, not gate. The surface is told
+        "the last N applies have clustered" — recruitment decides whether
+        ``novelty.shift`` outweighs whatever the next narrative justifies.
+        Cooldown bounded; emission is fail-open (any I/O error is
+        swallowed so the hot path never raises).
+        """
+        cluster_size = len(self._recency.entries)
+        if cluster_size < 2:
+            return
+        cluster_sim = self._recency.cluster_similarity()
+        if cluster_sim < PERCEPTUAL_CLUSTER_THRESHOLD:
+            return
+        now = time.time()
+        if (now - self._last_perceptual_emission_at) < PERCEPTUAL_IMPINGEMENT_COOLDOWN_S:
+            return
+        self._last_perceptual_emission_at = now
+        narrative = (
+            f"The visual chain has stayed in a similar register for "
+            f"the last {cluster_size} applies (cluster similarity "
+            f"{cluster_sim:.2f}). Reach for something perceptually "
+            f"distant if the moment allows."
+        )
+        # Build the impingement payload manually to avoid a circular
+        # import on Impingement (which depends on shared/affordance via
+        # the consent gate metadata).
+        payload = {
+            "id": uuid.uuid4().hex[:12],
+            "timestamp": now,
+            "source": "affordance_pipeline.recency",
+            "type": "boredom",
+            "strength": min(1.0, max(0.0, (cluster_sim - 0.5) * 2.0)),
+            "content": {
+                "metric": "preset_recency_cluster",
+                "cluster_similarity": round(cluster_sim, 3),
+                "cluster_size": cluster_size,
+                "narrative": narrative,
+            },
+            "context": {},
+            "intent_family": "content.too-similar-recently",
+            "embedding": None,
+            "interrupt_token": None,
+            "parent_id": None,
+            "trace_id": None,
+            "span_id": None,
+        }
+        try:
+            _PERCEPTUAL_IMPINGEMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with _PERCEPTUAL_IMPINGEMENTS_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(payload) + "\n")
+        except OSError:
+            pass
 
     def _log_cascade(self, impingement: Impingement, winners: list[SelectionCandidate]) -> None:
         if not winners:
