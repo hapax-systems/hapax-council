@@ -183,9 +183,16 @@ def _parse_intent_from_llm(
             return DirectorIntent.model_validate(obj)
         except Exception:
             emit_parse_failure(tier=tier, condition_id=condition_id)
-    # Fall back to legacy shape.
+    # Fall back to legacy/partial shape. The LLM may have emitted a
+    # partial modern shape ({activity, stance, narrative_text} without
+    # compositional_impingements) which fails the strict pydantic
+    # validation above; preserve its narrative_text rather than
+    # discarding it. Only fall back to the older "react" key when
+    # narrative_text is absent — viewer-visible narrative is the most
+    # operator-impactful field, so saving it from a partial response
+    # turns a silent broadcast into a degraded-but-informative one.
     activity = obj.get("activity") or fallback_activity
-    narrative = obj.get("react") or ""
+    narrative = obj.get("narrative_text") or obj.get("react") or ""
     try:
         return _silence_hold_fallback_intent(
             activity=activity,
