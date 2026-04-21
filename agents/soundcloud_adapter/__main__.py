@@ -77,6 +77,50 @@ def _try_import_client() -> tuple[Any, str] | None:
     return None
 
 
+def _scrape_client_id() -> str | None:
+    """Scrape a fresh SoundCloud public-web client_id from sndcdn JS bundles.
+
+    SoundCloud rotates the client_id embedded in its web-app JS bundles.
+    sclib's hardcoded id goes stale (HTTP 401 on resolve); the fix is to
+    fetch the homepage, follow any of the ``a-v2.sndcdn.com/assets/*.js``
+    bundles, and regex-match the current value. Returns the first 32-char
+    alphanumeric client_id found, or ``None`` on any scraping failure.
+    """
+    import re
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            "https://soundcloud.com/",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        html = urllib.request.urlopen(req, timeout=10).read().decode("utf-8", errors="ignore")
+        js_urls = re.findall(r"https://a-v2\.sndcdn\.com/assets/[^\"\s]+\.js", html)
+        for url in reversed(js_urls):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                js = urllib.request.urlopen(req, timeout=10).read().decode("utf-8", errors="ignore")
+                m = re.search(r'client_id[=:]"([0-9a-zA-Z]{32})"', js)
+                if m:
+                    return m.group(1)
+            except Exception:
+                continue
+    except Exception:
+        log.warning("failed to scrape SoundCloud client_id", exc_info=True)
+    return None
+
+
+def _resolve_client_id() -> str | None:
+    """Env → scrape fallback."""
+    env_cid = os.environ.get("SOUNDCLOUD_CLIENT_ID", "").strip()
+    if env_cid:
+        return env_cid
+    scraped = _scrape_client_id()
+    if scraped:
+        log.info("Scraped fresh SoundCloud client_id (env was empty)")
+    return scraped
+
+
 def _resolve_user_id(args: argparse.Namespace) -> str | None:
     """Pick the operator's SoundCloud identifier from args → env."""
     if args.user_id:
@@ -116,7 +160,7 @@ def fetch_likes(
     client_mod, flavor = spec
     try:
         if flavor == "sclib":
-            api = client_mod.SoundcloudAPI()
+            api = client_mod.SoundcloudAPI(client_id=_resolve_client_id())
             user = api.resolve(f"https://soundcloud.com/{user_id}")
             tracks_attr = getattr(user, "tracks", None) or getattr(user, "likes", None) or []
             out: list[dict[str, Any]] = []
@@ -164,7 +208,7 @@ def fetch_set(
     client_mod, flavor = spec
     try:
         if flavor == "sclib":
-            api = client_mod.SoundcloudAPI()
+            api = client_mod.SoundcloudAPI(client_id=_resolve_client_id())
             obj = api.resolve(url)
             # sclib Playlist exposes .tracks; Track lists return empty
             tracks_attr = getattr(obj, "tracks", None) or []
