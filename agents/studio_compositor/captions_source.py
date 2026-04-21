@@ -1,4 +1,16 @@
-"""LRR Phase 9 §3.6 — scientific-register caption overlay.
+"""LRR Phase 9 §3.6 — scientific-register caption overlay (DEPRECATED).
+
+DEPRECATION NOTICE (2026-04-21):
+This source is being retired in favor of the GEM ward (15th HOMAGE
+ward, operator-ratified 2026-04-21). Both occupy the lower-band
+geometry ``(40, 820, 1840, 240)``; GEM authors mural keyframes
+through Hapax instead of passively rendering STT.
+
+See ``docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md``
+§5 (captions retirement). Importers continue to function — the
+class still constructs and renders — but operator-facing surfaces
+should migrate to GEM. A warning fires once per process at import
+time so downstream consumers notice the deprecation.
 
 CairoSource that renders the most recent STT transcript lines onto the
 compositor frame, with styling that depends on the current stream mode:
@@ -22,6 +34,7 @@ required beyond ``_last_mtime``.
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,6 +45,19 @@ if TYPE_CHECKING:
     import cairo
 
 log = logging.getLogger(__name__)
+
+# Module-level deprecation marker: GEM ward (15th HOMAGE) is the
+# successor to captions in the same lower-band geometry. Fire ONCE per
+# process so downstream consumers (compositor.py, tests, scripts)
+# notice without flooding the log on repeated imports.
+warnings.warn(
+    "captions_source is deprecated; the GEM ward "
+    "(agents/studio_compositor/gem_source.py) is the successor in the "
+    "same lower-band geometry. See "
+    "docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md §5.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 DEFAULT_CAPTION_PATH = Path("/dev/shm/hapax-daimonion/stt-recent.txt")
 DEFAULT_STREAM_MODE = "private"

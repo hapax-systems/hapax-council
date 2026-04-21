@@ -52,6 +52,11 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "whos_here",
         # HOMAGE follow-on #121 (2026-04-18) — HARDM dot-matrix avatar.
         "hardm_dot_matrix",
+        # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
+        # Mural) is the 15th HOMAGE ward; lower-band geometry, retires
+        # captions in same surface area. See
+        # docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md.
+        "gem",
     }
 
     # LRR Phase 2 item 10: video_out surfaces declared for OutputRouter.from_layout()
@@ -83,6 +88,8 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "whos-here-tr",
         # HOMAGE follow-on #121 — HARDM dot-matrix surface (upper-right).
         "hardm-dot-matrix-ur",
+        # HOMAGE follow-on #191 — GEM mural surface (lower-band).
+        "gem-mural-bottom",
     }
 
     assignment_pairs = {(a.source, a.surface) for a in layout.assignments}
@@ -91,7 +98,10 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("reverie", "pip-ur"),
         ("album", "pip-ll"),
         ("stream_overlay", "pip-lr"),
-        ("captions", "captions_strip"),
+        # captions assignment removed at GEM cutover (2026-04-21);
+        # GEM ward (#191) takes the lower-band geometry. captions
+        # source + captions_strip surface remain in the schema for
+        # backwards compatibility but are not rendered.
         # Volitional-director Phase 4 legibility assignments.
         ("activity_header", "activity-header-top"),
         ("stance_indicator", "stance-indicator-tr"),
@@ -107,6 +117,8 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("whos_here", "whos-here-tr"),
         # HOMAGE follow-on #121 — HARDM dot-matrix avatar.
         ("hardm_dot_matrix", "hardm-dot-matrix-ur"),
+        # HOMAGE follow-on #191 — GEM mural assignment.
+        ("gem", "gem-mural-bottom"),
     }
 
 
@@ -117,6 +129,7 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
 
     backend_by_id = {s.id: s.backend for s in layout.sources}
     assert backend_by_id == {
+        "gem": "cairo",
         "token_pole": "cairo",
         "album": "cairo",
         "stream_overlay": "cairo",
@@ -278,6 +291,8 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "whos_here",
         # HOMAGE follow-on #121 — HARDM dot-matrix avatar.
         "hardm_dot_matrix",
+        # HOMAGE follow-on #191 — GEM mural ward (15th HOMAGE).
+        "gem",
     }
 
 

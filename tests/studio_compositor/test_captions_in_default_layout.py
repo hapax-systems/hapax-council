@@ -56,18 +56,17 @@ class TestCaptionsInDefaultLayout:
         video_out = next(s for s in layout["surfaces"] if s["id"] == "video_out_v4l2_loopback")
         assert 10 < strip["z_order"] < video_out["z_order"]
 
-    def test_captions_assignment_exists(self, layout):
+    def test_captions_assignment_retired_for_gem(self, layout):
+        """At GEM cutover (2026-04-21), captions → captions_strip
+        assignment was removed from the default layout. The lower-band
+        geometry now belongs to the GEM ward (#191). captions source +
+        captions_strip surface remain in the schema as deprecated
+        references for backwards compatibility but are not rendered.
+        See docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md
+        §5."""
         pairs = {(a["source"], a["surface"]) for a in layout["assignments"]}
-        assert ("captions", "captions_strip") in pairs
-
-    def test_captions_assignment_is_translucent(self, layout):
-        assignment = next(
-            a
-            for a in layout["assignments"]
-            if a["source"] == "captions" and a["surface"] == "captions_strip"
-        )
-        # Captions band has a slight alpha so background content shows through
-        assert 0.7 <= assignment["opacity"] < 1.0
+        assert ("captions", "captions_strip") not in pairs
+        assert ("gem", "gem-mural-bottom") in pairs
 
     def test_other_core_pips_untouched(self, layout):
         """Regression pin: CL §3.4 must not reposition pre-existing PiPs."""

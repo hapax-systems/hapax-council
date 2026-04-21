@@ -73,7 +73,7 @@
 | #125 Token pole HOMAGE | ✅ | [design](../specs/2026-04-18-token-pole-homage-migration-design.md) | — | merged |
 | #126 Pango text repository | ✅ | — | — | merged |
 | #159 Vinyl image ward | ✅ | [design](../specs/2026-04-18-vinyl-image-homage-ward-design.md) | — | merged |
-| #191 GEM ward | 🟡 QUEUED | — | [plan](2026-04-21-gem-ward-activation-plan.md) | — (operator ratified 2026-04-21 as 15th HOMAGE ward; delta §8 item 3) |
+| #191 GEM ward | 🟢 ACTIVE | — | [plan](2026-04-21-gem-ward-activation-plan.md) | Phases 1+2+3+6 ✅ (render, layout, producer, governance); Phase 4 implicit via HOMAGE HOLD-default; Phase 5 in-flight (deprecation marker + captions assignment removed; full module retirement deferred — 46 cross-refs); Phase 7 smoke pending |
 | #180 chat-keywords ward | 🟡 QUEUED | design at `docs/research/2026-04-20-chat-keywords-ward-design.md` | — | — (16th ward candidate) |
 
 ### Perception → Representation

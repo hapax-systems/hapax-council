@@ -235,6 +235,20 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_h": 256,
             },
         ),
+        # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
+        # Mural) is the 15th HOMAGE ward. Lower-band geometry; replaces
+        # captions in same surface area. See
+        # docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md.
+        SourceSchema(
+            id="gem",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "GemCairoSource",
+                "natural_w": 1840,
+                "natural_h": 240,
+            },
+        ),
     ],
     surfaces=[
         SurfaceSchema(
@@ -346,13 +360,20 @@ _FALLBACK_LAYOUT = Layout(
             geometry=SurfaceGeometry(kind="rect", x=1600, y=20, w=256, h=256),
             z_order=28,
         ),
+        # HOMAGE #191 GEM mural — lower-band, replaces captions geometry.
+        SurfaceSchema(
+            id="gem-mural-bottom",
+            geometry=SurfaceGeometry(kind="rect", x=40, y=820, w=1840, h=240),
+            z_order=30,
+        ),
     ],
     assignments=[
         Assignment(source="token_pole", surface="pip-ul"),
         Assignment(source="reverie", surface="pip-ur"),
         Assignment(source="album", surface="pip-ll"),
         Assignment(source="stream_overlay", surface="pip-lr"),
-        Assignment(source="captions", surface="captions_strip", opacity=0.92),
+        # captions assignment removed at GEM cutover (2026-04-21);
+        # GEM ward (#191) takes the lower-band geometry.
         # Volitional-director Phase 4 assignments.
         Assignment(source="activity_header", surface="activity-header-top"),
         Assignment(source="stance_indicator", surface="stance-indicator-tr"),
@@ -380,6 +401,8 @@ _FALLBACK_LAYOUT = Layout(
         Assignment(source="whos_here", surface="whos-here-tr", opacity=0.92),
         # HOMAGE #121 HARDM assignment.
         Assignment(source="hardm_dot_matrix", surface="hardm-dot-matrix-ur", opacity=0.92),
+        # HOMAGE #191 GEM mural assignment.
+        Assignment(source="gem", surface="gem-mural-bottom", opacity=0.95),
     ],
 )
 
