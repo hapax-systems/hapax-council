@@ -13,7 +13,7 @@ uniform float u_height;
 // Palette extract: samples the frame on a coarse grid, displays the per-
 // column mean as a horizontal swatch strip along the bottom N% of the
 // output. Not true K-means (no shared memory in fragment pipelines),
-// but cheap and serves the contextualization move — shows which colors
+// but cheap and serves the contextualization move -- shows which colors
 // dominate the cover without replacing it.
 //
 // Non-strip pixels: pass-through (source unchanged). Strip region:

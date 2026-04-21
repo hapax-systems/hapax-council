@@ -39,14 +39,14 @@ void main() {
         if (bDist < bWidth) {
             float bInt = 1.0 - bDist / bWidth;
             bInt = pow(bInt, 1.5);
-            // Per-line variation — each line has its own character
+            // Per-line variation -- each line has its own character
             float lineChar = hash(vec2(line * 2.3 + float(bi) * 7.0, t * 1.7));
             float lineIntensity = bInt * (0.4 + lineChar * 0.6);
             // Displacement varies per line
             float lineShift = hash(vec2(line * 0.3, t * 3.0 + float(bi) * 5.0));
             float disp = (lineShift - 0.5) * 35.0 * px * lineIntensity;
             uv.x += disp;
-            // Color noise — tints content
+            // Color noise -- tints content
             float nr = hash(vec2(uv.x * 80.0, line + t * 17.0 + float(bi) * 3.0));
             float ng = hash(vec2(uv.x * 80.0 + 7.0, line + t * 23.0 + float(bi)));
             float nb = hash(vec2(uv.x * 80.0 + 13.0, line + t * 31.0 + float(bi)));
@@ -64,8 +64,8 @@ void main() {
         uv.y += (headNoise - 0.5) * 0.003;
     }
 
-    // --- Characteristic 2: Chroma bleed — HEAVY RGB separation ---
-    float shift = u_chroma_shift * px * 1.5;  // ~9px — subtle edge fringing only
+    // --- Characteristic 2: Chroma bleed -- HEAVY RGB separation ---
+    float shift = u_chroma_shift * px * 1.5;  // ~9px -- subtle edge fringing only
     float r = texture2D(tex, vec2(uv.x + shift, uv.y)).r;
     float g = texture2D(tex, uv).g;
     float b = texture2D(tex, vec2(uv.x - shift, uv.y)).b;
@@ -76,16 +76,16 @@ void main() {
     color.rgb += vec3(trackingMix * 0.1);  // brightness boost in band
 
     // --- Characteristic 1: Refined horizontal scanlines + noise ---
-    // Visible individual scanlines — ALWAYS applied, including in tracking bands
+    // Visible individual scanlines -- ALWAYS applied, including in tracking bands
     float scanY = mod(gl_FragCoord.y, 3.0);
     float scanMask = smoothstep(0.0, 0.5, scanY) * smoothstep(3.0, 2.5, scanY);
     color.rgb *= mix(0.65, 1.0, scanMask);
 
-    // Per-line luminance noise — denser (ref: wedding tape static)
+    // Per-line luminance noise -- denser (ref: wedding tape static)
     float lineNoise = hash(vec2(line * 1.7, t * 0.5 + 42.0));
     color.rgb *= 0.75 + lineNoise * 0.50;  // stronger per-line variation
 
-    // High-frequency snow/static — heavier
+    // High-frequency snow/static -- heavier
     float snow = hash(vec2(uv.x * u_width * 0.5, line + t * 40.0));
     color.rgb += (snow - 0.5) * 0.20;
 
@@ -96,7 +96,7 @@ void main() {
     // --- Tape degradation ---
     float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
 
-    // Soft cyan/teal color wash (ref: Boards of Canada — underwater feel)
+    // Soft cyan/teal color wash (ref: Boards of Canada -- underwater feel)
     color.rgb = mix(color.rgb, vec3(lum * 0.7, lum * 1.0, lum * 1.2), 0.25);
 
     // Slight warmth in shadows (tape aging)

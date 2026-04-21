@@ -57,7 +57,7 @@ void main() {
     // Are we inside a freeze window?
     bool in_freeze = do_freeze && (pos < freeze_dur);
 
-    // Replay zone: last replay_frames of the freeze — rapid stutter
+    // Replay zone: last replay_frames of the freeze -- rapid stutter
     float replay_start = max(freeze_dur - u_replay_frames, 0.0);
     bool in_replay = in_freeze && (pos >= replay_start) && (u_replay_frames > 0.0);
 

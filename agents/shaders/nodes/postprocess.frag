@@ -18,9 +18,9 @@ float hash(vec2 p) {
 void main() {
     vec4 c = texture2D(tex, v_texcoord);
 
-    // Anonymize: light safety net — preserves studio detail, softens faces
+    // Anonymize: light safety net -- preserves studio detail, softens faces
     if (u_anonymize > 0.5) {
-        // Light posterize — reduces smooth gradients (skin) without killing textures
+        // Light posterize -- reduces smooth gradients (skin) without killing textures
         c.rgb = floor(c.rgb * 6.0 + 0.5) / 6.0;
         // Subtle noise
         float n = hash(v_texcoord * 200.0 + c.rg * 5.0);

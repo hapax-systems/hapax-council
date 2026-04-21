@@ -28,7 +28,7 @@ void main() {
         float dist = abs(uv.x - slit_pos);
         float wrap_dist = min(dist, 1.0 - dist);
         if (wrap_dist < slit_width) {
-            // At the slit — sample current frame
+            // At the slit -- sample current frame
             gl_FragColor = texture2D(tex, uv);
         } else {
             // Retain historical value from accumulator

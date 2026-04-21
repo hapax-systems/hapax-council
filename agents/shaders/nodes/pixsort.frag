@@ -37,7 +37,7 @@ void main() {
     vec2 dir = vec2(cos(angle), sin(angle));
     vec2 texel = vec2(1.0 / u_width, 1.0 / u_height);
 
-    // Walk backward — capped at 64 (was 256)
+    // Walk backward -- capped at 64 (was 256)
     int intervalStart = 0;
     for (int i = 1; i < 64; i++) {
         vec2 sUV = uv - dir * texel * float(i);
@@ -47,7 +47,7 @@ void main() {
         intervalStart = i;
     }
 
-    // Walk forward — capped at 64 (was 256)
+    // Walk forward -- capped at 64 (was 256)
     int intervalEnd = 0;
     for (int i = 1; i < 64; i++) {
         vec2 sUV = uv + dir * texel * float(i);
@@ -63,7 +63,7 @@ void main() {
         return;
     }
 
-    // Sample 12 pixels (was 32) — 4x fewer sort iterations
+    // Sample 12 pixels (was 32) -- 4x fewer sort iterations
     vec3 samples[12];
     float sampleLums[12];
     float stepSize = float(intervalLen) / 12.0;

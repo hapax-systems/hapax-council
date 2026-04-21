@@ -40,9 +40,9 @@ void main() {
 
         // Step 1: Lichtenstein bold color push
         vec3 col = src.rgb;
-        // Posterize first — reduce to ~4 tonal levels (flat Lichtenstein regions)
+        // Posterize first -- reduce to ~4 tonal levels (flat Lichtenstein regions)
         col = floor(col * 4.0 + 0.5) / 4.0;
-        // Hypersaturate — push toward pure primaries
+        // Hypersaturate -- push toward pure primaries
         float gray = dot(col, vec3(0.333));
         col = mix(vec3(gray), col, 4.0);
         col = clamp(col, 0.0, 1.0);
@@ -61,7 +61,7 @@ void main() {
         m_ink = (m_ink - k_ink) / div;
         y_ink = (y_ink - k_ink) / div;
 
-        // Step 3: Each channel at its screen angle — rosette emerges from overlap
+        // Step 3: Each channel at its screen angle -- rosette emerges from overlap
         float c_dot = halftone_dot(pixel, 15.0, c_ink, u_dot_size);
         float m_dot = halftone_dot(pixel, 75.0, m_ink, u_dot_size);
         float y_dot = halftone_dot(pixel, 0.0,  y_ink, u_dot_size * 0.9);  // slightly smaller for moire

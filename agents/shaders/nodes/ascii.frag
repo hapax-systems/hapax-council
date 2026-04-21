@@ -26,7 +26,7 @@ float charFill(float lum, vec2 cellPos) {
 
     // Thresholds create increasingly filled patterns
     // Low lum = few pixels lit, high lum = many pixels lit
-    if (lum < 0.05) return 0.0;  // space — nothing
+    if (lum < 0.05) return 0.0;  // space -- nothing
 
     // Single center dot
     if (lum < 0.15) {
