@@ -86,10 +86,15 @@ class TestWaitLoopDoesNotCrash:
         cm = _load_chat_monitor()
         monkeypatch.delenv("YOUTUBE_VIDEO_ID", raising=False)
 
-        # Make _wait_for_video_id return a fake ID after 1 tick to avoid
-        # a real loop, and stub ChatMonitor so we don't actually start a
-        # network connection.
+        # Make _read_video_id return empty so main() falls into the
+        # wait branch (otherwise the live youtube-video-id-publisher
+        # service writes a real ID to /dev/shm/.../youtube-video-id.txt
+        # and main() never reaches _wait_for_video_id). Then mock
+        # _wait_for_video_id to return a fake ID after 1 tick to avoid
+        # a real loop, and stub ChatMonitor so we don't actually start
+        # a network connection.
         with (
+            mock.patch.object(cm, "_read_video_id", return_value=""),
             mock.patch.object(cm, "_wait_for_video_id", return_value="stub-id"),
             mock.patch.object(cm, "ChatMonitor") as mock_ctor,
         ):
