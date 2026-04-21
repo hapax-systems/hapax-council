@@ -147,6 +147,17 @@ PHONE_TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "phone_notifications",
+            "description": (
+                "List recent notifications from the operator's phone. Use when "
+                "they say 'what notifications do I have' or 'check my phone'."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 # Handler mapping for tool execution
@@ -156,4 +167,5 @@ PHONE_TOOL_HANDLERS = {
     "send_to_phone": lambda **kw: send_to_phone(kw["text"]),
     "send_sms": lambda **kw: send_sms(kw["recipient"], kw["message"]),
     "media_control": lambda **kw: media_control(kw["action"]),
+    "phone_notifications": lambda **_: phone_notifications(),
 }
