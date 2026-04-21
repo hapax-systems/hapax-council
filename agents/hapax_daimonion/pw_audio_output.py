@@ -71,6 +71,17 @@ class PwAudioOutput:
                 str(self._rate),
                 "--channels",
                 str(self._channels),
+                # media.role=Assistant lets WirePlumber's role-based
+                # ducker (config/wireplumber/50-hapax-voice-duck.conf,
+                # linking.role-based.duck-level=0.3) lower bed-music
+                # streams while TTS is active. Without this tag the
+                # duck never fires — every untagged stream defaults
+                # to Multimedia per node.stream.default-media-role,
+                # so the duck sees "everything Multimedia, nothing
+                # Assistant" and does nothing. Surfaced in
+                # ~/.cache/hapax/relay/delta-ducking-gap-20260421-05h00.md.
+                "--media-role",
+                "Assistant",
             ]
             if target:
                 cmd.extend(["--target", target])
@@ -180,6 +191,12 @@ def play_pcm(pcm: bytes, rate: int = 24000, channels: int = 1, target: str | Non
             str(rate),
             "--channels",
             str(channels),
+            # See PwAudioOutput._ensure_process — same role-based
+            # ducker dependency. play_pcm() handles chimes/samples,
+            # which the operator hears alongside bed music; tagging
+            # them as Assistant lets the duck fire for those too.
+            "--media-role",
+            "Assistant",
         ]
         if target:
             cmd.extend(["--target", target])
