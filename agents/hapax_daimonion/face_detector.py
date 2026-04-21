@@ -17,6 +17,13 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+# Process-wide flag: log "InsightFace init failed" once per process even if
+# multiple FaceDetector instances try to construct the model. Without this,
+# studio-compositor's face_obscure_pipeline rebuilds a new InsightFaceSource
+# (and a fresh FaceDetector) on every preset switch, producing duplicate
+# WARNINGs (observed 42x in 30 min in 2026-04-21 logs).
+_INSIGHTFACE_FAILURE_LOGGED = False
+
 _OPERATOR_EMBEDDING_PATH = (
     Path.home() / ".local" / "share" / "hapax-daimonion" / "operator_face.npy"
 )
@@ -88,7 +95,12 @@ class FaceDetector:
             self._app = app
             log.info("InsightFace SCRFD (buffalo_sc) initialized with CUDA")
         except Exception as exc:
-            log.warning("Failed to initialize InsightFace SCRFD: %s", exc)
+            global _INSIGHTFACE_FAILURE_LOGGED
+            if not _INSIGHTFACE_FAILURE_LOGGED:
+                log.warning("Failed to initialize InsightFace SCRFD: %s", exc)
+                _INSIGHTFACE_FAILURE_LOGGED = True
+            else:
+                log.debug("Failed to initialize InsightFace SCRFD: %s", exc)
             self._init_failed = True
         return self._app
 

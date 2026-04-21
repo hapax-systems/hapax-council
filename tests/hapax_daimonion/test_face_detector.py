@@ -115,6 +115,36 @@ class TestInsightFaceInitFailures:
         assert result.detected is False
         assert result.count == 0
 
+    def test_insightface_failure_warning_dedup(self, caplog):
+        """Multiple FaceDetector instances each fail to init, but the WARNING
+        only fires once per process. Without dedup, studio-compositor's
+        face_obscure_pipeline rebuilds spammed 42 WARNINGs in 30 min from
+        a single PID — this regression-pin keeps the count to 1."""
+        import logging as _logging
+
+        from agents.hapax_daimonion import face_detector as fd_mod
+
+        # Reset the process-wide flag so the test is hermetic.
+        fd_mod._INSIGHTFACE_FAILURE_LOGGED = False
+
+        with patch.dict("sys.modules", {"insightface": None, "insightface.app": None}):
+            with caplog.at_level(_logging.WARNING, logger="agents.hapax_daimonion.face_detector"):
+                # Three separate FaceDetector instances, each tries _get_app.
+                for _ in range(3):
+                    detector = FaceDetector()
+                    detector._get_app()
+
+        warnings = [
+            r
+            for r in caplog.records
+            if "Failed to initialize InsightFace SCRFD" in r.message
+            and r.levelno == _logging.WARNING
+        ]
+        assert len(warnings) == 1, (
+            f"Expected exactly 1 WARNING across 3 init attempts, got {len(warnings)}. "
+            f"The process-wide _INSIGHTFACE_FAILURE_LOGGED dedup flag is broken."
+        )
+
 
 class TestBase64Decoding:
     """Tests for base64 input edge cases."""
