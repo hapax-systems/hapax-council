@@ -282,7 +282,8 @@ class VideoSlot:
         }
 
 
-slots: list[VideoSlot] = [VideoSlot(i) for i in range(3)]
+_N_SLOTS = int(os.environ.get("YOUTUBE_PLAYER_SLOTS", "3"))
+slots: list[VideoSlot] = [VideoSlot(i) for i in range(_N_SLOTS)]
 
 # Legacy compat
 current_process = None
