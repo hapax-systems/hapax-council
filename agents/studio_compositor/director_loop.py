@@ -1071,6 +1071,12 @@ class DirectorLoop:
         if self._slots:
             self._slots[self._active_slot].is_active = True
             self._audio_control.mute_all_except(self._active_slot)
+        # FINDING-D + FINDING-E (2026-04-21 wiring audit): start the
+        # turn-taking gate poll so respawned ffmpeg sink-inputs inherit
+        # mute state and the gate's read_gate_state() is actually called
+        # from the audio path. Default 2s cadence balances responsiveness
+        # vs. wpctl IPC pressure (~3 wpctl calls per tick).
+        self._audio_control.start_gate_poll()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="director-loop")
         self._thread.start()
         self._dispatch_cold_starts()
@@ -1154,6 +1160,9 @@ class DirectorLoop:
 
     def stop(self) -> None:
         self._running = False
+        # FINDING-D + FINDING-E: clean shutdown of the gate-poll thread.
+        if self._audio_control is not None:
+            self._audio_control.stop_gate_poll()
 
     def _loop(self) -> None:
         """Unified loop: Hapax decides what to do each tick."""

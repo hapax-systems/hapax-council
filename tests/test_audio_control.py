@@ -302,3 +302,104 @@ class TestDuckingMetricsGauge:
         ctrl.restore()
         # No envelope state change → no metric publish at all.
         assert mock_set.call_count == 0
+
+
+# ── FINDING-D + FINDING-E: gate-poll wiring tests (2026-04-21 audit) ──
+
+
+class _FakeGate:
+    """Duck-typed YouTubeGateState stand-in."""
+
+    def __init__(self, *, enabled: bool, active_slot: int = 0) -> None:
+        self.enabled = enabled
+        self.active_slot = active_slot
+
+
+class TestApplyGateState:
+    @patch("subprocess.run")
+    def test_enabled_gate_calls_mute_all_except(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.apply_gate_state(_FakeGate(enabled=True, active_slot=1))
+        wpctl_calls = [c for c in mock_run.call_args_list if "wpctl" in str(c)]
+        volumes = {c.args[0][2]: c.args[0][3] for c in wpctl_calls}
+        assert volumes["241"] == "0.0"
+        assert volumes["258"] == "1.0"
+        assert volumes["285"] == "0.0"
+
+    @patch("subprocess.run")
+    def test_disabled_gate_calls_mute_all(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.apply_gate_state(_FakeGate(enabled=False))
+        wpctl_calls = [c for c in mock_run.call_args_list if "wpctl" in str(c)]
+        for c in wpctl_calls:
+            assert c.args[0][3] == "0.0"
+
+    @patch("subprocess.run")
+    def test_apply_refreshes_node_cache(self, mock_run: MagicMock) -> None:
+        """Cache invalidation each call catches respawned ffmpeg node IDs."""
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.apply_gate_state(_FakeGate(enabled=True, active_slot=0))
+        ctrl.apply_gate_state(_FakeGate(enabled=True, active_slot=0))
+        # pw-dump should have fired twice (once per apply_gate_state)
+        pw_dump_calls = [c for c in mock_run.call_args_list if "pw-dump" in str(c)]
+        assert len(pw_dump_calls) == 2
+
+
+class TestStartGatePoll:
+    @patch("subprocess.run")
+    def test_poll_thread_calls_gate_reader(self, mock_run: MagicMock) -> None:
+        import time as _time
+
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+
+        call_count = {"n": 0}
+
+        def fake_gate_reader() -> _FakeGate:
+            call_count["n"] += 1
+            return _FakeGate(enabled=True, active_slot=0)
+
+        ctrl.start_gate_poll(interval_s=0.05, gate_reader=fake_gate_reader)
+        _time.sleep(0.18)  # let it tick a few times
+        ctrl.stop_gate_poll()
+        assert call_count["n"] >= 2
+
+    @patch("subprocess.run")
+    def test_start_is_idempotent(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+
+        ctrl.start_gate_poll(interval_s=0.5, gate_reader=lambda: _FakeGate(enabled=False))
+        first = ctrl._gate_poll_thread
+        ctrl.start_gate_poll(interval_s=0.5, gate_reader=lambda: _FakeGate(enabled=False))
+        second = ctrl._gate_poll_thread
+        ctrl.stop_gate_poll()
+        assert first is second  # same thread object, no respawn
+
+    @patch("subprocess.run")
+    def test_poll_continues_when_reader_raises(self, mock_run: MagicMock) -> None:
+        import time as _time
+
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+
+        call_count = {"n": 0}
+
+        def boom() -> _FakeGate:
+            call_count["n"] += 1
+            raise RuntimeError("director-intent.jsonl missing")
+
+        ctrl.start_gate_poll(interval_s=0.05, gate_reader=boom)
+        _time.sleep(0.18)
+        ctrl.stop_gate_poll()
+        # The loop continues after each exception — at least 2 calls
+        assert call_count["n"] >= 2
+
+    @patch("subprocess.run")
+    def test_stop_gate_poll_when_never_started_is_noop(self, mock_run: MagicMock) -> None:
+        ctrl = SlotAudioControl(slot_count=3)
+        # No start_gate_poll call; stop should not raise.
+        ctrl.stop_gate_poll()

@@ -66,6 +66,16 @@ class SlotAudioControl:
         self._pre_duck_volumes: dict[int, float] = {}
         self._ramp_thread: threading.Thread | None = None
         self._cancel_event: threading.Event = threading.Event()
+        # FINDING-D + FINDING-E (2026-04-21 wiring audit): turn-taking
+        # gate poll thread + node cache invalidator. Without this loop
+        # ``mute_all_except`` only runs at startup, so any sink-input
+        # spawned later (ffmpeg respawn under yt-player crash + restart)
+        # comes up unmuted. The poll re-applies the gate state every
+        # ``_gate_poll_interval_s`` seconds and forces a node cache
+        # refresh so newly-spawned ffmpegs are picked up.
+        self._gate_poll_thread: threading.Thread | None = None
+        self._gate_poll_stop: threading.Event = threading.Event()
+        self._gate_poll_interval_s: float = 2.0
 
     def _refresh_cache(self) -> None:
         """Parse pw-dump to discover youtube-audio node IDs."""
@@ -150,6 +160,92 @@ class SlotAudioControl:
         """Mute all YouTube audio streams."""
         for slot_id in range(self._slot_count):
             self.set_volume(slot_id, 0.0)
+
+    # ── FINDING-D + FINDING-E: periodic turn-taking gate apply ──────
+
+    def apply_gate_state(self, gate_state: object) -> None:
+        """Apply a YouTubeGateState reading.
+
+        Enabled gate → ``mute_all_except(gate.active_slot)``. Disabled
+        gate → ``mute_all()``. Forces a node cache refresh on each call
+        so respawned ffmpegs (new node IDs) are caught.
+
+        ``gate_state`` is typed as ``object`` rather than the concrete
+        ``YouTubeGateState`` to avoid an import cycle: youtube_turn_taking
+        already imports SlotAudioControl as a type reference. Duck typing
+        on ``.enabled`` + ``.active_slot``.
+        """
+        # Cache invalidation each call — cheap relative to wpctl IPC,
+        # and necessary because respawned ffmpegs change node IDs.
+        self._refresh_cache()
+        enabled = bool(getattr(gate_state, "enabled", False))
+        active_slot = int(getattr(gate_state, "active_slot", 0))
+        if enabled:
+            self.mute_all_except(active_slot)
+        else:
+            self.mute_all()
+
+    def start_gate_poll(
+        self,
+        *,
+        interval_s: float | None = None,
+        gate_reader=None,
+    ) -> None:
+        """Spawn a daemon thread that re-applies the turn-taking gate.
+
+        Closes FINDING-E (mute_all_except non-periodic) by ensuring the
+        gate state is re-applied every ``interval_s`` seconds, so any
+        sink-input spawned between startup and the next ffmpeg crash
+        gets picked up.
+
+        Closes FINDING-D (read_gate_state dead) because ``gate_reader``
+        defaults to ``youtube_turn_taking.read_gate_state`` — wired into
+        the audio path for the first time.
+
+        Idempotent: a second call with an already-running thread is a
+        no-op (call ``stop_gate_poll`` + ``start_gate_poll`` to retune).
+        """
+        if self._gate_poll_thread is not None and self._gate_poll_thread.is_alive():
+            return
+
+        if gate_reader is None:
+            from agents.studio_compositor.youtube_turn_taking import read_gate_state
+
+            gate_reader = read_gate_state
+
+        if interval_s is not None:
+            self._gate_poll_interval_s = interval_s
+
+        self._gate_poll_stop.clear()
+
+        def _poll_loop() -> None:
+            log.info(
+                "SlotAudioControl gate-poll started (interval=%.1fs)",
+                self._gate_poll_interval_s,
+            )
+            while not self._gate_poll_stop.is_set():
+                try:
+                    gate = gate_reader()
+                    self.apply_gate_state(gate)
+                except Exception:
+                    log.debug("gate-poll iteration failed", exc_info=True)
+                self._gate_poll_stop.wait(self._gate_poll_interval_s)
+            log.info("SlotAudioControl gate-poll stopped")
+
+        self._gate_poll_thread = threading.Thread(
+            target=_poll_loop,
+            daemon=True,
+            name="slot-audio-gate-poll",
+        )
+        self._gate_poll_thread.start()
+
+    def stop_gate_poll(self, *, timeout_s: float = 2.0) -> None:
+        """Signal the gate-poll loop to exit and join it."""
+        self._gate_poll_stop.set()
+        thread = self._gate_poll_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout_s)
+        self._gate_poll_thread = None
 
     # ── W3.1 envelope ducking ─────────────────────────────────────
 
