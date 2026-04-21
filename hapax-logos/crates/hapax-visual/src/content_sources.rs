@@ -290,6 +290,60 @@ impl ContentSourceManager {
         &self.placeholder_view
     }
 
+    /// Classify a source_id into a slot-family per the
+    /// yt-content-reverie-sierpinski-separation contract (2026-04-21).
+    /// `yt-slot-*` directories carry YouTube frames and route to the
+    /// `youtube_pip` family (Sierpinski). Everything else (`camera-*`,
+    /// `content-*`, future producers) defaults to `narrative` so it
+    /// lands in Reverie's generative substrate. Conservative-by-default
+    /// — new producers ship as narrative until explicitly tagged.
+    pub fn classify_family(source_id: &str) -> &'static str {
+        if source_id.starts_with("yt-slot-") {
+            "youtube_pip"
+        } else {
+            "narrative"
+        }
+    }
+
+    /// Get the texture view for a content slot filtered by family.
+    /// Per Phase 1B of the slot-family separation: `content_slot_*`
+    /// bindings on a pass tagged `slot_family="youtube_pip"` only see
+    /// YT-slot sources; passes tagged `"narrative"` only see narrative
+    /// sources. Returns the placeholder view when no source matches —
+    /// callers never see cross-family bleed.
+    pub fn slot_view_for_family(&self, index: usize, family: &str) -> &wgpu::TextureView {
+        let mut sorted: Vec<&ContentSource> = self.sources.iter()
+            .filter(|(id, s)| {
+                s.current_opacity > 0.001 && Self::classify_family(id) == family
+            })
+            .map(|(_, s)| s)
+            .collect();
+        sorted.sort_by_key(|s| s.manifest.z_order);
+        if let Some(source) = sorted.get(index) {
+            &source.view
+        } else {
+            &self.placeholder_view
+        }
+    }
+
+    /// Per-slot opacities filtered by family — pairs with
+    /// `slot_view_for_family` so a pass's slot uniforms reflect the
+    /// same source set as its bound textures.
+    pub fn slot_opacities_for_family(&self, family: &str) -> [f32; 4] {
+        let mut sorted: Vec<&ContentSource> = self.sources.iter()
+            .filter(|(id, s)| {
+                s.current_opacity > 0.001 && Self::classify_family(id) == family
+            })
+            .map(|(_, s)| s)
+            .collect();
+        sorted.sort_by_key(|s| s.manifest.z_order);
+        let mut opacities = [0.0f32; 4];
+        for (i, source) in sorted.iter().take(4).enumerate() {
+            opacities[i] = source.current_opacity;
+        }
+        opacities
+    }
+
     pub fn has_active_sources(&self) -> bool {
         self.sources.values().any(|s| s.current_opacity > 0.001)
     }
@@ -322,5 +376,72 @@ impl ContentSourceManager {
             opacities[i] = source.current_opacity;
         }
         opacities
+    }
+}
+
+#[cfg(test)]
+mod family_classification_tests {
+    use super::ContentSourceManager;
+
+    /// yt-content-reverie-sierpinski-separation 2026-04-21:
+    /// `yt-slot-*` directories MUST classify as `youtube_pip` so the
+    /// Rust runtime routes YT frames into Sierpinski only.
+    #[test]
+    fn yt_slot_zero_classifies_as_youtube_pip() {
+        assert_eq!(ContentSourceManager::classify_family("yt-slot-0"), "youtube_pip");
+    }
+
+    #[test]
+    fn yt_slot_double_digit_classifies_as_youtube_pip() {
+        assert_eq!(ContentSourceManager::classify_family("yt-slot-15"), "youtube_pip");
+    }
+
+    /// `content-*` directories (narrative_text, episodic_recall,
+    /// knowledge_recall) MUST land in narrative so Reverie keeps its
+    /// substrate purpose. Pre-fix they cross-bled with YT.
+    #[test]
+    fn content_narrative_text_classifies_as_narrative() {
+        assert_eq!(
+            ContentSourceManager::classify_family("content-narrative_text"),
+            "narrative"
+        );
+    }
+
+    #[test]
+    fn content_episodic_recall_classifies_as_narrative() {
+        assert_eq!(
+            ContentSourceManager::classify_family("content-episodic_recall"),
+            "narrative"
+        );
+    }
+
+    /// `camera-*` and any other producer that pre-dates the family
+    /// system defaults to narrative — conservative-by-default keeps
+    /// the existing cross-bleed contained until each producer is
+    /// explicitly tagged.
+    #[test]
+    fn camera_brio_operator_classifies_as_narrative_default() {
+        assert_eq!(
+            ContentSourceManager::classify_family("camera-brio-operator"),
+            "narrative"
+        );
+    }
+
+    #[test]
+    fn unknown_prefix_classifies_as_narrative_default() {
+        assert_eq!(
+            ContentSourceManager::classify_family("future-producer-xyz"),
+            "narrative"
+        );
+    }
+
+    /// A source whose name happens to contain "yt-slot-" mid-string
+    /// must NOT be misclassified — the prefix match is anchored.
+    #[test]
+    fn yt_slot_substring_inside_other_name_does_not_misclassify() {
+        assert_eq!(
+            ContentSourceManager::classify_family("camera-yt-slot-spy"),
+            "narrative"
+        );
     }
 }
