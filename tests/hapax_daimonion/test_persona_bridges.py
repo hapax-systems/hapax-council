@@ -13,10 +13,18 @@ class TestBridgeInstructions:
         prompt = system_prompt(guest_mode=False)
         assert "vary" in prompt.lower()
 
-    def test_guest_mode_no_bridge_instructions(self):
-        """Guest mode has no tools, so no bridge instructions needed."""
+    def test_guest_mode_no_per_tool_directory(self):
+        """Guest mode strips per-tool identifiers from the directory.
+
+        The original assertion was a blanket "no 'tool' substring"
+        but the rewritten prompt naturally mentions tool-related
+        concepts (operator-private tool boundary, bridge-before-
+        tool-call instruction). What actually matters is that no
+        per-tool identifier appears — the LLM in guest mode should
+        not know it has access to e.g. get_calendar_today."""
         prompt = system_prompt(guest_mode=True)
-        assert "tool" not in prompt.lower()
+        for tool_name in ("get_calendar_today", "search_emails", "send_sms"):
+            assert tool_name not in prompt
 
 
 class TestAppearanceResponse:

@@ -303,12 +303,19 @@ class TestEdgeCaseMatrix:
         assert not any("Late hours" in r for r in rules)
 
     def test_long_session(self):
-        """Session > 20min: conciseness overlay. No break suggestions."""
+        """Session > 20min: conciseness overlay. No break suggestions.
+
+        Original assertion was "Tighten responses"; the policy text
+        was rewritten to "Long session. Extra concise." — same
+        intent, different phrasing.
+        """
         env = FakeEnv()
         session_start = time.monotonic() - (25 * 60)
         p = get_policy(env=env, session_start=session_start)
         assert "Long session" in p
-        assert "Tighten responses" in p
+        # Conciseness modifier — accept either of the historical
+        # phrasings so a future trim doesn't re-break the test.
+        assert "Extra concise" in p or "Tighten responses" in p
 
     def test_short_session_no_overlay(self):
         """Session < 20min: no session duration overlay."""
@@ -318,11 +325,17 @@ class TestEdgeCaseMatrix:
         assert "Long session" not in p
 
     def test_multi_face_plus_coding(self):
-        """Coding + guest: both activity and multi-face rules apply."""
+        """Coding + guest: both activity and multi-face rules apply.
+
+        Guest-present overlay text was rewritten from "accessible to
+        all listeners" → "Accessible language" — same intent, more
+        compact phrasing."""
         env = FakeEnv(activity_mode="coding", face_count=2)
         p = get_policy(env=env)
         assert "Maximum brevity" in p
-        assert "accessible to all listeners" in p.lower()
+        # Guest-presence accessibility modifier (current + historical).
+        lower = p.lower()
+        assert "accessible language" in lower or "accessible to all listeners" in lower
         _has_env_block(p)
 
     def test_meeting_plus_long_session(self):

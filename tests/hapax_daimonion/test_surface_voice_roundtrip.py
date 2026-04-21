@@ -34,7 +34,16 @@ class TestPipelineWiring:
         mock_stt_cls,
         mock_transport_cls,
     ):
-        """Processors must be: input → STT → user_agg → LLM → TTS → output → assistant_agg."""
+        """Processors must be: input → VadStatePublisher → STT → user_agg
+        → LLM → TTS → TtsStatePublisher → output → assistant_agg.
+
+        VadStatePublisher (#134 Phase 9 hook 4 / B1 commit 6721fb863)
+        sits after transport.input() to observe VAD frames before they
+        enter STT. TtsStatePublisher (audio normalization PR-1) sits
+        after TTS to observe real playback start/stop frames."""
+        from agents.hapax_daimonion.tts_state_publisher import TtsStatePublisher
+        from agents.hapax_daimonion.vad_state_publisher import VadStatePublisher
+
         mock_transport = MagicMock()
         mock_transport_cls.return_value = mock_transport
         mock_agg = MagicMock()
@@ -49,13 +58,15 @@ class TestPipelineWiring:
         call_kwargs = mock_pipeline_cls.call_args.kwargs
         processors = call_kwargs["processors"]
 
-        assert processors[0] == mock_transport.input()  # transport input
-        assert processors[1] == mock_stt_cls()  # STT
-        assert processors[2] == mock_agg.user()  # user aggregator
-        assert processors[3] == mock_llm_cls()  # LLM
-        assert processors[4] == mock_tts_cls()  # TTS
-        assert processors[5] == mock_transport.output()  # transport output
-        assert processors[6] == mock_agg.assistant()  # assistant aggregator
+        assert processors[0] == mock_transport.input()
+        assert isinstance(processors[1], VadStatePublisher)
+        assert processors[2] == mock_stt_cls()
+        assert processors[3] == mock_agg.user()
+        assert processors[4] == mock_llm_cls()
+        assert processors[5] == mock_tts_cls()
+        assert isinstance(processors[6], TtsStatePublisher)
+        assert processors[7] == mock_transport.output()
+        assert processors[8] == mock_agg.assistant()
 
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
@@ -76,7 +87,12 @@ class TestPipelineWiring:
         mock_stt_cls,
         mock_transport_cls,
     ):
-        """When frame_gate is provided, it is inserted between input and STT."""
+        """When frame_gate is provided, it sits between VadStatePublisher
+        and STT. Pipeline shape:
+        input → VadStatePublisher → frame_gate → stt → ... → assistant_agg
+        (10 elements with the frame_gate inserted)."""
+        from agents.hapax_daimonion.vad_state_publisher import VadStatePublisher
+
         mock_transport = MagicMock()
         mock_transport_cls.return_value = mock_transport
         mock_agg = MagicMock()
@@ -92,10 +108,11 @@ class TestPipelineWiring:
         call_kwargs = mock_pipeline_cls.call_args.kwargs
         processors = call_kwargs["processors"]
 
-        assert processors[0] == mock_transport.input()  # transport input
-        assert processors[1] == mock_gate  # frame gate
-        assert processors[2] == mock_stt_cls()  # STT
-        assert len(processors) == 8
+        assert processors[0] == mock_transport.input()
+        assert isinstance(processors[1], VadStatePublisher)
+        assert processors[2] == mock_gate
+        assert processors[3] == mock_stt_cls()
+        assert len(processors) == 10
 
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
