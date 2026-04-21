@@ -93,41 +93,64 @@ try:
     except Exception:
         _COMPOSITOR_REGISTRY = None
 
+    # Apply the compositor's CollectorRegistry to EVERY metric defined in
+    # this module. The HOMAGE block below introduced this kwargs pattern
+    # in 2026-04-13 but the director-tier metrics above never adopted it
+    # — every Counter / Histogram from ``hapax_director_intent_total``
+    # through ``hapax_random_mode_transition_total`` was landing on
+    # prometheus_client's default registry and so never reached the
+    # ``:9482`` scrape surface or Grafana. Lifted into a shared dict and
+    # applied to every metric in this module so the director observability
+    # contract is uniform. Outside the compositor process (officium,
+    # tests, one-off scripts) ``_COMPOSITOR_REGISTRY`` is ``None`` and the
+    # dict is empty, leaving the metrics on the default registry — the
+    # previous behaviour for non-compositor environments.
+    _metric_kwargs: dict = (
+        {"registry": _COMPOSITOR_REGISTRY} if _COMPOSITOR_REGISTRY is not None else {}
+    )
+
     _director_intent_total = Counter(
         "hapax_director_intent_total",
         "Director intents emitted, labelled by condition + activity + stance.",
         ("condition_id", "activity", "stance"),
+        **_metric_kwargs,
     )
     _grounding_signal_total = Counter(
         "hapax_director_grounding_signal_used_total",
         "Grounding-provenance signal references per intent.",
         ("condition_id", "signal_name"),
+        **_metric_kwargs,
     )
     _compositional_impingement_total = Counter(
         "hapax_director_compositional_impingement_total",
         "Compositional impingements emitted, labelled by intent family.",
         ("condition_id", "intent_family"),
+        **_metric_kwargs,
     )
     _twitch_move_total = Counter(
         "hapax_director_twitch_move_total",
         "Twitch-director moves emitted, labelled by intent family.",
         ("condition_id", "intent_family"),
+        **_metric_kwargs,
     )
     _structural_intent_total = Counter(
         "hapax_director_structural_intent_total",
         "Structural-director intents emitted.",
         ("condition_id", "scene_mode", "preset_family_hint"),
+        **_metric_kwargs,
     )
     _llm_latency_seconds = Histogram(
         "hapax_director_llm_latency_seconds",
         "Director LLM call latency in seconds.",
         ("condition_id", "director_tier"),
         buckets=(0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 45.0, 60.0, 120.0),
+        **_metric_kwargs,
     )
     _intent_parse_failure_total = Counter(
         "hapax_director_intent_parse_failure_total",
         "LLM response failed to parse as DirectorIntent — fell back to legacy path.",
         ("condition_id", "director_tier"),
+        **_metric_kwargs,
     )
     _vacuum_prevented_total = Counter(
         "hapax_director_vacuum_prevented_total",
@@ -136,16 +159,19 @@ try:
             "(operator 2026-04-18) populated a silence-hold impingement."
         ),
         ("condition_id", "director_tier", "reason"),
+        **_metric_kwargs,
     )
     _random_mode_pick_total = Counter(
         "hapax_random_mode_pick_total",
         "random_mode preset picks, labelled by selection path.",
         ("chosen_via",),
+        **_metric_kwargs,
     )
     _random_mode_transition_total = Counter(
         "hapax_random_mode_transition_total",
         "random_mode chain-change transition picks, by capability name (Phase 7 of #166).",
         ("transition",),
+        **_metric_kwargs,
     )
     # Director watchdog Phase 2 (§8 single-flight): counts ticks where the
     # director was about to call the LLM but the prior call had not yet
@@ -156,17 +182,15 @@ try:
         "hapax_director_tick_skipped_in_flight_total",
         "Director ticks skipped because the prior LLM call was still in flight.",
         ("reason",),
+        **_metric_kwargs,
     )
     # HOMAGE framework metrics — spec §6.
-    # Registered against the compositor's CollectorRegistry (when the
-    # compositor package is importable) so the :9482 scrape surface
-    # actually exposes them. Passing a registry keyword-only argument
-    # only when non-None keeps the metric registered against the
-    # prometheus_client default registry in non-compositor environments
-    # (officium, test sandboxes without the compositor package).
-    _homage_metric_kwargs: dict = (
-        {"registry": _COMPOSITOR_REGISTRY} if _COMPOSITOR_REGISTRY is not None else {}
-    )
+    # Registered against the compositor's CollectorRegistry via the shared
+    # ``_metric_kwargs`` dict above, so the :9482 scrape surface exposes
+    # them. ``_homage_metric_kwargs`` is kept as an alias so existing
+    # references (e.g. test scaffolding that pokes the kwargs dict by
+    # name) keep working — both names point at the same dict.
+    _homage_metric_kwargs = _metric_kwargs
     _homage_package_active = Gauge(
         "hapax_homage_package_active",
         "1 if the named HOMAGE package is currently active, 0 otherwise.",

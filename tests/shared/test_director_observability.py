@@ -183,3 +183,40 @@ def test_emit_ungrounded_audit_silent_when_fully_grounded(caplog):
 
     ungrounded_warnings = [r for r in caplog.records if "UNGROUNDED" in r.message]
     assert ungrounded_warnings == []
+
+
+def test_all_director_metrics_register_with_compositor_registry():
+    """Regression for the 2026-04-21 registry bug.
+
+    ``director_observability`` defines its metrics at module load. Until
+    today only the HOMAGE block passed ``registry=_COMPOSITOR_REGISTRY``;
+    the 11 director-tier metrics above it landed on the prometheus_client
+    default registry and so never reached the ``:9482`` scrape surface.
+    This pins the contract: every metric defined here must be discoverable
+    on the compositor's ``REGISTRY`` so Grafana queries actually work.
+    """
+    from agents.studio_compositor.metrics import REGISTRY
+    from shared import director_observability as obs
+
+    expected = {
+        # The 11 director-tier metrics that were previously orphaned.
+        obs._director_intent_total._name,
+        obs._grounding_signal_total._name,
+        obs._compositional_impingement_total._name,
+        obs._twitch_move_total._name,
+        obs._structural_intent_total._name,
+        obs._llm_latency_seconds._name,
+        obs._intent_parse_failure_total._name,
+        obs._vacuum_prevented_total._name,
+        obs._random_mode_pick_total._name,
+        obs._random_mode_transition_total._name,
+        obs._director_tick_skipped_in_flight_total._name,
+        # A HOMAGE sample to confirm the existing path still works.
+        obs._homage_package_active._name,
+    }
+    actual = {c.name for c in REGISTRY.collect()}
+    missing = expected - actual
+    assert not missing, (
+        f"director_observability metrics missing from compositor REGISTRY: {missing}. "
+        "Did a new Counter/Gauge/Histogram skip the **_metric_kwargs splat?"
+    )
