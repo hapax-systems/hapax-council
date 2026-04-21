@@ -145,6 +145,17 @@ struct PlanPass {
     /// docs/superpowers/specs/2026-04-12-phase-3-executor-polymorphism-design.md
     #[serde(default = "default_backend")]
     backend: String,
+    /// Slot-family routing tag (yt-content-reverie-sierpinski-separation
+    /// design 2026-04-21). Only meaningful when `requires_content_slots`
+    /// is true. The runtime filters `ContentSourceManager` sources by
+    /// this family before binding `content_slot_*` textures, so passes
+    /// tagged `youtube_pip` only see YT-slot sources and passes tagged
+    /// `narrative` only see narrative sources. Defaults to `"narrative"`
+    /// for backward compatibility with plans written before the field
+    /// was introduced — matches the legacy global-pool behaviour for
+    /// the substrate node (`content_layer`).
+    #[serde(default = "default_slot_family")]
+    slot_family: String,
 }
 
 fn default_output() -> String {
@@ -157,6 +168,10 @@ fn default_steps() -> u32 {
 
 fn default_backend() -> String {
     "wgsl_render".into()
+}
+
+fn default_slot_family() -> String {
+    "narrative".into()
 }
 
 /// Deserialize a JSON object into HashMap<String, f64>, silently skipping non-numeric values.
@@ -193,6 +208,11 @@ struct DynamicPass {
     output: String,
     steps_per_frame: u32,
     requires_content_slots: bool,
+    /// Slot-family routing tag (yt-content-reverie-sierpinski-separation
+    /// design 2026-04-21). Forwarded from the plan JSON; the binding
+    /// builder uses it to call ``ContentSourceManager::slot_view_for_family``
+    /// instead of pulling from the global source pool.
+    slot_family: String,
     /// Backend dispatcher key. Phase 3a wires only "wgsl_render" — future
     /// sub-phases (3b/3c/3d) add "cairo", "text", "image_file" branches.
     backend: String,
@@ -762,6 +782,7 @@ impl DynamicPipeline {
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
                     requires_content_slots: plan_pass.requires_content_slots,
+                    slot_family: plan_pass.slot_family.clone(),
                     backend: plan_pass.backend.clone(),
                     target: target_name.clone(),
                 });
@@ -877,6 +898,7 @@ impl DynamicPipeline {
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
                     requires_content_slots: plan_pass.requires_content_slots,
+                    slot_family: plan_pass.slot_family.clone(),
                     backend: plan_pass.backend.clone(),
                     target: target_name.clone(),
                 });
@@ -1171,6 +1193,8 @@ impl DynamicPipeline {
                     device,
                     &pass.inputs,
                     pass.requires_content_slots,
+                    &pass.slot_family,
+                    &pass.node_id,
                     content_sources,
                 );
 
@@ -1227,6 +1251,8 @@ impl DynamicPipeline {
                     device,
                     &pass.inputs,
                     pass.requires_content_slots,
+                    &pass.slot_family,
+                    &pass.node_id,
                     content_sources,
                 );
                 let storage_bind_group =
@@ -1616,6 +1642,8 @@ impl DynamicPipeline {
         device: &wgpu::Device,
         inputs: &[String],
         requires_content_slots: bool,
+        slot_family: &str,
+        pass_id: &str,
         content_sources: Option<&ContentSourceManager>,
     ) -> wgpu::BindGroup {
         let input_count = inputs.len();
@@ -1623,6 +1651,13 @@ impl DynamicPipeline {
         // name-based detection for backward compatibility with older plans.
         let has_content_slots = requires_content_slots
             || inputs.iter().any(|n| n.starts_with("content_slot_"));
+        // Per yt-content-reverie-sierpinski-separation (2026-04-21):
+        // ``slot_family`` is forwarded from the plan and used below to
+        // filter ``ContentSourceManager`` sources before binding. The
+        // pass_id is plumbed in so the WARN-once log line can identify
+        // which pass missed its family — the spec requires "WARN once
+        // per (pass_id, family) per startup".
+        let _ = (slot_family, pass_id); // silence unused warnings when has_content_slots is false
 
         // Use cached layout from reload — fall back to fresh creation if uncached
         let owned_layout;
@@ -1683,13 +1718,20 @@ impl DynamicPipeline {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(&self.sampler),
             });
-            // Binding 2..N: content slot textures
+            // Binding 2..N: content slot textures, family-filtered.
+            // Phase 1B of yt-content-reverie-sierpinski-separation
+            // (2026-04-21). Each slot pulls from sources whose
+            // ``classify_family(source_id)`` matches this pass's
+            // ``slot_family`` tag — narrative sources never bind on a
+            // youtube_pip pass and vice-versa. Empty family ⇒ the
+            // ContentSourceManager's transparent placeholder, NOT a
+            // cross-family fallback.
             for (i, name) in content_inputs.iter().enumerate() {
                 let idx: usize = name.strip_prefix("content_slot_")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
                 let slot_view = content_sources
-                    .map(|cs| cs.slot_view(idx))
+                    .map(|cs| cs.slot_view_for_family(idx, slot_family))
                     .unwrap_or_else(|| {
                         self.intermediate(MAIN_FINAL_TEXTURE)
                             .map(|t| &t.view)
@@ -2097,6 +2139,7 @@ mod tests {
             steps_per_frame: 1,
             requires_content_slots: false,
             backend: "wgsl_render".to_string(),
+            slot_family: "narrative".to_string(),
         }
     }
 
