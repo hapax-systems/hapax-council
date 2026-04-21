@@ -370,32 +370,46 @@ Triaged below.
 
 ## §4 director intent_family wiring
 
-`shared/director_intent.py::IntentFamily` enumerates **22 families** (lines 68-94):
-- 4 control-surface: `camera.hero`, `preset.bias`, `overlay.emphasis`, `youtube.direction`
-- 1 attentional: `attention.winner`
-- 1 mode: `stream_mode.transition`
-- 7 ward-property: `ward.{size,position,staging,highlight,appearance,cadence,choreography}`
-- 6 homage: `homage.{rotation,emergence,swap,cycle,recede,expand}`
+`shared/director_intent.py::IntentFamily` enumerates **19 families** (lines 68-94 —
+audit's "22" count was wrong; actual is 4 control + 1 attentional + 1 mode + 7
+ward-property + 6 homage = 19).
 
-`compositional_consumer.py` defines `dispatch_*` functions for ALL 22, so the consumer
-side is wired. But on the EMITTER side — `grep -rhn 'intent_family\s*=\s*"' agents/`
-returns only 4 string literals: `camera.hero`, `overlay.emphasis`, `preset.bias`,
-`youtube.direction`. The other 18 families have no string-literal emit site in `agents/`.
+`compositional_consumer.py` defines `dispatch_*` functions for ALL 19, so the consumer
+side is fully wired. The audit's static-grep ("4 string literals" `camera.hero`,
+`overlay.emphasis`, `preset.bias`, `youtube.direction`) missed the dynamic recruitment
+path — see FINDING-N re-scoping below.
 
-### ❌ FINDING-N — 18 of 22 IntentFamily values have no emitter (dead taxonomy)
+### ⚠️ FINDING-N — IntentFamily taxonomy partially dormant (not dead) — RE-SCOPED 2026-04-21
 
-- **Severity:** MEDIUM-HIGH (18 dispatch endpoints with no producer; the recruitment
-  pipeline can in principle still reach them via dynamic capability registration but
-  the static-string path is dark)
-- **Audit-doc relevance:** §4.7 (per-ward families), §4.8 (homage families) — both
-  are listed but no emitter trace exists for either
-- **Possible mitigation already in place:** the `dispatch_*` routing in
-  `compositional_consumer.py` may be reachable via affordance-pipeline recruitment
-  (capability metadata sets `intent_family`, then the consumer dispatches by family
-  rather than string-equality). Need to verify the live recruitment path emits these
-  18 families OR confirm they are dead-code that should be retired
-- **Investigation step:** enumerate live `INTENT` JSONL for last 24h, count
-  `intent_family` distribution: `jq -r '.compositional_impingements[]?.intent_family' INTENT | sort | uniq -c`
+- **Severity (re-rated):** LOW (audit's "dead taxonomy" framing was based on
+  static-grep alone; live INTENT shows 9/19 families actively flowing via dynamic
+  recruitment)
+- **Live distribution (4517 INTENT records, 2026-04-21T15:08Z):**
+  ```
+  2689 overlay.emphasis
+  1563 preset.bias
+  1157 ward.highlight
+  1036 camera.hero
+   123 attention.winner
+    50 youtube.direction
+    26 stream_mode.transition
+     3 ward.staging
+     2 ward.choreography
+  ```
+  9 families active = 47% live coverage. The 4 control-surface + 1 attentional + 1
+  mode all firing; 3 of 7 ward-property dispatchers firing.
+- **Dormant 10/19** (with disposition):
+  - 4 ward-property: `ward.size`, `ward.position`, `ward.appearance`, `ward.cadence`
+    — dispatchers fully implemented (`compositional_consumer.py:549-720`), waiting
+    on capability-recruitment events. Currently uncalled by any recruited capability;
+    not "dead", just unrecruited.
+  - 6 homage: `homage.{rotation,emergence,swap,cycle,recede,expand}` — same pattern
+    as FINDING-A re-scoping; choreographer alive (FINDING-B resolved) but no
+    `homage.*` capability has been recruited since restart, so no transitions emit.
+- **Remaining work:** none in this audit. Per-ward synthetic-stimulus harness
+  (already on queue, task #13) will exercise the 10 dormant families end-to-end.
+  Decision on retire-vs-keep for `ward.{size,position,appearance,cadence}` is
+  deferred until the harness has run.
 
 ### ❌ FINDING-D (re-confirmed at §4.4) — `youtube_turn_taking` not in `director_loop.py`
 
