@@ -1,4 +1,10 @@
-// Content layer — Bachelard phenomenology surface.
+// Content layer — Bachelard phenomenology surface (Reverie substrate).
+// Slot-family contract (yt-content-reverie-sierpinski-separation 2026-04-21):
+// this node is tagged `slot_family: "narrative"` so the Rust runtime binds
+// only narrative-content sources here. YouTube frames flow to Sierpinski
+// via `sierpinski_content.wgsl` (slot_family: "youtube_pip"). Do NOT add
+// YT-frame consumption logic to this shader — it would re-bleed YT into
+// Reverie's generative substrate.
 // Reads procedural field as input, composites 4 content texture slots over it.
 // Bachelard effects:
 // 1. Materialization from substrate (noise-gated crystallization)

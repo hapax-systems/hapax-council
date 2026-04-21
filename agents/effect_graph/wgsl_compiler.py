@@ -188,6 +188,13 @@ def _build_passes_for_target(
 
         if requires_content_slots:
             descriptor["requires_content_slots"] = True
+            # Slot-family routing tag — Rust runtime filters
+            # ``content_slot_*`` bindings by SHM-path prefix matching
+            # this family. yt-content-reverie-sierpinski-separation
+            # design 2026-04-21 §1A. Always emitted alongside
+            # requires_content_slots so the Rust deserializer never
+            # has to handle "needs slots, no family declared".
+            descriptor["slot_family"] = node_def.slot_family if node_def else "narrative"
 
         if is_temporal:
             descriptor["temporal"] = True

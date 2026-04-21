@@ -23,6 +23,16 @@ class LoadedShaderDef:
     glsl_source: str | None
     requires_content_slots: bool = False
     backend: str = "wgsl_render"
+    # Slot-family routing tag (yt-content-reverie-sierpinski-separation
+    # design 2026-04-21). When ``requires_content_slots`` is True, the
+    # Rust runtime binds content_slot_0..3 to sources whose SHM-path
+    # prefix matches this family. Default ``"narrative"`` keeps the
+    # generative substrate's contract — Reverie's content_layer pulls
+    # narrative sources only and never sees raw YouTube frames.
+    # ``"youtube_pip"`` routes YT-slot sources to a foreground ward
+    # (Sierpinski) for prominent display. Empty/missing-family passes
+    # bind a 1×1 transparent placeholder rather than cross-bleed.
+    slot_family: str = "narrative"
 
 
 class ShaderRegistry:
@@ -56,6 +66,7 @@ class ShaderRegistry:
             glsl_source=glsl,
             requires_content_slots=raw.get("requires_content_slots", False),
             backend=raw.get("backend", "wgsl_render"),
+            slot_family=raw.get("slot_family", "narrative"),
         )
 
     @property
@@ -78,6 +89,7 @@ class ShaderRegistry:
             "compute": d.compute,
             "requires_content_slots": d.requires_content_slots,
             "backend": d.backend,
+            "slot_family": d.slot_family,
         }
 
     def all_schemas(self) -> dict[str, object]:
