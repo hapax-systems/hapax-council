@@ -110,6 +110,28 @@ def _ffmpeg_capture_v4l2(device: str, out: Path, *, timeout_s: int = 8) -> bool:
     return result.returncode == 0 and out.exists() and out.stat().st_size > 0
 
 
+def _frame_dimensions(image_path: Path) -> tuple[int, int] | None:
+    """Return (width, height) of the captured frame using ImageMagick."""
+    if shutil.which("identify") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["identify", "-format", "%w %h", str(image_path)],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        parts = result.stdout.decode().strip().split()
+        return int(parts[0]), int(parts[1])
+    except (IndexError, ValueError):
+        return None
+
+
 def _crop_stats(image_path: Path, x: int, y: int, w: int, h: int) -> tuple[float, float] | None:
     """Return (mean_luminance, std) for the given crop, [0..1] scale.
 
@@ -171,6 +193,28 @@ def main() -> int:
         action="store_true",
         help="Fail rather than falling back to RTMP when V4L2 capture fails.",
     )
+    parser.add_argument(
+        "--snapshot",
+        default=None,
+        help=(
+            "Skip live capture and read a pre-existing frame at this path "
+            "(e.g. /dev/shm/hapax-compositor/fx-snapshot.jpg). Coordinates "
+            "from default.json are auto-scaled if the snapshot dimensions "
+            "differ from the layout canvas."
+        ),
+    )
+    parser.add_argument(
+        "--canvas-w",
+        type=int,
+        default=1920,
+        help="Layout canvas width (default 1920) used for coord scaling.",
+    )
+    parser.add_argument(
+        "--canvas-h",
+        type=int,
+        default=1080,
+        help="Layout canvas height (default 1080) used for coord scaling.",
+    )
     args = parser.parse_args()
 
     layout = json.loads(Path(args.layout).read_text())
@@ -195,18 +239,47 @@ def main() -> int:
         )
 
     with tempfile.TemporaryDirectory() as td:
-        frame_path = Path(args.frame) if args.frame else Path(td) / "frame.jpg"
-        captured = _ffmpeg_capture_v4l2(args.device, frame_path)
-        if not captured and not args.no_rtmp_fallback:
+        if args.snapshot:
+            snapshot_path = Path(args.snapshot)
+            if not snapshot_path.exists():
+                print(f"ERROR: snapshot {snapshot_path} not found", file=sys.stderr)
+                return 2
+            frame_path = snapshot_path
+            captured = True
+        else:
+            frame_path = Path(args.frame) if args.frame else Path(td) / "frame.jpg"
+            captured = _ffmpeg_capture_v4l2(args.device, frame_path)
+            if not captured and not args.no_rtmp_fallback:
+                print(
+                    f"V4L2 device {args.device} unavailable (likely OBS holding it); "
+                    f"falling back to RTMP {args.rtmp}",
+                    file=sys.stderr,
+                )
+                captured = _ffmpeg_capture_rtmp(args.rtmp, frame_path)
+            if not captured:
+                print("ERROR: failed to capture a frame from any source", file=sys.stderr)
+                return 2
+
+        # Scale layout coordinates to the actual frame dimensions.
+        # Compositor canvas is 1920×1080; snapshots / V4L2 may be 1280×720.
+        frame_dims = _frame_dimensions(frame_path)
+        if frame_dims is None:
+            print("ERROR: could not read frame dimensions", file=sys.stderr)
+            return 2
+        frame_w, frame_h = frame_dims
+        scale_x = frame_w / args.canvas_w
+        scale_y = frame_h / args.canvas_h
+        if abs(scale_x - 1.0) > 0.01 or abs(scale_y - 1.0) > 0.01:
             print(
-                f"V4L2 device {args.device} unavailable (likely OBS holding it); "
-                f"falling back to RTMP {args.rtmp}",
+                f"Frame {frame_w}×{frame_h} differs from canvas {args.canvas_w}×{args.canvas_h}; "
+                f"scaling coords by ({scale_x:.3f}, {scale_y:.3f})",
                 file=sys.stderr,
             )
-            captured = _ffmpeg_capture_rtmp(args.rtmp, frame_path)
-        if not captured:
-            print("ERROR: failed to capture a frame from any source", file=sys.stderr)
-            return 2
+        for asn in rect_assignments:
+            asn["x"] = int(asn["x"] * scale_x)
+            asn["y"] = int(asn["y"] * scale_y)
+            asn["w"] = max(1, int(asn["w"] * scale_x))
+            asn["h"] = max(1, int(asn["h"] * scale_y))
 
         print(f"Captured frame: {frame_path} ({frame_path.stat().st_size} bytes)")
         print()
