@@ -1,0 +1,175 @@
+#!/bin/bash
+# hapax-post-merge-deploy — delta's post-merge deploy helper
+#
+# Given a commit SHA (typically a merge commit on origin/main), inspect
+# the files changed and run the manual deploy steps that the automated
+# rebuild-services.timer doesn't cover.
+#
+# Automated (by rebuild-services.timer, 5-min cadence):
+#   agents/**/*.py, shared/**/*.py, logos/**/*.py  → Python service rebuild
+#   hapax-logos/**                                  → rebuild-logos.timer
+#
+# Manual (this script):
+#   config/pipewire/*.conf         → cp + restart pipewire stack
+#   config/wireplumber/*.conf      → cp + restart wireplumber
+#   systemd/units/*.service|timer  → cp + daemon-reload + restart
+#   scripts/hapax-*                → ensure ~/.local/bin/ symlink
+#
+# Usage: hapax-post-merge-deploy <commit-sha>
+#
+# Exits 0 if nothing needed deploying or all deploys succeeded.
+# Exits non-zero if any deploy step failed.
+set -euo pipefail
+
+SHA="${1:?commit SHA required}"
+REPO="$HOME/projects/hapax-council"
+PW_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
+WP_CONF_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+LOCAL_BIN="$HOME/.local/bin"
+
+cd "$REPO"
+# Ensure the commit's objects are available locally even if main hasn't been
+# pulled yet; git-show against an unfetched SHA would fail and falsely signal
+# "file deleted" to the per-file branches below.
+git fetch --quiet origin main 2>/dev/null || true
+FILES="$(git show --name-only --format='' "$SHA")"
+
+# Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
+# to read commit-time content, decoupling the deploy decision from local
+# working-tree state. Prior revision used [ -f $REPO/$f ] which raced the
+# working-tree pull: when the deploy fired BEFORE the main branch had been
+# pulled locally, a deletion commit's [ -f ] returned true (old file still
+# present) and the script mistakenly cp-re-deployed the pre-deletion version.
+if [ -z "$FILES" ]; then
+    echo "no files changed in $SHA"
+    exit 0
+fi
+
+# Classify the file list
+PW=(); WP=(); SYSTEMD=(); SCRIPTS=(); SCRIPT_PY=()
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+        config/pipewire/*.conf)           PW+=("$f") ;;
+        config/wireplumber/*.conf)        WP+=("$f") ;;
+        systemd/units/*.service|systemd/units/*.timer) SYSTEMD+=("$f") ;;
+        scripts/hapax-*)                  SCRIPTS+=("$f") ;;
+        scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
+    esac
+done <<< "$FILES"
+
+DID_ANYTHING=0
+
+# --- PipeWire confs ---
+if [ "${#PW[@]}" -gt 0 ]; then
+    echo "pipewire confs changed (${#PW[@]}):"
+    mkdir -p "$PW_CONF_DIR"
+    for f in "${PW[@]}"; do
+        dest="$PW_CONF_DIR/$(basename "$f")"
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            git show "$SHA:$f" > "$dest"
+            echo "  '$f' -> '$dest'"
+        else
+            echo "  (deleted: $f)"
+            rm -fv "$dest" || true
+        fi
+    done
+    echo "restarting pipewire stack"
+    systemctl --user restart pipewire pipewire-pulse wireplumber
+    DID_ANYTHING=1
+fi
+
+# --- WirePlumber confs ---
+if [ "${#WP[@]}" -gt 0 ]; then
+    echo "wireplumber confs changed (${#WP[@]}):"
+    mkdir -p "$WP_CONF_DIR"
+    for f in "${WP[@]}"; do
+        dest="$WP_CONF_DIR/$(basename "$f")"
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            git show "$SHA:$f" > "$dest"
+            echo "  '$f' -> '$dest'"
+        else
+            rm -fv "$dest" || true
+        fi
+    done
+    # WP restart alone if we didn't already restart above
+    if [ "${#PW[@]}" -eq 0 ]; then
+        systemctl --user restart wireplumber
+    fi
+    DID_ANYTHING=1
+fi
+
+# --- systemd units ---
+if [ "${#SYSTEMD[@]}" -gt 0 ]; then
+    echo "systemd units changed (${#SYSTEMD[@]}):"
+    mkdir -p "$SYSTEMD_USER_DIR"
+    UNITS_TO_RESTART=()
+    for f in "${SYSTEMD[@]}"; do
+        base="$(basename "$f")"
+        dest="$SYSTEMD_USER_DIR/$base"
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            git show "$SHA:$f" > "$dest"
+            echo "  '$f' -> '$dest'"
+            UNITS_TO_RESTART+=("$base")
+        else
+            rm -fv "$dest" || true
+        fi
+    done
+    systemctl --user daemon-reload
+    for u in "${UNITS_TO_RESTART[@]}"; do
+        # Only restart if it's already running; timers we try-restart
+        if systemctl --user is-active --quiet "$u"; then
+            echo "restarting $u"
+            systemctl --user restart "$u"
+        elif [[ "$u" == *.timer ]]; then
+            echo "enabling+starting $u"
+            systemctl --user enable --now "$u"
+        fi
+    done
+    DID_ANYTHING=1
+fi
+
+# --- scripts/hapax-* symlinks ---
+if [ "${#SCRIPTS[@]}" -gt 0 ]; then
+    echo "scripts changed (${#SCRIPTS[@]}):"
+    mkdir -p "$LOCAL_BIN"
+    for f in "${SCRIPTS[@]}"; do
+        base="$(basename "$f")"
+        if [ -f "$REPO/$f" ]; then
+            chmod +x "$REPO/$f" 2>/dev/null || true
+            if [ ! -L "$LOCAL_BIN/$base" ] || [ "$(readlink "$LOCAL_BIN/$base")" != "$REPO/$f" ]; then
+                ln -sfv "$REPO/$f" "$LOCAL_BIN/$base"
+            fi
+        else
+            rm -fv "$LOCAL_BIN/$base" || true
+        fi
+    done
+    DID_ANYTHING=1
+fi
+
+# --- scripts/*.py / *.sh that back systemd user units ---
+# The rebuild-services.timer cascade doesn't watch scripts/; if a
+# systemd user unit's ExecStart references a script we just changed,
+# restart that unit. Catches producers like hapax-youtube-viewer-count
+# that live in scripts/ rather than agents/.
+if [ "${#SCRIPT_PY[@]}" -gt 0 ]; then
+    echo "backing-script changes (${#SCRIPT_PY[@]}):"
+    for f in "${SCRIPT_PY[@]}"; do
+        # Find units whose ExecStart references this script (any invocation form).
+        # Search both the repo definitions and the installed user units.
+        matches="$(grep -l -F "$f" "$REPO/systemd/units/"*.service 2>/dev/null || true)"
+        for unit_path in $matches; do
+            base="$(basename "$unit_path")"
+            if systemctl --user is-active --quiet "$base"; then
+                echo "  restarting $base (backs $f)"
+                systemctl --user restart "$base"
+                DID_ANYTHING=1
+            fi
+        done
+    done
+fi
+
+if [ "$DID_ANYTHING" -eq 0 ]; then
+    echo "merge $SHA: no manual deploys needed (only auto-rebuild paths changed)"
+fi
