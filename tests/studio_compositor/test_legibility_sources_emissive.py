@@ -135,10 +135,12 @@ class TestActivityHeaderEmissive:
         assert ward._last_activity == "BRAVO"
         assert ward._activity_flash_started_at == pytest.approx(1.0)
 
-        # Within 200 ms ⇒ positive flash alpha.
+        # Within the flash window ⇒ positive flash alpha. The lssh-001
+        # blink softening stretched the window to 400 ms with a cosine
+        # ease-out, so 100 ms in is still meaningfully bright.
         alpha_mid = ls._flash_alpha(1.1, ward._activity_flash_started_at)
         assert alpha_mid > 0.0
-        # After 200 ms ⇒ zero.
+        # After the window ⇒ zero (anything past 400 ms is decayed).
         alpha_done = ls._flash_alpha(1.5, ward._activity_flash_started_at)
         assert alpha_done == 0.0
 
@@ -416,11 +418,38 @@ class TestFlashAlphaHelper:
         assert a_early > a_late > 0.0
 
     def test_zero_after_window(self):
-        assert ls._flash_alpha(5.201, 5.0) == 0.0
+        # lssh-001: window stretched 200 ms → 400 ms. 0.401 s is past
+        # the new boundary so still zero.
+        assert ls._flash_alpha(5.401, 5.0) == 0.0
 
     def test_peak_immediately_after_start(self):
+        # lssh-001: peak alpha softened 0.45 → 0.15.
         a = ls._flash_alpha(5.0, 5.0)
-        assert a == pytest.approx(0.45)
+        assert a == pytest.approx(ls._INVERSE_FLASH_PEAK_ALPHA)
+        assert a == pytest.approx(0.15)
+
+    def test_blink_threshold_satisfied(self):
+        """Regression for lssh-001: the inverse-flash must not exceed
+        the operator's blink threshold (luminance change >40 % faster
+        than once per 500 ms). With cosine ease-out from 0.15 over
+        400 ms the maximum slope is well under that bar."""
+        start = 0.0
+        # Sample at 1 ms intervals across the window and find the
+        # largest 500-ms-equivalent rate.
+        max_rate_per_500ms = 0.0
+        prev = ls._flash_alpha(start, start)
+        for i in range(1, 401):
+            t = start + i / 1000.0
+            cur = ls._flash_alpha(t, start)
+            instant_rate_per_ms = abs(prev - cur)
+            rate_per_500ms = instant_rate_per_ms * 500.0
+            if rate_per_500ms > max_rate_per_500ms:
+                max_rate_per_500ms = rate_per_500ms
+            prev = cur
+        assert max_rate_per_500ms < 0.40, (
+            f"flash exceeds operator blink threshold: max change-rate "
+            f"{max_rate_per_500ms:.3f} per 500 ms (limit 0.40)"
+        )
 
 
 # ── Rotation-mode lookup ───────────────────────────────────────────────────

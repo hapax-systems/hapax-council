@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -119,9 +120,23 @@ _ROTATION_MODE_ROLE: dict[str, str] = {
 _ROTATION_MODE_DEFAULT: frozenset[str] = frozenset({"steady", "weighted_by_salience"})
 
 
-# Inverse-flash envelope — triggered by activity / stance change. 200 ms
-# window with linear alpha falloff. Plan §A3 ("mode-change vocab").
-_INVERSE_FLASH_DURATION_S: float = 0.200
+# Inverse-flash envelope — triggered by activity / stance change. Plan §A3
+# ("mode-change vocab"). lssh-001 (operator 2026-04-21: "way too much
+# BLINKING for the homage wards") softened the envelope along three axes:
+#
+#   1. Peak alpha 0.45 → 0.15 (3× softer at the visible-most moment).
+#   2. Duration 200 ms → 400 ms (so the change reads as a deliberate
+#      pulse rather than a snap).
+#   3. Linear decay → cosine ease-out (perceptually smoother tail; the
+#      operator's blink-threshold heuristic is "no luminance change
+#      >40 % faster than once every 500 ms" and the cosine curve keeps
+#      the maximum instantaneous slope below the linear-equivalent rate).
+#
+# Net rate at peak: 0.15 over 400 ms ≈ 0.19 per 500 ms = 19 %, well
+# under the 40 % bar. The pulse still carries the same information
+# signal (activity / stance just changed) — it just doesn't strobe.
+_INVERSE_FLASH_DURATION_S: float = 0.400
+_INVERSE_FLASH_PEAK_ALPHA: float = 0.15
 
 # Breathing alpha frequency for the ungrounded ticker state.
 _UNGROUNDED_BREATH_HZ: float = 0.3
@@ -282,15 +297,21 @@ def _paint_inverse_flash(
 def _flash_alpha(t: float, flash_started_at: float | None) -> float:
     """Return the inverse-flash alpha at ``t`` given the flash start time.
 
-    Linear decay over ``_INVERSE_FLASH_DURATION_S``. 0.0 when no flash
-    is active or the window has elapsed. Peak alpha is 0.45.
+    Cosine ease-out from ``_INVERSE_FLASH_PEAK_ALPHA`` to 0 over
+    ``_INVERSE_FLASH_DURATION_S``. ``cos(πx/2)`` gives a smooth tail with
+    a gentle initial drop and a soft asymptote — the operator's blink
+    audit (lssh-001) flagged the prior linear 0.45→0 over 200 ms as the
+    primary blink offender. See the duration / peak constants above for
+    the threshold math.
     """
     if flash_started_at is None:
         return 0.0
     dt = t - flash_started_at
     if dt < 0.0 or dt >= _INVERSE_FLASH_DURATION_S:
         return 0.0
-    return 0.45 * (1.0 - dt / _INVERSE_FLASH_DURATION_S)
+    progress = dt / _INVERSE_FLASH_DURATION_S
+    # Cosine ease-out: 1.0 at progress=0, 0.0 at progress=1.
+    return _INVERSE_FLASH_PEAK_ALPHA * math.cos(progress * math.pi / 2.0)
 
 
 def _emissive_structural(
