@@ -198,6 +198,26 @@ def apply_salience_modulation(
     )
 
 
+def compute_ramp_seconds(stimmung_velocity: float) -> float:
+    """Compute CC-interpolation ramp duration per spec §6.4.
+
+    Ramp time scales inversely with stimmung velocity:
+    - High velocity (>= 4.0 d(stance)/s) → 0.2 s (snappy transitions)
+    - Default (~0.8) → 1.0 s (smooth)
+    - Low velocity (< 0.32) → 2.5 s (cinematic drift)
+
+    Formula: ``clamp(0.2, 2.5, 0.8 / max(velocity, 0.1))``
+
+    The 0.1 lower bound on denominator prevents division by zero when
+    stimmung is stationary. The upper clamp at 2.5 s prevents a
+    runaway ramp — beyond 2.5 s the operator should use the CLI
+    `hapax-voice-tier --sticky` to lock the tier explicitly.
+    """
+    velocity = max(stimmung_velocity, 0.1)
+    raw = 0.8 / velocity
+    return max(0.2, min(2.5, raw))
+
+
 def arbitrate(state: AudioRouterState) -> RoutingIntent:
     """Full 3-layer arbitration — the router tick entry point.
 

@@ -18,6 +18,7 @@ from agents.audio_router.policy import (
     apply_safety_clamps,
     apply_salience_modulation,
     arbitrate,
+    compute_ramp_seconds,
 )
 from agents.audio_router.state import (
     AudioRouterState,
@@ -47,4 +48,5 @@ __all__ = [
     "apply_safety_clamps",
     "apply_salience_modulation",
     "arbitrate",
+    "compute_ramp_seconds",
 ]
