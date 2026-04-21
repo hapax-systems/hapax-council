@@ -39,15 +39,47 @@ def test_backend_protocol():
     assert backend.available()
     assert "ir_person_detected" in backend.provides
     assert "ir_drowsiness_score" in backend.provides
-    assert len(backend.provides) == 14
+    # Provider count grew from 14 → 15 (ir_blink_rate added per the
+    # IR perception remediation spec). Pin specific load-bearing
+    # provider names instead of a brittle exact count, but keep a
+    # ≥14 floor so a regression that drops a provider still trips.
+    assert len(backend.provides) >= 14
+    for name in (
+        "ir_person_detected",
+        "ir_person_count",
+        "ir_motion_delta",
+        "ir_gaze_zone",
+        "ir_head_pose_yaw",
+        "ir_posture",
+        "ir_hand_activity",
+        "ir_hand_zone",
+        "ir_screen_looking",
+        "ir_drowsiness_score",
+        "ir_blink_rate",
+        "ir_heart_rate_bpm",
+        "ir_heart_rate_conf",
+        "ir_brightness",
+    ):
+        assert name in backend.provides, f"missing IR provider: {name}"
     assert "ir_hand_zone" in backend.provides
 
 
 def test_no_state_files(tmp_path):
+    """No-state contract: positive-only sensors yield None (Bayesian
+    update skips), bidirectional sensors yield 0.0 / False.
+
+    Per CLAUDE.md signal design principle (positive-only for unreliable
+    sensors), `ir_person_detected` is positive-only — absence is
+    ambiguous so it returns None when no state files exist. The
+    Bayesian presence engine reads None as "no evidence either way."
+    """
     backend = IrPresenceBackend(state_dir=tmp_path)
     behaviors: dict[str, Behavior] = {}
     backend.contribute(behaviors)
-    assert behaviors["ir_person_detected"].value is False
+    # ir_person_detected is positive-only → None on absence (NOT False).
+    assert behaviors["ir_person_detected"].value is None
+    # ir_motion_delta is a quantitative signal → 0.0 on absence is
+    # still meaningful evidence.
     assert behaviors["ir_motion_delta"].value == 0.0
 
 

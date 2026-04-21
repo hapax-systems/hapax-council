@@ -20,6 +20,11 @@ class TestHotkeyChime:
         daemon = VoiceDaemon(cfg=cfg)
         mock_player = MockChime.return_value
         daemon._start_pipeline = AsyncMock()
+        # session_events._open_session reads daemon._cpal_runner; the
+        # bare VoiceDaemon doesn't initialize it (CPAL is wired by
+        # the daemon's start sequence). Set to None so the
+        # `if cpal_runner is not None` branch falls through cleanly.
+        daemon._cpal_runner = None
 
         # Toggle when not active should open and play chime
         asyncio.get_event_loop().run_until_complete(daemon._handle_hotkey("toggle"))
@@ -39,6 +44,7 @@ class TestHotkeyChime:
         daemon = VoiceDaemon(cfg=cfg)
         mock_player = MockChime.return_value
         daemon._start_pipeline = AsyncMock()
+        daemon._cpal_runner = None  # Same shim as test_toggle above.
 
         asyncio.get_event_loop().run_until_complete(daemon._handle_hotkey("open"))
         mock_player.play.assert_called_with("activation")

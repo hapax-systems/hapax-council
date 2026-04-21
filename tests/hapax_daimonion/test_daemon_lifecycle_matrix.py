@@ -49,6 +49,11 @@ def _make_daemon(**cfg_overrides) -> VoiceDaemon:
     finally:
         for p in reversed(patches):
             p.stop()
+    # CPAL runner is wired by daemon.start(), not __init__. Tests
+    # exercising stop_pipeline / lifecycle paths read daemon._cpal_runner;
+    # set to None so those paths' `if cpal_runner is not None` checks
+    # fall through cleanly without an AttributeError.
+    daemon._cpal_runner = None
     return daemon
 
 
