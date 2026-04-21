@@ -365,6 +365,10 @@ def _render_ward_deterministic(
         patch.object(ls, "_read_rotation_mode", return_value=None),
     ]
 
+    from agents.studio_compositor import album_overlay as ao
+    from agents.studio_compositor import hardm_source as hardm
+    from agents.studio_compositor import stream_overlay as so
+
     hothouse_patches = [
         patch.object(hs, "_PERCEPTION_STATE", nonexistent_shm / "perception.json"),
         patch.object(hs, "_STIMMUNG_STATE", nonexistent_shm / "stimmung.json"),
@@ -373,6 +377,31 @@ def _render_ward_deterministic(
         patch.object(hs, "_PRESENCE_STATE", nonexistent_shm / "presence.json"),
         patch.object(hs, "_RECENT_RECRUITMENT", nonexistent_shm / "recent-recruitment.json"),
         patch.object(hs, "_YOUTUBE_VIEWER_COUNT", nonexistent_shm / "youtube-viewer-count.txt"),
+        # FINDING-V Phase 6 (aa010c9c9) added _RECENT_IMPINGEMENTS for
+        # the cascade overlay; without this isolation the impingement
+        # cascade renderer reads the live producer's output and the
+        # visual regression drifts.
+        patch.object(hs, "_RECENT_IMPINGEMENTS", nonexistent_shm / "recent-impingements.json"),
+        # Album overlay reads /dev/shm/hapax-compositor/album-cover.png
+        # and music-attribution.txt; the live compositor writes album
+        # covers there from streaming music ID. Isolate so the golden
+        # render is content-deterministic against the empty-state
+        # placeholder rather than whatever album is currently playing.
+        patch.object(ao, "COVER_PATH", str(nonexistent_shm / "album-cover.png")),
+        patch.object(ao, "ATTRIB_PATH", str(nonexistent_shm / "music-attribution.txt")),
+        # HARDM dot matrix reads 6 live SHM files. Without isolation
+        # the golden render reflects whatever cells are firing right
+        # now (recent recruitment, voice state, emphasis, etc.).
+        patch.object(hardm, "RECENT_RECRUITMENT_FILE", nonexistent_shm / "recent-recruitment.json"),
+        patch.object(hardm, "SIGNAL_FILE", nonexistent_shm / "hardm-cell-signals.json"),
+        patch.object(hardm, "VOICE_STATE_FILE", nonexistent_shm / "voice-state.json"),
+        patch.object(hardm, "HARDM_EMPHASIS_FILE", nonexistent_shm / "hardm-emphasis.json"),
+        patch.object(hardm, "STIMMUNG_STATE_FILE", nonexistent_shm / "stimmung.json"),
+        patch.object(hardm, "OPERATOR_CUE_FILE", nonexistent_shm / "operator-cue.json"),
+        # Stream overlay reads fx-current, token-ledger, chat-state.
+        patch.object(so, "FX_CURRENT_FILE", nonexistent_shm / "fx-current.txt"),
+        patch.object(so, "TOKEN_LEDGER_FILE", nonexistent_shm / "token-ledger.json"),
+        patch.object(so, "CHAT_STATE_FILE", nonexistent_shm / "chat-state.json"),
     ]
 
     base_patches = [
