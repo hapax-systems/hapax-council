@@ -79,6 +79,30 @@ class TestParseIntentFromLlm:
         assert intent.activity == "react"  # fallback used
         assert intent.narrative_text == ""
 
+    def test_partial_modern_shape_preserves_narrative_text(self):
+        """The local-fast LLM frequently emits a partial modern shape
+        — {activity, stance, narrative_text} without the required
+        compositional_impingements. The strict pydantic validation
+        rejects it, falling through to the parser_legacy_shape path.
+        Before this fix the parser only read ``react`` from the legacy
+        shape; the LLM's ``narrative_text`` was silently discarded,
+        leaving the broadcast with empty narrative for every partial
+        response. Live regression seen 2026-04-21 — every director tick
+        producing micromove fallback with empty narrative.
+        """
+        payload = json.dumps(
+            {
+                "activity": "music",
+                "stance": "cautious",
+                "narrative_text": "Solitude by nthng on the deck — drifting downtempo.",
+            }
+        )
+        intent = dl._parse_intent_from_llm(payload)
+        assert intent.activity == "music"
+        assert "Solitude" in intent.narrative_text
+        assert intent.stance == Stance.NOMINAL  # silence-hold construction sets nominal
+        assert len(intent.compositional_impingements) == 1  # silence-hold impingement
+
 
 class TestEmitIntentArtifacts:
     @pytest.fixture
