@@ -318,6 +318,24 @@ try:
         ("condition_id", "scope"),  # scope ∈ {"intent", "impingement"}
     )
 
+    # FINDING-X Phase 1 (2026-04-21): post-parse synthesis hook records each
+    # impingement whose empty grounding_provenance was replaced by a synthetic
+    # "inferred.<stance>.<family>" marker so the constitutional invariant
+    # (every impingement carries non-empty provenance) holds by construction.
+    # Separate from _ungrounded_total: that counter keeps measuring raw LLM
+    # compliance pre-synthesis; this counter surfaces how often we had to
+    # synthesize. A rising synth rate signals LLM-compliance drift.
+    _ungrounded_synth_total = Counter(
+        "hapax_director_ungrounded_synth_total",
+        (
+            "CompositionalImpingements whose grounding_provenance was empty "
+            "from the LLM and had to be synthesized to preserve the "
+            "constitutional invariant. A rising rate indicates LLM-compliance "
+            "drift."
+        ),
+        ("intent_family",),
+    )
+
     _METRICS_AVAILABLE = True
 except Exception:  # pragma: no cover — prometheus_client missing at install time
     log.info("prometheus_client unavailable — director observability metrics are no-ops")
@@ -382,6 +400,22 @@ def emit_ungrounded_audit(intent: DirectorIntent, condition_id: str) -> None:
                     _ungrounded_total.labels(condition_id=condition_id, scope="impingement").inc()
     except Exception:
         log.debug("emit_ungrounded_audit failed", exc_info=True)
+
+
+def emit_ungrounded_synth(intent_family: str) -> None:
+    """Record one synthesized grounding-provenance entry per FINDING-X Phase 1.
+
+    Called from the post-parse synthesis hook whenever an LLM-emitted
+    CompositionalImpingement with empty grounding_provenance gets replaced
+    with a synthetic "inferred.<stance>.<family>" marker. Fail-open: any
+    exception is logged at debug and swallowed.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _ungrounded_synth_total.labels(intent_family=intent_family).inc()
+    except Exception:
+        log.debug("emit_ungrounded_synth failed", exc_info=True)
 
 
 def emit_twitch_move(intent_family: str, condition_id: str) -> None:
@@ -792,6 +826,7 @@ __all__ = [
     "emit_parse_failure",
     "emit_random_mode_pick",
     "emit_ungrounded_audit",
+    "emit_ungrounded_synth",
     "emit_vacuum_prevented",
     "emit_structural_intent",
     "emit_twitch_move",
