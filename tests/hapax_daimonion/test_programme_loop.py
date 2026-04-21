@@ -147,3 +147,158 @@ async def test_loop_exits_when_daemon_running_false_at_start() -> None:
         await asyncio.wait_for(programme_manager_loop(daemon), timeout=2.0)
 
     assert fake_manager.tick.call_count == 0
+
+
+# ── Auto-plan trigger ──────────────────────────────────────────────────
+
+
+import time
+
+
+def test_auto_plan_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        is_auto_plan_enabled,
+    )
+
+    monkeypatch.delenv(PROGRAMME_AUTO_PLAN_ENV, raising=False)
+    assert is_auto_plan_enabled() is False
+
+
+def test_auto_plan_enabled_truthy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        is_auto_plan_enabled,
+    )
+
+    for v in ("1", "true", "yes", "on", "TRUE", "On"):
+        monkeypatch.setenv(PROGRAMME_AUTO_PLAN_ENV, v)
+        assert is_auto_plan_enabled() is True
+
+
+def test_auto_plan_disabled_falsy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        is_auto_plan_enabled,
+    )
+
+    for v in ("0", "false", "no", "off", "", "maybe"):
+        monkeypatch.setenv(PROGRAMME_AUTO_PLAN_ENV, v)
+        assert is_auto_plan_enabled() is False
+
+
+def test_maybe_author_plan_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        _maybe_author_plan,
+    )
+
+    monkeypatch.delenv(PROGRAMME_AUTO_PLAN_ENV, raising=False)
+    manager = MagicMock()
+    planner, ts = _maybe_author_plan(manager, None, 0.0)
+    assert planner is None
+    assert ts == 0.0
+    manager.store.add.assert_not_called()
+
+
+def test_maybe_author_plan_noop_when_active_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        _maybe_author_plan,
+    )
+    from shared.programme import ProgrammeStatus
+
+    monkeypatch.setenv(PROGRAMME_AUTO_PLAN_ENV, "1")
+    manager = MagicMock()
+    active = MagicMock()
+    active.status = ProgrammeStatus.ACTIVE
+    manager.store.all.return_value = [active]
+
+    planner, ts = _maybe_author_plan(manager, None, 0.0)
+    assert ts == 0.0  # no attempt timestamp recorded
+    manager.store.add.assert_not_called()
+
+
+def test_maybe_author_plan_within_cooldown_skips(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        _maybe_author_plan,
+    )
+
+    monkeypatch.setenv(PROGRAMME_AUTO_PLAN_ENV, "1")
+    manager = MagicMock()
+    manager.store.all.return_value = []
+    fake_planner = MagicMock()
+
+    # First attempt was 1 second ago; cooldown is 300s by default.
+    last_ts = time.monotonic() - 1.0
+    planner, ts = _maybe_author_plan(manager, fake_planner, last_ts)
+
+    assert planner is fake_planner
+    assert ts == last_ts  # unchanged — cooldown blocked the attempt
+    fake_planner.plan.assert_not_called()
+
+
+def test_maybe_author_plan_writes_and_activates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty store + flag on + cooldown elapsed → planner authors, store writes,
+    first programme activates."""
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        _maybe_author_plan,
+    )
+
+    monkeypatch.setenv(PROGRAMME_AUTO_PLAN_ENV, "1")
+    manager = MagicMock()
+    manager.store.all.return_value = []
+    fake_plan = MagicMock()
+    p1 = MagicMock(programme_id="p1")
+    p2 = MagicMock(programme_id="p2")
+    fake_plan.programmes = [p1, p2]
+    fake_planner = MagicMock()
+    fake_planner.plan.return_value = fake_plan
+
+    planner, ts = _maybe_author_plan(manager, fake_planner, 0.0)
+
+    assert ts > 0.0  # cooldown timestamp recorded
+    fake_planner.plan.assert_called_once()
+    assert manager.store.add.call_count == 2
+    manager.store.activate.assert_called_once_with("p1")
+
+
+def test_maybe_author_plan_handles_planner_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """planner.plan() returning None → cooldown set, no store writes."""
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        _maybe_author_plan,
+    )
+
+    monkeypatch.setenv(PROGRAMME_AUTO_PLAN_ENV, "1")
+    manager = MagicMock()
+    manager.store.all.return_value = []
+    fake_planner = MagicMock()
+    fake_planner.plan.return_value = None
+
+    planner, ts = _maybe_author_plan(manager, fake_planner, 0.0)
+
+    assert ts > 0.0  # cooldown recorded so we don't retry immediately
+    manager.store.add.assert_not_called()
+    manager.store.activate.assert_not_called()
+
+
+def test_maybe_author_plan_handles_planner_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    """planner.plan() raising → cooldown set, no store writes, no propagation."""
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        _maybe_author_plan,
+    )
+
+    monkeypatch.setenv(PROGRAMME_AUTO_PLAN_ENV, "1")
+    manager = MagicMock()
+    manager.store.all.return_value = []
+    fake_planner = MagicMock()
+    fake_planner.plan.side_effect = TimeoutError("LLM gateway down")
+
+    planner, ts = _maybe_author_plan(manager, fake_planner, 0.0)
+
+    assert ts > 0.0
+    manager.store.add.assert_not_called()
