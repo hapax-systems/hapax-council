@@ -286,23 +286,30 @@ defense-in-depth. Estimated: 1 session.
 
 ## §10. Open questions
 
-1. PipeWire version on this system — does it ship `ebur128` filter-
-   chain builtin, or do we need the `calf` plugin package? Verify.
-2. Does L6 expose a master-output meter over USB multitrack that
-   PipeWire can read directly? If yes, skip the master-limit
-   filter-chain and read L6's own meter. If no, the filter-chain
-   is the only path.
-3. Post-24c retirement: where do notifications land now? Ryzen
-   line-out (shared with TTS source path), Ryzen front-panel jack
-   (if present), or a dedicated L6 AUX 2?
-4. Operator preference: full-automatic ducking everywhere vs. operator-
-   controlled ducking (L6 VCA cc or PipeWire-level)? Default to
-   automatic in this strategy; operator can invert with a config flag.
-5. What's the dry-vinyl Content-ID exposure if Mode D is off and the
-   operator raises ch 4 fader — is there always DMCA risk, or is there
-   a "safe cut" list the operator maintains? (Touches the vinyl-broadcast-
-   ethics doc; out of scope here but informs the ducking-vs-blocking
-   policy for S2.)
+1. **RESOLVED 2026-04-21** — `ebur128` ships as a native SPA filter-graph
+   plugin with `pipewire-audio`: `/usr/lib/spa-0.2/filter-graph/libspa-filter-graph-plugin-ebur128.so`.
+   `calf` is NOT installed and NOT required. Existing `voice-fx-loudnorm.conf`
+   + `yt-loudnorm.conf` use LADSPA `sc4m_1916` + `hard_limiter_1413` which
+   meets the LUFS/dBTP target; upgrading to the SPA `ebur128` plugin is an
+   optional future win (gives I/S/M sub-metrics natively) but not blocking.
+2. **RESOLVED 2026-04-21** — L-12 capture side exposes a 14-channel
+   `multichannel-input` profile: `alsa_input.usb-ZOOM_Corporation_L-12.*.multichannel-input`
+   (Channel Map: AUX0..AUX13, 48 kHz s32le). Per project memory the
+   hardware maps AUX0..AUX11 = per-input channels and AUX12/AUX13 = main
+   L/R mix return. **The master-mix IS addressable** — Phase A §5.3 can
+   read AUX12+AUX13 directly instead of inserting a filter-chain at the
+   output sink. The filter-chain path becomes a fallback if the AUX12/13
+   signal ever drops out.
+3. **RESOLVED 2026-04-21** — Notifications already land cleanly:
+   `config/wireplumber/92-hapax-notification-private.conf` routes the
+   Notification role to the `hapax-notification-private` sink (IDLE, 2ch
+   float32). Distinct from `hapax-livestream` — never reaches broadcast.
+   No post-24c retarget required; the notification path is decoupled
+   from the 24c retirement.
+4. **DEFERRED — operator preference** — Full-auto ducking is the
+   strategy default; operator invert via config flag remains available.
+   No tech blocker; will flip if operator indicates otherwise.
+5. Out of scope for this strategy — see vinyl-broadcast-ethics doc.
 
 ---
 

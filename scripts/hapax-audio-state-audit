@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Audit audio-router state surfaces (Phase A4 of evilpet-s4-dynamic-dual-processor-plan).
+
+Checks presence + freshness + JSON validity of the state surfaces the
+dynamic router agent (Phase B3) will depend on. Two categories:
+
+**continuous** — a daemon / systemd timer is expected to keep the file
+fresh. Absence or staleness is a regression.
+
+**on_demand** — written only when a specific claim path fires (operator
+CLI invocation, granular-engine claimant active). Absence is normal
+when nothing has claimed; existence should still be fresh.
+
+Surfaces:
+  - /dev/shm/hapax-stimmung/state.json          continuous (stance + dims)
+  - /dev/shm/hapax-compositor/voice-tier-override.json
+                                                on_demand (hapax-voice-tier CLI)
+  - /dev/shm/hapax-compositor/evil-pet-state.json
+                                                on_demand (granular claimant)
+
+Exits 0 if all surfaces healthy or on-demand-missing. Exits 1 if a
+continuous surface is stale/missing/invalid, or if an on-demand
+surface exists but is unparseable.
+
+Usage:
+    hapax-audio-state-audit [--json]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+# (path, budget_seconds, category, description)
+SURFACES: list[tuple[str, float, str, str]] = [
+    (
+        "/dev/shm/hapax-stimmung/state.json",
+        30.0,
+        "continuous",
+        "stimmung stance + 6-dim vector (writer: VLA)",
+    ),
+    (
+        "/dev/shm/hapax-compositor/voice-tier-override.json",
+        600.0,
+        "on_demand",
+        "active voice-tier override (writer: hapax-voice-tier CLI)",
+    ),
+    (
+        "/dev/shm/hapax-compositor/evil-pet-state.json",
+        15.0,
+        "on_demand",
+        "Evil Pet granular-engine ownership (writer: vocal_chain / vinyl_chain when claimed)",
+    ),
+]
+
+
+def audit() -> tuple[list[dict], int]:
+    now = time.time()
+    results: list[dict] = []
+    exit_code = 0
+    for path_s, budget_s, category, description in SURFACES:
+        path = Path(path_s)
+        entry: dict = {
+            "path": path_s,
+            "description": description,
+            "category": category,
+            "budget_s": budget_s,
+            "status": "healthy",
+            "issues": [],
+        }
+        if not path.exists():
+            if category == "on_demand":
+                entry["status"] = "absent_ok"
+                entry["issues"].append("on-demand writer has not fired; no claim active")
+            else:
+                entry["status"] = "missing"
+                entry["issues"].append("file does not exist")
+                exit_code = 1
+        else:
+            try:
+                age = now - path.stat().st_mtime
+                entry["age_s"] = round(age, 1)
+                if age > budget_s:
+                    entry["status"] = "stale"
+                    entry["issues"].append(f"age {age:.1f}s exceeds budget {budget_s}s")
+                    if category == "continuous":
+                        exit_code = 1
+            except OSError as e:
+                entry["status"] = "unreadable"
+                entry["issues"].append(f"stat failed: {e}")
+                exit_code = 1
+                results.append(entry)
+                continue
+            try:
+                json.loads(path.read_text())
+            except json.JSONDecodeError as e:
+                entry["status"] = "invalid_json"
+                entry["issues"].append(f"not valid JSON: {e}")
+                exit_code = 1
+            except OSError as e:
+                entry["status"] = "unreadable"
+                entry["issues"].append(f"read failed: {e}")
+                exit_code = 1
+        results.append(entry)
+    return results, exit_code
+
+
+def format_human(results: list[dict]) -> str:
+    lines = []
+    healthy = sum(1 for r in results if r["status"] in ("healthy", "absent_ok"))
+    lines.append(f"Audio router state surface audit — {healthy}/{len(results)} OK")
+    lines.append("")
+    for r in results:
+        badge = {
+            "healthy": "OK   ",
+            "absent_ok": "IDLE ",
+            "stale": "STALE",
+            "missing": "MISS ",
+            "invalid_json": "JSON ",
+            "unreadable": "RERR ",
+        }.get(r["status"], "?????")
+        age = r.get("age_s")
+        age_suffix = f" (age={age}s)" if age is not None else ""
+        cat_suffix = f" [{r['category']}]"
+        lines.append(f"  [{badge}] {r['path']}{age_suffix}{cat_suffix}")
+        lines.append(f"          {r['description']} (budget={r['budget_s']}s)")
+        for issue in r["issues"]:
+            lines.append(f"          ! {issue}")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON report")
+    args = parser.parse_args()
+    results, exit_code = audit()
+    if args.json:
+        print(json.dumps({"exit_code": exit_code, "surfaces": results}, indent=2))
+    else:
+        print(format_human(results))
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

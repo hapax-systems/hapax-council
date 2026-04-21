@@ -49,6 +49,7 @@ dependencies = [
     "imagehash>=4.3.2",
     "pytesseract>=0.3.13",
     "scikit-image>=0.26.0",
+    "soundcloud-lib>=0.6.1",
 ]
 
 [project.optional-dependencies]

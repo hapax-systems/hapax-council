@@ -268,6 +268,51 @@ def get_preset(name: str) -> EvilPetPreset:
     return PRESETS[name]
 
 
+# Phase B5 — dual-engine pairing recommendations (evilpet-s4-dynamic-dual-processor-design §4.3).
+#
+# Maps each Evil Pet preset to the S-4 scene that complements its
+# character when both engines are engaged simultaneously (dual-engine
+# topology classes D1, D2, D3 per spec §5.8-§5.10). The dynamic router
+# (Phase B3) consults this dict when selecting paired scenes; operator
+# CLI can override per §6.8.
+#
+# ``None`` indicates the preset should not run paired — e.g. hapax-mode-d
+# is the vinyl granular claim and S-4 is not expected to be engaged on
+# the voice path while Mode D holds the granular engine.
+DEFAULT_PAIRINGS: Final[dict[str, str | None]] = {
+    # Voice tiers T0..T6 — pair with companion scenes
+    "hapax-unadorned": "BYPASS",
+    "hapax-radio": "VOCAL-COMPANION",
+    "hapax-broadcast-ghost": "VOCAL-COMPANION",
+    "hapax-memory": "MEMORY-COMPANION",
+    "hapax-underwater": "UNDERWATER-COMPANION",
+    "hapax-granular-wash": "SONIC-RITUAL",
+    "hapax-obliterated": "SONIC-RITUAL",
+    # Modes
+    "hapax-mode-d": None,  # vinyl claims the granular engine; S-4 not paired on voice path
+    "hapax-bypass": "BYPASS",
+    # Music presets — pair with music scenes (Evil Pet is secondary coloration)
+    "hapax-sampler-wet": "BEAT-1",
+    "hapax-bed-music": "MUSIC-BED",
+    "hapax-drone-loop": "MUSIC-DRONE",
+    "hapax-s4-companion": "MUSIC-BED",
+}
+
+
+def get_default_pairing(preset_name: str) -> str | None:
+    """Return the recommended S-4 scene for a given Evil Pet preset.
+
+    Returns ``None`` for presets that should not run paired (e.g.
+    hapax-mode-d). Raises KeyError if ``preset_name`` is not in the
+    Evil Pet pack.
+    """
+    if preset_name not in PRESETS:
+        raise KeyError(
+            f"unknown Evil Pet preset '{preset_name}'; available: {', '.join(sorted(PRESETS))}"
+        )
+    return DEFAULT_PAIRINGS.get(preset_name)
+
+
 def recall_preset(
     name: str,
     midi_output: Any,
