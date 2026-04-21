@@ -9,7 +9,7 @@
 
 **Update cadence:** Every tick of the `/loop` dynamic mode. At minimum: when an item advances state (researched → spec → plan → in-PR → merged → active).
 
-**Last updated:** 2026-04-21 (delta refresh — §1/§2 status markers synced with live task state; §8 added for 2026-04-19/-20/-21 workstreams; §7 change-log carries three new entries).
+**Last updated:** 2026-04-21 late (alpha refresh — §8.7 ward-modulator-z-axis epic added; §7 change-log entry for late-afternoon push; §8.6 refreshed with shipped items #1145/#1147/#1150/#1151).
 
 ---
 
@@ -239,6 +239,7 @@ If a doc goes stale (no update in 14 days while its status is ACTIVE or QUEUED),
 - **2026-04-21 (early)** — Operator reports livestream bypassing Evil Pet. Delta diagnoses filter-chain drift (AUX10/11 raw PC on broadcast sum); opens PR #1115 (dual-processor epic): research + spec + plan + Phase A1 drift fix (live) + A2 runbook + A3 notification isolation (live) + A4 state-surface audit CLI (live) + A5 YT→S-4 bridge (live, dormant until S-4 plugs) + audit-doc rescue from stash + B8 runtime-safety test rescue. 44 pipewire tests + 6 gain-discipline tests pass locally.
 - **2026-04-21 (mid)** — Delta researched OQ-1 (HOMAGE 15th ward) and OQ-3 (CBIP) historical operator directives after operator flagged potential dropped research in alpha's workstream. OQ-1: the 15th ward is **GEM** (operator-designed 2026-04-19), not captions/vitruvian. OQ-3: PR #1112 deterministic tint is Phase 0 only; 5 enhancement families + 3 new effect-graph nodes + recognizability test harness still to ship. Audit dossiers at `~/.cache/hapax/relay/audit/oq{1,3}-*.md`. Alpha subsequently authored `docs/superpowers/specs/2026-04-21-cbip-phase-1-design.md` and `docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md` in response.
 - **2026-04-21 (late)** — Delta added Phase B4 (S-4 scene library, 10 scenes) + B5 (dual-engine pairings) + B3 policy core (state + 3-layer policy, 22 tests) + B6 UC1–UC10 integration tests (18 tests) + C1 ramp formula + C2 utterance-boundary sticky tracker (14 tests). PR #1115 reaches 9 commits, 61 audio-router tests. Operator: "Consider everything ratified and move forward." + "Get a pathway towards degradation mode prioritized." Delta Degraded-Stream MVP queued as next post-merge item per `~/.cache/hapax/relay/delta-priority-pathway-2026-04-21.md`. Active-work-index refreshed (this commit): §1/§2 status markers synced; §8 added for 2026-04-19/-20/-21 epics.
+- **2026-04-21 (late afternoon, alpha push)** — Ward-modulator-z-axis epic shipped: PR #1145 (Phase 1 — z-plane schema + `blit_with_depth`, behavior-neutral by default) + PR #1147 (Phase 2 — `WardStimmungModulator` ~5 Hz dim→ward depth, default-off behind `HAPAX_WARD_MODULATOR_ACTIVE`). Main CI red bundle fixed in PR #1150 (six stale-expectation test failures: GEM ward addition, reverie affordance count, YT loudnorm conf, EvilPet gain stage, EffectGraph preset filter). Retire-effect-shuffle plan shipped at PR #1151 (lifts 6-phase sequencing from research §9 into actionable plan; documentation only, hard-gated on #166 preset variety landing first). Cc-tasks closed: ward-modulator-z-axis, yt-reverie-sierpinski-separation (Phases 1A/1B/1C/2 all merged via PRs #1140-#1143), ef7b-191 (GEM ward, shipped as PR #1126), ef7b-175 (retire-effect-shuffle, plan-portion shipped at #1151). §8.7 added below.
 
 ---
 
@@ -319,3 +320,22 @@ Full ordered queue: `~/.cache/hapax/relay/delta-priority-pathway-2026-04-21.md`.
 - **Remaining wiring audits** (tasks #171, #172) — alpha pending.
 - **CBIP Phase 1 spec** authored 2026-04-21 (see §8.2).
 - **GEM activation plan** authored 2026-04-21 (see §8.3).
+- **Ward-modulator-z-axis Phases 1+2** shipped 2026-04-21 late (see §8.7).
+- **Main CI red bundle fix** shipped 2026-04-21 late (PR #1150 — unblocks normal-flow merges).
+- **Retire-effect-shuffle plan doc** shipped 2026-04-21 late (PR #1151; hard-gated on #166 landing).
+
+### 8.7 Ward-Modulator + Z-Axis Stratification (alpha — landed 2026-04-21 late)
+
+**Spec:** `docs/superpowers/specs/2026-04-21-ward-stimmung-modulator-design.md` (delta-authored).
+**Plan:** `docs/superpowers/plans/2026-04-21-ward-modulator-z-axis-plan.md` (alpha-authored, in PR #1145).
+**PRs:** #1145 (Phase 1 schema + blit) + #1147 (Phase 2 modulator).
+**Status:** ✅ Phase 1 and Phase 2 merged; default-off behind `HAPAX_WARD_MODULATOR_ACTIVE=1`.
+
+| Phase | Status | Notes |
+|---|---|---|
+| Spec + plan | ✅ | Delta wrote spec; alpha wrote plan in PR #1145 |
+| 1 — `WardProperties.z_plane`/`z_index_float` + `fx_chain.blit_with_depth` | ✅ | PR #1145; behavior-neutral default `on-scrim` ≈ 0.96 multiplier |
+| 2 — `WardStimmungModulator` (5 Hz dim→ward) + 4 Prometheus metrics | ✅ | PR #1147; 9 regression tests, never raises into fx tick |
+| 3 — Reverie drift per-plane + colorgrade tint | ⚫ | Depends on scrim Phase 2 (Reverie drift per-plane wired) |
+
+**Activation:** `HAPAX_WARD_MODULATOR_ACTIVE=1 systemctl --user restart hapax-studio-compositor`. Then push wards onto non-default planes (via director `placement_bias` or direct `WardProperties` write) and watch `hapax_ward_depth_attenuation_bucket` populate.
