@@ -31,54 +31,63 @@ condition that would have to change for it to fire.
 
 ## Aggregated systemic findings (so far)
 
-### ❌ FINDING-A — `hapax_ward_fx_events_total` ward-side bus is silent across ALL wards
+### ⚠️ FINDING-A — `hapax_ward_fx_events_total` ward-side bus rows require capability dispatch — RE-SCOPED 2026-04-21
 
-- **Severity:** medium (observability + reactor wiring)
-- **Where:** `shared/ward_fx_bus.py:303` (counter), `agents/studio_compositor/homage/choreographer.py:422` (`_publish_ward_events`)
-- **Symptom:** `curl :9482/metrics | grep hapax_ward_fx_events_total` returns only:
-  ```
-  hapax_ward_fx_events_total{direction="fx",kind="preset_family_change",preset_family="warm-minimal",ward_id=""} 1.0
-  hapax_ward_fx_events_total{direction="fx",kind="chain_swap",preset_family="",ward_id=""} 141.0
-  ```
-  - Zero rows with `direction="ward"`.
-  - Both extant rows have `ward_id=""` (empty), implying preset-family/chain-swap publishes are not propagating ward identity.
-- **Audit-doc claim violated:** §1.1.7, §1.2.x … §1.16.x all assert per-ward counters monotonically increasing.
-- **Likely cause:** `_publish_ward_events` is gated on `if not planned: return`, and the choreographer's `planned` list is empty because the choreographer reconcile is not firing (see FINDING-B). Possible second cause: the bus publish path emits `direction="fx"` with `ward_id=""` even when a ward event would otherwise carry an id — needs `shared/ward_fx_bus.py` walkthrough.
-- **Live-fix path (recommended):** first fix FINDING-B and re-observe. If ward_id rows still empty after choreographer reconcile resumes, drill into `WardEvent → counter.labels(...).inc()` mapping in `shared/ward_fx_bus.py`.
+- **Severity:** low (no code bug; observability gap surfaces only when no homage capability is active)
+- **Where:** `shared/ward_fx_bus.py:230` (publish_fx hardcodes ward_id=""),
+  `agents/studio_compositor/homage/choreographer.py:431` (`_publish_ward_events`),
+  `agents/studio_compositor/compositional_consumer.py:930` (`_append_pending_transition`)
+- **Re-scoping (post-FINDING-B-fix verification 2026-04-21T09:48Z):**
+  - `direction="fx"` rows legitimately hardcode `ward_id=""` (line 230). FX events are
+    global preset/chain mutations, not ward-scoped — empty ward_id is correct, not a bug.
+  - `direction="ward"` rows DO carry `ward_id=plan.source_id` (choreographer line 464),
+    so the labelling pipeline is correct.
+  - The remaining gap is producer-side: `_publish_ward_events` only fires when the
+    choreographer's `planned` list is non-empty, which only happens when
+    `_append_pending_transition` has written into `homage-pending-transitions.json`,
+    which only happens when a `homage.*` capability is recruited and dispatched. In
+    quiescent state (no IRC traffic, no recruitment events) the file legitimately
+    stays absent and no ward rows emit.
+- **Audit-doc claim re-scoping:** §1.1.7 / §1.2.x … §1.16.x's "monotonic ward_id rows
+  per ward" assertion requires synthetic stimulation; deferred to the per-ward
+  synthetic-stimulus harness already on the queue. Quiescent absence is not a bug.
+- **Remaining real work:** none. Closing as a producer-quiescence observation, not a
+  defect. If ward-rows still missing AFTER a recruitment dispatch occurs, re-open with
+  the dispatched-capability + missing-row evidence.
 
-### ❌ FINDING-B — HOMAGE choreographer reconcile stalled ≥ 8 h
+### ✅ FINDING-B — HOMAGE choreographer reconcile stalled ≥ 8 h — RESOLVED 2026-04-21
 
-- **Severity:** HIGH (cascade — all wards reading homage SHM are frozen on stale state; ward_fx event publication blocked)
-- **Where:** `agents/studio_compositor/homage/choreographer.py` (reconcile loop entrypoint)
-- **Evidence:**
+- **Resolution:** commit `54e2d36d6 fix(homage): import correct class name — Choreographer
+  not HomageChoreographer` together with the wiring block in
+  `agents/studio_compositor/lifecycle.py` (lines 373–407) instantiates `Choreographer`
+  and schedules `reconcile()` on a 1 Hz `GLib.timeout_add`. Root cause was cause-list
+  item #1: the loop never ran — the class was never instantiated at all
+  (`grep -r 'Choreographer('` returned zero call sites prior to the fix).
+- **Verification (2026-04-21T09:48Z):** compositor restarted 09:46:41 CDT; three of four
+  homage SHM files refreshing within seconds:
   ```
-  /dev/shm/hapax-compositor/homage-active-artefact.json     age=29727s
-  /dev/shm/hapax-compositor/homage-pending-transitions.json age=29718s
-  /dev/shm/hapax-compositor/homage-substrate-package.json   age=29727s
-  /dev/shm/hapax-compositor/homage-voice-register.json      age=29665s
+  /dev/shm/hapax-compositor/homage-active-artefact.json     09:47   {"package":"bitchx",...}
+  /dev/shm/hapax-compositor/homage-substrate-package.json   09:46   {"package":"bitchx",...}
+  /dev/shm/hapax-compositor/homage-voice-register.json      09:48   {"register":"textmode",...}
   ```
-  All four homage SHM publishers frozen at ~2026-04-19T02:29-02:30Z. Compositor service
-  active/uptime continuous since at least that time (no restart in the gap). No
-  `choreograph|homage|reconcile` log entries in the last 15 min in the journal.
-- **Active artefact stuck on `package: "bitchx"`** since 02:29 — TokenPole + other
-  artefact-aware wards continuously paint with the stale package's accent palette.
-- **Metric:** `hapax_homage_transition_total` exists in HELP/TYPE but emits zero rows
-  (no transitions in any active label set). `hapax_homage_package_active` gauge
-  similarly empty.
-- **Likely cause candidates** (must enumerate before fix per CLAUDE.md feedback):
-  1. Reconcile loop thread died silently 8 h ago
-  2. Reconcile loop running but `package` resolution returns None / no current
-     package, so it short-circuits before publish
-  3. Substrate detection logic disqualifies all current sources, causing every
-     `planned` list to be empty + no SHM rewrite
-  4. Plan/Reconcile gated on a stimmung dimension (e.g. SEEKING) that has not
-     fired in 8h
-  5. A subsystem dependency (cost tracker / cycle threshold / homage authority)
-     emitted None and the reconcile loop swallowed it
-- **Next investigation step:** grep choreographer for `def reconcile`, find the
-  thread that drives it, instrument with a single `log.info` per tick to see
-  whether the loop is alive at all, OR reproduce a single reconcile call from
-  a Python REPL against the running state.
+  `homage-pending-transitions.json` legitimately absent — that file is
+  dispatcher-written and choreographer-drained, so no `homage.*` capability
+  recruitment ⇒ empty queue ⇒ no file. See `_append_pending_transition` in
+  `agents/studio_compositor/compositional_consumer.py:930`.
+- **Cascade-resolved metrics** (curl `127.0.0.1:9482/metrics`):
+  - `hapax_homage_package_active{package="bitchx"} 1.0`
+  - `hapax_homage_signature_artefact_emitted_total{form="join-banner",...}` ≥ 1
+  - `hapax_homage_signature_artefact_emitted_total{form="quit-quip",...}` ≥ 2
+  - `hapax_homage_emphasis_applied_total{intent_family="structural.emphasis",ward=...}`
+    flowing for `thinking_indicator` + `stance_indicator`
+  - `hapax_homage_render_cadence_hz{ward=...}` for 17 wards (full coverage incl. `gem`)
+  - `hapax_homage_rotation_mode{mode="weighted_by_salience"} 1.0`
+  - `hapax_homage_substrate_saturation_target 1.0`
+- **Note for FINDING-A re-scope:** `direction="fx"` legitimately hardcodes `ward_id=""`
+  in `shared/ward_fx_bus.py:230` (FX events are global, not ward-scoped). Ward-bearing
+  rows require `direction="ward"`, which only fires when the choreographer's `planned`
+  list is non-empty — which in turn requires `homage.*` capability dispatch through
+  `_append_pending_transition`. See updated FINDING-A.
 
 ---
 
@@ -324,18 +333,26 @@ The remaining HIGH-severity items NOT covered by #1108 as of audit time:
 output. Of these, **18 emit ZERO rows** (defined but no instance ever incremented).
 Triaged below.
 
-### ❌ FINDING-K — 10 of 11 HOMAGE metrics empty (cascade of FINDING-B)
+### ✅ FINDING-K — 10 of 11 HOMAGE metrics empty — RESOLVED 2026-04-21 (cascade of FINDING-B fix)
 
-- **Severity:** HIGH (entire HOMAGE observability surface is dark)
-- **Empty metrics:** `hapax_homage_active_package`, `hapax_homage_choreographer_rejection_total`,
-  `hapax_homage_choreographer_substrate_skip_total`, `hapax_homage_emphasis_applied_total`,
-  `hapax_homage_package_active`, `hapax_homage_render_cadence_hz`, `hapax_homage_rotation_mode`,
-  `hapax_homage_signature_artefact_emitted_total`, `hapax_homage_substrate_saturation_target`,
-  `hapax_homage_transition_total`, `hapax_homage_violation_total`. Only
-  `hapax_homage_emphasis_applied_created` (= bookkeeping for the `_total`) shows up
-  in the curl scrape.
-- **Root cause:** FINDING-B (choreographer reconcile loop dead). Once B is fixed,
-  K should self-resolve without dedicated work. Verify after B fix lands.
+- **Resolution:** cascade-resolved by FINDING-B fix (commit `54e2d36d6`). Compositor
+  restarted 2026-04-21T09:46Z; metrics surface verified at T09:48Z.
+- **Verification (`curl 127.0.0.1:9482/metrics`):** all observability emitters now flowing:
+  - `hapax_homage_active_package{package="bitchx"} 1.0`
+  - `hapax_homage_package_active{package="bitchx"} 1.0`
+  - `hapax_homage_render_cadence_hz` — 17 wards covered (overlay-zones, token_pole,
+    sierpinski, album, hardm_dot_matrix, gem, captions, thinking_indicator,
+    stance_indicator, activity_header, chat_ambient, grounding_provenance_ticker,
+    whos_here, pressure_gauge, recruitment_candidate_panel, activity_variety_log,
+    impingement_cascade, sierpinski-lines, stream_overlay)
+  - `hapax_homage_rotation_mode{mode="weighted_by_salience"} 1.0`
+  - `hapax_homage_emphasis_applied_total` — 2 ward rows (thinking_indicator, stance_indicator)
+  - `hapax_homage_signature_artefact_emitted_total` — 2 forms (join-banner, quit-quip)
+  - `hapax_homage_substrate_saturation_target 1.0`
+- **Remaining empty (expected):** `hapax_homage_choreographer_rejection_total`,
+  `hapax_homage_choreographer_substrate_skip_total`, `hapax_homage_violation_total`,
+  `hapax_homage_transition_total`. These only emit on rejection/violation/transition
+  events; quiescent absence is correct behavior, matching FINDING-A re-scoping.
 
 ### ⚠️ FINDING-L — 7 other compositor/director metrics empty
 
