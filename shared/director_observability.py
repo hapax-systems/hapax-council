@@ -300,6 +300,24 @@ try:
         ("source_name",),
     )
 
+    # FINDING-X (2026-04-21 wiring audit): UNGROUNDED audit counter.
+    # Per the constitutional invariant cited in DirectorIntent docstring
+    # ("the audit emits an UNGROUNDED warning for the operator to track
+    # in research-mode logs"), every empty grounding_provenance — both
+    # at the top-level intent and per compositional_impingement — must
+    # be observable. Pre-fix: 428/430 (99.5%) of impingements emitted
+    # empty grounding_provenance with zero warnings. This counter +
+    # ``emit_ungrounded_audit`` close the silent-violation gap.
+    _ungrounded_total = Counter(
+        "hapax_director_ungrounded_total",
+        (
+            "Director intents or compositional impingements emitted with "
+            "empty grounding_provenance. Closes silent-violation gap from "
+            "the 2026-04-21 wiring audit (FINDING-X)."
+        ),
+        ("condition_id", "scope"),  # scope ∈ {"intent", "impingement"}
+    )
+
     _METRICS_AVAILABLE = True
 except Exception:  # pragma: no cover — prometheus_client missing at install time
     log.info("prometheus_client unavailable — director observability metrics are no-ops")
@@ -326,6 +344,44 @@ def emit_director_intent(intent: DirectorIntent, condition_id: str) -> None:
             ).inc()
     except Exception:
         log.warning("emit_director_intent failed", exc_info=True)
+
+
+def emit_ungrounded_audit(intent: DirectorIntent, condition_id: str) -> None:
+    """Audit + count empty-grounding emissions per FINDING-X.
+
+    Walks the top-level intent and every compositional_impingement; for
+    each empty ``grounding_provenance`` field it (a) increments the
+    Prometheus counter labeled by scope, and (b) emits a single warn-
+    level log line so research-mode journals show the violation.
+
+    Fail-open: any exception inside the audit is logged at debug and
+    swallowed. The audit must never block emit.
+    """
+    try:
+        if not intent.grounding_provenance:
+            log.warning(
+                "UNGROUNDED intent (condition=%s, activity=%s, stance=%s): "
+                "top-level grounding_provenance empty",
+                condition_id,
+                intent.activity,
+                intent.stance,
+            )
+            if _METRICS_AVAILABLE:
+                _ungrounded_total.labels(condition_id=condition_id, scope="intent").inc()
+
+        for imp in intent.compositional_impingements:
+            if not imp.grounding_provenance:
+                log.warning(
+                    "UNGROUNDED impingement (condition=%s, family=%s, "
+                    "salience=%.2f): per-impingement grounding_provenance empty",
+                    condition_id,
+                    imp.intent_family,
+                    imp.salience,
+                )
+                if _METRICS_AVAILABLE:
+                    _ungrounded_total.labels(condition_id=condition_id, scope="impingement").inc()
+    except Exception:
+        log.debug("emit_ungrounded_audit failed", exc_info=True)
 
 
 def emit_twitch_move(intent_family: str, condition_id: str) -> None:
@@ -735,6 +791,7 @@ __all__ = [
     "emit_homage_violation",
     "emit_parse_failure",
     "emit_random_mode_pick",
+    "emit_ungrounded_audit",
     "emit_vacuum_prevented",
     "emit_structural_intent",
     "emit_twitch_move",

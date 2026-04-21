@@ -381,6 +381,18 @@ def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
         emit_director_intent(intent, condition_id=condition_id)
     except Exception:
         log.debug("prometheus emit_director_intent failed", exc_info=True)
+    # FINDING-X (2026-04-21 wiring audit): close the silent-violation
+    # gap. Constitutional invariant: every impingement either has non-
+    # empty grounding_provenance OR an UNGROUNDED warning is logged.
+    # Pre-fix: 428/430 impingements had empty grounding_provenance with
+    # zero warnings emitted. emit_ungrounded_audit warn-logs + Prometheus-
+    # counts each empty case so researchers can quantify the violation.
+    try:
+        from shared.director_observability import emit_ungrounded_audit
+
+        emit_ungrounded_audit(intent, condition_id=condition_id)
+    except Exception:
+        log.debug("emit_ungrounded_audit failed", exc_info=True)
     try:
         _NARRATIVE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         state = {
