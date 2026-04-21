@@ -368,9 +368,13 @@ class TokenPoleCairoSource(HomageTransitionalSource):
             cx = NATURAL_SIZE * SPIRAL_CENTER_X
             cy = NATURAL_SIZE * SPIRAL_CENTER_Y
             max_r = NATURAL_SIZE * SPIRAL_MAX_R
-            self._spiral = _build_spiral(cx, cy, max_r, NUM_POINTS)
+            self._path = _build_spiral(cx, cy, max_r, NUM_POINTS)
         else:
-            self._spiral = _build_linear_path(NATURAL_SIZE, NUM_POINTS)
+            self._path = _build_linear_path(NATURAL_SIZE, NUM_POINTS)
+        # Backwards-compat alias so external code reading ``_spiral`` keeps
+        # working while ``_path`` is the canonical name. New code should
+        # reference ``_path`` directly.
+        self._spiral = self._path
         # Task #146 chat-contribution cascade. Drives optional trigger()
         # calls from the wiring layer (scripts/chat-monitor.py) via a
         # setter method. Kept as an attribute so tests can poke state.
@@ -531,28 +535,28 @@ class TokenPoleCairoSource(HomageTransitionalSource):
             cr.fill()
             cr.restore()
 
-        # --- Spiral guide — 32 emissive points along the path -------------
-        # Reimplemented from the former 250-point line stroke. The muted
-        # role keeps the skeleton grey; phase offsets de-synchronise the
-        # shimmer so the path breathes without strobing.
+        # --- Path backbone — continuous muted line across the full path ---
+        # #186 (operator 2026-04-19): full route visible always. Replaces
+        # the prior 32-point dotted skeleton, which read as gappy and
+        # ambiguous about which way the road went. The continuous stroke
+        # is a flat cairo line at the muted role's emissive ground
+        # (no per-segment shimmer — the bright trail overlay below carries
+        # all the breathing). Kept under the trail so the traveled portion
+        # of the path still reads bright; the untraveled portion shows as
+        # a clean grey road from token glyph to terminal anchor.
         muted_rgba = pkg.resolve_colour("muted")
-        spiral_samples = 32
-        step = max(1, NUM_POINTS // spiral_samples)
-        for i in range(0, NUM_POINTS, step):
-            sx, sy = self._spiral[i]
-            paint_emissive_point(
-                cr,
-                sx,
-                sy,
-                muted_rgba,
-                t=t_now,
-                phase=i * 0.19,
-                baseline_alpha=0.45,
-                centre_radius_px=1.2,
-                halo_radius_px=3.0,
-                outer_glow_radius_px=4.5,
-                shimmer_hz=pulse_hz,
-            )
+        m_r, m_g, m_b, m_a = muted_rgba
+        cr.save()
+        cr.set_source_rgba(m_r, m_g, m_b, m_a * 0.55)
+        cr.set_line_width(1.4)
+        cr.set_line_cap(__import__("cairo").LINE_CAP_ROUND)
+        cr.set_line_join(__import__("cairo").LINE_JOIN_ROUND)
+        first_x, first_y = self._path[0]
+        cr.move_to(first_x, first_y)
+        for px, py in self._path[1:]:
+            cr.line_to(px, py)
+        cr.stroke()
+        cr.restore()
 
         # --- Trail — muted→bright gradient via accent emissive strokes ----
         idx = int(self._position * (NUM_POINTS - 1))
@@ -570,8 +574,8 @@ class TokenPoleCairoSource(HomageTransitionalSource):
                 b = c0[2] + (c1[2] - c0[2]) * f
                 a = c0[3] + (c1[3] - c0[3]) * f
                 baseline = 0.15 + 0.65 * (progress**1.5)
-                x0, y0 = self._spiral[i - 1]
-                x1, y1 = self._spiral[i]
+                x0, y0 = self._path[i - 1]
+                x1, y1 = self._path[i]
                 paint_emissive_stroke(
                     cr,
                     x0,
@@ -590,8 +594,8 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         # Success-def §1.2: centre dot (accent_yellow), halo (accent_magenta
         # α=0.45), outer bloom (accent_yellow α=0.12). No cheeks. No eyes.
         # No smile. Reads as a point of light at the navel.
-        if idx < len(self._spiral):
-            gx, gy = self._spiral[idx]
+        if idx < len(self._path):
+            gx, gy = self._path[idx]
         else:
             gx = NATURAL_SIZE * SPIRAL_CENTER_X
             gy = NATURAL_SIZE * SPIRAL_CENTER_Y
@@ -653,8 +657,8 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         # Sparkle trail — bright, thinning, emissive.
         for i in range(1, 4):
             trail_idx = max(0, idx - i * 5)
-            if trail_idx < len(self._spiral):
-                tx, ty = self._spiral[trail_idx]
+            if trail_idx < len(self._path):
+                tx, ty = self._path[trail_idx]
                 br_r, br_g, br_b, br_a = bright_rgba
                 paint_emissive_point(
                     cr,
