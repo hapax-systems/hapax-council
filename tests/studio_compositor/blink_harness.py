@@ -178,9 +178,191 @@ def audit_ward_blink(
     )
 
 
+# ── Ward-vs-background contrast (lssh-005) ───────────────────────────────
+# Phase B of lssh-001 measured the ward in isolation. lssh-005 asks the
+# next question: when the same ward composites OVER a bright shader
+# field, do its emissive glyphs still read against the background, or
+# does the shader overpower the chrome? Small-area wards (stance ~4 k
+# px², thinking ~7.5 k px²) sit at the highest risk per the
+# 2026-04-21 per-ward opacity audit even after PR #1167 promoted them
+# to surface-scrim.
+#
+# Threshold rationale: WCAG 2.1 §1.4.3 sets 4.5 : 1 luminance
+# contrast for normal-size text and 3.0 : 1 for large text + UI
+# components. Hapax chrome wards sit between those — they are small
+# but are not body text, and the operator's goal is "remain legible
+# against worst-case shader preset" rather than full WCAG-AA. The
+# default here is 3.0 : 1 (WCAG-AA UI). A ward that fails at 3.0
+# needs the outline-bump / size-bump mitigation called out in
+# lssh-005 acceptance criteria.
+
+# WCAG-style luminance ratio threshold. Wards below this against the
+# tested background fail the contrast audit.
+DEFAULT_MIN_CONTRAST_RATIO: float = 3.0
+
+
+@dataclass(frozen=True)
+class WardContrastResult:
+    """One ward's luminance against a synthetic background.
+
+    ``contrast_ratio`` is the WCAG luminance ratio
+    ``(lighter + 0.05) / (darker + 0.05)`` between the ward's mean
+    foreground luminance and the background's mean luminance. Always
+    ≥ 1.0; higher = more contrast.
+    """
+
+    ward_name: str
+    background_name: str
+    ward_luminance: float
+    background_luminance: float
+    contrast_ratio: float
+    threshold: float
+
+    @property
+    def passes(self) -> bool:
+        return self.contrast_ratio >= self.threshold
+
+    def diagnostic(self) -> str:
+        verdict = "OK" if self.passes else "OVERPOWERED"
+        return (
+            f"[{verdict}] {self.ward_name} vs {self.background_name}: "
+            f"contrast {self.contrast_ratio:.2f} : 1 "
+            f"(min {self.threshold:.1f} : 1); "
+            f"ward luminance {self.ward_luminance:.3f}, "
+            f"background luminance {self.background_luminance:.3f}"
+        )
+
+
+def _wcag_contrast_ratio(luminance_a: float, luminance_b: float) -> float:
+    """WCAG 2.1 contrast ratio: (lighter + 0.05) / (darker + 0.05)."""
+    if luminance_a < luminance_b:
+        luminance_a, luminance_b = luminance_b, luminance_a
+    return (luminance_a + 0.05) / (luminance_b + 0.05)
+
+
+def synthetic_bright_background(
+    width: int,
+    height: int,
+    *,
+    luminance: float = 0.85,
+) -> Any:
+    """Render a uniform bright background as a stand-in for worst-case
+    halftone / chromatic shader output.
+
+    The compositor's halftone preset typically averages around 0.80
+    luminance over the chrome region; defaulting slightly higher
+    (0.85) gives a deliberately worst-case test. Returns a cairo
+    ImageSurface the caller composites the ward over via
+    ``set_source_surface`` + ``paint``.
+    """
+    import cairo
+
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    cr = cairo.Context(surface)
+    cr.set_source_rgba(luminance, luminance, luminance, 1.0)
+    cr.rectangle(0, 0, width, height)
+    cr.fill()
+    surface.flush()
+    return surface
+
+
+def audit_ward_against_background(
+    ward_name: str,
+    render_fn: Callable[[float], Any],
+    background_factory: Callable[[int, int], Any],
+    *,
+    width: int,
+    height: int,
+    background_name: str = "synthetic-bright",
+    sample_at: float = 1.0,
+    min_contrast_ratio: float = DEFAULT_MIN_CONTRAST_RATIO,
+) -> WardContrastResult:
+    """Render the ward, composite it over a synthetic background, and
+    measure WCAG luminance contrast.
+
+    Approach: the ward's render produces emissive glyphs that already
+    composite alpha-correctly against any underlying field. We sample
+    the ward at a single representative time (``sample_at``) and
+    measure mean luminance over only the pixels the ward TOUCHES
+    (alpha > 0). That gives the foreground signal. The background is
+    rendered separately at full size and measured the same way. The
+    contrast ratio between those two means is the audit number.
+
+    Why this shape rather than a full composite: WCAG ratios are
+    foreground-vs-background; the ward's glow does want to be lighter
+    than the background, but the bright bloom alone is not what the
+    viewer reads — the glyph centers are. Measuring ward-pixel-only
+    luminance approximates the brightest ward feature (centre dots
+    and outline glyphs) which is the operator's actual legibility
+    surface.
+    """
+    import cairo
+
+    ward_surface = render_fn(sample_at)
+    bg_surface = background_factory(width, height)
+
+    ward_only_luminance = _mean_luminance_of_alpha_pixels(ward_surface)
+    bg_luminance = mean_luminance(bg_surface)
+    ratio = _wcag_contrast_ratio(ward_only_luminance, bg_luminance)
+
+    # Suppress unused-import false positive in environments where
+    # cairo's import side effects are required for the rendered
+    # surfaces but pyright cannot tell.
+    del cairo
+
+    return WardContrastResult(
+        ward_name=ward_name,
+        background_name=background_name,
+        ward_luminance=ward_only_luminance,
+        background_luminance=bg_luminance,
+        contrast_ratio=ratio,
+        threshold=min_contrast_ratio,
+    )
+
+
+def _mean_luminance_of_alpha_pixels(surface: Any) -> float:
+    """Mean Rec. 709 luminance over pixels with alpha > 0 only.
+
+    Differs from ``mean_luminance`` (which weights by alpha across
+    every pixel of the surface). This variant treats transparent
+    pixels as not-rendered and excludes them from the mean. Use this
+    when measuring "what does the ward's foreground look like" rather
+    than "what does the ward contribute to a composite background".
+    """
+    width = surface.get_width()
+    height = surface.get_height()
+    stride = surface.get_stride()
+    data = bytes(surface.get_data())
+    total = 0.0
+    visible = 0
+    for y in range(height):
+        row = y * stride
+        for x in range(width):
+            offset = row + x * 4
+            b = data[offset]
+            g = data[offset + 1]
+            r = data[offset + 2]
+            a = data[offset + 3]
+            if a == 0:
+                continue
+            inv_a = 255.0 / a
+            r_un = min(255.0, r * inv_a)
+            g_un = min(255.0, g * inv_a)
+            b_un = min(255.0, b * inv_a)
+            total += (_LUMA_R * r_un + _LUMA_G * g_un + _LUMA_B * b_un) / 255.0
+            visible += 1
+    if visible == 0:
+        return 0.0
+    return total / visible
+
+
 __all__ = [
     "DEFAULT_MAX_RATE_PER_500MS",
+    "DEFAULT_MIN_CONTRAST_RATIO",
     "BlinkAuditResult",
+    "WardContrastResult",
+    "audit_ward_against_background",
     "audit_ward_blink",
     "mean_luminance",
+    "synthetic_bright_background",
 ]
