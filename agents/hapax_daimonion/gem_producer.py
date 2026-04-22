@@ -157,10 +157,19 @@ def _is_meta_narration(text: str) -> bool:
 
 
 def _extract_emphasis_text(imp: Impingement) -> str:
-    # Filter out obvious variable leakage (e.g. '.audio.album.current_track')
-    narrative = imp.content.get("narrative", "")
-    if isinstance(narrative, str) and (narrative.strip().startswith(".") or " , ." in narrative):
+    text = ""
+    for key in ("emphasis_text", "summary", "narrative"):
+        val = imp.content.get(key)
+        if isinstance(val, str) and val.strip():
+            text = val.strip()
+            if key == "narrative" and _is_meta_narration(text):
+                text = ""
+                continue
+            break
+
+    if text.startswith(".") or " , ." in text:
         return ""
+    return text
     """Pull a renderable text fragment from an impingement.
 
     Preference order:
