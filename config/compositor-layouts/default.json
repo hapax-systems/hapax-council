@@ -142,7 +142,7 @@
         "natural_h": 240
       },
       "update_cadence": "rate",
-      "rate_hz": 4.0,
+      "rate_hz": 24.0,
       "tags": [
         "homage",
         "expression",
