@@ -51,16 +51,20 @@ Priority is set by (a) livestream-readiness impact and (b) pre-requisite depth. 
 
 ## Bundle catalog
 
-### Bundle 1 — Phantom-VAD completion (alpha)
-**Closes:** Critical #1
-**Work:** Wire `voice_gate.evaluate_and_emit()` into `agents/hapax_daimonion/vad_state_publisher.py:59` before `publish_vad_state(True)`. Add fallback mode warning when `operator_voice.npy` missing. Add integration test: synthetic YT audio + real VAD → gate suppresses phantom duck.
+### Bundle 1 — Phantom-VAD completion (alpha) [REDESIGN — 2026-04-22]
+**Closes:** Critical #1 (pending operator product call)
+**Original work:** Wire `voice_gate.evaluate_and_emit()` into `agents/hapax_daimonion/vad_state_publisher.py:59` before `publish_vad_state(True)`. Add fallback mode warning when `operator_voice.npy` missing. Add integration test: synthetic YT audio + real VAD → gate suppresses phantom duck.
 
-### Bundle 2 — YT bundle closeout (alpha)
+**Status (PR #1191):** the audit's framing is wrong. `VadStatePublisher` and the entire pipecat `build_pipeline_task` path are **dead code** — the live conversation pipeline is `ConversationPipeline` (`conversation_pipeline.py`), constructed by `pipeline_start.start_conversation_pipeline`, and it does not instantiate `VadStatePublisher`. CPAL's `PerceptionStream` knows `speech_active` but does not publish to `voice-state.json`. Live `/dev/shm/hapax-compositor/voice-state.json` is frozen on the FINDING-F startup baseline. The duck **never fires** in either direction. See `docs/research/2026-04-22-vad-ducking-pipeline-dead-finding.md` for three options (A wire from CPAL / B delete dead code / C revive pipecat). **Operator product call required** — is duck-on-operator-speech still wanted now that lssh-012 covers the broadcast pain?
+
+### Bundle 2 — YT bundle closeout (alpha) [SHIPPED — pre-audit-doc, verified 2026-04-22]
 **Closes:** Critical #2, High #13, Low #27
-**Work:**
+**Original work:**
 - Wire `AttributionFileWriter.read_all_entries()` into `agents/studio_compositor/youtube_description_syncer.py::_snapshot_state()` → `assemble_description()`
 - Add `module-loudnorm` (`-16 LUFS / -1.5 dBTP`) upstream of YT→24c ducker per spec §3.4
 - Extend URL extractor regex tests to cover livestream/shorts/youtu.be/obfuscated
+
+**Status (verified 2026-04-22):** all three sub-tasks already shipped before the audit doc was written. (1) `_snapshot_state` reads attributions via `_read_attribution_entries` (`youtube_description_syncer.py:121-149`). (2) `config/pipewire/yt-loudnorm.conf` deployed (sc4m + hardLimiter pattern, -1.0 dBTP ceiling — slightly tighter than the audit's -1.5 dBTP target, with rationale in conf header). (3) `tests/shared/test_url_extractor.py::TestYouTubeUrlForms` covers shorts/live/embed/m./music./@channel/playlist + `?si=`/`&utm_*=`/`&t=`/`#t=` tracking-param obfuscation. **No further work needed; entry kept here for audit traceability.**
 
 ### Bundle 3 — Programme epic completion (alpha)
 **Closes:** Critical #3 (abort predicates), Critical #4 (Prometheus lifecycle), Critical #5 (JSONL log), Medium #18 (soft-prior math clamping)
