@@ -287,7 +287,7 @@ class ProgrammeManager:
             )
             return self.unknown_predicate_satisfies
         try:
-            return bool(fn(programme))
+            return bool(fn(programme, {}))
         except Exception:
             log.warning("predicate %r raised; treating as False", name, exc_info=True)
             return False
