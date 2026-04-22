@@ -738,7 +738,23 @@ class GroundingProvenanceTickerCairoSource(HomageTransitionalSource):
         # Treat a provenance list that contains ONLY fallback tags as
         # ungrounded (render the (ungrounded) breathing label). Mixed
         # lists drop the fallback tags but keep operator-meaningful ones.
-        prov_clean = [str(s) for s in prov if not str(s).startswith("fallback.")]
+        prov_clean = []
+        for s in prov:
+            s_str = str(s).strip()
+            if s_str.startswith("fallback."):
+                continue
+            if s_str.startswith("."):
+                continue
+
+            # If the LLM dumped a comma-separated list into one string, split it
+            if " , " in s_str or "," in s_str:
+                parts = [x.strip() for x in s_str.split(",")]
+                for p in parts:
+                    if p and not p.startswith("."):
+                        prov_clean.append(p)
+            else:
+                prov_clean.append(s_str)
+
         prov_list = prov_clean[:6]
 
         prov_hash = hash(tuple(prov_list))

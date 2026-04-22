@@ -226,7 +226,7 @@ def render_emphasis_template(text: str) -> list[GemFrame]:
     """
     safe = _frame_text_safe(text)
     if not safe:
-        return []
+        return [GemFrame(text=" ", hold_ms=100)]
     return [GemFrame(text=f"» {safe} «", hold_ms=2800)]
 
 
@@ -239,7 +239,7 @@ def render_composition_template(text: str) -> list[GemFrame]:
     """
     safe = _frame_text_safe(text)
     if not safe:
-        return []
+        return [GemFrame(text=" ", hold_ms=100)]
     return [
         GemFrame(text=f">>> {safe}", hold_ms=2000),
     ]
@@ -254,10 +254,10 @@ def frames_for_impingement(imp: Impingement) -> list[GemFrame]:
     failure or when the flag is off.
     """
     if not _intent_matches(imp):
-        return []
+        return [GemFrame(text=" ", hold_ms=100)]
     text = _extract_emphasis_text(imp)
     if not text:
-        return []
+        return [GemFrame(text=" ", hold_ms=100)]
     if imp.intent_family is not None and imp.intent_family.startswith("gem.composition"):
         frames = render_composition_template(text)
     else:
@@ -275,10 +275,10 @@ async def async_frames_for_impingement(imp: Impingement) -> list[GemFrame]:
     validation / model unavailable), the template path is used.
     """
     if not _intent_matches(imp):
-        return []
+        return [GemFrame(text=" ", hold_ms=100)]
     text = _extract_emphasis_text(imp)
     if not text:
-        return []
+        return [GemFrame(text=" ", hold_ms=100)]
 
     from agents.hapax_daimonion.gem_authoring_agent import (
         author_sequence,
