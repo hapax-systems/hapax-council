@@ -54,7 +54,7 @@ Pick the role that best matches each programme window. Closed set:
       "constraints": {
         "capability_bias_negative": {"<capability_name>": 0.4},
         "capability_bias_positive": {"<capability_name>": 1.5},
-        "preset_family_priors": ["calm-textural"],
+        "preset_family_priors": ["calm-textural"], // ONLY USE: "audio-reactive", "calm-textural", "glitch-dense", "warm-minimal"
         "homage_rotation_modes": ["paused", "weighted_by_salience"],
         "surface_threshold_prior": 0.7,
         "reverie_saturation_target": 0.30,
