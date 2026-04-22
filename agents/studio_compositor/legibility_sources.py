@@ -730,7 +730,16 @@ class GroundingProvenanceTickerCairoSource(HomageTransitionalSource):
     ) -> None:
         intent = _read_latest_intent()
         prov = intent.get("grounding_provenance") or []
-        prov_list = [str(s) for s in prov[:6]]
+        # ``fallback.<reason>`` entries are director-loop internal debug
+        # tags (see ``director_loop.py::_silence_hold_fallback_intent``).
+        # They are **meta-state leakage** (feedback_show_dont_tell_director)
+        # and must never render verbatim on broadcast — the operator saw
+        # ``fallback.parser_legacy_shape`` on the livestream 2026-04-22.
+        # Treat a provenance list that contains ONLY fallback tags as
+        # ungrounded (render the (ungrounded) breathing label). Mixed
+        # lists drop the fallback tags but keep operator-meaningful ones.
+        prov_clean = [str(s) for s in prov if not str(s).startswith("fallback.")]
+        prov_list = prov_clean[:6]
 
         prov_hash = hash(tuple(prov_list))
         if self._last_prov_hash is not None and prov_hash != self._last_prov_hash:
