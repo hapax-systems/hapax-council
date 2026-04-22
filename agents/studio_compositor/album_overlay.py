@@ -351,9 +351,13 @@ class AlbumOverlayCairoSource(HomageTransitionalSource):
     def _refresh_attribution(self) -> None:
         try:
             if not os.path.exists(ATTRIB_PATH):
+                self._attrib_text = ""
+                self._attrib_mtime = 0.0
                 return
             mtime = os.path.getmtime(ATTRIB_PATH)
         except OSError:
+            self._attrib_text = ""
+            self._attrib_mtime = 0.0
             return
         if mtime == self._attrib_mtime:
             return
