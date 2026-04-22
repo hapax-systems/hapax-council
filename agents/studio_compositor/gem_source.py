@@ -288,31 +288,7 @@ class GemCairoSource(HomageTransitionalSource):
             for room in tree:
                 bright = room_brightness(room, t)
                 cr.set_source_rgba(r, g, b, bright)
-
-                # Draw the room using lines instead of full text rendering for simplicity,
-                # or just use Cairo's stroke which is faster. But the spec says CP437.
-                # We'll just draw the corners as text to satisfy the "CP437 grammar" requirement.
-                glyphs = room.glyphs
-
-                # Top-left
-                cr.move_to(room.x, room.y + 16)
-                cr.show_text(glyphs["tl"])
-                # Top-right
-                cr.move_to(room.x + room.w - 8, room.y + 16)
-                cr.show_text(glyphs["tr"])
-                # Bottom-left
-                cr.move_to(room.x, room.y + room.h)
-                cr.show_text(glyphs["bl"])
-                # Bottom-right
-                cr.move_to(room.x + room.w - 8, room.y + room.h)
-                cr.show_text(glyphs["br"])
-
-                # Draw lines for the rest to make it a box
-                # cr.move_to(room.x + 8, room.y + 8)
-                # cr.line_to(room.x + room.w - 8, room.y + 8)
-                # ... skipping lines for now to keep it simple and performant,
-                # actually, let's just use Cairo strokes with dash patterns for dotted/single/double
-                # to perfectly match the visual look without the massive overhead of thousands of glyphs.
+                # Rendering disabled per operator feedback (artifacts leaking through).
 
             cr.restore()
         except Exception:

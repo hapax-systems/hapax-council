@@ -157,6 +157,10 @@ def _is_meta_narration(text: str) -> bool:
 
 
 def _extract_emphasis_text(imp: Impingement) -> str:
+    # Filter out obvious variable leakage (e.g. '.audio.album.current_track')
+    narrative = imp.content.get("narrative", "")
+    if isinstance(narrative, str) and (narrative.strip().startswith(".") or " , ." in narrative):
+        return ""
     """Pull a renderable text fragment from an impingement.
 
     Preference order:
@@ -214,12 +218,7 @@ def render_emphasis_template(text: str) -> list[GemFrame]:
     safe = _frame_text_safe(text)
     if not safe:
         return []
-    border = "─" * (len(safe) + 4)
-    return [
-        GemFrame(text=f"┌{border}┐\n│  {' ' * len(safe)}  │\n└{border}┘", hold_ms=400),
-        GemFrame(text=f"┌{border}┐\n│  {safe}  │\n└{border}┘", hold_ms=1800),
-        GemFrame(text=f"» {safe} «", hold_ms=600),
-    ]
+    return [GemFrame(text=f"» {safe} «", hold_ms=2800)]
 
 
 def render_composition_template(text: str) -> list[GemFrame]:
