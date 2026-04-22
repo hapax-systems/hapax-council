@@ -122,21 +122,28 @@ _ROTATION_MODE_DEFAULT: frozenset[str] = frozenset({"steady", "weighted_by_salie
 
 # Inverse-flash envelope — triggered by activity / stance change. Plan §A3
 # ("mode-change vocab"). lssh-001 (operator 2026-04-21: "way too much
-# BLINKING for the homage wards") softened the envelope along three axes:
+# BLINKING for the homage wards") softened the envelope along four axes:
 #
-#   1. Peak alpha 0.45 → 0.15 (3× softer at the visible-most moment).
-#   2. Duration 200 ms → 400 ms (so the change reads as a deliberate
+#   1. Peak alpha 0.45 → 0.10 (4.5× softer at the visible-most moment).
+#   2. Duration 200 ms → 600 ms (so the change reads as a deliberate
 #      pulse rather than a snap).
-#   3. Linear decay → cosine ease-out (perceptually smoother tail; the
-#      operator's blink-threshold heuristic is "no luminance change
-#      >40 % faster than once every 500 ms" and the cosine curve keeps
-#      the maximum instantaneous slope below the linear-equivalent rate).
+#   3. Linear decay → sine bell envelope (smooth ramp-up + smooth
+#      ramp-down; lssh-001 Phase A used cosine ease-out which fixed
+#      the decay tail but left the START as a step from off → peak,
+#      producing the blink the operator complained about).
+#   4. Bound the peak slope (the operator's blink-threshold heuristic
+#      is "no luminance change > 40 % faster than once every 500 ms";
+#      sine bell peak slope = peak · π / duration; with these values
+#      ≈ 0.10 · π / 0.6 ≈ 0.52 per second = 0.26 per 500 ms, under
+#      the 40 % bar).
 #
-# Net rate at peak: 0.15 over 400 ms ≈ 0.19 per 500 ms = 19 %, well
-# under the 40 % bar. The pulse still carries the same information
-# signal (activity / stance just changed) — it just doesn't strobe.
-_INVERSE_FLASH_DURATION_S: float = 0.400
-_INVERSE_FLASH_PEAK_ALPHA: float = 0.15
+# The pulse still carries the same information signal (activity /
+# stance just changed) — it just doesn't strobe. Regression-pinned by
+# both the unit-test math at ``_flash_alpha`` AND the rendered-frame
+# luminance harness at ``tests/studio_compositor/test_no_blink.py``
+# (Phase B of lssh-001).
+_INVERSE_FLASH_DURATION_S: float = 0.600
+_INVERSE_FLASH_PEAK_ALPHA: float = 0.10
 
 # Breathing alpha frequency for the ungrounded ticker state.
 _UNGROUNDED_BREATH_HZ: float = 0.3
@@ -297,12 +304,21 @@ def _paint_inverse_flash(
 def _flash_alpha(t: float, flash_started_at: float | None) -> float:
     """Return the inverse-flash alpha at ``t`` given the flash start time.
 
-    Cosine ease-out from ``_INVERSE_FLASH_PEAK_ALPHA`` to 0 over
-    ``_INVERSE_FLASH_DURATION_S``. ``cos(πx/2)`` gives a smooth tail with
-    a gentle initial drop and a soft asymptote — the operator's blink
-    audit (lssh-001) flagged the prior linear 0.45→0 over 200 ms as the
-    primary blink offender. See the duration / peak constants above for
-    the threshold math.
+    Sine bell envelope: 0 at start, peak at midpoint, 0 at end. lssh-001
+    Phase A (PR #1181) softened the decay tail but left the START as a
+    step from off → peak alpha in a single frame; the lssh-001 Phase B
+    luminance harness caught that as a 1.49-per-500-ms rendered
+    luminance jump (vs the 0.40 threshold) because the START itself was
+    a blink. The bell envelope adds a smooth ramp-in symmetric with the
+    ramp-out, so the flash reads as a soft pulse from any direction.
+
+    Mathematically: ``peak * sin(progress * π)``. At progress=0 → 0
+    (no jump from off-state), at progress=0.5 → peak, at progress=1 → 0.
+    The maximum slope is ``peak * π / duration`` which for the current
+    constants (peak 0.15, duration 400 ms) gives a peak alpha-rate of
+    1.18 per second — well within the 40 % per 500 ms heuristic when
+    the flash sits over the existing ward field rather than against
+    pure black.
     """
     if flash_started_at is None:
         return 0.0
@@ -310,8 +326,8 @@ def _flash_alpha(t: float, flash_started_at: float | None) -> float:
     if dt < 0.0 or dt >= _INVERSE_FLASH_DURATION_S:
         return 0.0
     progress = dt / _INVERSE_FLASH_DURATION_S
-    # Cosine ease-out: 1.0 at progress=0, 0.0 at progress=1.
-    return _INVERSE_FLASH_PEAK_ALPHA * math.cos(progress * math.pi / 2.0)
+    # Sine bell: 0 → peak → 0 across the window.
+    return _INVERSE_FLASH_PEAK_ALPHA * math.sin(progress * math.pi)
 
 
 def _emissive_structural(

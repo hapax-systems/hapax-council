@@ -136,12 +136,12 @@ class TestActivityHeaderEmissive:
         assert ward._activity_flash_started_at == pytest.approx(1.0)
 
         # Within the flash window ⇒ positive flash alpha. The lssh-001
-        # blink softening stretched the window to 400 ms with a cosine
-        # ease-out, so 100 ms in is still meaningfully bright.
+        # blink softening stretched the window to 600 ms with a sine
+        # bell envelope, so 100 ms in is still meaningfully bright.
         alpha_mid = ls._flash_alpha(1.1, ward._activity_flash_started_at)
         assert alpha_mid > 0.0
-        # After the window ⇒ zero (anything past 400 ms is decayed).
-        alpha_done = ls._flash_alpha(1.5, ward._activity_flash_started_at)
+        # After the window ⇒ zero (anything past 600 ms is decayed).
+        alpha_done = ls._flash_alpha(1.7, ward._activity_flash_started_at)
         assert alpha_done == 0.0
 
     def test_rotation_mode_suffix_only_when_nondefault(self):
@@ -411,22 +411,34 @@ class TestFlashAlphaHelper:
         assert ls._flash_alpha(0.0, None) == 0.0
         assert ls._flash_alpha(10.0, None) == 0.0
 
-    def test_monotone_decay_within_window(self):
+    def test_bell_envelope_within_window(self):
+        """Phase B (lssh-001): envelope is a sine bell — 0 at start,
+        peak at midpoint, 0 at end. The Phase A monotone-decay
+        assertion was wrong about the START region; that step IS the
+        blink. The bell is 0→peak→0 across the window."""
         start = 5.0
-        a_early = ls._flash_alpha(5.05, start)
-        a_late = ls._flash_alpha(5.15, start)
-        assert a_early > a_late > 0.0
+        midpoint = start + ls._INVERSE_FLASH_DURATION_S / 2.0
+        a_start = ls._flash_alpha(start, start)
+        a_midpoint = ls._flash_alpha(midpoint, start)
+        a_end = ls._flash_alpha(start + ls._INVERSE_FLASH_DURATION_S - 0.001, start)
+        assert a_start == pytest.approx(0.0, abs=1e-6)
+        assert a_midpoint == pytest.approx(ls._INVERSE_FLASH_PEAK_ALPHA, abs=1e-6)
+        assert 0.0 <= a_end < a_midpoint
 
     def test_zero_after_window(self):
-        # lssh-001: window stretched 200 ms → 400 ms. 0.401 s is past
-        # the new boundary so still zero.
-        assert ls._flash_alpha(5.401, 5.0) == 0.0
+        # lssh-001 Phase B: window stretched to 600 ms. 0.601 s is past
+        # the boundary so still zero.
+        assert ls._flash_alpha(5.601, 5.0) == 0.0
 
-    def test_peak_immediately_after_start(self):
-        # lssh-001: peak alpha softened 0.45 → 0.15.
-        a = ls._flash_alpha(5.0, 5.0)
+    def test_peak_at_midpoint(self):
+        # lssh-001 Phase B: peak shifted from start to midpoint of
+        # window via sine bell envelope. Peak alpha softened to 0.10
+        # to keep the bell's peak slope (peak·π/duration) under the
+        # 40 %/500 ms bar.
+        midpoint = 5.0 + ls._INVERSE_FLASH_DURATION_S / 2.0
+        a = ls._flash_alpha(midpoint, 5.0)
         assert a == pytest.approx(ls._INVERSE_FLASH_PEAK_ALPHA)
-        assert a == pytest.approx(0.15)
+        assert a == pytest.approx(0.10)
 
     def test_blink_threshold_satisfied(self):
         """Regression for lssh-001: the inverse-flash must not exceed
