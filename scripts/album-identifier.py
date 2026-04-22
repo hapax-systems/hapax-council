@@ -246,8 +246,8 @@ def identify_album_vision(image_data: bytes) -> dict | None:
                                 "Look closely at any text, logos, label marks, catalog numbers, "
                                 "and artwork style. If you're unsure, describe what you see in "
                                 "detail first, then make your best identification.\n\n"
-                                "Return a JSON object with: artist, title, year, label, confidence (0.0-1.0). "
-                                'If truly unidentifiable, return {"artist": null}. No other text.'
+                                "Return a JSON object with: is_album_present (boolean), artist (or null), title, year, label, confidence (0.0-1.0). "
+                                "If the desk is empty and NO album cover is visible in the image, set is_album_present to false and artist to null. No other text."
                             ),
                         },
                     ],
@@ -275,7 +275,7 @@ def identify_album_vision(image_data: bytes) -> dict | None:
                 raw = raw[:-3]
             raw = raw.strip()
         result = json.loads(raw)
-        if result.get("artist") is None:
+        if not result.get("is_album_present", True) or result.get("artist") is None:
             log.info("Album not identified")
             return None
         log.info(
@@ -446,8 +446,10 @@ def identify_album_and_track(image_data: bytes) -> tuple[dict | None, str | None
                             "text": (
                                 "What album is this? What track is playing?"
                                 f"{audio_instruction}\n\n"
-                                "Return a JSON object with: artist, title, year, label, confidence (0.0-1.0), "
-                                "track (specific track, or null), model (your model name). No other text."
+                                "Return a JSON object with: is_album_present (boolean), artist (or null), title, year, label, confidence (0.0-1.0), "
+                                "track (specific track, or null), model (your model name). No other text. "
+                                "If the desk is empty and NO album cover is visible in the image, set is_album_present to false and artist to null. "
+                                "Crucially: rely on the IMAGE to determine if an album is present. Do not let the audio trick you into thinking an album is present if the image is empty."
                             ),
                         },
                     ],
@@ -474,7 +476,7 @@ def identify_album_and_track(image_data: bytes) -> tuple[dict | None, str | None
             raw = raw.strip()
 
         result = json.loads(raw)
-        if result.get("artist") is None:
+        if not result.get("is_album_present", True) or result.get("artist") is None:
             log.info("Album not identified")
             return None, None
 
@@ -769,6 +771,9 @@ def main() -> None:
         # is also deterministic: fixed 15% center-crop margin, 90° rotate,
         # 512×512 resize — so the same scene ALWAYS produces the same PNG.
         try:
+            if _current_album is None:
+                raise ValueError("No album currently identified")
+
             from PIL import Image, ImageOps
 
             if not isinstance(cropped, (bytes, bytearray)):
@@ -852,6 +857,13 @@ def main() -> None:
             log_album(album)
             cooldown_until = now + 30
         else:
+            _current_album = None
+            try:
+                ALBUM_COVER_FILE.unlink(missing_ok=True)
+                MUSIC_ATTRIBUTION_FILE.unlink(missing_ok=True)
+                ALBUM_STATE_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
             cooldown_until = now + 15
 
 
