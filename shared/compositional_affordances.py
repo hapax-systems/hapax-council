@@ -249,6 +249,8 @@ _STREAM_MODE: list[CapabilityRecord] = [
 # recruiting against.
 
 _WARD_HIGHLIGHT: list[CapabilityRecord] = [
+    # Music — album cover lives at beyond-scrim; foreground/dim signals
+    # whether music is the subject or incidental.
     _record(
         "ward.highlight.album.foreground",
         "brightens the album cover ward when the music is the subject of the moment",
@@ -257,6 +259,12 @@ _WARD_HIGHLIGHT: list[CapabilityRecord] = [
         "ward.highlight.album.dim",
         "dims the album cover ward when the music is incidental and other content claims attention",
     ),
+    # Communication — captions + chat ambient + stream overlay + impingement
+    # cascade. Originally only album/captions/thinking had records;
+    # lssh-008 audit found ``family-restricted retrieval returned no
+    # candidates`` 10× in 12h for ward.highlight.<other> queries
+    # because the catalog was missing per-ward records for the rest of
+    # the WARD_DOMAIN. Filling the gap.
     _record(
         "ward.highlight.captions.dim",
         "dims the captions strip when the operator is silent or chat is the subject",
@@ -266,8 +274,106 @@ _WARD_HIGHLIGHT: list[CapabilityRecord] = [
         "brightens the captions strip when the operator is speaking and accessibility matters",
     ),
     _record(
+        "ward.highlight.chat_ambient.foreground",
+        "brightens the chat ambient surface when audience traffic deserves direct visibility",
+    ),
+    _record(
+        "ward.highlight.chat_ambient.dim",
+        "dims the chat ambient surface when chat is quiet or other content takes the floor",
+    ),
+    _record(
+        "ward.highlight.stream_overlay.foreground",
+        "brightens the stream-mode overlay during a mode change so viewers see the transition",
+    ),
+    _record(
+        "ward.highlight.impingement_cascade.pulse",
+        "pulses the impingement cascade when recruitment activity is itself the subject worth showing",
+    ),
+    # Presence — thinking, who's here, pressure.
+    _record(
         "ward.highlight.thinking_indicator.pulse",
         "pulses the thinking indicator when an LLM tick is in flight to make latency visible",
+    ),
+    _record(
+        "ward.highlight.thinking_indicator.foreground",
+        "brightens the thinking indicator when sustained reasoning is the subject of the moment",
+    ),
+    _record(
+        "ward.highlight.thinking_indicator.dim",
+        "dims the thinking indicator when reactive moves dominate and reasoning posture is incidental",
+    ),
+    _record(
+        "ward.highlight.whos_here.foreground",
+        "brightens the who's-here ward when a new viewer joins and acknowledgement is appropriate",
+    ),
+    _record(
+        "ward.highlight.whos_here.dim",
+        "dims the who's-here ward when audience composition is incidental to the active move",
+    ),
+    _record(
+        "ward.highlight.pressure_gauge.pulse",
+        "pulses the pressure gauge when system pressure spikes and the spike itself is legible content",
+    ),
+    _record(
+        "ward.highlight.pressure_gauge.foreground",
+        "brightens the pressure gauge during sustained high-pressure spans so viewers can see the strain",
+    ),
+    # Token economy.
+    _record(
+        "ward.highlight.token_pole.pulse",
+        "pulses the token pole when a token cascade lands and the reward beat is the move",
+    ),
+    _record(
+        "ward.highlight.token_pole.foreground",
+        "brightens the token pole when token-economy progress is itself the subject of the moment",
+    ),
+    # Music — vinyl platter + HARDM dot matrix.
+    _record(
+        "ward.highlight.vinyl_platter.foreground",
+        "brightens the vinyl platter when turntable manipulation is the focus and viewers should watch the spin",
+    ),
+    _record(
+        "ward.highlight.hardm_dot_matrix.pulse",
+        "pulses the HARDM dot matrix when signal density bursts so viewers see the system reading itself",
+    ),
+    _record(
+        "ward.highlight.hardm_dot_matrix.foreground",
+        "brightens the HARDM dot matrix when system self-perception is the subject of the moment",
+    ),
+    # Cognition — activity log + music surfacer.
+    _record(
+        "ward.highlight.activity_variety_log.foreground",
+        "brightens the activity variety log when activity legibility itself is the move worth showing viewers",
+    ),
+    _record(
+        "ward.highlight.activity_variety_log.dim",
+        "dims the activity variety log when current activity is sustained and meta-legibility would distract",
+    ),
+    _record(
+        "ward.highlight.music_candidate_surfacer.foreground",
+        "brightens the music candidate surfacer when track-selection cognition is the subject of the moment",
+    ),
+    # Director — objectives + structural state.
+    _record(
+        "ward.highlight.objectives_overlay.foreground",
+        "brightens the objectives overlay during research-mode streams when current objective is the subject",
+    ),
+    _record(
+        "ward.highlight.objectives_overlay.dim",
+        "dims the objectives overlay during expressive moments when research framing would cool the energy",
+    ),
+    _record(
+        "ward.highlight.structural_director.pulse",
+        "pulses the structural director ward when long-horizon scene direction shifts and the shift is content",
+    ),
+    # Perception — sierpinski geometry.
+    _record(
+        "ward.highlight.sierpinski.pulse",
+        "pulses the Sierpinski geometry layer when a fractal-burst beat fits the moment's rhythmic register",
+    ),
+    _record(
+        "ward.highlight.sierpinski.foreground",
+        "brightens the Sierpinski geometry layer when geometric expression is the subject of the move",
     ),
 ]
 

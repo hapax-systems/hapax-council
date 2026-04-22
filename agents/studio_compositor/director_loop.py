@@ -2281,6 +2281,48 @@ class DirectorLoop:
             "first. Do not let the shader chain be the only thing you "
             "drive."
         )
+        parts.append("")
+        parts.append("## GEM mural (lower-band CP437 graffiti)")
+        parts.append(
+            "The GEM ward (lower band, CP437 raster) is YOUR authoring "
+            "surface for emphasizing a fragment of the moment in mural "
+            "form. The director's prompt previously omitted gem.* from "
+            "the family enum, so the lssh-003 audit found zero gem.* "
+            "intents in the live director-intent.jsonl bus — the surface "
+            "stayed stuck on its static fallback. Two families live there:"
+        )
+        parts.append(
+            "  - **gem.emphasis**: highlight a single fragment of speech "
+            "or thought as mural-style emphasis. Frame the word, hold it, "
+            "fade it. Use when a phrase or beat genuinely deserves to be "
+            "made larger than the moment that produced it.\n"
+            "  - **gem.composition**: compose an abstract glyph sequence "
+            "— ASCII drawings, frame-by-frame animation, box-draw "
+            "containers. Use when the moment calls for a visual mark "
+            "rather than a textual one (a lull, a transition, a "
+            "punctuation between activities)."
+        )
+        parts.append(
+            "Worked example — a lyric just landed and you want to mural it:\n"
+            '  {"intent_family": "gem.emphasis", '
+            '"narrative": "carve the lyric \'cradle the static\' onto the '
+            'mural — hold it for two beats, fade", "material": "earth", '
+            '"salience": 0.65}'
+        )
+        parts.append(
+            "Worked example — the room just went quiet between activities:\n"
+            '  {"intent_family": "gem.composition", '
+            '"narrative": "draw a slow frame-pulse in CP437 box-glyphs to '
+            'mark the lull", "material": "void", "salience": 0.45}'
+        )
+        parts.append(
+            "Constraints: GEM is CP437-only (no emoji — they are silently "
+            "dropped at render time by AntiPatternKind enforcement). GEM "
+            "is Hapax's authoring surface, NOT a transcription channel — "
+            "do not mirror what the operator just said verbatim; pick a "
+            "phrase, frame, or shape worth making bigger than the live "
+            "moment."
+        )
 
         # HOMAGE composition section (spec §4.12). The active homage
         # package gives the livestream surface its aesthetic grammar;
@@ -2481,7 +2523,7 @@ class DirectorLoop:
             '  "compositional_impingements": [\n'
             "    {\n"
             '      "narrative": "<gibson-verb description of the compositional move>",\n'
-            '      "intent_family": "<camera.hero|preset.bias|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography>",\n'
+            '      "intent_family": "<camera.hero|preset.bias|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography|gem.emphasis|gem.composition>",\n'
             '      "material": "<water|fire|earth|air|void>",\n'
             '      "salience": 0.0..1.0\n'
             "    }\n"
