@@ -327,7 +327,7 @@ def _default_llm_fn(prompt: str) -> str:
         {
             "model": DEFAULT_MODEL,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 2000,
+            "max_tokens": 8192,
             "temperature": 0.7,
         }
     ).encode()
