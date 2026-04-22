@@ -51,18 +51,22 @@ The design replaces the prior R1/R2/R3 siloed-routing contract (one engine per s
 
 ### §3.1 Source → Engine contract
 
-Every broadcast-bound audio source (§4 research doc) declares a **primary engine** and a **secondary engine**. Both engines are always eligible to process the source; the active engine set per tick is determined by the arbiter (§6). The contract is:
+Every broadcast-bound audio source (§4 research doc) declares a **default mode** (`dry` or `modulated`), a **primary engine**, and a **secondary engine**. Operator-toggleable sources keep a per-source mode in a state file (`/dev/shm/hapax-audio-router/source-mode.json`) that the arbiter reads every tick. The contract is:
 
-| Source class | Primary | Secondary | Must-bypass on |
-|--------------|---------|-----------|-----------------|
-| Voice (TTS, Rode) | Evil Pet | S-4 Track 1 | consent-critical, FORTRESS |
-| Music (YT, SoundCloud) | S-4 Track 2 | Evil Pet (coloration) | programme `dry_music_only=true` |
-| Vinyl (Handytrax) | (dry by default) | Evil Pet Mode D (operator opt-in) | — |
-| Sampler (MPC) | (dry by default) | Evil Pet (AUX send) + S-4 Track 3 (optional) | — |
-| Operator SFX (assistant chimes) | (dry typically) | Evil Pet T1 (on recruitment) | — |
-| Contact mic (Cortado) | (private, never broadcast) | — | always bypassed |
+| Source class | Default | Primary | Secondary | Operator toggle | Must-bypass on |
+|--------------|---------|---------|-----------|-----------------|-----------------|
+| Voice (TTS, Rode) | modulated | Evil Pet | S-4 Track 1 | no — always modulated per directive | consent-critical, FORTRESS |
+| Music (YT, SoundCloud) | modulated | S-4 Track 2 | Evil Pet (coloration) | no — always modulated per directive | programme `dry_music_only=true` |
+| Vinyl (Handytrax) | **dry** | (dry) | Evil Pet Mode D | **`hapax-source-mode vinyl modulated\|dry`** | — |
+| Sampler (MPC) | **dry** | (dry) | Evil Pet (AUX send) + S-4 Track 3 | **`hapax-source-mode mpc modulated\|dry`** | — |
+| Operator SFX (assistant chimes) | **dry** | (dry) | Evil Pet T1 | **`hapax-source-mode sfx modulated\|dry`** | — |
+| Contact mic (Cortado) | bypassed | — | — | no — always private | always bypassed |
 
 Hardware-absence fallback: if secondary is unavailable (e.g., S-4 not USB-enumerated), source degrades to primary-only with no governance penalty.
+
+**Operator-toggleable sources** (vinyl, mpc, sfx) are modulated only when their entry in the state file is `"modulated"`. Absent file, missing key, invalid value, or any parse error fails **safe to default** (dry). Toggles take effect at the next arbiter tick (≤ 200 ms @ 5 Hz). The CLI `scripts/hapax-source-mode` is the canonical writer; arbiter (§6) is the canonical reader. Voice and music ignore the file — they are always modulated per the "no naked signal" directive (operator 2026-04-22).
+
+The data contract is in `shared/source_mode.py` (`SourceMode` Enum + `read_modes()` / `write_mode()`).
 
 ### §3.2 Engine → Preset contract
 

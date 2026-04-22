@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""hapax-source-mode — toggle dry/modulated for a single audio source.
+
+Canonical write path for the source-mode state consumed by the Evil Pet +
+S-4 arbiter. See `shared/source_mode.py` and design doc
+`docs/superpowers/specs/2026-04-21-evilpet-s4-dynamic-dual-processor-design.md`
+§3.1.
+
+Usage
+-----
+
+    hapax-source-mode                    # show current modes for all sources
+    hapax-source-mode vinyl modulated    # set vinyl → modulated
+    hapax-source-mode mpc dry            # set mpc → dry
+    hapax-source-mode sfx modulated      # set sfx → modulated
+
+Exit codes: 0 = success, 2 = usage error, 3 = unknown source.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# Allow invocation via ~/.local/bin symlink without cwd in the project root.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from shared.source_mode import TOGGLEABLE_SOURCES, SourceMode, read_modes, write_mode
+
+
+def _print_current() -> None:
+    modes = read_modes()
+    width = max(len(s) for s in TOGGLEABLE_SOURCES)
+    for source in TOGGLEABLE_SOURCES:
+        print(f"{source:<{width}}  {modes[source].value}")
+
+
+def _usage(code: int = 2) -> int:
+    print(__doc__, file=sys.stderr)
+    return code
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 1:
+        _print_current()
+        return 0
+
+    if len(argv) != 3:
+        return _usage()
+
+    source, mode_str = argv[1], argv[2].lower()
+
+    if source not in TOGGLEABLE_SOURCES:
+        print(
+            f"error: source {source!r} is not toggleable; "
+            f"must be one of {', '.join(TOGGLEABLE_SOURCES)}",
+            file=sys.stderr,
+        )
+        return 3
+
+    try:
+        mode = SourceMode(mode_str)
+    except ValueError:
+        print(
+            f"error: mode {mode_str!r} must be 'dry' or 'modulated'",
+            file=sys.stderr,
+        )
+        return _usage()
+
+    merged = write_mode(source, mode)
+    print(f"{source} → {merged[source].value}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
