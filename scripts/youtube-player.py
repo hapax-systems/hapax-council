@@ -181,8 +181,7 @@ class VideoSlot:
             audio_tempo,
             "-f",
             "pulse",
-            "-device",
-            "hapax-yt-loudnorm",
+            # Rely on WirePlumber role-based routing
             "-ac",
             "2",
             f"youtube-audio-{self.slot_id}",

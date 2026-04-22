@@ -314,25 +314,6 @@ class GemCairoSource(HomageTransitionalSource):
                 # actually, let's just use Cairo strokes with dash patterns for dotted/single/double
                 # to perfectly match the visual look without the massive overhead of thousands of glyphs.
 
-                cr.set_line_width(1.0)
-                if room.level == 1:
-                    # Double line
-                    cr.rectangle(room.x, room.y, room.w, room.h)
-                    cr.stroke()
-                    cr.rectangle(room.x + 2, room.y + 2, room.w - 4, room.h - 4)
-                    cr.stroke()
-                elif room.level == 2:
-                    # Single line
-                    cr.rectangle(room.x, room.y, room.w, room.h)
-                    cr.stroke()
-                elif room.level == 3:
-                    # Dotted line
-                    cr.save()
-                    cr.set_dash([2.0, 2.0])
-                    cr.rectangle(room.x, room.y, room.w, room.h)
-                    cr.stroke()
-                    cr.restore()
-
             cr.restore()
         except Exception:
             pass

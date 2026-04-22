@@ -37,11 +37,16 @@ class PwAudioOutput:
     """
 
     def __init__(
-        self, sample_rate: int = 24000, channels: int = 1, target: str | None = None
+        self,
+        sample_rate: int = 24000,
+        channels: int = 1,
+        target: str | None = None,
+        media_role: str = "Assistant",
     ) -> None:
         self._rate = sample_rate
         self._channels = channels
         self._default_target = target
+        self._media_role = media_role
         # One subprocess per distinct target. ``None`` keys the "no --target"
         # invocation, which pw-cat routes via the system default sink.
         self._processes: dict[str | None, subprocess.Popen] = {}
@@ -81,7 +86,7 @@ class PwAudioOutput:
                 # Assistant" and does nothing. Surfaced in
                 # ~/.cache/hapax/relay/delta-ducking-gap-20260421-05h00.md.
                 "--media-role",
-                "Assistant",
+                self._media_role,
             ]
             if target:
                 cmd.extend(["--target", target])
@@ -173,7 +178,13 @@ class PwAudioOutput:
                 self._processes.pop(target, None)
 
 
-def play_pcm(pcm: bytes, rate: int = 24000, channels: int = 1, target: str | None = None) -> None:
+def play_pcm(
+    pcm: bytes,
+    rate: int = 24000,
+    channels: int = 1,
+    target: str | None = None,
+    media_role: str = "Assistant",
+) -> None:
     """One-shot blocking PCM playback via pw-cat.
 
     Spawns a pw-cat process, writes all PCM, waits for completion.
@@ -196,7 +207,7 @@ def play_pcm(pcm: bytes, rate: int = 24000, channels: int = 1, target: str | Non
             # which the operator hears alongside bed music; tagging
             # them as Assistant lets the duck fire for those too.
             "--media-role",
-            "Assistant",
+            self._media_role,
         ]
         if target:
             cmd.extend(["--target", target])

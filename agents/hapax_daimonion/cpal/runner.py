@@ -338,6 +338,7 @@ class CpalRunner:
                 and not self._production.is_producing
             ):
                 from agents.hapax_daimonion.persona import session_end_message
+                from agents.hapax_daimonion.pw_audio_output import play_pcm
                 from agents.hapax_daimonion.session_events import close_session
 
                 msg = session_end_message(d.notifications.pending_count)
@@ -346,11 +347,11 @@ class CpalRunner:
                     try:
                         loop = asyncio.get_running_loop()
                         pcm = await loop.run_in_executor(
-                            None, d.tts.synthesize, msg, "conversation"
+                            None, d.tts.synthesize, msg, "notification"
                         )
                         if pcm:
                             await loop.run_in_executor(
-                                None, d._conversation_pipeline._audio_output.write, pcm
+                                play_pcm, pcm, 24000, 1, None, "Notification"
                             )
                     except Exception:
                         log.debug("Goodbye TTS failed", exc_info=True)
