@@ -197,3 +197,30 @@ def test_gem_frame_default_hold_ms() -> None:
 def test_gem_frame_is_hashable() -> None:
     """frozen=True dataclass — usable as dict key / set member."""
     {GemFrame(text="x"), GemFrame(text="y")}
+
+
+# ── GEM Rooms (Layer 2) ──────────────────────────────────────────────────
+
+
+def test_ensure_room_tree_caching(tmp_path: Path) -> None:
+    src = GemCairoSource(frames_path=tmp_path / "x.json")
+    tree1 = src._ensure_room_tree(1840, 240)
+    tree2 = src._ensure_room_tree(1840, 240)
+    assert tree1 is tree2
+    assert len(tree1) == 13
+
+
+def test_ensure_room_tree_recomputes_on_resize(tmp_path: Path) -> None:
+    src = GemCairoSource(frames_path=tmp_path / "x.json")
+    tree1 = src._ensure_room_tree(1840, 240)
+    tree2 = src._ensure_room_tree(1000, 200)
+    assert tree1 is not tree2
+    assert src._room_tree_w == 1000
+
+
+def test_render_rooms_handles_no_tree(tmp_path: Path) -> None:
+    src = GemCairoSource(frames_path=tmp_path / "x.json")
+    with patch(
+        "agents.studio_compositor.gem_source.GemCairoSource._ensure_room_tree", return_value=None
+    ):
+        src._render_rooms(None, 1840, 240, 0.0)  # Should not crash
