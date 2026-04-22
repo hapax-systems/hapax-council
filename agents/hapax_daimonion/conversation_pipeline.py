@@ -236,7 +236,17 @@ class ConversationPipeline:
                 f"The thought: {narrative}"
             )
         else:
-            metric = content.get("metric", "")
+            # Exploration / affordance / other sources carry their
+            # description in ``content.narrative`` (same key imagination
+            # uses). The ``metric`` key was an older schema that no
+            # producer still writes, so this lookup always returned ""
+            # and every non-imagination impingement produced an empty
+            # prompt — the LLM correctly answered [silence], and hapax
+            # went silent on the livestream (observed 2026-04-22: ~30
+            # "Generating spontaneous speech: " lines with empty body).
+            # Fall through metric → narrative so any legacy producer
+            # still works, but modern impingement shape is primary.
+            metric = content.get("metric") or content.get("narrative", "")
             prompt = (
                 f"You noticed something worth mentioning: {metric}. "
                 f"Urgency: {'high' if strength > 0.7 else 'moderate' if strength > 0.4 else 'low'}. "
