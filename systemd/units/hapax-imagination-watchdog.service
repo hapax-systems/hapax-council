@@ -1,0 +1,14 @@
+[Unit]
+Description=Imagination loop staleness watchdog — restart when current.json mtime > 600s
+After=hapax-imagination-loop.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-imagination-watchdog.sh
+Environment=HAPAX_IMAG_WATCHDOG_FILE=/dev/shm/hapax-imagination/current.json
+Environment=HAPAX_IMAG_WATCHDOG_STALE_S=600
+Environment=HAPAX_IMAG_WATCHDOG_UNIT=hapax-imagination-loop.service
+Environment=HOME=/home/hapax
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+SyslogIdentifier=hapax-imagination-watchdog
+TimeoutSec=20
