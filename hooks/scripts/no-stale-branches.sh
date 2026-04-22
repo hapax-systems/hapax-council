@@ -188,7 +188,28 @@ while IFS= read -r branch; do
     fi
 done < <(git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
 
-# Check remote branches (excluding main, HEAD, dependabot)
+# Check remote branches (excluding main, HEAD, dependabot, branches with
+# OPEN PRs owned by another session). The PR list is queried once per
+# 60 s and cached so the hook stays fast on repeat invocations.
+#
+# Rationale: when a peer session (delta/beta) has an open PR, the
+# corresponding remote branch is "ahead of main" but is NOT my stale
+# work — it's their in-flight delivery. The hook used to block alpha
+# from creating new branches whenever any peer had an open PR, which
+# turned a peer's normal cadence into an alpha-side bootstrap problem.
+# Skipping branches with open PRs preserves the original protection
+# (catch MY abandoned branches) while not punishing peer cadence.
+_open_pr_cache="/tmp/hapax-no-stale-open-prs.list"
+_open_pr_cache_ttl=60
+if [ ! -f "$_open_pr_cache" ] || [ $(($(date +%s) - $(stat -c %Y "$_open_pr_cache" 2>/dev/null || echo 0))) -gt "$_open_pr_cache_ttl" ]; then
+    if command -v gh >/dev/null 2>&1; then
+        gh pr list --state open --json headRefName --jq '.[].headRefName' 2>/dev/null > "$_open_pr_cache" || true
+    else
+        : > "$_open_pr_cache"
+    fi
+fi
+_open_pr_branches=$(cat "$_open_pr_cache" 2>/dev/null || true)
+
 while IFS= read -r branch; do
     [ -z "$branch" ] && continue
     short="${branch#origin/}"
@@ -200,6 +221,8 @@ while IFS= read -r branch; do
     echo "$short" | grep -qE '^dependabot/' && continue
     # Skip remote branches whose local counterpart is in another worktree
     echo "$other_wt_branches" | grep -qF "|${short}" && continue
+    # Skip remote branches with open PRs (peer session in-flight delivery)
+    echo "$_open_pr_branches" | grep -qFx "$short" && continue
     ahead=$(git rev-list --count "main..$branch" 2>/dev/null || echo 0)
     if [ "$ahead" -gt 0 ]; then
         # Skip if a local branch already covers this

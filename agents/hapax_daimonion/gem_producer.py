@@ -62,19 +62,129 @@ def _intent_matches(imp: Impingement) -> bool:
     return any(imp.intent_family.startswith(p) for p in GEM_INTENT_PREFIXES)
 
 
+# Meta-narration pattern: phrases that describe what the SYSTEM is about
+# to DO rather than CONTENT to render. The audit screenshot 2026-04-22
+# showed "Compose a minimal CP437 glyph sequence to mark the current
+# system status" rendered as GEM mural content — that's the LLM telling
+# itself what to compose, not the composition itself. Per
+# ``feedback_show_dont_tell_director`` the GEM ward must AUTHOR content,
+# not transcribe directives. The patterns below reject the visible
+# failure modes; new ones should be added when they appear in
+# director-intent.jsonl.
+_META_NARRATION_PREFIXES: tuple[str, ...] = (
+    "compose ",
+    "cut to ",
+    "cuts to ",
+    "cutting to ",
+    "show ",
+    "shows ",
+    "showing ",
+    "display ",
+    "displays ",
+    "displaying ",
+    "render ",
+    "renders ",
+    "rendering ",
+    "mark ",
+    "marks ",
+    "marking ",
+    "highlight ",
+    "highlights ",
+    "highlighting ",
+    "foreground ",
+    "foregrounds ",
+    "foregrounding ",
+    "background ",
+    "backgrounds ",
+    "backgrounding ",
+    "dim ",
+    "dims ",
+    "dimming ",
+    "pulse ",
+    "pulses ",
+    "pulsing ",
+    "drop ",
+    "drops ",
+    "dropping ",
+    "switch ",
+    "switches ",
+    "switching ",
+    "trigger ",
+    "triggers ",
+    "triggering ",
+    "author ",
+    "authors ",
+    "authoring ",
+    "let ",  # "let me show you", "let's bring up..."
+)
+_META_NARRATION_KEYWORDS: tuple[str, ...] = (
+    " ward",
+    " stance",
+    " preset",
+    " shader",
+    " scrim",
+    " homage",
+    " ticker",
+    " overlay",
+    " compositor",
+    " keyframe",
+    " glyph sequence",
+    " mural",
+    " surface",
+    " viewer",
+    "system status",
+    "current state",
+)
+
+
+def _is_meta_narration(text: str) -> bool:
+    """True if ``text`` is the LLM telling the system what to render
+    rather than CONTENT to render.
+
+    Two-stage check: imperative-verb prefix OR any system-vocabulary
+    keyword. Both stages are conservative — a real lyric like
+    "cut me loose" would match the prefix check but the keyword stage
+    would still pass it through; the GEM producer's caller falls back
+    to a stock frame on rejection so a false positive degrades
+    gracefully.
+    """
+    if not text:
+        return True
+    lower = text.lower().lstrip()
+    if any(lower.startswith(p) for p in _META_NARRATION_PREFIXES):
+        return True
+    return any(kw in lower for kw in _META_NARRATION_KEYWORDS)
+
+
 def _extract_emphasis_text(imp: Impingement) -> str:
     """Pull a renderable text fragment from an impingement.
 
     Preference order:
-    1. ``content.emphasis_text`` — explicit author choice
-    2. ``content.narrative`` — DMN's own framing
-    3. ``content.summary`` — generic detector output
-    4. Empty string (caller will fall back to a stock frame)
+    1. ``content.emphasis_text`` — explicit author choice. Returned
+       even if it looks meta — the explicit author field is the
+       contract, the producer trusts it.
+    2. ``content.summary`` — detector output. Trusted similarly.
+    3. ``content.narrative`` — LLM's own framing. **Rejected if it
+       reads as meta-narration** (per audit 2026-04-22, narratives
+       like "Compose a CP437 glyph sequence to mark…" leaked into
+       the mural as content rather than driving an actual compose).
+       lssh-002 (P0 GEM rendering redesign) will replace this whole
+       text-passthrough path with content authoring; until then the
+       meta-filter prevents the worst leak.
+    4. Empty string — caller falls back to a stock frame keyed on
+       material + salience rather than rendering nothing.
     """
-    for key in ("emphasis_text", "narrative", "summary"):
+    # Trusted-author keys take precedence and are returned as-is.
+    for key in ("emphasis_text", "summary"):
         value = imp.content.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    # Narrative is the LLM's own framing — filter meta-narration.
+    narrative = imp.content.get("narrative")
+    if isinstance(narrative, str) and narrative.strip():
+        text = narrative.strip()
+        if not _is_meta_narration(text):
+            return text
     return ""
 
 

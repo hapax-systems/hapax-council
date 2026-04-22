@@ -2305,15 +2305,22 @@ class DirectorLoop:
         parts.append(
             "Worked example — a lyric just landed and you want to mural it:\n"
             '  {"intent_family": "gem.emphasis", '
-            '"narrative": "carve the lyric \'cradle the static\' onto the '
-            'mural — hold it for two beats, fade", "material": "earth", '
-            '"salience": 0.65}'
+            '"narrative": "carve a lyric onto the mural — hold for two beats, fade", '
+            '"material": "earth", "salience": 0.65, '
+            '"content": {"emphasis_text": "cradle the static"}}\n'
+            "Note the split: ``narrative`` describes the MOVE (used for "
+            "retrieval), ``content.emphasis_text`` carries the actual "
+            "AUTHORED CONTENT the GEM ward will render. Always populate "
+            "``content.emphasis_text`` for gem.* — the producer rejects "
+            "narratives that read as meta-instructions and falls back to "
+            "stock frames."
         )
         parts.append(
             "Worked example — the room just went quiet between activities:\n"
             '  {"intent_family": "gem.composition", '
             '"narrative": "draw a slow frame-pulse in CP437 box-glyphs to '
-            'mark the lull", "material": "void", "salience": 0.45}'
+            'mark the lull", "material": "void", "salience": 0.45, '
+            '"content": {"emphasis_text": "•   •   •"}}'
         )
         parts.append(
             "Constraints: GEM is CP437-only (no emoji — they are silently "
@@ -2321,7 +2328,12 @@ class DirectorLoop:
             "is Hapax's authoring surface, NOT a transcription channel — "
             "do not mirror what the operator just said verbatim; pick a "
             "phrase, frame, or shape worth making bigger than the live "
-            "moment."
+            "moment. The narrative-leakage audit (operator 2026-04-22) "
+            "caught the LLM rendering its own stage-direction narratives "
+            '("Compose a CP437 glyph sequence to mark…") as the mural '
+            "content; the producer now filters those, but you should "
+            "supply ``content.emphasis_text`` so the producer has actual "
+            "content to render rather than falling back."
         )
 
         # HOMAGE composition section (spec §4.12). The active homage
@@ -2522,7 +2534,7 @@ class DirectorLoop:
             '  "grounding_provenance": ["<signal.path.from.perceptual_field>", ...],\n'
             '  "compositional_impingements": [\n'
             "    {\n"
-            '      "narrative": "<gibson-verb description of the compositional move>",\n'
+            '      "narrative": "<gibson-verb description of the compositional move (used for cosine retrieval against the affordance catalog — not displayed to viewers; do NOT write content for any ward here, write what the move IS)>",\n'
             '      "intent_family": "<camera.hero|preset.bias|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography|gem.emphasis|gem.composition>",\n'
             '      "material": "<water|fire|earth|air|void>",\n'
             '      "salience": 0.0..1.0\n'

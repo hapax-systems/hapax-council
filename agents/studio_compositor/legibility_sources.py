@@ -403,13 +403,17 @@ class ActivityHeaderCairoSource(HomageTransitionalSource):
         ns = _read_narrative_state()
         intent = _read_latest_intent()
         activity = str(ns.get("activity") or intent.get("activity") or "—").upper()
+        # Narrative-leakage audit (operator screenshot 2026-04-22): the
+        # ``gloss = best_impingement.narrative[:48]`` line previously
+        # rendered the LLM's directorial narrative ("Cut to the wide
+        # shot of the room") inline as ``[ACTIVITY | gloss]``. That
+        # violates ``feedback_show_dont_tell_director``: wards must
+        # not narrate compositor / director actions — the cut IS the
+        # communication, not a label about the cut. The activity badge
+        # stays as the stance-of-self signal; the dispatch path
+        # (camera-hero, ward.highlight, preset.bias) handles the
+        # compositional move itself.
         gloss = ""
-        imps = [
-            i for i in (intent.get("compositional_impingements") or []) if not i.get("diagnostic")
-        ]
-        if imps:
-            best = max(imps, key=lambda i: i.get("salience", 0.0))
-            gloss = str(best.get("narrative", ""))[:48]
 
         if self._last_activity is not None and activity != self._last_activity:
             self._activity_flash_started_at = t
