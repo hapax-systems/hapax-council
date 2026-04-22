@@ -35,7 +35,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import time
 import urllib.request
 from collections.abc import Callable
@@ -322,16 +321,8 @@ def _default_llm_fn(prompt: str) -> str:
     ``_default_llm_fn`` shape so the two stay symmetric.
     """
     litellm_url = os.environ.get("HAPAX_LITELLM_URL", "http://localhost:4000/v1/chat/completions")
-    try:
-        result = subprocess.run(
-            ["pass", "show", "litellm/master-key"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        key = result.stdout.strip()
-    except Exception:
-        key = ""
+    from shared.config import LITELLM_KEY as key
+
     body = json.dumps(
         {
             "model": DEFAULT_MODEL,
