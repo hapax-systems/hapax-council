@@ -184,8 +184,15 @@ def test_token_pole_idle_no_blink() -> None:
     must stay under threshold. The post-cascade explosion is a separate
     transient; the steady-state path is what the operator sees most of
     the time."""
+    import random
+
     from agents.studio_compositor.token_pole import TokenPoleCairoSource
 
+    # Particle/ember spawn uses module-level ``random`` without a seed,
+    # so the luminance trajectory varies across runs. Pinning the seed
+    # locks in a representative sequence; the blink bound has to hold
+    # on it (and any other seed the operator picks to spot-check).
+    random.seed(0)
     pole = TokenPoleCairoSource()
     # Steady ledger — no fresh explosion event in the audit window.
     result = audit_ward_blink(
