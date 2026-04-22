@@ -1070,6 +1070,20 @@ class StudioCompositor:
                 "runtime layout mutation via window.__logos / MCP is unavailable"
             )
 
+        try:
+            from agents.studio_compositor.recent_impingements_publisher import (
+                RecentImpingementsPublisher,
+            )
+
+            self._recent_pub = RecentImpingementsPublisher(
+                src=Path("/dev/shm/hapax-dmn/impingements.jsonl"),
+                dst=Path("/dev/shm/hapax-compositor/recent-impingements.json"),
+            )
+            self._recent_pub.start()
+        except Exception:
+            self._recent_pub = None
+            log.exception("failed to start recent-impingements publisher")
+
         # Task #150 Phase 1 — start the scene classifier thread when
         # HAPAX_SCENE_CLASSIFIER_ACTIVE is set. Flag-gated; returns None
         # (and logs) when inactive, so this is safe by default.
@@ -1106,6 +1120,12 @@ class StudioCompositor:
             except Exception:
                 log.exception("CommandServer.stop failed")
             self._command_server = None
+        if getattr(self, "_recent_pub", None) is not None:
+            try:
+                self._recent_pub.stop()
+            except Exception:
+                log.exception("recent_pub.stop failed")
+            self._recent_pub = None
         if self._layout_file_watcher is not None:
             try:
                 self._layout_file_watcher.stop()
