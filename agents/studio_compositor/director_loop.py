@@ -23,6 +23,7 @@ from pathlib import Path
 from agents.studio_compositor import metrics
 from agents.studio_compositor.audio_control import SlotAudioControl
 from agents.studio_compositor.tts_client import DaimonionTtsClient
+from shared.config import LITELLM_KEY
 from shared.director_intent import CompositionalImpingement, DirectorIntent
 from shared.persona_prompt_composer import compose_persona_prompt, role_scope_line
 from shared.stimmung import Stance
@@ -649,7 +650,6 @@ def _jsonl_log_path(now: datetime | None = None) -> Path:
 
 
 LITELLM_URL = "http://localhost:4000/v1/chat/completions"
-LITELLM_KEY = ""
 
 # Director commentary model. Default is the local Qwen3.5-9B substrate via
 # LiteLLM (`local-fast`) — no cloud billing dependency; keeps the stream
@@ -733,15 +733,6 @@ def _read_research_marker() -> str | None:
     _research_marker_cache["condition_id"] = condition_id
     _research_marker_cache["loaded_at"] = now
     return condition_id
-
-
-def _get_litellm_key() -> str:
-    global LITELLM_KEY
-    if not LITELLM_KEY:
-        from shared.config import LITELLM_KEY as key
-
-        LITELLM_KEY = key
-    return LITELLM_KEY
 
 
 def _render_active_objectives_block() -> str:
@@ -2669,8 +2660,7 @@ class DirectorLoop:
         empty-return path is identical to a normal LLM timeout, so the
         broadcast still gets a compositional impingement on every tick.
         """
-        key = _get_litellm_key()
-        if not key:
+        if not LITELLM_KEY:
             return ""
 
         if not _DIRECTOR_LLM_LOCK.acquire(blocking=False):
@@ -2780,7 +2770,7 @@ class DirectorLoop:
                 req = urllib.request.Request(
                     LITELLM_URL,
                     body,
-                    {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                    {"Content-Type": "application/json", "Authorization": f"Bearer {LITELLM_KEY}"},
                 )
                 try:
                     # 2026-04-17 director-LLM timeout sweep:
