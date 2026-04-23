@@ -170,22 +170,17 @@ class ObjectivesOverlay(CairoSource):
         padding = 20
         row_h = 72
         header_h = 40
-        panel_w = 560
-        panel_h = header_h + row_h * len(objectives) + padding
+        # panel_w / panel_h removed 2026-04-23 with the panel scrim +
+        # accent bar (zero-container-opacity directive). Row layout
+        # still uses row_h + header_h below.
         # Anchor to top-left; compositor may re-position via its surface layout.
         x, y = padding, padding
 
         cr.save()
 
-        # Panel background
-        cr.set_source_rgba(0.10, 0.10, 0.10, 0.88)
-        cr.rectangle(x, y, panel_w, panel_h)
-        cr.fill()
-
-        # Yellow accent bar (Gruvbox hard dark bright-yellow)
-        cr.set_source_rgba(0.98, 0.74, 0.18, 1.0)
-        cr.rectangle(x, y, 4, panel_h)
-        cr.fill()
+        # 2026-04-23 operator directive: zero container opacity. Panel
+        # scrim and accent bar retired — text now reads directly on the
+        # underlying substrate via outline contrast alone.
 
         # Header
         cr.set_source_rgba(0.98, 0.92, 0.78, 1.0)  # fg1
@@ -202,13 +197,12 @@ class ObjectivesOverlay(CairoSource):
         cr.set_font_size(18)
         for i, obj in enumerate(objectives):
             row_y = y + header_h + i * row_h
-            # Priority tag (colored pill)
+            # Priority tag — pill chrome retired 2026-04-23; priority colour
+            # now applied directly to the glyphs so the tag reads as
+            # coloured text on substrate (not text inside a coloured pill).
             priority = obj.get("priority", "normal")
             r, g, b = _priority_color(priority)
-            cr.set_source_rgba(r, g, b, 1.0)
-            cr.rectangle(x + 16, row_y + 12, 80, 24)
-            cr.fill()
-            cr.set_source_rgba(0.10, 0.10, 0.10, 1.0)  # bg0 text
+            cr.set_source_rgba(r, g, b, 1.0)  # priority text colour
             cr.select_font_face(
                 "JetBrainsMono Nerd Font", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD
             )

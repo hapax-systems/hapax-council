@@ -219,13 +219,10 @@ class VinylPlatterCairoSource(HomageTransitionalSource):
         cy = canvas_h / 2.0
         radius = min(canvas_w, canvas_h) / 2.0 - _BORDER_MARGIN_PX
 
-        # Background (package ``background`` role, transparent corners).
-        bg_rgba = pkg.resolve_colour("background")
-        cr.save()
-        cr.set_source_rgba(*bg_rgba)
-        cr.rectangle(0, 0, canvas_w, canvas_h)
-        cr.fill()
-        cr.restore()
+        # 2026-04-23 operator directive: zero container opacity. Canvas
+        # background fill retired — corners outside the platter disk are
+        # now transparent, letting the substrate show through.
+        _ = pkg  # package still needed below for tint + border markers
 
         # Platter disk (camera frame, circle-cropped, motion-blurred).
         self._draw_platter_disk(cr, cx, cy, radius, rate, frame_path)
@@ -354,14 +351,11 @@ class VinylPlatterCairoSource(HomageTransitionalSource):
         cx = canvas_w / 2.0
         cy = canvas_h / 2.0
 
-        # 1 px line in the grammar's ``punctuation`` role (muted grey).
-        pr, pg, pb, pa = pkg.resolve_colour(pkg.grammar.punctuation_colour_role)
-        cr.save()
-        cr.set_source_rgba(pr, pg, pb, pa)
-        cr.set_line_width(1.0)
-        cr.rectangle(0.5, 0.5, canvas_w - 1, canvas_h - 1)
-        cr.stroke()
-        cr.restore()
+        # 2026-04-23 operator directive: zero container opacity. The
+        # 1 px canvas-rectangle border is chrome — retired. The ``»»»``
+        # cardinal markers below remain (they're content glyphs, not
+        # container decoration).
+        _ = pkg  # package still used for the marker colour below
 
         # ``»»»`` at N / E / S / W. Uses the ``render_text`` helper so
         # Pango does the glyph work when the typelibs are present; falls

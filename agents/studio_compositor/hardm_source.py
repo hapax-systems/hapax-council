@@ -815,32 +815,18 @@ class HardmDotMatrix(HomageTransitionalSource):
         The combination is additive-with-clamp at 1.0: every contribution
         can only brighten a cell, never darken it past the base signal.
         """
-        # Decay contribution: if the cell has been active recently but
-        # the current signal is idle, we keep some brightness proportional
-        # to the exponential decay of the last-seen level.
+        # 2026-04-23 operator flagged HARDM as still blinking in sync with
+        # CBIP at ~500ms sinewave period — ripple_envelope's 0.4s linear
+        # fade + per-cell exp decay were the culprit. Both contributions
+        # retired. HARDM now composites base_level + rd_underlay only, so
+        # motion is smooth (slow reaction-diffusion) and new signals fade
+        # in/out with base_level transitions instead of per-event envelope
+        # pops. Ripple list still populated upstream for potential future
+        # re-enable with a properly smoothed envelope.
         decay_contribution = 0.0
-        if base_level < 0.05:
-            since = now - self._cell_last_active[cell_idx]
-            if since >= 0.0:
-                falloff = np.exp(-since / DECAY_TAU_DEFAULT_S)
-                decay_contribution = float(self._cell_last_level[cell_idx] * falloff)
-
-        # Ripple contribution: in-flight ripple wavefronts boost cells
-        # within a +neighbourhood of the origin. Amplitude decays over
-        # the ripple lifetime.
         ripple_contribution = 0.0
-        for origin_idx, ts in self._ripples:
-            age = now - ts
-            if age < 0.0 or age > RIPPLE_LIFETIME_S:
-                continue
-            envelope = 1.0 - (age / RIPPLE_LIFETIME_S)  # 1 → 0 linear
-            origin_row, origin_col = divmod(origin_idx, GRID_COLS)
-            if origin_row == row and origin_col == col:
-                ripple_contribution = max(ripple_contribution, 0.6 * envelope)
-                continue
-            for dr, dc, amp in _RIPPLE_NEIGHBOURS:
-                if origin_row + dr == row and origin_col + dc == col:
-                    ripple_contribution = max(ripple_contribution, amp * 4.0 * envelope)
+        _ = now  # retained for future re-enable
+        _ = (cell_idx, row, col)  # retained for future re-enable
 
         # RD underlay: V field modulates the cell by up to ±0.25. This is
         # the source of "internal motion always present".

@@ -248,37 +248,13 @@ def _paint_bitchx_bg(
     *,
     ward_id: str | None = None,
 ) -> None:
-    """Fill a CP437-style background — sharp corners, no rounded rects."""
-    if ward_id is not None:
-        try:
-            from agents.studio_compositor.homage.rendering import (
-                paint_bitchx_bg as _shared_paint_bitchx_bg,
-            )
+    """Fill a CP437-style background — sharp corners, no rounded rects.
 
-            _shared_paint_bitchx_bg(cr, w, h, pkg, ward_id=ward_id)
-            border = _stream_mode_accent()
-            if border is not None:
-                cr.save()
-                cr.set_source_rgba(*border)
-                cr.set_line_width(1.0)
-                cr.rectangle(0.5, 0.5, w - 1.0, h - 1.0)
-                cr.stroke()
-                cr.restore()
-            return
-        except Exception:
-            pass
-    r, g, b, a = pkg.resolve_colour("background")
-    cr.save()
-    cr.set_source_rgba(r, g, b, a)
-    cr.rectangle(0, 0, w, h)
-    cr.fill()
-    border = _stream_mode_accent()
-    if border is not None:
-        cr.set_source_rgba(*border)
-        cr.set_line_width(1.0)
-        cr.rectangle(0.5, 0.5, w - 1.0, h - 1.0)
-        cr.stroke()
-    cr.restore()
+    2026-04-23 operator directive: zero container opacity. The shared
+    primitive and the local stream-mode accent border are both chrome;
+    retired. Signature preserved for back-compat with existing callers.
+    """
+    _ = (cr, w, h, pkg, ward_id)  # params retained; unused
 
 
 def _paint_inverse_flash(
@@ -289,15 +265,15 @@ def _paint_inverse_flash(
     *,
     alpha: float,
 ) -> None:
-    """Paint a translucent rectangle covering the ward at ``alpha``."""
-    if alpha <= 0.0:
-        return
-    r, g, b, _a = rgba
-    cr.save()
-    cr.set_source_rgba(r, g, b, max(0.0, min(1.0, alpha)))
-    cr.rectangle(0, 0, w, h)
-    cr.fill()
-    cr.restore()
+    """Paint a translucent rectangle covering the ward at ``alpha``.
+
+    2026-04-23 operator directive: zero container opacity. Inverse flash
+    was already neutralized in practice (``_flash_alpha`` returns 0.0
+    since the no-flashing directive); the rectangle fill itself is also
+    retired now so the function cannot reintroduce chrome if a future
+    caller passes a non-zero alpha.
+    """
+    _ = (cr, w, h, rgba, alpha)  # params retained; unused
 
 
 def _flash_alpha(
