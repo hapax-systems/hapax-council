@@ -139,19 +139,6 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_h": 40,
             },
         ),
-        # HOMAGE follow-on #123 (2026-04-18) — ChatAmbientWard replaces
-        # the static ChatKeywordLegendCairoSource. Lower-content-band,
-        # 3–4 BitchX-grammar cells rendering aggregate chat temperature.
-        SourceSchema(
-            id="chat_ambient",
-            kind="cairo",
-            backend="cairo",
-            params={
-                "class_name": "ChatAmbientWard",
-                "natural_w": 560,
-                "natural_h": 40,
-            },
-        ),
         SourceSchema(
             id="grounding_provenance_ticker",
             kind="cairo",
@@ -322,11 +309,6 @@ _FALLBACK_LAYOUT = Layout(
             geometry=SurfaceGeometry(kind="rect", x=1800, y=290, w=100, h=40),
             z_order=35,
         ),
-        SurfaceSchema(
-            id="chat-legend-right",
-            geometry=SurfaceGeometry(kind="rect", x=1760, y=400, w=160, h=400),
-            z_order=20,
-        ),
         # 2026-04-23 Gemini-reapproach Plan B Phase B1 — move grounding-ticker
         # ABOVE gem-mural-bottom (y=820..1060) and to the RIGHT of pip-ll
         # (x=20..420, the album quadrant). New (440, 770, 480, 40) sits in
@@ -398,7 +380,6 @@ _FALLBACK_LAYOUT = Layout(
         # Volitional-director Phase 4 assignments.
         Assignment(source="activity_header", surface="activity-header-top"),
         Assignment(source="stance_indicator", surface="stance-indicator-tr"),
-        Assignment(source="chat_ambient", surface="chat-legend-right"),
         Assignment(source="grounding_provenance_ticker", surface="grounding-ticker-bl"),
         # Epic 2 Phase C hothouse assignments.
         Assignment(

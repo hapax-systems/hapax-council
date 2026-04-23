@@ -100,22 +100,6 @@
       ]
     },
     {
-      "id": "chat_ambient",
-      "kind": "cairo",
-      "backend": "cairo",
-      "params": {
-        "class_name": "ChatAmbientWard",
-        "natural_w": 320,
-        "natural_h": 96
-      },
-      "update_cadence": "rate",
-      "rate_hz": 2.0,
-      "tags": [
-        "legibility",
-        "communication"
-      ]
-    },
-    {
       "id": "captions",
       "kind": "cairo",
       "backend": "cairo",
@@ -442,24 +426,6 @@
       "update_cadence": "always"
     },
     {
-      "id": "chat-legend-right",
-      "geometry": {
-        "kind": "rect",
-        "x": 1760,
-        "y": 400,
-        "w": 160,
-        "h": 400,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 20,
-      "update_cadence": "always"
-    },
-    {
       "id": "captions_strip",
       "geometry": {
         "kind": "rect",
@@ -684,14 +650,6 @@
     {
       "source": "stance_indicator",
       "surface": "stance-indicator-tr",
-      "transform": {},
-      "opacity": 1.0,
-      "per_assignment_effects": [],
-      "non_destructive": true
-    },
-    {
-      "source": "chat_ambient",
-      "surface": "chat-legend-right",
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
