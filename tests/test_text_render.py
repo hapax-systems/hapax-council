@@ -15,11 +15,13 @@ import cairo
 import pytest
 
 from agents.studio_compositor.text_render import (
+    MAX_PANGO_TEXT_CHARS,
     OUTLINE_OFFSETS_4,
     OUTLINE_OFFSETS_8,
     TextChange,
     TextContent,
     TextStyle,
+    _cap_text,
     measure_text,
     render_text,
     render_text_to_surface,
@@ -304,6 +306,72 @@ def test_text_content_update_persists_new_style():
     content = TextContent(style=TextStyle(text="hello"))
     content.update(TextStyle(text="world"))
     assert content.style.text == "world"
+
+
+# ---------------------------------------------------------------------------
+# Oversized-text truncation (2026-04-23)
+# ---------------------------------------------------------------------------
+
+
+class TestTextCap:
+    """Regression pin for the 98/hour ``cairo.ImageSurface failed`` spam
+    observed when an overlay-zone's Obsidian note source held 164 K chars.
+    Pango would lay out the full blob into a 310 K-pixel-tall layout and
+    Cairo's ``ImageSurface`` rejected the dimensions; the ward render
+    would drop every tick until the content rotated.
+    """
+
+    def test_short_text_untouched(self):
+        text = "hello world\nshort text"
+        assert _cap_text(text, markup_mode=False) == text
+        assert _cap_text(text, markup_mode=True) == text
+
+    def test_long_plain_text_truncates_with_indicator(self):
+        text = "x" * (MAX_PANGO_TEXT_CHARS + 100)
+        out = _cap_text(text, markup_mode=False)
+        assert len(out) < len(text)
+        assert out.startswith("x" * MAX_PANGO_TEXT_CHARS)
+        assert "[truncated]" in out
+
+    def test_long_markup_truncates_at_tag_boundary(self):
+        # Text with markup tags interleaved; cap at 8000 must not split a
+        # tag. Construct input so the raw cut would land mid-tag.
+        prefix = "<b>hello</b> " * 400  # ~5200 chars
+        pad = "a" * (MAX_PANGO_TEXT_CHARS - len(prefix) - 5)
+        tail_tag = "<b>tail</b>" * 400  # extends past the cap
+        text = prefix + pad + tail_tag
+        assert len(text) > MAX_PANGO_TEXT_CHARS
+        out = _cap_text(text, markup_mode=True)
+        # Must end on a ``>`` (closing tag) before the truncation indicator,
+        # not mid-tag.
+        body = out.removesuffix("\n<i>…[truncated]</i>")
+        assert body.endswith(">"), f"body ends with {body[-20:]!r}"
+        assert "[truncated]" in out
+
+    def test_markup_truncation_no_tag_fallback(self):
+        # Pure text in markup mode (no ``<``/``>``) should still cap without
+        # error, just at the raw char boundary.
+        text = "hello world " * 1000  # plenty over cap, no tags
+        out = _cap_text(text, markup_mode=True)
+        assert len(out) < len(text)
+        assert "[truncated]" in out
+
+    @requires_pango
+    def test_oversized_input_renders_without_cairo_error(self):
+        # End-to-end: the concrete failure mode — a 160 K-char blob that
+        # would have raised ``cairo.Error`` before the cap — now produces
+        # a valid surface.
+        oversized = "Lorem ipsum dolor sit amet. " * 6000  # ~168 K chars
+        style = TextStyle(
+            text=oversized,
+            font_description="Sans 14",
+            max_width_px=500,
+            wrap="word_char",
+        )
+        surface, sw, sh = render_text_to_surface(style, padding_px=4)
+        assert surface is not None
+        assert 0 < sw < 32767
+        assert 0 < sh < 32767
 
 
 # ---------------------------------------------------------------------------

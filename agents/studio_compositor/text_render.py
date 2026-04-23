@@ -51,6 +51,46 @@ except (ImportError, ValueError):
     PangoCairo = None  # type: ignore[assignment]
     _HAS_PANGO = False
 
+# Cairo ImageSurface has a hard ~32767-pixel dimension cap (FORMAT_ARGB32
+# internal int16 stride math). A naïve ``render_text_to_surface`` call
+# with an Obsidian note or other multi-kilobyte blob laid out at 500-ish
+# pixels wide produces surfaces 300000+ pixels tall and throws
+# ``cairo.Error: invalid value``, losing the ward render for the tick.
+# Cap the text character count well below any realistic laid-out height
+# so Pango / Cairo stay inside limits regardless of font size or wrap.
+#
+# Observed pre-cap: text_len=164511, sh=310890. Cap of 8000 at 14 px line
+# height / 80 chars per line = ~1400 px tall, well within Cairo limits.
+# Truncation indicator preserves the fact that content was trimmed.
+MAX_PANGO_TEXT_CHARS: int = 8000
+_TRUNCATION_INDICATOR: str = "\n…[truncated]"
+_MARKUP_TRUNCATION_INDICATOR: str = "\n<i>…[truncated]</i>"
+
+
+def _cap_text(text: str, *, markup_mode: bool) -> str:
+    """Cap ``text`` to :data:`MAX_PANGO_TEXT_CHARS` with a truncation tail.
+
+    In markup mode, truncating mid-tag would produce invalid Pango markup
+    (``layout.set_markup`` raises ``GLib.GError``). The cap therefore
+    walks back from the char limit to the last ``>`` in the text (the
+    close of the enclosing tag) so the truncation never splits a tag.
+    If no ``>`` exists before the limit, falls back to the raw cap
+    — callers in that case have no tags in the first kilobytes anyway,
+    so mid-stream truncation can't corrupt markup that isn't there.
+    """
+    if len(text) <= MAX_PANGO_TEXT_CHARS:
+        return text
+    if markup_mode:
+        # Walk back to the last ``>`` to avoid splitting a tag.
+        safe_end = text.rfind(">", 0, MAX_PANGO_TEXT_CHARS + 1)
+        if safe_end < 0:
+            safe_end = MAX_PANGO_TEXT_CHARS
+        else:
+            safe_end += 1  # include the closing ``>``
+        return text[:safe_end] + _MARKUP_TRUNCATION_INDICATOR
+    return text[:MAX_PANGO_TEXT_CHARS] + _TRUNCATION_INDICATOR
+
+
 # Standard outline offset patterns. Callers can supply custom tuples,
 # but these two cover the existing OverlayZone (8-offset thick) and
 # AlbumOverlay (4-offset axis-aligned) cases verbatim.
@@ -138,10 +178,11 @@ def _build_layout(cr: cairo.Context, style: TextStyle) -> _LayoutBundle:
         layout.set_wrap(wrap_map[style.wrap])
     if style.line_spacing != 1.0:
         layout.set_line_spacing(style.line_spacing)
+    text = _cap_text(style.text, markup_mode=style.markup_mode)
     if style.markup_mode:
-        layout.set_markup(style.text, -1)
+        layout.set_markup(text, -1)
     else:
-        layout.set_text(style.text, -1)
+        layout.set_text(text, -1)
     width_px, height_px = layout.get_pixel_size()
     return _LayoutBundle(layout=layout, width_px=width_px, height_px=height_px)
 
