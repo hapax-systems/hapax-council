@@ -50,6 +50,10 @@ from .homage.transitional_source import HomageTransitionalSource
 if TYPE_CHECKING:
     import cairo
 
+    from .gem_substrate import NDArrayF32
+else:
+    NDArrayF32 = object
+
 log = logging.getLogger(__name__)
 
 DEFAULT_FRAMES_PATH = Path("/dev/shm/hapax-compositor/gem-frames.json")
@@ -338,7 +342,7 @@ class GemCairoSource(HomageTransitionalSource):
     def _paint_substrate_grid(
         self,
         cr: cairo.Context,
-        bright: object,  # np.ndarray[grid_h, grid_w] of float32 in [0, ceiling]
+        bright: NDArrayF32,  # np.ndarray[grid_h, grid_w] of float32 in [0, ceiling]
         grid_w: int,
         grid_h: int,
         canvas_w: int,

@@ -22,6 +22,19 @@ input. It is a fixed background process owned by the GEM renderer.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-checking-only: numpy is always present at runtime in the council
+    # baseline, but the try/except guard below preserves graceful degradation.
+    # Pyright reads this branch and resolves NDArrayF32 to numpy's actual
+    # type so substrate field/return annotations type-check correctly.
+    import numpy as _np_for_types
+    from numpy.typing import NDArray
+
+    NDArrayF32 = NDArray[_np_for_types.float32]
+else:
+    NDArrayF32 = object  # runtime-only fallback when numpy missing
 
 try:
     import numpy as np
@@ -63,8 +76,8 @@ class SubstrateState:
     decays to a flat plain.
     """
 
-    u: object  # np.ndarray (declared object so module import doesn't fail w/o numpy)
-    v: object
+    u: NDArrayF32  # numpy float32 array shape (grid_h, grid_w); object at runtime if numpy missing
+    v: NDArrayF32
     grid_w: int
     grid_h: int
 
@@ -115,7 +128,7 @@ def _step(
     state.v = v + dt * (dv * lap_v + uvv - (f + k) * v)
 
 
-def _to_brightness(state: SubstrateState, *, ceiling: float) -> object:
+def _to_brightness(state: SubstrateState, *, ceiling: float) -> NDArrayF32:
     """Project the V channel to a clamped brightness array in `[0, ceiling]`.
 
     V values can briefly exceed 1.0 during transient growth phases; the
@@ -172,7 +185,7 @@ class GemSubstrate:
         for _ in range(self._ticks_per_render):
             _step(self._state)
 
-    def brightness_array(self) -> object:
+    def brightness_array(self) -> NDArrayF32:
         """Return the clamped brightness array (shape `(grid_h, grid_w)`)."""
         return _to_brightness(self._state, ceiling=self._ceiling)
 
