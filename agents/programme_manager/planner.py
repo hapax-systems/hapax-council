@@ -42,6 +42,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from shared.config import LITELLM_KEY
 from shared.programme import ProgrammePlan
 
 log = logging.getLogger(__name__)
@@ -321,7 +322,6 @@ def _default_llm_fn(prompt: str) -> str:
     ``_default_llm_fn`` shape so the two stay symmetric.
     """
     litellm_url = os.environ.get("HAPAX_LITELLM_URL", "http://localhost:4000/v1/chat/completions")
-    from shared.config import LITELLM_KEY as key
 
     body = json.dumps(
         {
@@ -334,7 +334,7 @@ def _default_llm_fn(prompt: str) -> str:
     req = urllib.request.Request(
         litellm_url,
         body,
-        {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        {"Content-Type": "application/json", "Authorization": f"Bearer {LITELLM_KEY}"},
     )
     with urllib.request.urlopen(req, timeout=_LLM_TIMEOUT_S) as resp:
         data = json.loads(resp.read())
