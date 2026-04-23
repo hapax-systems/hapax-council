@@ -51,14 +51,23 @@ log = logging.getLogger("local_music_player")
 DEFAULT_SELECTION_PATH = Path("/dev/shm/hapax-compositor/music-selection.json")
 DEFAULT_ATTRIBUTION_PATH = Path("/dev/shm/hapax-compositor/music-attribution.txt")
 DEFAULT_POLL_S = 1.0
-# Explicit default sink: the operator's loudness-normalizing PipeWire
-# filter chain. Per the 2026-04-23 directive, EVERY broadcast-bound music
-# source must enter the normalization path. We default to this sink by
-# name so the routing is observable + auditable rather than implicit
-# in pactl's get-default-sink (which can drift if user-default changes).
-# Override via HAPAX_MUSIC_PLAYER_SINK env when off-broadcast monitoring
-# is required.
-DEFAULT_SINK = "hapax-pc-loudnorm"
+# Explicit default sink: the music-mastering-style loudness normalizer
+# (config/pipewire/hapax-music-loudnorm.conf). Earlier revision pointed
+# at hapax-pc-loudnorm, which is tuned for diverse PC audio (browser,
+# games, notifications) and pumped audibly on music drum transients
+# (operator observation 2026-04-23 on UNKNOWNTRON: "big pumping").
+#
+# hapax-music-loudnorm uses gentle, transient-preserving compression:
+# threshold -6 dB, ratio 1.5:1, attack 30ms, release 800ms — preserves
+# the mastered dynamics of the source. Both sinks land on the same
+# L-12 USB return downstream; the only difference is the dynamics
+# treatment.
+#
+# Per the 2026-04-23 directive, EVERY broadcast-bound music source
+# enters the normalization path — this sink IS the music path.
+# Override via HAPAX_MUSIC_PLAYER_SINK env when off-broadcast
+# monitoring is required.
+DEFAULT_SINK = "hapax-music-loudnorm"
 
 
 # ── Config ──────────────────────────────────────────────────────────────────

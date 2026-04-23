@@ -108,9 +108,9 @@ def test_build_local_pwcat_explicit_sink() -> None:
 
 def test_build_local_pwcat_normalization_sink() -> None:
     """Default sink lands on the loudness-normalizing filter chain."""
-    cmd = _build_local_pwcat("/abs/song.flac", sink="hapax-pc-loudnorm")
+    cmd = _build_local_pwcat("/abs/song.flac", sink="hapax-music-loudnorm")
     assert "--target" in cmd
-    assert "hapax-pc-loudnorm" in cmd
+    assert "hapax-music-loudnorm" in cmd
 
 
 def test_build_url_pipeline_three_stage() -> None:
@@ -130,8 +130,8 @@ def test_build_url_pipeline_three_stage() -> None:
 
 def test_build_url_pipeline_normalization_sink() -> None:
     """URL pipeline routes through the operator's loudness-normalizing sink."""
-    yt, ffmpeg, pw = _build_url_pipeline("https://x", sink="hapax-pc-loudnorm")
-    assert "hapax-pc-loudnorm" in pw
+    yt, ffmpeg, pw = _build_url_pipeline("https://x", sink="hapax-music-loudnorm")
+    assert "hapax-music-loudnorm" in pw
 
 
 # ── PlayerConfig from env ───────────────────────────────────────────────────
@@ -154,7 +154,7 @@ def test_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
     cfg = PlayerConfig.from_env()
     assert cfg.poll_s == 1.0
-    assert cfg.sink == "hapax-pc-loudnorm"
+    assert cfg.sink == "hapax-music-loudnorm"
 
 
 def test_config_from_env_sink_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,7 +169,7 @@ def test_config_from_env_empty_sink_falls_back_to_default(
     """Empty string env falls back to the loudness-normalizing default."""
     monkeypatch.setenv("HAPAX_MUSIC_PLAYER_SINK", "")
     cfg = PlayerConfig.from_env()
-    assert cfg.sink == "hapax-pc-loudnorm"
+    assert cfg.sink == "hapax-music-loudnorm"
 
 
 # ── tick: watch-loop core ───────────────────────────────────────────────────
@@ -182,7 +182,7 @@ def _make_config(tmp_path: Path) -> PlayerConfig:
         repo_path=tmp_path / "tracks.jsonl",
         sc_repo_path=tmp_path / "soundcloud.jsonl",
         poll_s=0.01,
-        sink="hapax-pc-loudnorm",
+        sink="hapax-music-loudnorm",
     )
 
 
@@ -246,7 +246,7 @@ def test_tick_url_invokes_three_stage_pipeline(tmp_path: Path) -> None:
     assert ffmpeg_cmd[0] == "ffmpeg"
     assert pw_cmd[0] == "pw-cat"
     # Sink target propagates to the final stage
-    assert "hapax-pc-loudnorm" in pw_cmd
+    assert "hapax-music-loudnorm" in pw_cmd
 
 
 def test_tick_writes_attribution(tmp_path: Path) -> None:
