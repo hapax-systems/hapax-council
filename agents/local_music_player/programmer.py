@@ -311,7 +311,11 @@ class MusicProgrammer:
     # ── selection ───────────────────────────────────────────────────────
 
     def _pool(self) -> list[LocalMusicTrack]:
-        """All broadcast-safe tracks across local + SC repos."""
+        """All broadcast-safe tracks across local + SC repos.
+
+        Triggers ``maybe_reload`` on each repo so newly-ingested tracks
+        on disk become eligible without restarting the daemon.
+        """
         repos: list[LocalMusicRepo] = []
         if self._local_repo is not None:
             repos.append(self._local_repo)
@@ -322,6 +326,12 @@ class MusicProgrammer:
             return []
         tracks: list[LocalMusicTrack] = []
         for repo in repos:
+            if repo.maybe_reload():
+                log.info(
+                    "MusicProgrammer: reloaded %s (%d tracks)",
+                    repo.path,
+                    len(repo.all_tracks()),
+                )
             for track in repo.all_tracks():
                 if not track.broadcast_safe:
                     continue

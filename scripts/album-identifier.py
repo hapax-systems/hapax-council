@@ -860,7 +860,13 @@ def main() -> None:
             _current_album = None
             try:
                 ALBUM_COVER_FILE.unlink(missing_ok=True)
-                MUSIC_ATTRIBUTION_FILE.unlink(missing_ok=True)
+                # NOTE: do NOT touch MUSIC_ATTRIBUTION_FILE here. The music
+                # player co-owns this surface and writes to it on every
+                # track start (epidemic, oudepode, local files, etc.).
+                # Album-identifier only writes it on a *successful* vinyl
+                # ID; nuking on failed IDs deletes the player's
+                # splattribution mid-track and blanks the CBIP ward.
+                # Player owns the empty/clear lifecycle on stop signal.
                 ALBUM_STATE_FILE.unlink(missing_ok=True)
             except OSError:
                 pass

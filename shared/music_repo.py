@@ -193,6 +193,7 @@ class LocalMusicRepo:
     def __init__(self, path: Path | None = None) -> None:
         self.path: Path = path if path is not None else DEFAULT_REPO_PATH
         self._by_path: dict[str, LocalMusicTrack] = {}
+        self._loaded_mtime: float = 0.0
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -203,13 +204,16 @@ class LocalMusicRepo:
         is treated as an empty repo (no error).
         """
         self._by_path.clear()
+        self._loaded_mtime = 0.0
         if not self.path.exists():
             return 0
         try:
+            stat = self.path.stat()
             text = self.path.read_text(encoding="utf-8")
         except OSError:
             log.debug("Failed to read music repo %s", self.path, exc_info=True)
             return 0
+        self._loaded_mtime = stat.st_mtime
         for raw in text.splitlines():
             stripped = raw.strip()
             if not stripped:
@@ -221,6 +225,22 @@ class LocalMusicRepo:
             except Exception:
                 log.debug("Skipping malformed music-repo line: %s", stripped[:80])
         return len(self._by_path)
+
+    def maybe_reload(self) -> bool:
+        """Reload from disk iff the underlying JSONL has a newer mtime.
+
+        Returns True when a reload happened, False otherwise. Lets the
+        programmer pick up newly-ingested tracks without restarting the
+        player daemon.
+        """
+        try:
+            current_mtime = self.path.stat().st_mtime
+        except OSError:
+            return False
+        if current_mtime <= self._loaded_mtime:
+            return False
+        self.load()
+        return True
 
     def save(self) -> None:
         """Persist the repo atomically (tmp + rename)."""
