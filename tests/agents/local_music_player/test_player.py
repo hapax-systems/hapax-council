@@ -101,33 +101,50 @@ def test_write_selection_round_trip(tmp_path: Path) -> None:
 # ── pw-cat / yt-dlp command construction ────────────────────────────────────
 
 
-def test_build_local_pwcat_no_sink() -> None:
-    cmd = _build_local_pwcat("/abs/song.flac", sink=None)
-    assert cmd == ["pw-cat", "--playback", "/abs/song.flac"]
-
-
-def test_build_local_pwcat_with_sink() -> None:
+def test_build_local_pwcat_explicit_sink() -> None:
     cmd = _build_local_pwcat("/abs/song.flac", sink="my-sink")
     assert cmd == ["pw-cat", "--playback", "--target", "my-sink", "/abs/song.flac"]
 
 
-def test_build_url_pipeline_no_sink() -> None:
-    yt, pw = _build_url_pipeline("https://soundcloud.com/x/y", sink=None)
-    assert yt[:2] == ["yt-dlp", "-x"]
+def test_build_local_pwcat_normalization_sink() -> None:
+    """Default sink lands on the loudness-normalizing filter chain."""
+    cmd = _build_local_pwcat("/abs/song.flac", sink="hapax-pc-loudnorm")
+    assert "--target" in cmd
+    assert "hapax-pc-loudnorm" in cmd
+
+
+def test_build_url_pipeline_three_stage() -> None:
+    yt, ffmpeg, pw = _build_url_pipeline("https://soundcloud.com/x/y", sink="my-sink")
+    assert yt[0] == "yt-dlp"
     assert "https://soundcloud.com/x/y" in yt
-    assert pw[:2] == ["pw-cat", "--playback"]
-    assert "--target" not in pw
-
-
-def test_build_url_pipeline_with_sink() -> None:
-    yt, pw = _build_url_pipeline("https://x", sink="my-sink")
+    # No `-x --audio-format wav` — that path was broken
+    assert "-x" not in yt
+    assert ffmpeg[0] == "ffmpeg"
+    # ffmpeg outputs s16le 44.1k stereo — required by pw-cat --raw
+    assert "s16le" in ffmpeg
+    assert "44100" in ffmpeg
+    assert pw[0] == "pw-cat"
     assert pw[2:4] == ["--target", "my-sink"]
+    assert "--raw" in pw
+
+
+def test_build_url_pipeline_normalization_sink() -> None:
+    """URL pipeline routes through the operator's loudness-normalizing sink."""
+    yt, ffmpeg, pw = _build_url_pipeline("https://x", sink="hapax-pc-loudnorm")
+    assert "hapax-pc-loudnorm" in pw
 
 
 # ── PlayerConfig from env ───────────────────────────────────────────────────
 
 
 def test_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default sink is the loudness-normalizing PipeWire filter chain.
+
+    Per the 2026-04-23 directive, every broadcast-bound music source MUST
+    enter the normalization path. The explicit default makes this routing
+    auditable rather than implicit in pactl's default-sink (which can
+    drift if user-default changes).
+    """
     for var in (
         "HAPAX_MUSIC_PLAYER_SELECTION_PATH",
         "HAPAX_MUSIC_PLAYER_ATTRIBUTION_PATH",
@@ -137,7 +154,7 @@ def test_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
     cfg = PlayerConfig.from_env()
     assert cfg.poll_s == 1.0
-    assert cfg.sink is None
+    assert cfg.sink == "hapax-pc-loudnorm"
 
 
 def test_config_from_env_sink_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -146,11 +163,13 @@ def test_config_from_env_sink_override(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.sink == "alsa_output.x.analog-stereo"
 
 
-def test_config_from_env_empty_sink_normalizes_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Empty string env should be treated as 'no sink override' (PipeWire default)."""
+def test_config_from_env_empty_sink_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty string env falls back to the loudness-normalizing default."""
     monkeypatch.setenv("HAPAX_MUSIC_PLAYER_SINK", "")
     cfg = PlayerConfig.from_env()
-    assert cfg.sink is None
+    assert cfg.sink == "hapax-pc-loudnorm"
 
 
 # ── tick: watch-loop core ───────────────────────────────────────────────────
@@ -163,7 +182,7 @@ def _make_config(tmp_path: Path) -> PlayerConfig:
         repo_path=tmp_path / "tracks.jsonl",
         sc_repo_path=tmp_path / "soundcloud.jsonl",
         poll_s=0.01,
-        sink=None,
+        sink="hapax-pc-loudnorm",
     )
 
 
@@ -203,7 +222,7 @@ def test_tick_local_file_invokes_pwcat(tmp_path: Path) -> None:
     assert "/abs/track.flac" in cmd
 
 
-def test_tick_url_invokes_yt_dlp_and_pwcat(tmp_path: Path) -> None:
+def test_tick_url_invokes_three_stage_pipeline(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     player = LocalMusicPlayer(cfg)
     write_selection(
@@ -214,14 +233,20 @@ def test_tick_url_invokes_yt_dlp_and_pwcat(tmp_path: Path) -> None:
     )
     yt_proc = MagicMock()
     yt_proc.stdout = MagicMock()
+    ffmpeg_proc = MagicMock()
+    ffmpeg_proc.stdout = MagicMock()
     pw_proc = MagicMock()
-    with patch("subprocess.Popen", side_effect=[yt_proc, pw_proc]) as popen:
+    with patch("subprocess.Popen", side_effect=[yt_proc, ffmpeg_proc, pw_proc]) as popen:
         player.tick()
-    assert popen.call_count == 2
+    assert popen.call_count == 3
     yt_cmd = popen.call_args_list[0][0][0]
-    pw_cmd = popen.call_args_list[1][0][0]
+    ffmpeg_cmd = popen.call_args_list[1][0][0]
+    pw_cmd = popen.call_args_list[2][0][0]
     assert yt_cmd[0] == "yt-dlp"
+    assert ffmpeg_cmd[0] == "ffmpeg"
     assert pw_cmd[0] == "pw-cat"
+    # Sink target propagates to the final stage
+    assert "hapax-pc-loudnorm" in pw_cmd
 
 
 def test_tick_writes_attribution(tmp_path: Path) -> None:
