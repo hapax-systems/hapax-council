@@ -326,7 +326,7 @@ class LocalMusicRepo:
                 log.debug("mutagen read failed for %s", full, exc_info=True)
 
         try:
-            return LocalMusicTrack(
+            track = LocalMusicTrack(
                 path=str(full),
                 title=title or full.stem,
                 artist=artist or "unknown",
@@ -339,6 +339,24 @@ class LocalMusicRepo:
         except Exception:
             log.debug("Validation failed for %s", full, exc_info=True)
             return None
+
+        # Phase 3: merge per-track YAML sidecar if present. Sidecar carries
+        # broadcast-safety provenance fields (content_risk, source,
+        # whitelist_source) for tracks ingested from Epidemic / Streambeats /
+        # other safe-music sources. Lazy import keeps the music_repo module
+        # importable without yaml installed (sidecar is opt-in).
+        try:
+            from agents.epidemic_adapter.sidecar import (
+                load_sidecar,
+                merge_sidecar_into_track,
+            )
+
+            sidecar = load_sidecar(full)
+            if sidecar is not None:
+                track = merge_sidecar_into_track(track, sidecar)
+        except ImportError:
+            log.debug("epidemic_adapter sidecar reader unavailable; skipping merge")
+        return track
 
     # ── selection / bookkeeping ──────────────────────────────────────
 
