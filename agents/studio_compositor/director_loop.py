@@ -2674,11 +2674,11 @@ class DirectorLoop:
             return ""
 
         try:
-            return self._call_activity_llm_locked(prompt, images, key)
+            return self._call_activity_llm_locked(prompt, images)
         finally:
             _DIRECTOR_LLM_LOCK.release()
 
-    def _call_activity_llm_locked(self, prompt: str, images: list | None, key: str) -> str:
+    def _call_activity_llm_locked(self, prompt: str, images: list | None) -> str:
         """Body of _call_activity_llm split out so the lock acquire/release
         wrap is unambiguous. All return paths from this method are still
         covered by the parent's try/finally release."""
