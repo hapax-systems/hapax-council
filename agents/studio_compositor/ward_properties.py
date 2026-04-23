@@ -32,9 +32,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
+from itertools import count
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +53,23 @@ WARD_PROPERTIES_PATH = Path("/dev/shm/hapax-compositor/ward-properties.json")
 # Hot-path cache TTL — same as ``OverlayZoneManager._resolve_chrome_alpha``
 # (200ms) so the cairooverlay synchronous draw callback stays under 2ms.
 _CACHE_TTL_S = 0.2
+
+# Per-writer unique tmp suffix counter. Multiple threads within the same
+# compositor process (modulator + fx_chain_ward_reactor + compositional
+# consumers) would otherwise race on the single ``.tmp`` filename and
+# silently lose writes when ``tmp.replace(dest)`` saw the source already
+# consumed by a sibling writer's rename.
+_TMP_SUFFIX_COUNTER = count()
+
+# Serializes the full read-modify-write transaction in
+# :func:`set_ward_properties`. Without it, two concurrent writers can both
+# read the file with wards={} (say), each add their own ward entry, and
+# have one rename clobber the other — the last writer's rename wins and
+# the other writer's entry is silently lost. A threading.Lock suffices
+# because all known writers (modulator, compositional_consumer,
+# fx_chain_ward_reactor, dispatchers in compositor.py) run inside the
+# single studio-compositor process.
+_WRITE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -201,48 +221,58 @@ def set_ward_properties(
     if ttl_s <= 0:
         log.warning("set_ward_properties: ttl_s must be > 0, got %.3f", ttl_s)
         return
-    try:
-        WARD_PROPERTIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-        current = _safe_load_raw()
-        wards = current.get("wards") or {}
-        new_entry = {
-            **_dataclass_to_jsonable(properties),
-            "expires_at": time.time() + ttl_s,
-        }
-        # 2026-04-23 race-safe preservation of modulator-owned fields
-        # (``z_plane`` + ``z_index_float``). The ``ward_stimmung_modulator``
-        # writes these every ~200 ms from imagination depth; non-modulator
-        # consumers (compositional_consumer, fx_chain_ward_reactor) use a
-        # read-modify-write merge pattern whose cached read can go stale
-        # between the modulator's write and the consumer's. Without this
-        # preservation the consumer's stale-read ``z_plane`` (default
-        # ``on-scrim``) silently clobbers the modulator's write, and wards
-        # like sierpinski never leave the default plane. The heuristic:
-        # if caller passes defaults AND disk already holds non-default
-        # values, assume caller is round-tripping and preserve disk.
-        # z_plane + z_index_float have no non-default callers outside the
-        # modulator today (2026-04-23 grep), so this is a safe merge.
-        existing = wards.get(ward_id)
-        if existing is not None:
-            if (
-                new_entry.get("z_plane") == DEFAULT_Z_PLANE
-                and existing.get("z_plane", DEFAULT_Z_PLANE) != DEFAULT_Z_PLANE
-            ):
-                new_entry["z_plane"] = existing["z_plane"]
-            if (
-                new_entry.get("z_index_float") == DEFAULT_Z_INDEX_FLOAT
-                and existing.get("z_index_float", DEFAULT_Z_INDEX_FLOAT) != DEFAULT_Z_INDEX_FLOAT
-            ):
-                new_entry["z_index_float"] = existing["z_index_float"]
-        wards[ward_id] = new_entry
-        out = {"wards": wards, "updated_at": time.time()}
-        tmp = WARD_PROPERTIES_PATH.with_suffix(WARD_PROPERTIES_PATH.suffix + ".tmp")
-        tmp.write_text(json.dumps(out), encoding="utf-8")
-        tmp.replace(WARD_PROPERTIES_PATH)
-    except Exception:
-        log.warning("set_ward_properties write failed for %s", ward_id, exc_info=True)
-    finally:
-        clear_ward_properties_cache()
+    with _WRITE_LOCK:
+        try:
+            WARD_PROPERTIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+            current = _safe_load_raw()
+            wards = current.get("wards") or {}
+            new_entry = {
+                **_dataclass_to_jsonable(properties),
+                "expires_at": time.time() + ttl_s,
+            }
+            # 2026-04-23 race-safe preservation of modulator-owned fields
+            # (``z_plane`` + ``z_index_float``). The ``ward_stimmung_modulator``
+            # writes these every ~200 ms from imagination depth; non-modulator
+            # consumers (compositional_consumer, fx_chain_ward_reactor) use a
+            # read-modify-write merge pattern whose cached read can go stale
+            # between the modulator's write and the consumer's. Without this
+            # preservation the consumer's stale-read ``z_plane`` (default
+            # ``on-scrim``) silently clobbers the modulator's write, and wards
+            # like sierpinski never leave the default plane. The heuristic:
+            # if caller passes defaults AND disk already holds non-default
+            # values, assume caller is round-tripping and preserve disk.
+            # z_plane + z_index_float have no non-default callers outside
+            # the modulator today (2026-04-23 grep), so this is a safe merge.
+            existing = wards.get(ward_id)
+            if existing is not None:
+                if (
+                    new_entry.get("z_plane") == DEFAULT_Z_PLANE
+                    and existing.get("z_plane", DEFAULT_Z_PLANE) != DEFAULT_Z_PLANE
+                ):
+                    new_entry["z_plane"] = existing["z_plane"]
+                if (
+                    new_entry.get("z_index_float") == DEFAULT_Z_INDEX_FLOAT
+                    and existing.get("z_index_float", DEFAULT_Z_INDEX_FLOAT)
+                    != DEFAULT_Z_INDEX_FLOAT
+                ):
+                    new_entry["z_index_float"] = existing["z_index_float"]
+            wards[ward_id] = new_entry
+            out = {"wards": wards, "updated_at": time.time()}
+            # 2026-04-23 per-writer unique tmp suffix. Single shared ``.tmp``
+            # filename loses writes when two concurrent callers
+            # ``replace()`` the same source — the second caller's rename
+            # raises ``FileNotFoundError`` because the first consumed it.
+            # PID + monotonic counter keeps tmp names disjoint across
+            # threads and processes, even without the ``_WRITE_LOCK``
+            # (which also serializes the read-modify-write transaction).
+            tmp_suffix = f".tmp.{os.getpid()}.{next(_TMP_SUFFIX_COUNTER)}"
+            tmp = WARD_PROPERTIES_PATH.with_suffix(WARD_PROPERTIES_PATH.suffix + tmp_suffix)
+            tmp.write_text(json.dumps(out), encoding="utf-8")
+            tmp.replace(WARD_PROPERTIES_PATH)
+        except Exception:
+            log.warning("set_ward_properties write failed for %s", ward_id, exc_info=True)
+        finally:
+            clear_ward_properties_cache()
 
 
 def clear_ward_properties_cache() -> None:

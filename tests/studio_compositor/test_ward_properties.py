@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -165,3 +166,49 @@ class TestModulatorFieldPreservation:
         assert props.z_plane == "on-scrim"
         assert props.z_index_float == 0.5
         assert props.alpha == 0.8
+
+
+class TestConcurrentWriteSafety:
+    """Regression pin for the 2026-04-23 tmp-suffix-collision race.
+
+    Prior to the fix, every ``set_ward_properties`` call wrote to a single
+    shared ``ward-properties.json.tmp`` path. Two concurrent callers would
+    race: the first's ``tmp.replace(dest)`` would consume the tmp file,
+    then the second's ``tmp.replace(dest)`` would raise ``FileNotFoundError``
+    (source missing), losing that write. Per-writer tmp suffixes (PID +
+    monotonic counter) eliminate the collision.
+    """
+
+    def test_concurrent_writers_all_land(self):
+        # 20 threads each write a distinct ward. All 20 writes must survive.
+        ward_count = 20
+        errors: list[BaseException] = []
+
+        def _writer(idx: int) -> None:
+            try:
+                wp.set_ward_properties(
+                    f"w{idx}",
+                    wp.WardProperties(alpha=0.01 * idx),
+                    ttl_s=10.0,
+                )
+            except BaseException as exc:  # pragma: no cover
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_writer, args=(i,)) for i in range(ward_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
+        wp.clear_ward_properties_cache()
+        # Every ward must be resolvable with the exact alpha we wrote.
+        for i in range(ward_count):
+            props = wp.resolve_ward_properties(f"w{i}")
+            assert props.alpha == pytest.approx(0.01 * i)
+
+    def test_tmp_files_cleaned_up(self, tmp_path):
+        # After a successful write, no ``.tmp.*`` files should remain in the
+        # ward-properties directory.
+        wp.set_ward_properties("album", wp.WardProperties(alpha=0.5), ttl_s=10.0)
+        leftovers = list(tmp_path.glob("ward-properties.json.tmp*"))
+        assert leftovers == []
