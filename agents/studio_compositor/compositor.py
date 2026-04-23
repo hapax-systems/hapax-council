@@ -1070,19 +1070,18 @@ class StudioCompositor:
                 "runtime layout mutation via window.__logos / MCP is unavailable"
             )
 
-        try:
-            from agents.studio_compositor.recent_impingements_publisher import (
-                RecentImpingementsPublisher,
-            )
-
-            self._recent_pub = RecentImpingementsPublisher(
-                src=Path("/dev/shm/hapax-dmn/impingements.jsonl"),
-                dst=Path("/dev/shm/hapax-compositor/recent-impingements.json"),
-            )
-            self._recent_pub.start()
-        except Exception:
-            self._recent_pub = None
-            log.exception("failed to start recent-impingements publisher")
+        # 2026-04-23 Gemini-audit Phase 3 — the compositor-embedded
+        # recent-impingements publisher (added in #1209) read ``salience``
+        # from /dev/shm/hapax-dmn/impingements.jsonl, but the correct key
+        # is ``strength``, leaving empty-string ward entries on the
+        # broadcast. It also raced the dedicated systemd unit
+        # ``hapax-recent-impingements.service`` (active since 2026-04-20,
+        # backed by ``scripts/recent-impingements-producer.py``), which
+        # already owns this SHM path and uses the correct schema. The
+        # systemd producer is the single writer for
+        # ``/dev/shm/hapax-compositor/recent-impingements.json``; the
+        # compositor-embedded variant has been removed.
+        self._recent_pub = None
 
         # Task #150 Phase 1 — start the scene classifier thread when
         # HAPAX_SCENE_CLASSIFIER_ACTIVE is set. Flag-gated; returns None
