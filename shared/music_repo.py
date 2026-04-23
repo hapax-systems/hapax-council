@@ -35,6 +35,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from shared.affordance import ContentRisk
+
 __all__ = [
     "DEFAULT_REPO_PATH",
     "SUPPORTED_EXTENSIONS",
@@ -53,6 +55,17 @@ DEFAULT_REPO_PATH: Path = Path.home() / "hapax-state" / "music-repo" / "tracks.j
 SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
     {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".mp4", ".wav", ".aiff", ".aif"}
 )
+
+# Content-risk tier ordering for the broadcast-safety gate. Lower number =
+# safer; ``select_candidates(max_content_risk=...)`` admits any tier whose
+# rank is ≤ the caller's max.
+_CONTENT_RISK_RANK: dict[ContentRisk, int] = {
+    "tier_0_owned": 0,
+    "tier_1_platform_cleared": 1,
+    "tier_2_provenance_known": 2,
+    "tier_3_uncertain": 3,
+    "tier_4_risky": 4,
+}
 
 
 class LocalMusicTrack(BaseModel):
@@ -102,6 +115,50 @@ class LocalMusicTrack(BaseModel):
         default=0,
         ge=0,
         description="Number of operator-approved plays recorded so far.",
+    )
+
+    # ── content-source-registry Phase 2 (2026-04-23) ─────────────────────
+    # Provenance fields for the broadcast-safety gate. Default to safe
+    # so old JSONL records load with a conservative posture (treated as
+    # operator-owned, broadcast-OK). Explicit re-tagging for tracks that
+    # came from external safe sources (Epidemic, Streambeats, etc.) lands
+    # in Phase 3 alongside their respective adapters.
+    content_risk: ContentRisk = Field(
+        default="tier_0_owned",
+        description=(
+            "Provenance/ContentID risk tier. tier_0_owned = operator-owned/"
+            "generated; tier_1_platform_cleared = Epidemic / Storyblocks / "
+            "Streambeats / YT AL; tier_2_provenance_known = verified CC0 / "
+            "Internet Archive raw PD; tier_3_uncertain = Bandcamp direct, "
+            "CC-BY; tier_4_risky = vinyl, commercial, raw type-beats."
+        ),
+    )
+    broadcast_safe: bool = Field(
+        default=True,
+        description=(
+            "When False, the selector hard-rejects this track regardless of "
+            "stance/energy match. Used for sample-source-only/ tracks that "
+            "live in the pool for DAW use but must never reach broadcast."
+        ),
+    )
+    source: str = Field(
+        default="local",
+        description=(
+            "Provenance label for routing + attribution. Free-form but "
+            "consumers expect: 'operator-owned', 'epidemic', 'streambeats', "
+            "'youtube-audio-library', 'freesound-cc0', 'bandcamp-direct', "
+            "'soundcloud-oudepode', 'sample-source', 'local'."
+        ),
+    )
+    whitelist_source: str | None = Field(
+        default=None,
+        description=(
+            "Platform-side anchor for ContentID whitelist resolution — "
+            "Epidemic recording UUID, Streambeats track id, distributor "
+            "track id for oudepode releases, etc. Carried so the egress "
+            "audit + future provenance manifest (Phase 7) can prove "
+            "broadcast safety per-asset."
+        ),
     )
 
     @field_validator("tags")
@@ -301,6 +358,7 @@ class LocalMusicRepo:
         exclude_recent_s: int = 3600,
         k: int = 5,
         now: float | None = None,
+        max_content_risk: ContentRisk = "tier_1_platform_cleared",
     ) -> list[LocalMusicTrack]:
         """Return the top-``k`` candidate tracks for a given stance + energy.
 
@@ -309,13 +367,29 @@ class LocalMusicRepo:
         tag) adds 0.25; tracks played within ``exclude_recent_s`` are
         dropped entirely (cooldown).
 
+        Hard-filters applied BEFORE scoring (never surfaceable above):
+
+        * ``broadcast_safe == False`` — sample-source-only material is
+          always excluded from candidate selection. The selector exists
+          to surface plays to the operator; non-broadcast samples live
+          in the pool only for DAW workflows.
+        * ``content_risk`` ranks above ``max_content_risk`` — caller's
+          gate. Default ``tier_1_platform_cleared`` admits operator-
+          owned + platform-cleared tracks; programmes that opt into
+          tier_2 or unlock tier_3 must pass that explicitly.
+
         ``now`` is injectable for deterministic testing.
         """
         ts_now = now if now is not None else time.time()
         stance_lc = stance.strip().lower()
+        max_rank = _CONTENT_RISK_RANK[max_content_risk]
 
         scored: list[tuple[float, LocalMusicTrack]] = []
         for t in self._by_path.values():
+            if not t.broadcast_safe:
+                continue
+            if _CONTENT_RISK_RANK[t.content_risk] > max_rank:
+                continue
             if t.last_played_ts is not None:
                 if ts_now - t.last_played_ts < exclude_recent_s:
                     continue
