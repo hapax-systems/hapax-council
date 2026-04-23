@@ -128,16 +128,25 @@ Sources WITH channel-whitelist defense (mechanically safe):
 
 ### §3.2 Visual use cases × source matrix
 
-| Use case | Studio cameras + shaders | Storyblocks / Artgrid | Internet Archive (PD raw) | AI-generated (Sora/Veo) | Pexels / Pixabay video | YouTube clips | Commercial film/TV |
-|---|---|---|---|---|---|---|---|
-| YouTube clips embedded in Sierpinski | No | No | No | No | No | **NEVER** (current state is a violation) | NEVER |
-| Album art display alongside playing track | No | Conditional | No | No | No | No | NEVER |
-| Sample / collage images | No | **PRIMARY** | **PRIMARY** | Primary | Conditional | No | NEVER |
-| Stock B-roll | No | **PRIMARY** | Primary (raw uploads only) | Primary (with synthetic-content label) | Conditional | No | NEVER |
-| Generated visuals (wgpu, Sierpinski, GEM) | **PRIMARY** | No | No | No | No | No | No |
-| Studio cameras (operator + room) | **PRIMARY** | No | No | No | No | No | No |
-| Programme-driven visual moves | **PRIMARY** | Primary | Primary | Primary (with label) | Conditional | No | NEVER |
-| Director-cued visual swaps | **PRIMARY** | Primary | Primary | Primary (with label) | Conditional | No | NEVER |
+| Use case | Studio cameras + shaders | Storyblocks / Artgrid | Internet Archive (PD raw) | AI-generated (Sora/Veo) | Pexels / Pixabay video | YouTube iframe embed (allowlist) | YouTube frame extraction | Commercial film/TV |
+|---|---|---|---|---|---|---|---|---|
+| YouTube clips on broadcast (cleared / curated) | No | No | No | No | No | **PRIMARY** (TIER 2) | **NEVER** (ToS+ContentID violation) | NEVER |
+| Album art display alongside playing track | No | Conditional | No | No | No | No | No | NEVER |
+| Sample / collage images | No | **PRIMARY** | **PRIMARY** | Primary | Conditional | No | No | NEVER |
+| Stock B-roll | No | **PRIMARY** | Primary (raw uploads only) | Primary (with synthetic-content label) | Conditional | No | No | NEVER |
+| Generated visuals (wgpu, Sierpinski, GEM) | **PRIMARY** | No | No | No | No | No | No | No |
+| Studio cameras (operator + room) | **PRIMARY** | No | No | No | No | No | No | No |
+| Programme-driven visual moves | **PRIMARY** | Primary | Primary | Primary (with label) | Conditional | Conditional | No | NEVER |
+| Director-cued visual swaps | **PRIMARY** | Primary | Primary | Primary (with label) | Conditional | Conditional (allowlist-bounded) | No | NEVER |
+
+The "YouTube iframe embed" path is distinct from frame extraction:
+the embed loads
+`https://www.youtube.com/embed/<video_id>?autoplay=1&controls=0&modestbranding=1`
+into a browser source / Tauri webview surface, served from YouTube's
+CDN — counts as a view for the original creator, serves their ads,
+fully ToS-compliant. Limited to an operator-curated allowlist of
+cleared video IDs (`config/youtube-embed-allowlist.yaml`) — the LLM
+director cannot recruit arbitrary YouTube content. See §9 Q1.
 
 ### §3.3 Oudepode rate-limit policy (operator's own catalog)
 
@@ -491,30 +500,54 @@ above similarity threshold:
 This eliminates the failure mode where the director silently surfaces
 an unsafe candidate because nothing safe matched.
 
-## §9 Open questions for operator decision
+## §9 Operator decisions (resolved 2026-04-23)
 
-1. **Storyblocks / Artgrid subscription** — needed for the visual
-   replacement of Sierpinski's YouTube ingestion. ~$15-30/mo. Skip-able
-   if Internet Archive PD + operator's own cuts cover the visual
-   bandwidth.
-2. **DistroKid (or whatever distributor) channel-whitelist verification**
-   for oudepode — what distributor handles oudepode releases? The
-   YouTube channel must be explicitly whitelisted in the distributor
-   dashboard or you'll self-strike when oudepode tracks play.
-3. **Voiceover use cases beyond programme intros** — should Epidemic
-   voiceovers be wired into any other pathway (officium briefings,
-   chronicle narration, etc.) or kept narrowly scoped to programme
-   transitions?
-4. **CC0 / public-domain pool — keep or delete?** The original local-
-   music-repo design has `cc-by/`, `cc-by-sa/`, `cc0/` directories.
-   Per the false-positive trap, these are NOT safe for direct broadcast.
-   Decision: rename to `sample-source-only/` (DAW input, never
-   broadcast) and add `broadcast_safe: false` flag, or delete entirely?
-5. **Voice catalog vs Kokoro** — Epidemic voice quality is high. Is
-   there value in routing daimonion's voice through Epidemic for
-   specific contexts (longform retrospective narration)? Likely no —
-   latency and consent boundaries argue for keeping daimonion on
-   Kokoro — but flag it.
+1. **Visual sources: YouTube AND Storyblocks both, with mechanism
+   separation.** The prohibition is on FRAME EXTRACTION (current
+   Sierpinski yt-dlp pipeline — ToS + ContentID violation). YouTube
+   embeds via official iframe ARE legal (served from YouTube CDN,
+   counts as a view for the creator, serves their ads). Two distinct
+   visual paths going forward:
+   - **Local visual pool** (Storyblocks + IA PD + operator cuts) —
+     compositor reads frames from `~/hapax-pool/visual/<tier>/`.
+     Used for Sierpinski texture, abstract B-roll, programme-cued
+     visual moves. TIER 1 / TIER 2.
+   - **YouTube iframe embed ward** — a new compositor surface that
+     loads `https://www.youtube.com/embed/<video_id>?autoplay=1&controls=0&modestbranding=1`
+     in a browser-source / Tauri-webview region. Operator-curated
+     allowlist of cleared video IDs in
+     `config/youtube-embed-allowlist.yaml`. TIER 2 (provenance-known
+     via allowlist). NO LLM-driven discovery from arbitrary YouTube;
+     allowlist-only.
+   - Storyblocks subscription decision deferred to whenever operator
+     decides the visual pool needs paid stock; meanwhile IA PD +
+     operator cuts cover the floor.
+2. **Distributor: not currently used, not currently necessary.**
+   Oudepode lives on SoundCloud only. Live performance on the
+   operator's own YouTube stream is not a distribution event; ContentID
+   cannot claim against tracks not registered with ContentID via a
+   distributor. Distributor becomes necessary only if/when the operator
+   wants (a) streaming royalties beyond YouTube ad share, (b) defensive
+   ContentID registration so others can't fraudulently claim oudepode,
+   or (c) cross-platform release. **Critical future trap**: if a
+   distributor IS adopted, operator MUST either opt-out of ContentID
+   for tracks that play on stream OR explicitly whitelist the YouTube
+   channel in the distributor dashboard. Track this as a future-state
+   condition; not a current implementation requirement.
+3. **No voice but Hapax.** All speech on broadcast comes from Hapax
+   via daimonion / Kokoro. Epidemic voiceover capability stays latent
+   in the MCP surface but is NOT wired into any production path.
+   Phase 8 (programme voiceover via Epidemic) is **cancelled**.
+   Programme intros / transitions / narration all use the existing
+   daimonion voice pipeline. This is a constitutional principle for
+   the broadcast: one voice, one identity, no third-party narration.
+4. **CC0 / `sample-source-only/` directory: keep as deferred-decision
+   default.** The implementation creates the directory empty with
+   `broadcast_safe: false` flag enforced at the selector layer. The
+   operator can populate (for DAW sampling) or delete entirely later;
+   broadcast safety is not affected either way.
+5. **Daimonion stays on Kokoro.** Confirmed. No routing through
+   Epidemic voices.
 
 ## §10 What this research does NOT cover (deferred)
 

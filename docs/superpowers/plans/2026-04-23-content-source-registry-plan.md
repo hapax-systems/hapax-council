@@ -283,20 +283,47 @@ available); Phase 3 (so live tracks have it).
   safe failure; clean manifest passes through.
 - [ ] PR + admin-merge.
 
-## Phase 8 (optional) — Voiceover integration for programme intros
+## Phase 6.5 — YouTube iframe embed ward (allowlist-bounded)
 
-**Branch:** `feat/programme-voiceover`
-**Depends on:** Phase 3, programme-layer completion.
+**Branch:** `feat/youtube-iframe-ward`
+**Depends on:** Phase 1 (content_risk tagging), Phase 6 (visual pool
+infrastructure).
+**Distinct from Phase 6's `local-visual-pool`** — Phase 6 retires the
+illegal frame-extraction path; this phase adds a NEW legal path for
+embedding cleared YouTube videos.
 
-- [ ] `agents/voiceover_adapter/` thin wrapper over Epidemic's
-  voiceover MCP tools: pick a voice (config), generate per programme
-  intro/outro text, cache the audio under
-  `~/hapax-pool/voiceover/<programme_id>/{intro,outro}.mp3`.
-- [ ] Programme-layer hook: programmes with
-  `intro_voiceover: true` invoke the adapter at programme onset;
-  audio is mixed into the broadcast bus on the programme intro slot.
-- [ ] Operator-configurable voice selection per programme type.
-- [ ] Tests + PR + admin-merge.
+- [ ] `config/youtube-embed-allowlist.yaml` — operator-curated list of
+  video IDs cleared for embedding. Schema:
+  ```yaml
+  - video_id: dQw4w9WgXcQ
+    title: "Track name"
+    creator: "Channel name"
+    cleared_by: operator
+    cleared_at: 2026-04-23
+    use_case: "music video for currently-playing track"
+    content_risk: TIER_2_PROVENANCE_KNOWN
+  ```
+- [ ] New compositor surface `youtube-embed-ward` — a browser source
+  (OBS) or Tauri webview region that loads
+  `https://www.youtube.com/embed/<video_id>?autoplay=1&controls=0&modestbranding=1`.
+  Width/height per layout JSON.
+- [ ] Affordance capability `visual.youtube-embed.<allowlist-id>` —
+  one capability per allowlisted video. LLM director can recruit by
+  matching the use_case tag, but only from the allowlist.
+- [ ] Unit test: `tests/studio_compositor/test_youtube_embed_allowlist.py`
+  — capability registration walks the allowlist; no capability ever
+  emits a video_id outside the allowlist.
+- [ ] Live verify: cued embed loads, plays, and the YouTube creator
+  view-counter increments (confirms the embed is recognized as a
+  legitimate view).
+- [ ] PR + admin-merge.
+
+## ~~Phase 8 — Voiceover integration~~ — CANCELLED 2026-04-23
+
+Operator decision: no voice but Hapax. All speech on broadcast comes
+from daimonion via Kokoro. Epidemic voiceover capability stays latent
+in the MCP surface but is NOT wired into any production path. This is
+a constitutional principle, not just a phase deferral.
 
 ## Sequencing summary
 
@@ -309,8 +336,9 @@ available); Phase 3 (so live tracks have it).
 | 4 | `feat/oudepode-rate-gate` | independent of 5-7 | 1 |
 | 5 | `feat/cbip-signal-density` | independent of 6-7 | 1 |
 | 6 | `feat/local-visual-pool` | independent of 5, 7 | 1 |
+| 6.5 | `feat/youtube-iframe-ward` | independent of 7 | 1 |
 | 7 | `feat/provenance-manifest-egress-gate` | last load-bearing | 1 |
-| 8 | `feat/programme-voiceover` | optional | 1 |
+| ~~8~~ | ~~programme-voiceover~~ | CANCELLED — Hapax-only voice | 0 |
 
 After Phase 7, the operator's standing directive
 (*"I never want to get one of these warnings again"*) is structurally
