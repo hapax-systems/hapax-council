@@ -331,49 +331,13 @@ def _paint_emissive_glow(
 ) -> None:
     """Paint a soft emissive glow along the ward's rectangular perimeter.
 
-    Implementation: four linear gradients (one per edge) where each
-    gradient fades from the full accent colour (at the edge) to alpha=0
-    at ``radius`` pixels in. The four gradients composite into an
-    even glow without the geometric artefacts of a single radial
-    gradient. Alpha-modulated by a slow sinusoid so the glow shimmers
-    rather than sitting static — matches the HARDM aesthetic (never
-    totally stable, precise yet diffuse).
+    2026-04-23 operator directive: zero container opacity. The
+    four-edge glow halos gave each ward a visible container
+    outline — chrome, not content. Retired. Emphasis flows through
+    content primitives now (text weight, crop shift, fronting per
+    the video-container epic). Signature preserved for back-compat.
     """
-    import cairo as _c  # local import: helpers live outside hot test paths
-
-    r = float(max(0.0, min(radius, min(w, h) * 0.5)))
-    if r <= 0.1:
-        return
-    r_red, g, b, a_base = rgba
-    # 2026-04-23 operator "no flashing of any kind" — shimmer retired.
-    # The glow now renders at a static peak alpha of a_base * 0.75 *
-    # baseline (0.85) so the edge-glow effect remains but no longer
-    # modulates in time. Any breathing belongs in geometry not alpha.
-    peak_alpha = float(max(0.0, min(1.0, a_base * 0.75 * 0.85)))
-
-    def _edge(x0: float, y0: float, x1: float, y1: float, fx: float, fy: float) -> None:
-        # Gradient axis goes from the edge inward by ``r`` px.
-        grad = _c.LinearGradient(x0, y0, x0 + fx * r, y0 + fy * r)
-        grad.add_color_stop_rgba(0.0, r_red, g, b, peak_alpha)
-        grad.add_color_stop_rgba(1.0, r_red, g, b, 0.0)
-        cr.save()
-        cr.set_source(grad)
-        # Rectangle along the edge, r px wide on the inward side.
-        if fx != 0:  # left or right edge
-            cr.rectangle(x0, y0, fx * r, y1 - y0)
-        else:  # top or bottom edge
-            cr.rectangle(x0, y0, x1 - x0, fy * r)
-        cr.fill()
-        cr.restore()
-
-    # Top edge
-    _edge(0.0, 0.0, w, 0.0, 0.0, 1.0)
-    # Bottom edge
-    _edge(0.0, h, w, h, 0.0, -1.0)
-    # Left edge
-    _edge(0.0, 0.0, 0.0, h, 1.0, 0.0)
-    # Right edge
-    _edge(w, 0.0, w, h, -1.0, 0.0)
+    _ = (cr, w, h, radius, rgba)  # params retained; unused
 
 
 def _paint_border_pulse(
@@ -383,25 +347,14 @@ def _paint_border_pulse(
     hz: float,
     rgba: tuple[float, float, float, float],
 ) -> None:
-    """Stroke the ward's rectangular outline with a sinusoidally pulsing alpha.
+    """Stroke the ward's rectangular outline.
 
-    2026-04-23 operator directive "no flashing of any kind" — the
-    sinusoidal ``pulse_alpha`` modulation is removed. The border still
-    renders at its full base alpha; consumers that set
-    ``border_pulse_hz > 0.01`` now get a static, legible border rather
-    than a time-varying one. This preserves the SEMANTIC (border
-    emphasised) while removing the FLASH. Signature + ``hz`` parameter
-    retained for backward compat so the reactor callers don't need to
-    be re-threaded.
+    2026-04-23 operator directive: zero container opacity. The
+    rectangular border stroke is chrome. Retired. Signature +
+    ``hz`` parameter retained for back-compat so reactor callers
+    don't need re-threading.
     """
-    _ = hz  # intentionally unused; see docstring.
-    r, g, b, a_base = rgba
-    cr.save()
-    cr.set_source_rgba(r, g, b, max(0.0, min(1.0, a_base)))
-    cr.set_line_width(2.0)
-    cr.rectangle(1.0, 1.0, max(0.0, w - 2.0), max(0.0, h - 2.0))
-    cr.stroke()
-    cr.restore()
+    _ = (cr, w, h, hz, rgba)  # params retained; unused
 
 
 # ── Internals ──────────────────────────────────────────────────────────────

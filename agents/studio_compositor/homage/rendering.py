@@ -9,7 +9,6 @@ and resolve palette / typography from there — no hardcoded hex.
 from __future__ import annotations
 
 import logging
-import math
 import time
 import warnings
 from typing import TYPE_CHECKING
@@ -118,36 +117,16 @@ def paint_bitchx_bg(
     Legacy callers that don't pass ``ward_id`` get the package's
     background role as a flat fill — prior behaviour preserved.
     Sharp corners (spec §5.5 refuses rounded-corners).
-    """
-    import cairo as _c
 
-    r, g, b, a = pkg.resolve_colour("background")
-    cr.save()
-    if ward_id is not None:
-        ar, ag, ab, _aa = _domain_accent(pkg, ward_id)
-        blend = 0.12
-        br = r + (ar - r) * blend
-        bg = g + (ag - g) * blend
-        bb = b + (ab - b) * blend
-        grad = _c.LinearGradient(0.0, 0.0, 0.0, h)
-        grad.add_color_stop_rgba(0.0, r, g, b, a)
-        grad.add_color_stop_rgba(1.0, br, bg, bb, a)
-        cr.set_source(grad)
-        cr.rectangle(0, 0, w, h)
-        cr.fill()
-        cr.set_source_rgba(ar, ag, ab, 0.85)
-        cr.rectangle(0, 0, 2, h)
-        cr.fill()
-    else:
-        cr.set_source_rgba(r, g, b, a)
-        cr.rectangle(0, 0, w, h)
-        cr.fill()
-    if border_rgba is not None:
-        cr.set_source_rgba(*border_rgba)
-        cr.set_line_width(1.0)
-        cr.rectangle(0.5, 0.5, w - 1.0, h - 1.0)
-        cr.stroke()
-    cr.restore()
+    2026-04-23 operator directive: "all containers should have zero
+    opacity and rely on text size and quality and smart contrasting
+    alone to deal with visibility." Splattribution is the reference —
+    text with outline, no container chrome. This function is a no-op;
+    all 15 call sites across ``legibility_sources``, ``hothouse_sources``,
+    and ``emissive_base`` inherit zero-chrome rendering. Signature
+    preserved for back-compat.
+    """
+    _ = (cr, w, h, pkg, border_rgba, ward_id)  # params retained; unused
 
 
 # WardDomain → accent colour role. Each HOMAGE ward's domain (per
@@ -282,52 +261,15 @@ def paint_emphasis_border(
     No-op when the ward has no active emphasis (glow_radius_px == 0).
     Cairo failures are swallowed — visual polish must never break a
     ward's render path.
+
+    2026-04-23 operator directive: zero container opacity. The outer
+    glow halo and inner border stroke were the two remaining chrome
+    primitives emphasizing an "active" ward. Both retired; emphasis
+    now happens via content-level means (text weight, crop shift,
+    eventually parallax/fronting per the video-container epic).
+    Signature preserved for back-compat.
     """
-    try:
-        from agents.studio_compositor.ward_properties import resolve_ward_properties
-
-        props = resolve_ward_properties(ward_id)
-    except Exception:
-        return
-    glow_radius = float(getattr(props, "glow_radius_px", 0.0) or 0.0)
-    if glow_radius <= 0.5:
-        return
-    pulse_hz = float(getattr(props, "border_pulse_hz", 0.0) or 0.0)
-    # Modulate line width with the pulse. Base width = min(glow_radius, 4).
-    base_width = min(glow_radius, 4.0)
-    if pulse_hz > 0.05:
-        phase = math.sin(2.0 * math.pi * pulse_hz * t)
-        width_mult = 0.6 + 0.4 * (0.5 + 0.5 * phase)
-    else:
-        width_mult = 1.0
-    stroke_width = max(1.0, base_width * width_mult)
-    try:
-        accent_rgba = getattr(props, "border_color_rgba", None)
-        if not accent_rgba or not isinstance(accent_rgba, tuple) or len(accent_rgba) != 4:
-            # Fallback to package accent role.
-            accent_rgba = pkg.resolve_colour(accent_role)
-    except Exception:
-        accent_rgba = pkg.resolve_colour("bright")
-
-    r, g, b, a = accent_rgba
-    cr.save()
-    try:
-        # Outer soft glow — wider stroke at lower alpha for a halo.
-        cr.set_source_rgba(r, g, b, a * 0.35)
-        cr.set_line_width(max(2.0, stroke_width * 2.2))
-        inset = max(1.0, stroke_width)
-        cr.rectangle(inset, inset, w - 2 * inset, h - 2 * inset)
-        cr.stroke()
-        # Inner crisp border.
-        cr.set_source_rgba(r, g, b, min(1.0, a * 0.95))
-        cr.set_line_width(stroke_width)
-        inset2 = max(0.5, stroke_width * 0.5)
-        cr.rectangle(inset2, inset2, w - 2 * inset2, h - 2 * inset2)
-        cr.stroke()
-    except Exception:
-        log.debug("paint_emphasis_border cairo error", exc_info=True)
-    finally:
-        cr.restore()
+    _ = (cr, w, h, pkg, ward_id, t, accent_role)  # params retained; unused
 
 
 def apply_scale_bump(cr: cairo.Context, w: float, h: float, ward_id: str) -> None:

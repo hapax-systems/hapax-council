@@ -128,15 +128,12 @@ def paint_emissive_bg(
 ) -> None:
     """Paint a flat-fill ground covering the whole surface.
 
-    Default is the Gruvbox bg0 near-black used by HARDM. Callers that
-    need a tinted/gradient ground should use ``paint_bitchx_bg`` from
-    ``rendering.py`` instead.
+    2026-04-23 operator directive: zero container opacity. The flat
+    ground fill is container chrome; retired. Dot-matrix emissive
+    points continue to render on a fully transparent substrate.
+    Signature preserved for back-compat.
     """
-    cr.save()
-    cr.set_source_rgba(*ground_rgba)
-    cr.rectangle(0, 0, w, h)
-    cr.fill()
-    cr.restore()
+    _ = (cr, w, h, ground_rgba)  # params retained; unused
 
 
 def paint_emissive_point(
