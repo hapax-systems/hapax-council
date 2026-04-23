@@ -1169,6 +1169,29 @@ class DirectorLoop:
             )
             urllib.request.urlopen(req, timeout=90)
             log.info("Slot %d reloaded from playlist: %s", slot_id, pick["title"][:40])
+        except urllib.error.HTTPError as exc:
+            # 2026-04-23: the youtube-player daemon currently serves only
+            # slot 0 but the director cold-starts every slot in
+            # ``self._slots`` at startup. Attempts against slots 1+ return
+            # HTTP 400 with ``{"error": "invalid slot"}``. Treat that
+            # specific body as a configuration mismatch — INFO-level — so
+            # the actual transient failures (500s, timeouts) stay at
+            # WARNING where they matter. Operator triage: scale the
+            # player up to match ``self._slots``, or reduce the director
+            # slot count. Either way, silent-until-then.
+            if exc.code == 400:
+                try:
+                    body_preview = exc.read(256).decode("utf-8", "replace")
+                except Exception:
+                    body_preview = ""
+                if "invalid slot" in body_preview:
+                    log.info(
+                        "Slot %d not served by youtube-player (%s) — skipping cold-start",
+                        slot_id,
+                        body_preview.strip(),
+                    )
+                    return
+            log.warning("Playlist reload failed for slot %d", slot_id, exc_info=True)
         except Exception:
             log.warning("Playlist reload failed for slot %d", slot_id, exc_info=True)
 
