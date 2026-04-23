@@ -199,13 +199,31 @@ def _build_url_pipeline(url: str, *, sink: str) -> tuple[list[str], list[str], l
 class LocalMusicPlayer:
     """Daemon that watches selection.json + plays the selected track."""
 
-    def __init__(self, config: PlayerConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: PlayerConfig | None = None,
+        *,
+        programmer: object | None = None,
+    ) -> None:
         self.config = config or PlayerConfig.from_env()
         self._last_mtime: float = 0.0
         self._current_proc: subprocess.Popen[bytes] | None = None
         self._current_yt: subprocess.Popen[bytes] | None = None
         self._current_ffmpeg: subprocess.Popen[bytes] | None = None
         self._stop = False
+        # Programmer drives continuous-play. None disables auto-next
+        # (Phase 4a behavior). Typed as `object` to keep player.py
+        # importable when the programmer module is partially deployed;
+        # runtime duck-types via getattr.
+        self._programmer = programmer
+        # Programming-silence latch: when True, do NOT auto-recruit
+        # next track. Set by reading `{"stop": true}` from selection
+        # file; cleared when a non-stop selection arrives.
+        self._silenced = False
+        # Track which selection-mtime came from our own auto-recruit
+        # write so we can distinguish that from external overrides
+        # (chat / Hapax cue / operator command) when recording plays.
+        self._auto_written_mtime: float = 0.0
 
     def stop(self) -> None:
         """Stop any in-flight playback and exit the loop."""
@@ -306,9 +324,93 @@ class LocalMusicPlayer:
         repo.load()
         repo.mark_played(track_path)
 
+    def _current_proc_alive(self) -> bool:
+        """True when the current playback chain is still producing audio.
+
+        We probe pw-cat (the final stage); if it's gone, the track has
+        ended (or upstream pipeline died). Used for continuous-play
+        auto-recruitment.
+        """
+        if self._current_proc is None:
+            return False
+        try:
+            return self._current_proc.poll() is None
+        except OSError:
+            return False
+
+    def _maybe_auto_recruit(self) -> None:
+        """When the current track has ended and we're not silenced,
+        ask the programmer for the next track and write it.
+
+        No-op when:
+        - No programmer configured (Phase 4a behavior preserved).
+        - Operator/Hapax wrote `{"stop": true}` and we're silenced.
+        - A track is still playing.
+        """
+        if self._programmer is None:
+            return
+        if self._silenced:
+            return
+        if self._current_proc_alive():
+            return
+        select = getattr(self._programmer, "select_next", None)
+        if select is None:
+            return
+        try:
+            track = select()
+        except Exception:
+            log.warning("programmer.select_next() raised", exc_info=True)
+            return
+        if track is None:
+            log.debug("programmer returned no track; idle")
+            return
+        log.info(
+            "auto-recruiting next track: %s — %s (source=%s)",
+            track.title,
+            track.artist,
+            track.source,
+        )
+        write_selection(
+            self.config.selection_path,
+            track.path,
+            title=track.title,
+            artist=track.artist,
+            source=track.source,
+        )
+        # Mark this write as ours so the next tick recognizes it as
+        # programmer-authored rather than external.
+        try:
+            self._auto_written_mtime = self.config.selection_path.stat().st_mtime
+        except OSError:
+            self._auto_written_mtime = 0.0
+
     def tick(self) -> None:
-        """One poll: check selection, start playback if it changed."""
+        """One poll: check selection, start playback if it changed.
+
+        Order matters:
+
+        1. Read current selection mtime. If it changed, an external
+           write happened (chat / Hapax cue / operator command) — process
+           that FIRST so we don't clobber it with auto-recruit.
+        2. If no external change AND no track playing AND not silenced,
+           ask the programmer for the next track. The programmer's write
+           changes mtime, which the next tick picks up as a normal
+           selection change.
+
+        Continuous-play (Phase 4b): when an auto-recruit-eligible state
+        is detected, the programmer writes selection.json; the SAME tick
+        below sees the new mtime and dispatches playback.
+        """
         path = self.config.selection_path
+        try:
+            current_mtime = path.stat().st_mtime if path.exists() else 0.0
+        except OSError:
+            current_mtime = 0.0
+
+        # Only auto-recruit when nothing has changed since last tick.
+        # External writes always take precedence.
+        if current_mtime == self._last_mtime:
+            self._maybe_auto_recruit()
         try:
             mtime = path.stat().st_mtime if path.exists() else 0.0
         except OSError:
@@ -319,6 +421,40 @@ class LocalMusicPlayer:
         selection = self._read_selection()
         if selection is None:
             return
+        # Stop signal: `{"stop": true}` halts auto-recruitment until a
+        # non-stop selection arrives. Operator/Hapax uses this for
+        # programming-silence segments.
+        if selection.get("stop") is True:
+            log.info("stop signal received; entering silence")
+            self._silenced = True
+            self._kill_current()
+            try:
+                write_attribution(self.config.attribution_path, "")
+            except OSError:
+                log.debug("attribution clear failed", exc_info=True)
+            return
+        # Non-stop selection — leave silence (if any).
+        self._silenced = False
+        # Distinguish programmer-authored writes from external overrides.
+        # When auto-recruit just wrote, this mtime equals _auto_written_mtime
+        # and we record by="programmer". Otherwise (chat / Hapax cue /
+        # operator), record by="external" so the rotation budget honors it.
+        by = "programmer" if mtime == self._auto_written_mtime else "external"
+        # Programmer.record_play observes the upcoming play so cap math
+        # advances even for external overrides.
+        if self._programmer is not None:
+            record = getattr(self._programmer, "record_play", None)
+            if record is not None:
+                try:
+                    record(
+                        path=str(selection.get("path", "")),
+                        title=selection.get("title"),
+                        artist=selection.get("artist"),
+                        source=str(selection.get("source") or "local"),
+                        by=by,
+                    )
+                except Exception:
+                    log.warning("programmer.record_play() raised", exc_info=True)
         self._kill_current()
         self._start_playback(selection)
 
