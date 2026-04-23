@@ -1,0 +1,99 @@
+"""2026-04-23 Gemini-reapproach Plan B Phase B2 regression pin.
+
+Scale values live in two files and MUST stay synchronized. Gemini's
+d4a4b0113 changed ``sierpinski_renderer.py`` scale 0.75 → 0.675 but
+left ``layout.py`` at 0.75 — that parity break is what operator caught
+as "sierpinski is cropped wrong" at 08:23 session 2.
+
+This test pins the current values as invariants. Any future atomic
+reduction (e.g. the 10% "reduce reverie sierp and cbip" directive)
+must update BOTH files; this test fires if only one side changes.
+
+Constants checked:
+- ``agents/studio_compositor/layout.py::_sierpinski_layout`` scale
+- ``agents/studio_compositor/sierpinski_renderer.py::render_content``
+  _get_triangle scale
+- ``agents/studio_compositor/token_pole.py::NATURAL_SIZE`` vs the
+  ``pip-ul`` surface w/h in ``default.json``
+- ``agents/studio_compositor/album_overlay.py::SIZE``
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import re
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).parents[2]
+_COMPOSITOR = _REPO_ROOT / "agents" / "studio_compositor"
+_DEFAULT_JSON = _REPO_ROOT / "config" / "compositor-layouts" / "default.json"
+
+
+def _read_scalar_module_constant(path: Path, name: str) -> float:
+    """Parse ``name = <literal>`` at module level via AST (no import)."""
+    tree = ast.parse(path.read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    if isinstance(node.value, ast.Constant) and isinstance(
+                        node.value.value, (int, float)
+                    ):
+                        return float(node.value.value)
+    raise AssertionError(f"module-level scalar constant {name!r} not found in {path}")
+
+
+def _find_sierpinski_renderer_scale() -> float:
+    """Extract the ``scale=<float>`` kwarg from the ``_get_triangle`` call."""
+    text = (_COMPOSITOR / "sierpinski_renderer.py").read_text()
+    match = re.search(r"_get_triangle\([^)]*?scale\s*=\s*([0-9]*\.[0-9]+)", text, re.DOTALL)
+    assert match, "sierpinski_renderer.py: _get_triangle(scale=<float>) call not found"
+    return float(match.group(1))
+
+
+def _find_layout_sierpinski_scale() -> float:
+    """Extract the ``scale = <float>`` assignment inside ``_sierpinski_layout``."""
+    text = (_COMPOSITOR / "layout.py").read_text()
+    match = re.search(r"def\s+_sierpinski_layout.*?scale\s*=\s*([0-9]*\.[0-9]+)", text, re.DOTALL)
+    assert match, "layout.py: _sierpinski_layout scale = <float> not found"
+    return float(match.group(1))
+
+
+def test_sierpinski_scale_parity() -> None:
+    """The two sierpinski scale constants must be equal."""
+    layout_scale = _find_layout_sierpinski_scale()
+    renderer_scale = _find_sierpinski_renderer_scale()
+    assert layout_scale == renderer_scale, (
+        f"sierpinski scale parity broken: "
+        f"layout.py::_sierpinski_layout scale={layout_scale!r}, "
+        f"sierpinski_renderer.py::render_content scale={renderer_scale!r}. "
+        "Both must change atomically. Gemini's d4a4b0113 caught on this "
+        "(operator: 'sierpinski is cropped wrong')."
+    )
+
+
+def test_token_pole_natural_size_matches_pip_ul_surface() -> None:
+    """TokenPole's NATURAL_SIZE must match the pip-ul surface in default.json."""
+    natural_size = int(_read_scalar_module_constant(_COMPOSITOR / "token_pole.py", "NATURAL_SIZE"))
+    default = json.loads(_DEFAULT_JSON.read_text())
+    pip_ul = next(s for s in default["surfaces"] if s["id"] == "pip-ul")
+    geo = pip_ul["geometry"]
+    assert natural_size == geo["w"] == geo["h"], (
+        f"token_pole.NATURAL_SIZE={natural_size} must match pip-ul "
+        f"(w={geo['w']}, h={geo['h']}). Gemini changed NATURAL_SIZE "
+        "300→270 without adjusting the surface — operator saw the "
+        "Vitruvian resample as degradation."
+    )
+
+
+def test_album_size_matches_pip_ll_width() -> None:
+    """AlbumOverlay's SIZE must match the pip-ll surface width in default.json."""
+    album_size = int(_read_scalar_module_constant(_COMPOSITOR / "album_overlay.py", "SIZE"))
+    default = json.loads(_DEFAULT_JSON.read_text())
+    pip_ll = next(s for s in default["surfaces"] if s["id"] == "pip-ll")
+    geo = pip_ll["geometry"]
+    assert album_size <= geo["w"], (
+        f"album_overlay.SIZE={album_size} must be <= pip-ll width ({geo['w']}). "
+        "If shrinking, update both atomically."
+    )
