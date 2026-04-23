@@ -1,0 +1,24 @@
+[Unit]
+Description=Vinyl-into-Evil-Pet broadcast safety detector — alerts when sustained vinyl + Evil Pet activity overlap
+Documentation=file:///home/hapax/projects/hapax-council/docs/governance/evil-pet-broadcast-source-policy.md
+After=hapax-secrets.service pipewire.service
+Wants=pipewire.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python -m agents.audio_safety
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5s
+MemoryMax=256M
+CPUQuota=15%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-audio-safety
+
+[Install]
+WantedBy=default.target
