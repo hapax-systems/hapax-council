@@ -279,32 +279,15 @@ def _pip_fx_package(
     cr.fill()
     cr.restore()
 
-    # Step 5 (chromatic aberration) — 2026-04-23 Phase B3.
-    # Only fires when both the cover surface AND audio reactivity are
-    # available. Bass band ∈ [0, 1] scales pixel offset in [0, _CHROMATIC_MAX_OFFSET_PX].
-    # Uses constant alpha at both channel paints AND the additive composite
-    # so the effect is never a flash/strobe.
-    if cover_surface is not None and bass_band > 0.02:
-        offset_px = min(max(bass_band, 0.0), 1.0) * _CHROMATIC_MAX_OFFSET_PX
-        # The cover was painted into ``cr`` after ``cr.scale(cover_scale, ...)``
-        # so the surface coordinate system is the un-scaled cover space. We
-        # translate in cover-space pixels — cover_scale maps to surface pixels.
-        _paint_channel_shift(
-            cr,
-            cover_surface,
-            offset_px=offset_px,
-            channel_rgb=(1.0, 0.0, 0.0),
-            direction=(1.0, 0.0),
-            alpha=_CHROMATIC_CHANNEL_ALPHA,
-        )
-        _paint_channel_shift(
-            cr,
-            cover_surface,
-            offset_px=offset_px,
-            channel_rgb=(0.0, 0.4, 1.0),
-            direction=(-1.0, 0.0),
-            alpha=_CHROMATIC_CHANNEL_ALPHA,
-        )
+    # Step 5 (chromatic aberration) — 2026-04-23 RETIRED.
+    # Operator flagged CBIP as still blinking after the earlier no-flash
+    # sweep. The effect gates on ``bass_band > 0.02`` which is a hard
+    # step function; every bass transient pops the R/B channel shift
+    # in and out, which reads as blinking even though the per-call
+    # alpha is constant. Retired until a properly-enveloped version
+    # (low-pass smoothed bass, always-rendering at small offset with
+    # magnitude modulation instead of on/off gate) can replace it.
+    _ = (cover_surface, bass_band, cover_scale)  # retained for signature
 
     # Step 6 (border) — RETIRED 2026-04-20.
     # The 2-px sharp border in the ward's domain accent role was drawing
