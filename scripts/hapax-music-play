@@ -1,0 +1,116 @@
+#!/usr/bin/env -S uv run python
+"""hapax-music-play — operator CLI for kicking off a music selection.
+
+Usage:
+  hapax-music-play <n>                 # play candidate N from music-candidates.json
+  hapax-music-play --path <track>      # play a specific track path / URL
+  hapax-music-play --path X --title T --artist A --source S
+
+Writes ``/dev/shm/hapax-compositor/music-selection.json`` which the
+``hapax-music-player`` daemon watches.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from agents.local_music_player.player import (  # noqa: E402
+    DEFAULT_SELECTION_PATH,
+    write_selection,
+)
+from agents.studio_compositor.music_candidate_surfacer import (  # noqa: E402
+    CANDIDATES_PATH,
+)
+
+
+def _resolve_candidate(n: int, candidates_path: Path) -> dict | None:
+    """Read music-candidates.json and pluck candidate N (1-indexed)."""
+    if not candidates_path.is_file():
+        print(
+            f"hapax-music-play: no candidates file at {candidates_path}",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        payload = json.loads(candidates_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"hapax-music-play: failed to read candidates: {exc}", file=sys.stderr)
+        return None
+    candidates = payload.get("candidates") if isinstance(payload, dict) else payload
+    if not isinstance(candidates, list):
+        print("hapax-music-play: candidates payload is not a list", file=sys.stderr)
+        return None
+    if n < 1 or n > len(candidates):
+        print(
+            f"hapax-music-play: candidate {n} out of range (1..{len(candidates)})",
+            file=sys.stderr,
+        )
+        return None
+    cand = candidates[n - 1]
+    if not isinstance(cand, dict):
+        print(f"hapax-music-play: candidate {n} not a dict", file=sys.stderr)
+        return None
+    return cand
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument("n", nargs="?", type=int, help="Candidate number from music-candidates.json")
+    p.add_argument("--path", help="Track path or URL (overrides candidate lookup)")
+    p.add_argument("--title", default=None)
+    p.add_argument("--artist", default=None)
+    p.add_argument("--source", default=None)
+    p.add_argument(
+        "--candidates",
+        type=Path,
+        default=CANDIDATES_PATH,
+        help="Override candidates JSON path (tests only).",
+    )
+    p.add_argument(
+        "--selection",
+        type=Path,
+        default=DEFAULT_SELECTION_PATH,
+        help="Override selection JSON path (tests only).",
+    )
+    args = p.parse_args()
+
+    if args.path:
+        track_path = args.path
+        title = args.title
+        artist = args.artist
+        source = args.source
+    elif args.n is not None:
+        cand = _resolve_candidate(args.n, args.candidates)
+        if cand is None:
+            return 2
+        track_path = cand.get("path")
+        if not isinstance(track_path, str) or not track_path:
+            print("hapax-music-play: candidate has no path", file=sys.stderr)
+            return 2
+        title = cand.get("title") or args.title
+        artist = cand.get("artist") or args.artist
+        source = cand.get("source") or args.source
+    else:
+        p.print_help(sys.stderr)
+        return 2
+
+    write_selection(
+        args.selection,
+        track_path,
+        title=title,
+        artist=artist,
+        source=source,
+    )
+    print(f"selection written → {args.selection}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
