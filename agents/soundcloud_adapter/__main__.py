@@ -252,6 +252,14 @@ def _normalize_sclib_track(t: Any) -> dict[str, Any]:
         "bpm": None,
         "last_played_ts": None,
         "play_count": 0,
+        # Adapter only syncs the operator's OWN SoundCloud catalogue
+        # (Oudepode). Without these fields the music programmer's
+        # weighted picker treats the records as anonymous "local" source
+        # — drops the 1-in-8 oudepode cap and the broadcast-safe gate.
+        "source": "soundcloud-oudepode",
+        "content_risk": "tier_0_owned",
+        "broadcast_safe": True,
+        "whitelist_source": None,
     }
 
 
@@ -270,6 +278,11 @@ def _normalize_soundcloud_track(t: Any) -> dict[str, Any]:
         "bpm": None,
         "last_played_ts": None,
         "play_count": 0,
+        # See _normalize_sclib_track for rationale on these fields.
+        "source": "soundcloud-oudepode",
+        "content_risk": "tier_0_owned",
+        "broadcast_safe": True,
+        "whitelist_source": None,
     }
 
 
