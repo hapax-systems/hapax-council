@@ -75,6 +75,14 @@ audio = [
     "panns-inference>=0.1.1",
     "pipecat-ai[silero,openai]>=0.0.50",
     "pyannote-audio>=3.3.0",
+    # 2026-04-23 Gemini-audit Phase 5 — pyannote-audio loads its
+    # pretrained models via hydra/omegaconf and does NOT list omegaconf
+    # as a hard dependency in the 3.x line. Without this explicit pin,
+    # ``Model.from_pretrained("pyannote/embedding")`` raises
+    # ``ModuleNotFoundError: No module named 'omegaconf'`` during
+    # speaker-ID startup in hapax-daimonion and the feature silently
+    # degrades.
+    "omegaconf>=2.3",
     "pvporcupine>=4.0.0",
     "pyaudio>=0.2.14",
     "silero-vad>=5.1",
