@@ -163,6 +163,11 @@ def _register_builtins() -> None:
     from agents.studio_compositor.chronicle_ticker import ChronicleTickerCairoSource
 
     register("ChronicleTickerCairoSource", ChronicleTickerCairoSource)
+    # ytb-LORE-MVP PR B (2026-04-24) — programme-state lore-surface ward.
+    # Default OFF via HAPAX_LORE_PROGRAMME_STATE_ENABLED.
+    from agents.studio_compositor.programme_state_ward import ProgrammeStateCairoSource
+
+    register("ProgrammeStateCairoSource", ProgrammeStateCairoSource)
 
 
 _register_builtins()

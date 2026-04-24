@@ -33,13 +33,20 @@ SPEC_PATH = REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-04-20-evilpet-s
 EXPECTED_MIXER_GAINS: dict[str, set[float]] = {
     "hapax-l6-evilpet-capture.conf": {4.0},  # L6 main-mix +12 dB makeup (legacy)
     "hapax-livestream-duck.conf": {1.0},  # PR-3 ducker default = pass-through
-    # L-12 v5 per-channel pre-fader/post-comp software gain stages:
-    # contact mic +3.5 dB (1.5), evilpet/rode/sampler +6 dB (2.0),
-    # PC line unity (1.0), L+R summing unity (1.0).
-    # Phase A2 (PR #1115) routed vinyl through Evil Pet so the standalone
-    # +12 dB (4.0) handytraxx stage was removed; vinyl now gets its
-    # makeup gain inside Evil Pet's L6 chain (4.0 there).
-    "hapax-l12-evilpet-capture.conf": {1.0, 1.5, 2.0},
+    # L-12 conf reverted to pure unity passthrough in d59368e76 —
+    # PipeWire's builtin mixer SUMS inputs (it does not divide-by-N),
+    # so the prior +3.5 / +6 dB per-channel software makeup stages
+    # would clip the broadcast on sum. Post-revert the conf carries
+    # only unity mixer stages; per-channel makeup is applied upstream.
+    # Phase A2 (PR #1115) also moved the +12 dB handytraxx stage into
+    # Evil Pet's L6 chain (4.0 there).
+    "hapax-l12-evilpet-capture.conf": {1.0},
+    # Phase 4 sidechain-ducking framework (#1273) — per-role ducker
+    # sinks with two mono mixers each, default unity passthrough. The
+    # hapax-audio-ducker.service sets live Gain 1 at runtime; the conf
+    # only pins the default 1.0 passthrough stage.
+    "hapax-music-duck.conf": {1.0},
+    "hapax-tts-duck.conf": {1.0},
 }
 
 GAIN_RE = re.compile(r'"Gain 1"\s*=\s*([\d.]+)')
