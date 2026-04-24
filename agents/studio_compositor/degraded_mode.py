@@ -53,13 +53,9 @@ log = logging.getLogger(__name__)
 # directory bind captures all operator-facing state.
 DEGRADED_MODE_PATH: Path = Path("/dev/shm/hapax-compositor/degraded-mode.json")
 
-# Bridge flag for the HARDM publisher (scripts/hardm-publish-signals.py
-# reads this path's existence as the ``degraded_stream`` signal). The
-# publisher hardcodes the path and uses presence semantics, so we touch
-# it on activate / remove on deactivate alongside the canonical
-# ``degraded-mode.json``. Without this bridge, ``degraded.activate``
-# UDS commands had no observable effect on HARDM rendering — the
-# coverage gap that broke gate-3 verification 2026-04-20.
+# Presence flag used as a cheap cross-service "degraded" signal. Originally
+# bridged the HARDM publisher (retired 2026-04-23); retained because other
+# compositor components (ward gating, reactor damping) still probe it.
 DEGRADED_FLAG_PATH: Path = Path("/dev/shm/hapax-compositor/degraded.flag")
 
 # Default TTL for a degraded activation. A typical Python service
@@ -216,8 +212,8 @@ class DegradedModeController:
             os.replace(tmp_path, self._path)
         except OSError:
             log.warning("degraded-mode publish failed", exc_info=True)
-        # Bridge to HARDM publisher's flag-presence consumer. See
-        # DEGRADED_FLAG_PATH module-level docstring.
+        # Presence-flag mirror for cross-service degraded signal (see
+        # DEGRADED_FLAG_PATH docstring).
         try:
             DEGRADED_FLAG_PATH.touch()
         except OSError:
@@ -228,7 +224,7 @@ class DegradedModeController:
             self._path.unlink(missing_ok=True)
         except OSError:
             log.debug("degraded-mode unpublish failed", exc_info=True)
-        # Mirror unpublish to HARDM publisher's flag.
+        # Mirror unpublish to the presence flag.
         try:
             DEGRADED_FLAG_PATH.unlink(missing_ok=True)
         except OSError:

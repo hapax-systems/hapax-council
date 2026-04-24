@@ -104,8 +104,10 @@ class WardEnhancementProfile(BaseModel):
     hardm_binding: bool = Field(
         default=False,
         description=(
-            "Whether HARDM anti-anthropomorphization binding applies "
-            "(notably token_pole, hardm_dot_matrix)."
+            "Whether the anti-anthropomorphization binding applies. "
+            "Originally introduced for HARDM; HARDM retired 2026-04-23 "
+            "(GEAL spec §12), and GEAL inherits the same 10-invariant "
+            "gate — the field name is kept for backwards compatibility."
         ),
     )
     cvs_bindings: list[str] = Field(

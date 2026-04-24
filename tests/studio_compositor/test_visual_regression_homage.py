@@ -110,7 +110,8 @@ class WardCase:
 
 _WARDS: list[WardCase] = [
     WardCase("token_pole", (300, 300), loose=True),
-    WardCase("hardm_dot_matrix", (256, 256), loose=False),
+    # HARDM retired 2026-04-23 (GEAL spec §12) — visual regression case
+    # removed; GEAL visual goldens ship in Phase 1 (plan Task 1.6).
     WardCase("album_overlay", (300, 450), loose=True),
     WardCase("captions", (1280, 80), loose=True),
     WardCase("chat_ambient", (800, 120), loose=True),
@@ -169,12 +170,6 @@ def _build_token_pole() -> Any:
 
     src = tp.TokenPoleCairoSource()
     return src
-
-
-def _build_hardm_dot_matrix() -> Any:
-    from agents.studio_compositor.hardm_source import HardmDotMatrix
-
-    return HardmDotMatrix()
 
 
 def _build_album_overlay() -> Any:
@@ -282,7 +277,6 @@ def _build_research_marker() -> Any:
 
 _BUILDERS: dict[str, Callable[[], Any]] = {
     "token_pole": _build_token_pole,
-    "hardm_dot_matrix": _build_hardm_dot_matrix,
     "album_overlay": _build_album_overlay,
     "captions": _build_captions,
     "chat_ambient": _build_chat_ambient,
@@ -366,7 +360,6 @@ def _render_ward_deterministic(
     ]
 
     from agents.studio_compositor import album_overlay as ao
-    from agents.studio_compositor import hardm_source as hardm
     from agents.studio_compositor import stream_overlay as so
 
     hothouse_patches = [
@@ -389,15 +382,6 @@ def _render_ward_deterministic(
         # placeholder rather than whatever album is currently playing.
         patch.object(ao, "COVER_PATH", str(nonexistent_shm / "album-cover.png")),
         patch.object(ao, "ATTRIB_PATH", str(nonexistent_shm / "music-attribution.txt")),
-        # HARDM dot matrix reads 6 live SHM files. Without isolation
-        # the golden render reflects whatever cells are firing right
-        # now (recent recruitment, voice state, emphasis, etc.).
-        patch.object(hardm, "RECENT_RECRUITMENT_FILE", nonexistent_shm / "recent-recruitment.json"),
-        patch.object(hardm, "SIGNAL_FILE", nonexistent_shm / "hardm-cell-signals.json"),
-        patch.object(hardm, "VOICE_STATE_FILE", nonexistent_shm / "voice-state.json"),
-        patch.object(hardm, "HARDM_EMPHASIS_FILE", nonexistent_shm / "hardm-emphasis.json"),
-        patch.object(hardm, "STIMMUNG_STATE_FILE", nonexistent_shm / "stimmung.json"),
-        patch.object(hardm, "OPERATOR_CUE_FILE", nonexistent_shm / "operator-cue.json"),
         # Stream overlay reads fx-current, token-ledger, chat-state.
         patch.object(so, "FX_CURRENT_FILE", nonexistent_shm / "fx-current.txt"),
         patch.object(so, "TOKEN_LEDGER_FILE", nonexistent_shm / "token-ledger.json"),
@@ -617,10 +601,12 @@ def test_homage_visual_regression(ward_id: str, emphasis: bool) -> None:
 # ── Meta tests ──────────────────────────────────────────────────────────
 
 
-def test_ward_inventory_is_sixteen() -> None:
-    """Plan §C3 success criterion: 16 wards × 2 states = 32 cases."""
-    assert len(_WARDS) == 16, f"expected 16 wards, got {len(_WARDS)}"
-    assert len(_cases()) == 32
+def test_ward_inventory_count() -> None:
+    """Plan §C3 originally pinned 16 wards × 2 states = 32 cases.
+    HARDM retired 2026-04-23 (GEAL spec §12); count drops to 15.
+    """
+    assert len(_WARDS) == 15, f"expected 15 wards, got {len(_WARDS)}"
+    assert len(_cases()) == 30
 
 
 def test_all_ward_ids_have_builders() -> None:

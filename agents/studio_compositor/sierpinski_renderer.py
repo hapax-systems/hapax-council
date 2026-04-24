@@ -16,6 +16,11 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import struct
+import tempfile
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -69,6 +74,14 @@ RENDER_FPS = 10
 # compositor process; reverie writes from a sister process.
 FEATURED_YT_SLOT_FILE = Path("/dev/shm/hapax-compositor/featured-yt-slot")
 FEATURED_TTL_S = 6.0
+
+# GEAL spec §5.1 — ``video_attention`` scalar. Sierpinski writes a single
+# little-endian f32 here each tick; GEAL reads it to scale its activation
+# budget so an active video rect pulls GEAL back to ~30 % and GEAL never
+# fills an empty rect.
+VIDEO_ATTENTION_PATH = Path("/dev/shm/hapax-compositor/video-attention.f32")
+VIDEO_ATTENTION_FRESH_S = 2.0  # freshness plateau
+VIDEO_ATTENTION_DECAY_TAU_S = 2.0  # exponential decay time constant beyond plateau
 FEATURED_OPACITY_BOOST = 1.0  # max opacity when featured (vs 0.9 active, 0.4 idle)
 FEATURED_FALLBACK_OPACITY = 0.9  # active-slot opacity (legacy default)
 FEATURED_IDLE_OPACITY = 0.4  # non-active opacity (legacy default)
@@ -80,6 +93,69 @@ COLORS = [
     (0.7, 0.3, 1.0),  # purple
     (1.0, 0.4, 0.8),  # hot pink
 ]
+
+# GEAL spec §4.2 — per-level stroke width + alpha table for the extended
+# geometry cache. Indexed by depth. Tuple is
+# ``(core_stroke_px, glow_stroke_px, core_alpha, glow_alpha)``. L4 has no
+# glow stroke (encoded as 0.0 / 0.0); audio-reactive stroke bumps apply to
+# L0–L2 only (L3/L4 stay structural).
+LEVEL_STROKE_ALPHA: dict[int, tuple[float, float, float, float]] = {
+    0: (2.0, 6.0, 0.80, 0.15),
+    1: (1.5, 4.5, 0.80, 0.15),
+    2: (1.25, 3.0, 0.70, 0.10),
+    3: (1.0, 1.8, 0.55, 0.06),
+    4: (0.75, 0.0, 0.35, 0.0),
+}
+
+
+# --- Extended geometry cache (GEAL Phase 0 Task 0.2) ---
+
+Point = tuple[float, float]
+Polygon = list[Point]
+
+
+@dataclass
+class GeometryCache:
+    """Sierpinski geometry computed up to ``target_depth``.
+
+    Produced by :meth:`SierpinskiCairoSource.geometry_cache`. Used by GEAL
+    to render the 8-layer expressive stack (§5 of the spec). Kept
+    side-by-side with the legacy ``_cached_*`` fields on the source —
+    GEAL is a parallel reader, not a rewrite of the existing render path.
+
+    Fields
+    ------
+    all_triangles
+        Every solid (non-void) sub-triangle from L0 through ``target_depth``.
+        Count matches ``sum(3**i for i in range(target_depth+1))``.
+    corner_slivers
+        Per-corner list of 3 polygons: the L1 corner triangle minus its
+        inscribed 16:9 rect, split into (apex, left, right) slivers. This
+        is where GEAL renders the three grounding extrusions without
+        occluding the YT video rects.
+    center_void
+        The L1 centre triangle (hosts the centre-void field in GEAL §5
+        layer 4).
+    vertex_halo_centers
+        The 3 primary L0 apices. Canonical anchors for V2 voice halos
+        and G6 gaze-hop markers.
+    edge_polylines
+        Mapping from path tag (e.g. ``"L0.top"``, ``"L1.0.left"``) to
+        the 2-point polyline describing that edge. Populated for every
+        level so G1 wavefronts can propagate along recursion-tree edges.
+    inscribed_rects
+        Axis-aligned 16:9 rects inscribed in each of the 3 L1 corners.
+    target_depth
+        The depth this cache was built for. L0 = root, L4 = max.
+    """
+
+    all_triangles: list[Polygon] = field(default_factory=list)
+    corner_slivers: list[list[Polygon]] = field(default_factory=list)
+    center_void: Polygon = field(default_factory=list)
+    vertex_halo_centers: list[Point] = field(default_factory=list)
+    edge_polylines: dict[str, list[Point]] = field(default_factory=dict)
+    inscribed_rects: list[tuple[float, float, float, float]] = field(default_factory=list)
+    target_depth: int = 2
 
 
 class SierpinskiCairoSource(HomageTransitionalSource):
@@ -217,6 +293,55 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         line_w = 1.5 + self._audio_energy * 2.0
         self._draw_triangle_lines(cr, self._cached_all_triangles, line_w, t)
 
+        # GEAL §5.1 — publish video_attention every tick so GEAL and the
+        # future WGSL parity node can scale their activation budgets.
+        self._publish_video_attention()
+
+    def _publish_video_attention(self) -> None:
+        """Write the ``video_attention`` scalar to SHM (spec §5.1).
+
+        ``video_attention = max(slot_opacity) * frame_freshness``. Slots
+        with no cached frame surface contribute 0. Frames fresher than
+        ``VIDEO_ATTENTION_FRESH_S`` plateau at freshness = 1.0, older
+        frames decay exponentially with time constant
+        ``VIDEO_ATTENTION_DECAY_TAU_S``.
+
+        Atomic write (tmp + os.replace) so consumers never read a torn
+        file. Best-effort — OSError is logged and swallowed; a missed
+        publish just means GEAL falls back to its previous cached value.
+        """
+        now = time.time()
+        max_attention = 0.0
+        for slot_id in range(3):
+            surface = self._frame_surfaces.get(slot_id)
+            mtime = self._frame_mtimes.get(slot_id)
+            if surface is None or mtime is None or mtime <= 0:
+                continue
+            age = now - mtime
+            if age < VIDEO_ATTENTION_FRESH_S:
+                freshness = 1.0
+            else:
+                freshness = math.exp(-(age - VIDEO_ATTENTION_FRESH_S) / VIDEO_ATTENTION_DECAY_TAU_S)
+            attention = self._slot_opacity(slot_id) * freshness
+            if attention > max_attention:
+                max_attention = attention
+
+        payload = struct.pack("<f", max_attention)
+        try:
+            VIDEO_ATTENTION_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=str(VIDEO_ATTENTION_PATH.parent),
+                prefix=".video-attention.",
+                suffix=".tmp",
+                delete=False,
+            ) as fh:
+                fh.write(payload)
+                tmp_path = fh.name
+            os.replace(tmp_path, VIDEO_ATTENTION_PATH)
+        except OSError:
+            log.debug("video_attention publish failed", exc_info=True)
+
     def _rebuild_geometry_cache(self, canvas_w: int, canvas_h: int) -> None:
         """Recompute triangle vertices + inscribed rects for this canvas size.
 
@@ -263,6 +388,171 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         ]
         self._cached_center_rect = self._inscribed_rect(center)
         self._geom_cache_size = (canvas_w, canvas_h)
+
+    def geometry_cache(
+        self,
+        *,
+        target_depth: int = 2,
+        canvas_w: int = 1280,
+        canvas_h: int = 720,
+    ) -> GeometryCache:
+        """Return the GEAL geometry cache for ``target_depth``.
+
+        Memoised on ``(canvas_w, canvas_h, target_depth)`` — the same
+        triple always returns the same content (tested by
+        ``test_geometry_cache_deterministic``).
+
+        ``target_depth`` must be in ``[0, 4]`` per spec §4.1 (L5 is the
+        coherence cliff and is not reachable in v1). The returned
+        :class:`GeometryCache` is a fresh object per call so callers can
+        mutate without corrupting the cache.
+        """
+        if not 0 <= target_depth <= 4:
+            raise ValueError(f"target_depth must be in [0, 4], got {target_depth}")
+
+        key = (canvas_w, canvas_h, target_depth)
+        cached = getattr(self, "_geal_geom_cache", {}).get(key)
+        if cached is not None:
+            # Return a shallow copy so callers can't mutate the cached payload.
+            return GeometryCache(
+                all_triangles=list(cached.all_triangles),
+                corner_slivers=[list(triad) for triad in cached.corner_slivers],
+                center_void=list(cached.center_void),
+                vertex_halo_centers=list(cached.vertex_halo_centers),
+                edge_polylines=dict(cached.edge_polylines),
+                inscribed_rects=list(cached.inscribed_rects),
+                target_depth=cached.target_depth,
+            )
+
+        geom = self._build_geometry_cache(canvas_w, canvas_h, target_depth)
+        if not hasattr(self, "_geal_geom_cache"):
+            self._geal_geom_cache: dict[tuple[int, int, int], GeometryCache] = {}
+        self._geal_geom_cache[key] = geom
+        return geom
+
+    def _build_geometry_cache(
+        self, canvas_w: int, canvas_h: int, target_depth: int
+    ) -> GeometryCache:
+        """Compute a fresh :class:`GeometryCache` — uncached."""
+        fw = float(canvas_w)
+        fh = float(canvas_h)
+        root = self._get_triangle(fw, fh, scale=0.75, y_offset=-0.02)
+
+        # Recurse: at each level, subdivide every solid (non-void) triangle
+        # into 3 corner sub-triangles (void is tracked separately and not
+        # recursed into — dyadic self-similarity preserves the centre void).
+        levels: list[list[Polygon]] = [[list(root)]]
+        for _ in range(target_depth):
+            next_level: list[Polygon] = []
+            for tri in levels[-1]:
+                corners, _void = self._subdivide(tri)
+                next_level.extend(corners)
+            levels.append(next_level)
+
+        all_triangles: list[Polygon] = []
+        for level_tris in levels:
+            all_triangles.extend(level_tris)
+
+        # Corner slivers + center void + inscribed rects all come from the
+        # L1 subdivision (the 3 L1 corners host the YT video rects; the L1
+        # centre triangle hosts the centre-void field).
+        l1_corners, l1_center = self._subdivide(list(root))
+        inscribed_rects = [self._inscribed_rect(c) for c in l1_corners]
+        corner_slivers = [
+            self._corner_slivers(corner, rect)
+            for corner, rect in zip(l1_corners, inscribed_rects, strict=True)
+        ]
+
+        # Edge polylines per level. Root edges use the canonical
+        # "L0.<side>" names; deeper levels add a triangle index so each
+        # edge has a unique key (used by G1 wavefront propagation).
+        edge_polylines: dict[str, list[Point]] = {}
+        _SIDES = ("top", "left", "right")
+        for level_idx, level_tris in enumerate(levels):
+            for tri_idx, tri in enumerate(level_tris):
+                edges = [
+                    [tri[0], tri[1]],  # top: apex → left-base
+                    [tri[1], tri[2]],  # left: left-base → right-base
+                    [tri[2], tri[0]],  # right: right-base → apex
+                ]
+                if level_idx == 0:
+                    for side, edge in zip(_SIDES, edges, strict=True):
+                        edge_polylines[f"L0.{side}"] = edge
+                else:
+                    for side, edge in zip(_SIDES, edges, strict=True):
+                        edge_polylines[f"L{level_idx}.{tri_idx}.{side}"] = edge
+
+        return GeometryCache(
+            all_triangles=all_triangles,
+            corner_slivers=corner_slivers,
+            center_void=list(l1_center),
+            vertex_halo_centers=[root[0], root[1], root[2]],
+            edge_polylines=edge_polylines,
+            inscribed_rects=inscribed_rects,
+            target_depth=target_depth,
+        )
+
+    def _subdivide(self, tri: Polygon) -> tuple[list[Polygon], Polygon]:
+        """Dyadic midpoint subdivision — returns (3 corner sub-triangles, centre void).
+
+        Matches the existing ``_rebuild_geometry_cache`` logic but returned
+        in a form the extended geometry cache can consume.
+        """
+        a, b, c = tri[0], tri[1], tri[2]
+        m_ab = self._midpoint(a, b)
+        m_bc = self._midpoint(b, c)
+        m_ac = self._midpoint(a, c)
+        corner_a: Polygon = [a, m_ab, m_ac]
+        corner_b: Polygon = [m_ab, b, m_bc]
+        corner_c: Polygon = [m_ac, m_bc, c]
+        center: Polygon = [m_ab, m_bc, m_ac]
+        return [corner_a, corner_b, corner_c], center
+
+    def _corner_slivers(
+        self,
+        corner: Polygon,
+        rect: tuple[float, float, float, float],
+    ) -> list[Polygon]:
+        """Decompose (corner minus inscribed rect) into apex/left/right slivers.
+
+        The inscribed rect is axis-aligned. The three slivers are the
+        regions of the corner triangle that fall outside the rect,
+        approximated as three triangles anchored at each corner vertex of
+        the triangle. This is a coarse topological decomposition
+        sufficient for GEAL's clip-region use — the per-level stroke
+        table (§4.2) clips L3/L4 edge work to these polygons so YT rects
+        never get edge-muddied.
+        """
+        rx, ry, rw, rh = rect
+        rect_tl: Point = (rx, ry)
+        rect_tr: Point = (rx + rw, ry)
+        rect_bl: Point = (rx, ry + rh)
+        rect_br: Point = (rx + rw, ry + rh)
+
+        # Identify apex (farthest from rect centre) and two base vertices.
+        cx = rx + rw * 0.5
+        cy = ry + rh * 0.5
+        by_dist = sorted(
+            corner,
+            key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2,
+            reverse=True,
+        )
+        apex = by_dist[0]
+        # The remaining two are the base vertices; left/right by x.
+        base = [by_dist[1], by_dist[2]]
+        base.sort(key=lambda p: p[0])
+        base_left, base_right = base[0], base[1]
+
+        # Apex sliver: apex + the two rect corners closest to the apex
+        # (top pair if apex is above rect, bottom pair otherwise).
+        if apex[1] < cy:
+            apex_sliver: Polygon = [apex, rect_tl, rect_tr]
+        else:
+            apex_sliver = [apex, rect_bl, rect_br]
+
+        left_sliver: Polygon = [base_left, rect_tl, rect_bl]
+        right_sliver: Polygon = [base_right, rect_tr, rect_br]
+        return [apex_sliver, left_sliver, right_sliver]
 
     def _load_frame(self, slot_id: int) -> cairo.ImageSurface | None:
         """Load a YouTube frame JPEG as a Cairo surface, with mtime caching."""

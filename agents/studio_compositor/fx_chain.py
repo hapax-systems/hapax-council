@@ -586,6 +586,19 @@ def build_inline_fx_chain(
     compositor._sierpinski_renderer.start()
     log.info("SierpinskiLoader + SierpinskiRenderer created (render thread at 10fps)")
 
+    # GEAL Phase 1 MVP — ward-gated behind HAPAX_GEAL_ENABLED=1. The
+    # GealCairoSource is instantiated unconditionally so tests and
+    # runtime-configuration toggles can engage it without a reload,
+    # but its render() is a no-op when the env var is unset. Shares
+    # the Sierpinski source's geometry cache to avoid recomputing
+    # recursion geometry on the render tick.
+    from .geal_source import GealCairoSource
+
+    compositor._geal_source = GealCairoSource(
+        _sierpinski_geom_provider=compositor._sierpinski_renderer._source,
+    )
+    log.info("GealCairoSource constructed (gated behind HAPAX_GEAL_ENABLED=1)")
+
     log.info(
         "FX chain: %d shader slots, glvideomixer (camera base + live flash 60%%)",
         compositor._slot_pipeline.num_slots,

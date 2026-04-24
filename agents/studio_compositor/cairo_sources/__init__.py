@@ -78,7 +78,6 @@ def _register_builtins() -> None:
     # is still referenced by existing layout JSONs (default.json + garage-door
     # .json); re-register it under both names until the layouts catch up.
     from agents.studio_compositor.chat_ambient_ward import ChatAmbientWard
-    from agents.studio_compositor.hardm_source import HardmDotMatrix
     from agents.studio_compositor.hothouse_sources import (
         ActivityVarietyLogCairoSource,
         ImpingementCascadeCairoSource,
@@ -145,9 +144,6 @@ def _register_builtins() -> None:
     register("ActivityVarietyLogCairoSource", ActivityVarietyLogCairoSource)
     # Epic 2 Phase D (2026-04-17) — operator-always-here audience framing.
     register("WhosHereCairoSource", WhosHereCairoSource)
-    # HOMAGE follow-on #121 (2026-04-18) — HARDM dot-matrix avatar readout.
-    # 16×16 signal grid, upper-right (1600, 20), 256×256.
-    register("HardmDotMatrix", HardmDotMatrix)
     # HOMAGE follow-on #159 (2026-04-18) — vinyl-platter ward. Registered
     # but NOT added to the default layout; operator declares a vinyl-focus
     # layout (see config/compositor-layouts/examples/vinyl-focus.json)

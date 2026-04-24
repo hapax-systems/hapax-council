@@ -160,9 +160,9 @@ class TestModulatorFieldPreservation:
     def test_first_write_with_defaults_persists_defaults(self):
         # No existing entry, caller writes defaults → defaults are written
         # (no preservation source to pull from).
-        wp.set_ward_properties("hardm_dot_matrix", wp.WardProperties(alpha=0.8), ttl_s=10.0)
+        wp.set_ward_properties("token_pole", wp.WardProperties(alpha=0.8), ttl_s=10.0)
         wp.clear_ward_properties_cache()
-        props = wp.resolve_ward_properties("hardm_dot_matrix")
+        props = wp.resolve_ward_properties("token_pole")
         assert props.z_plane == "on-scrim"
         assert props.z_index_float == 0.5
         assert props.alpha == 0.8

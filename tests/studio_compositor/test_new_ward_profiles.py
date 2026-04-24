@@ -189,8 +189,11 @@ def test_research_marker_overlay_rejects_all_aesthetics(
 def test_total_profile_count_matches_spec(
     registry: WardEnhancementProfileRegistry,
 ) -> None:
-    """Spec §0 reconciliation pins 20 ward profiles (19 enhanceable + reverie)."""
-    assert len(registry.list_wards()) == 20
+    """Spec §0 reconciliation originally pinned 20 ward profiles (19
+    enhanceable + reverie). Dropped to 19 after HARDM retirement
+    2026-04-23 (GEAL spec §12).
+    """
+    assert len(registry.list_wards()) == 19
 
 
 def test_all_six_new_wards_present(registry: WardEnhancementProfileRegistry) -> None:

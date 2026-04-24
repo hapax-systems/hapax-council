@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 
@@ -33,6 +34,20 @@ def on_draw(compositor: Any, overlay: Any, cr: Any, timestamp: int, duration: in
         if loader is not None:
             sierpinski.set_active_slot(loader._active_slot)
         sierpinski.draw(cr, canvas_w, canvas_h)
+
+    # GEAL (Grounding Expression Anchoring Layer) — extends Sierpinski
+    # with voice halos + stance depth + grounding extrusions. Renders
+    # ON TOP of Sierpinski so its additive halos + overlays layer onto
+    # the same main-layer cairooverlay. No-op when HAPAX_GEAL_ENABLED
+    # is unset; the gate lives inside render() so cost is essentially
+    # zero in the disabled path.
+    geal = getattr(compositor, "_geal_source", None)
+    if geal is not None:
+        state: dict[str, Any] = {}
+        cached_audio = getattr(compositor, "_cached_audio", None)
+        if cached_audio is not None:
+            state["tts_active"] = cached_audio.get("tts_active", False)
+        geal.render(cr, canvas_w, canvas_h, time.monotonic(), state)
 
     # Render content overlay zones (markdown/ANSI from Obsidian via Pango)
     if hasattr(compositor, "_overlay_zone_manager"):

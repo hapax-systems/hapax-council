@@ -1627,7 +1627,7 @@ class DirectorLoop:
                     "Keep the current hero camera but nudge its framing weight — a small "
                     "gesture, not a cut.",
                     "earth",
-                    ["hardm_dot_matrix"],
+                    ["sierpinski"],
                     "weighted_by_salience",
                 ),
                 (
@@ -2032,46 +2032,12 @@ class DirectorLoop:
             )
         parts.append(f"Time: {datetime.now().strftime('%H:%M')}.")
 
-        # ─── HARDM anchor status (task #160) ───────────────────────
-        # Research doc: docs/research/hardm-communicative-anchoring.md.
-        # Deterministic prefix — lets grounded beats reference HARDM
-        # without re-discovering its state every prompt.
-        try:
-            from agents.studio_compositor import hardm_source as _hs
-
-            bias = _hs.current_salience_bias(emit_metric=False)
-            emphasis = _hs._read_emphasis_state()
-            if bias > _hs.UNSKIPPABLE_BIAS:
-                hardm_state = "emphasized"
-            elif emphasis == "speaking":
-                hardm_state = "visible"
-            else:
-                hardm_state = "quiescent"
-            parts.append(f"HARDM is {hardm_state}; bias={bias:.2f}; emphasis={emphasis}.")
-        except Exception:
-            pass
-
-        # ─── Operator cue — point-at-hardm (task #160) ─────────────
-        try:
-            from agents.studio_compositor import hardm_source as _hs
-
-            cue_path = _hs.OPERATOR_CUE_FILE
-            if cue_path.exists():
-                cue = json.loads(cue_path.read_text(encoding="utf-8"))
-                if isinstance(cue, dict) and cue.get("cue") == "point-at-hardm":
-                    cell = cue.get("cell")
-                    signal_name = cue.get("signal_name") or "?"
-                    if isinstance(cell, int):
-                        parts.append(
-                            f"Operator cue: reference HARDM cell {cell} "
-                            f"({signal_name}) in your next narrative beat."
-                        )
-                try:
-                    cue_path.unlink()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        # HARDM anchor status (task #160) and point-at-hardm operator
+        # cue retired 2026-04-23 alongside the HARDM source. GEAL
+        # (Sierpinski-native expressive layer, spec at
+        # ``docs/superpowers/specs/2026-04-23-geal-spec.md``) replaces
+        # the anchor role; director anchoring will re-attach to GEAL
+        # state in Phase 1+.
 
         # ─── Chat state ───────────────────────────────────────────
         try:

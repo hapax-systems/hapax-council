@@ -290,7 +290,7 @@ class TestStructuralIntentAggressiveEmphasis:
             ward_emphasis=[
                 "album_overlay",
                 "sierpinski",
-                "hardm_dot_matrix",
+                "pressure_gauge",
                 "stream_overlay",
             ],
         )
@@ -303,7 +303,7 @@ class TestStructuralIntentAggressiveEmphasis:
         for ward_id in (
             "album_overlay",
             "sierpinski",
-            "hardm_dot_matrix",
+            "pressure_gauge",
             "stream_overlay",
         ):
             props = wp.get_specific_ward_properties(ward_id)
@@ -547,11 +547,12 @@ class TestB2IntentFamilyRoutingAggressiveEnvelope:
         # salience=0.5 → ttl_s = max(1.5, 0.5 * 5.0) = 2.5
         assert 2.0 <= ttl_s <= 3.5, f"expected ~2.5s at salience=0.5, got {ttl_s:.3f}"
 
-    def test_multi_ward_rotation_beyond_hardm_and_album(self, wired):
+    def test_multi_ward_rotation_not_stuck_on_single_ward(self, wired):
         """60s-simulated rotation: recruit ward.highlight.<id>.pulse for
         four wards in sequence and verify each one lands the aggressive
-        envelope. Closes the plan's "not stuck on HARDM + album"
-        invariant.
+        envelope. Closes the plan's "rotate across wards, don't stick"
+        invariant (originally phrased as "not stuck on HARDM + album";
+        HARDM retired 2026-04-23).
         """
         import agents.studio_compositor.ward_properties as wp
 
@@ -575,17 +576,15 @@ class TestB2IntentFamilyRoutingAggressiveEnvelope:
             assert props.glow_radius_px >= 12.0, (
                 f"{ward_id} glow below legibility floor: {props.glow_radius_px}"
             )
-        # Sanity: the invariant is specifically "more than HARDM + album".
-        # We rotated through 4 distinct wards, none of which is HARDM, so
-        # the surface-wide count of aggressively-emphasized non-HARDM
-        # non-album wards is >= 2 (sierpinski + stream_overlay +
-        # captions = 3).
-        non_hardm_non_album = [
+        # Sanity: we rotated through 4 distinct wards; at least 3
+        # non-album wards carry aggressive-envelope properties
+        # (sierpinski + stream_overlay + captions = 3).
+        non_album_rotated = [
             w
             for w in ("sierpinski", "stream_overlay", "captions")
             if wp.get_specific_ward_properties(w) is not None
         ]
-        assert len(non_hardm_non_album) >= 3
+        assert len(non_album_rotated) >= 3
 
     def test_catalog_overlay_foregrounds_land_ward_properties(self, wired):
         """Every overlay.foreground.<target> in the capability catalog

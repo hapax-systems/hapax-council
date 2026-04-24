@@ -332,9 +332,11 @@ class TestFxEventToWardProperties:
         get_bus().publish_fx(FXEvent(kind="intensity_spike"))
 
         ward_properties.clear_ward_properties_cache()
-        hardm = ward_properties.get_specific_ward_properties("hardm_dot_matrix")
-        assert hardm is not None
-        assert hardm.border_pulse_hz > 0.0
+        # HARDM retired 2026-04-23; pressure_gauge substitutes as the
+        # audio-reactive ward asserted to pulse on intensity_spike.
+        pressure = ward_properties.get_specific_ward_properties("pressure_gauge")
+        assert pressure is not None
+        assert pressure.border_pulse_hz > 0.0
 
 
 class TestJsonlObservability:
@@ -488,8 +490,8 @@ class TestDomainPresetFamilyMapping:
         )
 
         # At least the operator's named set is in the audio-reactive bucket.
+        # (HARDM retired 2026-04-23 — dropped from this assertion.)
         assert "pressure_gauge" in AUDIO_REACTIVE_WARDS
-        assert "hardm_dot_matrix" in AUDIO_REACTIVE_WARDS
         assert is_audio_reactive("token_pole")
         assert not is_audio_reactive("captions")
 
