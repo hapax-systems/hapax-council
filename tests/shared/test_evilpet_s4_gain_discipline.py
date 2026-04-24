@@ -39,7 +39,23 @@ EXPECTED_MIXER_GAINS: dict[str, set[float]] = {
     # Phase A2 (PR #1115) routed vinyl through Evil Pet so the standalone
     # +12 dB (4.0) handytraxx stage was removed; vinyl now gets its
     # makeup gain inside Evil Pet's L6 chain (4.0 there).
-    "hapax-l12-evilpet-capture.conf": {1.0, 1.5, 2.0},
+    # NOTE 2026-04-24: per-channel pre-fader gains (1.5 contact mic, 2.0
+    # evilpet/rode/sampler) were reverted to unity in commit d59368e76
+    # ("fix(audio): revert l12-evilpet filter to unity — mixer sums, not
+    # averages"). PipeWire's builtin mixer sums inputs (per
+    # reference_pipewire_builtin_mixer_sums memory) so the v5 plan's
+    # per-channel makeup gains were over-driving the bus. Now: every
+    # input lands at unity; makeup happens downstream in the L12 sink
+    # filter chain.
+    "hapax-l12-evilpet-capture.conf": {1.0},
+    # Audio Phase 4 sidechain ducking (PRs #1271-#1273): two mono mixers
+    # per chain with controllable Gain 1. Both default 1.0 (passthrough);
+    # hapax-audio-ducker.service writes attenuated values at runtime
+    # (music: 0.251 / 0.398; tts: 0.398) when the relevant channel is
+    # active. Static-config inspection only sees the documented baseline,
+    # which is the unity passthrough.
+    "hapax-music-duck.conf": {1.0},
+    "hapax-tts-duck.conf": {1.0},
 }
 
 GAIN_RE = re.compile(r'"Gain 1"\s*=\s*([\d.]+)')

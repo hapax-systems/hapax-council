@@ -63,7 +63,7 @@ def _make_director():
 class TestSingleFlightLock:
     def test_lock_acquired_releases_after_call(self) -> None:
         director = _make_director()
-        with patch.object(dl_mod, "_get_litellm_key", return_value="dummy"):
+        with patch.object(dl_mod, "LITELLM_KEY", "dummy"):
             with patch.object(
                 director, "_call_activity_llm_locked", return_value="some response"
             ) as mock_locked:
@@ -76,7 +76,7 @@ class TestSingleFlightLock:
 
     def test_lock_released_on_inner_exception(self) -> None:
         director = _make_director()
-        with patch.object(dl_mod, "_get_litellm_key", return_value="dummy"):
+        with patch.object(dl_mod, "LITELLM_KEY", "dummy"):
             with patch.object(
                 director,
                 "_call_activity_llm_locked",
@@ -90,7 +90,7 @@ class TestSingleFlightLock:
 
     def test_second_concurrent_call_skips_with_metric(self) -> None:
         director = _make_director()
-        with patch.object(dl_mod, "_get_litellm_key", return_value="dummy"):
+        with patch.object(dl_mod, "LITELLM_KEY", "dummy"):
             # Simulate prior call holding the lock.
             assert dl_mod._DIRECTOR_LLM_LOCK.acquire(blocking=False)
             try:
@@ -105,7 +105,7 @@ class TestSingleFlightLock:
 
     def test_no_litellm_key_skips_lock_acquire(self) -> None:
         director = _make_director()
-        with patch.object(dl_mod, "_get_litellm_key", return_value=""):
+        with patch.object(dl_mod, "LITELLM_KEY", ""):
             with patch.object(director, "_call_activity_llm_locked") as mock_locked:
                 result = director._call_activity_llm("prompt", None)
         assert result == ""
