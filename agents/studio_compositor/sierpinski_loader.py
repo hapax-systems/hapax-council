@@ -1,14 +1,27 @@
 """Sierpinski content loader — publishes YouTube video frames via the unified source protocol.
 
-Replaces the legacy ContentTextureManager/slots.json path. Polls yt-frame-{0,1,2}.jpg
-snapshots from the youtube-player daemon and injects them into the wgpu content source
-protocol (/dev/shm/hapax-imagination/sources/yt-slot-{N}/) via content_injector.
+Replaces the legacy ContentTextureManager/slots.json path. Polls
+``yt-frame-{N}.jpg`` snapshots from the youtube-player daemon and
+injects them into the wgpu content source protocol
+(``/dev/shm/hapax-imagination/sources/yt-slot-{N}/``) via
+``content_injector``.
 
-The Sierpinski triangle shader (sierpinski_content.wgsl) handles the triangle-region
-masking and compositing on the GPU side. This loader is the data pipeline.
+The Sierpinski triangle shader (``sierpinski_content.wgsl``) handles
+the triangle-region masking and compositing on the GPU side. This
+loader is the data pipeline.
 
-Active slot opacity is higher (0.9) than inactive slots (0.3). Slot ordering via
-z_order so the active slot sorts highest and the shader binds it first.
+Active slot opacity is higher (0.9) than inactive slots (0.3). Slot
+ordering via ``z_order`` so the active slot sorts highest and the
+shader binds it first.
+
+Slot count history: the loader originally spoke three slots
+(0, 1, 2) on the assumption of multi-video playback. The
+``youtube-player`` daemon ships serving slot 0 only; slots 1+ have
+been returning HTTP 400 ``{"error": "invalid slot"}`` on every cold
+start since then, and no multi-video workflow ever materialised.
+2026-04-23: operator decision to match reality — slot count pulled
+to 1. Re-expanding later is a one-number change (``VIDEO_SLOT_COUNT``)
+plus aligned changes on the youtube-player side.
 """
 
 from __future__ import annotations
@@ -22,6 +35,11 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 YT_FRAME_DIR = Path("/dev/shm/hapax-compositor")
+
+# Number of video slots the loader manages. 2026-04-23: reduced from
+# 3 to 1 to match the live youtube-player configuration. Re-expand by
+# bumping this AND updating the player's slot count in parallel.
+VIDEO_SLOT_COUNT: int = 1
 
 
 class VideoSlotStub:
@@ -70,7 +88,7 @@ class SierpinskiLoader:
         self._running = False
         self._thread: threading.Thread | None = None
         self._active_slot = 0
-        self.video_slots = [VideoSlotStub(i) for i in range(3)]
+        self.video_slots = [VideoSlotStub(i) for i in range(VIDEO_SLOT_COUNT)]
 
     def start(self) -> None:
         """Start the frame polling thread and deferred director initialization."""
@@ -89,7 +107,7 @@ class SierpinskiLoader:
         """Deferred director loop startup — waits for YouTube frames to appear."""
         # Wait for at least one YouTube frame to exist
         for _ in range(30):
-            if any((YT_FRAME_DIR / f"yt-frame-{i}.jpg").exists() for i in range(3)):
+            if any((YT_FRAME_DIR / f"yt-frame-{i}.jpg").exists() for i in range(VIDEO_SLOT_COUNT)):
                 break
             time.sleep(1)
         try:
@@ -177,7 +195,7 @@ class SierpinskiLoader:
         Inactive slots get opacity 0.3 and z_order 2-4.
         Slots with missing yt-frame files get their source removed.
         """
-        for slot_id in range(3):
+        for slot_id in range(VIDEO_SLOT_COUNT):
             frame_path = YT_FRAME_DIR / f"yt-frame-{slot_id}.jpg"
             source_id = f"yt-slot-{slot_id}"
             if not frame_path.exists():
