@@ -3,6 +3,7 @@ state_kinds:
   - chronicle.weekly_digest
   - programme.completed_plan
   - axiom.precedent_operator_authority
+  - research.corpus_excerpt
 redactions:
   - operator_profile.*
   - operator_identity.*

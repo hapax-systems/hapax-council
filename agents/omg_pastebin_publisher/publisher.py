@@ -257,6 +257,77 @@ def build_precedent_digest(*, precedent: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ── Research-corpus digest (Phase D) ──────────────────────────────────────
+
+
+def build_research_slug(research_id: str) -> str:
+    """Deterministic slug for a research-corpus paste."""
+    return f"research-{_slug_sanitise(research_id)}"
+
+
+def build_research_digest(*, research: dict[str, Any]) -> str:
+    """Render a research-corpus excerpt as a plain-text digest.
+
+    Default-deny gate: returns empty string unless the research dict
+    explicitly carries ``publish: True``. Operator authors set the flag
+    per-document; pre-attribution drafts (publication contract redaction
+    ``research.pre_attribution``) stay unpublished by default.
+
+    Returns empty string if ``research_id`` missing.
+    """
+    if not research.get("publish"):
+        return ""
+    research_id = research.get("research_id")
+    if not research_id:
+        return ""
+
+    title = research.get("title", research_id)
+    body = research.get("body", "")
+    extracted_date = research.get("extracted_date", "")
+
+    lines: list[str] = [f"# {title}", ""]
+    if extracted_date:
+        lines.append(f"_extracted: {extracted_date}_")
+        lines.append("")
+    if body:
+        lines.append(str(body).rstrip())
+        lines.append("")
+    lines.append(f"_digest compiled: {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}_")
+    return "\n".join(lines) + "\n"
+
+
+def read_research_from_dir(directory: Path) -> list[dict[str, Any]]:
+    """Soft-read research markdown files with YAML frontmatter.
+
+    Treats the body (after the closing ``---``) as the document
+    content; assigns it to the ``body`` key in the parsed dict.
+    Documents without parseable frontmatter are skipped.
+    """
+    if not directory.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not text.startswith("---\n"):
+            continue
+        end = text.find("\n---\n", 4)
+        if end == -1:
+            continue
+        try:
+            frontmatter = yaml.safe_load(text[4:end])
+        except yaml.YAMLError:
+            continue
+        if not isinstance(frontmatter, dict):
+            continue
+        body = text[end + len("\n---\n") :].strip()
+        record = {**frontmatter, "body": body}
+        out.append(record)
+    return out
+
+
 def read_precedents_from_dir(directory: Path) -> list[dict[str, Any]]:
     """Soft-read top-level ``*.yaml`` precedent files.
 
@@ -324,6 +395,7 @@ class PastebinArtifactPublisher:
     CATEGORY_CHRONICLE = "chronicle.weekly_digest"
     CATEGORY_PROGRAMME = "programme.completed_plan"
     CATEGORY_PRECEDENT = "axiom.precedent_operator_authority"
+    CATEGORY_RESEARCH = "research.corpus_excerpt"
 
     def __init__(
         self,
@@ -336,6 +408,7 @@ class PastebinArtifactPublisher:
         min_salience: float = 0.7,
         read_programmes: Callable[[], list[dict[str, Any]]] | None = None,
         read_precedents: Callable[[], list[dict[str, Any]]] | None = None,
+        read_research: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> None:
         self.client = client
         self.state_file = state_file
@@ -348,6 +421,7 @@ class PastebinArtifactPublisher:
         # loader; call sites that want a category pass their own loader.
         self._read_programmes: Callable[[], list[dict[str, Any]]] = read_programmes or (lambda: [])
         self._read_precedents: Callable[[], list[dict[str, Any]]] = read_precedents or (lambda: [])
+        self._read_research: Callable[[], list[dict[str, Any]]] = read_research or (lambda: [])
 
     def _read_state(self) -> dict:
         try:
@@ -564,6 +638,73 @@ class PastebinArtifactPublisher:
         self._write_state(persisted)
         log.info("omg-pastebin: published precedent digest %s", slug)
         _record(self.CATEGORY_PRECEDENT, "published")
+        return "published"
+
+    def publish_research(self, research_id: str, *, dry_run: bool = False) -> str:
+        """Compose + publish (or update) the digest for a research-corpus excerpt.
+
+        Default-deny gate: the underlying ``build_research_digest`` returns
+        empty string unless the source dict carries ``publish: True``.
+        """
+        research = self._read_research()
+        match = next(
+            (r for r in research if r.get("research_id") == research_id),
+            None,
+        )
+        if match is None:
+            _record(self.CATEGORY_RESEARCH, "empty")
+            return "empty"
+
+        content = build_research_digest(research=match)
+        if not content:
+            _record(self.CATEGORY_RESEARCH, "empty")
+            return "empty"
+
+        slug = build_research_slug(research_id)
+
+        allow = allowlist_check(
+            SURFACE,
+            self.CATEGORY_RESEARCH,
+            {"summary": f"{slug}: {match.get('title', '')}"},
+        )
+        if allow.decision == "deny":
+            log.info("omg-pastebin: allowlist denied research digest (%s)", allow.reason)
+            _record(self.CATEGORY_RESEARCH, "allowlist-denied")
+            return "allowlist-denied"
+
+        state_key = f"digest_sha_{slug}"
+        import hashlib
+
+        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        persisted = self._read_state()
+        if persisted.get(state_key) == content_sha:
+            _record(self.CATEGORY_RESEARCH, "unchanged")
+            return "unchanged"
+
+        if dry_run:
+            log.info(
+                "omg-pastebin: dry-run — research digest %s (sha %s…)",
+                slug,
+                content_sha[:8],
+            )
+            _record(self.CATEGORY_RESEARCH, "dry-run")
+            return "dry-run"
+
+        if not getattr(self.client, "enabled", False):
+            log.warning("omg-pastebin: client disabled — skipping publish")
+            _record(self.CATEGORY_RESEARCH, "client-disabled")
+            return "client-disabled"
+
+        resp = self.client.set_paste(self.address, content=content, title=slug, listed=True)
+        if resp is None:
+            log.warning("omg-pastebin: set_paste returned None (%s)", slug)
+            _record(self.CATEGORY_RESEARCH, "failed")
+            return "failed"
+
+        persisted[state_key] = content_sha
+        self._write_state(persisted)
+        log.info("omg-pastebin: published research digest %s", slug)
+        _record(self.CATEGORY_RESEARCH, "published")
         return "published"
 
 
