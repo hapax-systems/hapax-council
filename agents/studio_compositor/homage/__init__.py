@@ -147,10 +147,14 @@ from agents.studio_compositor.homage.bitchx import (  # noqa: E402
 from agents.studio_compositor.homage.bitchx_authentic import (  # noqa: E402
     BITCHX_AUTHENTIC_PACKAGE,
 )
+from agents.studio_compositor.homage.enlightenment_moksha import (  # noqa: E402
+    ENLIGHTENMENT_MOKSHA_PACKAGE,
+)
 
 register_package(BITCHX_PACKAGE)
 register_package(BITCHX_CONSENT_SAFE_PACKAGE)
 register_package(BITCHX_AUTHENTIC_PACKAGE)
+register_package(ENLIGHTENMENT_MOKSHA_PACKAGE)
 
 
 __all__ = [
@@ -158,6 +162,7 @@ __all__ = [
     "BITCHX_CONSENT_SAFE_PACKAGE",
     "BITCHX_PACKAGE",
     "CONSENT_SAFE_PACKAGE_NAME",
+    "ENLIGHTENMENT_MOKSHA_PACKAGE",
     "get_active_package",
     "get_consent_safe_package",
     "get_package",
