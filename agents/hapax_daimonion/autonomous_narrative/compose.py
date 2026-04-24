@@ -90,7 +90,43 @@ def _build_seed(context: Any) -> str:
     events_summary = _summarize_events(context.chronicle_events)
     if events_summary:
         parts.append(f"Recent events: {events_summary}")
+    vault_summary = _summarize_vault_context(getattr(context, "vault_context", None))
+    if vault_summary:
+        parts.append(vault_summary)
     return "\n".join(parts)
+
+
+def _summarize_vault_context(vault_context: Any) -> str:
+    """Render the operator's vault state as a compact context block.
+
+    SS2 cycle 1 (ytb-SS2 §4): provides the LLM with the operator's
+    "current focus" — recent daily notes + active goals — as
+    informational context rather than as a directive about what to
+    talk about. The compose-prompt frames it as such.
+
+    Returns an empty string when the vault context is None or empty
+    so the seed cleanly omits the block; downstream prompt assembly
+    drops empty parts.
+    """
+    if vault_context is None:
+        return ""
+    excerpts = getattr(vault_context, "daily_note_excerpts", ()) or ()
+    goals = getattr(vault_context, "active_goals", ()) or ()
+    if not excerpts and not goals:
+        return ""
+
+    sections: list[str] = []
+    if goals:
+        goal_lines = [f"  - [{prio}] {title} ({status})" for title, prio, status in goals]
+        sections.append("Operator's active goals:\n" + "\n".join(goal_lines))
+    if excerpts:
+        note_lines: list[str] = []
+        for date_label, body in excerpts:
+            indented_body = body.replace("\n", "\n    ")
+            note_lines.append(f"  [{date_label}]\n    {indented_body}")
+        sections.append("Operator's recent daily notes (oldest first):\n" + "\n".join(note_lines))
+
+    return "Operator focus context:\n" + "\n\n".join(sections)
 
 
 def _summarize_events(events: tuple[dict, ...]) -> str:
@@ -141,7 +177,14 @@ def _build_prompt(context: Any, seed: str) -> str:
         "- Diegetic consistency: refer to the system as 'Hapax'. Never "
         "'the AI', 'this AI', 'our AI'.\n"
         "- If no event in the state below is substantive enough to "
-        "narrate, return the literal token [silence] and nothing else.\n\n"
+        "narrate, return the literal token [silence] and nothing else.\n"
+        "- Operator focus context (when present in the state below) is "
+        "informational scaffolding, NOT a directive about what to talk "
+        "about. Use it to ground references to operator concerns when "
+        "naturally relevant; do NOT recite it, summarise it, or treat "
+        "its presence as license to narrate goals or daily notes "
+        "directly. The chronicle events remain the primary grounding "
+        "source.\n\n"
         "State (deterministic snapshot):\n"
         "---\n"
         f"{seed}\n"
