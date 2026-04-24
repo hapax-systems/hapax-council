@@ -157,6 +157,12 @@ def _register_builtins() -> None:
     from agents.studio_compositor.gem_source import GemCairoSource
 
     register("GemCairoSource", GemCairoSource)
+    # ytb-LORE-MVP PR A (2026-04-24) — chronicle-ticker lore-surface ward.
+    # Default OFF via HAPAX_LORE_CHRONICLE_TICKER_ENABLED; registered so
+    # layout JSON can declare it independent of the flag.
+    from agents.studio_compositor.chronicle_ticker import ChronicleTickerCairoSource
+
+    register("ChronicleTickerCairoSource", ChronicleTickerCairoSource)
 
 
 _register_builtins()
