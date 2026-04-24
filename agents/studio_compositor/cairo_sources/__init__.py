@@ -175,6 +175,14 @@ def _register_builtins() -> None:
     from agents.studio_compositor.durf_source import DURFCairoSource
 
     register("DURFCairoSource", DURFCairoSource)
+    # ef7b-165 Phase 9 Part 2 (2026-04-24) — anti-personification egress
+    # footer. Static text strip framing the channel as a research
+    # instrument. Default OFF via HAPAX_EGRESS_FOOTER_ENABLED; operator
+    # flips after visual sign-off. Registered so layout JSON can declare
+    # the ward independent of the flag.
+    from agents.studio_compositor.egress_footer_source import EgressFooterCairoSource
+
+    register("EgressFooterCairoSource", EgressFooterCairoSource)
 
 
 _register_builtins()
