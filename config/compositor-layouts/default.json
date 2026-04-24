@@ -13,7 +13,10 @@
       },
       "update_cadence": "always",
       "rate_hz": null,
-      "tags": []
+      "tags": [],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "album",
@@ -26,7 +29,10 @@
       },
       "update_cadence": "always",
       "rate_hz": null,
-      "tags": []
+      "tags": [],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "stream_overlay",
@@ -39,7 +45,10 @@
       },
       "update_cadence": "rate",
       "rate_hz": 2.0,
-      "tags": []
+      "tags": [],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "sierpinski",
@@ -52,7 +61,10 @@
       },
       "update_cadence": "always",
       "rate_hz": null,
-      "tags": []
+      "tags": [],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "reverie",
@@ -65,7 +77,10 @@
       },
       "update_cadence": "always",
       "rate_hz": null,
-      "tags": []
+      "tags": [],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "activity_header",
@@ -81,7 +96,10 @@
       "tags": [
         "legibility",
         "authorship"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "stance_indicator",
@@ -97,7 +115,10 @@
       "tags": [
         "legibility",
         "authorship"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "captions",
@@ -114,7 +135,10 @@
         "legibility",
         "communication",
         "deprecating"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "gem",
@@ -131,7 +155,10 @@
         "homage",
         "expression",
         "graffiti-emphasis-mural"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "grounding_provenance_ticker",
@@ -147,7 +174,10 @@
       "tags": [
         "legibility",
         "grounding"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "impingement_cascade",
@@ -163,7 +193,10 @@
       "tags": [
         "hothouse",
         "pressure"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "recruitment_candidate_panel",
@@ -179,7 +212,10 @@
       "tags": [
         "hothouse",
         "authorship"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "thinking_indicator",
@@ -195,7 +231,10 @@
       "tags": [
         "hothouse",
         "authorship"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "pressure_gauge",
@@ -211,7 +250,10 @@
       "tags": [
         "hothouse",
         "pressure"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "activity_variety_log",
@@ -227,7 +269,10 @@
       "tags": [
         "hothouse",
         "authorship"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "whos_here",
@@ -243,7 +288,10 @@
       "tags": [
         "hothouse",
         "audience"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     },
     {
       "id": "hardm_dot_matrix",
@@ -259,7 +307,10 @@
       "tags": [
         "homage",
         "avatar"
-      ]
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     }
   ],
   "surfaces": [
