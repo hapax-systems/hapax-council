@@ -77,6 +77,31 @@ _V2_ZETA = 0.8
 _G1_SIGMA_MS = 120.0
 _G1_TRAVEL_MS = 600.0
 
+# G2 latch-and-fade parameters (spec §6.3 / §7.5): three_phase 100/80/1200
+# commit band + 450 ms log-decay settle.
+_G2_ANTICIPATE_MS = 100.0
+_G2_COMMIT_MS = 80.0
+_G2_SETTLE_MS = 1200.0
+_G2_SETTLE_TAU_MS = 450.0
+
+# S2 apex-weight redistribution table (spec §6.2). Each row sums to 1.0
+# except CRITICAL (all apices dark; rendered as a near-zero weight set
+# which the S2 renderer treats as "mid-edge glow territory").
+_S2_APEX_WEIGHTS: dict[str, tuple[float, float, float]] = {
+    "NOMINAL": (0.33, 0.33, 0.33),
+    "SEEKING": (0.55, 0.22, 0.22),
+    "CAUTIOUS": (0.15, 0.42, 0.42),
+    "DEGRADED": (0.60, 0.20, 0.20),
+    "CRITICAL": (0.05, 0.05, 0.05),
+}
+
+# V1 Chladni — number of sub-triangle slivers to ignite per
+# (centroid × rms) amplitude range. Spec §6.1: 1-3 of the 9 L2
+# sub-triangle slivers.
+_V1_MAX_IGNITIONS = 3
+_V1_OMEGA = 12.0
+_V1_ZETA = 0.7
+
 # Palette apex ordering — matches the GeometryCache.vertex_halo_centers
 # list (main triangle vertices in order apex / base-left / base-right).
 _APEX_ORDER: tuple[ClassifierApex, ClassifierApex, ClassifierApex] = ("top", "bl", "br")
@@ -180,6 +205,10 @@ class GealCairoSource(CairoSource):
     _voice_rms_lp: SecondOrderLP = field(
         default_factory=lambda: SecondOrderLP(omega=12.0, zeta=0.7)
     )
+    # V1 Chladni ignition amplitude filter (centroid × rms → fill).
+    _v1_ignite_lp: SecondOrderLP = field(
+        default_factory=lambda: SecondOrderLP(omega=_V1_OMEGA, zeta=_V1_ZETA)
+    )
 
     # -- Public control surface --------------------------------------------
 
@@ -195,6 +224,11 @@ class GealCairoSource(CairoSource):
         fans out to three simultaneous wavefronts). Safe to call from
         any thread that holds the runner's tick lock; the wavefronts
         are consumed on the next render tick.
+
+        Phase 2 also spawns a G2 latch-and-fade: ``hash(source_id) %
+        num_cells`` picks a deterministic L2 sub-triangle sliver; same
+        source_id → same cell, so repeated recognitions ("Jason",
+        "paper-42") build a spatial memory the viewer learns.
         """
         if not _gate_enabled():
             return
@@ -214,6 +248,22 @@ class GealCairoSource(CairoSource):
                         palette_id=palette_id,
                     )
                 )
+            # Imagination-converge spawns three latches — one per apex.
+            for concrete in _APEX_ORDER:
+                self._active_latches.append(
+                    _LatchFade(
+                        apex=concrete,
+                        sub_triangle_idx=self._hash_to_cell_idx(source_id, concrete),
+                        envelope=Envelope.three_phase(
+                            fire_at_s=now_s,
+                            anticipate_ms=_G2_ANTICIPATE_MS,
+                            commit_ms=_G2_COMMIT_MS,
+                            settle_ms=_G2_SETTLE_MS,
+                            peak_amp=0.9,
+                            settle_tau_ms=_G2_SETTLE_TAU_MS,
+                        ),
+                    )
+                )
         else:
             self._active_wavefronts.append(
                 _Wavefront(
@@ -227,6 +277,34 @@ class GealCairoSource(CairoSource):
                     palette_id=palette_id,
                 )
             )
+            self._active_latches.append(
+                _LatchFade(
+                    apex=apex,
+                    sub_triangle_idx=self._hash_to_cell_idx(source_id, apex),
+                    envelope=Envelope.three_phase(
+                        fire_at_s=now_s,
+                        anticipate_ms=_G2_ANTICIPATE_MS,
+                        commit_ms=_G2_COMMIT_MS,
+                        settle_ms=_G2_SETTLE_MS,
+                        peak_amp=0.9,
+                        settle_tau_ms=_G2_SETTLE_TAU_MS,
+                    ),
+                )
+            )
+
+    @staticmethod
+    def _hash_to_cell_idx(source_id: str, apex: ClassifierApex) -> int:
+        """Deterministic cell selection within an apex's sliver triad.
+
+        Three slivers per apex (apex / left / right) → picks one of
+        those three. Using a stable Python hash variant ensures the
+        same source_id always maps to the same cell regardless of
+        interpreter start-up.
+        """
+        import hashlib
+
+        digest = hashlib.blake2b(f"{apex}::{source_id}".encode(), digest_size=4).digest()
+        return int.from_bytes(digest, "little") % 3
 
     # -- CairoSource render entry point ------------------------------------
 
@@ -282,8 +360,12 @@ class GealCairoSource(CairoSource):
         ]
         self._active_latches = [L for L in self._active_latches if not L.envelope.is_expired(t)]
 
-        # Layer 6 — V2 vertex halos (additive).
-        self._paint_vertex_halos(cr, geom, palette, roles, t, state)
+        # Layer 3 — V1 Chladni sub-triangle ignition (centroid × rms → fill).
+        self._paint_v1_chladni(cr, geom, palette, t, state)
+        # Layer 3 — G2 deterministic per-source latches (on top of V1).
+        self._paint_g2_latches(cr, geom, palette, t)
+        # Layer 6 — V2 vertex halos (additive, modulated by stance apex-weight S2).
+        self._paint_vertex_halos(cr, geom, palette, roles, t, state, stance=stance)
         # Layer 7 — G1 wavefronts (additive, clipped away from YT rects).
         self._paint_wavefronts(cr, geom, t)
 
@@ -342,9 +424,18 @@ class GealCairoSource(CairoSource):
         roles: Any,
         t: float,
         state: dict[str, Any],
+        *,
+        stance: str = "NOMINAL",
     ) -> None:
-        """Layer 6 — V2 additive radial halos at each L0 apex."""
+        """Layer 6 — V2 additive radial halos at each L0 apex, modulated by S2.
+
+        S2 (spec §6.2) redistributes attention across the three primary
+        apices via a per-stance weight triple; V2 halo alpha is scaled
+        by the corresponding weight so viewers read "where Hapax is
+        pointing" without the grammar ever using a facial cue.
+        """
         role_tokens = (roles.apex, roles.bl, roles.br)
+        s2_weights = _S2_APEX_WEIGHTS.get(stance, _S2_APEX_WEIGHTS["NOMINAL"])
         halo_alpha = 0.35 + roles.halo_alpha_boost
         halo_omega = roles.lp_omega_override or _V2_OMEGA_DEFAULT
         halo_base_radius_px = min(geom.inscribed_rects[0][2], geom.inscribed_rects[0][3]) * 0.35
@@ -383,11 +474,123 @@ class GealCairoSource(CairoSource):
             radius = halo_base_radius_px * (0.6 + 0.6 * radius_scale)
             r, g, b = self._resolve_halo_colour(role_token, palette)
             cx, cy = centre
+            # S2 apex-weight scale: 0.33 is the NOMINAL baseline, so we
+            # rescale by 3 × weight to keep NOMINAL visually identical
+            # and let SEEKING / CAUTIOUS redistribute intensity.
+            weight_scale = 3.0 * s2_weights[idx]
             gradient = cairo.RadialGradient(cx, cy, 0.0, cx, cy, radius)
-            gradient.add_color_stop_rgba(0.0, r, g, b, halo_alpha * radius_scale)
+            gradient.add_color_stop_rgba(0.0, r, g, b, halo_alpha * radius_scale * weight_scale)
             gradient.add_color_stop_rgba(1.0, r, g, b, 0.0)
             cr.set_source(gradient)
             cr.arc(cx, cy, radius, 0.0, 2.0 * math.pi)
+            cr.fill()
+        cr.restore()
+
+    def _paint_v1_chladni(
+        self,
+        cr: cairo.Context,
+        geom: GeometryCache,
+        palette: Any,
+        t: float,
+        state: dict[str, Any],
+    ) -> None:
+        """Layer 3 — V1 Chladni sub-triangle ignition.
+
+        ``spectral_centroid × rms`` drives the number + placement of
+        sub-triangles that fill in as "still points" while the rest of
+        the geometry dithers. High centroid (consonants) → apex apex
+        slivers. Low centroid (vowels / silence) → base slivers.
+
+        Samples come from the TTS envelope ring; silence = no ignition.
+        """
+        samples = self._tts_envelope_reader.latest(4)
+        if not samples:
+            return
+
+        rms_avg = sum(s[0] for s in samples) / float(len(samples))
+        centroid_avg = sum(s[1] for s in samples) / float(len(samples))
+        # Normalise centroid to [0, 1] — human speech ranges ~400–4000 Hz.
+        centroid_norm = max(0.0, min(1.0, centroid_avg / 4000.0))
+        raw = rms_avg * centroid_norm * 6.0  # scale into useful amplitude
+        amp = self._v1_ignite_lp.tick(t, raw)
+        if amp < 0.05:
+            return
+
+        # Pick number of ignitions (1-3) from amplitude.
+        n_ignite = max(1, min(_V1_MAX_IGNITIONS, int(amp * _V1_MAX_IGNITIONS + 0.5)))
+        # Centroid selects apex-weighted (top) vs base (bl/br) bias.
+        apex_bias: list[ClassifierApex]
+        if centroid_norm > 0.6:
+            apex_bias = ["top", "top", "bl", "br"]
+        elif centroid_norm < 0.3:
+            apex_bias = ["bl", "br", "bl", "br"]
+        else:
+            apex_bias = ["top", "bl", "br"]
+
+        fill = _lab_to_srgb(tuple(palette.dominant_lab))
+
+        cr.save()
+        self._clip_to_non_video(cr, geom)
+        cr.set_operator(cairo.OPERATOR_OVER)
+        for i in range(n_ignite):
+            apex_kind = apex_bias[i % len(apex_bias)]
+            apex_idx = _APEX_ORDER.index(apex_kind)
+            triad = geom.corner_slivers[apex_idx]
+            # Rotate through sliver index so repeated ignitions don't
+            # stack on the same cell during a single utterance.
+            poly = triad[(i + int(t * 3.0)) % len(triad)]
+            if not poly:
+                continue
+            cr.move_to(*poly[0])
+            for x, y in poly[1:]:
+                cr.line_to(x, y)
+            cr.close_path()
+            cr.set_source_rgba(fill[0], fill[1], fill[2], min(0.55, amp * 0.85))
+            cr.fill()
+        cr.restore()
+
+    def _paint_g2_latches(
+        self,
+        cr: cairo.Context,
+        geom: GeometryCache,
+        palette: Any,
+        t: float,
+    ) -> None:
+        """Layer 3 — G2 deterministic latch-and-fade cells.
+
+        Each live :class:`_LatchFade` envelope maps to one sliver
+        polygon (selected at fire time via ``hash(source_id)``) and
+        paints it in the apex's accent LAB at the envelope's current
+        amplitude. Same source_id → same cell, so the viewer learns
+        "that cell = that thing" over the course of a session.
+        """
+        if not self._active_latches:
+            return
+
+        cr.save()
+        self._clip_to_non_video(cr, geom)
+        cr.set_operator(cairo.OPERATOR_OVER)
+        for latch in self._active_latches:
+            amp = latch.envelope.tick(t)
+            if amp < 0.02:
+                continue
+            apex_idx = _APEX_ORDER.index(latch.apex)
+            triad = geom.corner_slivers[apex_idx]
+            if not triad:
+                continue
+            poly = triad[latch.sub_triangle_idx % len(triad)]
+            if not poly:
+                continue
+            try:
+                lab = self._palette_bridge.grounding_latch_lab(palette.id, latch.apex)
+            except KeyError:
+                continue
+            r, g, b = _lab_to_srgb(lab)
+            cr.move_to(*poly[0])
+            for x, y in poly[1:]:
+                cr.line_to(x, y)
+            cr.close_path()
+            cr.set_source_rgba(r, g, b, min(0.7, amp))
             cr.fill()
         cr.restore()
 

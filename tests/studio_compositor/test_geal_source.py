@@ -135,6 +135,52 @@ def test_render_in_budget_at_15fps(canvas) -> None:
     assert elapsed_ms < 15.0, f"mean render {elapsed_ms:.2f} ms exceeds Phase 1 budget"
 
 
+def test_g2_latches_deterministic_cell_per_source_id() -> None:
+    """Spec §6.3 — same source_id → same cell every time."""
+    source = _fresh_source(enabled=True)
+    source.fire_grounding_event("insightface.jason", now_s=0.0)
+    first_cell = source._active_latches[0].sub_triangle_idx
+
+    source2 = _fresh_source(enabled=True)
+    source2.fire_grounding_event("insightface.jason", now_s=42.0)
+    second_cell = source2._active_latches[0].sub_triangle_idx
+
+    assert first_cell == second_cell, (
+        f"G2 hash must be stable across instances; got {first_cell} vs {second_cell}"
+    )
+
+
+def test_g2_latch_spawns_alongside_wavefront() -> None:
+    """Grounding events spawn both a G1 wavefront and a G2 latch."""
+    source = _fresh_source(enabled=True)
+    source.fire_grounding_event("insightface.op", now_s=0.0)
+    assert len(source._active_wavefronts) == 1
+    assert len(source._active_latches) == 1
+    assert source._active_latches[0].apex == "top"
+
+
+def test_s2_apex_weights_rebalance_on_stance() -> None:
+    """Spec §6.2 S2 — SEEKING is apex-heavy; CAUTIOUS is base-heavy."""
+    from agents.studio_compositor.geal_source import _S2_APEX_WEIGHTS
+
+    seeking = _S2_APEX_WEIGHTS["SEEKING"]
+    cautious = _S2_APEX_WEIGHTS["CAUTIOUS"]
+
+    # SEEKING: top > bl + br.
+    assert seeking[0] > seeking[1]
+    assert seeking[0] > seeking[2]
+    # CAUTIOUS: bl + br > top (inverted).
+    assert cautious[1] > cautious[0]
+    assert cautious[2] > cautious[0]
+    # All weights sum to 1.0 for the five canonical stances (CRITICAL
+    # is dark, but we still keep it well-formed).
+    # Weights sum to ~1.0. A 0.02 tolerance accommodates the spec's
+    # chosen-rounded values (e.g. NOMINAL=(0.33,0.33,0.33)=0.99).
+    for stance in ("NOMINAL", "SEEKING", "CAUTIOUS", "DEGRADED"):
+        total = sum(_S2_APEX_WEIGHTS[stance])
+        assert abs(total - 1.0) < 0.02, f"{stance} weights sum to {total}"
+
+
 def test_never_paints_inside_inscribed_video_rect() -> None:
     """GEAL layers 3, 4, 6, 7 clip to the three sliver + centre-void
     regions — the inscribed 16:9 YT rects must remain uncovered.
