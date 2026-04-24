@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# hapax-purl — thin wrapper around `python -m agents.omg_purl_registrar`
+# for easy operator shell use.
+#
+# Usage:
+#   hapax-purl seed [--force]
+#   hapax-purl add <slug> <target> [--force]
+#   hapax-purl list
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+exec uv run python -m agents.omg_purl_registrar "$@"
