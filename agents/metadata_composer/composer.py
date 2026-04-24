@@ -86,30 +86,63 @@ def compose_metadata(
     ``llm_call`` is a test-injection hook. Production callers leave it
     None and the composer dispatches to ``_call_llm_balanced``; tests can
     pass a stub returning the deterministic prose they expect.
+
+    The composer picks one operator referent per call via
+    ``shared.operator_referent.OperatorReferentPicker`` (per directive
+    `su-non-formal-referent-001`) and threads it through the LLM prompt
+    so all metadata surfaces for one VOD stay internally consistent. The
+    picker import is soft — if the module is not yet present (pre-PR
+    #1277 merge), referent-aware prompt-clauses are simply omitted.
     """
     state = state_readers.snapshot()
+    referent = _pick_referent(scope, broadcast_id, triggering_event)
     grounding: dict[str, Any] = {
         "working_mode": state.working_mode,
         "programme_role": state.programme.role.value if state.programme else None,
         "stimmung_tone": state.stimmung_tone,
         "director_activity": state.director_activity,
         "scope": scope,
+        "operator_referent": referent,
     }
 
     if scope == "vod_boundary":
         if vod_time_range is None:
             raise ValueError("vod_boundary scope requires vod_time_range=(start, end)")
-        return _compose_vod_boundary(state, vod_time_range, grounding, llm_call)
+        return _compose_vod_boundary(state, vod_time_range, grounding, llm_call, referent)
 
     if scope == "live_update":
-        return _compose_live_update(state, grounding, llm_call)
+        return _compose_live_update(state, grounding, llm_call, referent)
 
     if scope == "cross_surface":
         if triggering_event is None:
             raise ValueError("cross_surface scope requires triggering_event")
-        return _compose_cross_surface(state, triggering_event, grounding, llm_call)
+        return _compose_cross_surface(state, triggering_event, grounding, llm_call, referent)
 
     raise ValueError(f"unknown scope: {scope!r}")
+
+
+def _pick_referent(
+    scope: Scope, broadcast_id: str | None, triggering_event: dict | None
+) -> str | None:
+    """Pick one operator referent for this composition.
+
+    Sticky-per-VOD seeding: a given ``broadcast_id`` always resolves to
+    the same referent so all metadata for one VOD reads with one voice.
+    Cross-surface posts seed on the triggering event to keep federated
+    posts about one moment internally consistent. Returns None if the
+    picker module is unavailable so the composer ships standalone.
+    """
+    try:
+        from shared.operator_referent import OperatorReferentPicker  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    if broadcast_id:
+        return OperatorReferentPicker.pick_for_vod_segment(broadcast_id)
+    if triggering_event is not None:
+        ev_id = triggering_event.get("id") or str(triggering_event.get("ts", ""))
+        return OperatorReferentPicker.pick(f"cross-surface-{ev_id}")
+    return OperatorReferentPicker.pick()
 
 
 # ── per-scope composition ──────────────────────────────────────────────────
@@ -120,6 +153,7 @@ def _compose_vod_boundary(
     vod_time_range: tuple[float, float],
     grounding: dict[str, Any],
     llm_call: Any,
+    referent: str | None,
 ) -> ComposedMetadata:
     start, end = vod_time_range
     chapter_list = _chapters.extract_chapters(
@@ -130,10 +164,16 @@ def _compose_vod_boundary(
 
     title_seed = framing.compose_title_seed(state)
     description_seed = framing.compose_description_seed(state, scope="vod_boundary")
-    title = _maybe_llm_polish(title_seed, scope="vod_boundary", llm_call=llm_call)
+    title = _maybe_llm_polish(
+        title_seed, scope="vod_boundary", llm_call=llm_call, referent=referent
+    )
     title = framing.enforce_register(title, fallback=title_seed)[:TITLE_LIMIT]
     description_body = _maybe_llm_polish(
-        description_seed, scope="vod_boundary", llm_call=llm_call, kind="description"
+        description_seed,
+        scope="vod_boundary",
+        llm_call=llm_call,
+        kind="description",
+        referent=referent,
     )
     description_body = framing.enforce_register(description_body, fallback=description_seed)
     description_body = redaction.redact_capabilities(description_body, state.programme)
@@ -168,13 +208,18 @@ def _compose_live_update(
     state: state_readers.StateSnapshot,
     grounding: dict[str, Any],
     llm_call: Any,
+    referent: str | None,
 ) -> ComposedMetadata:
     title_seed = framing.compose_title_seed(state)
     description_seed = framing.compose_description_seed(state, scope="live_update")
-    title = _maybe_llm_polish(title_seed, scope="live_update", llm_call=llm_call)
+    title = _maybe_llm_polish(title_seed, scope="live_update", llm_call=llm_call, referent=referent)
     title = framing.enforce_register(title, fallback=title_seed)[:TITLE_LIMIT]
     description_body = _maybe_llm_polish(
-        description_seed, scope="live_update", llm_call=llm_call, kind="description"
+        description_seed,
+        scope="live_update",
+        llm_call=llm_call,
+        kind="description",
+        referent=referent,
     )
     description_body = framing.enforce_register(description_body, fallback=description_seed)
     description_body = redaction.redact_capabilities(description_body, state.programme)
@@ -203,6 +248,7 @@ def _compose_cross_surface(
     triggering_event: dict,
     grounding: dict[str, Any],
     llm_call: Any,
+    referent: str | None,
 ) -> ComposedMetadata:
     grounding["triggering_event_kind"] = triggering_event.get("event_type")
     grounding["triggering_event_salience"] = triggering_event.get("payload", {}).get("salience")
@@ -274,12 +320,13 @@ def _maybe_llm_polish(
     scope: Scope,
     llm_call: Any,
     kind: str = "title",
+    referent: str | None = None,
 ) -> str:
     """Return the LLM-polished string or the seed on any failure."""
     if llm_call is None:
         llm_call = _call_llm_balanced
     try:
-        polished = llm_call(seed=seed, scope=scope, kind=kind)
+        polished = llm_call(seed=seed, scope=scope, kind=kind, referent=referent)
         if polished and isinstance(polished, str):
             return polished.strip()
     except Exception as exc:
@@ -287,7 +334,9 @@ def _maybe_llm_polish(
     return seed
 
 
-def _call_llm_balanced(*, seed: str, scope: Scope, kind: str) -> str | None:
+def _call_llm_balanced(
+    *, seed: str, scope: Scope, kind: str, referent: str | None = None
+) -> str | None:
     """Best-effort LLM polish via the ``balanced`` tier.
 
     Returns None on any litellm failure so callers fall back to the seed.
@@ -300,7 +349,7 @@ def _call_llm_balanced(*, seed: str, scope: Scope, kind: str) -> str | None:
 
     from shared.config import MODELS  # noqa: PLC0415
 
-    prompt = framing.build_llm_prompt(seed=seed, scope=scope, kind=kind)
+    prompt = framing.build_llm_prompt(seed=seed, scope=scope, kind=kind, referent=referent)
     try:
         response = litellm.completion(
             model=MODELS["balanced"],

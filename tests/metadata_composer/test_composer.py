@@ -135,8 +135,8 @@ def test_field_limits_enforced():
 def test_llm_polish_called_with_seed():
     seen: list[dict] = []
 
-    def stub(*, seed, scope, kind):
-        seen.append({"seed": seed, "scope": scope, "kind": kind})
+    def stub(*, seed, scope, kind, referent=None):
+        seen.append({"seed": seed, "scope": scope, "kind": kind, "referent": referent})
         return f"polished: {seed[:30]}"
 
     with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
@@ -149,7 +149,7 @@ def test_llm_polish_called_with_seed():
 def test_register_violation_falls_back_to_seed():
     """If the LLM emits a personification verb, the fallback seed wins."""
 
-    def bad_stub(*, seed, scope, kind):
+    def bad_stub(*, seed, scope, kind, referent=None):
         return "Hapax feels excited about today's stream!"
 
     with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
@@ -203,6 +203,98 @@ def test_format_description_with_chapters_prepends_scaffold():
 
 def test_format_description_no_chapters_returns_body():
     assert composer_mod._format_description_with_chapters("body", []) == "body"
+
+
+# ── operator referent integration (su-non-formal-referent-001 / PR #1277) ─
+
+
+def test_referent_threaded_into_grounding_when_picker_available():
+    """When OperatorReferentPicker is importable, grounding records the picked referent."""
+    fake_picker = type(
+        "FakePicker",
+        (),
+        {
+            "pick_for_vod_segment": staticmethod(lambda seg_id: "Oudepode"),
+            "pick": staticmethod(lambda seed=None: "Oudepode"),
+        },
+    )
+    with (
+        patch.dict(
+            "sys.modules",
+            {"shared.operator_referent": type("M", (), {"OperatorReferentPicker": fake_picker})()},
+        ),
+        patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
+    ):
+        result = compose_metadata("live_update", broadcast_id="bx", llm_call=lambda **_: None)
+    assert result.grounding_provenance["operator_referent"] == "Oudepode"
+
+
+def test_referent_threaded_into_llm_call():
+    seen: list[dict] = []
+
+    def stub(*, seed, scope, kind, referent=None):
+        seen.append({"referent": referent})
+        return None
+
+    fake_picker = type(
+        "FakePicker",
+        (),
+        {
+            "pick_for_vod_segment": staticmethod(lambda seg_id: "OTO"),
+            "pick": staticmethod(lambda seed=None: "OTO"),
+        },
+    )
+    with (
+        patch.dict(
+            "sys.modules",
+            {"shared.operator_referent": type("M", (), {"OperatorReferentPicker": fake_picker})()},
+        ),
+        patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
+    ):
+        compose_metadata("live_update", broadcast_id="bx", llm_call=stub)
+
+    assert seen and all(s["referent"] == "OTO" for s in seen)
+
+
+def test_referent_none_when_picker_unavailable():
+    """If the operator_referent module is missing (pre-#1277), composer ships standalone."""
+    with (
+        patch.dict("sys.modules", {"shared.operator_referent": None}),
+        patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
+    ):
+        result = compose_metadata("live_update", broadcast_id="bx", llm_call=lambda **_: None)
+    assert result.grounding_provenance["operator_referent"] is None
+
+
+def test_referent_seeded_per_vod_for_consistency():
+    """Same broadcast_id → same referent across multiple compose calls."""
+
+    captured: list[str | None] = []
+
+    fake_picker_module = type(
+        "M",
+        (),
+        {
+            "OperatorReferentPicker": type(
+                "P",
+                (),
+                {
+                    "pick_for_vod_segment": staticmethod(lambda seg_id: f"referent-for-{seg_id}"),
+                    "pick": staticmethod(lambda seed=None: "fallback"),
+                },
+            ),
+        },
+    )()
+    with (
+        patch.dict("sys.modules", {"shared.operator_referent": fake_picker_module}),
+        patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
+    ):
+        r1 = compose_metadata("live_update", broadcast_id="vod-7", llm_call=lambda **_: None)
+        r2 = compose_metadata("live_update", broadcast_id="vod-7", llm_call=lambda **_: None)
+        captured.append(r1.grounding_provenance["operator_referent"])
+        captured.append(r2.grounding_provenance["operator_referent"])
+
+    assert captured[0] == captured[1] == "referent-for-vod-7"
 
 
 # ── Hypothesis property: composer is deterministic ────────────────────────

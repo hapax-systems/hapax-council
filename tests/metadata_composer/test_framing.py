@@ -184,3 +184,26 @@ def test_llm_prompt_includes_seed_and_scope():
     assert "live_update" in prompt
     assert "title" in prompt
     assert "Hapax is a system, not a character" in prompt
+
+
+def test_llm_prompt_omits_referent_clause_when_none():
+    prompt = framing.build_llm_prompt(seed="Foo", scope="live_update", kind="title", referent=None)
+    assert "Operator-naming rule" not in prompt
+    assert "EXCLUSIVELY" not in prompt
+
+
+def test_llm_prompt_includes_referent_clause_when_provided():
+    prompt = framing.build_llm_prompt(
+        seed="Foo", scope="live_update", kind="title", referent="Oudepode"
+    )
+    assert "Operator-naming rule" in prompt
+    assert 'EXCLUSIVELY as: "Oudepode"' in prompt
+    assert "legal name" in prompt
+
+
+def test_llm_prompt_referent_blocks_legal_name_and_mixed_forms():
+    prompt = framing.build_llm_prompt(
+        seed="X", scope="vod_boundary", kind="description", referent="OTO"
+    )
+    assert "Do not use their legal name" in prompt
+    assert "Do not mix other referent forms" in prompt

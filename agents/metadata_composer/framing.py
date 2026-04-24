@@ -159,8 +159,23 @@ def compose_pinned_comment(state, chapter_list) -> str:
     return "\n".join(lines)
 
 
-def build_llm_prompt(*, seed: str, scope: str, kind: str) -> str:
-    """Build the prompt asked of the ``balanced`` tier when polishing seeds."""
+def build_llm_prompt(*, seed: str, scope: str, kind: str, referent: str | None = None) -> str:
+    """Build the prompt asked of the ``balanced`` tier when polishing seeds.
+
+    ``referent`` is the operator's chosen non-formal referent for this
+    composition (per ``shared.operator_referent.OperatorReferentPicker`` —
+    `su-non-formal-referent-001`). When provided, the prompt includes a
+    style rule that constrains the LLM to that single referent so all
+    metadata for one VOD stays internally consistent.
+    """
+    referent_clause = ""
+    if referent:
+        referent_clause = (
+            "\nOperator-naming rule:\n"
+            f'- When the operator must be named, refer to them EXCLUSIVELY as: "{referent}".\n'
+            "- Do not use their legal name in this context.\n"
+            "- Do not mix other referent forms.\n"
+        )
     return (
         "You are composing YouTube metadata for a 24/7 research-instrument "
         "livestream named Hapax.\n\n"
@@ -170,8 +185,9 @@ def build_llm_prompt(*, seed: str, scope: str, kind: str) -> str:
         "'thinks', 'wants', 'remembers', 'dreams', 'inspired', 'creative "
         "journey').\n"
         "- No emoji, no exclamation marks except ending sentences once.\n"
-        "- Describe operational state, not commercial performance.\n\n"
-        f"Scope: {scope}\n"
+        "- Describe operational state, not commercial performance."
+        f"{referent_clause}\n"
+        f"\nScope: {scope}\n"
         f"Output kind: {kind}\n\n"
         f"Seed (deterministically composed from current state):\n"
         f"---\n{seed}\n---\n\n"
