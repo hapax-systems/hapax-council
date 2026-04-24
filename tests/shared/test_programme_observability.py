@@ -15,6 +15,7 @@ import pytest  # noqa: TC002
 from prometheus_client import REGISTRY
 
 from shared.programme_observability import (
+    emit_programme_dwell_update,
     emit_programme_end,
     emit_programme_start,
     emit_soft_prior_override,
@@ -171,6 +172,107 @@ class TestEmitSoftPriorOverride:
         assert v == 1.0
 
 
+class TestEmitProgrammeDwellUpdate:
+    def test_on_time_ratio_is_one(self) -> None:
+        prog = _StubProgramme(
+            programme_id="prog-dwell-1",
+            role="showcase",
+            planned_duration_s=60.0,
+            elapsed_s=60.0,
+        )
+        emit_programme_dwell_update(prog)
+        v = _read_gauge(
+            "hapax_programme_dwell_overshoot_ratio",
+            programme_id="prog-dwell-1",
+            role="showcase",
+        )
+        assert v == 1.0
+
+    def test_halfway_ratio_is_half(self) -> None:
+        prog = _StubProgramme(
+            programme_id="prog-dwell-half",
+            role="ambient",
+            planned_duration_s=120.0,
+            elapsed_s=60.0,
+        )
+        emit_programme_dwell_update(prog)
+        v = _read_gauge(
+            "hapax_programme_dwell_overshoot_ratio",
+            programme_id="prog-dwell-half",
+            role="ambient",
+        )
+        assert v == 0.5
+
+    def test_overshoot_ratio_exceeds_one(self) -> None:
+        prog = _StubProgramme(
+            programme_id="prog-dwell-over",
+            role="showcase",
+            planned_duration_s=60.0,
+            elapsed_s=120.0,
+        )
+        emit_programme_dwell_update(prog)
+        v = _read_gauge(
+            "hapax_programme_dwell_overshoot_ratio",
+            programme_id="prog-dwell-over",
+            role="showcase",
+        )
+        assert v == 2.0
+
+    def test_none_programme_sets_sentinel_to_zero(self) -> None:
+        emit_programme_dwell_update(None)
+        v = _read_gauge(
+            "hapax_programme_dwell_overshoot_ratio",
+            programme_id="__none__",
+            role="__none__",
+        )
+        assert v == 0.0
+
+    def test_elapsed_none_leaves_gauge_untouched(self) -> None:
+        """Programme not yet started → no gauge emission (no divide-by-zero)."""
+        prog = _StubProgramme(
+            programme_id="prog-dwell-pristine",
+            role="showcase",
+            planned_duration_s=60.0,
+            elapsed_s=None,
+        )
+        # No prior value on this label → reading returns 0.0 from helper default.
+        emit_programme_dwell_update(prog)
+        v = _read_gauge(
+            "hapax_programme_dwell_overshoot_ratio",
+            programme_id="prog-dwell-pristine",
+            role="showcase",
+        )
+        assert v == 0.0  # unchanged from the helper's default
+
+    def test_zero_planned_duration_leaves_gauge_untouched(self) -> None:
+        """Programme with zero planned duration must not divide by zero."""
+        prog = _StubProgramme(
+            programme_id="prog-dwell-zero",
+            role="showcase",
+            planned_duration_s=0.0,
+            elapsed_s=10.0,
+        )
+        emit_programme_dwell_update(prog)
+        v = _read_gauge(
+            "hapax_programme_dwell_overshoot_ratio",
+            programme_id="prog-dwell-zero",
+            role="showcase",
+        )
+        assert v == 0.0
+
+    def test_exception_in_attribute_access_does_not_propagate(self) -> None:
+        class _Trap:
+            @property
+            def elapsed_s(self) -> float:
+                raise RuntimeError("kaboom")
+
+            programme_id = "trap-dwell"
+            role = "showcase"
+            planned_duration_s = 60.0
+
+        emit_programme_dwell_update(_Trap())  # must not raise
+
+
 class TestMetricsUnavailableGracefulNoOp:
     def test_no_op_when_metrics_unavailable(self) -> None:
         """All emit functions must be no-ops when prometheus_client is
@@ -179,10 +281,12 @@ class TestMetricsUnavailableGracefulNoOp:
         from shared import programme_observability as obs_mod
 
         with patch.object(obs_mod, "_METRICS_AVAILABLE", False):
-            # Must not raise on any of the three.
+            # Must not raise on any of the four.
             emit_programme_start(_StubProgramme())
             emit_programme_end(_StubProgramme(elapsed_s=10.0))
             emit_soft_prior_override("prog-x")
+            emit_programme_dwell_update(_StubProgramme(elapsed_s=10.0))
+            emit_programme_dwell_update(None)
 
 
 class TestExceptionsCaught:

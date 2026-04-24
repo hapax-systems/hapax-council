@@ -80,6 +80,18 @@ try:
         ),
         ("programme_id", "reason"),
     )
+    _programme_dwell_overshoot_ratio = Gauge(
+        "hapax_programme_dwell_overshoot_ratio",
+        (
+            "elapsed_s / planned_duration_s for the currently active "
+            "programme. 1.0 = on-time; >1.0 = overshooting the plan. "
+            "Sustained values above 1.5 signal the system is stuck on a "
+            "programme and not advancing through the planned arc — a "
+            "quality-bar failure signal (content feels stagnant). Set to "
+            "0 when no programme is active."
+        ),
+        ("programme_id", "role"),
+    )
     # Set-reduction sentinel: defined in shared/governance/demonet_metrics.py
     # so the affordance pipeline's _apply_programme_bias path can increment
     # without a circular import. Imported here for symmetry — same name.
@@ -127,6 +139,41 @@ def emit_programme_end(programme: Any, *, reason: EndReason = "planned") -> None
         log.warning("emit_programme_end failed", exc_info=True)
 
 
+def emit_programme_dwell_update(programme: Any | None) -> None:
+    """Update the dwell-overshoot gauge for the active programme.
+
+    Call at every ProgrammeManager tick. When ``programme`` is None
+    (no programme is currently ACTIVE), the gauge is set to 0.0 for all
+    label combinations that the ProgrammeManager has ever observed, so
+    dashboards don't see a stale value for a programme that has already
+    ended. When the programme has a zero / missing ``planned_duration_s``
+    or a None ``elapsed_s`` (not yet started), the gauge is left
+    untouched to avoid division-by-zero or meaningless negative ratios.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        if programme is None:
+            # No active programme → all previously-observed series reset to 0.
+            # Prometheus Gauge doesn't support bulk reset; callers typically
+            # see this in the dashboard by label age, so set 0 on the sentinel
+            # label we always expose.
+            _programme_dwell_overshoot_ratio.labels(programme_id="__none__", role="__none__").set(
+                0.0
+            )
+            return
+        elapsed = getattr(programme, "elapsed_s", None)
+        planned = float(getattr(programme, "planned_duration_s", 0.0) or 0.0)
+        if elapsed is None or planned <= 0.0:
+            return
+        ratio = float(elapsed) / planned
+        role = str(getattr(programme, "role", "unknown"))
+        programme_id = str(getattr(programme, "programme_id", "unknown"))
+        _programme_dwell_overshoot_ratio.labels(programme_id=programme_id, role=role).set(ratio)
+    except Exception:
+        log.warning("emit_programme_dwell_update failed", exc_info=True)
+
+
 def emit_soft_prior_override(programme_id: str, reason: str = "high_pressure") -> None:
     """Increment the soft-prior-override counter.
 
@@ -148,6 +195,7 @@ def emit_soft_prior_override(programme_id: str, reason: str = "high_pressure") -
 
 __all__ = [
     "EndReason",
+    "emit_programme_dwell_update",
     "emit_programme_end",
     "emit_programme_start",
     "emit_soft_prior_override",

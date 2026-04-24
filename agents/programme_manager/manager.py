@@ -47,7 +47,11 @@ from agents.programme_manager.transition import (
 from shared import programme_outcome_log as _outcome_log_module
 from shared.impingement import Impingement
 from shared.programme import Programme, ProgrammeStatus
-from shared.programme_observability import emit_programme_end, emit_programme_start
+from shared.programme_observability import (
+    emit_programme_dwell_update,
+    emit_programme_end,
+    emit_programme_start,
+)
 from shared.programme_outcome_log import ProgrammeOutcomeLog
 from shared.programme_store import ProgrammePlanStore
 
@@ -147,6 +151,9 @@ class ProgrammeManager:
         and don't wait for ``tick``.
         """
         active = self.store.active_programme()
+        # Publish dwell-overshoot metric at every tick (ytb-QM3). Safe to
+        # emit on every tick — prometheus Gauge.set is O(1); cheap.
+        emit_programme_dwell_update(active)
         if active is None:
             return self._maybe_promote_first_pending()
 

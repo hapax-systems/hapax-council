@@ -98,6 +98,39 @@ class TestEmptyStore:
         assert decision.to_programme is None
         assert decision.impingements is None
 
+
+class TestDwellUpdatePerTick:
+    """ytb-QM3: emit_programme_dwell_update fires on every tick, active or not."""
+
+    def test_dwell_emit_called_when_no_active_programme(
+        self,
+        store: ProgrammePlanStore,
+        chor: TransitionChoreographer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list = []
+        from agents.programme_manager import manager as mgr_mod
+
+        monkeypatch.setattr(mgr_mod, "emit_programme_dwell_update", lambda p: calls.append(p))
+        ProgrammeManager(store, chor).tick()
+        assert calls == [None]
+
+    def test_dwell_emit_called_with_active_programme(
+        self,
+        store: ProgrammePlanStore,
+        chor: TransitionChoreographer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list = []
+        from agents.programme_manager import manager as mgr_mod
+
+        monkeypatch.setattr(mgr_mod, "emit_programme_dwell_update", lambda p: calls.append(p))
+        store.add(_programme("active", status=ProgrammeStatus.ACTIVE, started_at=1_000.0))
+        ProgrammeManager(store, chor, now_fn=lambda: 1_050.0).tick()
+        assert len(calls) == 1
+        assert calls[0] is not None
+        assert calls[0].programme_id == "active"
+
     def test_first_pending_auto_promotes(
         self, store: ProgrammePlanStore, chor: TransitionChoreographer
     ) -> None:
