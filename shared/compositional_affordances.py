@@ -704,6 +704,29 @@ _GEM: list[CapabilityRecord] = [
 ]
 
 
+# YouTube telemetry impingements (ytb-005, #1311). The youtube.telemetry
+# IntentFamily is a downstream-only signal emitted by the analytics tailer
+# onto /dev/shm/hapax-dmn/impingements.jsonl. Per feedback_no_expert_system_rules,
+# there is no dispatcher in compositional_consumer; the affordance pipeline
+# is the sole consumer. These catalog rows keep family-completeness green so
+# the pipeline can match on the family even before specific producers are
+# wired. The emitter publishes three salience kinds (spike / drop / stale)
+# per agents/youtube_telemetry/salience.py.
+
+_YOUTUBE_TELEMETRY: list[CapabilityRecord] = [
+    _record(
+        "youtube.telemetry.spike-response",
+        "warms the room's pace when live viewers surge — the compositor "
+        "picks up its step to match the moment's heat without announcing it",
+    ),
+    _record(
+        "youtube.telemetry.drop-retreat",
+        "settles the room into a quieter register when live viewers fall "
+        "away — the stream hears the room empty and lets the air in",
+    ),
+]
+
+
 # ── Catalog ────────────────────────────────────────────────────────────────
 
 COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
@@ -717,6 +740,7 @@ COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
     + _HOMAGE_AFFORDANCES
     + _TRANSITION
     + _GEM
+    + _YOUTUBE_TELEMETRY
 )
 
 
