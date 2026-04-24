@@ -1,0 +1,236 @@
+"""Unit tests for agents.metadata_composer.composer.compose_metadata."""
+
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+
+from agents.metadata_composer import (
+    ChapterMarker,
+    ComposedMetadata,
+    compose_metadata,
+    state_readers,
+)
+from agents.metadata_composer import composer as composer_mod
+
+
+@pytest.fixture(autouse=True)
+def _clear_state_cache():
+    state_readers._reset_cache()
+    yield
+    state_readers._reset_cache()
+
+
+def _make_snapshot(**overrides) -> state_readers.StateSnapshot:
+    defaults = {
+        "working_mode": "research",
+        "programme": None,
+        "stimmung_tone": "ambient",
+        "director_activity": "observe",
+        "chronicle_events": [],
+    }
+    defaults.update(overrides)
+    return state_readers.StateSnapshot(**defaults)
+
+
+# ── scope dispatch ─────────────────────────────────────────────────────────
+
+
+def test_vod_boundary_returns_full_metadata():
+    with (
+        patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
+        patch.object(state_readers, "read_chronicle", return_value=[]),
+    ):
+        result = compose_metadata(
+            "vod_boundary",
+            broadcast_id="bx",
+            vod_time_range=(0.0, 100.0),
+            llm_call=lambda **_: None,
+        )
+    assert isinstance(result, ComposedMetadata)
+    assert result.title
+    assert result.description
+    assert result.description_chapters is not None
+    assert any(c.timestamp_s == 0 for c in result.description_chapters)
+    assert result.tags
+    assert result.grounding_provenance["scope"] == "vod_boundary"
+
+
+def test_live_update_omits_chapters():
+    with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
+        result = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=lambda **_: None,
+        )
+    assert isinstance(result, ComposedMetadata)
+    assert result.description_chapters is None
+    assert result.pinned_comment == ""
+
+
+def test_cross_surface_uses_event_in_provenance():
+    event = {
+        "event_type": "transition",
+        "ts": 1.0,
+        "payload": {"intent_family": "programme.boundary", "salience": 0.85},
+    }
+    with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
+        result = compose_metadata(
+            "cross_surface",
+            triggering_event=event,
+            llm_call=lambda **_: None,
+        )
+    assert isinstance(result, ComposedMetadata)
+    assert result.grounding_provenance["triggering_event_kind"] == "transition"
+    assert result.grounding_provenance["triggering_event_salience"] == 0.85
+    assert "programme.boundary" in result.bluesky_post
+
+
+def test_unknown_scope_raises():
+    with pytest.raises(ValueError, match="unknown scope"):
+        compose_metadata("garbage")  # type: ignore[arg-type]
+
+
+def test_vod_boundary_requires_time_range():
+    with pytest.raises(ValueError, match="vod_boundary"):
+        compose_metadata("vod_boundary", broadcast_id="bx")
+
+
+def test_cross_surface_requires_event():
+    with pytest.raises(ValueError, match="cross_surface"):
+        compose_metadata("cross_surface")
+
+
+# ── char limits enforced ───────────────────────────────────────────────────
+
+
+def test_field_limits_enforced():
+    with (
+        patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
+        patch.object(state_readers, "read_chronicle", return_value=[]),
+    ):
+        # Push the deterministic prose through with a no-op LLM stub
+        result = compose_metadata(
+            "vod_boundary",
+            broadcast_id="bx",
+            vod_time_range=(0.0, 60.0),
+            llm_call=lambda **_: None,
+        )
+    assert len(result.title) <= composer_mod.TITLE_LIMIT
+    assert len(result.description) <= composer_mod.DESCRIPTION_LIMIT
+    assert len(result.shorts_caption) <= composer_mod.SHORTS_CAPTION_LIMIT
+    assert len(result.bluesky_post) <= composer_mod.BLUESKY_LIMIT
+    assert len(result.discord_embed_title) <= composer_mod.DISCORD_TITLE_LIMIT
+    assert len(result.mastodon_post) <= composer_mod.MASTODON_LIMIT
+    tag_total = sum(len(t) for t in result.tags) + max(0, len(result.tags) - 1)
+    assert tag_total <= composer_mod.TAGS_TOTAL_LIMIT
+
+
+# ── LLM polish + register fallback ─────────────────────────────────────────
+
+
+def test_llm_polish_called_with_seed():
+    seen: list[dict] = []
+
+    def stub(*, seed, scope, kind):
+        seen.append({"seed": seed, "scope": scope, "kind": kind})
+        return f"polished: {seed[:30]}"
+
+    with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
+        compose_metadata("live_update", broadcast_id="bx", llm_call=stub)
+
+    assert len(seen) >= 1
+    assert all(s["kind"] in {"title", "description"} for s in seen)
+
+
+def test_register_violation_falls_back_to_seed():
+    """If the LLM emits a personification verb, the fallback seed wins."""
+
+    def bad_stub(*, seed, scope, kind):
+        return "Hapax feels excited about today's stream!"
+
+    with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
+        result = compose_metadata("live_update", broadcast_id="bx", llm_call=bad_stub)
+
+    assert "feels" not in result.title
+    assert "feels" not in result.description
+
+
+def test_llm_failure_falls_back_to_seed():
+    def crashing_stub(**_):
+        raise RuntimeError("network gone")
+
+    with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
+        result = compose_metadata("live_update", broadcast_id="bx", llm_call=crashing_stub)
+
+    assert isinstance(result, ComposedMetadata)
+    assert result.title
+
+
+# ── helper unit tests ─────────────────────────────────────────────────────
+
+
+def test_truncate_tags_caps_total_length():
+    too_many = [f"tag{i:03d}" for i in range(200)]
+    truncated = composer_mod._truncate_tags(too_many)
+    total = sum(len(t) for t in truncated) + max(0, len(truncated) - 1)
+    assert total <= composer_mod.TAGS_TOTAL_LIMIT
+
+
+def test_format_chapter_line_under_one_hour():
+    line = composer_mod._format_chapter_line(ChapterMarker(timestamp_s=754, label="X"))
+    assert line == "12:34 X"
+
+
+def test_format_chapter_line_over_one_hour():
+    line = composer_mod._format_chapter_line(ChapterMarker(timestamp_s=5025, label="X"))
+    assert line == "1:23:45 X"
+
+
+def test_format_description_with_chapters_prepends_scaffold():
+    chapters = [
+        ChapterMarker(timestamp_s=0, label="Opening"),
+        ChapterMarker(timestamp_s=120, label="Beat"),
+    ]
+    result = composer_mod._format_description_with_chapters("body text", chapters)
+    assert "00:00 Opening" in result
+    assert "02:00 Beat" in result
+    assert result.endswith("body text")
+
+
+def test_format_description_no_chapters_returns_body():
+    assert composer_mod._format_description_with_chapters("body", []) == "body"
+
+
+# ── Hypothesis property: composer is deterministic ────────────────────────
+
+
+@given(
+    working_mode=st.sampled_from(["research", "rnd", "fortress"]),
+    stimmung_tone=st.sampled_from(["ambient", "focused", "hothouse"]),
+    director_activity=st.sampled_from(["observe", "create", "respond"]),
+)
+def test_compose_live_update_deterministic_for_state(
+    working_mode, stimmung_tone, director_activity
+):
+    """Same state in → same outputs out (no hidden time/random dependency)."""
+    snap = _make_snapshot(
+        working_mode=working_mode,
+        stimmung_tone=stimmung_tone,
+        director_activity=director_activity,
+    )
+
+    state_readers._reset_cache()
+    with patch.object(state_readers, "snapshot", return_value=snap):
+        r1 = compose_metadata("live_update", broadcast_id="bx", llm_call=lambda **_: None)
+    state_readers._reset_cache()
+    with patch.object(state_readers, "snapshot", return_value=snap):
+        r2 = compose_metadata("live_update", broadcast_id="bx", llm_call=lambda **_: None)
+
+    assert r1.title == r2.title
+    assert r1.description == r2.description
+    assert r1.tags == r2.tags
+    assert r1.shorts_caption == r2.shorts_caption
