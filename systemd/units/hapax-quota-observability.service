@@ -1,0 +1,28 @@
+[Unit]
+Description=Hapax YouTube quota observability — Cloud Monitoring → Prometheus (ytb-001)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/quota_observability/exporter.py
+After=network-online.target hapax-secrets.service
+Wants=network-online.target
+PartOf=hapax.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=HAPAX_QUOTA_METRICS_PORT=9497
+Environment=HAPAX_QUOTA_TICK_S=60
+Environment=HAPAX_QUOTA_ALERT_THRESHOLD=0.8
+Environment=HAPAX_LOG_LEVEL=INFO
+# Application Default Credentials path (one-time operator setup):
+#   gcloud auth application-default login \
+#     --scopes=https://www.googleapis.com/auth/monitoring.read,https://www.googleapis.com/auth/cloud-platform.read-only
+# ADC default lookup honours GOOGLE_APPLICATION_CREDENTIALS too if a
+# service-account key path is preferred.
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.quota_observability
+Restart=on-failure
+RestartSec=15
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target
