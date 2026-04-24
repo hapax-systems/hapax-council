@@ -190,6 +190,96 @@ def build_programme_digest(*, programme: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ── Axiom-precedent digest (Phase C) ──────────────────────────────────────
+
+
+def build_precedent_slug(precedent_id: str) -> str:
+    """Deterministic slug for an axiom-precedent paste."""
+    return f"precedent-{_slug_sanitise(precedent_id)}"
+
+
+def build_precedent_digest(*, precedent: dict[str, Any]) -> str:
+    """Render an axiom-precedent record as a plain-text digest.
+
+    Returns empty string when the precedent lacks a ``precedent_id``
+    (the addressable identity is required for any responsible publish).
+    Other fields are rendered if present; absent fields are skipped.
+
+    Source files are expected to be authored impersonal (see
+    ``axioms/precedents/sp-hsea-mg-001.yaml`` for the canonical
+    shape) — string-content redaction is NOT applied at the
+    publisher layer; PII-free authoring is the contract.
+    """
+    precedent_id = precedent.get("precedent_id")
+    if not precedent_id:
+        return ""
+
+    short_name = precedent.get("short_name", "")
+    axiom_id = precedent.get("axiom_id", "")
+    secondary = precedent.get("secondary_axioms") or []
+    version = precedent.get("version")
+    situation = precedent.get("situation", "")
+    decision = precedent.get("decision", "")
+    reasoning = precedent.get("reasoning", "")
+
+    title_bits = [precedent_id]
+    if short_name:
+        title_bits.append(short_name)
+    title = " — ".join(title_bits)
+
+    lines: list[str] = [f"# {title}", ""]
+    meta_bits: list[str] = []
+    if axiom_id:
+        meta_bits.append(f"axiom: `{axiom_id}`")
+    if secondary:
+        meta_bits.append(f"secondary: {', '.join(f'`{a}`' for a in secondary)}")
+    if version is not None:
+        meta_bits.append(f"v{version}")
+    if meta_bits:
+        lines.append("_" + " · ".join(meta_bits) + "_")
+        lines.append("")
+    if situation:
+        lines.append("## Situation")
+        lines.append("")
+        lines.append(str(situation).rstrip())
+        lines.append("")
+    if decision:
+        lines.append("## Decision")
+        lines.append("")
+        lines.append(str(decision).rstrip())
+        lines.append("")
+    if reasoning:
+        lines.append("## Reasoning")
+        lines.append("")
+        lines.append(str(reasoning).rstrip())
+        lines.append("")
+    lines.append(f"_digest compiled: {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}_")
+    return "\n".join(lines) + "\n"
+
+
+def read_precedents_from_dir(directory: Path) -> list[dict[str, Any]]:
+    """Soft-read top-level ``*.yaml`` precedent files.
+
+    Excludes any subdirectories (notably ``seed/`` which holds
+    templates). Missing directory → empty list. Malformed files are
+    silently skipped.
+    """
+    if not directory.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("*.yaml")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            data = yaml.safe_load(text)
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(data, dict):
+            out.append(data)
+    return out
+
+
 def read_programmes_from_dir(directory: Path) -> list[dict[str, Any]]:
     """Soft-read ``{programme}.md`` files with YAML frontmatter.
 
@@ -233,6 +323,7 @@ class PastebinArtifactPublisher:
 
     CATEGORY_CHRONICLE = "chronicle.weekly_digest"
     CATEGORY_PROGRAMME = "programme.completed_plan"
+    CATEGORY_PRECEDENT = "axiom.precedent_operator_authority"
 
     def __init__(
         self,
@@ -244,6 +335,7 @@ class PastebinArtifactPublisher:
         address: str = DEFAULT_ADDRESS,
         min_salience: float = 0.7,
         read_programmes: Callable[[], list[dict[str, Any]]] | None = None,
+        read_precedents: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> None:
         self.client = client
         self.state_file = state_file
@@ -251,10 +343,11 @@ class PastebinArtifactPublisher:
         self._now_fn = now_fn
         self.address = address
         self.min_salience = min_salience
-        # Default to empty-list loader so existing chronicle call sites keep
-        # working without adjustment. Call sites that want programme publish
-        # support pass their own loader (closure over a path or live source).
+        # Default loaders are empty-list so existing call sites keep
+        # working without adjustment. Each new category adds an optional
+        # loader; call sites that want a category pass their own loader.
         self._read_programmes: Callable[[], list[dict[str, Any]]] = read_programmes or (lambda: [])
+        self._read_precedents: Callable[[], list[dict[str, Any]]] = read_precedents or (lambda: [])
 
     def _read_state(self) -> dict:
         try:
@@ -405,6 +498,72 @@ class PastebinArtifactPublisher:
         self._write_state(persisted)
         log.info("omg-pastebin: published programme digest %s", slug)
         _record(self.CATEGORY_PROGRAMME, "published")
+        return "published"
+
+    def publish_precedent(self, precedent_id: str, *, dry_run: bool = False) -> str:
+        """Compose + publish (or update) the digest for an axiom precedent.
+
+        Same outcome contract as the other publish_* methods.
+        """
+        precedents = self._read_precedents()
+        match = next(
+            (p for p in precedents if p.get("precedent_id") == precedent_id),
+            None,
+        )
+        if match is None:
+            _record(self.CATEGORY_PRECEDENT, "empty")
+            return "empty"
+
+        content = build_precedent_digest(precedent=match)
+        if not content:
+            _record(self.CATEGORY_PRECEDENT, "empty")
+            return "empty"
+
+        slug = build_precedent_slug(precedent_id)
+
+        allow = allowlist_check(
+            SURFACE,
+            self.CATEGORY_PRECEDENT,
+            {"summary": f"{slug}: {match.get('short_name', '')}"},
+        )
+        if allow.decision == "deny":
+            log.info("omg-pastebin: allowlist denied precedent digest (%s)", allow.reason)
+            _record(self.CATEGORY_PRECEDENT, "allowlist-denied")
+            return "allowlist-denied"
+
+        state_key = f"digest_sha_{slug}"
+        import hashlib
+
+        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        persisted = self._read_state()
+        if persisted.get(state_key) == content_sha:
+            _record(self.CATEGORY_PRECEDENT, "unchanged")
+            return "unchanged"
+
+        if dry_run:
+            log.info(
+                "omg-pastebin: dry-run — precedent digest %s (sha %s…)",
+                slug,
+                content_sha[:8],
+            )
+            _record(self.CATEGORY_PRECEDENT, "dry-run")
+            return "dry-run"
+
+        if not getattr(self.client, "enabled", False):
+            log.warning("omg-pastebin: client disabled — skipping publish")
+            _record(self.CATEGORY_PRECEDENT, "client-disabled")
+            return "client-disabled"
+
+        resp = self.client.set_paste(self.address, content=content, title=slug, listed=True)
+        if resp is None:
+            log.warning("omg-pastebin: set_paste returned None (%s)", slug)
+            _record(self.CATEGORY_PRECEDENT, "failed")
+            return "failed"
+
+        persisted[state_key] = content_sha
+        self._write_state(persisted)
+        log.info("omg-pastebin: published precedent digest %s", slug)
+        _record(self.CATEGORY_PRECEDENT, "published")
         return "published"
 
 
