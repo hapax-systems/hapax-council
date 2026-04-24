@@ -168,6 +168,13 @@ def _register_builtins() -> None:
     from agents.studio_compositor.programme_state_ward import ProgrammeStateCairoSource
 
     register("ProgrammeStateCairoSource", ProgrammeStateCairoSource)
+    # DURF (Display Under Reflective Frame) — 2026-04-24T23:10Z operator
+    # directive. First full-frame HOMAGE ward. Text-only tmux-capture of
+    # the 4-session Claude-Code coordination setup. Design:
+    # docs/research/2026-04-24-durf-design.md.
+    from agents.studio_compositor.durf_source import DURFCairoSource
+
+    register("DURFCairoSource", DURFCairoSource)
 
 
 _register_builtins()

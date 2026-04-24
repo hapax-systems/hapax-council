@@ -292,6 +292,26 @@
       "pair_role": "solo",
       "pair_leg": null,
       "ward_id": null
+    },
+    {
+      "id": "durf",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "DURFCairoSource",
+        "natural_w": 1920,
+        "natural_h": 1080
+      },
+      "update_cadence": "rate",
+      "rate_hz": 6.0,
+      "tags": [
+        "homage",
+        "durf",
+        "full-frame"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": "durf"
     }
   ],
   "surfaces": [
@@ -618,6 +638,24 @@
       "blend_mode": "over",
       "z_order": 32,
       "update_cadence": "rate"
+    },
+    {
+      "id": "durf-fullframe",
+      "geometry": {
+        "kind": "rect",
+        "x": 0,
+        "y": 0,
+        "w": 1920,
+        "h": 1080,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 5,
+      "update_cadence": "rate"
     }
   ],
   "assignments": [
@@ -741,6 +779,15 @@
     {
       "source": "whos_here",
       "surface": "whos-here-tr",
+      "transform": {},
+      "opacity": 0.92,
+      "per_assignment_effects": [],
+      "non_destructive": false,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "durf",
+      "surface": "durf-fullframe",
       "transform": {},
       "opacity": 0.92,
       "per_assignment_effects": [],
