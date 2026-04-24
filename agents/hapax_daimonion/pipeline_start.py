@@ -168,9 +168,18 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
                 daemon._conversation_pipeline._grounding_ledger
             )
 
-        # Wire audio output for T1 acknowledgments + backchannels
+        # Wire audio output for T1 acknowledgments + backchannels.
+        # Use attach_audio_output so the GEAL TTS envelope publisher tap
+        # also gets wrapped onto the now-real PwAudioOutput.write.
+        # (Direct attribute set still works for callers that don't need
+        # the tap; the new method is preferred.)
         if getattr(daemon._conversation_pipeline, "_audio_output", None) is not None:
-            daemon._cpal_runner._audio_output = daemon._conversation_pipeline._audio_output
+            audio_output = daemon._conversation_pipeline._audio_output
+            attach = getattr(daemon._cpal_runner, "attach_audio_output", None)
+            if callable(attach):
+                attach(audio_output)
+            else:
+                daemon._cpal_runner._audio_output = audio_output
 
     # Wake greeting
     _play_wake_greeting(daemon)
