@@ -159,16 +159,30 @@ jobs:
               --deselect=tests/studio_compositor/test_overlay_zones_research_gate.py::TestZoneGate::test_default_always_on \
               -m "not llm" -k "not golden and not goldens" \
               -p no:cacheprovider 2>&1 | tee /tmp/pytest-output.txt
-          # Parse pytest summary from captured output
-          if grep -q "passed" /tmp/pytest-output.txt; then
-            if grep -q "failed" /tmp/pytest-output.txt; then
-              echo "Tests had failures"
-              exit 1
+          PYTEST_EXIT=${PIPESTATUS[0]}
+          # pytest exit codes: 0 = all passed, 1 = failures, 2 = usage error,
+          # 3 = internal error, 4 = usage error, 5 = no tests collected.
+          # With conftest.py pytest_sessionfinish (#1318) closing socket hangs,
+          # the timeout wrapper no longer fires on success, so pytest's own exit
+          # code is reliable. The prior grep-for-"failed" parse had a bug:
+          # "xfailed" contains "failed" as a substring, so any PR with xfail
+          # markers (e.g. #1322 chronic-xfails) flagged a false failure.
+          # Trust the exit code directly.
+          if [ "$PYTEST_EXIT" -eq 0 ]; then
+            # Sanity: a success must have a pytest summary line.
+            if grep -qE '\bpassed\b' /tmp/pytest-output.txt; then
+              echo "All tests passed (pytest exit 0)"
+              exit 0
             fi
-            echo "All tests passed"
-            exit 0
+            echo "No test summary found — likely crashed or timed out"
+            exit 1
           fi
-          echo "No test summary found — likely crashed or timed out"
+          if [ "$PYTEST_EXIT" -eq 124 ] || [ "$PYTEST_EXIT" -eq 137 ]; then
+            # SIGTERM (124) or SIGKILL (137) from the ``timeout`` wrapper.
+            echo "Test step timed out (exit $PYTEST_EXIT)"
+            exit 1
+          fi
+          echo "Tests failed (pytest exit $PYTEST_EXIT)"
           exit 1
 
   homage-visual-regression:
