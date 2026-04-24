@@ -12,12 +12,24 @@ compositor rendering cadence. It renders into a 1920x120 strip at
 the top-right of the main canvas (the compositor places it at its
 assigned surface geometry). When the marker is stale the overlay
 renders transparently so the streaming thread can skip the blit.
+
+ytb-LORE-MVP PR C (2026-04-24, delta) — optional context subtext. When
+``HAPAX_LORE_RESEARCH_MARKER_CONTEXT_ENABLED=1`` is set, the banner
+grows two additional Px437 lines underneath the primary marker row
+reporting the current sprint day + measures progress + next-block
+title pulled from ``/dev/shm/hapax-sprint/state.json``. The feature
+flag defaults OFF so the shipped 3 s banner shape is preserved for
+operators who haven't opted in. The fade-in / fade-out envelope
+continues to be governed by the existing ``visibility_seconds``
+window (default 3 s); the context rows surface only while the marker
+itself is visible, then vanish with it.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,7 +44,59 @@ MARKER_VISIBILITY_SECONDS = 3.0
 DEFAULT_MARKER_PATH = Path("/dev/shm/hapax-compositor/research-marker.json")
 """Phase 1 SHM injection target. Never hard-code elsewhere."""
 
+DEFAULT_SPRINT_STATE_PATH = Path("/dev/shm/hapax-sprint/state.json")
+"""Sprint state written by the sprint-tracker timer; cheap re-read path."""
+
+CONTEXT_FEATURE_FLAG_ENV = "HAPAX_LORE_RESEARCH_MARKER_CONTEXT_ENABLED"
+"""When truthy (1/true/yes/on), the banner renders the sprint/context subtext."""
+
 log = logging.getLogger(__name__)
+
+
+def _context_enabled() -> bool:
+    """Return True if ``HAPAX_LORE_RESEARCH_MARKER_CONTEXT_ENABLED`` is truthy."""
+    raw = os.environ.get(CONTEXT_FEATURE_FLAG_ENV, "0")
+    return raw.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _read_sprint_state(path: Path) -> dict[str, Any] | None:
+    """Load sprint state.json; ``None`` on any failure so render can fall back."""
+    try:
+        if not path.exists():
+            return None
+        raw = path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            return None
+        return payload
+    except (OSError, json.JSONDecodeError):
+        log.debug("research-marker: sprint state unavailable", exc_info=True)
+        return None
+
+
+def _format_sprint_line(state: dict[str, Any]) -> str | None:
+    """Render the single sprint-progress line, or ``None`` if required fields missing."""
+    sprint = state.get("current_sprint")
+    day = state.get("current_day")
+    completed = state.get("measures_completed")
+    total = state.get("measures_total")
+    if sprint is None or day is None or completed is None or total is None:
+        return None
+    return f"sprint {sprint} · day {day}  {completed}/{total} measures"
+
+
+def _format_next_block_line(state: dict[str, Any]) -> str | None:
+    """Render a compact ``next: <measure> <title>`` line, or ``None`` if absent."""
+    block = state.get("next_block")
+    if not isinstance(block, dict):
+        return None
+    measure = block.get("measure")
+    title = block.get("title")
+    if not title:
+        return None
+    if measure:
+        return f"next: [{measure}] {title}"
+    return f"next: {title}"
 
 
 class ResearchMarkerOverlay(HomageTransitionalSource):
@@ -49,6 +113,7 @@ class ResearchMarkerOverlay(HomageTransitionalSource):
         marker_path: Path | None = None,
         visibility_seconds: float = MARKER_VISIBILITY_SECONDS,
         now_fn: Any = None,
+        sprint_state_path: Path | None = None,
     ) -> None:
         super().__init__(source_id="research_marker_overlay")
         self._marker_path = marker_path or DEFAULT_MARKER_PATH
@@ -57,6 +122,10 @@ class ResearchMarkerOverlay(HomageTransitionalSource):
         self._visibility_seconds = visibility_seconds
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
         self._last_rendered_condition: str | None = None
+        # ytb-LORE-MVP PR C — sprint-state path is injection-testable.
+        # Read-path failures degrade to "no context rows rendered",
+        # never raise; the marker itself keeps its legacy shape.
+        self._sprint_state_path = sprint_state_path or DEFAULT_SPRINT_STATE_PATH
 
     def state(self) -> dict[str, Any]:
         """Snapshot the marker state so render() has a coherent view."""
@@ -132,6 +201,12 @@ class ResearchMarkerOverlay(HomageTransitionalSource):
         ``>>> [RESEARCH MARKER] <HH:MM:SS>`` Px437 line via Pango. The
         condition id renders as an emissive glyph row above the main
         line so the marker reads as both timestamp and id.
+
+        PR C: when ``HAPAX_LORE_RESEARCH_MARKER_CONTEXT_ENABLED=1`` the
+        banner grows a 32-px subtext band carrying sprint progress +
+        next-block title. The core 64-px band (glyphs + main line) is
+        positioned identically in both states so the shipped golden
+        image stays valid when the flag is off.
         """
         from agents.studio_compositor.homage.emissive_base import (
             GRUVBOX_BG0,
@@ -144,7 +219,10 @@ class ResearchMarkerOverlay(HomageTransitionalSource):
         )
         from agents.studio_compositor.text_render import TextStyle, render_text
 
-        banner_h = 64
+        context_on = _context_enabled()
+        core_h = 64
+        context_h = 32
+        banner_h = core_h + (context_h if context_on else 0)
         banner_w = canvas_w
         padding = 16
 
@@ -173,7 +251,7 @@ class ResearchMarkerOverlay(HomageTransitionalSource):
             t_phase = float(now_wall.timestamp())
         except Exception:
             t_phase = 0.0
-        glyph_y = int(banner_h * 0.28)
+        glyph_y = int(core_h * 0.28)
         glyph_spacing = 12
         for i, _ch in enumerate(condition_id[:40]):
             cx = padding + i * glyph_spacing
@@ -201,7 +279,39 @@ class ResearchMarkerOverlay(HomageTransitionalSource):
             font_description=font_desc,
             color_rgba=content_rgba,
         )
-        render_text(cr, body_style, x=padding, y=int(banner_h * 0.50))
+        render_text(cr, body_style, x=padding, y=int(core_h * 0.50))
+
+        if context_on:
+            state = _read_sprint_state(self._sprint_state_path)
+            if state is not None:
+                try:
+                    context_font = select_bitchx_font_pango(cr, 14, bold=False)
+                except Exception:
+                    context_font = "Px437 IBM VGA 8x16 14"
+                sprint_line = _format_sprint_line(state)
+                next_line = _format_next_block_line(state)
+                if sprint_line:
+                    render_text(
+                        cr,
+                        TextStyle(
+                            text=sprint_line,
+                            font_description=context_font,
+                            color_rgba=muted_rgba,
+                        ),
+                        x=padding,
+                        y=core_h + 2,
+                    )
+                if next_line:
+                    render_text(
+                        cr,
+                        TextStyle(
+                            text=next_line,
+                            font_description=context_font,
+                            color_rgba=muted_rgba,
+                        ),
+                        x=padding,
+                        y=core_h + 16,
+                    )
 
         # Muted 1-px baseline stroke at the foot of the banner, echoing
         # the accent-bar role from the prior design.
@@ -228,7 +338,9 @@ def _parse_iso_utc(value: str) -> datetime | None:
 
 
 __all__ = [
-    "MARKER_VISIBILITY_SECONDS",
+    "CONTEXT_FEATURE_FLAG_ENV",
     "DEFAULT_MARKER_PATH",
+    "DEFAULT_SPRINT_STATE_PATH",
+    "MARKER_VISIBILITY_SECONDS",
     "ResearchMarkerOverlay",
 ]
