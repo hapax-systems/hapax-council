@@ -26,7 +26,6 @@ from typing import Any
 import pytest
 
 from agents.studio_compositor.homage.emissive_base import (
-    BREATHING_AMPLITUDE,
     BREATHING_BASELINE,
     CENTRE_DOT_RADIUS_PX,
     GRUVBOX_BG0,
@@ -65,13 +64,25 @@ def _update_golden_requested() -> bool:
 
 
 def _make_surface(width: int, height: int) -> tuple[Any, Any]:
-    """Return (surface, cr) ARGB32 with a painted dark ground."""
+    """Return (surface, cr) ARGB32 with a painted dark ground.
+
+    NOTE 2026-04-24: post-#1242 ("zero container opacity"),
+    ``paint_emissive_bg`` is a no-op. The fixture inlines the GRUVBOX_BG0
+    fill directly so the test suite's "what's painted ON TOP of a dark
+    ground" pixel assertions still have a defined ground to sample. The
+    paint_emissive_bg tests in :class:`TestPaintEmissiveBgChromeRetired`
+    test the no-op contract directly — they don't use this fixture.
+    """
     import cairo
 
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
     cr = cairo.Context(surface)
-    # Ground — mirror paint_emissive_bg so tests are self-contained.
-    paint_emissive_bg(cr, width, height)
+    # Inline GRUVBOX_BG0 fill (mirrors the pre-#1242 paint_emissive_bg
+    # behaviour for fixture purposes only — production no longer paints
+    # the chrome bg).
+    r, g, b, a = GRUVBOX_BG0
+    cr.set_source_rgba(r, g, b, a)
+    cr.paint()
     return surface, cr
 
 
@@ -117,39 +128,49 @@ def _surfaces_match(actual: Any, expected: Any, tolerance: int) -> tuple[bool, s
 
 
 class TestPaintBreathingAlpha:
+    """Post-#1236 ("no flashing — kill all time-varying alpha") contract:
+    ``paint_breathing_alpha`` returns the baseline as a STATIC constant,
+    ignoring t / hz / phase / amplitude. The signature is preserved so
+    future reverts can be atomic without re-threading call sites."""
+
     def test_midpoint_returns_baseline(self):
-        # sin(0) == 0 ⇒ baseline exactly.
         assert paint_breathing_alpha(0.0, hz=1.0, phase=0.0) == pytest.approx(BREATHING_BASELINE)
 
-    def test_peak_returns_baseline_plus_amplitude(self):
-        # Quarter cycle at hz=1 is t=0.25 s ⇒ sin = 1.
-        v = paint_breathing_alpha(0.25, hz=1.0, phase=0.0)
-        assert v == pytest.approx(BREATHING_BASELINE + BREATHING_AMPLITUDE)
+    def test_t_does_not_affect_output(self):
+        # Quarter / three-quarter cycle should be identical to t=0.
+        v_zero = paint_breathing_alpha(0.0, hz=1.0, phase=0.0)
+        v_quarter = paint_breathing_alpha(0.25, hz=1.0, phase=0.0)
+        v_three_quarter = paint_breathing_alpha(0.75, hz=1.0, phase=0.0)
+        assert v_quarter == pytest.approx(v_zero)
+        assert v_three_quarter == pytest.approx(v_zero)
+        assert v_quarter == pytest.approx(BREATHING_BASELINE)
 
-    def test_trough_returns_baseline_minus_amplitude(self):
-        # Three-quarter cycle ⇒ sin = -1.
-        v = paint_breathing_alpha(0.75, hz=1.0, phase=0.0)
-        assert v == pytest.approx(BREATHING_BASELINE - BREATHING_AMPLITUDE)
-
-    def test_phase_offset_is_equivalent_to_time_shift(self):
-        # phase=pi/2 at t=0 should equal phase=0 at t=0.25 s (hz=1).
+    def test_phase_does_not_affect_output(self):
+        # Phase is a no-op param post-#1236.
         a = paint_breathing_alpha(0.0, hz=1.0, phase=math.pi / 2.0)
         b = paint_breathing_alpha(0.25, hz=1.0, phase=0.0)
         assert a == pytest.approx(b)
+        assert a == pytest.approx(BREATHING_BASELINE)
 
-    def test_clamped_to_zero_one(self):
-        # Force an out-of-range amplitude.
-        v_hi = paint_breathing_alpha(0.25, hz=1.0, baseline=0.9, amplitude=0.5)
-        v_lo = paint_breathing_alpha(0.75, hz=1.0, baseline=0.1, amplitude=0.5)
-        assert 0.0 <= v_hi <= 1.0
-        assert 0.0 <= v_lo <= 1.0
-        assert v_hi == pytest.approx(1.0)
-        assert v_lo == pytest.approx(0.0)
+    def test_amplitude_does_not_affect_output(self):
+        # Amplitude is a no-op param post-#1236; output stays at baseline
+        # regardless of how the caller would have wanted it to vary.
+        v_default = paint_breathing_alpha(0.25, hz=1.0, baseline=0.5, amplitude=0.0)
+        v_high = paint_breathing_alpha(0.25, hz=1.0, baseline=0.5, amplitude=0.5)
+        assert v_default == pytest.approx(v_high)
+        assert v_default == pytest.approx(0.5)
 
-    def test_different_frequencies_produce_different_values(self):
+    def test_baseline_passes_through(self):
+        # Baseline IS the output — change it and the value follows.
+        assert paint_breathing_alpha(0.0, hz=1.0, baseline=0.7) == pytest.approx(0.7)
+        assert paint_breathing_alpha(0.0, hz=1.0, baseline=0.3) == pytest.approx(0.3)
+
+    def test_different_frequencies_produce_same_output(self):
+        # Post-#1236: hz is no-op. All frequencies → same baseline.
         a = paint_breathing_alpha(0.1, hz=0.5)
         b = paint_breathing_alpha(0.1, hz=2.0)
-        assert a != pytest.approx(b)
+        assert a == pytest.approx(b)
+        assert a == pytest.approx(BREATHING_BASELINE)
 
 
 # ── Stance table ────────────────────────────────────────────────────────
@@ -182,7 +203,14 @@ class TestStanceHz:
 
 @requires_cairo
 class TestPaintEmissiveBg:
-    def test_fills_entire_surface_with_ground_rgba(self):
+    """Post-#1242 ("zero container opacity — neutralize 5 chrome
+    primitives") contract: ``paint_emissive_bg`` is a no-op. Container
+    chrome was retired per operator directive; emissive points / glyphs
+    / strokes paint on a fully transparent substrate. The signature is
+    preserved so future reverts can be atomic without re-threading call
+    sites."""
+
+    def test_does_not_fill_surface_anymore(self):
         import cairo
 
         w, h = 8, 8
@@ -191,23 +219,22 @@ class TestPaintEmissiveBg:
         paint_emissive_bg(cr, w, h)
         surface.flush()
         r, g, b, a = _pixel_rgba(surface, 4, 4)
-        # GRUVBOX_BG0 = (0x1D, 0x20, 0x21, 0xFF).
-        assert r == 0x1D
-        assert g == 0x20
-        assert b == 0x21
-        assert a == 0xFF
+        # Surface is the cairo default (transparent black) because the
+        # function no longer paints anything.
+        assert (r, g, b, a) == (0, 0, 0, 0)
 
-    def test_custom_ground_rgba(self):
+    def test_custom_ground_rgba_arg_is_ignored(self):
         import cairo
 
         w, h = 4, 4
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
         cr = cairo.Context(surface)
+        # Pass a colour; function ignores it (signature preserved for
+        # call-site compatibility). Surface stays transparent.
         paint_emissive_bg(cr, w, h, ground_rgba=(1.0, 0.0, 0.0, 1.0))
         surface.flush()
         r, _g, _b, a = _pixel_rgba(surface, 1, 1)
-        assert r == 0xFF
-        assert a == 0xFF
+        assert (r, a) == (0, 0)
 
     def test_restores_cairo_state(self):
         import cairo
