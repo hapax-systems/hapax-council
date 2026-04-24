@@ -237,6 +237,20 @@ class SurfaceSchema(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+RenderStage = Literal["pre_fx", "post_fx"]
+"""Which cairooverlay callback an Assignment renders on.
+
+* ``"post_fx"`` (default) — the assignment is blitted on the post-FX
+  cairooverlay, after the glfeedback shader chain. This is the existing
+  behavior for every Assignment (back-compat). Chrome wards belong here
+  so shaders do not overwrite their content.
+* ``"pre_fx"`` — the assignment is blitted on the BASE cairooverlay,
+  before the shader chain. Substrate surfaces (camera PiPs, iconic
+  Vitruvian figure, album art) belong here so shaders can decorate
+  them. FINDING-W (ef7b-179) introduces this dimension.
+"""
+
+
 class Assignment(BaseModel):
     """Binding of source to surface with per-assignment overrides."""
 
@@ -256,6 +270,17 @@ class Assignment(BaseModel):
             "informational overlays that composite over camera PiPs set "
             "this flag so the camera underneath remains recognizable. "
             "Default False keeps existing layouts byte-identical."
+        ),
+    )
+    render_stage: RenderStage = Field(
+        default="post_fx",
+        description=(
+            "FINDING-W (ef7b-179): which cairooverlay callback this "
+            "assignment renders on. ``post_fx`` (default, back-compat) "
+            "renders after the shader chain so chrome stays crisp. "
+            "``pre_fx`` renders before the shader chain so substrate "
+            "surfaces (camera PiPs, iconic Vitruvian figure, album art) "
+            "are decorated by the shaders."
         ),
     )
 
