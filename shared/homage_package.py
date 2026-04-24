@@ -30,6 +30,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from shared.palette_response import PaletteResponse
 from shared.voice_register import VoiceRegister
 
 # ── Vocabularies ──────────────────────────────────────────────────────────
@@ -327,6 +328,27 @@ class HomagePackage(BaseModel):
     refuses_anti_patterns: frozenset[AntiPatternKind] = Field(
         default_factory=frozenset,
         description="Anti-patterns this package hard-refuses (spec §5.5).",
+    )
+
+    # Video-container + mirror-emissive Phase 2 (2026-04-23).
+    # ``palette_response`` binds this package to the palette family
+    # (``shared.palette_family.ScrimPalette`` / ``PaletteChain``) for
+    # packages whose emissive leg uses ``palette_sync`` complementarity.
+    # None preserves legacy behaviour — the package's own palette drives
+    # the emissive leg without any video-substrate coupling.
+    #
+    # Authored, not auto-derived (spec risk note): package authors pick
+    # the palette curve explicitly so the emissive aesthetic stays
+    # deliberate across package swaps. The registry/scrim loader can
+    # substitute the palette at Phase 5+ — the package just declares
+    # *what shape* of response it wants.
+    palette_response: PaletteResponse | None = Field(
+        default=None,
+        description=(
+            "Optional binding to the palette family for emissive-leg "
+            "``palette_sync`` mode. None = legacy behaviour (package's "
+            "own HomagePalette drives emissive without video coupling)."
+        ),
     )
 
     @model_validator(mode="after")

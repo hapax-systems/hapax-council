@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from itertools import count
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from agents.studio_compositor.z_plane_constants import (
     DEFAULT_Z_INDEX_FLOAT,
@@ -122,6 +122,36 @@ class WardProperties:
     # the ward stimmung modulator. Both are read by ``fx_chain.blit_with_depth``.
     z_plane: str = "on-scrim"
     z_index_float: float = 0.5
+
+    # Video-container + mirror-emissive Phase 2 additions (2026-04-23).
+    # These fields govern paired wards (video + emissive legs at the same
+    # semantic slot). Solo wards ignore them — every field has a neutral
+    # default that preserves legacy single-leg rendering.
+    #
+    # ``front_state`` is the pair-level lifecycle: whether the video leg
+    # is behind the scrim (integrated), moving forward (fronting), fully
+    # forward (fronted), or pulling back (retiring). The choreographer
+    # writes transitions; the renderer reads to drive per-leg parallax +
+    # scale envelopes.
+    #
+    # ``front_t0`` is the monotonic timestamp the current state entered,
+    # so the renderer can compute an envelope progress curve without
+    # reading wall-clock in the hot path.
+    #
+    # ``parallax_scalar_*`` scale the per-leg parallax response to the
+    # audio / imagination depth signal. Defaults to 1.0 (full response).
+    # The emissive leg often wants a larger scalar so the mirror moves
+    # further when the video moves — exaggerating complementarity.
+    #
+    # ``crop_rect_override`` lets a programme re-crop the video leg
+    # without touching the source schema — e.g., tightening the peephole
+    # under deep scrim (nebulous-scrim §12.8). Normalised (x, y, w, h)
+    # in [0, 1]²; None preserves the source's natural framing.
+    front_state: Literal["integrated", "fronting", "fronted", "retiring"] = "integrated"
+    front_t0: float = 0.0
+    parallax_scalar_video: float = 1.0
+    parallax_scalar_emissive: float = 1.0
+    crop_rect_override: tuple[float, float, float, float] | None = None
 
     def merge_animation(self, animated: dict[str, float]) -> WardProperties:
         """Return a copy with animation-engine interpolated values applied.
@@ -472,6 +502,19 @@ def _dataclass_to_jsonable(props: WardProperties) -> dict:
     return payload
 
 
+_TUPLE_FIELDS: frozenset[str] = frozenset(
+    {
+        "glow_color_rgba",
+        "border_color_rgba",
+        "color_override_rgba",
+        # Phase 2 additions (2026-04-23) — crop_rect_override is the new
+        # tuple-valued field and needs the same list→tuple coercion on
+        # read-back as the colour fields. Future tuple fields belong here.
+        "crop_rect_override",
+    }
+)
+
+
 def _dict_to_properties(entry: dict) -> WardProperties:
     """Tolerant constructor — unknown keys ignored, missing keys default."""
     kwargs: dict[str, Any] = {}
@@ -479,12 +522,7 @@ def _dict_to_properties(entry: dict) -> WardProperties:
     for key, value in entry.items():
         if key not in valid_names:
             continue
-        if (
-            key in ("glow_color_rgba", "border_color_rgba")
-            and isinstance(value, list)
-            or key == "color_override_rgba"
-            and isinstance(value, list)
-        ):
+        if key in _TUPLE_FIELDS and isinstance(value, list):
             kwargs[key] = tuple(value)
         else:
             kwargs[key] = value

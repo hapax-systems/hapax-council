@@ -168,6 +168,56 @@ class TestModulatorFieldPreservation:
         assert props.alpha == 0.8
 
 
+class TestVideoContainerPhase2Fields:
+    """New fields added 2026-04-23 for the video-container + emissive epic.
+
+    All default to neutral values so existing wards render unchanged.
+    """
+
+    def test_defaults(self):
+        props = wp.WardProperties()
+        assert props.front_state == "integrated"
+        assert props.front_t0 == 0.0
+        assert props.parallax_scalar_video == 1.0
+        assert props.parallax_scalar_emissive == 1.0
+        assert props.crop_rect_override is None
+
+    def test_front_state_values(self):
+        # Literal values accepted by the dataclass (no runtime enum coercion,
+        # but the type checker pins the set).
+        for state in ("integrated", "fronting", "fronted", "retiring"):
+            props = wp.WardProperties(front_state=state)
+            assert props.front_state == state
+
+    def test_parallax_scalars_differ_per_leg(self):
+        props = wp.WardProperties(parallax_scalar_video=0.8, parallax_scalar_emissive=1.4)
+        assert props.parallax_scalar_video == 0.8
+        assert props.parallax_scalar_emissive == 1.4
+
+    def test_crop_rect_override_roundtrip(self):
+        # Normalised rect tightening the peephole.
+        props = wp.WardProperties(crop_rect_override=(0.1, 0.1, 0.8, 0.8))
+        wp.set_ward_properties("zoomed", props, ttl_s=10.0)
+        wp.clear_ward_properties_cache()
+        resolved = wp.resolve_ward_properties("zoomed")
+        assert resolved.crop_rect_override == (0.1, 0.1, 0.8, 0.8)
+
+    def test_new_fields_roundtrip_through_shm(self):
+        props = wp.WardProperties(
+            front_state="fronting",
+            front_t0=1234.5,
+            parallax_scalar_video=0.5,
+            parallax_scalar_emissive=2.0,
+        )
+        wp.set_ward_properties("paired_ward", props, ttl_s=10.0)
+        wp.clear_ward_properties_cache()
+        resolved = wp.resolve_ward_properties("paired_ward")
+        assert resolved.front_state == "fronting"
+        assert resolved.front_t0 == 1234.5
+        assert resolved.parallax_scalar_video == 0.5
+        assert resolved.parallax_scalar_emissive == 2.0
+
+
 class TestConcurrentWriteSafety:
     """Regression pin for the 2026-04-23 tmp-suffix-collision race.
 

@@ -124,6 +124,38 @@ class SourceSchema(BaseModel):
     )
     tags: list[str] = Field(default_factory=list)
 
+    # Video-container + mirror-emissive Phase 2 additions (2026-04-23).
+    # ``pair_role`` defaults to ``solo`` so every existing source loads
+    # unchanged; paired sources declare their leg + the ward identity
+    # they belong to. See ``shared/ward_pair.py`` for the pair record
+    # and :mod:`docs/superpowers/specs/2026-04-23-video-container-parallax-homage-spec`
+    # §4.2 for the rationale.
+    pair_role: Literal["solo", "paired"] = Field(
+        default="solo",
+        description=(
+            "Whether this source stands alone or belongs to a WardPair. "
+            "``solo`` (default) preserves legacy behaviour; ``paired`` requires "
+            "``pair_leg`` and ``ward_id`` to be set."
+        ),
+    )
+    pair_leg: Literal["video", "emissive"] | None = Field(
+        default=None,
+        description=(
+            "Which leg of a WardPair this source is. Required when "
+            "``pair_role='paired'``, forbidden otherwise."
+        ),
+    )
+    ward_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Ward identity the source renders into. Required when "
+            "``pair_role='paired'``; optional for solo sources (legacy "
+            "wards pass None and rely on the source ID as ward identity)."
+        ),
+    )
+
     @model_validator(mode="after")
     def _validate_rate(self) -> SourceSchema:
         """Cadence/rate consistency check.
@@ -139,6 +171,19 @@ class SourceSchema(BaseModel):
             raise ValueError(f"source {self.id}: update_cadence='rate' requires rate_hz")
         if self.update_cadence != "rate" and self.rate_hz is not None:
             raise ValueError(f"source {self.id}: rate_hz only valid with update_cadence='rate'")
+        # Paired-leg consistency check (Phase 2 of the video-container epic).
+        # ``pair_leg`` and ``ward_id`` are mandatory when paired, forbidden
+        # otherwise — otherwise a layout could declare a source as
+        # ``paired`` without specifying which leg it is or what ward it
+        # belongs to, which the pair renderer has no way to interpret.
+        if self.pair_role == "paired":
+            if self.pair_leg is None:
+                raise ValueError(f"source {self.id}: pair_role='paired' requires pair_leg")
+            if self.ward_id is None:
+                raise ValueError(f"source {self.id}: pair_role='paired' requires ward_id")
+        else:
+            if self.pair_leg is not None:
+                raise ValueError(f"source {self.id}: pair_leg only valid with pair_role='paired'")
         return self
 
 
