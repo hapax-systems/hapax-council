@@ -1,0 +1,21 @@
+[Unit]
+Description=Hapax audio ducker — VAD-driven mixer-gain controller
+Documentation=file:///home/hapax/projects/hapax-council/docs/superpowers/specs/2026-04-23-livestream-audio-unified-architecture-design.md
+After=pipewire.service pipewire-pulse.service wireplumber.service hapax-secrets.service
+Requires=pipewire.service
+PartOf=pipewire.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv run --directory %h/projects/hapax-council python -m agents.audio_ducker
+Restart=always
+RestartSec=2s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-audio-ducker
+
+[Install]
+WantedBy=default.target

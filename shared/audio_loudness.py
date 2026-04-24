@@ -86,7 +86,7 @@ MASTER_LIMITER_RELEASE_MS: float = 50.0
 # sums to reach -14 LUFS-I egress target.
 # Phase 3 per-source pre-normalizers will replace this single constant
 # with proper per-source LUFS targeting.
-MASTER_INPUT_MAKEUP_DB: float = 9.0
+MASTER_INPUT_MAKEUP_DB: float = 1.0
 
 # ── Per-source line-output ceiling for L-12 USB return (Phase 1.5) ────
 #
