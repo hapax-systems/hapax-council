@@ -52,3 +52,13 @@ def on_draw(compositor: Any, overlay: Any, cr: Any, timestamp: int, duration: in
     # Render content overlay zones (markdown/ANSI from Obsidian via Pango)
     if hasattr(compositor, "_overlay_zone_manager"):
         compositor._overlay_zone_manager.render(cr, canvas_w, canvas_h)
+
+    # FINDING-W (ef7b-179, 2026-04-24): substrate layout assignments —
+    # any ``render_stage="pre_fx"`` binding — are blitted on the BASE
+    # cairooverlay BEFORE the glfeedback shader chain so shaders can
+    # decorate them. Chrome wards remain on the post-FX callback. The
+    # default layout ships chrome-only so this call is a no-op until
+    # a session or layout opts substrate assignments in.
+    from agents.studio_compositor.fx_chain import pre_fx_draw_from_layout
+
+    pre_fx_draw_from_layout(compositor, cr)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import random
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import cairo
 
@@ -144,6 +144,8 @@ def pip_draw_from_layout(
     cr: cairo.Context,
     layout_state: LayoutState,
     source_registry: SourceRegistry,
+    *,
+    stage: Literal["pre_fx", "post_fx"] | None = None,
 ) -> None:
     """Walk the current layout's assignments by z_order and blit each one.
 
@@ -165,10 +167,20 @@ def pip_draw_from_layout(
     each successful blit increments a counter labeled by ward_id.
     Operators diagnosing visual-absence symptoms can rate-query the
     skip counter to identify which wards are not blitting and why.
+
+    FINDING-W (ef7b-179, 2026-04-24): when ``stage`` is provided, only
+    assignments whose ``render_stage`` matches are drawn. ``None``
+    (default) renders every assignment — back-compat for any legacy
+    caller not split across the two cairooverlay callbacks. The
+    compositor wires ``stage="post_fx"`` on the post-FX callback and
+    ``stage="pre_fx"`` on the BASE callback so chrome stays crisp on
+    top of shaders and substrate gets decorated by them.
     """
     layout = layout_state.get()
     pairs: list[tuple[Any, Any]] = []
     for assignment in layout.assignments:
+        if stage is not None and getattr(assignment, "render_stage", "post_fx") != stage:
+            continue
         surface_schema = layout.surface_by_id(assignment.surface)
         if surface_schema is None:
             _emit_blit_skip(assignment.source, "surface_not_found")
@@ -308,18 +320,43 @@ def _record_blit_observability(
 
 
 def _pip_draw(compositor: Any, cr: Any) -> None:
-    """Post-FX cairooverlay callback — drives pip_draw_from_layout only.
+    """Post-FX cairooverlay callback — renders chrome wards on top of shaders.
 
     Phase 9 Task 29 of the compositor unification epic removed the
     pre-Phase-3 legacy fallback and the cross-facade double-draw for
     ``_stream_overlay``. Layout state + source registry are always
     populated by ``StudioCompositor.start_layout_only`` (PR #735),
     so the layout walk is the only render path.
+
+    FINDING-W (ef7b-179): filters assignments to those whose
+    ``render_stage == "post_fx"`` so they blit AFTER the shader chain.
+    Substrate assignments (``render_stage == "pre_fx"``) are drawn by
+    :func:`pre_fx_draw_from_layout` on the BASE cairooverlay instead.
     """
     layout_state = getattr(compositor, "layout_state", None)
     source_registry = getattr(compositor, "source_registry", None)
     if layout_state is not None and source_registry is not None:
-        pip_draw_from_layout(cr, layout_state, source_registry)
+        pip_draw_from_layout(cr, layout_state, source_registry, stage="post_fx")
+
+
+def pre_fx_draw_from_layout(compositor: Any, cr: Any) -> None:
+    """BASE cairooverlay helper — renders substrate assignments.
+
+    FINDING-W (ef7b-179, 2026-04-24): exposes the pre-FX layout walk so
+    :mod:`agents.studio_compositor.overlay`::``on_draw`` can blit any
+    assignment tagged ``render_stage="pre_fx"`` before the glfeedback
+    shader chain decorates the frame. Called after Sierpinski + GEAL
+    so those surfaces keep their historical z-order above the layout
+    substrate.
+
+    No-op when no assignment is tagged ``pre_fx`` (the default layout
+    is chrome-only on ship, so the BASE cost stays unchanged until a
+    layout opts substrate assignments in).
+    """
+    layout_state = getattr(compositor, "layout_state", None)
+    source_registry = getattr(compositor, "source_registry", None)
+    if layout_state is not None and source_registry is not None:
+        pip_draw_from_layout(cr, layout_state, source_registry, stage="pre_fx")
 
 
 class FlashScheduler:
