@@ -1863,28 +1863,27 @@ class ConversationPipeline:
             pass
 
     async def _prewarm_llm(self) -> None:
-        """Phase 3b: Pre-warm LLM connection at session start.
+        """Pre-warm the grounded-LLM path via TCP connect (no billable call).
 
-        Sends a minimal request to warm TCP + LiteLLM route cache +
-        upstream provider connection. Saves 200-500ms on first LLM call.
+        Grounding-acts (autonomous_narrative, spontaneous_speech, fortress
+        daily) route to TabbyAPI at :5000 via LiteLLM. A raw TCP connect
+        validates the grounded endpoint is reachable and warms the kernel
+        socket cache without consuming tokens.
+
+        The previous 1-token litellm.acompletion paid a full round-trip
+        (provider selection, httpx pool warmup, token accounting) solely
+        to warm one hop — wasteful once grounding-acts pinned to local.
         """
         if self._llm_prewarmed:
             return
         try:
-            import os
-
-            import litellm
-
-            await litellm.acompletion(
-                model=f"openai/{self.llm_model}",
-                messages=[{"role": "user", "content": "hi"}],
-                max_tokens=1,
-                api_base=_voice_litellm_base,
-                api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
-                timeout=5,
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", 5000), timeout=0.5
             )
+            writer.close()
+            await writer.wait_closed()
             self._llm_prewarmed = True
-            log.debug("LLM connection pre-warmed")
+            log.debug("LLM connection pre-warmed (TCP ping)")
         except Exception:
             log.debug("LLM prewarm failed (non-fatal)", exc_info=True)
 
