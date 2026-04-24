@@ -216,6 +216,8 @@ References:
 
 T0 violations blocked by SDLC hooks. Definitions in `axioms/registry.yaml`, implications in `axioms/implications/`, consent contracts in `axioms/contracts/`.
 
+**Non-formal operator referent policy** (`su-non-formal-referent-001`, directive 2026-04-24): in non-formal contexts (livestream narration, captions, social-surface posts, YouTube metadata, chat attribution, scope-nudge framing), the operator is referred to exclusively by one of four equally-weighted referents — `"The Operator"`, `"Oudepode"`, `"Oudepode The Operator"`, `"OTO"`. Selection is sticky-per-utterance via `shared.operator_referent.OperatorReferentPicker`; seed with `pick_for_tick(tick_id)` for director narration, `pick_for_vod_segment(video_id)` for YouTube / cross-surface posts. Legal name is reserved for formal-address-required contexts only (partner-in-conversation role, consent contracts, axiom precedents, git author metadata, profile persistence) — `logos.voice.operator_name()` remains the formal-context function. Spec: `docs/superpowers/specs/2026-04-24-operator-referent-policy-design.md`. Canonical spelling is **Oudepode** (with `e`) — matches existing IPA `uˈdɛpoʊdeɪ` in `shared/speech_lexicon.py`.
+
 ## SDLC Pipeline
 
 LLM-driven lifecycle via GitHub Actions: Triage → Plan → Implement → Adversarial Review (3 rounds max) → Axiom Gate → Auto-merge. Scripts in `scripts/`, workflows in `.github/workflows/`. All scripts support `--dry-run`. Observability via `profiles/sdlc-events.jsonl` + Langfuse traces. Agent PRs only on `agent/*` branches with `agent-authored` label.

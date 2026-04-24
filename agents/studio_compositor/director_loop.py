@@ -984,20 +984,25 @@ def _vinyl_is_playing() -> bool:
         return False
 
 
-def _curated_music_framing(slot_title: str, slot_channel: str) -> str:
+def _curated_music_framing(slot_title: str, slot_channel: str, referent: str) -> str:
     """One-line "what's providing music" framing — vinyl-first, YouTube fallback.
 
     Operator directive 2026-04-17:
       - Music featuring must work regardless of whether vinyl is playing.
-      - All music surfaces must come from Oudepode's curated taste (the
+      - All music surfaces must come from the operator's curated taste (the
         PLAYLIST_URL at module top), not from auto-recommendations.
+
+    ``referent`` is the non-formal referent chosen by the tick-level picker
+    (directive 2026-04-24, ``su-non-formal-referent-001``).
     """
     if _vinyl_is_playing():
-        return f"Oudepode is spinning vinyl: {_read_album_info()}."
+        return f"{referent} is spinning vinyl: {_read_album_info()}."
     if slot_title:
-        # slot_channel is the YouTube channel — part of Oudepode's curated
-        # playlist so it's still "Oudepode's music taste".
-        return f"Music is playing from Oudepode's curated queue: '{slot_title}' by {slot_channel}."
+        # slot_channel is the YouTube channel — part of the operator's
+        # curated playlist so it's still the operator's music taste.
+        return (
+            f"Music is playing from {referent}'s curated queue: '{slot_title}' by {slot_channel}."
+        )
     return "No music is playing at the moment — the room is quiet."
 
 
@@ -1040,7 +1045,7 @@ ACTIVITY_CAPABILITIES = (
     "  PAIRS WITH: camera.hero (operator-brio.conversing), preset.bias\n"
     "  (pick the family that keeps visual noise low during conversation),\n"
     "  overlay.foreground for chat_keyword_legend / captions.\n"
-    "- music: comment on Oudepode's curated music — vinyl on the turntable\n"
+    "- music: comment on the operator's curated music — vinyl on the turntable\n"
     "  or YouTube queue track. PAIRS WITH: camera.hero (overhead.vinyl-spinning\n"
     "  when the record is the subject; synths-brio.beatmaking for pad work),\n"
     "  preset.bias (audio-reactive to sync visuals to the beat),\n"
@@ -1108,6 +1113,10 @@ class DirectorLoop:
         )
         self._current_voice_tier: int | None = None  # VoiceTier int value
         self._current_programme_band: tuple[int, int] | None = None
+        # Monotonic counter seeding the non-formal operator referent picker
+        # per tick (directive 2026-04-24, su-non-formal-referent-001). One
+        # referent per _build_unified_prompt call, sticky-per-utterance.
+        self._referent_tick: int = 0
         self._load_memory()
 
     def _load_memory(self) -> None:
@@ -1941,6 +1950,15 @@ class DirectorLoop:
         album_info = _read_album_info()
         slot = self._slots[self._active_slot]
 
+        # Non-formal operator referent for this tick (directive 2026-04-24,
+        # su-non-formal-referent-001). Sticky-per-utterance: one form for
+        # the whole reactor context + LLM output. See spec
+        # docs/superpowers/specs/2026-04-24-operator-referent-policy-design.md.
+        from shared.operator_referent import OperatorReferentPicker
+
+        self._referent_tick += 1
+        referent = OperatorReferentPicker.pick_for_tick(self._referent_tick)
+
         parts: list[str] = ["<reactor_context>"]
 
         # ─── Identity + situation ─────────────────────────────────
@@ -1948,13 +1966,13 @@ class DirectorLoop:
         # not personification-coded prologue. Role is livestream-host
         # (director composes reactions for broadcast audience).
         # HAPAX_PERSONA_LEGACY=1 reverts to pre-Phase-7 hard-coded block.
-        music_framing = _curated_music_framing(slot._title, slot._channel)
+        music_framing = _curated_music_framing(slot._title, slot._channel, referent)
         # Epic 2 Phase D — operator-always-here framing. Even with zero
-        # external viewers, Oudepode is always the first-class audience.
+        # external viewers, the operator is always the first-class audience.
         # This block removes the implicit "nobody is watching" assumption.
         audience_framing = (
-            "Oudepode is always present in the room as your first-class audience. "
-            "Whatever moves you pick, he sees them — even when external viewer count is zero."
+            f"{referent} is always present in the room as your first-class audience. "
+            f"Whatever moves you pick, they see them — even when external viewer count is zero."
         )
         if _persona_legacy_mode():
             parts.append(
@@ -1977,6 +1995,15 @@ class DirectorLoop:
             scope = role_scope_line("livestream-host")
             if scope:
                 parts.append(scope)
+            parts.append("")
+            parts.append("## Referent policy for this tick")
+            parts.append(
+                f"When referring to the operator in narration, use EXCLUSIVELY: "
+                f'"{referent}". Do not use their legal name. Do not mix other '
+                f"referent forms (e.g., 'OTO', 'Oudepode', 'The Operator') in "
+                f"this tick — use the one given above consistently throughout. "
+                f"Governance: su-non-formal-referent-001."
+            )
             parts.append("")
             parts.append("## Current situation")
             parts.append(f"This is Legomena Live. {music_framing}")
@@ -2067,7 +2094,7 @@ class DirectorLoop:
                     text = m.get("text", "")
                     if text:
                         if "oudepode" in author.lower():
-                            parts.append(f'Oudepode: "{text}"')
+                            parts.append(f'{referent}: "{text}"')
                         else:
                             parts.append(f'Someone in chat: "{text}"')
         except Exception:
@@ -2489,8 +2516,8 @@ class DirectorLoop:
                     "## Scope nudge\n"
                     f"You have commented on the video for {video_streak} ticks in a row. "
                     "The viewer can see the video. **Shift ground**: comment on "
-                    "the music Oudepode is playing, the reverie visual mood, "
-                    "the operator's desk activity, or the active research "
+                    f"the music {referent} is playing, the reverie visual mood, "
+                    f"{referent}'s desk activity, or the active research "
                     "objective. Anything BUT another video paragraph."
                 )
         except Exception:

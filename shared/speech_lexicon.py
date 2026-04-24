@@ -22,9 +22,23 @@ Pronunciation choices (2026-04-20):
 * **Oudepode** — /uˈdɛpoʊdeɪ/ "oo-DEP-oh-day". Operator handle derived
   from Greek οὐδέποτε ("never"). Stress on the second syllable per the
   Greek antepenult rule; final ε realised as /eɪ/ for English register.
+* **OTO** — /oʊ tiː oʊ/ "oh-tee-oh". Acronym form of "Oudepode The
+  Operator" — spoken letter-by-letter, not as the word "oto" (directive
+  2026-04-24, one of four ratified non-formal operator referents).
 * **Legomenon** — /lɛˈɡɑmənɒn/ "leh-GAH-muh-non". American academic
   pronunciation of λεγόμενον; stress on the second syllable.
 * **Legomena** — /lɛˈɡɑmənə/ "leh-GAH-muh-nuh". Plural of the above.
+
+Non-formal operator referents (directive 2026-04-24): the four ratified
+forms are "The Operator", "Oudepode", "Oudepode The Operator", and "OTO".
+"The Operator" (and multi-word phrases containing it) flow through
+misaki's default G2P natively — no override needed. "Oudepode" is covered
+by its own entry above and wraps the "Oudepode The Operator" multi-word
+form via the existing word-boundary regex. Only "OTO" needs an explicit
+IPA override because misaki would otherwise pronounce it as the word
+"oto" rather than letter-by-letter. See ``shared/operator_referent.py``
+for the picker and ``axioms/implications/non-formal-referent-policy.yaml``
+for the governance rule.
 """
 
 from __future__ import annotations
@@ -43,6 +57,7 @@ log = logging.getLogger(__name__)
 _LEXICON: dict[str, str] = {
     "hapax": "hˈæpæks",
     "oudepode": "uˈdɛpoʊdeɪ",
+    "oto": "oʊ tiː oʊ",
     "legomenon": "lɛˈɡɑmənɒn",
     "legomena": "lɛˈɡɑmənə",
 }

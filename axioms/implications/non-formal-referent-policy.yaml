@@ -1,0 +1,85 @@
+implication_id: su-non-formal-referent-001
+axiom_id: single_user
+version: 1
+tier: T1
+enforcement: review
+canon: purposivist
+mode: sufficiency
+level: system
+text: |
+  In non-formal contexts — livestream narration, voice commentary,
+  rendered text and captions, social-surface posts, YouTube metadata,
+  chat attribution of operator utterances, scope-nudge prompt framing —
+  the operator is referred to exclusively by one of the four ratified
+  equally-weighted referents:
+    - "The Operator"
+    - "Oudepode"
+    - "Oudepode The Operator"
+    - "OTO"
+  The operator's legal name is reserved for formal-address-required
+  contexts only (consent contracts, axiom precedents, persona
+  partner-in-conversation role declaration, git author metadata,
+  operator profile persistence).
+
+  Selection is sticky-per-utterance — one referent per director LLM
+  call / narration construction, rotating across calls. See
+  shared/operator_referent.OperatorReferentPicker.
+
+rationale: |
+  Directive 2026-04-24 from operator. Four equally-weighted referents
+  give the livestream narrator + social surfaces variety while keeping
+  each utterance internally coherent. Legal name stays with formal
+  relational contexts (partner-in-conversation, consent-contract
+  parties) where identity specificity is load-bearing.
+
+  Axiom-sweep enforcement catches new narration sites that ship without
+  routing through the picker — prevents silent drift as ytb-008,
+  ytb-010, ytb-011, and future wards land.
+
+scope:
+  applies_to:
+    - director narration (agents/studio_compositor/director_loop.py)
+    - daimonion spontaneous speech and commentary
+    - rendered captions (agents/live_captions/, cccombiner payloads)
+    - YouTube video metadata (titles, descriptions, community posts)
+    - cross-surface federation posts (Bluesky, Mastodon, Discord)
+    - chat attribution when the author is the operator
+    - scope-nudge and framing prompt text
+  excludes:
+    - persona._operator_partner_block (formal relational declaration)
+    - logos.voice.operator_name() (legal-name source for formal surfaces)
+    - axioms/contracts/*.yaml subject_name fields
+    - axioms/precedents/*.yaml
+    - git author metadata / commit co-authorship
+    - operator profile persistence (profile facts, dimensions)
+    - briefing / orientation panel (formal information surfaces)
+    - officium management-decision surfaces
+
+  referents:
+    - "The Operator"
+    - "Oudepode"
+    - "Oudepode The Operator"
+    - "OTO"
+
+  canonical_spelling_notes: |
+    "Oudepode" (with `e`) is canonical — the `e` matches the stressed
+    /dɛ/ vowel in its IPA /uˈdɛpoʊdeɪ/. The operator's initial directive
+    spelled it "Oudopode" as a typo, corrected in-conversation.
+
+implementation:
+  picker: shared/operator_referent.py::OperatorReferentPicker
+  lexicon_additions: shared/speech_lexicon.py (OTO → /oʊ tiː oʊ/)
+  first_call_sites:
+    - agents/studio_compositor/director_loop.py (6 runtime sites)
+  follow_ups:
+    - ytb-007 metadata_seed.compose() (delta, already shipped)
+    - ytb-008 research-instrument composer (alpha, greenfield)
+    - ytb-010 cross-surface federation (beta, greenfield)
+
+authority:
+  ratified_by: operator
+  ratified_at: "2026-04-24T00:30Z"
+  ratification_vehicle: "epsilon session direct operator confirmation"
+  session: epsilon
+  design_doc: docs/superpowers/specs/2026-04-24-operator-referent-policy-design.md
+  implementation_plan: docs/superpowers/plans/2026-04-24-operator-referent-policy-plan.md

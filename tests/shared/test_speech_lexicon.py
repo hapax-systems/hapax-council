@@ -66,3 +66,50 @@ def test_applies_to_unwrapped_only_when_mixed() -> None:
     result = apply_lexicon(text)
     assert result.hit_count == 1
     assert result.text == "[Hapax](/hˈæpæks/) meets [Oudepode](/uˈdɛpoʊdeɪ/) today."
+
+
+def test_oto_letter_by_letter_override() -> None:
+    """OTO must be spoken letter-by-letter, not as the word "oto"."""
+    result = apply_lexicon("OTO is live on air.")
+    assert result.hit_count == 1
+    assert result.was_modified is True
+    assert "[OTO](/oʊ tiː oʊ/)" in result.text
+
+
+def test_oto_case_insensitive_preserves_casing() -> None:
+    result = apply_lexicon("oto and OTO and Oto.")
+    assert result.hit_count == 3
+    assert "[oto](/oʊ tiː oʊ/)" in result.text
+    assert "[OTO](/oʊ tiː oʊ/)" in result.text
+    assert "[Oto](/oʊ tiː oʊ/)" in result.text
+
+
+def test_oudepode_the_operator_multiword_form() -> None:
+    """The multi-word referent "Oudepode The Operator" gets its Oudepode
+    prefix wrapped by the existing regex; "The Operator" flows through
+    misaki's default G2P natively.
+    """
+    result = apply_lexicon("Oudepode The Operator is in the room.")
+    assert result.hit_count == 1
+    assert result.text == "[Oudepode](/uˈdɛpoʊdeɪ/) The Operator is in the room."
+
+
+def test_all_four_non_formal_referents_round_trip() -> None:
+    """Directive 2026-04-24: the four ratified non-formal referents all
+    render correctly through the lexicon.
+    """
+    for text in (
+        "The Operator is watching.",
+        "Oudepode is watching.",
+        "Oudepode The Operator is watching.",
+        "OTO is watching.",
+    ):
+        result = apply_lexicon(text)
+        # All four must produce output where known terms are wrapped and
+        # the result is a valid string (misaki-parseable).
+        assert "watching" in result.text
+        # "The Operator" bare has no lexicon hit; others hit at least once.
+        if text.startswith("The Operator"):
+            assert result.hit_count == 0
+        else:
+            assert result.hit_count >= 1
