@@ -1,0 +1,148 @@
+# Likelihood-ratio registry — backfill of PresenceEngine's 14 signals
+#
+# Phase 0 STUB deliverable per docs/operations/2026-04-24-workstream-realignment-v3.md §3.2.
+# CI rule HPX003 (Phase 0 FULL) will require every ClaimEngine signal to have an
+# LRDerivation entry here with a documented source_category + estimation_reference.
+#
+# Every signal below is retroactively documented from PresenceEngine's
+# DEFAULT_SIGNAL_WEIGHTS (agents/hapax_daimonion/presence_engine.py L27-48),
+# which was hand-calibrated from the 2026-03-17 first live run. Backfill preserves
+# the shipped values while declaring the ad-hoc provenance honestly — Phase 2+
+# onwards every new signal must ship with a proper source_category (calibration_study,
+# calibrated_classifier, physical_model, expert_elicitation_shelf, or
+# online_recalibration) per research synthesis §5.
+#
+# Schema is shared.claim.LRDerivation; see shared/claim.py.
+
+presence_signals:
+  operator_face:
+    claim_name: operator_present
+    source_category: expert_elicitation_shelf
+    p_true_given_h1: 0.90
+    p_true_given_h0: 0.10
+    positive_only: true
+    estimation_reference: "DEFAULT_SIGNAL_WEIGHTS 2026-03-17 first-live-run calibration; InsightFace SCRFD face detection"
+    calibration_window_s: null
+
+  keyboard_active:
+    claim_name: operator_present
+    source_category: physical_model
+    p_true_given_h1: 0.85
+    p_true_given_h0: 0.05
+    positive_only: false  # bidirectional: keyboard-idle > 300s via evdev
+    estimation_reference: "evdev direct HID; Claude Code subprocess filtered; idle gate 300s"
+    calibration_window_s: 300.0
+
+  vad_speech:
+    claim_name: operator_present
+    source_category: expert_elicitation_shelf
+    p_true_given_h1: 0.60
+    p_true_given_h0: 0.15
+    positive_only: true
+    estimation_reference: "Silero VAD; confidence>0.5 threshold"
+    calibration_window_s: null
+
+  speaker_is_operator:
+    claim_name: operator_present
+    source_category: expert_elicitation_shelf
+    p_true_given_h1: 0.95
+    p_true_given_h0: 0.02
+    positive_only: true
+    estimation_reference: "DEFAULT_SIGNAL_WEIGHTS 2026-03-17"
+    calibration_window_s: null
+
+  watch_hr:
+    claim_name: operator_present
+    source_category: physical_model
+    p_true_given_h1: 0.80
+    p_true_given_h0: 0.30
+    positive_only: false  # staleness >120s = out of BLE range
+    estimation_reference: "Pixel Watch BLE staleness cutoff 120s"
+    calibration_window_s: 120.0
+
+  watch_connected:
+    claim_name: operator_present
+    source_category: physical_model
+    p_true_given_h1: 0.70
+    p_true_given_h0: 0.40
+    positive_only: true
+    estimation_reference: "BLE connect/disconnect event; unreliable under Linux BLE"
+    calibration_window_s: null
+
+  desktop_active:
+    claim_name: operator_present
+    source_category: expert_elicitation_shelf
+    p_true_given_h1: 0.75
+    p_true_given_h0: 0.10
+    positive_only: true
+    estimation_reference: "Hyprland focus-change event"
+    calibration_window_s: null
+
+  midi_active:
+    claim_name: operator_present
+    source_category: physical_model
+    p_true_given_h1: 0.90
+    p_true_given_h0: 0.02
+    positive_only: true
+    estimation_reference: "OXI One MIDI clock pulse; physical operator-interaction proof"
+    calibration_window_s: null
+
+  bt_phone_connected:
+    claim_name: operator_present
+    source_category: physical_model
+    p_true_given_h1: 0.70
+    p_true_given_h0: 0.30
+    positive_only: true
+    estimation_reference: "Linux BLE unreliable; downweighted from (0.95, 0.05)"
+    calibration_window_s: null
+
+  phone_kde_connected:
+    claim_name: operator_present
+    source_category: physical_model
+    p_true_given_h1: 0.80
+    p_true_given_h0: 0.25
+    positive_only: true
+    estimation_reference: "KDE Connect WiFi reachable = likely in house"
+    calibration_window_s: null
+
+  room_occupancy:
+    claim_name: operator_present
+    source_category: calibrated_classifier
+    p_true_given_h1: 0.85
+    p_true_given_h0: 0.20
+    positive_only: true
+    estimation_reference: "YOLOv8n person-detection on any camera"
+    calibration_window_s: null
+
+  ir_person_detected:
+    claim_name: operator_present
+    source_category: calibrated_classifier
+    p_true_given_h1: 0.90
+    p_true_given_h0: 0.10
+    positive_only: true
+    estimation_reference: "Pi NoIR YOLOv8n ONNX runtime; lighting-invariant"
+    calibration_window_s: null
+
+  ir_hand_active:
+    claim_name: operator_present
+    source_category: physical_model
+    p_true_given_h1: 0.85
+    p_true_given_h0: 0.10
+    positive_only: true
+    estimation_reference: "Pi NoIR hand-threshold motion-gated >0.05; works when face-detection broken"
+    calibration_window_s: null
+
+  desk_active:
+    claim_name: operator_present
+    source_category: physical_model
+    p_true_given_h1: 0.90
+    p_true_given_h0: 0.05
+    positive_only: true
+    estimation_reference: "Cortado MKIII contact mic; acoustic-impedance mismatch rejects airborne noise; typing/tapping/drumming"
+    calibration_window_s: null
+
+# Phase 2 + Phase 2b will add claim-specific signal blocks below once
+# the corresponding ClaimEngines ship:
+#   vinyl_spinning_signals: {turntable_rpm, ir_hand_turntable, audio_signal_present, ...}
+#   music_playing_signals: {yamnet_music_posterior, youtube_audio_active, local_player_active, ...}
+#   operator_working_signals: {keyboard_active, operator_present, screen_looking, ...}
