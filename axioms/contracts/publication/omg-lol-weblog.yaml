@@ -1,0 +1,14 @@
+surface: omg-lol-weblog
+state_kinds:
+  - weblog.entry
+redactions:
+  - operator_profile.*
+  - operator_identity.*
+  - operator_legal_name
+  - chronicle.private_moments
+  - chat.author_id
+  - chat.author_handle
+rate_limit:
+  per_week: 2
+  per_month: 8
+cadence_hint: "Operator-reviewed; monthly-ish cadence; never fully autonomous."
