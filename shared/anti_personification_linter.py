@@ -150,7 +150,29 @@ DENY_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
     "anthropic_pronouns": [
         ("hapax_gendered", re.compile(r"\bHapax,? (he|she|his|her|him)\b")),
     ],
+    # GEAL-scoped face-iconography rule family (spec §11 #1 of
+    # docs/superpowers/specs/2026-04-23-geal-spec.md). Only applied to
+    # files whose path matches ``_GEAL_PATH_GLOB`` — word-boundary
+    # matches on face parts that would violate the 10-invariant gate
+    # GEAL inherits from the retired HARDM.
+    "geal_geometry": [
+        ("eye", re.compile(r"\beye(s|ball|lid|ball)?\b", re.IGNORECASE)),
+        ("mouth", re.compile(r"\bmouth(s)?\b", re.IGNORECASE)),
+        ("smile", re.compile(r"\bsmil(e|es|ing|ed)\b", re.IGNORECASE)),
+        ("wink_blink", re.compile(r"\bwink(s|ing|ed)?\b|\bblink(s|ing|ed)?\b", re.IGNORECASE)),
+        ("brow", re.compile(r"\b(eye)?brow(s)?\b", re.IGNORECASE)),
+        ("nose", re.compile(r"\bnose(s)?\b", re.IGNORECASE)),
+        ("lips", re.compile(r"\blip(s)?\b", re.IGNORECASE)),
+        ("frown", re.compile(r"\bfrown(s|ing|ed)?\b", re.IGNORECASE)),
+        ("grin", re.compile(r"\bgrin(s|ning|ned)?\b", re.IGNORECASE)),
+        ("ear", re.compile(r"\bear(s|lobe|drum)?\b", re.IGNORECASE)),
+    ],
 }
+
+# GEAL-scoped linting applies only to files matching this glob. Keeps
+# the broader codebase free to use "eye" / "mouth" in their legitimate
+# technical senses (a.k.a. storm-eye, river-mouth).
+_GEAL_PATH_MARKER = "geal"
 
 
 # ---------------------------------------------------------------------------
@@ -222,20 +244,31 @@ def lint_text(text: str, path: str = "", lint_mode: LintMode = "warn") -> list[F
         return []
 
     severity = "error" if lint_mode == "fail" else "warn"
+    # GEAL-geometry rules fire only on paths containing "geal" (either
+    # ``agents/studio_compositor/geal_source.py`` or
+    # ``tests/.../test_geal_*.py``). Short-circuits the whole family
+    # when the caller is linting an unrelated file.
+    geal_scoped = _GEAL_PATH_MARKER in path.lower()
+
     findings: list[Finding] = []
     for family, patterns in DENY_PATTERNS.items():
+        if family == "geal_geometry" and not geal_scoped:
+            continue
         for rule_id, pattern in patterns:
             for match in pattern.finditer(text):
                 if _carve_out(text, match.start(), rule_id):
                     continue
                 line = text.count("\n", 0, match.start()) + 1
                 col = match.start() - (text.rfind("\n", 0, match.start()) + 1)
+                # Use a distinctive separator for the GEAL family so
+                # tests / filters can prefix-match on the rule_id.
+                sep = "::" if family == "geal_geometry" else "."
                 findings.append(
                     Finding(
                         file_path=path,
                         line=line,
                         col=col,
-                        rule_id=f"{family}.{rule_id}",
+                        rule_id=f"{family}{sep}{rule_id}",
                         matched_text=match.group(0),
                         severity=severity,
                     )
