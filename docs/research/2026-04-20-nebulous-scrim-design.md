@@ -446,25 +446,80 @@ The scrim introduction is a significant re-anchoring, but the existing stack can
 
 ---
 
-## 12. Open Questions for Operator
+## 12. Operator Decisions
 
-These decisions sit with the operator and should be resolved before or during the corresponding phase.
+Resolved by operator 2026-04-23. Eight decisions unblock Phases 2-4 of
+the scrim implementation.
 
-1. **Face-obscure before or after the scrim in the pipeline?** Proposal: face-obscure before scrim (at the cam producer layer, per existing #129). The scrim inherits already-obscured pixels. Confirm.
-2. **Preferred scrim-density default.** Three candidates:
-   - *Light* (~0.25 baseline) — the scrim is barely there, clarity-first, risks reading as "no scrim."
-   - *Medium* (~0.50 baseline) — balanced, the operator-current-reading target.
-   - *Heavy* (~0.75 baseline) — the scrim is obviously present, atmospheric, risks obscuring the studio too much for daily use.
+1. **Face-obscure before scrim.** At the cam producer layer, per existing
+   #129. The scrim inherits already-obscured pixels. Preserves the
+   fail-closed privacy invariant: if the obscure detector fails the
+   frame never reaches the scrim layer with unobscured faces.
 
-   Recommendation: start at medium, make density programme-driven.
-3. **Scrim-pierce dynamic cadence.** Frequent (every ~30s on Hapax speech) or rare ritual (every ~120s + explicit ritual moments)?
-   Recommendation: rare ritual. The pierce loses power if it happens every time Hapax opens their mouth.
-4. **Seasonal / time-of-day variation?** Should the scrim have morning-warm-haze vs evening-cool-mist variants? Or is the working-mode (R&D / Research) palette the only variation axis?
-   Recommendation: working-mode is primary, programme is secondary, no explicit time-of-day layer. But operator taste is authoritative here.
-5. **Warm-cloth vs. cool-mist default palette.** Within R&D / Gruvbox, the scrim can lean warm-cloth (amber-tinted) or cool-mist (cyan-tinted, aligned with HOMAGE A6). The A6 substrate invariant already chose cyan for BitchX; confirming that choice carries forward as the R&D default.
-6. **Relation to the 5-channel mixer (per memory `project_reverie_adaptive`).** The operator's Reverie adaptive direction work names 5 channels (RD, Physarum, Voronoi, feedback, noise). How do the scrim-profile families map onto the mixer channels? Proposal: each scrim profile is an operating-point for the mixer — `gauzy_quiet` biases noise + feedback + rd; `moire_crackle` biases dither + glfeedback + halftone; etc. The mixer remains the technique selector; the scrim profile names the *feel* the mixer is aiming at.
-7. **Can the scrim ever *fully* part?** §9.1 says always-present. But is there a single moment per session (e.g., show closer) where the scrim is allowed to fully dissolve to zero density for a beat? Operator taste.
-8. **Camera PiP sizing under deep scrim.** When the scrim is dense (hothouse, wind-down), does the PiP *shrink* as well as blur — tightening the peephole compositionally? Or does it stay the same size and only the scrim changes?
+2. **Baseline scrim density = medium (~0.50).** Programme-driven from
+   there. Light reads as "no scrim"; heavy obscures the studio too much
+   for daily use.
+
+3. **Scrim-pierce = rare ritual (~120 s + explicit ritual moments).**
+   Not tied to Hapax utterance cadence — the pierce loses power if it
+   fires every time the voice opens.
+
+4. **No explicit time-of-day layer.** Working-mode is primary, programme
+   is secondary. Seasonal / diurnal variation is expressed through
+   palette selection (see §5), not through a separate time axis.
+
+5. **Palette as a first-class family (*orthogonal* to working-mode).**
+   Warm and cool variations are NOT a `working_mode → palette` binding.
+   Palettes are handled the same way as effects, effect presets, and
+   preset chains: at minimum a dozen named palette instances live in a
+   registry, each tagged with semantic descriptors, LAB anchors, axes
+   (warmth / saturation / lightness), a response curve, and an optional
+   temporal profile. Hapax recruits them through the affordance
+   pipeline using the tags and axes; working-mode is an *affinity
+   hint*, not a hard gate — a palette with R&D affinity can still be
+   recruited in Research when the semantic fits, and vice versa.
+   Chains sequence palettes over time with transition modes
+   (`crossfade` / `pierce` / `swap`).
+
+   Implementation lands in `shared/palette_family.py`,
+   `shared/palette_response.py`, and `shared/ward_pair.py`
+   (video-container Phase 2, 2026-04-23). Phase 3+ adds the registry
+   (the dozen+ instances) and the curve evaluator.
+
+6. **Scrim profile ↔ 5-channel mixer mapping = profile is an
+   operating-point.** Each scrim profile (`gauzy_quiet`,
+   `moire_crackle`, etc.) biases the mixer's channel weights in a
+   named direction. The mixer remains the technique selector (RD,
+   Physarum, Voronoi, feedback, noise); the scrim profile names the
+   *feel* the mixer is aiming at. Profile and palette compose: a
+   profile declares mixer bias, a palette declares colour, the two are
+   independently recruitable.
+
+7. **Scrim fully parts once per session, at the show closer.** Rare
+   enough to stay meaningful, bounded enough that the default is
+   always "scrim-present". The choreographer owns this moment — not
+   automatic, triggered by show-closer programme entry.
+
+8. **Camera PiP shrinks as well as blurs under deep scrim.** Depth
+   feel comes from both blur AND size; blur-only reads as a post-FX
+   pass. The `crop_rect_override` field on `WardProperties`
+   (Phase 2) is the substrate for this — the scrim renderer tightens
+   the rect toward centre proportional to scrim density.
+
+### Deltas from original proposals
+
+Four items carried the proposal; four adjusted:
+
+| # | Proposal | Decision | Delta |
+|---|---|---|---|
+| 1 | before | **before** | — |
+| 2 | medium | **medium** | — |
+| 3 | rare ritual | **rare ritual** | — |
+| 4 | working-mode primary, programme secondary | **no TOD layer at all** | simplified |
+| 5 | cool-mist (A6-aligned) | **palette family, dozen+, orthogonal** | major expansion |
+| 6 | profile = mixer op-point | **profile = mixer op-point** | — |
+| 7 | operator taste | **yes, once per session at show close** | decided |
+| 8 | operator taste | **yes, shrinks + blurs** | decided |
 
 ---
 
