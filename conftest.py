@@ -136,3 +136,85 @@ def _block_real_notifications():
         patch("shared.notify._run_subprocess", mock_run),
     ):
         yield
+
+
+def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
+    """Force-close module-level network clients so pytest can exit cleanly.
+
+    LiteLLM, Qdrant, and httpx keep TCP pools alive in module-level or
+    ``functools.lru_cache``-backed singletons. After tests finish, these
+    sockets never close and the pytest process hangs until the CI
+    ``timeout -s KILL 1500`` wrapper shoots it. Real tests finish in
+    ~11-15 min; the remaining ~10-14 min until KILL is pure tax per
+    PR. This finalizer turns that tax into a clean ~0.1s teardown.
+
+    Idempotent + swallows everything: teardown must never fail.
+    """
+    import contextlib
+    import gc
+
+    # Qdrant: clear ``shared.config`` lru_caches + close raw clients.
+    with contextlib.suppress(Exception):
+        import shared.config as _cfg
+
+        for factory in ("_get_qdrant_raw", "_get_qdrant_grpc_raw"):
+            cache = getattr(_cfg, factory, None)
+            if cache is None:
+                continue
+            try:
+                client = cache()
+            except Exception:  # noqa: BLE001
+                client = None
+            with contextlib.suppress(Exception):
+                cache.cache_clear()
+            if client is not None:
+                # QdrantClient has a .close() that tears down httpx + grpc.
+                with contextlib.suppress(Exception):
+                    client.close()
+
+    # LiteLLM: close the module's shared httpx + async client sessions.
+    # LiteLLM registers ``aclient_session`` / ``client_session`` at module level
+    # with connection pools; these leak sockets post-session.
+    with contextlib.suppress(Exception):
+        import litellm
+
+        for attr in ("client_session", "aclient_session", "in_memory_llm_clients_cache"):
+            obj = getattr(litellm, attr, None)
+            if obj is None:
+                continue
+            with contextlib.suppress(Exception):
+                close = getattr(obj, "close", None)
+                if callable(close):
+                    close()
+            with contextlib.suppress(Exception):
+                setattr(litellm, attr, None)
+
+    # httpx: close any module-level AsyncClient/Client survivors.
+    # ``httpx._client`` keeps no global registry, but pydantic-ai's
+    # LiteLLMProvider holds a ``httpx.AsyncClient`` that pins sockets.
+    # Walk live objects for any Client with an open transport + close.
+    with contextlib.suppress(Exception):
+        import httpx
+
+        for obj in list(gc.get_objects()):
+            if isinstance(obj, httpx.AsyncClient | httpx.Client):
+                with contextlib.suppress(Exception):
+                    close = getattr(obj, "close", None)
+                    if callable(close):
+                        # AsyncClient.close is a coroutine; schedule + ignore.
+                        import asyncio
+                        import inspect
+
+                        if inspect.iscoroutinefunction(close):
+                            with contextlib.suppress(Exception):
+                                loop = asyncio.new_event_loop()
+                                try:
+                                    loop.run_until_complete(close())
+                                finally:
+                                    loop.close()
+                        else:
+                            close()
+
+    # Give the gc a nudge so sockets get finalized before interpreter exit.
+    with contextlib.suppress(Exception):
+        gc.collect()
