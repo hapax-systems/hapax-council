@@ -26,3 +26,11 @@ Assets under this license:
 - `fonts/Px437_IBM_VGA_8x16.ttf` (source: `fonts`, kind: `font`, name: `px437`)
 - `fonts/Px437_IBM_VGA_8x16.woff2` (source: `fonts`, kind: `font`, name: `px437-woff2`)
 
+## CC0-1.0
+
+- **Hapax (authored approximation under no-operator-approval-waits mandate 2026-04-24T19:10Z)** — https://www.enlightenment.org/
+
+Assets under this license:
+
+- `enlightenment/themes/moksha.edc` (source: `enlightenment`, kind: `theme`, name: `moksha`)
+

@@ -1,0 +1,35 @@
+source: enlightenment
+source_url: https://www.enlightenment.org/
+source_commit: ""
+extracted_date: "2026-04-24"
+original_author: "Hapax (authored approximation under no-operator-approval-waits mandate 2026-04-24T19:10Z)"
+license: CC0-1.0
+license_text_path: ""
+attribution_line: "Moksha-grammar color approximation authored by Hapax (CC0-1.0)"
+notes: |
+  This file is an AUTHORED PLACEHOLDER for the E17/Moksha default theme's
+  color-classes EDC. Shipped as Phase 2 of ytb-AUTH-PALETTE per beta's
+  2026-04-24 workstream realignment: "authored placeholders under
+  autonomy mandate — same pattern as #1315 Phase 1 (operator reverts
+  if register off). No wait on operator asset supply."
+
+  When an authentic upstream Moksha .edc becomes available:
+
+    1. Replace the RGB bytes in themes/moksha.edc with the extracted
+       upstream color-class values.
+    2. Update the sha256 pin in assets/aesthetic-library/_manifest.yaml.
+    3. Update this provenance.yaml with the real upstream provenance
+       (source_url, source_commit, original_author, license).
+
+  The loader contract (shared.aesthetic_library_loader.MokshaThemeLoader)
+  is byte-value-agnostic — swapping in a real EDC requires no code
+  changes, only the asset + manifest update.
+
+  Color values chosen to approximate E17/Moksha aesthetic register:
+    bg_color      — dark grey panel background  (#252525)
+    fg_color      — soft light foreground       (#cccccc)
+    text_color    — primary text                (#e0e0e0)
+    fg_selected   — selection highlight (white) (#ffffff)
+    focus_color   — cornflower blue accent      (#6495ed)
+    success_color — dim green                   (#60b860)
+    alert_color   — dim red                     (#cc6060)

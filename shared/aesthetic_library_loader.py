@@ -131,4 +131,34 @@ class MokshaThemeLoader:
         return out
 
 
-__all__ = ["MOKSHA_COLOR_CLASSES", "LabTriple", "MokshaThemeLoader"]
+# Canonical in-repo path to the authored Moksha EDC placeholder. When an
+# authentic upstream .edc is acquired the bytes at this path are replaced
+# (loader contract is byte-value-agnostic; swapping is a pure asset update).
+# Phase 2 of ytb-AUTH-PALETTE per beta's 2026-04-24 workstream realignment.
+DEFAULT_MOKSHA_EDC_PATH: Path = (
+    Path(__file__).resolve().parent.parent
+    / "assets"
+    / "aesthetic-library"
+    / "enlightenment"
+    / "themes"
+    / "moksha.edc"
+)
+
+
+def load_default_moksha() -> dict[str, LabTriple] | None:
+    """Convenience wrapper — load the in-repo Moksha EDC placeholder.
+
+    Returns the same shape as :meth:`MokshaThemeLoader.load`. Intended as
+    the compositor-boot entry point: import + call, no path plumbing at
+    the call site.
+    """
+    return MokshaThemeLoader().load(DEFAULT_MOKSHA_EDC_PATH)
+
+
+__all__ = [
+    "DEFAULT_MOKSHA_EDC_PATH",
+    "MOKSHA_COLOR_CLASSES",
+    "LabTriple",
+    "MokshaThemeLoader",
+    "load_default_moksha",
+]

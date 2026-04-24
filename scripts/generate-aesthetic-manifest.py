@@ -29,6 +29,7 @@ ASSET_KIND_MAP: dict[tuple[str, str], str] = {
     ("bitchx/colors", "mirc16.yaml"): "palette",
     ("fonts", "Px437_IBM_VGA_8x16.ttf"): "font",
     ("fonts", "Px437_IBM_VGA_8x16.woff2"): "font",
+    ("enlightenment/themes", "moksha.edc"): "theme",
 }
 
 # (source, kind, name) → relative path under LIB_ROOT
@@ -38,6 +39,7 @@ ASSET_NAME_MAP: dict[tuple[str, str, str], str] = {
     ("bitchx", "palette", "mirc16"): "bitchx/colors/mirc16.yaml",
     ("fonts", "font", "px437"): "fonts/Px437_IBM_VGA_8x16.ttf",
     ("fonts", "font", "px437-woff2"): "fonts/Px437_IBM_VGA_8x16.woff2",
+    ("enlightenment", "theme", "moksha"): "enlightenment/themes/moksha.edc",
 }
 
 
