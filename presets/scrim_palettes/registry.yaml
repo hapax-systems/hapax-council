@@ -285,6 +285,54 @@ palettes:
       preserve_luminance: true
     temporal_profile: steady
 
+  # --- Authentic-asset palettes (sourced from shared.aesthetic_library) ---
+  #
+  # mirc-16-standard: byte-exact mIRC 16-color contract authored as a
+  # 16-stop CIE-LAB gradient. Slot index → t = i/15. LAB values computed
+  # via the standard sRGB→linear→XYZ(D65)→LAB pipeline from
+  # ``assets/aesthetic-library/bitchx/colors/mirc16.yaml`` (ytb-AUTH1);
+  # the helper ``scripts/bin/_mirc16_to_lab.py`` regenerates them.
+  #
+  # Slot 11 (cyan, #00FFFF) is dominant — matches BitchX HOMAGE A6
+  # alignment. Slot 06 (purple, #9C009C) is the secondary BitchX accent.
+  # Round-trip tolerance pinned at ±1/255 per channel by
+  # ``tests/test_mirc16_palette.py``.
+  - id: mirc-16-standard
+    display_name: mIRC 16 Standard
+    description: >-
+      Byte-exact mIRC 16-color palette as a 16-stop LAB gradient.
+      BitchX-kin terminal lineage. Sourced from
+      shared.aesthetic_library / bitchx/colors/mirc16.yaml.
+    semantic_tags: [terminal, irc, mirc, 16-color, authentic, retro,
+                    net-culture, bitchx-kin]
+    working_mode_affinity: [rnd, any]
+    warmth_axis: 0.0
+    saturation_axis: 0.95
+    lightness_axis: 0.05
+    dominant_lab: [91.11, -48.09, -14.13]
+    accent_lab: [36.87, 68.05, -42.14]
+    curve:
+      mode: gradient_map
+      params:
+        stops:
+          - {t: 0.0000, lab: [100.00,   0.00,   0.00]}  # slot 00 white
+          - {t: 0.0667, lab: [  0.00,   0.00,   0.00]}  # slot 01 black
+          - {t: 0.1333, lab: [ 12.81,  47.23, -64.34]}  # slot 02 blue
+          - {t: 0.2000, lab: [ 52.80, -57.16,  55.17]}  # slot 03 green
+          - {t: 0.2667, lab: [ 53.24,  80.09,  67.20]}  # slot 04 red
+          - {t: 0.3333, lab: [ 25.30,  47.77,  37.75]}  # slot 05 brown
+          - {t: 0.4000, lab: [ 36.87,  68.05, -42.14]}  # slot 06 purple
+          - {t: 0.4667, lab: [ 66.43,  42.16,  73.43]}  # slot 07 orange
+          - {t: 0.5333, lab: [ 97.14, -21.55,  94.48]}  # slot 08 yellow
+          - {t: 0.6000, lab: [ 86.81, -85.41,  82.44]}  # slot 09 light_green
+          - {t: 0.6667, lab: [ 55.04, -31.89,  -9.37]}  # slot 10 teal
+          - {t: 0.7333, lab: [ 91.11, -48.09, -14.13]}  # slot 11 cyan
+          - {t: 0.8000, lab: [ 31.87,  78.48, -106.90]} # slot 12 light_blue
+          - {t: 0.8667, lab: [ 60.32,  98.23, -60.82]}  # slot 13 pink
+          - {t: 0.9333, lab: [ 53.19,   0.00,   0.00]}  # slot 14 grey
+          - {t: 1.0000, lab: [ 84.20,   0.00,   0.00]}  # slot 15 light_grey
+    temporal_profile: steady
+
 chains:
   - id: day-arc
     display_name: Day Arc
