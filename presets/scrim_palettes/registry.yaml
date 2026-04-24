@@ -1,0 +1,362 @@
+# Scrim palette registry — first-class colour-scheme family.
+#
+# Loaded at compositor init via :class:`shared.palette_registry.PaletteRegistry`.
+#
+# Operator directive 2026-04-23: palettes are a full family like
+# effects / effect presets / preset chains. Dozen+ named instances,
+# each tagged for Hapax recruitment, orthogonal to working-mode.
+#
+# ## Authoring
+#
+# Each palette is a ``ScrimPalette`` record (see
+# ``shared/palette_family.py``). LAB values: L* in [0, 100], a*/b* in
+# approximately [-80, 80] for in-gamut colours.
+#
+# ## Taxonomy
+#
+# 14 palettes: 6 warm, 6 cool, 2 neutral/special. Plus 3 example chains.
+
+palettes:
+  # --- Warm ---
+  - id: amber-glow
+    display_name: Amber Glow
+    description: >-
+      Warm amber honeycomb — gruvbox-adjacent saturation, mid
+      lightness. Lamplight without sunset-cliché.
+    semantic_tags: [warm, amber, honey, lamplight, gruvbox-kin, studio]
+    working_mode_affinity: [rnd, any]
+    warmth_axis: 0.7
+    saturation_axis: 0.65
+    lightness_axis: 0.1
+    dominant_lab: [62.0, 18.0, 48.0]
+    accent_lab: [45.0, 24.0, 38.0]
+    curve:
+      mode: lab_shift
+      params: {delta_l: 0.0, delta_a: 12.0, delta_b: 24.0}
+      preserve_luminance: true
+    temporal_profile: steady
+
+  - id: sage-morning
+    display_name: Sage Morning
+    description: >-
+      Soft warm-neutral — dusty sage with faint amber undertone.
+      Low saturation, mid-high lightness. Morning-garden palette.
+    semantic_tags: [warm, sage, dawn, pastel, soft, garden, tender]
+    working_mode_affinity: [research, any]
+    warmth_axis: 0.25
+    saturation_axis: 0.35
+    lightness_axis: 0.45
+    dominant_lab: [78.0, -6.0, 16.0]
+    accent_lab: [62.0, 4.0, 14.0]
+    curve:
+      mode: lab_shift
+      params: {delta_l: 2.0, delta_a: -4.0, delta_b: 10.0}
+      preserve_luminance: false
+      clip_s_curve: [15.0, 92.0]
+    temporal_profile: breathing
+    temporal_rate_hz: 0.08
+
+  - id: rust-velvet
+    display_name: Rust Velvet
+    description: >-
+      Deep autumnal rust — high saturation, low lightness. Oxidised
+      companion to amber-glow. Good for hothouse / wind-down.
+    semantic_tags: [warm, rust, autumn, deep, velvet, hothouse]
+    working_mode_affinity: [rnd, any]
+    warmth_axis: 0.8
+    saturation_axis: 0.75
+    lightness_axis: -0.35
+    dominant_lab: [38.0, 32.0, 36.0]
+    accent_lab: [24.0, 26.0, 20.0]
+    curve:
+      mode: duotone
+      params:
+        stop_low: [15.0, 18.0, 12.0]
+        stop_high: [55.0, 38.0, 44.0]
+    temporal_profile: steady
+
+  - id: candle-tongue
+    display_name: Candle Tongue
+    description: >-
+      Firelight spectrum — warm, high saturation, dark. Pulses with
+      low-frequency audio by default. Ritual palette.
+    semantic_tags: [warm, fire, flame, candle, pulsing, dark, ritual]
+    working_mode_affinity: [rnd, any]
+    warmth_axis: 0.85
+    saturation_axis: 0.88
+    lightness_axis: -0.55
+    dominant_lab: [28.0, 38.0, 42.0]
+    accent_lab: [52.0, 28.0, 50.0]
+    curve:
+      mode: gradient_map
+      params:
+        stops:
+          - {t: 0.0, lab: [8.0, 12.0, 6.0]}
+          - {t: 0.3, lab: [22.0, 32.0, 28.0]}
+          - {t: 0.7, lab: [48.0, 36.0, 48.0]}
+          - {t: 1.0, lab: [78.0, 18.0, 56.0]}
+    temporal_profile: pulsing
+    temporal_rate_hz: 1.8
+
+  - id: peach-haze
+    display_name: Peach Haze
+    description: >-
+      Soft peach — warm, low-mid saturation, high lightness. Late-day
+      haze. Light enough for ground-surface, warm enough to pair with
+      vinyl cover art.
+    semantic_tags: [warm, peach, haze, soft, light, late-afternoon, pastel]
+    working_mode_affinity: [any]
+    warmth_axis: 0.55
+    saturation_axis: 0.40
+    lightness_axis: 0.5
+    dominant_lab: [82.0, 12.0, 22.0]
+    accent_lab: [70.0, 20.0, 28.0]
+    curve:
+      mode: lab_shift
+      params: {delta_l: 4.0, delta_a: 6.0, delta_b: 14.0}
+    temporal_profile: drifting
+    temporal_rate_hz: 0.03
+
+  - id: bourbon
+    display_name: Bourbon
+    description: >-
+      Whiskey amber — warm, deep saturation, mid lightness. Between
+      amber-glow and rust-velvet. The "grown" warm palette.
+    semantic_tags: [warm, bourbon, whiskey, amber, grown, studio, hothouse]
+    working_mode_affinity: [rnd, any]
+    warmth_axis: 0.75
+    saturation_axis: 0.7
+    lightness_axis: -0.05
+    dominant_lab: [48.0, 22.0, 40.0]
+    accent_lab: [36.0, 18.0, 28.0]
+    curve:
+      mode: lab_shift
+      params: {delta_l: 0.0, delta_a: 14.0, delta_b: 28.0}
+      preserve_luminance: true
+    temporal_profile: steady
+
+  # --- Cool ---
+  - id: cool-mist
+    display_name: Cool Mist
+    description: >-
+      Soft cyan-grey — cool, low saturation, high lightness. Carries
+      the HOMAGE A6 cyan substrate invariant forward. Library-haze.
+    semantic_tags: [cool, mist, cyan, soft, library, reading-room, a6, default]
+    working_mode_affinity: [rnd, any]
+    warmth_axis: -0.35
+    saturation_axis: 0.25
+    lightness_axis: 0.5
+    dominant_lab: [80.0, -8.0, -10.0]
+    accent_lab: [62.0, -4.0, -14.0]
+    curve:
+      mode: lab_shift
+      params: {delta_l: 0.0, delta_a: -6.0, delta_b: -10.0}
+      preserve_luminance: true
+    temporal_profile: breathing
+    temporal_rate_hz: 0.06
+
+  - id: ocean-depth
+    display_name: Ocean Depth
+    description: >-
+      Deep oceanic blue — cool, high saturation, low lightness. The
+      heavy-mist palette for nocturnal / deep-study surfaces.
+    semantic_tags: [cool, ocean, blue, deep, night, heavy, study]
+    working_mode_affinity: [research, any]
+    warmth_axis: -0.7
+    saturation_axis: 0.75
+    lightness_axis: -0.45
+    dominant_lab: [32.0, -4.0, -32.0]
+    accent_lab: [22.0, 2.0, -38.0]
+    curve:
+      mode: duotone
+      params:
+        stop_low: [10.0, 2.0, -22.0]
+        stop_high: [52.0, -6.0, -42.0]
+    temporal_profile: drifting
+    temporal_rate_hz: 0.02
+
+  - id: silver-fog
+    display_name: Silver Fog
+    description: >-
+      Neutral-cool grey — warmth near zero, very low saturation,
+      mid-high lightness. The "no palette" palette — barely-there read.
+    semantic_tags: [cool, neutral, silver, fog, muted, quiet, minimal]
+    working_mode_affinity: [any]
+    warmth_axis: -0.1
+    saturation_axis: 0.1
+    lightness_axis: 0.35
+    dominant_lab: [72.0, 0.0, -4.0]
+    accent_lab: [62.0, 2.0, -6.0]
+    curve:
+      mode: lab_shift
+      params: {delta_l: 0.0, delta_a: -2.0, delta_b: -4.0}
+    temporal_profile: steady
+
+  - id: xenon-pulse
+    display_name: Xenon Pulse
+    description: >-
+      Neon cyan — cool, very high saturation, mid lightness. Synthetic,
+      electric, modem-era. Pulses with beat.
+    semantic_tags: [cool, neon, xenon, cyan, electric, synthetic, pulsing, retro]
+    working_mode_affinity: [rnd, any]
+    warmth_axis: -0.5
+    saturation_axis: 0.92
+    lightness_axis: 0.2
+    dominant_lab: [68.0, -34.0, -22.0]
+    accent_lab: [82.0, -42.0, -12.0]
+    curve:
+      mode: hue_rotate
+      params: {degrees: 8.0}
+      preserve_luminance: true
+    temporal_profile: pulsing
+    temporal_rate_hz: 2.4
+
+  - id: wintergreen
+    display_name: Wintergreen
+    description: >-
+      Pale jade — cool-ish, mid saturation, mid lightness. Herbal,
+      mentholated. Pairs well with low-end audio.
+    semantic_tags: [cool, green, jade, mint, herbal, pale]
+    working_mode_affinity: [any]
+    warmth_axis: -0.3
+    saturation_axis: 0.55
+    lightness_axis: 0.15
+    dominant_lab: [66.0, -22.0, 8.0]
+    accent_lab: [54.0, -28.0, 12.0]
+    curve:
+      mode: lab_shift
+      params: {delta_l: 2.0, delta_a: -14.0, delta_b: 4.0}
+    temporal_profile: steady
+
+  - id: bruise
+    display_name: Bruise
+    description: >-
+      Deep violet-burgundy — cool-leaning, deep saturation, low
+      lightness. Tender and dark; carries intent. Not a default.
+    semantic_tags: [cool, violet, burgundy, bruise, tender, deep, ritual]
+    working_mode_affinity: [rnd, any]
+    warmth_axis: -0.15
+    saturation_axis: 0.7
+    lightness_axis: -0.55
+    dominant_lab: [28.0, 26.0, -18.0]
+    accent_lab: [18.0, 18.0, -8.0]
+    curve:
+      mode: duotone
+      params:
+        stop_low: [10.0, 8.0, -4.0]
+        stop_high: [42.0, 32.0, -24.0]
+    temporal_profile: drifting
+    temporal_rate_hz: 0.04
+
+  # --- Neutral / special ---
+  - id: phosphor
+    display_name: Phosphor
+    description: >-
+      Green terminal phosphor — high-saturation green on near-black.
+      CRT / vt100 read. Ritual only — not for daily scrim.
+    semantic_tags: [green, phosphor, terminal, crt, vt100, retro, ritual]
+    working_mode_affinity: [any]
+    warmth_axis: -0.2
+    saturation_axis: 0.88
+    lightness_axis: -0.4
+    dominant_lab: [42.0, -48.0, 38.0]
+    accent_lab: [28.0, -32.0, 26.0]
+    curve:
+      mode: channel_mix
+      params: {rr: 0.2, rg: 0.0, rb: 0.0, gr: 0.2, gg: 1.6, gb: 0.1, br: 0.1, bg: 0.0, bb: 0.2}
+    temporal_profile: breathing
+    temporal_rate_hz: 0.15
+
+  - id: monochrome
+    display_name: Monochrome
+    description: >-
+      Pure grayscale — zero chroma, full luminance preservation. The
+      "palette that isn't". For content-heavy moments.
+    semantic_tags: [monochrome, grayscale, minimal, neutral, zero-chroma, reading]
+    working_mode_affinity: [any]
+    warmth_axis: 0.0
+    saturation_axis: 0.0
+    lightness_axis: 0.0
+    dominant_lab: [50.0, 0.0, 0.0]
+    accent_lab: [32.0, 0.0, 0.0]
+    curve:
+      mode: channel_mix
+      params: {rr: 0.299, rg: 0.587, rb: 0.114, gr: 0.299, gg: 0.587, gb: 0.114, br: 0.299, bg: 0.587, bb: 0.114}
+      preserve_luminance: true
+    temporal_profile: steady
+
+chains:
+  - id: day-arc
+    display_name: Day Arc
+    description: >-
+      Dawn → morning → midday → dusk. 4-hour session fits one loop.
+      The programme-agnostic "long session" default.
+    semantic_tags: [arc, day, session, long, narrative]
+    loop: true
+    steps:
+      - palette_id: sage-morning
+        dwell_s: 1800.0
+        transition_mode: crossfade
+        transition_s: 60.0
+      - palette_id: amber-glow
+        dwell_s: 2400.0
+        transition_mode: crossfade
+        transition_s: 90.0
+      - palette_id: bourbon
+        dwell_s: 3000.0
+        transition_mode: crossfade
+        transition_s: 120.0
+      - palette_id: rust-velvet
+        dwell_s: 1800.0
+        transition_mode: crossfade
+        transition_s: 90.0
+
+  - id: nocturne
+    display_name: Nocturne
+    description: >-
+      Deep night arc. Ocean → bruise → phosphor (ritual window) →
+      bruise → ocean. Late-session / insomnia.
+    semantic_tags: [night, nocturne, deep, ritual, late-session]
+    loop: true
+    steps:
+      - palette_id: ocean-depth
+        dwell_s: 2400.0
+        transition_mode: crossfade
+        transition_s: 120.0
+      - palette_id: bruise
+        dwell_s: 1800.0
+        transition_mode: crossfade
+        transition_s: 90.0
+      - palette_id: phosphor
+        dwell_s: 600.0
+        transition_mode: pierce
+        transition_s: 15.0
+      - palette_id: bruise
+        dwell_s: 1800.0
+        transition_mode: crossfade
+        transition_s: 90.0
+
+  - id: electric-study
+    display_name: Electric Study
+    description: >-
+      High-focus arc. Cool-mist baseline with xenon-pulse pierces for
+      breakthrough moments, monochrome rest between. Non-looping.
+    semantic_tags: [study, electric, focus, pulse, research]
+    loop: false
+    steps:
+      - palette_id: cool-mist
+        dwell_s: 2700.0
+        transition_mode: crossfade
+        transition_s: 60.0
+      - palette_id: xenon-pulse
+        dwell_s: 300.0
+        transition_mode: pierce
+        transition_s: 12.0
+      - palette_id: monochrome
+        dwell_s: 600.0
+        transition_mode: crossfade
+        transition_s: 30.0
+      - palette_id: cool-mist
+        dwell_s: 2700.0
+        transition_mode: crossfade
+        transition_s: 60.0

@@ -56,7 +56,7 @@ registry implementation is Phase 3 scope.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -111,7 +111,13 @@ class PaletteResponseCurve(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     mode: PaletteCurveMode = "identity"
-    params: dict[str, float | list[float] | dict[str, float]] = Field(default_factory=dict)
+    # ``params`` holds mode-specific knobs. The shape is heterogeneous
+    # by design: ``lab_shift`` uses floats; ``duotone`` uses list-valued
+    # LAB triples; ``gradient_map`` nests a list of ``{t, lab}`` dicts.
+    # The curve evaluator (Phase 3+) interprets the shape per-mode; the
+    # schema stays permissive (``Any`` leaves) so author YAML is natural
+    # and future modes can add fields without touching this file.
+    params: dict[str, Any] = Field(default_factory=dict)
     preserve_luminance: bool = Field(
         default=False,
         description=(
