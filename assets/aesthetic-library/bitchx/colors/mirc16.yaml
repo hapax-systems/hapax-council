@@ -1,0 +1,29 @@
+# mIRC 16-color palette — the canonical palette for IRC color codes 00–15.
+# Values documented since 1995 at https://mirc.com/colors.html. Colors are
+# factual data (uncopyrightable). Provenance line retained for attribution
+# discipline.
+#
+# Slot number → sRGB hex. Slots 00–15 are the classical IRC subset; many
+# modern clients (mIRC 7.10+, irssi) also carry extended 99-color palettes,
+# but the 16-slot subset is what BitchX, older EPIC, and most legacy
+# scripts emit.
+#
+# Naming below matches mIRC's historical labels.
+schema: mirc16
+slots:
+  "00": { name: white,         hex: "#FFFFFF" }
+  "01": { name: black,         hex: "#000000" }
+  "02": { name: blue,          hex: "#00007F" }
+  "03": { name: green,         hex: "#009300" }
+  "04": { name: red,           hex: "#FF0000" }
+  "05": { name: brown,         hex: "#7F0000" }
+  "06": { name: purple,        hex: "#9C009C" }
+  "07": { name: orange,        hex: "#FC7F00" }
+  "08": { name: yellow,        hex: "#FFFF00" }
+  "09": { name: light_green,   hex: "#00FC00" }
+  "10": { name: teal,          hex: "#009393" }
+  "11": { name: cyan,          hex: "#00FFFF" }
+  "12": { name: light_blue,    hex: "#0000FC" }
+  "13": { name: pink,          hex: "#FF00FF" }
+  "14": { name: grey,          hex: "#7F7F7F" }
+  "15": { name: light_grey,    hex: "#D2D2D2" }

@@ -1,0 +1,31 @@
+source: fonts
+source_url: https://int10h.org/oldschool-pc-fonts/
+source_commit: "The Oldschool PC Font Resource v2.2 (2021-01-01)"
+extracted_date: "2026-04-24"
+original_author: VileR (int10h.org)
+license: CC-BY-SA-4.0
+license_text_path: LICENSE.CC-BY-SA-4.0
+attribution_line: "Px437 IBM VGA 8×16 © VileR (int10h.org, CC-BY-SA 4.0)"
+notes: |
+  Px437 IBM VGA 8×16 is VileR's faithful reconstruction of the native
+  IBM VGA text-mode typeface (CP437 codepage coverage). Ingested as two
+  artifacts:
+
+    - Px437_IBM_VGA_8x16.ttf — TrueType, used by host renderers
+      (pango / cairo overlays)
+    - Px437_IBM_VGA_8x16.woff2 — web format for @font-face embedding in
+      omg.lol surfaces (generated via `fonttools ttLib.woff2 compress`
+      from the .ttf at ingest time; bytes derive from the same font,
+      both distributed under the same CC-BY-SA-4.0 license)
+
+  CRITICAL: the TTF bytes must not be modified — unmodified redistribution
+  does not trigger CC-BY-SA-4.0's ShareAlike clause, but any modification
+  would require derivative work to be shared under the same terms. The
+  woff2 conversion is a format transcoding, not a font modification;
+  glyph outlines, metrics, and OS/2 tables are identical.
+
+  Predecessor path: assets/fonts/Px437_IBM_VGA_8x16.ttf was present in
+  the repo prior to this ingest. AUTH1 moves the canonical copy into
+  the aesthetic-library tree and updates callers to fetch via
+  `library().get("fonts", "font", "px437")`. The predecessor path is
+  removed in the same commit to prevent drift.
