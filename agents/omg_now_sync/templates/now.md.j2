@@ -1,0 +1,28 @@
+# now
+
+hapax is broadcasting.
+
+Stream: <https://youtube.com/@LegomenaLive>
+{% if state.working_mode != "unknown" -%}
+Mode: {{ state.working_mode }}
+{% else -%}
+Mode: _placeholder_
+{% endif -%}
+{% if state.stimmung and state.stimmung.get("stance") -%}
+Stimmung: {{ state.stimmung.get("stance") }}{% if state.stimmung.get("dominant_dimension") %}; {{ state.stimmung.get("dominant_dimension") }}{% endif %}
+{% else -%}
+Stimmung: _placeholder_
+{% endif -%}
+Chronicle: twelve-hour rolling record at [/statuses](/statuses)
+
+{% if state.chronicle_recent -%}
+Recent notable moments:
+
+{% for event in state.chronicle_recent -%}
+- {{ event.summary or event.get("narrative", "(untitled)") }}{% if event.source %} ({{ event.source }}){% endif %}
+{% endfor %}
+{% else -%}
+_no recent notable moments._
+
+{% endif -%}
+_last updated: {{ state.timestamp_iso }}_
