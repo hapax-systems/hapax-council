@@ -1,0 +1,21 @@
+[Unit]
+Description=Hapax Content-ID watcher — autonomous YouTube content warning detector
+Documentation=file:%h/projects/hapax-council/agents/content_id_watcher/__init__.py
+After=network-online.target hapax-secrets.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+Environment=HAPAX_CONTENT_ID_WATCHER_ENABLED=0
+ExecCondition=/usr/bin/test "$HAPAX_CONTENT_ID_WATCHER_ENABLED" = "1"
+ExecStart=%h/.local/bin/uv run --directory %h/projects/hapax-council python -m agents.content_id_watcher
+Restart=always
+RestartSec=5s
+MemoryMax=128M
+# Read-only network egress + ephemeral SHM for impingement writes.
+ProtectSystem=strict
+ReadWritePaths=/dev/shm
+
+[Install]
+WantedBy=default.target
