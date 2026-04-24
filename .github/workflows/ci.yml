@@ -48,6 +48,12 @@ jobs:
       - run: uv sync --extra ci
       - name: Anti-personification linter
         run: uv run python scripts/lint_personification.py
+      # ytb-AUTH1 — aesthetic library integrity. Verifies _manifest.yaml
+      # and _NOTICES.md match on-disk bytes and every asset's SHA-256
+      # still agrees with its manifest entry. Fail-loud if a regenerated
+      # asset bypassed the manifest refresh.
+      - name: Aesthetic library verify
+        run: uv run python scripts/verify-aesthetic-library.py
 
 
   typecheck:
@@ -78,7 +84,7 @@ jobs:
         run: |
           # Install system-wide so fontconfig's /usr/share/fonts scan picks it up.
           sudo mkdir -p /usr/share/fonts/TTF
-          sudo cp assets/fonts/Px437_IBM_VGA_8x16.ttf /usr/share/fonts/TTF/
+          sudo cp assets/aesthetic-library/fonts/Px437_IBM_VGA_8x16.ttf /usr/share/fonts/TTF/
           # Root cache (scans /usr/share/fonts, writes /var/cache/fontconfig).
           sudo fc-cache -fv /usr/share/fonts
           # User cache. Pango enumerates through the client's fontconfig
@@ -181,7 +187,7 @@ jobs:
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency)
         run: |
           sudo mkdir -p /usr/share/fonts/TTF
-          sudo cp assets/fonts/Px437_IBM_VGA_8x16.ttf /usr/share/fonts/TTF/
+          sudo cp assets/aesthetic-library/fonts/Px437_IBM_VGA_8x16.ttf /usr/share/fonts/TTF/
           sudo fc-cache -fv /usr/share/fonts
           fc-cache -fv
           fc-list | grep -i 'Px437.*IBM VGA 8x16' \

@@ -1,0 +1,49 @@
+assets:
+- source: bitchx
+  kind: splash
+  name: banner
+  path: bitchx/splash/banner.txt
+  sha256: afb5a432eeabe9093db063ec03d57cbb781c88612fd42e543988dd523fb74589
+  license: BSD-3-Clause
+  author: Colten Edwards (panasync) + EPIC Software Labs + Matthew Green + Michael
+    Sandroff
+  source_url: https://github.com/prime001/BitchX
+  extracted_date: '2026-04-24'
+- source: bitchx
+  kind: quotes
+  name: quit
+  path: bitchx/quotes/bitchx-quit.txt
+  sha256: 4c457bc587ebcfe221c6b70ed28e6adfaac9ae2a049c5099f811d3cd064771c1
+  license: BSD-3-Clause
+  author: Colten Edwards (panasync) + EPIC Software Labs + Matthew Green + Michael
+    Sandroff
+  source_url: https://github.com/prime001/BitchX
+  extracted_date: '2026-04-24'
+- source: bitchx
+  kind: palette
+  name: mirc16
+  path: bitchx/colors/mirc16.yaml
+  sha256: fd59032ad55c77812cbee862b77094dfbf599b19b7b7c21d8433327229afb49d
+  license: BSD-3-Clause
+  author: Colten Edwards (panasync) + EPIC Software Labs + Matthew Green + Michael
+    Sandroff
+  source_url: https://github.com/prime001/BitchX
+  extracted_date: '2026-04-24'
+- source: fonts
+  kind: font
+  name: px437
+  path: fonts/Px437_IBM_VGA_8x16.ttf
+  sha256: 56ccd98628e0539e4d8086d3ff4ecd6dbf513635558ceef0692e4277169ec2cc
+  license: CC-BY-SA-4.0
+  author: VileR (int10h.org)
+  source_url: https://int10h.org/oldschool-pc-fonts/
+  extracted_date: '2026-04-24'
+- source: fonts
+  kind: font
+  name: px437-woff2
+  path: fonts/Px437_IBM_VGA_8x16.woff2
+  sha256: 0cc1138b121d96bfd639e493a1746aa20207288b775f0ae7270f39c40d305be2
+  license: CC-BY-SA-4.0
+  author: VileR (int10h.org)
+  source_url: https://int10h.org/oldschool-pc-fonts/
+  extracted_date: '2026-04-24'

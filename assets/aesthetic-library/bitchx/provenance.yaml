@@ -1,0 +1,29 @@
+source: bitchx
+source_url: https://github.com/prime001/BitchX
+source_commit: master
+extracted_date: "2026-04-24"
+original_author: Colten Edwards (panasync) + EPIC Software Labs + Matthew Green + Michael Sandroff
+license: BSD-3-Clause
+license_text_path: LICENSE.BSD-3
+attribution_line: "BitchX © Colten Edwards (panasync), EPIC Software Labs, and prior authors (BSD-3-Clause)"
+notes: |
+  Three asset groups ingested from upstream prime001/BitchX:
+
+    - splash/banner.txt — authentic version-line banner as printed by
+      BitchX on connect (source/irc.c:1554)
+    - quotes/bitchx-quit.txt — verbatim copy of upstream BitchX.quit
+      (signoff message template)
+    - colors/mirc16.yaml — the canonical mIRC 16-color palette (factual
+      RGB data, uncopyrightable; attribution-documented for provenance
+      discipline)
+
+  The GPL-2 Europa.c plugin is deliberately EXCLUDED from ingestion —
+  BSD-3 core + GPL-2 plugin cannot coexist in one distribution under
+  this project's license model. See cc-task ytb-AUTH1 §Notes.
+
+  The legendary "BitchX dragon" ASCII splash is not present in the
+  prime001 upstream tree (search confirmed 2026-04-24); it was distributed
+  via community scripts and never landed in the core source. A dedicated
+  acquisition pass can add it later under splash/dragon.txt with its own
+  provenance if the operator decides to source from a specific community
+  script repository.
