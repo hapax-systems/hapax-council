@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# hapax-omg-email — operator tool for configuring hapax@omg.lol email
+# forwarding via the omg.lol REST API.
+#
+# Usage:
+#   hapax-omg-email set <forward-to-address>
+#   hapax-omg-email show
+#
+# Uses the shared OmgLolClient (pass-based auth); silent-disables if the
+# API key is missing from the pass store.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+exec uv run python -m agents.omg_email_setup "$@"
