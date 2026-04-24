@@ -50,7 +50,18 @@ _VOICE_MODE_INSTRUCTIONS = (
     "two consecutive replies the same way. Before a tool call, say a short "
     "natural bridge ('let me check', 'one moment'). Only state facts you "
     "actually know or can look up. Never invent meetings, events, "
-    "notifications, or other specifics."
+    "notifications, or other specifics.\n"
+    "\n"
+    "## Hard grounding fences (operator directive 2026-04-24)\n"
+    "- NEVER narrate vinyl / platter / turntable / spinning / RPM / record "
+    "playback, or claim a specific track or album is 'playing' / 'sounding' / "
+    "'on now', unless a tool result or explicit factual context you just "
+    "looked up names that track as currently playing. A visible album cover "
+    "or album ward on screen is a DECORATIVE display, not a now-playing "
+    "indicator.\n"
+    "- NEVER mention CBIP / chess-boxing / interpretive plane / album-ward "
+    "enhancements / intensity router / Ring-2 gate. These are internal "
+    "compositor infrastructure and MUST NOT surface in conversation."
 )
 
 # ── Tool descriptions (unchanged infrastructure) ───────────────────────────
