@@ -627,7 +627,8 @@
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
-      "non_destructive": true
+      "non_destructive": true,
+      "render_stage": "pre_fx"
     },
     {
       "source": "reverie",
@@ -635,7 +636,8 @@
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     },
     {
       "source": "album",
@@ -643,7 +645,8 @@
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
-      "non_destructive": true
+      "non_destructive": true,
+      "render_stage": "pre_fx"
     },
     {
       "source": "stream_overlay",
@@ -651,7 +654,8 @@
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     },
     {
       "source": "activity_header",
@@ -659,7 +663,8 @@
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
-      "non_destructive": true
+      "non_destructive": true,
+      "render_stage": "post_fx"
     },
     {
       "source": "stance_indicator",
@@ -667,7 +672,8 @@
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
-      "non_destructive": true
+      "non_destructive": true,
+      "render_stage": "post_fx"
     },
     {
       "source": "gem",
@@ -675,7 +681,8 @@
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     },
     {
       "source": "grounding_provenance_ticker",
@@ -683,7 +690,8 @@
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     },
     {
       "source": "impingement_cascade",
@@ -691,7 +699,8 @@
       "transform": {},
       "opacity": 0.92,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     },
     {
       "source": "recruitment_candidate_panel",
@@ -699,7 +708,8 @@
       "transform": {},
       "opacity": 0.92,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     },
     {
       "source": "thinking_indicator",
@@ -707,7 +717,8 @@
       "transform": {},
       "opacity": 0.92,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     },
     {
       "source": "pressure_gauge",
@@ -715,7 +726,8 @@
       "transform": {},
       "opacity": 0.92,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     },
     {
       "source": "activity_variety_log",
@@ -723,7 +735,8 @@
       "transform": {},
       "opacity": 0.9,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     },
     {
       "source": "whos_here",
@@ -731,7 +744,8 @@
       "transform": {},
       "opacity": 0.92,
       "per_assignment_effects": [],
-      "non_destructive": false
+      "non_destructive": false,
+      "render_stage": "post_fx"
     }
   ]
 }

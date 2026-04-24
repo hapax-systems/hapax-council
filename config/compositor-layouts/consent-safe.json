@@ -169,6 +169,7 @@
     {
       "source": "token_pole",
       "surface": "pip-ul",
+      "render_stage": "pre_fx",
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": []
@@ -183,6 +184,7 @@
     {
       "source": "album",
       "surface": "pip-ll",
+      "render_stage": "pre_fx",
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": []
