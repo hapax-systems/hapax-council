@@ -1,0 +1,50 @@
+// Moksha theme — authored placeholder.
+//
+// This file is an AUTHORED APPROXIMATION of the E17/Moksha default theme's
+// color classes, shipped under the hapax-council no-operator-approval-waits
+// mandate (2026-04-24T19:10Z). When an authentic upstream Moksha .edc file
+// is acquired, replace the byte values below with the extracted upstream
+// values and update the SHA-256 pin in ``assets/aesthetic-library/_manifest.yaml``.
+//
+// Shape: a narrow EDC subset that ``shared.aesthetic_library_loader.MokshaThemeLoader``
+// parses into the 7 canonical Moksha color classes (bg_color, fg_color,
+// text_color, fg_selected, focus_color, success_color, alert_color). Real
+// EDC files contain much more (groups, parts, programs); this placeholder
+// carries only the color_classes block because that is what the loader
+// uses.
+//
+// Provenance: ``enlightenment/themes/provenance.yaml`` records this as
+// author: Hapax; license: CC0-1.0 (authored approximation, no upstream rights).
+
+collections {
+  color_classes {
+    color_class {
+      name: "bg_color";
+      color: 37 37 37 255;
+    }
+    color_class {
+      name: "fg_color";
+      color: 204 204 204 255;
+    }
+    color_class {
+      name: "text_color";
+      color: 224 224 224 255;
+    }
+    color_class {
+      name: "fg_selected";
+      color: 255 255 255 255;
+    }
+    color_class {
+      name: "focus_color";
+      color: 100 149 237 255;
+    }
+    color_class {
+      name: "success_color";
+      color: 96 184 96 255;
+    }
+    color_class {
+      name: "alert_color";
+      color: 204 96 96 255;
+    }
+  }
+}

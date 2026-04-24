@@ -394,9 +394,15 @@ class TestRealRepoLibrary:
 
         lib = AestheticLibrary(root=ASSETS_ROOT_DEFAULT / "aesthetic-library")
         licenses = set(lib.all_licenses().keys())
-        # First-acquisition commits only BSD-3-Clause and CC-BY-SA-4.0.
+        # Vetted licenses in this library:
+        #   - BSD-3-Clause — BitchX corpus (first-acquisition)
+        #   - CC-BY-SA-4.0 — Px437 IBM VGA font (first-acquisition)
+        #   - CC0-1.0    — authored placeholders (ytb-AUTH-PALETTE Phase 2;
+        #                   e.g. enlightenment/themes/moksha.edc)
+        # BSD-2-Clause and LGPL-2.1 are pre-vetted for future acquisitions.
         # Any other license means an unvetted asset slipped in.
-        expected = {"BSD-3-Clause", "CC-BY-SA-4.0"}
-        assert licenses.issubset(expected | {"BSD-2-Clause", "LGPL-2.1"}), (
-            f"unexpected license appeared in aesthetic-library: {licenses - expected}"
+        expected = {"BSD-3-Clause", "CC-BY-SA-4.0", "CC0-1.0"}
+        allowlist = expected | {"BSD-2-Clause", "LGPL-2.1"}
+        assert licenses.issubset(allowlist), (
+            f"unexpected license appeared in aesthetic-library: {licenses - allowlist}"
         )

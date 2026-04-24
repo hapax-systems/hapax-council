@@ -47,3 +47,12 @@ assets:
   author: VileR (int10h.org)
   source_url: https://int10h.org/oldschool-pc-fonts/
   extracted_date: '2026-04-24'
+- source: enlightenment
+  kind: theme
+  name: moksha
+  path: enlightenment/themes/moksha.edc
+  sha256: 7f5a636767e258256ae5a2ac39ec7998d009cfdc17eca198326e8ae56582b67b
+  license: CC0-1.0
+  author: Hapax (authored approximation under no-operator-approval-waits mandate 2026-04-24T19:10Z)
+  source_url: https://www.enlightenment.org/
+  extracted_date: '2026-04-24'

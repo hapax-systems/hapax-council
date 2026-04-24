@@ -18,8 +18,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from shared.aesthetic_library_loader import (
+    DEFAULT_MOKSHA_EDC_PATH,
     MOKSHA_COLOR_CLASSES,
     MokshaThemeLoader,
+    load_default_moksha,
 )
 
 
@@ -127,3 +129,47 @@ collections {
         result = loader.load(self._fixture(tmp_path))
         assert result is not None
         assert result["fg_selected"][0] > 95.0
+
+
+class TestInRepoAuthoredPlaceholder:
+    """Phase 2 integration: the authored Moksha placeholder ships in-repo."""
+
+    def test_default_path_exists(self) -> None:
+        """Authored Moksha EDC placeholder ships at the canonical path."""
+        assert DEFAULT_MOKSHA_EDC_PATH.is_file()
+
+    def test_load_default_returns_all_seven_classes(self) -> None:
+        """``load_default_moksha()`` yields the 7 canonical classes."""
+        result = load_default_moksha()
+        assert result is not None
+        for cls in MOKSHA_COLOR_CLASSES:
+            assert cls in result
+
+    def test_default_bg_is_dark_grey(self) -> None:
+        """Authored placeholder bg_color is #252525 → L ≈ 15."""
+        result = load_default_moksha()
+        assert result is not None
+        L, _, _ = result["bg_color"]
+        # RGB (37,37,37) → CIE-LAB L ≈ 14.99 at D65.
+        assert 12.0 <= L <= 18.0
+
+    def test_default_fg_selected_is_white(self) -> None:
+        """Authored placeholder fg_selected is pure white → L ≈ 100."""
+        result = load_default_moksha()
+        assert result is not None
+        L, _, _ = result["fg_selected"]
+        assert L >= 95.0
+
+    def test_default_focus_is_blueish(self) -> None:
+        """Cornflower-blue #6495ed has negative a* and strongly negative b*."""
+        result = load_default_moksha()
+        assert result is not None
+        _, a, b = result["focus_color"]
+        # Blue dominates → b* well below 0.
+        assert b < -30.0
+
+    def test_default_extract_is_stable_across_calls(self) -> None:
+        """Pure function: same bytes in → same LAB triples out."""
+        r1 = load_default_moksha()
+        r2 = load_default_moksha()
+        assert r1 == r2
