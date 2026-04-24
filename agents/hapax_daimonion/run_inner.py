@@ -49,6 +49,7 @@ RECREATE_TASKS: frozenset[str] = frozenset(
         "gem_producer_loop",
         "programme_manager_loop",
         "salience_publish_loop",
+        "autonomous_narrative_loop",
     }
 )
 LOG_AND_CONTINUE_TASKS: frozenset[str] = frozenset()
@@ -254,6 +255,7 @@ def _emit_crash_event(
 async def run_inner(daemon: VoiceDaemon) -> None:
     """Inner run loop — executes within consent_scope context."""
     from agents.hapax_daimonion.activity_mode import classify_activity_mode
+    from agents.hapax_daimonion.autonomous_narrative import autonomous_narrative_loop
     from agents.hapax_daimonion.init_pipeline import precompute_pipeline_deps
     from agents.hapax_daimonion.run_loops import (
         actuation_loop,
@@ -444,6 +446,16 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         daemon,
         "sidechat_consumer_loop",
         lambda: sidechat_consumer_loop(daemon),
+    )
+    # ytb-SS1: autonomous narrative director. Default OFF behind
+    # HAPAX_AUTONOMOUS_NARRATIVE_ENABLED=1; when on, emits one
+    # substantive narration every ~2-3 min during operator-absent
+    # stretches via the existing impingement → CPAL → spontaneous-
+    # speech path. See agents/hapax_daimonion/autonomous_narrative/.
+    _make_task(
+        daemon,
+        "autonomous_narrative_loop",
+        lambda: autonomous_narrative_loop(daemon),
     )
     # GEM producer — Hapax authors the Graffiti Emphasis Mural ward by
     # tailing gem.* impingements and writing /dev/shm/hapax-compositor/
