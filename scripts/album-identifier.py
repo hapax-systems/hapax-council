@@ -48,6 +48,34 @@ SHM_DIR = Path("/dev/shm/hapax-compositor")
 ALBUM_COVER_FILE = SHM_DIR / "album-cover.png"
 MUSIC_ATTRIBUTION_FILE = SHM_DIR / "music-attribution.txt"
 ALBUM_STATE_FILE = SHM_DIR / "album-state.json"
+_VINYL_OVERRIDE_FLAG = SHM_DIR / "vinyl-operator-active.flag"
+_PERCEPTION_STATE_FILE = Path.home() / ".cache/hapax-daimonion/perception-state.json"
+
+
+def _vinyl_probably_playing() -> bool:
+    """Mirror of director_loop._vinyl_is_playing — platter actually spinning?
+
+    Duplicated here (not imported) to keep album-identifier free of the
+    studio_compositor dependency. Kept deliberately narrow: override flag
+    OR hand-zone=turntable OR hand-activity=scratching. The same gate the
+    director prompt uses to construct its "is music playing" framing.
+    """
+    try:
+        if _VINYL_OVERRIDE_FLAG.exists():
+            return True
+        if _PERCEPTION_STATE_FILE.exists():
+            data = json.loads(_PERCEPTION_STATE_FILE.read_text())
+            hand_zone = str(data.get("ir_hand_zone") or "").lower()
+            hand_activity = str(data.get("ir_hand_activity") or "").lower()
+            if "turntable" in hand_zone:
+                return True
+            if hand_activity in {"scratching", "scratch"}:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 ATTRIBUTION_LOG = Path(
     os.path.expanduser("~/Documents/Personal/30-areas/legomena-live/music-attribution-log.md")
 )
@@ -657,14 +685,24 @@ def write_state(album: dict, track: str) -> None:
     year = album.get("year", "")
     label = album.get("label", "")
 
-    # Splattribution text for overlay
+    # Splattribution text for overlay. We gate the header + the Track line
+    # on `_vinyl_probably_playing()` because the LLM director reads this
+    # text visually off the composed surface. When the platter isn't
+    # spinning, a line like `Track: "Hoe Cakes"` is the strongest signal
+    # nudging the model into a present-tense "the track X is playing"
+    # claim — exactly the hallucination operators flagged 2026-04-24.
+    # The fix is upstream of the render: strip the track-specific claim
+    # and relabel the header so neither the LLM nor a viewer can read it
+    # as a now-playing indicator.
+    playing_now = _vinyl_probably_playing()
     model = album.get("model", "unknown LLM")
     confidence = album.get("confidence", "?")
+    header = "SPLATTRIBUTION" if playing_now else "ALBUM CATALOG (not playing)"
     lines = [
-        "SPLATTRIBUTION",
+        header,
         f'{model} says: "{artist} — {title}"',
     ]
-    if track:
+    if track and playing_now:
         lines.append(f'Track: "{track}"')
     # "(LOL)" is deliberate commentary on dumb-LLM-attribution-confidence —
     # it rides inline with the Confidence value rather than dangling on its
@@ -679,7 +717,10 @@ def write_state(album: dict, track: str) -> None:
     except OSError:
         pass
 
-    # JSON state for other consumers
+    # JSON state for other consumers. current_track is gated on
+    # `_vinyl_probably_playing()` so downstream prompts can treat absence
+    # of `current_track` as "nothing is playing" rather than "I don't
+    # know what's playing but here's what's on the deck".
     state = {
         "type": "splattribution",
         "artist": artist,
@@ -688,7 +729,8 @@ def write_state(album: dict, track: str) -> None:
         "label": label,
         "model": album.get("model", "unknown"),
         "confidence": album.get("confidence", 0),
-        "current_track": track,
+        "current_track": track if playing_now else "",
+        "playing": playing_now,
         "timestamp": time.time(),
     }
     try:
