@@ -1,0 +1,15 @@
+surface: omg-lol-statuslog
+state_kinds:
+  - chronicle.high_salience
+  - broadcast.boundary
+redactions:
+  - operator_profile.*
+  - operator_identity.*
+  - operator_legal_name
+  - chronicle.private_moments
+  - chat.author_id
+  - chat.author_handle
+rate_limit:
+  per_day: 3
+  min_interval_s: 14400  # 4h min between posts
+cadence_hint: "Rate-limited autonomous composer-driven posts; max 3/day; 4h min interval."
