@@ -1,0 +1,77 @@
+# GEAL stance → palette mapping (spec §8.1)
+#
+# Signal-semantic, not affect-semantic. Severity is rendered as reduced
+# chroma + dropped lightness; "red = angry" is NOT encoded here.
+#
+# Operator-editable. Loaded by shared/geal_palette_bridge.py.
+# Every primary / fallback id must resolve in presets/scrim_palettes/registry.yaml.
+
+stance_palette:
+  NOMINAL:
+    primary: cool-mist
+    fallback: silver-fog
+    rationale: >-
+      Declared default; carries HOMAGE A6 cyan invariant forward.
+  SEEKING:
+    primary: xenon-pulse
+    fallback: sage-morning
+    rationale: >-
+      `pulsing` + high chroma = reaching outward. Not alarm.
+  CAUTIOUS:
+    primary: sage-morning
+    fallback: wintergreen
+    rationale: >-
+      `breathing` + low saturation + clip_s_curve softens extremes = held
+      posture.
+  DEGRADED:
+    primary: silver-fog
+    fallback: monochrome
+    rationale: >-
+      Near-zero chroma = system admitting it cannot render with full
+      vocabulary.
+  CRITICAL:
+    primary: monochrome
+    fallback: bruise
+    rationale: >-
+      Pure grayscale + preserve_luminance = legibility-first. Severity
+      via chroma subtraction.
+
+# Register → halo-role table (spec §8.2).
+# Each register permutes how the active palette's roles map to the three
+# vertex halos. apex_role / bl_role / br_role are one of:
+#   - "dominant"        — palette dominant_lab anchor
+#   - "accent"          — palette accent_lab anchor
+#   - "accent_low_chroma"  — accent with chroma reduced to ~0.4 of anchor
+#   - "duotone_low"     — palette duotone stop_low
+#   - "duotone_high"    — palette duotone stop_high
+#   - "off"             — no halo drawn
+# halo_alpha_boost is added to the palette's baseline halo alpha.
+# lp_omega_override (optional) shifts the V2 SecondOrderLP natural
+# frequency; "ritual" uses a lower ω for the "slow breathing" signature.
+register_halo_roles:
+  announcing:
+    apex_role: dominant
+    bl_role: accent_low_chroma
+    br_role: accent_low_chroma
+    halo_alpha_boost: 0.30
+  conversing:
+    apex_role: duotone_high
+    bl_role: duotone_high
+    br_role: duotone_high
+    halo_alpha_boost: 0.0
+  textmode:
+    apex_role: "off"
+    bl_role: accent
+    br_role: "off"
+    halo_alpha_boost: 0.0
+  choral:
+    apex_role: accent
+    bl_role: dominant
+    br_role: accent
+    halo_alpha_boost: 0.0
+  ritual:
+    apex_role: dominant
+    bl_role: dominant
+    br_role: dominant
+    halo_alpha_boost: 0.50
+    lp_omega_override: 4.0   # slower breathing (~0.6 Hz vs baseline 1.3 Hz)
