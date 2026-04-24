@@ -96,23 +96,37 @@ class TestVinylDecoupling:
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
         self._set_override(tmp_path, monkeypatch, active=False)
         monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
-        framing = director_loop._curated_music_framing("yt-title", "yt-channel")
+        framing = director_loop._curated_music_framing("yt-title", "yt-channel", "Oudepode")
         assert "spinning vinyl" in framing
         assert "Bobby Konders" in framing
+        assert "Oudepode" in framing
 
     def test_framing_when_no_vinyl_but_youtube_slot_active(self, tmp_path, monkeypatch):
         missing = tmp_path / "absent-album-state.json"
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", missing)
-        framing = director_loop._curated_music_framing("Some Track", "Some Channel")
+        framing = director_loop._curated_music_framing("Some Track", "Some Channel", "OTO")
         assert "curated queue" in framing
         assert "Some Track" in framing
         assert "vinyl" not in framing.lower()
+        assert "OTO" in framing
 
     def test_framing_when_no_music_at_all(self, tmp_path, monkeypatch):
         missing = tmp_path / "absent-album-state.json"
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", missing)
-        framing = director_loop._curated_music_framing("", "")
+        framing = director_loop._curated_music_framing("", "", "The Operator")
         assert "No music" in framing
+
+    def test_framing_accepts_each_of_the_four_referents(self, tmp_path, monkeypatch):
+        """su-non-formal-referent-001: all four ratified referents must
+        flow through _curated_music_framing without error."""
+        state = tmp_path / "album-state.json"
+        state.write_text(json.dumps({"artist": "A", "title": "T", "confidence": 0.9}))
+        monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
+        self._set_override(tmp_path, monkeypatch, active=False)
+        monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
+        for referent in ("The Operator", "Oudepode", "Oudepode The Operator", "OTO"):
+            framing = director_loop._curated_music_framing("yt-t", "yt-c", referent)
+            assert referent in framing
 
 
 class TestOperatorTaste:
