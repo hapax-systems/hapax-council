@@ -104,6 +104,55 @@ class TestSourceSchema:
         with pytest.raises(ValidationError):
             SourceSchema(id="", kind="camera", backend="v4l2_camera")
 
+    def test_paired_source_requires_pair_leg_and_ward_id(self):
+        # pair_role="paired" without pair_leg fails
+        with pytest.raises(ValidationError, match="pair_leg"):
+            SourceSchema(
+                id="s",
+                kind="shader",
+                backend="wgsl_render",
+                pair_role="paired",
+                ward_id="some_ward",
+            )
+        # Without ward_id fails
+        with pytest.raises(ValidationError, match="ward_id"):
+            SourceSchema(
+                id="s",
+                kind="shader",
+                backend="wgsl_render",
+                pair_role="paired",
+                pair_leg="video",
+            )
+
+    def test_solo_source_forbids_pair_leg(self):
+        with pytest.raises(ValidationError, match="pair_leg only valid"):
+            SourceSchema(
+                id="s",
+                kind="shader",
+                backend="wgsl_render",
+                pair_role="solo",
+                pair_leg="video",
+            )
+
+    def test_paired_source_valid(self):
+        src = SourceSchema(
+            id="sierpinski.video",
+            kind="shader",
+            backend="wgsl_render",
+            pair_role="paired",
+            pair_leg="video",
+            ward_id="sierpinski",
+        )
+        assert src.pair_role == "paired"
+        assert src.pair_leg == "video"
+        assert src.ward_id == "sierpinski"
+
+    def test_solo_source_defaults_unchanged(self):
+        src = SourceSchema(id="s", kind="shader", backend="wgsl_render")
+        assert src.pair_role == "solo"
+        assert src.pair_leg is None
+        assert src.ward_id is None
+
     def test_extra_fields_rejected(self):
         with pytest.raises(ValidationError):
             SourceSchema(
