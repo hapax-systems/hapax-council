@@ -1,0 +1,17 @@
+surface: omg-lol-pastebin
+state_kinds:
+  - chronicle.weekly_digest
+  - programme.completed_plan
+  - axiom.precedent_operator_authority
+redactions:
+  - operator_profile.*
+  - operator_identity.*
+  - operator_legal_name
+  - chronicle.private_moments
+  - chat.author_id
+  - chat.author_handle
+  - research.pre_attribution
+rate_limit:
+  per_day: 6
+  per_week: 25
+cadence_hint: "Weekly digest cadence + event-triggered additions; listed pastes discoverable via pastebin index page."
