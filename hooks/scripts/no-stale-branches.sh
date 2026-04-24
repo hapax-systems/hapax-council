@@ -141,7 +141,8 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null; then
 fi
 
 # Session worktree limit: alpha (primary) + beta (permanent) + delta
-# (permanent, first-class) + 1 spontaneous = max 4 session worktrees.
+# (permanent) + epsilon (permanent, 2026-04-24 formalization) + 1
+# spontaneous = max 5 session worktrees.
 #
 # Infrastructure worktrees under ~/.cache/ (e.g. rebuild-scratch at
 # $HOME/.cache/hapax/rebuild/worktree, managed by rebuild-logos.sh via
@@ -149,8 +150,8 @@ fi
 # worktrees and exist independently of session work.
 if echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s'; then
     session_wt_count=$(git worktree list 2>/dev/null | grep -v '/\.cache/' | wc -l)
-    if [ "$session_wt_count" -ge 4 ]; then
-        echo "BLOCKED: Max 4 session worktrees (alpha + beta + delta + 1 spontaneous). Clean up before adding another." >&2
+    if [ "$session_wt_count" -ge 5 ]; then
+        echo "BLOCKED: Max 5 session worktrees (alpha + beta + delta + epsilon + 1 spontaneous). Clean up before adding another." >&2
         echo "  Current session worktrees (infrastructure under ~/.cache/ excluded):" >&2
         git worktree list 2>/dev/null | grep -v '/\.cache/' | sed 's/^/    /' >&2
         git worktree list 2>/dev/null | grep '/\.cache/' | sed 's/^/    [infra, not counted] /' >&2 || true

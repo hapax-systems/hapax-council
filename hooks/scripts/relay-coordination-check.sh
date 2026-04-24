@@ -68,6 +68,9 @@ case "$THIS_WT_BASENAME" in
   hapax-council--beta) SELF="beta" ;;
   hapax-council) SELF="alpha" ;;
   hapax-council--delta*) SELF="delta" ;;
+  hapax-council--cascade*) SELF="delta" ;;
+  hapax-council--epsilon*) SELF="epsilon" ;;
+  hapax-council--op-referent*) SELF="epsilon" ;;
   *) SELF="" ;;
 esac
 

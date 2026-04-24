@@ -426,11 +426,21 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
   echo "RELAY PROTOCOL ACTIVE — you are **$ROLE**"
   echo "Read $RELAY_DIR/onboarding-${ROLE}.md and onboard immediately."
   echo "Then read $RELAY_DIR/PROTOCOL.md for the full spec."
-  PEER=$([ "$ROLE" = "alpha" ] && echo "beta" || echo "alpha")
-  if [ -f "$RELAY_DIR/${PEER}.yaml" ]; then
-    echo "Peer status ($PEER):"
-    head -6 "$RELAY_DIR/${PEER}.yaml" | sed 's/^/  /'
-  fi
+  # 4-session quad protocol (2026-04-24 epsilon formalization): each role
+  # has 3 peers. Show all peer statuses so sessions stay aware.
+  case "$ROLE" in
+    alpha)   PEERS="beta delta epsilon" ;;
+    beta)    PEERS="alpha delta epsilon" ;;
+    delta)   PEERS="alpha beta epsilon" ;;
+    epsilon) PEERS="alpha beta delta" ;;
+    *)       PEERS="" ;;
+  esac
+  for PEER in $PEERS; do
+    if [ -f "$RELAY_DIR/${PEER}.yaml" ]; then
+      echo "Peer status ($PEER):"
+      head -6 "$RELAY_DIR/${PEER}.yaml" | sed 's/^/  /'
+    fi
+  done
 
   # Show work queue items for this role
   if [ -d "$RELAY_DIR/queue" ]; then

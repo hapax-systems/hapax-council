@@ -1,6 +1,16 @@
 # Trio Delivery Pipeline — delta / beta / alpha
 
-**Status:** Active 2026-04-18 (go-live night).
+> **2026-04-24 addendum:** epsilon was formalized as a 4th primary session on
+> this date. **Epsilon operates outside this pipeline by default** —
+> authored PRs independently (e.g., PR #1277 operator-referent-policy was
+> epsilon-authored + admin-merged by alpha without beta-audit). For
+> epsilon's PRs, beta still performs pre-merge audit per trio-delivery §11
+> (beta audits all code-shipping sessions generally), but the "implementation
+> → pre-merge audit → smoketest" cadence is delta-centric.
+> Full 4-session quad-delivery rewrite deferred until friction observed;
+> see `~/.cache/hapax/relay/context/2026-04-24-epsilon-4-session-rebalance-synthesis.md`.
+
+**Status:** Active 2026-04-18 (go-live night). Epsilon addendum 2026-04-24.
 **Operator directive:** "Start devising a plan where you can delegate work to two other sessions for safe parallelization... beta audits all work after produced... alpha smoketests all work after it lands on local from all angles."
 
 ## 1. Roles
