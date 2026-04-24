@@ -73,6 +73,33 @@ DUCK_LOOKAHEAD_MS: float = 5.0
 MASTER_LIMITER_LOOKAHEAD_MS: float = 5.0
 MASTER_LIMITER_RELEASE_MS: float = 50.0
 
+# Master input makeup gain (Phase 1.5 calibration, 2026-04-23).
+# Compensates for analog losses in the L-12 → AUX-B → Evil Pet → L-12 USB
+# return path so the post-master sum lands near EGRESS_TARGET_LUFS_I.
+# Calibrated subjectively with operator listening to lo-fi music alone:
+# - +19 dB landed music alone at -15 LUFS-I → too hot (sums with voice/TTS
+#   would push above target)
+# - +14 dB landed music alone at -20 LUFS-I → still 5 dB too hot
+#   subjectively
+# - +9 dB lands music alone at -25 LUFS-I → operator confirmed "perfect"
+# Headroom budget: music-only at -25 LUFS-I leaves 11 LU for voice + TTS
+# sums to reach -14 LUFS-I egress target.
+# Phase 3 per-source pre-normalizers will replace this single constant
+# with proper per-source LUFS targeting.
+MASTER_INPUT_MAKEUP_DB: float = 9.0
+
+# ── Per-source line-output ceiling for L-12 USB return (Phase 1.5) ────
+#
+# Music chain output ceiling so signal lands at L-12 LINE input + fader
+# unity without clipping the channel preamp or driving Evil Pet into
+# nonlinear range. -18 dBFS clean (true lookahead limiter, not sample
+# clipper) maps to ~+4 dBu line-level reference at L-12.
+# Operator confirmed L-12 channel meter at -18 dB with no audible
+# distortion 2026-04-23 (after replacing hard_limiter_1413 sample-clipper
+# with fast_lookahead_limiter_1913 true-peak limiter).
+MUSIC_TO_L12_PEAK_DBFS: float = -18.0
+MUSIC_LIMITER_RELEASE_MS: float = 200.0
+
 # ── Headroom budget ───────────────────────────────────────────────────
 #
 # Reserved per stage for transients. Means: each stage's nominal output
