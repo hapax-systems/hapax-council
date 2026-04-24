@@ -1,0 +1,20 @@
+surface: youtube-description
+state_kinds:
+  - programme.role
+  - programme.narrative_beat
+  - research_instrument.sprint_state
+  - research_instrument.bayesian_claim
+  - chronicle.high_salience
+  - chronicle.chapter_candidate
+  - working_mode
+  - director.activity
+  - director.youtube_direction
+redactions:
+  - operator_profile.*
+  - chronicle.private_moments
+  - operator_identity.*
+  - capability.name_if_risk_medium_or_high
+rate_limit:
+  per_hour: 6
+  per_day: 60
+cadence_hint: "Every 5-10 min during live; full rewrite per VOD boundary"

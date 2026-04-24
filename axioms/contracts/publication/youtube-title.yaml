@@ -1,0 +1,14 @@
+surface: youtube-title
+state_kinds:
+  - programme.role
+  - research_instrument.sprint_state
+  - chronicle.high_salience
+  - working_mode
+redactions:
+  - operator_profile.*
+  - chronicle.private_moments
+  - operator_identity.*
+rate_limit:
+  per_hour: 2
+  per_day: 12
+cadence_hint: "One update per VOD boundary + opportunistic narrative shifts"

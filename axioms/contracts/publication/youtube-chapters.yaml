@@ -1,0 +1,12 @@
+surface: youtube-chapters
+state_kinds:
+  - chronicle.high_salience
+  - chronicle.chapter_candidate
+  - programme.boundary
+  - director.activity_change
+redactions:
+  - chronicle.private_moments
+rate_limit:
+  per_hour: 6
+  per_day: 24
+cadence_hint: "Live via cuepoint (event-driven); full VOD chapters per boundary"

@@ -1,0 +1,9 @@
+# Deferred: no API support for pinning comments in 2026.
+# Stub-safe: empty state_kinds means default DENY is enforced for any caller.
+surface: pinned-comment
+state_kinds: []
+redactions: []
+rate_limit:
+  per_hour: 0
+  per_day: 0
+cadence_hint: "OUT OF SCOPE — no API for pinning in 2026"

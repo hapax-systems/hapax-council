@@ -1,0 +1,13 @@
+surface: discord-webhook
+state_kinds:
+  - broadcast.boundary
+  - chronicle.high_salience
+  - shorts.upload
+redactions:
+  - operator_profile.*
+  - operator_identity.*
+  - chronicle.private_moments
+rate_limit:
+  per_hour: 12
+  per_day: 60
+cadence_hint: "Discord rate = 5 req / 2s per webhook; more generous than YT"

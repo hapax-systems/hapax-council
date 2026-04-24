@@ -1,0 +1,9 @@
+surface: channel-sections
+state_kinds:
+  - broadcast.recent_vods
+  - programme.thematic_groups
+redactions: []
+rate_limit:
+  per_hour: 1
+  per_day: 4
+cadence_hint: "Weekly rebuild; digest-diff so only change-triggered writes"

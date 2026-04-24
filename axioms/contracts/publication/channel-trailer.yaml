@@ -1,0 +1,8 @@
+surface: channel-trailer
+state_kinds:
+  - broadcast.current_live_url
+redactions: []
+rate_limit:
+  per_hour: 2
+  per_day: 6
+cadence_hint: "Per VOD boundary — trailer points at the current live broadcast"

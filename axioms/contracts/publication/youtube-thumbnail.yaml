@@ -1,0 +1,12 @@
+surface: youtube-thumbnail
+state_kinds:
+  - chronicle.high_salience
+  - programme.role
+redactions: []
+# Thumbnails are visual; redaction applies upstream via the face-obscure
+# pipeline (face-obscure runs on every compositor frame before any tee, so
+# all source frames are safe — no text-payload redaction needed here).
+rate_limit:
+  per_hour: 2
+  per_day: 48
+cadence_hint: "Every 30 min until VOD boundary; per-boundary otherwise"

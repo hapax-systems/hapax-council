@@ -1,0 +1,13 @@
+surface: bluesky-post
+state_kinds:
+  - broadcast.boundary
+  - chronicle.high_salience
+  - shorts.upload
+redactions:
+  - operator_profile.*
+  - operator_identity.*
+  - chronicle.private_moments
+rate_limit:
+  per_hour: 6
+  per_day: 30
+cadence_hint: "Boundary events + Shorts uploads + coalesced high-salience"

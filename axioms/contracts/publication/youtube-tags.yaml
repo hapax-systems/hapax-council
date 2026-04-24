@@ -1,0 +1,12 @@
+surface: youtube-tags
+state_kinds:
+  - programme.role
+  - research_instrument.sprint_state
+  - working_mode
+redactions:
+  - operator_profile.*
+  - operator_identity.*
+rate_limit:
+  per_hour: 2
+  per_day: 6
+cadence_hint: "Per VOD boundary + infrequent drift adjustment. Tags have minimal 2026 ranker weight."

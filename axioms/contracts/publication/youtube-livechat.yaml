@@ -1,0 +1,11 @@
+surface: youtube-livechat
+state_kinds:
+  - programme.boundary
+  - director.activity_transition
+redactions:
+  - operator_identity.*
+  - chronicle.private_moments
+rate_limit:
+  per_hour: 12
+  per_day: 60
+cadence_hint: "Programme boundary markers + major transitions only. No personification."
