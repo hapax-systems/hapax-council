@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>hapax — credits</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://ryanklee.github.io/hapax-assets/css/hapax-core.css">
+  <style>
+    body { font-family: "Px437 IBM VGA 8x16", "PxPlus IBM VGA 8x16", monospace; }
+    table.credits-table { border-collapse: collapse; width: 100%; }
+    table.credits-table th, table.credits-table td { padding: 0.4em 0.8em; text-align: left; vertical-align: top; }
+    table.credits-table thead tr { border-bottom: 1px solid currentColor; }
+    table.credits-table tbody tr:nth-child(even) { opacity: 0.85; }
+    code { white-space: nowrap; }
+  </style>
+</head>
+<body>
+
+<section class="e-window" data-title="credits">
+  <div class="body">
+    <p>Every authentic asset incorporated into Hapax.
+       In the hip-hop production tradition: these are the samples.</p>
+
+    <table class="credits-table">
+      <thead>
+        <tr>
+          <th>asset</th>
+          <th>origin</th>
+          <th>author</th>
+          <th>license</th>
+          <th>extracted</th>
+        </tr>
+      </thead>
+      <tbody>
+        {%- for asset in model.assets %}
+        <tr>
+          <td><code>{{ asset.source }}/{{ asset.kind }}/{{ asset.name }}</code></td>
+          <td>{{ asset.path }}</td>
+          <td><a href="{{ asset.source_url }}" rel="noopener">{{ asset.author }}</a></td>
+          <td>{{ asset.license }}</td>
+          <td>{{ asset.extracted_date }}</td>
+        </tr>
+        {%- endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="e-window" data-title="license obligations">
+  <div class="body">
+    <p>Licenses present in this library:</p>
+    <ul>
+      {%- for license_id in model.licenses_present %}
+      <li><strong>{{ license_id }}</strong></li>
+      {%- endfor %}
+    </ul>
+
+    <p>Per-asset attribution lines (verbatim from upstream):</p>
+    <ul>
+      {%- for asset in model.assets %}
+      <li>{{ asset.attribution_line }}</li>
+      {%- endfor %}
+    </ul>
+
+    <p>CC-BY-SA-4.0 ShareAlike: derivative works of any CC-BY-SA-4.0
+       asset above inherit the same license. Hapax does not modify the
+       upstream bytes of CC-BY-SA-4.0 assets (format-only transcodes
+       like TTF→WOFF2 are not derivatives).</p>
+  </div>
+</section>
+
+<section class="e-window" data-title="meta">
+  <div class="body">
+    <p>This page is auto-generated from the aesthetic library's
+       <code>_manifest.yaml</code> + per-source
+       <code>provenance.yaml</code>. Any new asset added to the
+       library appears here automatically on the next publish cycle.</p>
+    <p>Source of truth:
+       <a href="https://github.com/ryanklee/hapax-council/blob/main/assets/aesthetic-library/_manifest.yaml"
+          rel="noopener">hapax-council/assets/aesthetic-library/</a>.</p>
+  </div>
+</section>
+
+</body>
+</html>
