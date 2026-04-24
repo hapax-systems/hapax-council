@@ -316,6 +316,43 @@ class TestIntegrityErrorShape:
         assert err.details == ["fonts/px437.ttf"]
 
 
+class TestLoaderEdgeCases:
+    """Edge cases flagged in beta's PR #1285 pre-merge audit (low-severity
+    follow-ups landing on AUTH-HOSTING alongside web_url consumer tests).
+    """
+
+    def test_nonexistent_root_yields_empty_library(self, tmp_path: Path) -> None:
+        # No directory at all → library instantiates, list() returns [], no crash.
+        lib = AestheticLibrary(root=tmp_path / "does-not-exist")
+        assert lib.list() == []
+        assert lib.all_licenses() == {}
+        assert lib.verify_integrity() == []
+
+    def test_missing_manifest_yields_empty_library(self, tmp_path: Path) -> None:
+        # Directory exists but no _manifest.yaml — same graceful behavior.
+        root = tmp_path / "aesthetic-library"
+        root.mkdir()
+        lib = AestheticLibrary(root=root)
+        assert lib.list() == []
+
+    def test_malformed_manifest_yaml_raises_with_context(self, tmp_path: Path) -> None:
+        root = tmp_path / "aesthetic-library"
+        root.mkdir()
+        (root / "_manifest.yaml").write_text("this: is: not: valid: yaml:\n")
+        with pytest.raises(Exception):
+            AestheticLibrary(root=root)
+
+    def test_manifest_sha_mismatch_exactly_reports_offending_path(self, library_root: Path) -> None:
+        # Pin byte-level: modifying any single byte surfaces drift with the
+        # offending path, not a whole-library "something broke" message.
+        (library_root / "fonts" / "px437.ttf").write_bytes(b"single-byte-change")
+        lib = AestheticLibrary(root=library_root)
+        drift = lib.verify_integrity()
+        assert len(drift) == 1
+        assert "fonts/px437.ttf" in drift[0]
+        assert "sha mismatch" in drift[0]
+
+
 class TestRealRepoLibrary:
     """Integration tests against the real on-disk `assets/aesthetic-library/`.
 

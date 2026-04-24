@@ -1,0 +1,41 @@
+name: Publish to GitHub Pages
+
+# External repo: ryanklee/hapax-assets
+# This workflow file is committed to the external repo's main branch.
+# On push to main, it deploys the repo contents to gh-pages via the
+# actions/deploy-pages action. GitHub Pages must be enabled in repo
+# settings (Settings → Pages → Source: "GitHub Actions").
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/configure-pages@v5
+      - name: Package site
+        run: |
+          # Exclude git + workflow metadata from the deployed artifact.
+          mkdir -p _site
+          rsync -a --exclude='.git' --exclude='.github' --exclude='_site' ./ _site/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

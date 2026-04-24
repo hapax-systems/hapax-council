@@ -1,0 +1,24 @@
+[Unit]
+Description=hapax-assets publisher — mirrors assets/aesthetic-library → ryanklee/hapax-assets CDN
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/hapax_assets_publisher/__init__.py
+Requires=hapax-secrets.service
+After=hapax-secrets.service network-online.target
+Wants=network-online.target
+
+# Disabled by default — enable only after scripts/setup-hapax-assets-repo.sh
+# has created the external ryanklee/hapax-assets repo + SSH deploy key.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/env
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.hapax_assets_publisher --watch
+Restart=on-failure
+RestartSec=30
+
+# Idempotent sync — safe to restart at any time.
+# The publisher only pushes when bytes actually changed, and the
+# PushThrottle state file prevents burst-push (one per 30s min).
+
+[Install]
+WantedBy=default.target
