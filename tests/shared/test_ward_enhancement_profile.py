@@ -62,7 +62,6 @@ EXPECTED_WARDS = frozenset(
         "pressure_gauge",
         "activity_variety_log",
         "whos_here",
-        "hardm_dot_matrix",
         "reverie",
         # Ratified 2026-04-21 (operator decision): GEM (#15, replaces
         # captions in lower-band geometry), chat_keywords (#16, aggregate

@@ -1343,7 +1343,6 @@ _VALID_WARD_IDS: frozenset[str] = frozenset(
         "token_pole",
         "album_overlay",
         "sierpinski",
-        "hardm_dot_matrix",
         "stream_overlay",
         "captions",
         "research_marker_overlay",

@@ -15,7 +15,7 @@ Two lookups live here:
 * :data:`AUDIO_REACTIVE_WARDS` — wards whose rendering should respond
   to FX ``audio_kick_onset`` / ``intensity_spike`` events with a
   brightness/shimmer boost. Currently: ``pressure_gauge``,
-  ``hardm_dot_matrix``, ``token_pole``, ``activity_variety_log``.
+  ``token_pole``, ``activity_variety_log``.
 """
 
 from __future__ import annotations
@@ -70,7 +70,6 @@ WARD_DOMAIN: dict[str, WardDomain] = {
     # Music
     "album": "music",
     "vinyl_platter": "music",
-    "hardm_dot_matrix": "music",
     # Cognition
     "activity_variety_log": "cognition",
     "recruitment_candidate_panel": "cognition",
@@ -87,7 +86,6 @@ WARD_DOMAIN: dict[str, WardDomain] = {
 AUDIO_REACTIVE_WARDS: frozenset[str] = frozenset(
     {
         "pressure_gauge",
-        "hardm_dot_matrix",
         "token_pole",
         "activity_variety_log",
         "vinyl_platter",

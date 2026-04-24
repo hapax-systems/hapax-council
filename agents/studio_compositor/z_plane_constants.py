@@ -59,16 +59,13 @@ WARD_Z_PLANE_DEFAULTS: Final[dict[str, str]] = {
     # Mid — informational backdrop
     "chat_ambient": "mid-scrim",
     "impingement_cascade": "mid-scrim",
-    "hardm_dot_matrix": "mid-scrim",
+    # ``hardm_dot_matrix`` retired 2026-04-23 (GEAL Phase 0) —
+    # superseded by the Sierpinski-native expressive layer. See
+    # ``docs/archive/homage-hardm/``.
     # Beyond — atmosphere. 2026-04-23: sierpinski added per nebulous-scrim
     # spec §6.4 ("what the audience peers at"). It was grandfathered to
-    # the default ``on-scrim`` plane, which made it render at ~0.96 while
-    # HARDM (mid-scrim ~0.80) and album (beyond-scrim ~0.68) were
-    # attenuated — operator flagged the resulting uniformity break
-    # ("homage wards in the nebulous scrim should all be subject to the
-    # same effects; see differences between sierp and everything else").
-    # Assigning sierp to beyond-scrim places it alongside album as a
-    # peered-through-scrim element, restoring depth-uniformity.
+    # the default ``on-scrim`` plane; assigning it to beyond-scrim places
+    # it alongside album as a peered-through-scrim element.
     "sierpinski": "beyond-scrim",
     "album": "beyond-scrim",
 }

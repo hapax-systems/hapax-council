@@ -1,22 +1,20 @@
 """2026-04-23 Gemini-reapproach Plan B Phase B1 regression pin.
 
 Operator reported in session 2 (2026-04-23 06:34 → 13:01 UTC) that
-HOMAGE wards were overlapping each other — HARDM's 256×256 block at
-(1600, 20) was underneath thinking-indicator-tr (1620, 20) and
-stance-indicator-tr (1800, 24), producing visible z-order collisions
-on the broadcast even with z-dominance fixes in place.
-
-This test enforces that no two HOMAGE / legibility / hothouse surfaces
-geometrically overlap in the default layout. Axis-aligned rectangle
-intersection check; surfaces are non-overlapping iff one's right-edge
-is left-of or equal-to the other's left-edge OR one's bottom-edge is
-above or equal-to the other's top-edge.
+HOMAGE wards were overlapping each other. This test enforces that no
+two HOMAGE / legibility / hothouse surfaces geometrically overlap in
+the default layout. Axis-aligned rectangle intersection check; surfaces
+are non-overlapping iff one's right-edge is left-of or equal-to the
+other's left-edge OR one's bottom-edge is above or equal-to the other's
+top-edge.
 
 Only overlay surfaces are checked — `pip-*` quadrant surfaces host
 multiple assigned sources and intentionally overlap with their own
-content (reverie can pass through pip-ur, HARDM at hardm-dot-matrix-ur
-can visually sit adjacent to pip-ur, etc.), and `video_out_*` surfaces
-are output sinks outside the 1920×1080 rendering canvas.
+content, and `video_out_*` surfaces are output sinks outside the
+1920×1080 rendering canvas.
+
+HARDM was retired 2026-04-23 (GEAL spec §12); the dot-matrix surface and
+its spatial-separation pins are no longer part of this check.
 """
 
 from __future__ import annotations
@@ -28,13 +26,10 @@ _DEFAULT_JSON = Path(__file__).parents[2] / "config" / "compositor-layouts" / "d
 
 # Surfaces to check for overlap. Upper-band (y < 400) overlay surfaces
 # must not collide with each other; lower-band legibility + GEM must not
-# collide either. pip-* hosts its assigned source; HARDM is adjacent to
-# pip-ur intentionally; captions_strip is allowed to sit under the
-# retired captions assignment.
+# collide either.
 _OVERLAY_SURFACE_IDS = {
     "activity-header-top",
     "stance-indicator-tr",
-    "chat-legend-right",
     "grounding-ticker-bl",
     "impingement-cascade-midright",
     "recruitment-candidate-top",
@@ -42,7 +37,6 @@ _OVERLAY_SURFACE_IDS = {
     "pressure-gauge-ul",
     "activity-variety-log-mid",
     "whos-here-tr",
-    "hardm-dot-matrix-ur",
     "gem-mural-bottom",
 }
 
@@ -80,40 +74,28 @@ def test_no_overlay_surface_overlap() -> None:
     )
 
 
-def test_hardm_thinking_stance_whos_here_spatial_separation() -> None:
-    """Explicit pin for the 2026-04-23 Plan B Phase B1 fix.
+def test_upper_right_cluster_spatial_separation() -> None:
+    """Upper-right legibility cluster must stack without collisions.
 
-    The upper-right cluster (HARDM + thinking + stance + whos-here) was
-    the specific operator complaint. Pins their new positions so a
-    future refactor can't silently re-introduce the overlap.
+    whos-here sits below thinking-indicator; both sit left of stance-indicator.
+    Pins their positions so a future refactor can't silently re-introduce
+    the overlap that prompted the original 2026-04-23 fix.
     """
     raw = json.loads(_DEFAULT_JSON.read_text())
     geos = {s["id"]: s["geometry"] for s in raw["surfaces"] if s["geometry"]["kind"] == "rect"}
 
-    hardm = geos["hardm-dot-matrix-ur"]
     thinking = geos["thinking-indicator-tr"]
     stance = geos["stance-indicator-tr"]
     whos = geos["whos-here-tr"]
 
-    # Thinking must be to the LEFT of HARDM with some gap.
-    assert thinking["x"] + thinking["w"] <= hardm["x"], (
-        f"thinking-indicator-tr right edge ({thinking['x'] + thinking['w']}) must be "
-        f"<= HARDM left edge ({hardm['x']})"
-    )
-
-    # Stance must be BELOW HARDM (fully below HARDM's bottom edge).
-    hardm_bottom = hardm["y"] + hardm["h"]
-    assert stance["y"] >= hardm_bottom, (
-        f"stance-indicator-tr top ({stance['y']}) must be >= HARDM bottom ({hardm_bottom})"
-    )
-
-    # whos-here is stacked BELOW thinking-indicator (both left of HARDM).
+    # whos-here is stacked BELOW thinking-indicator.
     assert whos["y"] >= thinking["y"] + thinking["h"], (
         f"whos-here-tr top ({whos['y']}) must be >= "
         f"thinking-indicator-tr bottom ({thinking['y'] + thinking['h']})"
     )
-    # whos-here must also be left of HARDM.
-    assert whos["x"] + whos["w"] <= hardm["x"], (
-        f"whos-here-tr right edge ({whos['x'] + whos['w']}) must be "
-        f"<= HARDM left edge ({hardm['x']})"
+    # stance-indicator and thinking-indicator must not overlap.
+    thinking_rect = {"x": thinking["x"], "y": thinking["y"], "w": thinking["w"], "h": thinking["h"]}
+    stance_rect = {"x": stance["x"], "y": stance["y"], "w": stance["w"], "h": stance["h"]}
+    assert not _rects_intersect(thinking_rect, stance_rect), (
+        "thinking-indicator-tr and stance-indicator-tr must not overlap"
     )

@@ -300,31 +300,10 @@ wards:
     cvs_bindings:
       - "CVS #16 anti-personification"
 
-  hardm_dot_matrix:
-    recognizability_invariant: >-
-      Grid != face (Pearson <0.6); cell count constant; glow-through-
-      scrim bloom asymmetry non-negotiable.
-    recognizability_tests:
-      - pearson_face_correlation
-      - cell_count_preservation
-      - bloom_asymmetry
-    use_case_acceptance_test: >-
-      Observer sees abstract grid, not stylized face.
-    acceptance_test_harness: tests/studio_compositor/test_hardm_dot_matrix_acceptance.py
-    accepted_enhancement_categories:
-      - halftone
-      - film_grain
-      - rd
-    rejected_enhancement_categories:
-      - kuwahara
-      - glitch
-      - posterize
-    spatial_dynamism_approved: true
-    oq_02_bound_applicable: true
-    hardm_binding: true
-    cvs_bindings:
-      - "CVS #8 non-manipulation"
-      - "CVS #16 anti-personification"
+  # hardm_dot_matrix retired 2026-04-23 (GEAL spec §12). The anti-
+  # anthropomorphization invariants previously carried by HARDM are
+  # inherited by GEAL's 10-invariant gate (see
+  # docs/superpowers/specs/2026-04-23-geal-spec.md §2).
 
   reverie:
     recognizability_invariant: >-

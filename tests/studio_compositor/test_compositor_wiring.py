@@ -65,7 +65,6 @@ class TestStartLayoutOnly:
             "reverie",
             "activity_header",
             "stance_indicator",
-            "chat_ambient",
             "grounding_provenance_ticker",
             "captions",
             "impingement_cascade",
@@ -74,7 +73,6 @@ class TestStartLayoutOnly:
             "pressure_gauge",
             "activity_variety_log",
             "whos_here",
-            "hardm_dot_matrix",
             "gem",
         }
         assert {s.id for s in layout.sources} == expected_ids
@@ -96,7 +94,6 @@ class TestStartLayoutOnly:
             "reverie",
             "activity_header",
             "stance_indicator",
-            "chat_ambient",
             "grounding_provenance_ticker",
             "captions",
             "impingement_cascade",
@@ -105,7 +102,6 @@ class TestStartLayoutOnly:
             "pressure_gauge",
             "activity_variety_log",
             "whos_here",
-            "hardm_dot_matrix",
             "gem",
         }
 

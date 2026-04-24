@@ -40,7 +40,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         # (PR #1017/§3.5 + follow-ups #1018).
         "activity_header",
         "stance_indicator",
-        "chat_ambient",
+        # chat_ambient retired 2026-04-23 (PR #1239 — aspect-ratio mismatch).
         "grounding_provenance_ticker",
         # Epic 2 Phase C (2026-04-17) — hothouse pressure surfaces.
         "impingement_cascade",
@@ -50,8 +50,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "activity_variety_log",
         # Epic 2 Phase D — operator-always-here indicator.
         "whos_here",
-        # HOMAGE follow-on #121 (2026-04-18) — HARDM dot-matrix avatar.
-        "hardm_dot_matrix",
         # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
         # Mural) is the 15th HOMAGE ward; lower-band geometry, retires
         # captions in same surface area. See
@@ -76,7 +74,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "video_out_hls_playlist",
         "activity-header-top",
         "stance-indicator-tr",
-        "chat-legend-right",
         "grounding-ticker-bl",
         # Epic 2 Phase C hothouse surfaces.
         "impingement-cascade-midright",
@@ -86,8 +83,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "activity-variety-log-mid",
         # Epic 2 Phase D — operator-always-here indicator.
         "whos-here-tr",
-        # HOMAGE follow-on #121 — HARDM dot-matrix surface (upper-right).
-        "hardm-dot-matrix-ur",
         # HOMAGE follow-on #191 — GEM mural surface (lower-band).
         "gem-mural-bottom",
     }
@@ -105,7 +100,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         # Volitional-director Phase 4 legibility assignments.
         ("activity_header", "activity-header-top"),
         ("stance_indicator", "stance-indicator-tr"),
-        ("chat_ambient", "chat-legend-right"),
         ("grounding_provenance_ticker", "grounding-ticker-bl"),
         # Epic 2 Phase C hothouse assignments.
         ("impingement_cascade", "impingement-cascade-midright"),
@@ -115,8 +109,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("activity_variety_log", "activity-variety-log-mid"),
         # Epic 2 Phase D.
         ("whos_here", "whos-here-tr"),
-        # HOMAGE follow-on #121 — HARDM dot-matrix avatar.
-        ("hardm_dot_matrix", "hardm-dot-matrix-ur"),
         # HOMAGE follow-on #191 — GEM mural assignment.
         ("gem", "gem-mural-bottom"),
     }
@@ -139,7 +131,6 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         # Volitional-director Phase 4 legibility sources.
         "activity_header": "cairo",
         "stance_indicator": "cairo",
-        "chat_ambient": "cairo",
         "grounding_provenance_ticker": "cairo",
         # Epic 2 Phase C hothouse sources.
         "impingement_cascade": "cairo",
@@ -149,8 +140,6 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "activity_variety_log": "cairo",
         # Epic 2 Phase D.
         "whos_here": "cairo",
-        # HOMAGE follow-on #121 — HARDM dot-matrix avatar.
-        "hardm_dot_matrix": "cairo",
     }
 
 
@@ -223,33 +212,9 @@ def test_default_json_stream_overlay_source_is_registered() -> None:
     assert cls.__name__ == "StreamOverlayCairoSource"
 
 
-def test_default_json_chat_ambient_binds_to_chat_ambient_ward() -> None:
-    """HOMAGE Phase B5 regression pin: chat_ambient binds to ChatAmbientWard.
-
-    Per docs/superpowers/plans/2026-04-19-homage-completion-plan.md §B5
-    and the HOMAGE reckoning §7.2 step 1, the chat_ambient slot must
-    render through the new aggregate-only ChatAmbientWard, NOT the
-    legacy ChatKeywordLegendCairoSource keyword legend. Pinning the
-    binding prevents a silent regression to the legacy class.
-    """
-    from agents.studio_compositor.cairo_sources import get_cairo_source_class
-
-    raw = json.loads(DEFAULT_JSON.read_text())
-    layout = Layout.model_validate(raw)
-
-    chat_ambient = next(
-        (s for s in layout.sources if s.id == "chat_ambient"),
-        None,
-    )
-    assert chat_ambient is not None, "chat_ambient source missing from default.json"
-    assert chat_ambient.backend == "cairo"
-    class_name = chat_ambient.params.get("class_name")
-    assert class_name == "ChatAmbientWard", (
-        f"chat_ambient must bind to ChatAmbientWard (HOMAGE B5); got {class_name!r}"
-    )
-    cls = get_cairo_source_class(class_name)
-    assert cls is not None
-    assert cls.__name__ == "ChatAmbientWard"
+# chat_ambient retired 2026-04-23 (PR #1239 — aspect-ratio mismatch).
+# Original test pinned its binding to ChatAmbientWard; the source and
+# surface are no longer in default.json so the pin is obsolete.
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +244,7 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         # Volitional-director Phase 4 legibility additions.
         "activity_header",
         "stance_indicator",
-        "chat_ambient",
+        # chat_ambient retired 2026-04-23 (PR #1239 — aspect-ratio mismatch).
         "grounding_provenance_ticker",
         # Epic 2 Phase C hothouse additions.
         "impingement_cascade",
@@ -289,8 +254,6 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "activity_variety_log",
         # Epic 2 Phase D.
         "whos_here",
-        # HOMAGE follow-on #121 — HARDM dot-matrix avatar.
-        "hardm_dot_matrix",
         # HOMAGE follow-on #191 — GEM mural ward (15th HOMAGE).
         "gem",
     }
@@ -419,69 +382,17 @@ def test_load_layout_or_fallback_rescales_to_canvas_size() -> None:
         f"got {activity_header.geometry.x}"
     )
     assert activity_header.geometry.w == expected_w
-    chat_legend = next(s for s in layout.surfaces if s.id == "chat-legend-right")
-    expected_chat_x = int(round(1760 * LAYOUT_COORD_SCALE))
-    assert chat_legend.geometry.x == expected_chat_x
+    # chat-legend-right retired 2026-04-23 (PR #1239). Stance indicator is
+    # the closest-analogue right-edge ward; pin its rescale to cover the
+    # same "right-edge wards off-canvas" regression space.
+    stance_ind = next(s for s in layout.surfaces if s.id == "stance-indicator-tr")
+    # stance-indicator-tr x=1800 in 1920-coord space.
+    expected_stance_x = int(round(1800 * LAYOUT_COORD_SCALE))
+    assert stance_ind.geometry.x == expected_stance_x
 
 
-def test_thinking_indicator_z_above_hardm_avoids_occlusion() -> None:
-    """Regression pin for the 2026-04-21 z-order collision fix.
-
-    HARDM's 256×256 rect at (1600, 20) entirely covers the
-    thinking_indicator's 170×44 rect at (1620, 20). Pre-fix, both lived
-    at z=26 (thinking) and z=28 (HARDM) respectively, so HARDM painted
-    on top and the thinking text was invisible. Post-fix, thinking
-    sits at z=32 (above HARDM's z=28) so it composites on top.
-
-    Any layout edit that drops thinking-indicator's z below HARDM's
-    must update both — there is no valid configuration in which
-    thinking lives under HARDM and is visible.
-    """
-    raw = json.loads(DEFAULT_JSON.read_text())
-    layout = Layout.model_validate(raw)
-    surfaces_by_id = {s.id: s for s in layout.surfaces}
-
-    thinking = surfaces_by_id["thinking-indicator-tr"]
-    hardm = surfaces_by_id["hardm-dot-matrix-ur"]
-
-    thinking_x_range = (thinking.geometry.x, thinking.geometry.x + thinking.geometry.w)
-    thinking_y_range = (thinking.geometry.y, thinking.geometry.y + thinking.geometry.h)
-    hardm_x_range = (hardm.geometry.x, hardm.geometry.x + hardm.geometry.w)
-    hardm_y_range = (hardm.geometry.y, hardm.geometry.y + hardm.geometry.h)
-
-    overlaps_x = thinking_x_range[0] < hardm_x_range[1] and hardm_x_range[0] < thinking_x_range[1]
-    overlaps_y = thinking_y_range[0] < hardm_y_range[1] and hardm_y_range[0] < thinking_y_range[1]
-    if overlaps_x and overlaps_y:
-        assert thinking.z_order > hardm.z_order, (
-            f"thinking-indicator z={thinking.z_order} must be greater than "
-            f"hardm-dot-matrix z={hardm.z_order} when their rects overlap "
-            f"(thinking x={thinking_x_range}, y={thinking_y_range} vs "
-            f"hardm x={hardm_x_range}, y={hardm_y_range})"
-        )
-
-
-def test_whos_here_z_above_hardm_avoids_occlusion() -> None:
-    """Regression pin: whos-here's right edge (x=1610) brushes HARDM's
-    left edge (x=1600), so a 10-pixel column overlaps. Pre-fix, both at
-    z=26 and z=28 meant the right edge of whos-here vanished under
-    HARDM. Post-fix, whos-here at z=32 sits above HARDM (z=28).
-    """
-    raw = json.loads(DEFAULT_JSON.read_text())
-    layout = Layout.model_validate(raw)
-    surfaces_by_id = {s.id: s for s in layout.surfaces}
-
-    whos = surfaces_by_id["whos-here-tr"]
-    hardm = surfaces_by_id["hardm-dot-matrix-ur"]
-
-    whos_x_range = (whos.geometry.x, whos.geometry.x + whos.geometry.w)
-    whos_y_range = (whos.geometry.y, whos.geometry.y + whos.geometry.h)
-    hardm_x_range = (hardm.geometry.x, hardm.geometry.x + hardm.geometry.w)
-    hardm_y_range = (hardm.geometry.y, hardm.geometry.y + hardm.geometry.h)
-
-    overlaps_x = whos_x_range[0] < hardm_x_range[1] and hardm_x_range[0] < whos_x_range[1]
-    overlaps_y = whos_y_range[0] < hardm_y_range[1] and hardm_y_range[0] < whos_y_range[1]
-    if overlaps_x and overlaps_y:
-        assert whos.z_order > hardm.z_order, (
-            f"whos-here z={whos.z_order} must be greater than "
-            f"hardm-dot-matrix z={hardm.z_order} when their rects overlap"
-        )
+# HARDM retired 2026-04-23 (GEAL spec §12) — the z-order collision tests
+# that pinned thinking-indicator and whos-here above HARDM are no longer
+# applicable because HARDM is no longer in the layout. GEAL inhabits the
+# central Sierpinski triangle instead of a dedicated 256×256 surface, so
+# upper-right z-cluster collisions cannot recur through this vector.
