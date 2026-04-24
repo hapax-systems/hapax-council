@@ -1,0 +1,26 @@
+[Unit]
+Description=Hapax channel trailer rotator (ytb-011 Phase 1)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/channel_metadata/trailer_rotator.py
+After=network-online.target hapax-secrets.service
+Wants=network-online.target
+PartOf=hapax.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=HAPAX_CHANNEL_TRAILER_METRICS_PORT=9499
+Environment=HAPAX_CHANNEL_TRAILER_TICK_S=30
+Environment=HAPAX_LOG_LEVEL=INFO
+# OAuth path: shared/google_auth.py reads `google/token` from the pass
+# store. Operator must mint the token with `youtube.force-ssl` scope
+# (the channels.update API requires write access). YOUTUBE_CHANNEL_ID
+# must be exported from hapax-secrets — daemon errors gracefully if absent.
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.channel_metadata
+Restart=on-failure
+RestartSec=15
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target
