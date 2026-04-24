@@ -1,0 +1,25 @@
+[Unit]
+Description=Hapax YouTube live cuepoint chapter markers (ytb-004)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/live_cuepoints/__init__.py
+After=network-online.target hapax-secrets.service
+Wants=network-online.target
+PartOf=hapax.target
+
+[Service]
+Type=notify
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=HAPAX_LIVE_CUEPOINTS_ENABLED=0
+Environment=HAPAX_CUEPOINT_TICK_S=15
+Environment=HAPAX_CUEPOINT_DEBOUNCE_S=90
+Environment=HAPAX_CUEPOINT_MAX_PER_HOUR=60
+Environment=HAPAX_CUEPOINT_METRICS_PORT=9494
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.live_cuepoints
+Restart=on-failure
+RestartSec=30
+WatchdogSec=60
+MemoryMax=128M
+
+[Install]
+WantedBy=hapax.target
