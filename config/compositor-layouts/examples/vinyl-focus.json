@@ -62,6 +62,7 @@
     {
       "source": "vinyl_platter",
       "surface": "pip-vinyl",
+      "render_stage": "pre_fx",
       "transform": {},
       "opacity": 1.0,
       "per_assignment_effects": [],
