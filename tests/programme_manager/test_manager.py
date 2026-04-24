@@ -260,7 +260,10 @@ class TestEmergentAbort:
             store,
             chor,
             now_fn=lambda: 60.0,
-            abort_predicates={"bad": lambda p: True},
+            # Predicates take (programme, context_dict) — production
+            # calls `fn(programme, {})`. Stale single-arg lambda raised
+            # TypeError, evaluated to False, decision missed EMERGENT.
+            abort_predicates={"bad": lambda _p, _ctx: True},
         )
         decision = mgr.tick()
         assert decision.trigger == BoundaryTrigger.EMERGENT

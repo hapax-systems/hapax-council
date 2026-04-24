@@ -42,11 +42,23 @@ def test_uses_loopback_module(conf_text: str) -> None:
     assert "libpipewire-module-loopback" in conf_text
 
 
-def test_targets_l12_master_not_capture(conf_text: str) -> None:
+def test_targets_off_l12_broadcast_paths(conf_text: str) -> None:
+    """Notifications MUST NOT reach any livestream / L-12 broadcast path.
+
+    NOTE 2026-04-22 (lssh-014 directive): the prior revision targeted
+    the L-12 MASTER analog-surround-40 monitor. This was retargeted
+    OFF the L-12 entirely to the Blue Yeti headphone monitor — the
+    operator's dedicated headphone path. The hard governance contract
+    (no notifications on broadcast) holds; the specific destination
+    moved. The test now pins the broadcast-isolation invariant
+    without coupling to which specific off-broadcast sink the
+    notification lands on.
+    """
     # Strip comment lines so we only check active configuration.
     active_lines = [line for line in conf_text.splitlines() if not line.lstrip().startswith("#")]
     active = "\n".join(active_lines)
 
+    # Forbidden: any L-12 capture / livestream-broadcast path.
     assert "hapax-l12-evilpet-capture" not in active, (
         "Notification sink must NEVER target the L-12 filter-chain capture; "
         "notifications forbidden on broadcast."
@@ -54,12 +66,15 @@ def test_targets_l12_master_not_capture(conf_text: str) -> None:
     assert "hapax-livestream-tap" not in active, (
         "Notification sink must not route into the livestream tap directly."
     )
-    assert "ZOOM_Corporation_L-12" in active, (
-        "Notification sink must target the L-12 MASTER analog output "
-        "(operator monitor) as its destination."
+    assert "hapax-livestream" not in active, (
+        "Notification sink must not target any livestream sink/source."
     )
-    assert "analog-surround-40" in active, (
-        "Target object should be the analog-surround-40 profile of the L-12."
+    # Required: a target.object directive that lands somewhere
+    # off-broadcast (operator monitor). The specific device is
+    # operator-config — could be Yeti, iLoud, or future swap — so
+    # only pin that target.object exists and isn't a broadcast path.
+    assert "target.object" in active, (
+        "Notification sink must declare an explicit target.object (off-broadcast operator monitor)."
     )
 
 
