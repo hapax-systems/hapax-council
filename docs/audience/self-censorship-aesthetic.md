@@ -4,7 +4,7 @@ authors:
   byline_variant: V2
   unsettled_variant: V1
   surface: triple-canopy
-  surface_deviation_matrix_key: lesswrong
+  surface_deviation_matrix_key: triple_canopy
   rendered_at_publish_time: true
 status: draft
 target_word_count: 7000
