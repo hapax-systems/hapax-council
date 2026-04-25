@@ -25,10 +25,12 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 import yaml
 
@@ -135,6 +137,86 @@ def _pattern_matches(pattern: str, value: str) -> bool:
     if pattern.endswith("*"):
         return value.startswith(pattern[:-1])
     return False
+
+
+# ── Redaction transform registry (AUDIT-22 Phase A) ─────────────────────
+#
+# Named transforms operating on string content. Each transform takes a
+# string + returns a string with sensitive substrings replaced by
+# ``[REDACTED]``. Registered by name so contract ``redactions:`` entries
+# can name them uniformly (``- legal_name``, ``- email_address``).
+#
+# Phase A (this PR): registry + transforms + tests.
+# Phase B (follow-on): wire registry into ``_apply_redactions`` so
+# string payloads get the named-transform pipeline applied per
+# contract redactions list.
+#
+# Spec: v4 §3.4.2 AUDIT-22 acceptance — RedactionTransform registry
+# (transforms registered by name: legal_name, email_address,
+# gps_coordinate, applied per `redactions:` field uniformly).
+
+# RFC-5322-shaped email; intentionally a tighter matcher than the
+# canonical regex (we want false negatives over false positives in the
+# redaction context — better to miss a corner-case email than to
+# accidentally redact a non-email).
+_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+
+# Decimal-degree coordinate pair: ``lat, lon`` with optional sign and
+# 1-3 decimal-degree places. Coordinates without a comma-separated
+# pair (single decimals like "version 1.0") do not match.
+_GPS_PATTERN = re.compile(r"-?\d{1,3}\.\d{2,}\s*,\s*-?\d{1,3}\.\d{2,}")
+
+REDACTION_MARKER: Final[str] = "[REDACTED]"
+
+
+class RedactionTransformNotFound(KeyError):
+    """Raised when ``apply_named_transform`` is called with a name not in
+    :data:`REDACTION_TRANSFORMS`. Subclasses :class:`KeyError` so callers
+    that already except KeyError around registry lookups inherit the
+    fail-closed default."""
+
+
+def _legal_name_transform(content: str) -> str:
+    """Redact ``HAPAX_OPERATOR_NAME`` env-supplied legal name (case-
+    insensitive substring). Empty / unset env disables the transform —
+    an empty pattern would match every string trivially."""
+    pattern = os.environ.get("HAPAX_OPERATOR_NAME", "")
+    if not pattern:
+        return content
+    return re.sub(re.escape(pattern), REDACTION_MARKER, content, flags=re.IGNORECASE)
+
+
+def _email_address_transform(content: str) -> str:
+    """Redact RFC-5322-shaped email addresses."""
+    return _EMAIL_PATTERN.sub(REDACTION_MARKER, content)
+
+
+def _gps_coordinate_transform(content: str) -> str:
+    """Redact decimal-degree coordinate pairs (``lat, lon``)."""
+    return _GPS_PATTERN.sub(REDACTION_MARKER, content)
+
+
+REDACTION_TRANSFORMS: Final[dict[str, Callable[[str], str]]] = {
+    "legal_name": _legal_name_transform,
+    "email_address": _email_address_transform,
+    "gps_coordinate": _gps_coordinate_transform,
+}
+
+
+def apply_named_transform(name: str, content: str) -> str:
+    """Look up a named transform and apply it to ``content``.
+
+    Raises :class:`RedactionTransformNotFound` for unknown names — the
+    fail-closed default keeps unrecognized transform names from
+    silently no-op'ing in production. Phase B's contract-side
+    validator (the linter component of AUDIT-22) flags unknown names
+    at contract load time so production never reaches this raise on
+    a known-deployed contract.
+    """
+    transform = REDACTION_TRANSFORMS.get(name)
+    if transform is None:
+        raise RedactionTransformNotFound(f"unknown redaction transform: {name!r}")
+    return transform(content)
 
 
 def _apply_redactions(payload: dict | str, redactions: tuple[str, ...]) -> tuple[dict | str, bool]:
