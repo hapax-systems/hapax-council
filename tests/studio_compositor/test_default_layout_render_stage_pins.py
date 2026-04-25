@@ -80,11 +80,19 @@ CHROME_DEFAULT = (
 
 
 @pytest.mark.parametrize("chrome_source", CHROME_DEFAULT)
-def test_default_chrome_wards_are_post_fx(chrome_source: str) -> None:
+def test_default_chrome_wards_are_pre_fx(chrome_source: str) -> None:
+    """Operator directive 2026-04-24: pull all wards into the nebulous scrim (pre_fx).
+
+    Previously chrome wards stayed post_fx for legibility. The operator
+    directive overrode that policy: chrome wards now render pre-FX so the
+    shader chain decorates them as part of the unified scrim. Legacy +
+    consent-safe layouts retain the old post-FX positioning (see those
+    targeted tests below) for the rollback path.
+    """
     stages = _stage_by_source(_load("default.json"))
-    assert stages[chrome_source] == "post_fx", (
-        f"default.json: {chrome_source} is a chrome ward — must stay "
-        "post-FX so shaders do not distort legibility."
+    assert stages[chrome_source] == "pre_fx", (
+        f"default.json: {chrome_source} should now render pre-FX as part of "
+        "the unified nebulous scrim. Per operator directive 2026-04-24."
     )
 
 
@@ -104,20 +112,25 @@ def test_consent_safe_stream_overlay_is_post_fx() -> None:
     assert stages["stream_overlay"] == "post_fx"
 
 
-# ── reverie pointed at post_fx deliberately ────────────────────────────
+# ── reverie pre/post-fx by layout ──────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "layout_name",
-    ["default.json", "default-legacy.json", "consent-safe.json"],
-)
-def test_reverie_is_post_fx(layout_name: str) -> None:
-    """Reverie IS the shader output surface.
+def test_reverie_in_default_is_pre_fx() -> None:
+    """Operator directive 2026-04-24: reverie joins the nebulous scrim.
 
-    Tagging it ``pre_fx`` would feed shader output back through the
-    shader chain, producing a double-pass that is not what Phase 2
-    wants. The default ``post_fx`` keeps the pipeline single-pass.
+    Previously reverie stayed post_fx because it IS the shader output
+    surface and tagging it pre_fx feeds shader output back through the
+    chain (double-pass). The operator accepted that trade-off when
+    pulling all wards into the unified scrim.
     """
+    stages = _stage_by_source(_load("default.json"))
+    assert stages["reverie"] == "pre_fx"
+
+
+@pytest.mark.parametrize("layout_name", ["default-legacy.json", "consent-safe.json"])
+def test_reverie_in_legacy_layouts_is_post_fx(layout_name: str) -> None:
+    """Legacy / consent-safe rollback layouts keep reverie at the
+    single-pass default to avoid the double-pass shader feedback path."""
     stages = _stage_by_source(_load(layout_name))
     assert stages["reverie"] == "post_fx"
 
