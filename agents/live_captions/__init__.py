@@ -11,6 +11,11 @@ modification (alpha lane) and the daimonion-side caption writer land
 in follow-up PRs once this contract is in place.
 """
 
+from agents.live_captions.daimonion_bridge import (
+    DaimonionCaptionBridge,
+    get_caption_bridge,
+    set_caption_bridge,
+)
 from agents.live_captions.reader import CaptionEvent, CaptionReader
 from agents.live_captions.routing import RoutedCaptionWriter, RoutingPolicy
 from agents.live_captions.writer import CaptionWriter
@@ -19,6 +24,9 @@ __all__ = [
     "CaptionEvent",
     "CaptionReader",
     "CaptionWriter",
+    "DaimonionCaptionBridge",
     "RoutedCaptionWriter",
     "RoutingPolicy",
+    "get_caption_bridge",
+    "set_caption_bridge",
 ]
