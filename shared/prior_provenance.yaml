@@ -57,6 +57,19 @@ system_degraded:
   symmetry: "time-translation invariant within a single boot window; resets at process restart (no persistence across boots — degradation belief is recomputed from current observations)"
   derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 + §6 (asymmetric profiles)"
 
+mood_coherence_low:
+  claim_name: mood_coherence_low
+  structural_commitments:
+    - "single_user axiom: coherence is a property of the (sole) operator's autonomic state; no cross-operator fusion needed"
+    - "physical: low coherence manifests through bounded biometric channels (HRV beat-to-beat variability, respiration rhythm, accelerometer micro-movement, skin temp thermoregulation) — all derivable from existing Pixel Watch sensor surface"
+    - "stimmung-adjacent: this claim is the Bayesian-posterior counterpart to the existing stimmung biometric dimension physiological_coherence; Phase 6b-iii.B may wire stimmung as a posterior consumer"
+    - "quantize-tier discipline: the underlying continuous-coherence-magnitude signal is quantized into a low-tier boolean for ClaimEngine[bool]; continuous-posterior path lands later if option 1 proves insufficient"
+    - "negative-tier framing: the claim is `coherence_is_low` so the asserted-state corresponds to dysregulated autonomic state — mirrors SystemDegradedEngine's HEALTHY/DEGRADED orientation rather than positive-tier semantics"
+  reference_prior: "Beta(2,11); 0.15 starting probability — operator's autonomic coherence is at or above baseline during most working windows. Low-coherence is rare under nominal conditions; 0.15 reflects empirical observation that coherence rarely drops in a healthy adult during focused work (refined empirically in Phase 6b-iii.B from baseline observation). The lower-than-arousal-or-valence prior reflects coherence's relative stability under most operating conditions."
+  constraint_narrowing: "Bias toward COHERENT/UNCERTAIN because (a) low-coherence claims affect downstream consumer behavior (recruitment caution, narration softening, cadence stretch) in ways that should require sustained evidence; (b) a single high-variability reading can have benign causes (movement artifact, sensor placement). The slow-enter / slower-exit TemporalProfile (k_enter=4, k_exit=8) further narrows toward conservative behavior under doubt — neither catastrophizing on a single high-CV reading nor flipping to COHERENT on a brief recovery, since autonomic regulation re-establishes slowly after dysregulation."
+  symmetry: "time-translation invariant within a working window; baseline (used by all four signals' threshold derivation) recalibrates at session boundaries — claim semantics are conditioned on the current session's baseline, not absolute physiological values"
+  derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 (priors) + §6 (Phase 6b mood claims)"
+
 mood_valence_negative:
   claim_name: mood_valence_negative
   structural_commitments:
