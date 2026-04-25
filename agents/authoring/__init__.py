@@ -13,10 +13,18 @@ from agents.authoring.byline import (
     BylineVariant,
     render_byline,
 )
+from agents.authoring.polysemic_audit import (
+    PolysemicAuditResult,
+    PolysemicConcern,
+    audit_artifact,
+)
 
 __all__ = [
     "Byline",
     "BylineCoauthor",
     "BylineVariant",
+    "PolysemicAuditResult",
+    "PolysemicConcern",
+    "audit_artifact",
     "render_byline",
 ]
