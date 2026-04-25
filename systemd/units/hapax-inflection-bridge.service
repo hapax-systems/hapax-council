@@ -1,0 +1,15 @@
+[Unit]
+Description=hapax — relay inflection → impingement bus bridge (AUDIT-20)
+Documentation=file:///home/hapax/projects/hapax-council/agents/inflection_to_impingement.py
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+Nice=19
+StandardOutput=journal
+StandardError=journal
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.inflection_to_impingement
+
+[Install]
+WantedBy=default.target
