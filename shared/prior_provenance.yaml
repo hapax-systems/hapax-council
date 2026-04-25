@@ -93,3 +93,15 @@ mood_arousal_high:
   constraint_narrowing: "Mid prior reflects that the high-arousal claim is a tier-cut boolean (~30% of ticks fall in the upper tier under nominal operating distribution). The roughly-symmetric TemporalProfile (k_enter=3, k_exit=4) reflects that mood shifts move more readily in both directions than presence or system-degradation, but arousal-asserting events get a slight head start over recovery to avoid flicker on isolated calm bursts."
   symmetry: "time-translation invariant within a working window; baseline (used by hr_bpm_above_baseline + ambient quantiles) recalibrates at session boundaries — claim semantics are conditioned on the current session's baseline, not absolute physiological values"
   derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 (priors) + §6 (Phase 6b mood claims)"
+
+operator_activity:
+  claim_name: operator_activity
+  structural_commitments:
+    - "single_user axiom: activity is a property of the (sole) operator — no cross-operator fusion needed"
+    - "engagement vs. occupation distinction: this claim measures *active engaged work*, not *body in the room*. Heart-rate / face / BLE proximity belong to PresenceEngine; OperatorActivityEngine reads keyboard / MIDI clock / desk taps / window focus / watch motion. The signal sets are deliberately disjoint to keep the two posteriors independently meaningful."
+    - "physical: activity manifests through bounded sensor channels (evdev keystroke rate, OXI MIDI clock pulse, Cortado contact mic taps, Hyprland focus events, Pixel Watch accelerometer delta)"
+    - "tick-discrete: each signal is observed at the daimonion perception cadence (~5s); engine state is derived from sustained patterns over multiple ticks via the asymmetric TemporalProfile"
+  reference_prior: "Beta(3,7); 0.30 starting probability — operator is in a focused-work state during ~30% of waking hours by rough self-report. Bias toward IDLE because (a) most ticks are at-rest / reading / waiting; (b) the cost of false-ACTIVE (overzealous narration cadence, recruitment churn) is moderate, while the cost of false-IDLE is low (the system simply quiets briefly until the next signal). Refined empirically in 6a-i.B from live signal stream observation."
+  constraint_narrowing: "Bias toward IDLE because activity is the assertion-requires-positive-evidence claim; absence of all five signals is genuine evidence of IDLE, not unknown. The asymmetric TemporalProfile (k_enter=1, k_exit=8) reflects that engagement bursts onto the stage immediately on a single strong cue (keyboard / MIDI clock) but recovery to IDLE requires sustained signal absence — brief reading pauses must not flip state."
+  symmetry: "time-translation invariant within a single waking window; resets at process restart (no persistence across boots — activity belief is recomputed from current observations)"
+  derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 + §6 (asymmetric profiles); beta scope direction 2026-04-25T02:18Z (Phase 6a delta-canonical)"

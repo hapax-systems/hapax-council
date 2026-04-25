@@ -328,8 +328,59 @@ mood_coherence_low_signals:
     estimation_reference: "Pixel Watch skin temperature varying rapidly; unstable thermoregulation"
     calibration_window_s: null
 
+# Phase 6a-i.A — operator_activity (delta, this PR)
+# Activity-claim posterior over operator's actively-engaged-in-focused-work
+# state. Distinct from PresenceEngine: PresenceEngine answers "body in
+# room?" (face / HR / BLE proximity); OperatorActivityEngine answers
+# "actively engaged?" (keyboard / MIDI clock / desk taps / window focus
+# / watch motion). Wired-in signal sources land in Phase 6a-i.B follow-up.
+operator_activity_signals:
+  keyboard_active:
+    claim_name: operator_activity
+    source_category: physical_model
+    p_true_given_h1: 0.85
+    p_true_given_h0: 0.05
+    positive_only: false
+    estimation_reference: "evdev raw HID; Claude Code subprocess filtered; calibrated 2026-04-25 against PresenceEngine baseline; refined in 6a-i.B wire-in"
+    calibration_window_s: 300.0
+
+  midi_clock_active:
+    claim_name: operator_activity
+    source_category: physical_model
+    p_true_given_h1: 0.70
+    p_true_given_h0: 0.02
+    positive_only: false
+    estimation_reference: "OXI One MIDI clock pulse rate above tempo threshold; direct artefact of operator action; calibrated 2026-04-25"
+    calibration_window_s: null
+
+  desk_active:
+    claim_name: operator_activity
+    source_category: physical_model
+    p_true_given_h1: 0.75
+    p_true_given_h0: 0.10
+    positive_only: false
+    estimation_reference: "Cortado MKIII contact mic on Studio 24c Input 2; activity classes typing/tapping/drumming/active per shared/perception activity vocab; calibrated 2026-04-25"
+    calibration_window_s: null
+
+  desktop_focus_changed_recent:
+    claim_name: operator_activity
+    source_category: expert_elicitation_shelf
+    p_true_given_h1: 0.65
+    p_true_given_h0: 0.15
+    positive_only: false
+    estimation_reference: "Hyprland focus-change event within last poll window; expert-shelf prior aligned with PresenceEngine desktop_active; calibrated 2026-04-25"
+    calibration_window_s: null
+
+  watch_movement:
+    claim_name: operator_activity
+    source_category: physical_model
+    p_true_given_h1: 0.55
+    p_true_given_h0: 0.10
+    positive_only: false
+    estimation_reference: "Pixel Watch accelerometer delta exceeding stillness threshold; weak positive (operator can be active while still); calibrated 2026-04-25"
+    calibration_window_s: 60.0
+
 # Phase 2 + Phase 2b will add claim-specific signal blocks below once
 # the corresponding ClaimEngines ship:
 #   vinyl_spinning_signals: {turntable_rpm, ir_hand_turntable, audio_signal_present, ...}
 #   music_playing_signals: {yamnet_music_posterior, youtube_audio_active, local_player_active, ...}
-#   operator_working_signals: {keyboard_active, operator_present, screen_looking, ...}
