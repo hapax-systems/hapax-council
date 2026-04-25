@@ -1,0 +1,17 @@
+[Unit]
+Description=hapax — 60s relay-inflection → impingement bus bridge timer (AUDIT-20)
+Documentation=file:///home/hapax/projects/hapax-council/agents/inflection_to_impingement.py
+
+[Timer]
+# 60s cadence — peer relay broadcasts are sparse (minutes-to-hours
+# apart) but the QM2 sampler computes a 5-min novelty score that wants
+# the inflection event landed within the same window it occurred.
+# Persistent catches missed runs after reboot.
+OnBootSec=2min
+OnUnitActiveSec=60s
+Persistent=true
+RandomizedDelaySec=10
+Unit=hapax-inflection-bridge.service
+
+[Install]
+WantedBy=timers.target
