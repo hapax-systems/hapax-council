@@ -2,7 +2,8 @@
 # Stub-safe: empty state_kinds means default DENY is enforced for any caller.
 surface: pinned-comment
 state_kinds: []
-redactions: []
+redactions:
+  - operator_legal_name
 rate_limit:
   per_hour: 0
   per_day: 0

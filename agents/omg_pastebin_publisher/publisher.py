@@ -25,6 +25,7 @@ from typing import Any
 
 import yaml
 
+from shared.governance.omg_referent import OperatorNameLeak, safe_render
 from shared.governance.publication_allowlist import check as allowlist_check
 
 log = logging.getLogger(__name__)
@@ -435,6 +436,20 @@ class PastebinArtifactPublisher:
         tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
         tmp.replace(self.state_file)
 
+    def _safe_render_or_drop(self, content: str, slug: str, category: str) -> str | None:
+        """AUDIT-05: scan content for legal-name leak + substitute
+        ``{operator}`` token before publish.
+
+        Returns redacted content, or ``None`` if a leak was detected
+        (caller bails with ``"legal-name-leak"`` outcome).
+        """
+        try:
+            return safe_render(content, segment_id=slug)
+        except OperatorNameLeak:
+            log.warning("omg-pastebin: legal-name leak detected — DROPPING (%s)", slug)
+            _record(category, "legal-name-leak")
+            return None
+
     def publish_chronicle_week(self, week_start: date, *, dry_run: bool = False) -> str:
         """Compose + publish (or update) the digest for the given ISO week.
 
@@ -485,7 +500,10 @@ class PastebinArtifactPublisher:
             _record(self.CATEGORY_CHRONICLE, "client-disabled")
             return "client-disabled"
 
-        resp = self.client.set_paste(self.address, content=content, title=slug, listed=True)
+        redacted = self._safe_render_or_drop(content, slug, self.CATEGORY_CHRONICLE)
+        if redacted is None:
+            return "legal-name-leak"
+        resp = self.client.set_paste(self.address, content=redacted, title=slug, listed=True)
         if resp is None:
             log.warning("omg-pastebin: set_paste returned None (%s)", slug)
             _record(self.CATEGORY_CHRONICLE, "failed")
@@ -562,7 +580,10 @@ class PastebinArtifactPublisher:
             _record(self.CATEGORY_PROGRAMME, "client-disabled")
             return "client-disabled"
 
-        resp = self.client.set_paste(self.address, content=content, title=slug, listed=True)
+        redacted = self._safe_render_or_drop(content, slug, self.CATEGORY_PROGRAMME)
+        if redacted is None:
+            return "legal-name-leak"
+        resp = self.client.set_paste(self.address, content=redacted, title=slug, listed=True)
         if resp is None:
             log.warning("omg-pastebin: set_paste returned None (%s)", slug)
             _record(self.CATEGORY_PROGRAMME, "failed")
@@ -628,7 +649,10 @@ class PastebinArtifactPublisher:
             _record(self.CATEGORY_PRECEDENT, "client-disabled")
             return "client-disabled"
 
-        resp = self.client.set_paste(self.address, content=content, title=slug, listed=True)
+        redacted = self._safe_render_or_drop(content, slug, self.CATEGORY_PRECEDENT)
+        if redacted is None:
+            return "legal-name-leak"
+        resp = self.client.set_paste(self.address, content=redacted, title=slug, listed=True)
         if resp is None:
             log.warning("omg-pastebin: set_paste returned None (%s)", slug)
             _record(self.CATEGORY_PRECEDENT, "failed")
@@ -695,7 +719,10 @@ class PastebinArtifactPublisher:
             _record(self.CATEGORY_RESEARCH, "client-disabled")
             return "client-disabled"
 
-        resp = self.client.set_paste(self.address, content=content, title=slug, listed=True)
+        redacted = self._safe_render_or_drop(content, slug, self.CATEGORY_RESEARCH)
+        if redacted is None:
+            return "legal-name-leak"
+        resp = self.client.set_paste(self.address, content=redacted, title=slug, listed=True)
         if resp is None:
             log.warning("omg-pastebin: set_paste returned None (%s)", slug)
             _record(self.CATEGORY_RESEARCH, "failed")

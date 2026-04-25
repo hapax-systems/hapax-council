@@ -6,6 +6,7 @@ state_kinds:
 redactions:
   - operator_profile.*
   - operator_identity.*
+  - operator_legal_name
   - chronicle.private_moments
 rate_limit:
   per_hour: 12

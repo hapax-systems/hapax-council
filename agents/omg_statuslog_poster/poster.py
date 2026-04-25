@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from shared.governance.omg_referent import OperatorNameLeak, safe_render
 from shared.governance.publication_allowlist import check as allowlist_check
 
 log = logging.getLogger(__name__)
@@ -180,6 +181,17 @@ class StatuslogPoster:
             return "compose-empty"
         if len(text) > MAX_STATUS_LEN:
             text = text[: MAX_STATUS_LEN - 1].rstrip() + "…"
+
+        # AUDIT-05: substitute {operator} via OperatorReferentPicker +
+        # scan for legal-name leak before publishing. LLM-composed text
+        # is the highest-risk path in the OMG cascade — fail-closed if
+        # the legal name slips through HAPAX_OPERATOR_NAME guard.
+        try:
+            text = safe_render(text, segment_id=str(event.get("event_id", "")) or None)
+        except OperatorNameLeak:
+            log.warning("omg-statuslog: legal-name leak detected — DROPPING post")
+            _record("legal-name-leak")
+            return "legal-name-leak"
 
         if not getattr(self.client, "enabled", False):
             log.warning("omg-statuslog: client disabled — skipping post")

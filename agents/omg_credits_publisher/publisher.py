@@ -24,6 +24,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from agents.omg_credits_publisher.data import CreditsModel, build_credits_model
+from shared.governance.omg_referent import OperatorNameLeak, safe_render
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +117,15 @@ class OmgCreditsPublisher:
         if not getattr(self.client, "enabled", False):
             log.warning("omg-credits: client disabled — skipping publish")
             return "client-disabled"
+
+        # AUDIT-05: scan rendered credits HTML for legal-name leak
+        # before publishing. Asset attribution metadata may contain
+        # operator-name surface forms; this is the egress guard.
+        try:
+            html = safe_render(html, segment_id=CREDITS_SLUG)
+        except OperatorNameLeak:
+            log.warning("omg-credits: legal-name leak detected — DROPPING publish")
+            return "legal-name-leak"
 
         resp = self.client.set_paste(
             self.address,

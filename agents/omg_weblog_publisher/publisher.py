@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from shared.governance.omg_referent import OperatorNameLeak, safe_render
 from shared.governance.publication_allowlist import check as allowlist_check
 
 log = logging.getLogger(__name__)
@@ -172,7 +173,17 @@ class WeblogPublisher:
             _record("client-disabled")
             return "client-disabled"
 
-        resp = self.client.set_entry(self.address, draft.slug, content=draft.content)
+        # AUDIT-05: scan operator-edited weblog content for legal-name
+        # leak before publishing. Operator drafts may contain inadvertent
+        # name mentions; this is the last guard before omg.lol egress.
+        try:
+            content = safe_render(draft.content, segment_id=draft.slug)
+        except OperatorNameLeak:
+            log.warning("omg-weblog: legal-name leak detected — DROPPING publish")
+            _record("legal-name-leak")
+            return "legal-name-leak"
+
+        resp = self.client.set_entry(self.address, draft.slug, content=content)
         if resp is None:
             log.warning("omg-weblog: set_entry returned None")
             _record("failed")

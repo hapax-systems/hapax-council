@@ -13,6 +13,7 @@ redactions:
   - operator_profile.*
   - chronicle.private_moments
   - operator_identity.*
+  - operator_legal_name
   - capability.name_if_risk_medium_or_high
 rate_limit:
   per_hour: 6

@@ -1,7 +1,8 @@
 surface: channel-trailer
 state_kinds:
   - broadcast.current_live_url
-redactions: []
+redactions:
+  - operator_legal_name
 rate_limit:
   per_hour: 2
   per_day: 6

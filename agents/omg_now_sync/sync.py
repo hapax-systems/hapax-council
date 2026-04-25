@@ -26,6 +26,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from agents.omg_now_sync.data import NowState
+from shared.governance.omg_referent import OperatorNameLeak, safe_render
 
 log = logging.getLogger(__name__)
 
@@ -158,6 +159,16 @@ class OmgNowSync:
             log.warning("omg-now: client disabled — skipping publish")
             _record("client-disabled")
             return "client-disabled"
+
+        # AUDIT-05: scan rendered markdown for legal-name leak before
+        # publishing. The /now page aggregates chronicle events whose
+        # narrative may contain operator-name surface forms.
+        try:
+            markdown = safe_render(markdown, segment_id=content_sha)
+        except OperatorNameLeak:
+            log.warning("omg-now: legal-name leak detected — DROPPING publish")
+            _record("legal-name-leak")
+            return "legal-name-leak"
 
         resp = self.client.set_now(self.address, content=markdown, listed=True)
         if resp is None:

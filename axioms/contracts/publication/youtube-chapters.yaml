@@ -5,6 +5,7 @@ state_kinds:
   - programme.boundary
   - director.activity_change
 redactions:
+  - operator_legal_name
   - chronicle.private_moments
 rate_limit:
   per_hour: 6

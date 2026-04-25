@@ -8,6 +8,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.governance.omg_referent import safe_render
+
 # Default vault path per cc-task design. Operator drafts land here; Phase B
 # publisher (agents/omg_weblog_publisher) reads from the same directory
 # after the operator flips ``approved: true`` in frontmatter.
@@ -180,7 +182,14 @@ class WeblogComposer:
             lines.append("")
             lines.append("")
 
-        path.write_text("\n".join(lines), encoding="utf-8")
+        # AUDIT-05: scan composed skeleton for legal-name leak before
+        # writing to vault. Composer-side sources (chronicle entries,
+        # programme summaries, axiom precedents) may contain operator-
+        # name surface forms; failing fast here avoids the operator
+        # editing leaked content downstream.
+        rendered = "\n".join(lines)
+        rendered = safe_render(rendered, segment_id=draft.iso_date)
+        path.write_text(rendered, encoding="utf-8")
         return path
 
 

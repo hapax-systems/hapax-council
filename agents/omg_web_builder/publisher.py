@@ -28,6 +28,8 @@ import logging
 import sys
 from pathlib import Path
 
+from shared.governance.omg_referent import OperatorNameLeak, safe_render
+
 log = logging.getLogger(__name__)
 
 DEFAULT_HTML_PATH = Path(__file__).resolve().parent / "static" / "index.html"
@@ -86,6 +88,15 @@ def publish(
     client = (client_factory or _default_client_factory)()
     if not getattr(client, "enabled", True):
         log.error("omg.lol client disabled (no API key in pass store)")
+        return 1
+
+    # AUDIT-05: scan static HTML for legal-name leak before publishing
+    # to /web. The web page is the broadest public surface in the OMG
+    # cascade — fail-closed if HAPAX_OPERATOR_NAME guard matches.
+    try:
+        content = safe_render(content, segment_id=f"web-{address}")
+    except OperatorNameLeak:
+        log.error("omg-web: legal-name leak detected — DROPPING publish")
         return 1
 
     response = client.set_web(address, content=content, publish=True)

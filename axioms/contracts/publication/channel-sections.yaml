@@ -2,7 +2,8 @@ surface: channel-sections
 state_kinds:
   - broadcast.recent_vods
   - programme.thematic_groups
-redactions: []
+redactions:
+  - operator_legal_name
 rate_limit:
   per_hour: 1
   per_day: 4
