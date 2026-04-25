@@ -145,3 +145,65 @@ class TestSubclassOverrideContract:
         result = pub.publish(PublisherPayload(target="permitted-target", text="x"))
         assert result.refused
         assert "rate-limited" in result.detail
+
+
+class TestRefusalBriefEmission:
+    """Refusal-as-data: allowlist deny + legal-name leak both emit a
+    structured event into the canonical refusal log."""
+
+    def test_allowlist_deny_emits_refusal_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: list = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        pub = _FakePublisher()
+        result = pub.publish(PublisherPayload(target="bad-target", text="x"))
+        assert result.refused
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.surface == "publication_bus:test-surface"
+        assert ev.axiom == "allowlist_deny"
+        assert "bad-target" in ev.reason
+
+    def test_legal_name_leak_emits_refusal_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Test Operator")
+        captured: list = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        pub = _FakePublisher()
+        result = pub.publish(PublisherPayload(target="permitted-target", text="from Test Operator"))
+        assert result.refused
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.surface == "publication_bus:test-surface"
+        assert ev.axiom == "legal_name_leak"
+        # Reason must NOT contain the matched legal name (re-emission would
+        # defeat the purpose of the guard).
+        assert "Test Operator" not in ev.reason
+
+    def test_ok_path_emits_no_refusal_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: list = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        pub = _FakePublisher()
+        result = pub.publish(PublisherPayload(target="permitted-target", text="hello"))
+        assert result.ok
+        assert captured == []
+
+    def test_writer_failure_does_not_break_publish(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import agents.refusal_brief as _pkg
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("writer is on fire")
+
+        monkeypatch.setattr(_pkg, "append", _boom)
+
+        pub = _FakePublisher()
+        # Must not raise — publish still returns the refused result.
+        result = pub.publish(PublisherPayload(target="bad", text="x"))
+        assert result.refused
