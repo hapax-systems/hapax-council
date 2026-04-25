@@ -84,18 +84,54 @@ the publisher can't recover from; re-dispatching loops forever."""
 
 # ── Surface registry ────────────────────────────────────────────────
 
+# CONSTITUTIONAL GATE — full-automation-or-no-engagement (operator
+# directive 2026-04-25):
+#
+# Only register surfaces whose entire publication + post-publication
+# engagement path is FULL-Hapax-automated end-to-end. Any surface
+# requiring HUMAN intervention at ANY step — including post-publish
+# reply cycles, captcha gates, peer-review human-loops, identity
+# verification beyond a one-time bootstrap, in-person presentation,
+# follow-back culture, or comment threads expecting authorial reply —
+# is REFUSED, regardless of stated quality.
+#
+# "Operator just clicks once" = HUMAN_REQUIRED = REFUSE.
+#
+# Refused surfaces are not omissions; they are the dataset of the
+# Refusal Brief (an Automation-Tractability Disclosure published as
+# a standalone artifact). See:
+#   - feedback_full_automation_or_no_engagement.md (auto-memory)
+#   - feedback_co_publishing_auto_only_unsettled_contribution.md
+#   - ~/Documents/Personal/30-areas/hapax/refusal-brief.md (Locus 2)
+#   - ~/Documents/Personal/30-areas/hapax/manifesto.md §IV.5 (Locus 1)
+#
+# Before adding a new entry below, confirm the surface is FULL_AUTO
+# per the 4-cluster audit (35 surfaces classified as of 2026-04-25,
+# refresh on major-policy-event triggers). The audit dataset lives
+# at ~/.cache/hapax/relay/inflections/20260425T17{0000,1500}Z-*.md.
+
 SURFACE_REGISTRY: dict[str, str] = {
     # Phase 1 cross-surface posters (PUB-P1-A/B/C/D foundations).
     "bluesky-post": "agents.cross_surface.bluesky_post:publish_artifact",
     "mastodon-post": "agents.cross_surface.mastodon_post:publish_artifact",
     "arena-post": "agents.cross_surface.arena_post:publish_artifact",
     "discord-webhook": "agents.cross_surface.discord_webhook:publish_artifact",
-    # Phase 2 (queued)
+    # Phase 2 (queued — FULL_AUTO confirmed per 2026-04-25 audit)
     "osf-preprint": "agents.osf_preprint_publisher:publish_artifact",
-    # "hf-papers":      "agents.hf_papers_publisher:publish_artifact",
+    # "zenodo-doi":     "agents.zenodo_publisher:publish_artifact",  # next: cleanest fully-automated DOI minter
+    # "hf-papers":      "agents.hf_papers_publisher:publish_artifact",  # arXiv-downstream Mon-Fri
+    # "alphaxiv-comments": "agents.alphaxiv_publisher:publish_artifact",  # arXiv-downstream comment loop
+    # "ghost-blog":     "agents.ghost_publisher:publish_artifact",  # self-hosted, richest API
+    # "omg-weblog":     "agents.omg_weblog_publisher:publish_artifact",  # operator-owned
+    # "smtp-newsletter":"agents.smtp_newsletter_publisher:publish_artifact",  # operator-sovereign
+    # "tumblr":         "agents.tumblr_publisher:publish_artifact",
+    # "dev-to":         "agents.dev_to_publisher:publish_artifact",
+    # "hashnode":       "agents.hashnode_publisher:publish_artifact",
+    # "beehiiv":        "agents.beehiiv_publisher:publish_artifact",
+    # "scene-org":      "agents.scene_org_publisher:publish_artifact",  # anonymous FTP
     # "manifold":       "agents.manifold_publisher:publish_artifact",
     # "lesswrong":      "agents.lesswrong_publisher:publish_artifact",
-    # Phase 3 (Playwright daemon-mediated; queued)
+    # Phase 3 (Playwright daemon-mediated; queued — CONDITIONAL_ENGAGE per audit)
     # "philarchive":    "agents.philarchive_publisher:publish_artifact",
     # "alphaxiv":       "agents.alphaxiv_publisher:publish_artifact",
     # "substack":       "agents.substack_publisher:publish_artifact",
