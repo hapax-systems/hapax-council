@@ -280,3 +280,19 @@ class TestSurfaceRegistry:
         mod = importlib.import_module(module_path)
         fn = getattr(mod, attr)
         assert callable(fn)
+
+    def test_zenodo_doi_wired(self):
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        assert "zenodo-doi" in SURFACE_REGISTRY
+        assert SURFACE_REGISTRY["zenodo-doi"] == ("agents.zenodo_publisher:publish_artifact")
+
+    def test_zenodo_entry_resolves(self):
+        import importlib
+
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        module_path, attr = SURFACE_REGISTRY["zenodo-doi"].split(":")
+        mod = importlib.import_module(module_path)
+        fn = getattr(mod, attr)
+        assert callable(fn)
