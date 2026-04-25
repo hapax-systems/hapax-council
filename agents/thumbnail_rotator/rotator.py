@@ -43,6 +43,7 @@ description syncer + video-id publisher use.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import signal as _signal
@@ -61,6 +62,13 @@ DEFAULT_SNAPSHOT_PATH = Path(
     )
 )
 DEFAULT_TICK_S: float = float(os.environ.get("HAPAX_THUMBNAIL_TICK_S", "1800"))
+DEFAULT_SLOT_DIR = Path(
+    os.environ.get(
+        "HAPAX_THUMBNAIL_SLOT_DIR",
+        str(Path.home() / ".cache/hapax/thumbnail-rotator/slots"),
+    )
+)
+SLOT_NAMES = ("a", "b")
 
 # YouTube's recommended thumbnail dimensions; staying on the canonical
 # size avoids re-encoding by the YT pipeline. JPEG quality 85 keeps
@@ -127,6 +135,7 @@ class ThumbnailRotator:
         snapshot_path: Path = DEFAULT_SNAPSHOT_PATH,
         tick_s: float = DEFAULT_TICK_S,
         dry_run: bool = False,
+        slot_dir: Path = DEFAULT_SLOT_DIR,
         registry: CollectorRegistry = REGISTRY,
     ) -> None:
         self._video_id = video_id or os.environ.get("HAPAX_YOUTUBE_VIDEO_ID", "").strip() or None
@@ -134,43 +143,101 @@ class ThumbnailRotator:
         self._snapshot_path = snapshot_path
         self._tick_s = max(60.0, tick_s)
         self._dry_run = dry_run or bool(os.environ.get("HAPAX_THUMBNAIL_DRY_RUN", "").strip())
+        self._slot_dir = slot_dir
         self._stop_evt = threading.Event()
 
         self.rotations_total = Counter(
             "hapax_broadcast_yt_thumbnail_rotations_total",
             "YouTube thumbnail rotations attempted, broken down by outcome.",
-            ["result"],
+            ["result", "slot"],
             registry=registry,
         )
 
+    def _next_slot(self) -> str:
+        """Return the slot to use this rotation; persist for the next.
+
+        Slot state persists at ``{slot_dir}/state.json`` as
+        ``{"next_slot": "a"|"b"}``. First-ever start defaults to ``a``;
+        the file is written before this method returns so a crash
+        between slot selection and upload still preserves the
+        intended alternation. Read failures default to ``a`` rather
+        than blocking the rotation.
+        """
+        state_path = self._slot_dir / "state.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            current = str(state.get("next_slot", "a"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            current = "a"
+        if current not in SLOT_NAMES:
+            current = "a"
+        flipped = SLOT_NAMES[(SLOT_NAMES.index(current) + 1) % len(SLOT_NAMES)]
+        try:
+            self._slot_dir.mkdir(parents=True, exist_ok=True)
+            tmp = state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"next_slot": flipped}), encoding="utf-8")
+            tmp.replace(state_path)
+        except OSError:
+            log.warning("slot-state write failed at %s", state_path, exc_info=True)
+        return current
+
+    def _persist_slot_jpeg(self, slot: str, jpeg: bytes) -> None:
+        """Persist the just-uploaded JPEG to ``{slot_dir}/slot-{name}.jpg``.
+
+        Best-effort: failures log without raising. The slot file is
+        operator-visible — they can inspect both A and B current
+        thumbnails without round-tripping through the YouTube UI.
+        """
+        try:
+            self._slot_dir.mkdir(parents=True, exist_ok=True)
+            (self._slot_dir / f"slot-{slot}.jpg").write_bytes(jpeg)
+        except OSError:
+            log.warning("slot persist failed for %s at %s", slot, self._slot_dir, exc_info=True)
+
     def run_once(self) -> str:
-        """Process one rotation; return the result label."""
+        """Process one rotation; return the result label.
+
+        Phase 3 (A/B retention): each rotation alternates between two
+        named slots. The slot for this tick is selected from persistent
+        state (so the alternation survives daemon restarts), the
+        compositor snapshot is captured fresh, the JPEG is persisted
+        to the slot file (operator-visible), and the upload happens
+        from the in-memory bytes. The Prometheus counter carries a
+        ``slot=a|b`` label so quota + outcome can be split per slot.
+        """
+        slot = self._next_slot()
         if not self._video_id:
             log.debug("no HAPAX_YOUTUBE_VIDEO_ID set; skipping rotation")
-            self.rotations_total.labels(result="no_video_id").inc()
+            self.rotations_total.labels(result="no_video_id", slot=slot).inc()
             return "no_video_id"
 
         jpeg = prepare_thumbnail_jpeg(self._snapshot_path)
         if jpeg is None:
-            self.rotations_total.labels(result="no_snapshot").inc()
+            self.rotations_total.labels(result="no_snapshot", slot=slot).inc()
             return "no_snapshot"
+
+        # Persist the captured JPEG to the slot file regardless of
+        # upload outcome — operators inspecting the slot directory
+        # see what the captured frame would have been.
+        self._persist_slot_jpeg(slot, jpeg)
 
         if self._dry_run:
             log.info(
-                "DRY RUN — would set thumbnail for %s (%d bytes)",
+                "DRY RUN — would set thumbnail for %s slot=%s (%d bytes)",
                 self._video_id,
+                slot,
                 len(jpeg),
             )
-            self.rotations_total.labels(result="dry_run").inc()
+            self.rotations_total.labels(result="dry_run", slot=slot).inc()
             return "dry_run"
 
         try:
             result = self._upload(self._video_id, jpeg)
         except Exception:  # noqa: BLE001
             log.exception("thumbnail upload raised for video_id=%s", self._video_id)
-            self.rotations_total.labels(result="error").inc()
+            self.rotations_total.labels(result="error", slot=slot).inc()
             return "error"
-        self.rotations_total.labels(result=result).inc()
+        self.rotations_total.labels(result=result, slot=slot).inc()
         return result
 
     def run_forever(self) -> None:

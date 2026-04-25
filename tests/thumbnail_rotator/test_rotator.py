@@ -29,15 +29,20 @@ def _make_rotator(
     snapshot_path: Path,
     tick_s: float = 60.0,
     dry_run: bool = False,
+    slot_dir: Path | None = None,
 ) -> tuple[ThumbnailRotator, mock.Mock]:
     if upload_fn is None:
         upload_fn = mock.Mock(return_value="ok")
+    if slot_dir is None:
+        # Use a dedicated tmp slot dir per rotator so tests don't collide.
+        slot_dir = snapshot_path.parent / "slots"
     rotator = ThumbnailRotator(
         video_id=video_id,
         upload_fn=upload_fn,
         snapshot_path=snapshot_path,
         tick_s=tick_s,
         dry_run=dry_run,
+        slot_dir=slot_dir,
         registry=CollectorRegistry(),
     )
     return rotator, upload_fn
@@ -167,7 +172,8 @@ class TestUploadOutcomes:
         _write_test_jpeg(src)
         rotator, upload = _make_rotator(snapshot_path=src)
         rotator.run_once()
-        assert rotator.rotations_total.labels(result="ok")._value.get() == 1.0
+        # First rotation lands in slot a (default).
+        assert rotator.rotations_total.labels(result="ok", slot="a")._value.get() == 1.0
 
     def test_upload_exception_yields_error(self, tmp_path):
         src = tmp_path / "snapshot.jpg"
@@ -183,7 +189,7 @@ class TestUploadOutcomes:
         upload = mock.Mock(return_value="auth_error")
         rotator, _ = _make_rotator(snapshot_path=src, upload_fn=upload)
         assert rotator.run_once() == "auth_error"
-        assert rotator.rotations_total.labels(result="auth_error")._value.get() == 1.0
+        assert rotator.rotations_total.labels(result="auth_error", slot="a")._value.get() == 1.0
 
 
 # ── Tick cadence floor ──────────────────────────────────────────────
@@ -196,6 +202,92 @@ class TestTickFloor:
         _write_test_jpeg(src)
         rotator, _ = _make_rotator(snapshot_path=src, tick_s=10.0)
         assert rotator._tick_s >= 60.0
+
+
+# ── A/B slot retention (Phase 3) ────────────────────────────────────
+
+
+class TestSlotRetention:
+    """A/B alternation: each rotation flips the persisted slot pointer.
+
+    Phase 3 of ytb-003 — keeps two recent thumbnails on disk (operator-
+    inspectable) and alternates uploads so YouTube's freshness signal
+    sees a moving target. Slot pointer persists across daemon restarts
+    so the alternation cadence is unaffected by service flaps.
+    """
+
+    def test_first_rotation_uses_slot_a(self, tmp_path):
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        rotator, _ = _make_rotator(snapshot_path=src)
+        rotator.run_once()
+        assert rotator.rotations_total.labels(result="ok", slot="a")._value.get() == 1.0
+        assert rotator.rotations_total.labels(result="ok", slot="b")._value.get() == 0.0
+
+    def test_second_rotation_uses_slot_b(self, tmp_path):
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        rotator, _ = _make_rotator(snapshot_path=src)
+        rotator.run_once()
+        rotator.run_once()
+        assert rotator.rotations_total.labels(result="ok", slot="a")._value.get() == 1.0
+        assert rotator.rotations_total.labels(result="ok", slot="b")._value.get() == 1.0
+
+    def test_alternates_across_many_rotations(self, tmp_path):
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        rotator, _ = _make_rotator(snapshot_path=src)
+        for _ in range(6):
+            rotator.run_once()
+        # 3 a, 3 b — perfect alternation.
+        assert rotator.rotations_total.labels(result="ok", slot="a")._value.get() == 3.0
+        assert rotator.rotations_total.labels(result="ok", slot="b")._value.get() == 3.0
+
+    def test_slot_jpegs_persisted_to_disk(self, tmp_path):
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        slot_dir = tmp_path / "slots"
+        rotator, _ = _make_rotator(snapshot_path=src, slot_dir=slot_dir)
+        rotator.run_once()
+        rotator.run_once()
+        assert (slot_dir / "slot-a.jpg").exists()
+        assert (slot_dir / "slot-b.jpg").exists()
+        assert (slot_dir / "state.json").exists()
+
+    def test_slot_state_persists_across_rotator_instances(self, tmp_path):
+        """A new rotator pointed at the same slot dir resumes the alternation."""
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        slot_dir = tmp_path / "slots"
+        # First daemon: 1 rotation → slot a.
+        rotator1, _ = _make_rotator(snapshot_path=src, slot_dir=slot_dir)
+        rotator1.run_once()
+        # Second daemon (simulates restart) reuses slot dir; next slot is b.
+        rotator2, _ = _make_rotator(snapshot_path=src, slot_dir=slot_dir)
+        rotator2.run_once()
+        assert rotator2.rotations_total.labels(result="ok", slot="b")._value.get() == 1.0
+
+    def test_slot_persisted_even_when_upload_skipped(self, tmp_path):
+        """no_video_id / no_snapshot still flip the pointer (atomic alternation)."""
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        slot_dir = tmp_path / "slots"
+        rotator, _ = _make_rotator(video_id=None, snapshot_path=src, slot_dir=slot_dir)
+        rotator.run_once()  # slot a
+        rotator.run_once()  # slot b
+        assert rotator.rotations_total.labels(result="no_video_id", slot="a")._value.get() == 1.0
+        assert rotator.rotations_total.labels(result="no_video_id", slot="b")._value.get() == 1.0
+
+    def test_corrupt_state_defaults_to_slot_a(self, tmp_path):
+        """Malformed state.json doesn't block rotation; falls back to slot a."""
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        slot_dir = tmp_path / "slots"
+        slot_dir.mkdir()
+        (slot_dir / "state.json").write_text("not json", encoding="utf-8")
+        rotator, _ = _make_rotator(snapshot_path=src, slot_dir=slot_dir)
+        rotator.run_once()
+        assert rotator.rotations_total.labels(result="ok", slot="a")._value.get() == 1.0
 
 
 # ── Salience-triggered loop ─────────────────────────────────────────
