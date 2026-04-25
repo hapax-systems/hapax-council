@@ -12,6 +12,13 @@ in follow-up PRs once this contract is in place.
 """
 
 from agents.live_captions.reader import CaptionEvent, CaptionReader
+from agents.live_captions.routing import RoutedCaptionWriter, RoutingPolicy
 from agents.live_captions.writer import CaptionWriter
 
-__all__ = ["CaptionEvent", "CaptionReader", "CaptionWriter"]
+__all__ = [
+    "CaptionEvent",
+    "CaptionReader",
+    "CaptionWriter",
+    "RoutedCaptionWriter",
+    "RoutingPolicy",
+]
