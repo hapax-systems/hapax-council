@@ -128,3 +128,49 @@ class TestEngineHistory:
         client = TestClient(_make_app())
         resp = client.get("/api/engine/history")
         assert resp.status_code == 503
+
+
+# ── TestSystemDegradedStatus ────────────────────────────────────────────
+
+
+class TestSystemDegradedStatus:
+    def test_returns_posterior_and_state(self):
+        from agents.hapax_daimonion.system_degraded_engine import SystemDegradedEngine
+
+        sde = SystemDegradedEngine()
+        app = _make_app(_mock_engine())
+        app.state.system_degraded_engine = sde
+        client = TestClient(app)
+        resp = client.get("/api/engine/system_degraded")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "posterior" in data
+        assert "state" in data
+        assert 0.0 <= data["posterior"] <= 1.0
+        assert data["state"] in {"DEGRADED", "UNCERTAIN", "HEALTHY"}
+
+    def test_state_responds_to_observations(self):
+        from agents.hapax_daimonion.backends.engine_queue_depth import (
+            DEFAULT_WATERMARK_DEPTH,
+            queue_depth_observation,
+        )
+        from agents.hapax_daimonion.system_degraded_engine import SystemDegradedEngine
+
+        class _StubQueue:
+            def qsize(self):
+                return DEFAULT_WATERMARK_DEPTH + 100
+
+        sde = SystemDegradedEngine(prior=0.1, enter_ticks=2)
+        for _ in range(8):
+            sde.contribute(queue_depth_observation(_StubQueue()))
+        app = _make_app(_mock_engine())
+        app.state.system_degraded_engine = sde
+        client = TestClient(app)
+        resp = client.get("/api/engine/system_degraded")
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "DEGRADED"
+
+    def test_503_when_no_sde(self):
+        client = TestClient(_make_app())
+        resp = client.get("/api/engine/system_degraded")
+        assert resp.status_code == 503

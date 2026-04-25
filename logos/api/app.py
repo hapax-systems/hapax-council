@@ -94,6 +94,23 @@ async def lifespan(app: FastAPI):
         _log.exception("Reactive engine failed to start (continuing without it)")
         engine = None
 
+    # Phase 6d-i.B partial wire-in: SystemDegradedEngine observes the
+    # ReactiveEngine watcher's consumer-queue depth and exposes a
+    # Bayesian posterior for downstream consumers (DMN governor,
+    # narration cadence, recruitment pipeline). Sourced from #1357
+    # (engine + signal contract) + #1362 (queue-depth adapter). Other
+    # 3 signals (drift / gpu / director_cadence) wire in subsequent
+    # PRs as their production sources land daimonion-side.
+    sde = None
+    if engine is not None:
+        try:
+            from agents.hapax_daimonion.system_degraded_engine import SystemDegradedEngine
+
+            sde = SystemDegradedEngine()
+            app.state.system_degraded_engine = sde
+        except Exception:
+            _log.exception("SystemDegradedEngine wire-in failed (continuing without it)")
+
     # Start chronicle sampler and periodic trim
     import asyncio
 
@@ -108,13 +125,30 @@ async def lifespan(app: FastAPI):
                 _log.debug("Chronicle trim failed", exc_info=True)
             await asyncio.sleep(60)
 
+    async def _system_degraded_tick_loop():
+        """1s-cadence tick — observes queue depth + contributes to engine."""
+        from agents.hapax_daimonion.backends.engine_queue_depth import (
+            queue_depth_observation,
+        )
+
+        while True:
+            try:
+                if engine is not None and sde is not None:
+                    sde.contribute(queue_depth_observation(engine.watcher))
+            except Exception:
+                _log.debug("SystemDegradedEngine tick failed", exc_info=True)
+            await asyncio.sleep(1.0)
+
     _sampler_task = asyncio.create_task(run_sampler())
     _trim_task = asyncio.create_task(_chronicle_trim_loop())
+    _sde_task = asyncio.create_task(_system_degraded_tick_loop()) if sde is not None else None
 
     yield
 
     _sampler_task.cancel()
     _trim_task.cancel()
+    if _sde_task is not None:
+        _sde_task.cancel()
     if engine is not None:
         await engine.stop()
     await agent_run_manager.shutdown()

@@ -22,6 +22,21 @@ async def engine_status(request: Request):
     return engine.status
 
 
+@router.get("/system_degraded")
+async def system_degraded_status(request: Request):
+    """Phase 6d-i.B SystemDegradedEngine posterior + state.
+
+    Returns the Bayesian meta-claim posterior and discrete state
+    derived from the live observation stream (currently
+    queue_depth_observation; drift / gpu / director_cadence wire in
+    subsequent PRs). State is one of DEGRADED / UNCERTAIN / HEALTHY.
+    """
+    sde = getattr(request.app.state, "system_degraded_engine", None)
+    if sde is None:
+        return JSONResponse({"error": "SystemDegradedEngine not initialized"}, status_code=503)
+    return {"posterior": sde.posterior, "state": sde.state}
+
+
 @router.get("/rules")
 async def engine_rules(request: Request):
     """List registered rules with metadata."""
