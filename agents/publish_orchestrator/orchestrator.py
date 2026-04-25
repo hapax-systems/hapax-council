@@ -116,13 +116,13 @@ SURFACE_REGISTRY: dict[str, str] = {
     "mastodon-post": "agents.cross_surface.mastodon_post:publish_artifact",
     "arena-post": "agents.cross_surface.arena_post:publish_artifact",
     "discord-webhook": "agents.cross_surface.discord_webhook:publish_artifact",
-    # Phase 2 (queued — FULL_AUTO confirmed per 2026-04-25 audit)
+    # Phase 2 (FULL_AUTO confirmed per 2026-04-25 audit)
     "osf-preprint": "agents.osf_preprint_publisher:publish_artifact",
-    # "zenodo-doi":     "agents.zenodo_publisher:publish_artifact",  # next: cleanest fully-automated DOI minter
+    "zenodo-doi": "agents.zenodo_publisher:publish_artifact",  # primary DOI minter
+    # "omg-weblog" pending #1424 entry-point merge.
     # "hf-papers":      "agents.hf_papers_publisher:publish_artifact",  # arXiv-downstream Mon-Fri
     # "alphaxiv-comments": "agents.alphaxiv_publisher:publish_artifact",  # arXiv-downstream comment loop
     # "ghost-blog":     "agents.ghost_publisher:publish_artifact",  # self-hosted, richest API
-    # "omg-weblog":     "agents.omg_weblog_publisher:publish_artifact",  # operator-owned
     # "smtp-newsletter":"agents.smtp_newsletter_publisher:publish_artifact",  # operator-sovereign
     # "tumblr":         "agents.tumblr_publisher:publish_artifact",
     # "dev-to":         "agents.dev_to_publisher:publish_artifact",
