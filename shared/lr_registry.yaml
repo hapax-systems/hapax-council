@@ -282,6 +282,52 @@ mood_valence_negative_signals:
     estimation_reference: "Voice pitch elevated above operator's session baseline; stress correlate in speech"
     calibration_window_s: null
 
+# Phase 6b-iii.A — mood_coherence_low (alpha, this PR)
+# Mood-claim posterior over operator's autonomic-coherence state. Wired-in
+# signal sources land in Phase 6b-iii.B follow-up. Signal LR weights
+# calibrated 2026-04-25 against Pixel Watch biometric channels (HRV CV,
+# respiration rate, accelerometer micro-movement, skin temp volatility).
+# Quantize-into-tiers approach (option 1 from beta dispatch 02:18Z);
+# continuous-posterior ClaimEngine[float] deferred if option 1 proves
+# insufficient. Completes the 3-claim mood cluster (mood_arousal_high,
+# mood_valence_negative, mood_coherence_low).
+mood_coherence_low_signals:
+  hrv_variability_high:
+    claim_name: mood_coherence_low
+    source_category: physical_model
+    p_true_given_h1: 0.78
+    p_true_given_h0: 0.18
+    positive_only: false  # bidirectional — low CV evidences steady parasympathetic tone
+    estimation_reference: "Pixel Watch HRV beat-to-beat coefficient-of-variation high; matches PresenceEngine watch_hr 120s BLE staleness cutoff"
+    calibration_window_s: 120.0
+
+  respiration_irregular:
+    claim_name: mood_coherence_low
+    source_category: physical_model
+    p_true_given_h1: 0.72
+    p_true_given_h0: 0.15
+    positive_only: true  # absence ambiguous (could be normal task-driven variation rather than dysregulation)
+    estimation_reference: "Pixel Watch respiration rate variance high; irregular breathing rhythm"
+    calibration_window_s: null
+
+  movement_jitter_high:
+    claim_name: mood_coherence_low
+    source_category: physical_model
+    p_true_given_h1: 0.65
+    p_true_given_h0: 0.20
+    positive_only: true  # stillness ambiguous (focused-quiet OR shallow disengagement)
+    estimation_reference: "Pixel Watch accelerometer micro-movement noise; restlessness, fidgeting, postural instability"
+    calibration_window_s: null
+
+  skin_temp_volatility_high:
+    claim_name: mood_coherence_low
+    source_category: physical_model
+    p_true_given_h1: 0.68
+    p_true_given_h0: 0.18
+    positive_only: true  # stable temperature is the baseline; volatility is informative, stability is not
+    estimation_reference: "Pixel Watch skin temperature varying rapidly; unstable thermoregulation"
+    calibration_window_s: null
+
 # Phase 2 + Phase 2b will add claim-specific signal blocks below once
 # the corresponding ClaimEngines ship:
 #   vinyl_spinning_signals: {turntable_rpm, ir_hand_turntable, audio_signal_present, ...}
