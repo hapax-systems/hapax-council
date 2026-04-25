@@ -168,6 +168,58 @@ class TestPolysemicConcernDataclass:
         assert concern.registers == ("legal", "ai_safety")
 
 
+class TestAcknowledgedTermsOverride:
+    """Operator-ratified per-artifact override: ``acknowledged_terms``
+    filters listed seed terms out of the audit's concern list. This is
+    the API surface that ``scripts/verify-polysemic-audit.py`` uses to
+    honor frontmatter ``polysemic_audit_acknowledged_terms``.
+
+    The pattern matches directive #10 (admin-merge override): the
+    audit's heuristic-flagged false-positive is overridden by an
+    explicit operator decision per-artifact, not blanketed across
+    the corpus.
+    """
+
+    def test_acknowledged_term_does_not_flag(self) -> None:
+        """Listed term is suppressed even when 2+ registers fire."""
+        text = (
+            "GDPR compliance regulation requires audit log. "
+            "The model's compliance with directives is the alignment proxy. "
+            "Corporate compliance officers convene a board review."
+        )
+        result_no_ack = audit_artifact(text)
+        assert not result_no_ack.passed
+        assert any(c.term == "compliance" for c in result_no_ack.concerns)
+
+        result_ack = audit_artifact(text, acknowledged_terms=frozenset({"compliance"}))
+        assert result_ack.passed
+        assert result_ack.concerns == ()
+
+    def test_unacknowledged_terms_still_flag(self) -> None:
+        """Acknowledging one term does not silence others."""
+        text = (
+            "Compliance with regulation is one axiom; the model's directives "
+            "stipulate compliance. Corporate boards govern this. "
+            "Governance under HIPAA regulation implies model governance "
+            "via the orchestrator's directives, with corporate executive sign-off."
+        )
+        result = audit_artifact(text, acknowledged_terms=frozenset({"compliance"}))
+        # 'compliance' suppressed; 'governance' still flagged.
+        assert any(c.term == "governance" for c in result.concerns)
+        assert all(c.term != "compliance" for c in result.concerns)
+
+    def test_empty_acknowledgement_set_is_no_op(self) -> None:
+        """frozenset() acknowledgement = same behavior as None default."""
+        text = (
+            "Compliance with regulation conflicts with model's compliance "
+            "with directives in the executive corporate board's view."
+        )
+        without = audit_artifact(text)
+        with_empty = audit_artifact(text, acknowledged_terms=frozenset())
+        assert without.passed == with_empty.passed
+        assert {c.term for c in without.concerns} == {c.term for c in with_empty.concerns}
+
+
 @pytest.mark.parametrize(
     "term",
     ["compliance", "governance", "safety"],

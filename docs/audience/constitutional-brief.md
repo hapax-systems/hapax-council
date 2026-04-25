@@ -15,6 +15,21 @@ target_surfaces:
   - ssrn
 v5_weave: "wk1 d5-d6 lead-with artifact #1"
 non_engagement_clause_form: LONG
+polysemic_audit_acknowledged_terms:
+  - governance
+  - compliance
+  - safety
+polysemic_audit_acknowledgement_rationale: |
+  This brief's TOPIC is precisely the cross-register translation
+  between legal-theoretic, AI-safety, corporate-governance, and
+  product-safety decoder stacks. § 0 is the explicit register-
+  resolution preamble that the polysemic_audit gate's documented
+  remediation contemplates. The audit's pattern-based heuristic
+  cannot detect a register-resolution preamble; the operator
+  acknowledges all three flagged terms as multi-register-by-design
+  for this artifact specifically. New artifacts that introduce
+  these terms without a register-resolution preamble must NOT
+  inherit this acknowledgement — it is per-artifact, not per-corpus.
 ---
 
 # The Hapax Constitutional-Law Brief

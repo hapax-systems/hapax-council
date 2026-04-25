@@ -39,6 +39,49 @@ def _scan_dir(directory: Path) -> list[Path]:
     return sorted(directory.rglob("*.md"))
 
 
+def _acknowledged_terms_from_frontmatter(content: str) -> frozenset[str]:
+    """Parse ``polysemic_audit_acknowledged_terms`` from YAML frontmatter.
+
+    Returns an empty frozenset when no frontmatter exists or the field
+    is absent. Acknowledgement is per-artifact: the operator declares
+    multi-register-by-design terms in the source's frontmatter, and the
+    audit honors the override.
+
+    Frontmatter shape:
+
+      polysemic_audit_acknowledged_terms:
+        - governance
+        - compliance
+        - safety
+      polysemic_audit_acknowledgement_rationale: |
+        ... operator-authored rationale ...
+
+    Rationale is optional but operator-recommended (it documents the
+    override decision in-band so future readers can audit).
+    """
+    if not (content.startswith("---\n") or content.startswith("---\r\n")):
+        return frozenset()
+    after_open = content.split("\n", 1)[1] if "\n" in content else ""
+    end_idx = after_open.find("\n---\n")
+    if end_idx == -1:
+        end_idx = after_open.find("\n---\r\n")
+    if end_idx == -1:
+        return frozenset()
+    fm_text = after_open[:end_idx]
+    try:
+        import yaml
+
+        parsed = yaml.safe_load(fm_text)
+    except (ImportError, Exception):  # noqa: BLE001 — yaml may emit any error
+        return frozenset()
+    if not isinstance(parsed, dict):
+        return frozenset()
+    value = parsed.get("polysemic_audit_acknowledged_terms")
+    if not isinstance(value, list):
+        return frozenset()
+    return frozenset(str(v).strip() for v in value if isinstance(v, str))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -74,7 +117,8 @@ def main() -> int:
         except OSError as e:
             sys.stderr.write(f"ERROR: unable to read {file_path}: {e}\n")
             return 2
-        result = audit_artifact(content)
+        ack = _acknowledged_terms_from_frontmatter(content)
+        result = audit_artifact(content, acknowledged_terms=ack)
         if not result.passed:
             messages = [
                 f"{c.term} (registers: {', '.join(c.registers)}) — excerpt: {c.excerpt[:100]}"

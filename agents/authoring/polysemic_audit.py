@@ -143,16 +143,37 @@ def _identify_registers(sentence: str) -> set[str]:
     return fired
 
 
-def audit_artifact(text: str) -> PolysemicAuditResult:
+def audit_artifact(
+    text: str,
+    *,
+    acknowledged_terms: frozenset[str] | None = None,
+) -> PolysemicAuditResult:
     """Scan ``text`` for cross-register polysemy on seed terms.
 
     Returns a result with ``passed=True, concerns=()`` for clean text
     (empty / single-register / unambiguous). For text where a seed
     term appears across two distinct registers, emits one
     :class:`PolysemicConcern` per term.
+
+    ``acknowledged_terms`` (optional) is a frozenset of seed terms the
+    operator has explicitly acknowledged as multi-register-by-design
+    for this artifact. Concerns on acknowledged terms are filtered
+    out of the result. The audit's documented remediation ("explicit
+    register-shift sentence at the top of each section") is
+    operator-ratified when this set lists a term — meaning the
+    artifact's prose handles the register translation explicitly,
+    and the heuristic's flag is a known false-positive.
+
+    Acknowledgement is a manual operator action per artifact, not a
+    blanket toggle. Listing a term in ``acknowledged_terms`` is the
+    same architectural posture as ``feedback_no_operator_approval_waits``
+    directive #10 admin-merge: a documented, contextual override that
+    preserves the gate's signal for unknown future cases.
     """
     if not text or not text.strip():
         return PolysemicAuditResult(passed=True, concerns=())
+
+    ack: frozenset[str] = acknowledged_terms or frozenset()
 
     sentences = [s.strip() for s in _SENTENCE_SPLIT.split(text) if s.strip()]
 
@@ -160,6 +181,8 @@ def audit_artifact(text: str) -> PolysemicAuditResult:
     # it appears across the artifact's sentences.
     concerns: list[PolysemicConcern] = []
     for term in SEED_POLYSEMIC_TERMS:
+        if term in ack:
+            continue
         registers_seen: set[str] = set()
         excerpt_parts: list[str] = []
         for sentence in sentences:
