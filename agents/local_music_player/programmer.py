@@ -83,9 +83,14 @@ MAX_ARTIST_STREAK = 10_000
 # symmetry — irrelevant when only one source is weighted.
 MAX_SOURCE_STREAK = 3
 
-# Recency: 4-hour track cooldown — even a 2-hour viewer session never
-# hears the same track twice.
-TRACK_COOLDOWN_S = 4 * 3600.0
+# Recency: 30-minute track cooldown. The previous 4-hour value was
+# tuned for a multi-source pool with hundreds of tracks; with the
+# operator-only pool (~5 oudepode tracks at the time of the 2026-04-24
+# directive flip), 4-hour cooldown locks the entire pool after one
+# rotation cycle and silences the daemon. 30 min is slightly longer
+# than a full 5-track cycle (~20-25 min including interstitials), so
+# every track is fresh by its next turn.
+TRACK_COOLDOWN_S = 30 * 60.0
 
 # Rolling history window — long enough to compute oudepode cap +
 # generous source/artist streak detection.
@@ -474,8 +479,37 @@ class MusicProgrammer:
         # forever and the stream goes silent. Comfort > silence: pick
         # ANY safe non-recently-played track.
         log.debug("all sources + artist streak yielded no candidate; dropping artist-streak")
-        return self._pick_candidate(
+        candidate = self._pick_candidate(
             pool, ts=ts, ignore_source_streak=True, ignore_artist_streak=True
+        )
+        if candidate is not None:
+            return candidate
+        # Last resort, tier 3: drop the cooldown gate too. With a small
+        # operator pool, all tracks can be within the recency window at
+        # once. Pick the LEAST-recently-played track over silence — the
+        # stream's continuity invariant trumps cooldown comfort.
+        log.warning(
+            "all admissibility gates yielded no candidate; "
+            "falling back to least-recently-played (pool=%d)",
+            len(pool),
+        )
+        return self._pick_least_recently_played(pool)
+
+    def _pick_least_recently_played(self, pool: list[LocalMusicTrack]) -> LocalMusicTrack | None:
+        """Tier-3 fallback: among the entire pool, pick the track whose
+        most recent play in history is oldest. Tracks never played pass
+        ``-inf`` so they win first. Never returns None unless the pool
+        itself is empty.
+        """
+        if not pool:
+            return None
+        last_play_by_path: dict[str, float] = {}
+        for event in self._history:
+            last_play_by_path[event.path] = max(last_play_by_path.get(event.path, 0.0), event.ts)
+        # Sort: oldest-played first, never-played first (treated as -inf).
+        return min(
+            pool,
+            key=lambda t: last_play_by_path.get(t.path, float("-inf")),
         )
 
     def _pick_candidate(
