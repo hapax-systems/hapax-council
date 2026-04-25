@@ -67,12 +67,11 @@ _TERMINAL_RESULTS = frozenset({"ok", "denied", "auth_error", "error", "dropped",
 # ── Surface registry ────────────────────────────────────────────────
 
 SURFACE_REGISTRY: dict[str, str] = {
-    # Already-shipped surfaces (refactor onto base class lands per
-    # PUB-P1-A/B/C tickets; entry-points populated then)
-    # "bluesky-post":   "agents.cross_surface.bluesky_post:publish_artifact",
-    # "mastodon-post":  "agents.cross_surface.mastodon_post:publish_artifact",
-    # "arena-post":     "agents.cross_surface.arena_post:publish_artifact",
-    # "discord-webhook":"agents.cross_surface.discord_webhook:publish_artifact",
+    # Phase 1 cross-surface posters (PUB-P1-A/B/C/D foundations).
+    "bluesky-post": "agents.cross_surface.bluesky_post:publish_artifact",
+    "mastodon-post": "agents.cross_surface.mastodon_post:publish_artifact",
+    "arena-post": "agents.cross_surface.arena_post:publish_artifact",
+    "discord-webhook": "agents.cross_surface.discord_webhook:publish_artifact",
     # Phase 2 (queued)
     "osf-preprint": "agents.osf_preprint_publisher:publish_artifact",
     # "hf-papers":      "agents.hf_papers_publisher:publish_artifact",
