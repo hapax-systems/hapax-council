@@ -292,6 +292,70 @@ def _webhook_url_from_env() -> str | None:
     return raw or None
 
 
+# ── Orchestrator entry-point (PUB-P1-D foundation) ───────────────────
+
+
+def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Dispatch a ``PreprintArtifact`` to the operator's Discord webhook.
+
+    Static entry-point consumed by ``agents/publish_orchestrator``'s
+    surface registry. Returns one of: ``ok | denied | auth_error |
+    error | no_credentials``. Never raises.
+
+    Composes via the artifact's ``title`` + (``attribution_block`` |
+    ``abstract``) into a Discord embed payload (``title``,
+    ``description``, ``color``, optional ``url``). The full
+    ``BasePublisher`` refactor that consolidates the JSONL-tail mode
+    with this entry-point lands in a follow-up ticket; this adds the
+    orchestrator surface entry-point without the tail-mode rewrite.
+
+    Discord webhooks accept raw-URL POSTs, so there is no
+    ``auth_error`` distinct from ``error``; both surface as ``error``
+    (the webhook either accepts or 4xx/5xxs, no separate login step).
+    A missing webhook URL maps to ``no_credentials`` for parity with
+    the bsky/mastodon/arena entry-points.
+    """
+    webhook_url = _webhook_url_from_env()
+    if not webhook_url:
+        return "no_credentials"
+
+    payload = _compose_artifact_payload(artifact)
+
+    try:
+        ok = _default_post(webhook_url, payload, timeout=WEBHOOK_TIMEOUT_S)
+    except Exception:  # noqa: BLE001
+        log.exception("discord webhook POST raised for %s", getattr(artifact, "slug", "?"))
+        return "error"
+    return "ok" if ok else "error"
+
+
+def _compose_artifact_payload(artifact) -> dict:  # type: ignore[no-untyped-def]
+    """Render a ``PreprintArtifact`` to a Discord embed payload.
+
+    Description preference order: ``attribution_block`` (V5
+    per-artifact framing), else ``abstract``, else placeholder.
+    Embed ``url`` is supplied when the artifact carries a ``doi``
+    (renders as ``https://doi.org/{doi}``) so the embed becomes
+    click-through.
+    """
+    title = getattr(artifact, "title", "") or "hapax — publication artifact"
+    attribution = getattr(artifact, "attribution_block", "") or ""
+    abstract = getattr(artifact, "abstract", "") or ""
+    description = attribution or abstract or ""
+
+    embed: dict = {
+        "title": title[:256],  # Discord embed title limit
+        "description": description[:4096],  # Discord embed description limit
+        "color": DISCORD_EMBED_COLOR,
+    }
+
+    doi = getattr(artifact, "doi", None)
+    if doi:
+        embed["url"] = f"https://doi.org/{doi}"
+
+    return {"embeds": [embed]}
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agents.cross_surface.discord_webhook",

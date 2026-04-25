@@ -296,3 +296,113 @@ class TestUrlExtractor:
     def test_returns_none_when_missing_both(self):
         event = {}
         assert _broadcast_url_from_event(event) is None
+
+
+# ── Orchestrator entry-point (PUB-P1-D foundation) ───────────────────
+
+
+class _FakeArtifact:
+    def __init__(
+        self,
+        *,
+        slug: str = "test",
+        title: str = "",
+        abstract: str = "",
+        attribution_block: str = "",
+        doi: str | None = None,
+    ) -> None:
+        self.slug = slug
+        self.title = title
+        self.abstract = abstract
+        self.attribution_block = attribution_block
+        self.doi = doi
+
+
+class TestPublishArtifact:
+    def test_no_credentials_returns_no_credentials(self, monkeypatch):
+        from agents.cross_surface.discord_webhook import publish_artifact
+
+        monkeypatch.setenv("HAPAX_DISCORD_WEBHOOK_URL", "")
+        artifact = _FakeArtifact(title="x", abstract="y")
+        assert publish_artifact(artifact) == "no_credentials"
+
+    def test_attribution_block_preferred_in_description(self, monkeypatch):
+        from agents.cross_surface import discord_webhook
+
+        monkeypatch.setenv("HAPAX_DISCORD_WEBHOOK_URL", "https://discord.test/webhook/abc")
+        with mock.patch.object(discord_webhook, "_default_post", return_value=True) as post:
+            artifact = _FakeArtifact(
+                title="Title",
+                abstract="Abstract.",
+                attribution_block="Attribution Block",
+            )
+            assert discord_webhook.publish_artifact(artifact) == "ok"
+        payload = post.call_args.args[1]
+        assert payload["embeds"][0]["title"] == "Title"
+        assert payload["embeds"][0]["description"] == "Attribution Block"
+        assert payload["embeds"][0]["color"] == discord_webhook.DISCORD_EMBED_COLOR
+
+    def test_abstract_fallback_when_no_attribution(self, monkeypatch):
+        from agents.cross_surface import discord_webhook
+
+        monkeypatch.setenv("HAPAX_DISCORD_WEBHOOK_URL", "https://discord.test/webhook/abc")
+        with mock.patch.object(discord_webhook, "_default_post", return_value=True) as post:
+            artifact = _FakeArtifact(title="T", abstract="A")
+            assert discord_webhook.publish_artifact(artifact) == "ok"
+        assert post.call_args.args[1]["embeds"][0]["description"] == "A"
+
+    def test_doi_yields_embed_url(self, monkeypatch):
+        from agents.cross_surface import discord_webhook
+
+        monkeypatch.setenv("HAPAX_DISCORD_WEBHOOK_URL", "https://discord.test/webhook/abc")
+        with mock.patch.object(discord_webhook, "_default_post", return_value=True) as post:
+            artifact = _FakeArtifact(title="T", abstract="A", doi="10.5281/zenodo.1234")
+            assert discord_webhook.publish_artifact(artifact) == "ok"
+        assert post.call_args.args[1]["embeds"][0]["url"] == "https://doi.org/10.5281/zenodo.1234"
+
+    def test_no_doi_omits_embed_url(self, monkeypatch):
+        from agents.cross_surface import discord_webhook
+
+        monkeypatch.setenv("HAPAX_DISCORD_WEBHOOK_URL", "https://discord.test/webhook/abc")
+        with mock.patch.object(discord_webhook, "_default_post", return_value=True) as post:
+            artifact = _FakeArtifact(title="T", abstract="A")
+            assert discord_webhook.publish_artifact(artifact) == "ok"
+        assert "url" not in post.call_args.args[1]["embeds"][0]
+
+    def test_post_returns_false_yields_error(self, monkeypatch):
+        from agents.cross_surface import discord_webhook
+
+        monkeypatch.setenv("HAPAX_DISCORD_WEBHOOK_URL", "https://discord.test/webhook/abc")
+        with mock.patch.object(discord_webhook, "_default_post", return_value=False):
+            artifact = _FakeArtifact(title="T", abstract="A")
+            assert discord_webhook.publish_artifact(artifact) == "error"
+
+    def test_post_raises_yields_error(self, monkeypatch):
+        from agents.cross_surface import discord_webhook
+
+        monkeypatch.setenv("HAPAX_DISCORD_WEBHOOK_URL", "https://discord.test/webhook/abc")
+        with mock.patch.object(
+            discord_webhook,
+            "_default_post",
+            side_effect=RuntimeError("network down"),
+        ):
+            artifact = _FakeArtifact(title="T", abstract="A")
+            assert discord_webhook.publish_artifact(artifact) == "error"
+
+    def test_title_truncated_to_256(self, monkeypatch):
+        from agents.cross_surface import discord_webhook
+
+        monkeypatch.setenv("HAPAX_DISCORD_WEBHOOK_URL", "https://discord.test/webhook/abc")
+        with mock.patch.object(discord_webhook, "_default_post", return_value=True) as post:
+            artifact = _FakeArtifact(title="x" * 300, abstract="A")
+            assert discord_webhook.publish_artifact(artifact) == "ok"
+        assert len(post.call_args.args[1]["embeds"][0]["title"]) == 256
+
+    def test_description_truncated_to_4096(self, monkeypatch):
+        from agents.cross_surface import discord_webhook
+
+        monkeypatch.setenv("HAPAX_DISCORD_WEBHOOK_URL", "https://discord.test/webhook/abc")
+        with mock.patch.object(discord_webhook, "_default_post", return_value=True) as post:
+            artifact = _FakeArtifact(title="T", attribution_block="x" * 5000)
+            assert discord_webhook.publish_artifact(artifact) == "ok"
+        assert len(post.call_args.args[1]["embeds"][0]["description"]) == 4096
