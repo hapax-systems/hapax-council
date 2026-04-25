@@ -196,3 +196,79 @@ class TestTickFloor:
         _write_test_jpeg(src)
         rotator, _ = _make_rotator(snapshot_path=src, tick_s=10.0)
         assert rotator._tick_s >= 60.0
+
+
+# ── Salience-triggered loop ─────────────────────────────────────────
+
+
+class TestSalienceTriggeredLoop:
+    """The salience-triggered loop fires run_once iff trigger.should_fire().
+
+    Drives one iteration per stop call so we can pin the gate behavior
+    without spinning the actual daemon loop.
+    """
+
+    def test_fire_triggers_run_once(self, tmp_path):
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        rotator, upload = _make_rotator(snapshot_path=src)
+        trigger = mock.Mock()
+        trigger.should_fire.side_effect = [True, False]  # fire then idle
+
+        # Stop after the second wait so the loop runs exactly twice.
+        original_wait = rotator._stop_evt.wait
+
+        def stop_after_two(timeout):
+            if not hasattr(stop_after_two, "calls"):
+                stop_after_two.calls = 0
+            stop_after_two.calls += 1
+            if stop_after_two.calls >= 2:
+                rotator._stop_evt.set()
+            return original_wait(0)
+
+        with mock.patch.object(rotator._stop_evt, "wait", side_effect=stop_after_two):
+            rotator.run_forever_salience_triggered(trigger, poll_s=0.01)
+
+        assert trigger.should_fire.call_count == 2
+        assert upload.call_count == 1
+
+    def test_no_fire_skips_run_once(self, tmp_path):
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        rotator, upload = _make_rotator(snapshot_path=src)
+        trigger = mock.Mock()
+        trigger.should_fire.return_value = False
+
+        original_wait = rotator._stop_evt.wait
+
+        def stop_after_one(timeout):
+            rotator._stop_evt.set()
+            return original_wait(0)
+
+        with mock.patch.object(rotator._stop_evt, "wait", side_effect=stop_after_one):
+            rotator.run_forever_salience_triggered(trigger, poll_s=0.01)
+
+        upload.assert_not_called()
+
+    def test_trigger_exception_does_not_break_loop(self, tmp_path):
+        src = tmp_path / "snapshot.jpg"
+        _write_test_jpeg(src)
+        rotator, _ = _make_rotator(snapshot_path=src)
+        trigger = mock.Mock()
+        trigger.should_fire.side_effect = [RuntimeError("boom"), False]
+
+        original_wait = rotator._stop_evt.wait
+
+        def stop_after_two(timeout):
+            if not hasattr(stop_after_two, "calls"):
+                stop_after_two.calls = 0
+            stop_after_two.calls += 1
+            if stop_after_two.calls >= 2:
+                rotator._stop_evt.set()
+            return original_wait(0)
+
+        with mock.patch.object(rotator._stop_evt, "wait", side_effect=stop_after_two):
+            # Should not raise even though the first should_fire() raised.
+            rotator.run_forever_salience_triggered(trigger, poll_s=0.01)
+
+        assert trigger.should_fire.call_count == 2

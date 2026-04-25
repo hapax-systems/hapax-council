@@ -13,6 +13,7 @@ from agents.thumbnail_rotator.rotator import (
     DEFAULT_TICK_S,
     ThumbnailRotator,
 )
+from agents.thumbnail_rotator.salience_trigger import SalienceTrigger
 
 METRICS_PORT: int = int(os.environ.get("HAPAX_THUMBNAIL_METRICS_PORT", "9512"))
 
@@ -36,7 +37,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--tick-s",
         type=float,
         default=DEFAULT_TICK_S,
-        help="rotation cadence in seconds (default: 1800)",
+        help="rotation cadence in seconds (fixed mode only; default: 1800)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("fixed", "salience"),
+        default="salience",
+        help=(
+            "rotation trigger mode. 'salience' (default): fire on chronicle "
+            "high-salience event + 120s chapter stability. 'fixed': fire on "
+            "the --tick-s cadence."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -59,7 +70,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     start_http_server(METRICS_PORT, addr="127.0.0.1")
-    rotator.run_forever()
+    if args.mode == "salience":
+        rotator.run_forever_salience_triggered(SalienceTrigger())
+    else:
+        rotator.run_forever()
     return 0
 
 

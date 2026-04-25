@@ -13,5 +13,6 @@ from agents.thumbnail_rotator.rotator import (
     ThumbnailRotator,
     prepare_thumbnail_jpeg,
 )
+from agents.thumbnail_rotator.salience_trigger import SalienceTrigger
 
-__all__ = ["ThumbnailRotator", "prepare_thumbnail_jpeg"]
+__all__ = ["SalienceTrigger", "ThumbnailRotator", "prepare_thumbnail_jpeg"]
