@@ -1,0 +1,37 @@
+# In-band live caption routing (ytb-009).
+#
+# Per-source policy: which speakers/sources are routed into the
+# CEA-708 caption track that GStreamer's cc708overlay element emits
+# into the broadcast video stream.
+#
+# - allow: list of speaker tags (matches CaptionEvent.speaker).
+#   The empty/unset speaker is always allowed (operator narration is
+#   the default source).
+# - deny: list of speaker tags to drop unconditionally. Wins over allow
+#   when a tag appears in both lists.
+#
+# The routing layer enforces this BEFORE the GStreamer encoder sees
+# the caption — no need to scrub at the SEI layer. Per-source consent
+# follows the same pattern as `axioms/contracts/publication/*.yaml`:
+# explicit allowlist with a small default-allow set for the operator's
+# own speech.
+#
+# This config is read by `agents/live_captions/routing.py` (Phase 3
+# wiring). Phase 2 ships the schema only so the contract is reviewable
+# before the consumer is plugged in.
+
+allow:
+  # Default: operator's own speech (no speaker tag set on emit).
+  - oudepode
+  - operator
+
+deny:
+  # Reserved for the per-guest-consent gate when the diarization
+  # follow-up lands (out of scope for ytb-009 Phase 2).
+  []
+
+# Per-route fallback when a speaker is neither allow- nor deny-listed.
+# 'allow' favours visibility (caption appears) — fits the SEO + a11y
+# motivation for the captions track. Switch to 'deny' for events
+# where consent posture should be conservative.
+default: allow
