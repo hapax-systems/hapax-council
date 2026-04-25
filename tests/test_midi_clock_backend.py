@@ -67,6 +67,7 @@ class TestMidiClockBackend(unittest.TestCase):
         self.assertIn("timeline_mapping", behaviors)
         self.assertIn("beat_position", behaviors)
         self.assertIn("bar_position", behaviors)
+        self.assertIn("midi_clock_transport", behaviors)
 
     def test_contribute_transport_stopped(self):
         b = self._make_backend()
@@ -75,6 +76,22 @@ class TestMidiClockBackend(unittest.TestCase):
 
         mapping = behaviors["timeline_mapping"].value
         self.assertEqual(mapping.transport, TransportState.STOPPED)
+        self.assertEqual(behaviors["midi_clock_transport"].value, "STOPPED")
+
+    def test_contribute_transport_playing_publishes_enum_name(self):
+        """midi_clock_transport behavior carries TransportState enum *name* (PLAYING)."""
+        b = self._make_backend()
+        b._on_message(_msg("start"))
+
+        behaviors: dict[str, Behavior] = {}
+        b.contribute(behaviors)
+
+        self.assertEqual(behaviors["midi_clock_transport"].value, "PLAYING")
+
+    def test_provides_includes_midi_clock_transport(self):
+        """provides set includes midi_clock_transport so registration discovers it."""
+        b = self._make_backend()
+        self.assertIn("midi_clock_transport", b.provides)
 
     def test_beat_position_monotonic_during_playing(self):
         """beat_position should be monotonically non-decreasing during PLAYING."""

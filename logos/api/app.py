@@ -146,17 +146,25 @@ class LogosPerceptionStateBridge:
         return changed
 
     def midi_clock_active(self) -> bool | None:
-        """SCAFFOLDED: returns None until MidiClockBackend cross-process publishes.
+        """True iff the OXI One MIDI clock transport is PLAYING.
 
-        The OXI One MIDI clock currently runs as in-process daimonion
-        state (``MidiClockBackend``); it has no /dev/shm publication
-        path. A follow-up PR adds a thin publisher writing BPM + tick-
-        recency to ``/dev/shm/hapax-daimonion/midi-clock.json`` and
-        this accessor reads from there. Until then, returning None
-        keeps the engine's protocol shape stable while contributing
-        no MIDI-clock evidence.
+        ``MidiClockBackend.contribute()`` publishes a ``midi_clock_transport``
+        behavior carrying the ``TransportState`` enum name (PLAYING /
+        STOPPED). The perception-state writer surfaces it under the same
+        key so this bridge can read it without a separate publisher.
+
+        Returns None when the perception-state file is missing the field
+        (daimonion not yet writing it, e.g. mido unavailable). The Bayesian
+        engine treats None as skip-this-signal — no evidence contributed.
+        Empty string also returns None (default value before any tick).
         """
-        return None
+        data = self._load()
+        if data is None or "midi_clock_transport" not in data:
+            return None
+        transport = str(data["midi_clock_transport"])
+        if not transport:
+            return None
+        return transport == "PLAYING"
 
     def watch_movement(self) -> bool | None:
         """SCAFFOLDED: returns None until watch-receiver state file reader lands.

@@ -21,13 +21,12 @@ Wired so far (live perception-state.json signals):
 - Part 1 (#1389): ``keyboard_active``
 - Part 2 (#1391): ``desk_active``
 - Part 3 (#1410): ``desktop_focus_changed_recent``
+- Part 4: ``midi_clock_active`` — ``MidiClockBackend.contribute()``
+  publishes ``midi_clock_transport`` (TransportState enum name); the
+  perception-state writer surfaces it in the same file the bridge
+  already reads, so no separate publisher is needed.
 
-Scaffolded (this PR — accessors return ``None`` until upstream
-publishers exist):
-- Part 4: ``midi_clock_active``. Source data lives in
-  ``MidiClockBackend`` (in-process daimonion state). Cross-process
-  publication to ``/dev/shm/hapax-daimonion/midi-clock.json`` lands
-  in a follow-up PR.
+Scaffolded (accessors return ``None`` until upstream publishers exist):
 - Part 5: ``watch_movement``. Source data flows through
   ``hapax-watch-receiver`` HTTP endpoint to a per-tick state file;
   bridge accessor needs a thin reader for that file.
@@ -86,9 +85,12 @@ def operator_activity_observation(
       change in the perception window → positive evidence of active
       engagement (LR weights 0.65/0.15 — workspace switching is a
       strong cue but not exhaustive of activity).
-    - ``midi_clock_active``: SCAFFOLDED. Bridge returns None until
-      ``MidiClockBackend`` publishes BPM to a cross-process state file
-      (follow-up PR).
+    - ``midi_clock_active``: WIRED. Positive-only,
+      ``MidiClockBackend`` publishes ``midi_clock_transport`` and the
+      bridge maps PLAYING → True (engaged via OXI One MIDI clock).
+      STOPPED → False rather than None: the absence of a clock pulse
+      from a known-good backend is itself evidence — same pattern as
+      ``keyboard_active`` returning False on idle.
     - ``watch_movement``: SCAFFOLDED. Bridge returns None until the
       ``hapax-watch-receiver`` per-tick state file reader lands
       (follow-up PR).

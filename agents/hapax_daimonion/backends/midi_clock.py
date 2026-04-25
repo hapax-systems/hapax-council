@@ -66,7 +66,14 @@ class MidiClockBackend:
 
     @property
     def provides(self) -> frozenset[str]:
-        return frozenset({"timeline_mapping", "beat_position", "bar_position"})
+        return frozenset(
+            {
+                "timeline_mapping",
+                "beat_position",
+                "bar_position",
+                "midi_clock_transport",
+            }
+        )
 
     @property
     def tier(self) -> PerceptionTier:
@@ -156,6 +163,7 @@ class MidiClockBackend:
             else:
                 beat = self._reference_beat
             bar = beat / self._beats_per_bar
+            transport_name = self._transport.name
 
         if "timeline_mapping" not in behaviors:
             behaviors["timeline_mapping"] = Behavior(mapping, watermark=now)
@@ -171,3 +179,12 @@ class MidiClockBackend:
             behaviors["bar_position"] = Behavior(bar, watermark=now)
         else:
             behaviors["bar_position"].update(bar, now)
+
+        # Cross-process publishable transport state for OperatorActivityEngine.
+        # ``midi_clock_active`` (Phase 6a-i.B Part 4) reads this through the
+        # perception-state.json bridge — emitting the enum *name* keeps the
+        # JSON-serialised behavior value stable for the bridge.
+        if "midi_clock_transport" not in behaviors:
+            behaviors["midi_clock_transport"] = Behavior(transport_name, watermark=now)
+        else:
+            behaviors["midi_clock_transport"].update(transport_name, now)

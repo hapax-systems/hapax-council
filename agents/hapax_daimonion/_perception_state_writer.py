@@ -430,6 +430,7 @@ def write_perception_state(
             # MIDI clock (beat/bar position for visual sync)
             "beat_position": _safe_float(_bval("beat_position", 0.0)),
             "bar_position": _safe_float(_bval("bar_position", 0.0)),
+            "midi_clock_transport": str(_bval("midi_clock_transport", "")),
             # Overhead hand tracking (zone-based)
             "overhead_hand_zones": str(_bval("overhead_hand_zones", "")),
             "detected_action": str(_bval("detected_action", "")),

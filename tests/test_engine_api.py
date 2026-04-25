@@ -590,21 +590,85 @@ class TestOperatorActivityObservation:
         }
 
 
-class TestLogosPerceptionStateBridgeScaffolding:
-    """Pin Part 4+5 scaffolding: midi_clock_active + watch_movement.
+class TestLogosPerceptionStateBridgeMidiClock:
+    """Pin Part 4 wire-in: midi_clock_active reads midi_clock_transport.
 
-    These accessors return None until upstream cross-process publishers
-    land (MidiClockBackend → /dev/shm publication for midi; watch-receiver
-    last-tick state file reader for watch). The all-None scaffold keeps
-    the protocol surface stable and matches alpha's LogosStimmungBridge
-    (#1392) pattern.
+    ``MidiClockBackend.contribute()`` publishes ``midi_clock_transport``
+    (TransportState enum name); the perception-state writer surfaces it
+    in the same JSON file the bridge already reads. PLAYING → True,
+    STOPPED → False (real negative evidence: a known-good backend
+    reporting no clock pulse is informative). Missing field or empty
+    string → None (engine skips the signal).
     """
 
-    def test_midi_clock_active_returns_none(self):
+    def test_midi_clock_active_playing_returns_true(self, tmp_path, monkeypatch):
+        import json
+
         from logos.api.app import LogosPerceptionStateBridge
 
-        bridge = LogosPerceptionStateBridge()
-        assert bridge.midi_clock_active() is None
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        (state_dir / "perception-state.json").write_text(
+            json.dumps({"midi_clock_transport": "PLAYING"}), encoding="utf-8"
+        )
+        assert LogosPerceptionStateBridge().midi_clock_active() is True
+
+    def test_midi_clock_active_stopped_returns_false(self, tmp_path, monkeypatch):
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        (state_dir / "perception-state.json").write_text(
+            json.dumps({"midi_clock_transport": "STOPPED"}), encoding="utf-8"
+        )
+        assert LogosPerceptionStateBridge().midi_clock_active() is False
+
+    def test_midi_clock_active_empty_string_returns_none(self, tmp_path, monkeypatch):
+        """Default behavior value (empty string before any tick) → None."""
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        (state_dir / "perception-state.json").write_text(
+            json.dumps({"midi_clock_transport": ""}), encoding="utf-8"
+        )
+        assert LogosPerceptionStateBridge().midi_clock_active() is None
+
+    def test_midi_clock_active_missing_field_returns_none(self, tmp_path, monkeypatch):
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        (state_dir / "perception-state.json").write_text(
+            json.dumps({"keyboard_active": True}), encoding="utf-8"
+        )
+        assert LogosPerceptionStateBridge().midi_clock_active() is None
+
+    def test_midi_clock_active_missing_file_returns_none(self, tmp_path, monkeypatch):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert LogosPerceptionStateBridge().midi_clock_active() is None
+
+
+class TestLogosPerceptionStateBridgeScaffolding:
+    """Pin Part 5 scaffolding: watch_movement still returns None.
+
+    Bridge accessor returns None until the ``hapax-watch-receiver``
+    per-tick state file reader lands (follow-up PR). All-None scaffold
+    keeps the protocol surface stable and matches alpha's
+    LogosStimmungBridge (#1392) pattern.
+    """
 
     def test_watch_movement_returns_none(self):
         from logos.api.app import LogosPerceptionStateBridge
@@ -612,8 +676,8 @@ class TestLogosPerceptionStateBridgeScaffolding:
         bridge = LogosPerceptionStateBridge()
         assert bridge.watch_movement() is None
 
-    def test_scaffolded_accessors_independent_of_perception_state(self, tmp_path, monkeypatch):
-        """Scaffolded accessors return None even when perception-state is live."""
+    def test_watch_movement_independent_of_perception_state(self, tmp_path, monkeypatch):
+        """watch_movement returns None even when perception-state is live."""
         import json
 
         from logos.api.app import LogosPerceptionStateBridge
@@ -626,11 +690,8 @@ class TestLogosPerceptionStateBridgeScaffolding:
             encoding="utf-8",
         )
         bridge = LogosPerceptionStateBridge()
-        # Wired accessors light up...
         assert bridge.keyboard_active() is True
         assert bridge.desk_active() is True
-        # ...scaffolded ones still return None
-        assert bridge.midi_clock_active() is None
         assert bridge.watch_movement() is None
 
 
