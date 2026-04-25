@@ -284,11 +284,15 @@ class TestInheritsHomageTransitionalSource:
 
 
 class TestBitchXGrammarApplied:
-    def test_active_package_is_bitchx_by_default(self):
+    def test_active_package_is_authentic_v1_by_default(self):
         from agents.studio_compositor.homage import get_active_package
+        from agents.studio_compositor.homage.bitchx_authentic import (
+            BITCHX_AUTHENTIC_PACKAGE,
+        )
 
         active = get_active_package()
-        assert active is BITCHX_PACKAGE
+        # Post AUTH-HOMAGE flip, library-sourced authentic-v1 is default.
+        assert active is BITCHX_AUTHENTIC_PACKAGE
 
     def test_activity_header_uses_line_start_marker(self, tmp_path):
         """Phase A3: chevron marker + activity token now render via

@@ -23,10 +23,14 @@ come from the canonical, SHA-pinned, license-tracked
   place. A dedicated dragon acquisition can follow later.
 
 The original inline ``bitchx`` package (in ``bitchx.py``) is RETAINED as a
-deprecated fallback. Operator flips between the two via the active-package
-SHM file (``/dev/shm/hapax-compositor/homage-active.json``); ``bitchx``
-remains the compile-time default until operator visually approves
-``bitchx-authentic-v1`` on a live broadcast.
+deprecated fallback. Operator can flip between the two via the active-
+package SHM file (``/dev/shm/hapax-compositor/homage-active.json``).
+
+Compile-time default flipped from ``bitchx`` to ``bitchx-authentic-v1``
+under AUTH-HOMAGE (workstream-realignment v3 §1.4 "Aesthetic sign-off,
+default-flag flips ... all session-callable without operator gating" +
+operator's 19:10Z 2026-04-24 no-approval-waits absolute rule). The
+inline package stays registered for revert-via-SHM if needed.
 
 **Palette divergence from inline `bitchx`:** the inline ``bitchx`` package
 uses bespoke "dimmer" RGB values that diverge from the byte-exact mIRC

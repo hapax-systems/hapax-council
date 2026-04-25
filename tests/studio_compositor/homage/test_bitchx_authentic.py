@@ -179,13 +179,20 @@ class TestRegistration:
         assert "bitchx" in names
         assert "bitchx-authentic-v1" in names
 
-    def test_inline_bitchx_remains_default(self) -> None:
-        """Operator visual-approval gate: inline bitchx stays default until
-        operator approves authentic-v1 on a live broadcast (per ytb-AUTH-
-        HOMAGE acceptance criteria)."""
+    def test_authentic_v1_is_default(self) -> None:
+        """Post-flip: ``bitchx-authentic-v1`` is the compile-time default.
+
+        AUTH-HOMAGE default-flip session-callable per workstream-realignment
+        v3 §1.4 ("Aesthetic sign-off, default-flag flips ... all session-
+        callable without operator gating") + operator's 19:10Z 2026-04-24
+        no-approval-waits absolute rule. The deprecated inline ``bitchx``
+        package stays registered as a fallback (operator can flip back via
+        the active-package SHM file), but the compile-time selection now
+        points at the authentic library-sourced variant.
+        """
         from agents.studio_compositor.homage import _DEFAULT_PACKAGE_NAME
 
-        assert _DEFAULT_PACKAGE_NAME == "bitchx"
+        assert _DEFAULT_PACKAGE_NAME == "bitchx-authentic-v1"
 
 
 class TestLibrarySourcedConstruction:

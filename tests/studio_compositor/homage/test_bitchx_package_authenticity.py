@@ -176,13 +176,18 @@ class TestRegistry:
         assert "bitchx" in registered_package_names()
         assert get_package("bitchx") is BITCHX_PACKAGE
 
-    def test_get_active_package_returns_bitchx_by_default(self, tmp_path, monkeypatch):
+    def test_get_active_package_returns_authentic_v1_by_default(self, tmp_path, monkeypatch):
         from agents.studio_compositor import homage
+        from agents.studio_compositor.homage.bitchx_authentic import (
+            BITCHX_AUTHENTIC_PACKAGE,
+        )
 
         monkeypatch.setattr(homage, "_ACTIVE_FILE", tmp_path / "homage-active.json")
-        # No file → default.
+        # No file → default. Post AUTH-HOMAGE flip, default is the
+        # library-sourced ``bitchx-authentic-v1`` (session-callable per
+        # workstream-realignment v3 §1.4).
         active = homage.get_active_package()
-        assert active is BITCHX_PACKAGE
+        assert active is BITCHX_AUTHENTIC_PACKAGE
 
     def test_consent_safe_returns_none(self):
         assert get_active_package(consent_safe=True) is None
@@ -191,12 +196,16 @@ class TestRegistry:
         import json as _json
 
         from agents.studio_compositor import homage
+        from agents.studio_compositor.homage.bitchx_authentic import (
+            BITCHX_AUTHENTIC_PACKAGE,
+        )
 
         active_file = tmp_path / "homage-active.json"
         active_file.write_text(_json.dumps({"package": "no-such-package"}), encoding="utf-8")
         monkeypatch.setattr(homage, "_ACTIVE_FILE", active_file)
         active = homage.get_active_package()
-        assert active is BITCHX_PACKAGE  # fell back to default
+        # Post AUTH-HOMAGE flip, default is bitchx-authentic-v1.
+        assert active is BITCHX_AUTHENTIC_PACKAGE
 
     def test_set_active_package_round_trip(self, tmp_path, monkeypatch):
         from agents.studio_compositor import homage

@@ -33,7 +33,7 @@ from shared.homage_package import HomagePackage
 log = logging.getLogger(__name__)
 
 _ACTIVE_FILE: Final[Path] = Path("/dev/shm/hapax-compositor/homage-active.json")
-_DEFAULT_PACKAGE_NAME: Final[str] = "bitchx"
+_DEFAULT_PACKAGE_NAME: Final[str] = "bitchx-authentic-v1"
 # Phase 12: the consent-safe variant the choreographer falls back to when
 # the consent gate flips to compose-safe. Registered below at import time.
 CONSENT_SAFE_PACKAGE_NAME: Final[str] = "bitchx_consent_safe"
