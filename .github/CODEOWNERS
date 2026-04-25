@@ -33,3 +33,13 @@ assets/aesthetic-library/LICENSE.*              @ryanklee
 assets/aesthetic-library/_NOTICES.md            @ryanklee
 assets/aesthetic-library/_manifest.yaml         @ryanklee
 assets/aesthetic-library/**/provenance.yaml     @ryanklee
+
+# Operator anonymity primitives (AUDIT-29 hardening of AUDIT-05)
+# Both modules carry single_user / interpersonal_transparency invariants:
+# the referent picker is the canonical non-formal-name surface (4
+# ratified referents, sticky-per-utterance), and the speech lexicon
+# carries pronunciations for those same referents. A regression to
+# either silently re-opens the OMG cascade legal-name-leak surface.
+shared/operator_referent.py                     @ryanklee
+shared/speech_lexicon.py                        @ryanklee
+axioms/implications/non-formal-referent-policy.yaml  @ryanklee
