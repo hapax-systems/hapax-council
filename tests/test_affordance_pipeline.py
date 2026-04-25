@@ -472,3 +472,114 @@ class TestConsentGate:
             p._consent_loaded_at -= ap_mod._CONSENT_CACHE_TTL_S + 1.0
             assert p._consent_allows(cand) is True
             assert mock_load.call_count == 2
+
+
+class TestConsentRefusalBriefEmission:
+    """Refusal-as-data emission: when the consent gate blocks, an event
+    lands in the canonical refusal log. Bounded to ≤1 emit per cache TTL
+    per pipeline because emit only fires inside the cache-load branch.
+    """
+
+    def _candidate(self):
+        from shared.affordance import SelectionCandidate
+
+        return SelectionCandidate(
+            capability_name="studio.toggle_livestream",
+            similarity=0.9,
+            payload={"consent_required": True},
+        )
+
+    def test_emits_on_no_active_contracts(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        captured = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        empty_registry = MagicMock()
+        empty_registry.__iter__ = lambda self: iter([])
+        with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
+            assert AffordancePipeline()._consent_allows(self._candidate()) is False
+
+        assert len(captured) == 1
+        assert captured[0].surface == "affordance_pipeline:consent_gate"
+        assert captured[0].axiom == "interpersonal_transparency"
+        assert "no active consent contract" in captured[0].reason
+
+    def test_emits_on_loader_exception(self, monkeypatch):
+        from unittest.mock import patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        captured = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        with patch(
+            "shared.governance.consent.load_contracts", side_effect=RuntimeError("bad yaml")
+        ):
+            assert AffordancePipeline()._consent_allows(self._candidate()) is False
+
+        assert len(captured) == 1
+        assert "exception" in captured[0].reason.lower()
+
+    def test_no_emit_when_consent_active(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        captured = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        active_contract = MagicMock()
+        active_contract.active = True
+        registry = MagicMock()
+        registry.__iter__ = lambda self: iter([active_contract])
+        with patch("shared.governance.consent.load_contracts", return_value=registry):
+            assert AffordancePipeline()._consent_allows(self._candidate()) is True
+
+        assert captured == []
+
+    def test_emit_bounded_by_cache_ttl(self, monkeypatch):
+        """N consecutive blocked checks within the TTL window → at most one emit."""
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        captured = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        empty_registry = MagicMock()
+        empty_registry.__iter__ = lambda self: iter([])
+        p = AffordancePipeline()
+        cand = self._candidate()
+        with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
+            for _ in range(20):
+                p._consent_allows(cand)
+
+        assert len(captured) == 1
+
+    def test_writer_failure_does_not_break_gate(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        import agents.refusal_brief as _pkg
+        from shared.affordance_pipeline import AffordancePipeline
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("writer is on fire")
+
+        monkeypatch.setattr(_pkg, "append", _boom)
+
+        empty_registry = MagicMock()
+        empty_registry.__iter__ = lambda self: iter([])
+        with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
+            # Must not raise — gate decision still returned.
+            assert AffordancePipeline()._consent_allows(self._candidate()) is False

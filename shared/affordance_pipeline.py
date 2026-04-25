@@ -110,6 +110,38 @@ def _apply_exploration_noise(
         c.combined = max(0.0, c.combined + random.gauss(0, noise_scale))
 
 
+def _emit_consent_refusal(*, axiom: str, surface: str, reason: str) -> None:
+    """Append a structured event to the canonical refusal log.
+
+    Used by the affordance-pipeline consent gate when the contract
+    registry holds no active consent (or the loader itself raised),
+    so consent_required capabilities are about to be blocked.
+
+    The cache TTL on the consent gate (60s) bounds emission rate to
+    at most one append per minute per pipeline instance — the gate
+    only loads contracts on cache miss, and emit is conditional on
+    the load returning False.
+
+    Best-effort: writer failures swallowed so an observability hiccup
+    never breaks the consent decision path.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from agents.refusal_brief import RefusalEvent, append
+
+        append(
+            RefusalEvent(
+                timestamp=datetime.now(UTC),
+                axiom=axiom,
+                surface=surface,
+                reason=reason[:160],
+            )
+        )
+    except Exception:
+        pass
+
+
 class EmbeddingCache:
     def __init__(self, max_size: int = 256) -> None:
         self._cache: OrderedDict[str, list[float]] = OrderedDict()
@@ -425,6 +457,12 @@ class AffordancePipeline:
                 # AttributeError-blocks every consent_required capability.
                 self._consent_has_active = any(c.active for c in registry)
                 self._consent_loaded_at = now
+                if not self._consent_has_active:
+                    _emit_consent_refusal(
+                        axiom="interpersonal_transparency",
+                        surface="affordance_pipeline:consent_gate",
+                        reason="no active consent contract — consent_required candidates blocked",
+                    )
             except Exception:
                 log.warning(
                     "Consent gate failed for %s — blocking (fail-closed)",
@@ -432,6 +470,11 @@ class AffordancePipeline:
                 )
                 self._consent_has_active = False
                 self._consent_loaded_at = now
+                _emit_consent_refusal(
+                    axiom="interpersonal_transparency",
+                    surface="affordance_pipeline:consent_gate",
+                    reason="contract loader exception — gate failed closed",
+                )
         return bool(self._consent_has_active)
 
     def _apply_programme_bias(
