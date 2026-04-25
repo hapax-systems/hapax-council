@@ -27,6 +27,46 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
+def _emit_axiom_refusal(*, axiom: str, situation: str, violations: list[str]) -> None:
+    """Append an axiom-violation event to the canonical refusal log.
+
+    Fires only from the cold-path :func:`check_full` when a violation
+    is detected — the hot-path :func:`check_fast` deliberately does
+    NOT emit, because it runs as a VetoChain predicate (sub-millisecond
+    budget per call) where any I/O is a non-starter.
+
+    The emitted ``axiom`` field is the first violated axiom_id (a
+    single check can violate multiple axioms; the writer's per-event
+    schema records only one). The ``reason`` is a compact description
+    of the situation + first violation, capped at 160 chars.
+
+    Best-effort: writer failures are swallowed so an observability
+    hiccup never breaks the compliance-decision path.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from agents.refusal_brief import RefusalEvent, append
+
+        first_violation = violations[0] if violations else "(no detail)"
+        suffix = f" (+{len(violations) - 1} more)" if len(violations) > 1 else ""
+        budget = 160 - len(suffix) - len(situation) - len(": ")
+        if budget < 20:
+            reason = f"{situation[:80]}: {first_violation[:60]}{suffix}"
+        else:
+            reason = f"{situation}: {first_violation[:budget]}{suffix}"
+        append(
+            RefusalEvent(
+                timestamp=datetime.now(UTC),
+                axiom=axiom,
+                surface="axiom_enforcement:check_full",
+                reason=reason[:160],
+            )
+        )
+    except Exception:
+        pass
+
+
 @dataclass(frozen=True)
 class ComplianceRule:
     """A single compliance rule for fast-path checking.
@@ -311,6 +351,13 @@ def check_full(
     all_axiom_ids = list(fast_result.axiom_ids) + [
         a for a in precedent_axioms if a not in fast_result.axiom_ids
     ]
+
+    if all_violations:
+        _emit_axiom_refusal(
+            axiom=all_axiom_ids[0] if all_axiom_ids else "unknown",
+            situation=situation,
+            violations=all_violations,
+        )
 
     return ComplianceResult(
         compliant=len(all_violations) == 0,
