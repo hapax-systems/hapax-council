@@ -225,6 +225,19 @@ class Orchestrator:
         self._continue_rotation_new()
 
     def _continue_rotation_new(self) -> None:
+        # Re-discover stream id every tick of an in-progress rotation so a
+        # mid-rotation RTMP signal change is picked up. ``discover_stream_id``
+        # returns None when no liveStream is currently active — defer rather
+        # than insert+bind+fail-transition with a ghost broadcast that
+        # accumulates on the channel.
+        self._tracking.cached_stream_id = api.discover_stream_id(self._client)
+        if not self._tracking.cached_stream_id:
+            log.info(
+                "rotation: no active liveStream — deferring %s until RTMP signal arrives",
+                self._tracking.state.value,
+            )
+            return
+
         if self._tracking.incoming_broadcast_id is None:
             inserted = api.insert_broadcast(
                 self._client,

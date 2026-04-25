@@ -35,7 +35,19 @@ def list_active_broadcasts(client: YouTubeApiClient) -> list[dict]:
 
 
 def discover_stream_id(client: YouTubeApiClient) -> str | None:
-    """Return the active liveStream id (RTMP ingest config), if any."""
+    """Return the ACTIVE liveStream id (RTMP ingest currently receiving signal).
+
+    Returns ``None`` when no liveStream has ``status.streamStatus == "active"``.
+    Earlier behavior fell back to ``items[0]`` when no stream was active —
+    the resulting bind succeeded but the subsequent
+    ``liveBroadcasts.transition(broadcastStatus="testing")`` was rejected
+    by YouTube with HTTP 403 ``invalidTransition`` because the bound
+    stream wasn't receiving a signal. The orchestrator then entered a
+    5-minute retry loop that burned ~600 quota units / hour and left a
+    ghost broadcast on the channel. Returning None instead lets the
+    caller defer rotation until the operator's RTMP feed actually
+    starts pushing.
+    """
     if not client.enabled:
         return None
     resp = client.execute(
@@ -53,8 +65,6 @@ def discover_stream_id(client: YouTubeApiClient) -> str | None:
     for item in items:
         if item.get("status", {}).get("streamStatus") == "active":
             return item.get("id")
-    if items:
-        return items[0].get("id")
     return None
 
 

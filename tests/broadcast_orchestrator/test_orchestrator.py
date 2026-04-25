@@ -144,6 +144,9 @@ def test_full_rotation_at_11h_boundary(monkeypatch, orch, fake_client):
     orch._tracking.cached_stream_id = "stream-id-mno"
     orch._set_state(State.ACTIVE)
     orch._clock.advance(40000)  # past 11h
+    # _continue_rotation_new re-discovers the stream every tick so a mid-
+    # rotation RTMP signal change is picked up; queue an active stream.
+    fake_client.queue("liveStreams.list", "stream-id-mno")
     fake_client.queue(
         "liveBroadcasts.insert",
         {"id": "broadcast-new-444", "snippet": {}, "status": {}},
@@ -163,6 +166,7 @@ def test_full_rotation_at_11h_boundary(monkeypatch, orch, fake_client):
     assert orch.tracking.active_broadcast_id == "broadcast-new-444"
     endpoints = [c[0] for c in fake_client.calls]
     assert endpoints == [
+        "liveStreams.list",
         "liveBroadcasts.insert",
         "liveBroadcasts.bind",
         "liveBroadcasts.transition",
@@ -179,6 +183,7 @@ def test_rotation_holds_when_insert_fails(monkeypatch, orch, fake_client):
     orch._tracking.cached_stream_id = "stream-id-mno"
     orch._set_state(State.ACTIVE)
     orch._clock.advance(40000)
+    fake_client.queue("liveStreams.list", "stream-id-mno")
     fake_client.queue("liveBroadcasts.insert", None)  # quota silent-skip
     orch.run_once()
     assert orch.state == State.ROTATING_NEW
@@ -192,6 +197,7 @@ def test_rotation_holds_when_bind_fails(monkeypatch, orch, fake_client):
     orch._tracking.cached_stream_id = "stream-id-mno"
     orch._set_state(State.ACTIVE)
     orch._clock.advance(40000)
+    fake_client.queue("liveStreams.list", "stream-id-mno")
     fake_client.queue(
         "liveBroadcasts.insert",
         {"id": "broadcast-new-444", "snippet": {}, "status": {}},
@@ -201,6 +207,33 @@ def test_rotation_holds_when_bind_fails(monkeypatch, orch, fake_client):
     assert orch.state == State.ROTATING_NEW
     # incoming_broadcast_id retained so retry doesn't re-insert
     assert orch.tracking.incoming_broadcast_id == "broadcast-new-444"
+
+
+def test_rotation_defers_when_no_active_stream(monkeypatch, orch, fake_client):
+    """Regression for the ghost-broadcast loop: when no liveStream is active
+    (RTMP feed not currently pushing), the rotation in ROTATING_NEW must
+    defer instead of inserting a broadcast that can't be transitioned to
+    testing. Earlier behavior bound to the first inactive stream + entered
+    a 5-minute retry loop burning ~600 quota/hour.
+    """
+    _patch_api(monkeypatch, fake_client)
+    orch._tracking.active_broadcast_id = "broadcast-old-111"
+    orch._tracking.active_started_ts = orch._time()
+    orch._tracking.cached_stream_id = "stream-id-stale"  # populated, but stale
+    orch._set_state(State.ACTIVE)
+    orch._clock.advance(40000)  # past 11h, would normally rotate
+    # discover_stream_id returns None (no active stream queued).
+    orch.run_once()
+    # Stayed in ROTATING_NEW so next tick can retry; no insert call yet.
+    assert orch.state == State.ROTATING_NEW
+    assert orch.tracking.incoming_broadcast_id is None
+    endpoints = [c[0] for c in fake_client.calls]
+    assert "liveBroadcasts.insert" not in endpoints
+    assert "liveBroadcasts.bind" not in endpoints
+    assert "liveBroadcasts.transition" not in endpoints
+    # cached_stream_id was overwritten to None so the next tick can detect
+    # signal arrival without staleness.
+    assert orch.tracking.cached_stream_id is None
 
 
 def test_vod_loss_alert_after_12h(monkeypatch, orch, fake_client):
