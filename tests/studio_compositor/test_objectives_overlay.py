@@ -184,12 +184,6 @@ class TestRender:
         # checking the first 4 bytes is enough for a smoke test
         assert data[:4] == b"\x00\x00\x00\x00" or data[3] == 0
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="ytb-OBJECTIVES-OVERLAY-RENDER-FOLLOWUP: chronic 'overlay did not render' "
-        "assertion failure on main since ~20:00Z; render path regression "
-        "disjoint from fixture setup. See cc-task.",
-    )
     def test_render_draws_when_objectives_present(self, tmp_path):
         import cairo
 
@@ -207,13 +201,16 @@ class TestRender:
         cr = cairo.Context(surface)
 
         overlay.render(cr, 1920, 1080, 0.0, overlay.state())
-        # After drawing the panel, some non-transparent pixels should exist
-        # near the top-left where the panel lives
+        # After drawing, some non-transparent pixels must exist somewhere
+        # on the surface. The 2026-04-23 "zero container opacity"
+        # directive retired the panel scrim, so the previous
+        # row-60-col-40 sample (the old panel-background pixel) is now
+        # legitimately transparent — text glyphs render at the header
+        # baseline (~row 48) and per-row baselines (88+). Full-surface
+        # scan is the robust assertion. Mirrors the
+        # ytb-LEGIBILITY-SMOKE-FOLLOWUP fix in test_legibility_sources.py.
         data = bytes(surface.get_data())
-        stride = surface.get_stride()
-        # Sample a row well inside the panel (row y=60, col x=40)
-        idx = 60 * stride + 40 * 4
-        assert any(b != 0 for b in data[idx : idx + 4]), "overlay did not render"
+        assert any(b != 0 for b in data), "overlay did not render"
 
 
 class TestInit:
