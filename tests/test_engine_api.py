@@ -617,6 +617,102 @@ class TestMoodValenceObservation:
         assert engine.state == "POSITIVE"
 
 
+# ── TestLogosMoodCoherenceBridge (Phase 6b-iii.B wire-in) ───────────────
+
+
+class TestLogosMoodCoherenceBridge:
+    """Mood-coherence bridge: all 4 health-volatility signal accessors.
+
+    Part 1 ships the protocol-matching surface with all accessors
+    returning ``None``. Per-signal threshold wiring lands in subsequent
+    PRs (Part 2-5) — same additive pattern alpha used in #1392 / #1399.
+    """
+
+    def test_hrv_variability_high_returns_none(self):
+        from logos.api.app import LogosMoodCoherenceBridge
+
+        assert LogosMoodCoherenceBridge().hrv_variability_high() is None
+
+    def test_respiration_irregular_returns_none(self):
+        from logos.api.app import LogosMoodCoherenceBridge
+
+        assert LogosMoodCoherenceBridge().respiration_irregular() is None
+
+    def test_movement_jitter_high_returns_none(self):
+        from logos.api.app import LogosMoodCoherenceBridge
+
+        assert LogosMoodCoherenceBridge().movement_jitter_high() is None
+
+    def test_skin_temp_volatility_high_returns_none(self):
+        from logos.api.app import LogosMoodCoherenceBridge
+
+        assert LogosMoodCoherenceBridge().skin_temp_volatility_high() is None
+
+
+# ── TestMoodCoherenceObservation (Phase 6b-iii.B adapter) ───────────────
+
+
+class TestMoodCoherenceObservation:
+    def test_returns_four_signal_dict_with_none_values(self):
+        """Default scaffolding bridge returns all-None observation dict."""
+        from agents.hapax_daimonion.backends.mood_coherence_observation import (
+            mood_coherence_observation,
+        )
+        from logos.api.app import LogosMoodCoherenceBridge
+
+        obs = mood_coherence_observation(LogosMoodCoherenceBridge())
+        assert obs == {
+            "hrv_variability_high": None,
+            "respiration_irregular": None,
+            "movement_jitter_high": None,
+            "skin_temp_volatility_high": None,
+        }
+
+    def test_propagates_signal_values_when_source_provides_them(self):
+        """Non-None values from the source flow through to the engine."""
+        from agents.hapax_daimonion.backends.mood_coherence_observation import (
+            mood_coherence_observation,
+        )
+
+        class _StubMixed:
+            def hrv_variability_high(self) -> bool:
+                return True
+
+            def respiration_irregular(self) -> None:
+                return None
+
+            def movement_jitter_high(self) -> bool:
+                return False
+
+            def skin_temp_volatility_high(self) -> bool:
+                return True
+
+        obs = mood_coherence_observation(_StubMixed())
+        assert obs == {
+            "hrv_variability_high": True,
+            "respiration_irregular": None,
+            "movement_jitter_high": False,
+            "skin_temp_volatility_high": True,
+        }
+
+    def test_engine_consumes_observation_without_error(self):
+        """Adapter output is a valid argument to MoodCoherenceEngine.contribute()."""
+        from agents.hapax_daimonion.backends.mood_coherence_observation import (
+            mood_coherence_observation,
+        )
+        from agents.hapax_daimonion.mood_coherence_engine import MoodCoherenceEngine
+        from logos.api.app import LogosMoodCoherenceBridge
+
+        engine = MoodCoherenceEngine()
+        for _ in range(5):
+            engine.contribute(mood_coherence_observation(LogosMoodCoherenceBridge()))
+        # All-None observations leave posterior at prior. Prior 0.15 is
+        # below exit_threshold (engine starts RETRACTED) — translates to
+        # COHERENT in the negative-tier vocabulary INCOHERENT/UNCERTAIN/COHERENT.
+        assert engine.posterior == pytest.approx(0.15)
+        assert engine.state == "COHERENT"
+
+
 # ── TestLogosDriftBridge ────────────────────────────────────────────────
 
 

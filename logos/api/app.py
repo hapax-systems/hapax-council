@@ -166,6 +166,34 @@ class LogosMoodValenceBridge:
         return None
 
 
+# Phase 6b-iii.B partial wire-in. Bridge contract for the four
+# mood-coherence (low-tier) signals (``hrv_variability_high``,
+# ``respiration_irregular``, ``movement_jitter_high``,
+# ``skin_temp_volatility_high``) defined in
+# ``mood_coherence_engine.DEFAULT_SIGNAL_WEIGHTS``. Per-signal sources
+# live in heterogeneous backends — mostly Pixel Watch volatility/
+# variance metrics in health.py. Part 1 (this PR) ships the protocol-
+# matching bridge with all accessors returning ``None`` so the engine
+# math runs cleanly with no live signal contribution. Subsequent PRs
+# wire each threshold reference as the per-backend volatility windows
+# stabilise — same additive pattern alpha used in #1392 / #1399 and
+# delta used in #1389.
+class LogosMoodCoherenceBridge:
+    """Bridge health-volatility signals → MoodCoherenceEngine signal Protocol."""
+
+    def hrv_variability_high(self) -> bool | None:
+        return None
+
+    def respiration_irregular(self) -> bool | None:
+        return None
+
+    def movement_jitter_high(self) -> bool | None:
+        return None
+
+    def skin_temp_volatility_high(self) -> bool | None:
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await start_refresh_loop()
@@ -309,6 +337,23 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("MoodValenceEngine wire-in failed (continuing without it)")
 
+    # Phase 6b-iii.B partial wire-in: MoodCoherenceEngine observes the
+    # four health-volatility coherence signals (HRV CV, respiration
+    # variance, movement jitter, skin temp volatility). Engine math +
+    # signal contract shipped in #1374; this PR activates the live
+    # consumer + adapter contract. All four signal accessors return
+    # ``None`` from LogosMoodCoherenceBridge until per-backend
+    # volatility windows stabilise — same additive pattern alpha used
+    # for MAE in #1392 and MVE in #1399.
+    mce = None
+    try:
+        from agents.hapax_daimonion.mood_coherence_engine import MoodCoherenceEngine
+
+        mce = MoodCoherenceEngine()
+        app.state.mood_coherence_engine = mce
+    except Exception:
+        _log.exception("MoodCoherenceEngine wire-in failed (continuing without it)")
+
     # Start chronicle sampler and periodic trim
     import asyncio
 
@@ -398,12 +443,29 @@ async def lifespan(app: FastAPI):
                 _log.debug("MoodValenceEngine tick failed", exc_info=True)
             await asyncio.sleep(1.0)
 
+    async def _mood_coherence_tick_loop():
+        """1s-cadence tick — observes 4 mood-coherence signals + contributes to MCE."""
+        from agents.hapax_daimonion.backends.mood_coherence_observation import (
+            mood_coherence_observation,
+        )
+
+        coherence_bridge = LogosMoodCoherenceBridge()
+
+        while True:
+            try:
+                if mce is not None:
+                    mce.contribute(mood_coherence_observation(coherence_bridge))
+            except Exception:
+                _log.debug("MoodCoherenceEngine tick failed", exc_info=True)
+            await asyncio.sleep(1.0)
+
     _sampler_task = asyncio.create_task(run_sampler())
     _trim_task = asyncio.create_task(_chronicle_trim_loop())
     _sde_task = asyncio.create_task(_system_degraded_tick_loop()) if sde is not None else None
     _oae_task = asyncio.create_task(_operator_activity_tick_loop()) if oae is not None else None
     _mae_task = asyncio.create_task(_mood_arousal_tick_loop()) if mae is not None else None
     _mve_task = asyncio.create_task(_mood_valence_tick_loop()) if mve is not None else None
+    _mce_task = asyncio.create_task(_mood_coherence_tick_loop()) if mce is not None else None
 
     yield
 
@@ -417,6 +479,8 @@ async def lifespan(app: FastAPI):
         _mae_task.cancel()
     if _mve_task is not None:
         _mve_task.cancel()
+    if _mce_task is not None:
+        _mce_task.cancel()
     if engine is not None:
         await engine.stop()
     await agent_run_manager.shutdown()
