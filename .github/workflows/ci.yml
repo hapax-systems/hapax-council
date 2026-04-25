@@ -54,6 +54,14 @@ jobs:
       # asset bypassed the manifest refresh.
       - name: Aesthetic library verify
         run: uv run python scripts/verify-aesthetic-library.py
+      # AUDIT-22 Phase B-2 — publication-contract redaction linter.
+      # Validates every contract `redactions:` entry is either a
+      # registered transform (REDACTION_TRANSFORMS) or a dict-key
+      # pattern (contains `.` or ends with `*`). Catches typos /
+      # unregistered transforms that would silently no-op in the
+      # _apply_redactions wire-in.
+      - name: Publication redaction transforms verify
+        run: uv run python scripts/verify-redaction-transforms.py
       # Bayesian Phase 0 FULL — HPX003 + HPX004 claim/LR registry gates.
       # HPX003: every signal in shared/lr_registry.yaml validates against
       # LRDerivation. HPX004: every claim has a PriorProvenance entry in

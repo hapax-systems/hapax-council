@@ -139,20 +139,22 @@ def _pattern_matches(pattern: str, value: str) -> bool:
     return False
 
 
-# ── Redaction transform registry (AUDIT-22 Phase A) ─────────────────────
+# ── Redaction transform registry (AUDIT-22 Phase A + B + B-2) ───────────
 #
 # Named transforms operating on string content. Each transform takes a
 # string + returns a string with sensitive substrings replaced by
 # ``[REDACTED]``. Registered by name so contract ``redactions:`` entries
-# can name them uniformly (``- legal_name``, ``- email_address``).
+# can name them uniformly (``- operator_legal_name``,
+# ``- email_address``).
 #
-# Phase A (this PR): registry + transforms + tests.
-# Phase B (follow-on): wire registry into ``_apply_redactions`` so
-# string payloads get the named-transform pipeline applied per
-# contract redactions list.
+# Phase A: registry + transforms + tests.
+# Phase B: wire registry into ``_apply_redactions`` so string payloads
+# get the named-transform pipeline applied per contract redactions list.
+# Phase B-2: ``legal_name`` → ``operator_legal_name`` rename to align
+# with contract entry naming + ``HAPAX_OPERATOR_NAME`` env semantics.
 #
 # Spec: v4 §3.4.2 AUDIT-22 acceptance — RedactionTransform registry
-# (transforms registered by name: legal_name, email_address,
+# (transforms registered by name: operator_legal_name, email_address,
 # gps_coordinate, applied per `redactions:` field uniformly).
 
 # RFC-5322-shaped email; intentionally a tighter matcher than the
@@ -176,7 +178,7 @@ class RedactionTransformNotFound(KeyError):
     fail-closed default."""
 
 
-def _legal_name_transform(content: str) -> str:
+def _operator_legal_name_transform(content: str) -> str:
     """Redact ``HAPAX_OPERATOR_NAME`` env-supplied legal name (case-
     insensitive substring). Empty / unset env disables the transform —
     an empty pattern would match every string trivially."""
@@ -197,7 +199,7 @@ def _gps_coordinate_transform(content: str) -> str:
 
 
 REDACTION_TRANSFORMS: Final[dict[str, Callable[[str], str]]] = {
-    "legal_name": _legal_name_transform,
+    "operator_legal_name": _operator_legal_name_transform,
     "email_address": _email_address_transform,
     "gps_coordinate": _gps_coordinate_transform,
 }
@@ -227,8 +229,8 @@ def _apply_redactions(payload: dict | str, redactions: tuple[str, ...]) -> tuple
     * **dict**: drop any key whose name matches a redaction pattern
       (existing behavior; wildcard matching via :func:`_pattern_matches`).
       Redaction entries that name a registered transform (eg.
-      ``legal_name``) are skipped on dict payloads — the transform
-      operates on string content, not on dict keys.
+      ``operator_legal_name``) are skipped on dict payloads — the
+      transform operates on string content, not on dict keys.
     * **string** (AUDIT-22 Phase B): for each redaction entry that
       names a :data:`REDACTION_TRANSFORMS` entry, apply the transform
       to the string content. Entries that aren't registered transforms

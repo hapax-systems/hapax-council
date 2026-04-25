@@ -120,11 +120,14 @@ def test_redaction_string_payload_passes_through(tmp_path: Path) -> None:
 # ── AUDIT-22 Phase B: registered transforms apply to string payloads ──────
 
 
-def test_string_payload_legal_name_transform_applied(tmp_path: Path, monkeypatch) -> None:
-    """When a contract names ``legal_name`` and a string payload contains
-    the operator's name (env var), redaction substitutes ``[REDACTED]``."""
+def test_string_payload_operator_legal_name_transform_applied(tmp_path: Path, monkeypatch) -> None:
+    """When a contract names ``operator_legal_name`` and a string
+    payload contains the operator's name (env var), redaction
+    substitutes ``[REDACTED]``."""
     monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Real Person")
-    _write_contract(tmp_path, "youtube-title", state_kinds=["x"], redactions=["legal_name"])
+    _write_contract(
+        tmp_path, "youtube-title", state_kinds=["x"], redactions=["operator_legal_name"]
+    )
     result = check("youtube-title", "x", "by Real Person today", contracts_dir=tmp_path)
     assert result.decision == "redact"
     assert "Real Person" not in result.payload
@@ -146,7 +149,7 @@ def test_string_payload_multiple_transforms_compose(tmp_path: Path, monkeypatch)
         tmp_path,
         "youtube-title",
         state_kinds=["x"],
-        redactions=["legal_name", "email_address"],
+        redactions=["operator_legal_name", "email_address"],
     )
     payload = "Real Person at user@example.com"
     result = check("youtube-title", "x", payload, contracts_dir=tmp_path)
@@ -163,11 +166,14 @@ def test_string_payload_no_transform_match_passes_through(tmp_path: Path) -> Non
 
 
 def test_dict_payload_transform_name_skips_key_redaction(tmp_path: Path) -> None:
-    """Transform names (eg. ``legal_name``) on dict payloads are no-ops —
-    transforms operate on string content. A dict key literally named
-    ``legal_name`` would be matched as a wildcard pattern, but only if
-    the existing dict-key matcher accepts it (no wildcard suffix)."""
-    _write_contract(tmp_path, "youtube-title", state_kinds=["x"], redactions=["legal_name"])
+    """Transform names (eg. ``operator_legal_name``) on dict payloads
+    are no-ops — transforms operate on string content. A dict key
+    literally named ``operator_legal_name`` would be matched as a
+    wildcard pattern, but only if the existing dict-key matcher
+    accepts it (no wildcard suffix)."""
+    _write_contract(
+        tmp_path, "youtube-title", state_kinds=["x"], redactions=["operator_legal_name"]
+    )
     result = check(
         "youtube-title",
         "x",

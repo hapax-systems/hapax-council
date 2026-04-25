@@ -20,7 +20,7 @@ from shared.governance.publication_allowlist import (
 
 class TestRegistryShape:
     def test_three_transforms_registered(self) -> None:
-        assert "legal_name" in REDACTION_TRANSFORMS
+        assert "operator_legal_name" in REDACTION_TRANSFORMS
         assert "email_address" in REDACTION_TRANSFORMS
         assert "gps_coordinate" in REDACTION_TRANSFORMS
 
@@ -28,33 +28,38 @@ class TestRegistryShape:
         with pytest.raises(RedactionTransformNotFound):
             apply_named_transform("not_a_real_transform", "anything")
 
+    def test_legacy_legal_name_alias_not_registered(self) -> None:
+        """AUDIT-22 Phase B-2 rename: ``legal_name`` is gone, replaced
+        by ``operator_legal_name`` (matches contract entry naming)."""
+        assert "legal_name" not in REDACTION_TRANSFORMS
 
-class TestLegalNameTransform:
-    """``legal_name`` redacts the operator's name as supplied via
-    ``HAPAX_OPERATOR_NAME`` env var. Mirrors the AUDIT-05 guard in
+
+class TestOperatorLegalNameTransform:
+    """``operator_legal_name`` redacts the operator's name as supplied
+    via ``HAPAX_OPERATOR_NAME`` env var. Mirrors the AUDIT-05 guard in
     ``shared/governance/omg_referent.py`` but at the publication-
     allowlist layer (defense-in-depth)."""
 
     def test_match_substituted_with_redacted_marker(self, monkeypatch) -> None:
         monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Real Person")
-        out = apply_named_transform("legal_name", "by Real Person, today")
+        out = apply_named_transform("operator_legal_name", "by Real Person, today")
         assert "Real Person" not in out
         assert "[REDACTED]" in out
 
     def test_case_insensitive_match(self, monkeypatch) -> None:
         monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Real Person")
-        out = apply_named_transform("legal_name", "BY REAL PERSON, TODAY")
+        out = apply_named_transform("operator_legal_name", "BY REAL PERSON, TODAY")
         assert "REAL PERSON" not in out
         assert "[REDACTED]" in out
 
     def test_no_env_var_passthrough(self, monkeypatch) -> None:
         monkeypatch.delenv("HAPAX_OPERATOR_NAME", raising=False)
-        out = apply_named_transform("legal_name", "by Real Person")
+        out = apply_named_transform("operator_legal_name", "by Real Person")
         assert out == "by Real Person"
 
     def test_empty_env_var_passthrough(self, monkeypatch) -> None:
         monkeypatch.setenv("HAPAX_OPERATOR_NAME", "")
-        out = apply_named_transform("legal_name", "by Real Person")
+        out = apply_named_transform("operator_legal_name", "by Real Person")
         assert out == "by Real Person"
 
 
@@ -109,12 +114,12 @@ class TestGpsCoordinateTransform:
 class TestStringContentInvariant:
     """All transforms operate on string content and return string."""
 
-    @pytest.mark.parametrize("name", ["legal_name", "email_address", "gps_coordinate"])
+    @pytest.mark.parametrize("name", ["operator_legal_name", "email_address", "gps_coordinate"])
     def test_returns_string(self, name: str) -> None:
         out = apply_named_transform(name, "some content")
         assert isinstance(out, str)
 
-    @pytest.mark.parametrize("name", ["legal_name", "email_address", "gps_coordinate"])
+    @pytest.mark.parametrize("name", ["operator_legal_name", "email_address", "gps_coordinate"])
     def test_empty_input_returns_empty(self, name: str) -> None:
         out = apply_named_transform(name, "")
         assert out == ""
