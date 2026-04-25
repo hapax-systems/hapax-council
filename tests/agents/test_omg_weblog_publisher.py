@@ -327,3 +327,44 @@ class TestPublishArtifact:
             artifact = _FakeArtifact(title="t", body_md="b")
             assert publish_artifact(artifact) == "denied"
         client.set_entry.assert_not_called()
+
+    def test_oudepode_variant_routes_to_oudepode_address(self) -> None:
+        """publish_artifact_oudepode targets the oudepode address + key."""
+        from unittest.mock import patch
+
+        from agents.omg_weblog_publisher.publisher import publish_artifact_oudepode
+
+        client = MagicMock()
+        client.enabled = True
+        client.set_entry.return_value = {"ok": True}
+        with patch("shared.omg_lol_client.OmgLolClient", return_value=client) as mock_cls:
+            artifact = _FakeArtifact(
+                slug="oudepode-disclosure",
+                title="Oudepode Disclosure",
+                attribution_block="Hapax + CC.",
+                abstract="A.",
+                body_md="B.",
+            )
+            assert publish_artifact_oudepode(artifact) == "ok"
+        # Client constructed with oudepode credentials.
+        construct_kwargs = mock_cls.call_args.kwargs
+        assert construct_kwargs["address"] == "oudepode"
+        assert construct_kwargs["pass_key"] == "omg-lol/oudepode-api-key"
+        # set_entry called with the oudepode address (not hapax).
+        set_entry_args = client.set_entry.call_args.args
+        assert set_entry_args[0] == "oudepode"
+        assert set_entry_args[1] == "oudepode-disclosure"
+
+    def test_address_kwarg_propagates_to_set_entry(self) -> None:
+        """Custom address kwarg overrides the default and reaches set_entry."""
+        from unittest.mock import patch
+
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = MagicMock()
+        client.enabled = True
+        client.set_entry.return_value = {"ok": True}
+        with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
+            artifact = _FakeArtifact(slug="x", title="t", body_md="b")
+            assert publish_artifact(artifact, address="custom-addr") == "ok"
+        assert client.set_entry.call_args.args[0] == "custom-addr"

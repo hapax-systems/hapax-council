@@ -21,6 +21,7 @@ from agents.omg_weblog_publisher.publisher import (
     main,
     parse_draft,
     publish_artifact,
+    publish_artifact_oudepode,
 )
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "main",
     "parse_draft",
     "publish_artifact",
+    "publish_artifact_oudepode",
 ]

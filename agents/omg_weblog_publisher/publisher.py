@@ -198,8 +198,13 @@ class WeblogPublisher:
 # ── Orchestrator entry-point (PUB-P2-C foundation) ───────────────────
 
 
-def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
-    """Dispatch a ``PreprintArtifact`` to the operator's omg.lol weblog.
+def publish_artifact(  # type: ignore[no-untyped-def]
+    artifact,
+    *,
+    address: str = DEFAULT_ADDRESS,
+    pass_key: str = "omg-lol/api-key",
+) -> str:
+    """Dispatch a ``PreprintArtifact`` to an omg.lol weblog account.
 
     Static entry-point consumed by ``agents/publish_orchestrator``'s
     surface registry. Returns one of: ``ok | denied | auth_error |
@@ -209,6 +214,12 @@ def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
     weblog is operator-owned and FULL_AUTO eligible. The Refusal Brief's
     Locus 2 (the standalone web essay) lives at hapax.omg.lol/refusal,
     so this entry-point is the unblocking work for that publish.
+
+    The ``address`` + ``pass_key`` kwargs select which omg.lol account
+    receives the artifact; the orchestrator binds them through sibling
+    surface entries (``omg-weblog`` for hapax, ``oudepode-omg-weblog``
+    for oudepode). Operator-side cross-account routing is metadata on
+    the artifact itself — the publisher does not infer.
 
     Composition: the artifact's ``slug`` becomes the omg.lol entry slug,
     ``title`` renders as a markdown ``# H1`` at the top, ``attribution_block``
@@ -221,9 +232,13 @@ def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
     """
     from shared.omg_lol_client import OmgLolClient
 
-    client = OmgLolClient()
+    client = OmgLolClient(address=address, pass_key=pass_key)
     if not client.enabled:
-        log.info("omg-weblog: API key unavailable; deferring artifact %s", artifact.slug)
+        log.info(
+            "omg-weblog[%s]: API key unavailable; deferring artifact %s",
+            address,
+            artifact.slug,
+        )
         _record("no_credentials")
         return "no_credentials"
 
@@ -251,20 +266,40 @@ def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
         return "error"
 
     try:
-        resp = client.set_entry(DEFAULT_ADDRESS, artifact.slug, content=guarded)
+        resp = client.set_entry(address, artifact.slug, content=guarded)
     except Exception:  # noqa: BLE001
-        log.exception("omg-weblog: set_entry raised for artifact %s", artifact.slug)
+        log.exception("omg-weblog[%s]: set_entry raised for artifact %s", address, artifact.slug)
         _record("error")
         return "error"
 
     if resp is None:
-        log.warning("omg-weblog: set_entry returned None for artifact %s", artifact.slug)
+        log.warning(
+            "omg-weblog[%s]: set_entry returned None for artifact %s", address, artifact.slug
+        )
         _record("error")
         return "error"
 
-    log.info("omg-weblog: published artifact %s", artifact.slug)
+    log.info("omg-weblog[%s]: published artifact %s", address, artifact.slug)
     _record("ok")
     return "ok"
+
+
+def publish_artifact_oudepode(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Dispatch a ``PreprintArtifact`` to the oudepode omg.lol weblog account.
+
+    Sibling entry-point for the operator's second omg.lol identity. The
+    hapax account carries the system-side surface (Manifesto, Refusal
+    Brief, governance disclosures); the oudepode account carries the
+    music-side surface (cohort disclosures, release-window companion
+    notes, future Insights-API attestations). Cross-linking happens at
+    artifact authorship time, not at publish time — this function is
+    just the credential + address selector.
+    """
+    return publish_artifact(
+        artifact,
+        address="oudepode",
+        pass_key="omg-lol/oudepode-api-key",
+    )
 
 
 def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
