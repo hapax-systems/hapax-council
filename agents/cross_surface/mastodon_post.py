@@ -272,6 +272,68 @@ def _credentials_from_env() -> tuple[str | None, str | None]:
     return instance, token
 
 
+# ── Orchestrator entry-point (PUB-P1-B foundation) ───────────────────
+
+
+def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Dispatch a ``PreprintArtifact`` to Mastodon.
+
+    Static entry-point consumed by ``agents/publish_orchestrator``'s
+    surface registry. Returns one of: ``ok | denied | auth_error |
+    error | no_credentials``. Never raises.
+
+    Composes via the artifact's ``title + abstract`` (truncated to
+    ``MASTODON_TEXT_LIMIT``, default 500). The full ``BasePublisher``
+    refactor that consolidates the JSONL-tail mode with this
+    entry-point lands in a follow-up ticket.
+    """
+    instance_url, access_token = _credentials_from_env()
+    if not (instance_url and access_token):
+        return "no_credentials"
+
+    text = _compose_artifact_text(artifact)
+    if not text:
+        return "error"
+
+    try:
+        client = _default_client_factory(instance_url, access_token)
+    except Exception:  # noqa: BLE001
+        log.exception("mastodon login failed for artifact %s", getattr(artifact, "slug", "?"))
+        return "auth_error"
+
+    try:
+        client.status_post(text)
+    except Exception:  # noqa: BLE001
+        log.exception(
+            "mastodon status_post raised for artifact %s",
+            getattr(artifact, "slug", "?"),
+        )
+        return "error"
+    return "ok"
+
+
+def _compose_artifact_text(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Render a ``PreprintArtifact`` to Mastodon-bounded text.
+
+    Default: ``"{title} — {abstract}"`` truncated to
+    ``MASTODON_TEXT_LIMIT``. If the artifact carries a non-empty
+    ``attribution_block``, prefer that as the body so per-artifact
+    framing stays authoritative.
+    """
+    title = getattr(artifact, "title", "") or ""
+    abstract = getattr(artifact, "abstract", "") or ""
+    attribution = getattr(artifact, "attribution_block", "") or ""
+
+    if attribution:
+        body = attribution
+    elif abstract:
+        body = f"{title} — {abstract}"
+    else:
+        body = title or "hapax — publication artifact"
+
+    return body[:MASTODON_TEXT_LIMIT]
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agents.cross_surface.mastodon_post",
