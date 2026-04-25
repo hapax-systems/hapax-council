@@ -30,6 +30,7 @@ import os
 import random
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from shared.affordance import MonetizationRisk
@@ -41,6 +42,8 @@ __all__ = [
     "MonetizationRiskGate",
     "RiskAssessment",
     "SurfaceKind",
+    "reload_whitelist",
+    "current_whitelist",
 ]
 
 _log = logging.getLogger(__name__)
@@ -79,6 +82,106 @@ def register_assess_listener(listener: _AssessListener) -> None:
     """
     if listener not in _assess_listeners:
         _assess_listeners.append(listener)
+
+
+# ── Phase 10: operator whitelist + flagged-payload sink ──────────────────
+#
+# The whitelist NARROWS Ring 2. It can override a Ring-2 escalation /
+# rendered-payload block, but it CANNOT override a Ring-1 ``risk == "high"``
+# catalog declaration — that short-circuit fires before any whitelist code.
+# Tested in tests/monetization_review/test_whitelist.py::TestNeverBypassesRing1High.
+#
+# Module-level state because the gate's ``GATE`` singleton is stateless;
+# stashing the whitelist on the instance would break the "pure filter"
+# contract documented above and force every caller through the singleton.
+
+from agents.monetization_review.flagged_store import FlaggedStore
+from agents.monetization_review.whitelist import (
+    DEFAULT_WHITELIST_PATH,
+    Whitelist,
+)
+
+_CURRENT_WHITELIST: Whitelist = Whitelist.empty()
+_FLAGGED_STORE: FlaggedStore | None = None
+
+
+def reload_whitelist(path: Path | None = None) -> Whitelist:
+    """Reload the operator whitelist from YAML. Returns the new whitelist.
+
+    Called at module import (so daemon startups pick up the on-disk
+    state automatically) and from a SIGHUP handler installed by
+    ``agents.monetization_review.cli.install_inprocess_sighup_handler``.
+    Idempotent — never raises; malformed YAML reverts to an empty
+    whitelist with a warning log so a corrupted file cannot block traffic.
+    """
+    global _CURRENT_WHITELIST
+    _CURRENT_WHITELIST = Whitelist.load(path)
+    return _CURRENT_WHITELIST
+
+
+def current_whitelist() -> Whitelist:
+    """Return the active whitelist instance — used by tests + introspection."""
+    return _CURRENT_WHITELIST
+
+
+def _flagged_store() -> FlaggedStore:
+    """Lazy-construct the partitioned flagged-payload store."""
+    global _FLAGGED_STORE
+    if _FLAGGED_STORE is None:
+        _FLAGGED_STORE = FlaggedStore()
+    return _FLAGGED_STORE
+
+
+def _maybe_record_flagged(
+    assessment: RiskAssessment,
+    *,
+    capability_name: str,
+    rendered_payload: Any,
+    programme_id: str | None,
+) -> None:
+    """Persist a block to the operator-review surface if a payload is present.
+
+    Ring-1-only blocks (no ``rendered_payload`` ever passed to ``assess``)
+    are skipped — the operator can't whitelist a payload they never see.
+    Ring 1 high catalog blocks are intentionally elided here too because
+    the whitelist cannot override them; surfacing them would imply they're
+    actionable, which they aren't.
+    """
+    if assessment.allowed:
+        return
+    if rendered_payload is None:
+        return
+    if assessment.risk == "high" and "ring2" not in assessment.reason:
+        return  # Ring 1 high — operator review surface elides
+    try:
+        _flagged_store().record_block(
+            capability_name=capability_name,
+            surface=assessment.surface.value if assessment.surface else None,
+            rendered_payload=rendered_payload,
+            risk=assessment.risk,
+            reason=assessment.reason,
+            programme_id=programme_id,
+        )
+    except Exception:  # noqa: BLE001 — flagged-store write must not break the gate
+        _log.warning("flagged-store write failed", exc_info=True)
+
+
+def _whitelist_overrides(
+    *,
+    capability_name: str,
+    rendered_payload: Any,
+) -> tuple[bool, str]:
+    """True iff the active whitelist allows this capability + rendered text.
+
+    Capability-name match wins over payload match (operator's broadest
+    explicit decision). Payload match falls back to stringified value.
+    """
+    cap_match, cap_reason = _CURRENT_WHITELIST.matches_capability(capability_name)
+    if cap_match:
+        return True, cap_reason
+    if rendered_payload is None:
+        return False, ""
+    return _CURRENT_WHITELIST.matches_payload(rendered_payload)
 
 
 class SurfaceKind(StrEnum):
@@ -303,26 +406,70 @@ class MonetizationRiskGate:
                 # If the fail-closed wrapper fired and blocked, surface
                 # that immediately; don't continue through opt-in logic.
                 if not decision.assessment.allowed and decision.used_fallback:
+                    assessment = RiskAssessment(
+                        allowed=False,
+                        risk=effective_risk,  # type: ignore[arg-type]
+                        reason=f"{name}: ring2 degraded → {ring2_reason}",
+                        surface=surface,
+                    )
+                    _maybe_record_flagged(
+                        assessment,
+                        capability_name=name,
+                        rendered_payload=rendered_payload,
+                        programme_id=programme_id,
+                    )
                     return _record_and_return(
-                        RiskAssessment(
-                            allowed=False,
-                            risk=effective_risk,  # type: ignore[arg-type]
-                            reason=f"{name}: ring2 degraded → {ring2_reason}",
-                            surface=surface,
-                        ),
+                        assessment,
                         capability_name=name,
                         programme_id=programme_id,
                     )
 
+        # Phase 10: whitelist override — applies ONLY when Ring 2
+        # was used and either escalated risk or kept the payload at a
+        # blockable tier. Ring 1 high already short-circuited above and
+        # never reaches this code, so the "NEVER bypasses Ring 1 high"
+        # invariant holds structurally — see TestNeverBypassesRing1High.
+        if ring2_used and effective_risk in ("high", "medium"):
+            allowed_by_whitelist, override_reason = _whitelist_overrides(
+                capability_name=name,
+                rendered_payload=rendered_payload,
+            )
+            if allowed_by_whitelist:
+                _log.info(
+                    "monetization: ring2 verdict overridden by whitelist (%s): %s",
+                    name,
+                    override_reason,
+                )
+                return _record_and_return(
+                    RiskAssessment(
+                        allowed=True,
+                        risk=ring1_risk,
+                        reason=(
+                            f"{name}: ring2 verdict {effective_risk!r} overridden by "
+                            f"whitelist — {override_reason}"
+                        ),
+                        surface=surface,
+                    ),
+                    capability_name=name,
+                    programme_id=programme_id,
+                )
+
         # Effective-risk-high path: Ring 2 escalated to high.
         if effective_risk == "high":
+            assessment = RiskAssessment(
+                allowed=False,
+                risk=effective_risk,  # type: ignore[arg-type]
+                reason=f"{name}: ring2 escalated to high ({ring2_reason})",
+                surface=surface,
+            )
+            _maybe_record_flagged(
+                assessment,
+                capability_name=name,
+                rendered_payload=rendered_payload,
+                programme_id=programme_id,
+            )
             return _record_and_return(
-                RiskAssessment(
-                    allowed=False,
-                    risk=effective_risk,  # type: ignore[arg-type]
-                    reason=f"{name}: ring2 escalated to high ({ring2_reason})",
-                    surface=surface,
-                ),
+                assessment,
                 capability_name=name,
                 programme_id=programme_id,
             )
@@ -338,13 +485,20 @@ class MonetizationRiskGate:
                     if ring2_used and ring2_reason and effective_risk != ring1_risk
                     else ""
                 )
+                assessment = RiskAssessment(
+                    allowed=False,
+                    risk=effective_risk,  # type: ignore[arg-type]
+                    reason=f"{name}: medium-risk capability requires programme opt-in{detail}",
+                    surface=surface,
+                )
+                _maybe_record_flagged(
+                    assessment,
+                    capability_name=name,
+                    rendered_payload=rendered_payload,
+                    programme_id=programme_id,
+                )
                 return _record_and_return(
-                    RiskAssessment(
-                        allowed=False,
-                        risk=effective_risk,  # type: ignore[arg-type]
-                        reason=f"{name}: medium-risk capability requires programme opt-in{detail}",
-                        surface=surface,
-                    ),
+                    assessment,
                     capability_name=name,
                     programme_id=programme_id,
                 )
@@ -408,3 +562,15 @@ def assess(
 # Deliberately unused import — kept only so ``Literal`` remains available
 # for Phase 3 RiskAssessment refinements when the classifier lands.
 _ = Literal
+
+
+# Phase 10: load the operator whitelist at module import so daemon
+# startups pick up the on-disk state without an explicit bootstrap call.
+# Tests that need a known-empty starting point call ``reload_whitelist``
+# with a tmp_path. Wrapped in try/except because module import must
+# never fail on a corrupted whitelist; the loader already returns an
+# empty whitelist on parse failure so this is belt-and-braces.
+try:
+    reload_whitelist(DEFAULT_WHITELIST_PATH)
+except Exception:  # noqa: BLE001 — module import must not fail
+    _log.warning("monetization-whitelist: bootstrap load failed", exc_info=True)
