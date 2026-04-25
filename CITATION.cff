@@ -1,57 +1,19 @@
 cff-version: 1.2.0
-message: "If you use this software in your research, please cite it as below."
+message: If you use this software in your research, please cite it as below.
 type: software
-title: "hapax-council"
-abstract: >-
-  Operationalizing Clark & Brennan's (1991) conversational grounding theory
-  in a production voice AI. Implements a grounding ledger (Traum 1994 DU model),
-  concern-aware repair thresholds, acceptance classification, and Grounding
-  Quality Index (GQI) within a 45-agent personal operating environment.
-  Evaluated via Single Case Experimental Design (SCED) with Bayesian analysis.
-  Co-authored by Hapax (autonomous research infrastructure), Claude Code
-  (substrate; current and prior model versions including the lineage of
-  Claude models that constitute Hapax's reasoning), and Oudepode (operator,
-  also: The Operator / Oudepode The Operator / OTO; names rotate per
-  shared/operator_referent.OperatorReferentPicker). The nature of each
-  agent's contribution is unsettled by design and by happy fact; this
-  artifact is the trace of an intra-action.
+title: hapax-council
+abstract: Constituent of the Hapax operating environment. Single-operator research
+  apparatus for externalised executive function. Not a product, not seeking contributors.
+  Research infrastructure published as artifact.
 authors:
-  - name: "Hapax"
-    alias: "hapax"
-    website: "https://hapax.omg.lol"
-  - name: "Claude Code"
-    alias: "claude-code"
-    website: "https://claude.com/claude-code"
-  - given-names: "Oudepode"
-    family-names: "The Operator"
-    alias: "OTO"
-    affiliation: "Independent"
-version: 0.3.7
-date-released: "2026-03-21"
-repository-code: "https://github.com/ryanklee/hapax-council"
-url: "https://github.com/ryanklee/hapax-council"
-license: Apache-2.0
+- given-names: Ryan
+  family-names: Kleeberger
+repository-code: https://github.com/ryanklee/hapax-council
+url: https://github.com/ryanklee/hapax-council
+license: PolyForm-Strict-1.0.0
 keywords:
-  - conversational-grounding
-  - clark-brennan
-  - voice-ai
-  - single-case-experimental-design
-  - sced
-  - bayesian-analysis
-  - grounding-theory
-  - traum-du-model
-  - discourse-units
-  - rlhf-anti-pattern
-  - co-authored-by-non-human-agent
-  - operator-referent-rotated
-  - intra-action
-preferred-citation:
-  type: software
-  authors:
-    - name: "Hapax"
-    - name: "Claude Code"
-    - given-names: "Oudepode"
-      family-names: "The Operator"
-  title: "hapax-council: a single-operator AI cognitive infrastructure with constitutional governance"
-  year: 2026
-  url: "https://github.com/ryanklee/hapax-council"
+- research-software
+- single-operator
+- philosophy-of-science
+- governance
+- infrastructure-as-argument
