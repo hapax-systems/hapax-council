@@ -53,6 +53,36 @@ from agents.publication_bus.publisher_kit.legal_name_guard import (
 log = logging.getLogger(__name__)
 
 
+def _emit_publisher_refusal(*, axiom: str, surface: str, reason: str) -> None:
+    """Append a publisher-bus refusal event to the canonical refusal log.
+
+    Fires from the two refusal-return paths in :meth:`Publisher.publish`:
+    allowlist deny and legal-name leak. Constitutional fit: the
+    publication bus is the load-bearing surface for refusal-as-data
+    (per ``feedback_full_automation_or_no_engagement``) — every
+    REFUSED outcome belongs in the canonical log alongside Prometheus
+    counters.
+
+    Best-effort: writer failures swallowed at the publisher boundary
+    so observability hiccups never break the publish path.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from agents.refusal_brief import RefusalEvent, append
+
+        append(
+            RefusalEvent(
+                timestamp=datetime.now(UTC),
+                axiom=axiom,
+                surface=surface,
+                reason=reason[:160],
+            )
+        )
+    except Exception:
+        pass
+
+
 @dataclass(frozen=True)
 class PublisherPayload:
     """One publish-event's payload.
@@ -168,6 +198,11 @@ class Publisher(ABC):
             log.warning("publication_bus: refused — allowlist deny: %s", exc)
             if counter is not None:
                 counter.labels(surface=self.surface_name, result="refused").inc()
+            _emit_publisher_refusal(
+                axiom="allowlist_deny",
+                surface=f"publication_bus:{self.surface_name}",
+                reason=f"allowlist deny: target {payload.target!r}",
+            )
             return PublisherResult(
                 refused=True,
                 detail=f"allowlist deny: target {payload.target!r}",
@@ -187,6 +222,15 @@ class Publisher(ABC):
                 )
                 if counter is not None:
                     counter.labels(surface=self.surface_name, result="refused").inc()
+                # Reason text deliberately omits the matched substring
+                # — the writer caps at 160 chars regardless, and
+                # re-emitting the leak in the refusal log would defeat
+                # the purpose of the guard.
+                _emit_publisher_refusal(
+                    axiom="legal_name_leak",
+                    surface=f"publication_bus:{self.surface_name}",
+                    reason=f"legal-name leak detected on segment {payload.target!r}",
+                )
                 return PublisherResult(
                     refused=True,
                     detail="legal-name leak detected",
