@@ -1,20 +1,33 @@
-"""Pins the FINDING-W Phase 2 substrate/chrome render_stage tagging.
+"""Pins the unified-nebulous-scrim render_stage tagging across layouts.
 
-FINDING-W (ef7b-179) Phase 2 (2026-04-24). These tests guarantee the
-shipped default layouts tag substrate surfaces ``pre_fx`` (so the
-glfeedback shader chain decorates them) and leave every chrome ward at
-the schema default ``post_fx`` (so chrome stays crisp on the top
-cairooverlay).
+FINDING-W (ef7b-179) Phase 2 (2026-04-24) shipped the substrate/chrome
+``render_stage`` distinction; the operator directive of 2026-04-24
+overrode it for ``default.json`` — every ward there now renders
+``pre_fx`` so the glfeedback shader chain decorates the entire frame
+as a unified nebulous scrim. The legacy and consent-safe layouts
+preserve the original substrate/chrome split as a rollback path.
 
-Scrim taxonomy (session-authoritative per 2026-04-24T19:10Z operator
-no-approval-waits directive):
+Two orthogonal axes govern ward placement; this file pins the first:
 
-* substrate / ``pre_fx`` — token_pole (Vitruvian figure), album art,
-  vinyl_platter. These are visual content the shaders should decorate.
-* chrome / ``post_fx`` (default) — legibility, hothouse, and
-  ticker wards. Must stay crisp and unfiltered.
-* reverie — already the shader output surface; left at default
-  ``post_fx`` to avoid a double-shader pass.
+1. **render_stage** (``pre_fx`` / ``post_fx``) — what this file pins.
+   Whether a ward enters the FX chain or composites on top of it.
+   *default.json*: every ward is ``pre_fx`` (unified scrim, post
+   2026-04-24 directive). *default-legacy.json* + *consent-safe.json*:
+   substrate wards (token_pole, album, vinyl_platter) are ``pre_fx``;
+   chrome wards (captions, stream_overlay, ...) stay ``post_fx`` for
+   crisp legibility — the rollback path.
+
+2. **z_plane** (``surface-scrim`` / ``on-scrim`` / ``mid-scrim`` /
+   ``beyond-scrim``) — depth attenuation taxonomy independent of
+   ``render_stage``. Defined in
+   :data:`agents.studio_compositor.z_plane_constants.WARD_Z_PLANE_DEFAULTS`
+   and pinned elsewhere. A ward can be ``pre_fx`` (decorated by the
+   shader chain) and at ``beyond-scrim`` (rendered with full depth
+   attenuation) simultaneously — they answer different questions.
+
+Reverie is the shader output surface itself; for ``default.json`` the
+operator accepted the double-shader-pass trade-off (reverie ``pre_fx``)
+to keep the unified-scrim aesthetic. Legacy keeps reverie ``post_fx``.
 """
 
 from __future__ import annotations
