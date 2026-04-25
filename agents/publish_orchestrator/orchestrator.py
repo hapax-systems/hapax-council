@@ -121,7 +121,6 @@ SURFACE_REGISTRY: dict[str, str] = {
     "zenodo-doi": "agents.zenodo_publisher:publish_artifact",  # primary DOI minter
     "omg-weblog": "agents.omg_weblog_publisher:publish_artifact",  # operator-owned
     # "hf-papers":      "agents.hf_papers_publisher:publish_artifact",  # arXiv-downstream Mon-Fri
-    # "alphaxiv-comments": "agents.alphaxiv_publisher:publish_artifact",  # arXiv-downstream comment loop
     # "ghost-blog":     "agents.ghost_publisher:publish_artifact",  # self-hosted, richest API
     # "smtp-newsletter":"agents.smtp_newsletter_publisher:publish_artifact",  # operator-sovereign
     # "tumblr":         "agents.tumblr_publisher:publish_artifact",
@@ -131,9 +130,10 @@ SURFACE_REGISTRY: dict[str, str] = {
     # "scene-org":      "agents.scene_org_publisher:publish_artifact",  # anonymous FTP
     # "manifold":       "agents.manifold_publisher:publish_artifact",
     # "lesswrong":      "agents.lesswrong_publisher:publish_artifact",
+    # Phase 3 cross-surface posters (PUB-P3 foundations — arXiv-downstream comment loop).
+    "alphaxiv-comments": "agents.cross_surface.alphaxiv_post:publish_artifact",
     # Phase 3 (Playwright daemon-mediated; queued — CONDITIONAL_ENGAGE per audit)
     # "philarchive":    "agents.philarchive_publisher:publish_artifact",
-    # "alphaxiv":       "agents.alphaxiv_publisher:publish_artifact",
     # "substack":       "agents.substack_publisher:publish_artifact",
     # "pouet-net":      "agents.pouet_net_publisher:publish_artifact",
     # "scene-org":      "agents.scene_org_publisher:publish_artifact",

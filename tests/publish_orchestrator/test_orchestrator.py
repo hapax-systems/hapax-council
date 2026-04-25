@@ -312,3 +312,21 @@ class TestSurfaceRegistry:
         mod = importlib.import_module(module_path)
         fn = getattr(mod, attr)
         assert callable(fn)
+
+    def test_alphaxiv_comments_wired(self):
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        assert "alphaxiv-comments" in SURFACE_REGISTRY
+        assert SURFACE_REGISTRY["alphaxiv-comments"] == (
+            "agents.cross_surface.alphaxiv_post:publish_artifact"
+        )
+
+    def test_alphaxiv_comments_entry_resolves(self):
+        import importlib
+
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        module_path, attr = SURFACE_REGISTRY["alphaxiv-comments"].split(":")
+        mod = importlib.import_module(module_path)
+        fn = getattr(mod, attr)
+        assert callable(fn)
