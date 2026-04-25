@@ -155,3 +155,78 @@ class TestCheckFull:
         result = check_full("anything", axiom_id="nonexistent_axiom_xyz")
         assert result.compliant is True
         assert result.checked_rules == 0
+
+
+class TestRefusalBriefEmission:
+    """Refusal-as-data: check_full() appends an event to the canonical
+    refusal log when a violation is detected. Hot-path check_fast does
+    NOT emit (sub-millisecond budget cannot afford the I/O)."""
+
+    def test_emit_helper_writes_event_with_axiom_and_situation(self, monkeypatch):
+        from shared.axiom_enforcement import _emit_axiom_refusal
+
+        captured = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        _emit_axiom_refusal(
+            axiom="single_user",
+            situation="adding multi-user auth",
+            violations=["[T0] su-auth-001: no auth allowed"],
+        )
+
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.axiom == "single_user"
+        assert ev.surface == "axiom_enforcement:check_full"
+        assert "adding multi-user auth" in ev.reason
+        assert "su-auth-001" in ev.reason
+
+    def test_emit_truncates_long_situation(self, monkeypatch):
+        from shared.axiom_enforcement import _emit_axiom_refusal
+
+        captured = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        _emit_axiom_refusal(
+            axiom="x",
+            situation="x" * 500,
+            violations=["v"],
+        )
+
+        assert len(captured) == 1
+        assert len(captured[0].reason) <= 160
+
+    def test_emit_appends_count_suffix_when_multiple_violations(self, monkeypatch):
+        from shared.axiom_enforcement import _emit_axiom_refusal
+
+        captured = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        _emit_axiom_refusal(
+            axiom="x",
+            situation="multi-violation",
+            violations=["[T0] a: first", "[T0] b: second", "[T0] c: third"],
+        )
+
+        assert len(captured) == 1
+        # +2 more (3 total - 1 shown).
+        assert "+2 more" in captured[0].reason
+
+    def test_writer_failure_does_not_raise(self, monkeypatch):
+        """Writer raise is swallowed so the compliance-decision path is unaffected."""
+        import agents.refusal_brief as _pkg
+        from shared.axiom_enforcement import _emit_axiom_refusal
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("writer is on fire")
+
+        monkeypatch.setattr(_pkg, "append", _boom)
+
+        # Must not raise.
+        _emit_axiom_refusal(axiom="x", situation="any", violations=["v"])
