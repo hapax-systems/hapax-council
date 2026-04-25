@@ -264,9 +264,10 @@ class TestPublishArtifact:
         kwargs = client.set_entry.call_args.kwargs
         args = client.set_entry.call_args.args
         assert args[1] == "hello-world"
-        # Content has all sections, blank-line-separated.
+        # Content carries omg.lol-required inline Date line + sections.
         content = kwargs["content"]
-        assert content.startswith("# Hello World")
+        assert content.startswith("Date: ")
+        assert "# Hello World" in content
         assert "Hapax + CC." in content
         assert "Abstract." in content
         assert "Body." in content

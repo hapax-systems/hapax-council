@@ -150,6 +150,7 @@ class OmgLolClient:
         *,
         endpoint: str,
         json_body: dict | None = None,
+        text_body: str | None = None,
     ) -> dict | None:
         if not self.enabled:
             log.warning("omg.lol client disabled; skipping %s", endpoint)
@@ -162,13 +163,26 @@ class OmgLolClient:
 
         for attempt in range(self._max_retries + 1):
             try:
-                resp = self._session.request(
-                    method=method,
-                    url=url,
-                    headers=self._headers(),
-                    json=json_body,
-                    timeout=self._timeout_s,
-                )
+                if text_body is not None:
+                    request_headers = {
+                        **self._headers(),
+                        "Content-Type": "text/plain; charset=utf-8",
+                    }
+                    resp = self._session.request(
+                        method=method,
+                        url=url,
+                        headers=request_headers,
+                        data=text_body.encode("utf-8"),
+                        timeout=self._timeout_s,
+                    )
+                else:
+                    resp = self._session.request(
+                        method=method,
+                        url=url,
+                        headers=self._headers(),
+                        json=json_body,
+                        timeout=self._timeout_s,
+                    )
             except requests.RequestException as e:
                 log.warning("omg.lol %s network error (attempt %d): %s", endpoint, attempt, e)
                 if attempt < self._max_retries:
@@ -403,11 +417,16 @@ class OmgLolClient:
         )
 
     def set_entry(self, address: str, entry_id: str, *, content: str) -> dict | None:
+        # omg.lol weblog API expects raw markdown body (Content-Type:
+        # text/plain), NOT a JSON-wrapped {"entry": ...} payload. The
+        # JSON envelope causes the server to save the entry but parse
+        # nothing — title/body land empty, slug becomes "untitled".
+        # Verified 2026-04-25 via direct curl comparison.
         return self._execute(
             "POST",
             f"/address/{address}/weblog/entry/{entry_id}",
             endpoint="address.weblog.set",
-            json_body={"entry": content},
+            text_body=content,
         )
 
     def delete_entry(self, address: str, entry_id: str) -> dict | None:

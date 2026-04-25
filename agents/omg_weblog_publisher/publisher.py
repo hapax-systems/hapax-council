@@ -7,6 +7,7 @@ import logging
 import re
 import sys
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -267,28 +268,69 @@ def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
 
 
 def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
-    """Render a ``PreprintArtifact`` to omg.lol weblog markdown content.
+    """Render a ``PreprintArtifact`` to omg.lol weblog entry format.
 
-    Preferred order: ``# {title}`` → ``attribution_block`` →
+    omg.lol weblog entries are markdown with YAML frontmatter; the
+    ``Date:`` field is required (omg.lol parses the title from the
+    first ``# H1`` heading and auto-derives the slug from the title).
+    Without the frontmatter block the entry stores blank title + body,
+    so this function ALWAYS prepends a minimal frontmatter even if
+    the artifact carries no body.
+
+    Body section order: ``# {title}`` → ``attribution_block`` →
     ``abstract`` → ``body_md``. Each section separated by a blank line.
-    Skips empty sections; never produces leading/trailing whitespace.
+    If ``body_md`` already contains a leading ``# H1`` matching the
+    artifact's title, the duplicate H1 is suppressed (avoids the omg.lol
+    parser seeing two title candidates).
     """
+    from datetime import datetime  # noqa: I001 — local for testability
+
     title = (getattr(artifact, "title", "") or "").strip()
     attribution = (getattr(artifact, "attribution_block", "") or "").strip()
     abstract = (getattr(artifact, "abstract", "") or "").strip()
     body_md = (getattr(artifact, "body_md", "") or "").strip()
 
-    parts: list[str] = []
+    # omg.lol parses the FIRST # H1 as the title and derives the URL
+    # slug from it. The H1 must be the first content after the Date
+    # line — anything before it (e.g., a freestanding attribution
+    # paragraph) gets parsed as the title and the actual H1 becomes
+    # body.
+    #
+    # If body_md already leads with the artifact title as ``# {title}``,
+    # split it off so the H1 lands first; attribution + abstract follow
+    # the H1, then the rest of body_md (with leading H1 removed) closes
+    # out. This way the layout is always: Date → H1 → byline →
+    # abstract → body, regardless of whether body_md carries its own H1.
+    body_after_title = body_md
+    leading_title: str | None = None
     if title:
-        parts.append(f"# {title}")
+        h1_marker = f"# {title}"
+        if body_md.startswith(h1_marker):
+            leading_title = h1_marker
+            body_after_title = body_md[len(h1_marker) :].lstrip("\n")
+        else:
+            leading_title = h1_marker
+
+    parts: list[str] = []
+    if leading_title:
+        parts.append(leading_title)
     if attribution:
         parts.append(attribution)
     if abstract:
         parts.append(abstract)
-    if body_md:
-        parts.append(body_md)
+    if body_after_title:
+        parts.append(body_after_title)
 
-    return "\n\n".join(parts)
+    body = "\n\n".join(parts)
+    if not body:
+        return ""
+
+    # omg.lol weblog entry format: a single ``Date:`` line followed by
+    # a blank line, then the markdown body. NOT YAML frontmatter (no
+    # triple-dash delimiters). Spec example from api.omg.lol:
+    # "Date: 2022-12-11 5:46 PM EDT\n\n# Test post\n\nThis is a test."
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M %Z")
+    return f"Date: {timestamp}\n\n{body}"
 
 
 def main(argv: list[str] | None = None) -> int:
