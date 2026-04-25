@@ -209,3 +209,120 @@ class TestParseDraftApproval:
         draft = parse_draft(f)
         # Frontmatter title takes precedence over body heading.
         assert draft.title == "Frontmatter Title"
+
+
+# ── Orchestrator entry-point (PUB-P2-C foundation) ───────────────────
+
+
+class _FakeArtifact:
+    def __init__(
+        self,
+        *,
+        slug: str = "test",
+        title: str = "",
+        abstract: str = "",
+        body_md: str = "",
+        attribution_block: str = "",
+    ) -> None:
+        self.slug = slug
+        self.title = title
+        self.abstract = abstract
+        self.body_md = body_md
+        self.attribution_block = attribution_block
+
+
+class TestPublishArtifact:
+    def test_disabled_client_returns_no_credentials(self) -> None:
+        from unittest.mock import patch
+
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = MagicMock()
+        client.enabled = False
+        with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
+            artifact = _FakeArtifact(title="t", body_md="b")
+            assert publish_artifact(artifact) == "no_credentials"
+
+    def test_happy_path_returns_ok(self) -> None:
+        from unittest.mock import patch
+
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = MagicMock()
+        client.enabled = True
+        client.set_entry.return_value = {"ok": True}
+        with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
+            artifact = _FakeArtifact(
+                slug="hello-world",
+                title="Hello World",
+                attribution_block="Hapax + CC.",
+                abstract="Abstract.",
+                body_md="Body.",
+            )
+            assert publish_artifact(artifact) == "ok"
+        client.set_entry.assert_called_once()
+        kwargs = client.set_entry.call_args.kwargs
+        args = client.set_entry.call_args.args
+        assert args[1] == "hello-world"
+        # Content has all sections, blank-line-separated.
+        content = kwargs["content"]
+        assert content.startswith("# Hello World")
+        assert "Hapax + CC." in content
+        assert "Abstract." in content
+        assert "Body." in content
+
+    def test_set_entry_returns_none_yields_error(self) -> None:
+        from unittest.mock import patch
+
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = MagicMock()
+        client.enabled = True
+        client.set_entry.return_value = None
+        with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
+            artifact = _FakeArtifact(title="t", body_md="b")
+            assert publish_artifact(artifact) == "error"
+
+    def test_set_entry_raises_yields_error(self) -> None:
+        from unittest.mock import patch
+
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = MagicMock()
+        client.enabled = True
+        client.set_entry.side_effect = RuntimeError("network down")
+        with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
+            artifact = _FakeArtifact(title="t", body_md="b")
+            assert publish_artifact(artifact) == "error"
+
+    def test_empty_artifact_returns_error(self) -> None:
+        from unittest.mock import patch
+
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = MagicMock()
+        client.enabled = True
+        with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
+            artifact = _FakeArtifact()  # all fields empty
+            assert publish_artifact(artifact) == "error"
+
+    def test_allowlist_deny_returns_denied(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import MagicMock as _MM
+        from unittest.mock import patch
+
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = MagicMock()
+        client.enabled = True
+        deny = _MM()
+        deny.decision = "deny"
+        deny.reason = "test reason"
+
+        def _check(*_args, **_kwargs):
+            return deny
+
+        monkeypatch.setattr("agents.omg_weblog_publisher.publisher.allowlist_check", _check)
+        with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
+            artifact = _FakeArtifact(title="t", body_md="b")
+            assert publish_artifact(artifact) == "denied"
+        client.set_entry.assert_not_called()

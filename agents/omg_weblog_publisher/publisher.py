@@ -194,6 +194,103 @@ class WeblogPublisher:
         return "published"
 
 
+# ── Orchestrator entry-point (PUB-P2-C foundation) ───────────────────
+
+
+def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Dispatch a ``PreprintArtifact`` to the operator's omg.lol weblog.
+
+    Static entry-point consumed by ``agents/publish_orchestrator``'s
+    surface registry. Returns one of: ``ok | denied | auth_error |
+    error | no_credentials | legal_name_leak``. Never raises.
+
+    Per the 2026-04-25 4-cluster automation-tractability audit, omg.lol
+    weblog is operator-owned and FULL_AUTO eligible. The Refusal Brief's
+    Locus 2 (the standalone web essay) lives at hapax.omg.lol/refusal,
+    so this entry-point is the unblocking work for that publish.
+
+    Composition: the artifact's ``slug`` becomes the omg.lol entry slug,
+    ``title`` renders as a markdown ``# H1`` at the top, ``attribution_block``
+    + ``abstract`` + ``body_md`` follow. ``safe_render`` passes the
+    composed content through the legal-name-leak guard.
+
+    Bypasses the WeblogDraft approval-gate because orchestrator-dispatched
+    artifacts have already passed the inbox approval gate (DRAFT →
+    APPROVED via ``mark_approved``).
+    """
+    from shared.omg_lol_client import OmgLolClient
+
+    client = OmgLolClient()
+    if not client.enabled:
+        log.info("omg-weblog: API key unavailable; deferring artifact %s", artifact.slug)
+        _record("no_credentials")
+        return "no_credentials"
+
+    content = _compose_artifact_content(artifact)
+    if not content:
+        log.error("omg-weblog: empty content for artifact %s", artifact.slug)
+        _record("error")
+        return "error"
+
+    verdict = allowlist_check(
+        SURFACE,
+        "weblog.entry",
+        {"title": artifact.title, "slug": artifact.slug, "content": content},
+    )
+    if verdict.decision == "deny":
+        log.warning("omg-weblog: allowlist denied artifact %s (%s)", artifact.slug, verdict.reason)
+        _record("denied")
+        return "denied"
+
+    try:
+        guarded = safe_render(content, segment_id=artifact.slug)
+    except OperatorNameLeak:
+        log.warning("omg-weblog: legal-name leak in artifact %s — DROPPING", artifact.slug)
+        _record("legal_name_leak")
+        return "error"
+
+    try:
+        resp = client.set_entry(DEFAULT_ADDRESS, artifact.slug, content=guarded)
+    except Exception:  # noqa: BLE001
+        log.exception("omg-weblog: set_entry raised for artifact %s", artifact.slug)
+        _record("error")
+        return "error"
+
+    if resp is None:
+        log.warning("omg-weblog: set_entry returned None for artifact %s", artifact.slug)
+        _record("error")
+        return "error"
+
+    log.info("omg-weblog: published artifact %s", artifact.slug)
+    _record("ok")
+    return "ok"
+
+
+def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Render a ``PreprintArtifact`` to omg.lol weblog markdown content.
+
+    Preferred order: ``# {title}`` → ``attribution_block`` →
+    ``abstract`` → ``body_md``. Each section separated by a blank line.
+    Skips empty sections; never produces leading/trailing whitespace.
+    """
+    title = (getattr(artifact, "title", "") or "").strip()
+    attribution = (getattr(artifact, "attribution_block", "") or "").strip()
+    abstract = (getattr(artifact, "abstract", "") or "").strip()
+    body_md = (getattr(artifact, "body_md", "") or "").strip()
+
+    parts: list[str] = []
+    if title:
+        parts.append(f"# {title}")
+    if attribution:
+        parts.append(attribution)
+    if abstract:
+        parts.append(abstract)
+    if body_md:
+        parts.append(body_md)
+
+    return "\n\n".join(parts)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("draft_path", type=Path, help="path to the approved draft markdown")
