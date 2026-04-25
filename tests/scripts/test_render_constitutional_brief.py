@@ -149,3 +149,68 @@ def test_actual_constitutional_brief_renders(
     assert any(
         marker in result.attribution.unsettled_sentence.lower() for marker in ("voice", "thinking")
     )
+
+
+def test_actual_aesthetic_library_manifesto_renders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped Aesthetic Library Manifesto renders per its declared
+    frontmatter.
+
+    Regression pin: V4 byline (Hapax-canonical with operator-of-record)
+    + V5 unsettled (manifesto register) + LONG non-engagement clause
+    per ``SURFACE_DEVIATION_MATRIX["omg_lol_weblog"]``.
+    """
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Test Operator")
+    artifact_path = REPO_ROOT / "docs" / "audience" / "aesthetic-library-manifesto.md"
+    if not artifact_path.exists():
+        pytest.skip("Aesthetic Library Manifesto not yet shipped")
+
+    from scripts.render_constitutional_brief import render_publish_artifact
+
+    result = render_publish_artifact(artifact_path)
+
+    assert result.surface_key == "omg_lol_weblog"
+    # V4 byline: ``Hapax · operator-of-record: <name>``
+    assert "Hapax" in result.attribution.byline_text
+    assert "operator-of-record" in result.attribution.byline_text
+    assert "Test Operator" in result.attribution.byline_text
+    # V5 unsettled: 'manifesto register' phrasing emphasizes
+    # constitutive/indeterminate framing.
+    sentence = result.attribution.unsettled_sentence.lower()
+    assert any(marker in sentence for marker in ("constitutive", "indeterminacy", "co-publication"))
+    # LONG non-engagement clause references the Refusal Brief.
+    assert result.attribution.non_engagement_clause is not None
+    assert "Refusal Brief" in result.attribution.non_engagement_clause
+
+
+def test_actual_self_censorship_aesthetic_renders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped Self-Censorship as Aesthetic essay renders per its
+    declared frontmatter.
+
+    Regression pin: V2 byline (full three-way) + V1 unsettled
+    (celebrated polysemy) per ``SURFACE_DEVIATION_MATRIX["lesswrong"]``
+    fallback (Triple Canopy lacks matrix entry).
+    """
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Test Operator")
+    artifact_path = REPO_ROOT / "docs" / "audience" / "self-censorship-aesthetic.md"
+    if not artifact_path.exists():
+        pytest.skip("Self-Censorship as Aesthetic not yet shipped")
+
+    from scripts.render_constitutional_brief import render_publish_artifact
+
+    result = render_publish_artifact(artifact_path)
+
+    assert result.surface_key == "lesswrong"
+    # V2 byline: three-way comma-separated.
+    assert "Test Operator" in result.attribution.byline_text
+    assert "Hapax" in result.attribution.byline_text
+    assert "Claude Code" in result.attribution.byline_text
+    # V1 unsettled: 'celebrated polysemy' includes the polysemic-surface
+    # framing.
+    assert "polysemic" in result.attribution.unsettled_sentence.lower()
+    # LONG non-engagement clause references the Refusal Brief.
+    assert result.attribution.non_engagement_clause is not None
+    assert "Refusal Brief" in result.attribution.non_engagement_clause
