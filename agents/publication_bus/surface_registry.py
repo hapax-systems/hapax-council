@@ -112,6 +112,11 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         automation_status=AutomationStatus.REFUSED,
         refusal_link="docs/refusal-briefs/rym-no-api.md",
     ),
+    "crossref-event-data": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/crossref-event-data-sunset.md",
+        scope_note="superseded by DataCite Commons GraphQL surface",
+    ),
 }
 
 

@@ -42,13 +42,27 @@ from agents.publication_bus.publisher_kit.legal_name_guard import (
     LegalNameLeak,
     assert_no_leak,
 )
+from agents.publication_bus.publisher_kit.refused import (
+    REFUSED_PUBLISHER_CLASSES,
+    BandcampRefusedPublisher,
+    CrossrefEventDataRefusedPublisher,
+    DiscogsRefusedPublisher,
+    RefusedPublisher,
+    RymRefusedPublisher,
+)
 
 __all__ = [
     "AllowlistGate",
     "AllowlistViolation",
+    "BandcampRefusedPublisher",
+    "CrossrefEventDataRefusedPublisher",
+    "DiscogsRefusedPublisher",
     "LegalNameLeak",
     "Publisher",
     "PublisherPayload",
     "PublisherResult",
+    "REFUSED_PUBLISHER_CLASSES",
+    "RefusedPublisher",
+    "RymRefusedPublisher",
     "assert_no_leak",
 ]
