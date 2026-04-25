@@ -484,13 +484,14 @@ class TestDirectoryWatcher:
         """AUDIT-31: _EventHandler.on_any_event filters at the handler
         layer via `_should_skip` BEFORE the asyncio queue dispatch.
 
-        Mocks `_should_skip` directly so the test is purely about
-        on_any_event's integration with the filter, not about
-        watchdog event-type semantics or path-component traversal.
+        Decouples from watchdog by using mock event objects + patching
+        `_EVENT_TYPE_MAP` to a known-good lookup. Earlier iterations
+        used real `FileCreatedEvent` instances but CI hit a watchdog
+        version where `type(event)` did not match the map key,
+        short-circuiting on_any_event before the dispatch path could
+        be exercised.
         """
         from unittest.mock import MagicMock, patch
-
-        from watchdog.events import FileCreatedEvent
 
         from logos.engine.watcher import _EventHandler
 
@@ -498,14 +499,27 @@ class TestDirectoryWatcher:
         queue = MagicMock()
         handler = _EventHandler(queue, loop)
 
-        # 4 events: first 3 filtered, 4th allowed.
+        # 4 mock events: first 3 will be filtered, 4th allowed.
+        events = []
+        for i in range(4):
+            e = MagicMock()
+            e.is_directory = False
+            e.src_path = f"/x{i}"
+            events.append(e)
+
         decisions = [True, True, True, False]
-        with patch(
-            "logos.engine.watcher._should_skip",
-            side_effect=lambda _path: decisions.pop(0),
+        type_map = MagicMock()
+        type_map.get.return_value = "created"
+
+        with (
+            patch("logos.engine.watcher._EVENT_TYPE_MAP", new=type_map),
+            patch(
+                "logos.engine.watcher._should_skip",
+                side_effect=lambda _path: decisions.pop(0),
+            ),
         ):
-            for _ in range(4):
-                handler.on_any_event(FileCreatedEvent("/x"))
+            for e in events:
+                handler.on_any_event(e)
 
         assert loop.call_soon_threadsafe.call_count == 1, (
             f"Expected 1 dispatch (3 filtered + 1 allowed); got "
@@ -514,9 +528,7 @@ class TestDirectoryWatcher:
 
     async def test_handler_skips_directory_events(self):
         """Directory-only events skip regardless of filter outcome."""
-        from unittest.mock import MagicMock, PropertyMock, patch
-
-        from watchdog.events import FileCreatedEvent
+        from unittest.mock import MagicMock
 
         from logos.engine.watcher import _EventHandler
 
@@ -524,11 +536,10 @@ class TestDirectoryWatcher:
         queue = MagicMock()
         handler = _EventHandler(queue, loop)
 
-        event = FileCreatedEvent("/data/somedir")
-        with patch.object(
-            type(event), "is_directory", new_callable=PropertyMock, return_value=True
-        ):
-            handler.on_any_event(event)
+        event = MagicMock()
+        event.is_directory = True
+        event.src_path = "/data/somedir"
+        handler.on_any_event(event)
         assert loop.call_soon_threadsafe.call_count == 0
 
 
