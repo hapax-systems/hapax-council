@@ -1,0 +1,9 @@
+surface: publish-orchestrator
+state_kinds:
+  - publication.artifact
+redactions:
+  - operator_legal_name
+rate_limit:
+  per_hour: 0
+  per_day: 0
+cadence_hint: "Meta-contract for the publish orchestrator's own logging emit. Zero rate-limit because the orchestrator does not directly egress; per-surface contracts gate the actual publishers."

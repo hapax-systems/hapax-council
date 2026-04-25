@@ -1,0 +1,18 @@
+[Unit]
+Description=hapax — approval-gated publish orchestrator
+Documentation=file:///home/hapax/projects/hapax-council/agents/publish_orchestrator/orchestrator.py
+After=hapax-secrets.service
+Requires=hapax-secrets.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hapax/projects/hapax-council
+EnvironmentFile=-/home/hapax/.config/hapax/hapax.env
+ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.publish_orchestrator
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
