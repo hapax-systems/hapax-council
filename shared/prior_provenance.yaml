@@ -34,6 +34,18 @@ speaker_is_operator:
   symmetry: "time-translation invariant during a single session window; resets at session boundaries"
   derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4"
 
+chat_author_is_operator:
+  claim_name: chat_author_is_operator
+  structural_commitments:
+    - "single_user axiom (the only enrolled identity is the operator; non-operator chat-authors require active consent contracts per interpersonal_transparency)"
+    - "broadcast cardinality: chat surfaces are designed for audience > 1 (Discord/Bluesky/Mastodon/IRC interactive flows + livestream chat); the dominant author cardinality is non-operator"
+    - "authenticated handle space: cryptographic identifiers (Discord user_id, Bluesky DID, Mastodon acct, IRC nick+cert) are not spoofable by chance — handle match is structural evidence, not perceptual"
+    - "no per-author engine state: the engine tracks a single sustained author at a time; per-author caching is the consumer's responsibility, surfacing the persistent-state-about-non-operator-persons concern at the consumer layer for governance review"
+  reference_prior: "Beta(1,19); 0.05 starting probability — broadcast chat is dominated by non-operator authors. interpersonal_transparency requires defaulting to non-operator absent positive evidence; the cost of false-positive (mis-attributing audience message to operator) is governance-significant, the cost of false-negative (missing an operator interjection) is recoverable via re-attribution on subsequent messages"
+  constraint_narrowing: "interpersonal_transparency narrows the prior toward non-operator (vs. speaker_is_operator's 0.5 default-operator-under-no-session); the high narration_floor (0.85) further narrows toward 'unclear → unknown' rather than 'unclear → operator' to keep mis-attribution out of broadcast surfaces and qdrant persistence"
+  symmetry: "time-translation invariant within a single sustained chat-author lifecycle (conversation thread, Q&A turn); resets at author boundaries — engine carries no cross-author state by design"
+  derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 + §6 (asymmetric profiles); positive-only multi-source fusion is the noisy-OR semantic shape (ClaimComposition operator='noisy_or')"
+
 system_degraded:
   claim_name: system_degraded
   structural_commitments:
