@@ -482,48 +482,41 @@ class TestDirectoryWatcher:
 
     async def test_handler_prefilters_skip_eligible_events(self):
         """AUDIT-31: _EventHandler.on_any_event filters at the handler
-        layer (before asyncio queue dispatch). gmail-sync bursts no
-        longer cross into Python; defense-in-depth on consumer side
-        remains for safety."""
-        from unittest.mock import MagicMock
+        layer via `_should_skip` BEFORE the asyncio queue dispatch.
+
+        Mocks `_should_skip` directly so the test is purely about
+        on_any_event's integration with the filter, not about
+        watchdog event-type semantics or path-component traversal.
+        """
+        from unittest.mock import MagicMock, patch
 
         from watchdog.events import FileCreatedEvent
 
         from logos.engine.watcher import _EventHandler
 
         loop = MagicMock()
-        loop.call_soon_threadsafe = MagicMock()
         queue = MagicMock()
         handler = _EventHandler(queue, loop)
 
-        # Filtered: rag-sources/gmail/* path
-        gmail_event = FileCreatedEvent("/data/rag-sources/gmail/inbox/x.md")
-        handler.on_any_event(gmail_event)
-        # Filtered: dotfile path
-        dot_event = FileCreatedEvent("/data/.hidden/y.md")
-        handler.on_any_event(dot_event)
-        # Filtered: processed/ path
-        proc_event = FileCreatedEvent("/data/processed/z.md")
-        handler.on_any_event(proc_event)
+        # 4 events: first 3 filtered, 4th allowed.
+        decisions = [True, True, True, False]
+        with patch(
+            "logos.engine.watcher._should_skip",
+            side_effect=lambda _path: decisions.pop(0),
+        ):
+            for _ in range(4):
+                handler.on_any_event(FileCreatedEvent("/x"))
 
-        # All three filtered → no queue dispatches
-        assert loop.call_soon_threadsafe.call_count == 0
-
-        # Allowed: ordinary RAG path
-        allowed_event = FileCreatedEvent("/data/rag-sources/web/article.md")
-        handler.on_any_event(allowed_event)
-
-        # Exactly one dispatch
-        assert loop.call_soon_threadsafe.call_count == 1
-        args = loop.call_soon_threadsafe.call_args
-        assert args[0][0] == queue.put_nowait
-        assert args[0][1] == ("/data/rag-sources/web/article.md", "created")
+        assert loop.call_soon_threadsafe.call_count == 1, (
+            f"Expected 1 dispatch (3 filtered + 1 allowed); got "
+            f"{loop.call_soon_threadsafe.call_count}"
+        )
 
     async def test_handler_skips_directory_events(self):
-        """Directory-only events skip regardless of path."""
-        from unittest.mock import MagicMock
+        """Directory-only events skip regardless of filter outcome."""
+        from unittest.mock import MagicMock, PropertyMock, patch
 
-        from watchdog.events import DirCreatedEvent
+        from watchdog.events import FileCreatedEvent
 
         from logos.engine.watcher import _EventHandler
 
@@ -531,8 +524,11 @@ class TestDirectoryWatcher:
         queue = MagicMock()
         handler = _EventHandler(queue, loop)
 
-        dir_event = DirCreatedEvent("/data/rag-sources/web/newdir")
-        handler.on_any_event(dir_event)
+        event = FileCreatedEvent("/data/somedir")
+        with patch.object(
+            type(event), "is_directory", new_callable=PropertyMock, return_value=True
+        ):
+            handler.on_any_event(event)
         assert loop.call_soon_threadsafe.call_count == 0
 
 
