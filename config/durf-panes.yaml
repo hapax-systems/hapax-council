@@ -1,38 +1,47 @@
-# DURF (Display Under Reflective Frame) — tmux pane targets
+# DURF (Display Under Reflective Frame) — pane sources for the 2x2 grid
 #
-# Text-only capture via `tmux capture-pane -p -t <target>`. Wayland pixel
-# capture is forbidden (L-12 broadcast-bleed risk).
+# Operator-directed arrangement 2026-04-24T23:50Z:
 #
-# Four roles: alpha / beta / delta / epsilon. Each maps to a tmux target
-# in session:window.pane form. Glyphs are 4-char geometric-identity
-# markers (NOT name labels per HARDM anti-anthropomorphization).
+#   ┌─────────────┬─────────────┐
+#   │   delta     │    beta     │
+#   ├─────────────┼─────────────┤
+#   │   alpha     │   epsilon   │
+#   └─────────────┴─────────────┘
 #
-# Operator adjusts targets if tmux layout changes. Missing target →
-# empty pane rendered (substrate bleeds through).
+# Source kinds:
+#   - "tmux session:window.pane"  — live tmux capture-pane
+#   - "file:<path>"                — tail of file (40 lines)
+#
+# Currently: each role reads from its session relay yaml in
+# ~/.cache/hapax/relay/{role}.yaml. These reflect the most-recent
+# coordination state for the corresponding Claude-Code session.
+#
+# Glyphs are 4-char geometric-identity markers (NOT name labels per
+# HARDM anti-anthropomorphization).
+#
+# Operator may swap to live tmux/pty sources when a unified tmux
+# arrangement is configured.
 
 panes:
-  - role: alpha
-    tmux_target: "council:0.0"
-    glyph: "A-//"
-  - role: beta
-    tmux_target: "council:0.1"
-    glyph: "B-|/"
   - role: delta
-    tmux_target: "council:0.2"
+    tmux_target: "file:~/.cache/hapax/relay/delta.yaml"
     glyph: "D-|\\"
+  - role: beta
+    tmux_target: "file:~/.cache/hapax/relay/beta.yaml"
+    glyph: "B-|/"
+  - role: alpha
+    tmux_target: "file:~/.cache/hapax/relay/alpha.yaml"
+    glyph: "A-//"
   - role: epsilon
-    tmux_target: "council:0.3"
+    tmux_target: "file:~/.cache/hapax/relay/epsilon.yaml"
     glyph: "E-\\\\"
 
-# Redaction patterns applied per captured line (see agents/studio_compositor/durf_source.py
-# _REDACTION_PATTERNS). Additions here would require code changes; this
-# block documents current list for operator review.
 redactions_documented:
-  - "sk-..." API key prefix
-  - "AKIA..." AWS key
-  - "ghp_..." GitHub token
-  - "Bearer <token>"
-  - "/home/<user>/.ssh/<path>"
-  - "/home/<user>/.envrc"
+  - "sk-* API key prefix"
+  - "AKIA* AWS key"
+  - "ghp_* GitHub token"
+  - "Bearer token"
+  - "home/* ssh paths"
+  - "home/* envrc paths"
   - "ANTHROPIC_API_KEY=..."
   - "AWS_SECRET_ACCESS_KEY=..."

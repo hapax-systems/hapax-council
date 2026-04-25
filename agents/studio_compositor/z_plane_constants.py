@@ -56,6 +56,14 @@ WARD_Z_PLANE_DEFAULTS: Final[dict[str, str]] = {
     "thinking_indicator": "surface-scrim",
     "whos_here": "surface-scrim",
     "pressure_gauge": "surface-scrim",
+    # DURF (Display Under Reflective Frame) — operator directive 2026-04-25
+    # ('It does need modulation, just not a pulse like that, it's too
+    # heavy handed and distracting'). Pinning to surface-scrim keeps DURF
+    # legible through the FX chain — content can be consumed without the
+    # heavy 1-2s shader-feedback pulse that hits mid/beyond planes.
+    # DURF still composites pre_fx (in the scrim) so the scrim is felt,
+    # but its depth-attenuation factor is at the surface ceiling.
+    "durf": "surface-scrim",
     # Mid — informational backdrop
     "chat_ambient": "mid-scrim",
     "impingement_cascade": "mid-scrim",
