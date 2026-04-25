@@ -1085,6 +1085,42 @@ def _music_engine():  # type: ignore[no-untyped-def]
     return _MUSIC_ENGINE
 
 
+def _gather_director_claims() -> list[Claim]:
+    """Collect ``Claim`` envelopes from every engine the director surface reads.
+
+    Phase 6 wire-up (UBCC §10): the director's prompt envelope was
+    shipped on Phase 4 with an empty list (placeholder). This populates
+    it with live posteriors from the engines that already feed the
+    music-framing branch — vinyl + broadcast-music. Below-floor claims
+    render as ``[UNKNOWN]``; above-floor claims render with their
+    numeric posterior so the LLM can apply the uncertainty contract.
+
+    Engine ticks are deliberate: a single ``_build_unified_prompt``
+    invocation is the natural perceptual moment for the director, so
+    refreshing posteriors here keeps the envelope in lock-step with
+    the prompt assembly. Engine-init or tick failure degrades to an
+    empty list — the renderer tolerates that and emits the contract
+    without populated claims.
+    """
+    claims: list[Claim] = []
+    floor = SURFACE_FLOORS["director"]
+    vinyl = _vinyl_engine()
+    if vinyl is not None:
+        try:
+            vinyl.tick()
+            claims.append(vinyl.to_claim(narration_floor=floor))
+        except Exception:
+            log.debug("vinyl engine to_claim failed", exc_info=True)
+    music = _music_engine()
+    if music is not None:
+        try:
+            music.tick()
+            claims.append(music.to_claim(narration_floor=floor))
+        except Exception:
+            log.debug("music engine to_claim failed", exc_info=True)
+    return claims
+
+
 def _vinyl_is_playing_legacy() -> bool:
     """Legacy 3-signal Boolean predicate (rollback path / bypass fallback).
 
@@ -3069,6 +3105,40 @@ class DirectorLoop:
                     len(raw_content),
                     raw_content[:200],
                 )
+
+                # Bayesian Phase 5 — refusal gate (R-Tuning post-emission
+                # verifier, Zhang et al. NAACL 2024 / UBCC §8). Shadow
+                # mode: rejection just logs ``claim_discipline=0.0`` to
+                # Langfuse without re-rolling. Once the per-surface
+                # rejection-rate baseline is calibrated (Phase 5 follow-
+                # up), the re-roll path lights up. Failures inside the
+                # gate are non-fatal — a bad gate must NEVER drop a
+                # legitimate emission on the floor.
+                try:
+                    from shared.claim_refusal import RefusalGate, claim_discipline_score
+
+                    gate_result = RefusalGate(surface="director").check(
+                        raw_content,
+                        available_claims=_gather_director_claims(),
+                    )
+                    if hapax_score is not None and span is not None:
+                        hapax_score(
+                            span,
+                            "claim_discipline",
+                            claim_discipline_score(gate_result),
+                            comment=(
+                                f"surface=director rejected={len(gate_result.rejected_propositions)}"
+                            ),
+                        )
+                    if not gate_result.accepted:
+                        log.info(
+                            "claim-discipline rejection (shadow): %d propositions; first: %r",
+                            len(gate_result.rejected_propositions),
+                            gate_result.rejected_propositions[:1],
+                        )
+                except Exception:
+                    log.debug("refusal gate check failed; emission passes", exc_info=True)
+
                 # `react` here is only for per-reaction coherence scoring
                 # below; the caller re-parses `raw_content` via
                 # _parse_intent_from_llm for the full DirectorIntent

@@ -87,9 +87,10 @@ buffer (deferred — see Phase 2b.2 spec).
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
-from shared.claim import ClaimEngine, LRDerivation, TemporalProfile
+from shared.claim import Claim, ClaimEngine, LRDerivation, TemporalProfile
 
 if TYPE_CHECKING:
     import numpy as np
@@ -229,6 +230,30 @@ class MusicPlayingEngine:
         director_loop's music-framing branch reads both.
         """
         return self._engine.state == "ASSERTED"
+
+    def to_claim(self, *, narration_floor: float = 0.60) -> Claim:
+        """Render the current engine state as a Phase 4/5/6 ``Claim`` envelope.
+
+        Companion to ``VinylSpinningEngine.to_claim()``; surfaces gather
+        both for the director / persona / narrative prompt envelope. The
+        proposition deliberately scopes to ``the broadcast audio`` so the
+        LLM cannot conflate it with the upstream source attribution
+        (which ``vinyl_spinning`` answers separately).
+        """
+        return Claim(
+            name="music_playing",
+            domain="audio",
+            proposition="Music is audible in the broadcast audio.",
+            posterior=self.posterior,
+            prior_source="maximum_entropy",
+            prior_provenance_ref="music_playing",
+            evidence_sources=[],
+            last_update_t=time.time(),
+            temporal_profile=DEFAULT_PROFILE,
+            composition=None,
+            narration_floor=narration_floor,
+            staleness_cutoff_s=60.0,
+        )
 
     # ── Signal reader (private) ────────────────────────────────────
 
