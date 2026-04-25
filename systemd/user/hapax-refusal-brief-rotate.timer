@@ -1,0 +1,13 @@
+[Unit]
+Description=Fire hapax-refusal-brief-rotate.service at midnight UTC
+
+[Timer]
+# Daily at 00:00:00 UTC. Persistent=true so a missed firing
+# (machine off / suspended at midnight) runs on next boot rather
+# than skipping the day.
+OnCalendar=*-*-* 00:00:00 UTC
+Persistent=true
+Unit=hapax-refusal-brief-rotate.service
+
+[Install]
+WantedBy=timers.target

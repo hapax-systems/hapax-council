@@ -1,0 +1,23 @@
+[Unit]
+Description=hapax-refusal-brief-rotate — daily archive of /dev/shm refusal log to ~/hapax-state/refusals/
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/refusal_brief/rotator.py
+
+# Atomically rename log.jsonl → log.<date>.<pid>.rotating, then
+# append-gzip into the operator's permanent archive at
+# ~/hapax-state/refusals/<date>.jsonl.gz, then unlink the slice.
+# Concurrent writers (axiom guards, consent traces, etc.) keep their
+# fds valid during the rename; subsequent appends re-open the
+# original path, creating a fresh log with no write loss.
+#
+# Archive copy is the operator's record — never deleted by this
+# daemon. Append-only is constitutional per the spec (any "clear log"
+# affordance creates HITL pressure).
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/env
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.refusal_brief --rotate
+
+[Install]
+WantedBy=default.target
