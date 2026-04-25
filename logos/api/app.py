@@ -92,6 +92,35 @@ class LogosPerceptionStateBridge:
         return bool(data["keyboard_active"])
 
 
+# Phase 6b-i.B partial wire-in. Bridge contract for the four
+# mood-arousal signals (``ambient_audio_rms_high``,
+# ``contact_mic_onset_rate_high``, ``midi_clock_bpm_high``,
+# ``hr_bpm_above_baseline``) defined in
+# ``mood_arousal_engine.DEFAULT_SIGNAL_WEIGHTS``. Per-signal sources
+# live in heterogeneous backends — ambient_audio.py / contact_mic.py /
+# midi_clock.py / health.py — each with its own quantile or baseline
+# threshold semantics. Part 1 (this PR) ships the protocol-matching
+# bridge with all accessors returning ``None`` so the engine math runs
+# cleanly with no live signal contribution. Subsequent PRs wire each
+# threshold reference as the per-backend quantile / baseline references
+# stabilise — same additive pattern delta used in #1389 and beta used
+# across #1379 + #1377.
+class LogosStimmungBridge:
+    """Bridge stimmung-derived signals → MoodArousalEngine signal Protocol."""
+
+    def ambient_audio_rms_high(self) -> bool | None:
+        return None
+
+    def contact_mic_onset_rate_high(self) -> bool | None:
+        return None
+
+    def midi_clock_bpm_high(self) -> bool | None:
+        return None
+
+    def hr_bpm_above_baseline(self) -> bool | None:
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await start_refresh_loop()
@@ -199,6 +228,25 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("OperatorActivityEngine wire-in failed (continuing without it)")
 
+    # Phase 6b-i.B partial wire-in: MoodArousalEngine observes the four
+    # stimmung-derived arousal signals (ambient room mic RMS, contact mic
+    # onset rate, MIDI clock BPM, watch HR vs baseline). Engine math +
+    # signal contract shipped in #1368; this PR activates the live
+    # consumer + adapter contract. All four signal accessors return
+    # ``None`` from LogosStimmungBridge until per-backend quantile /
+    # baseline references stabilise — same additive pattern delta used
+    # for OAE in #1389. Posterior + state will be exposed at
+    # GET /api/engine/mood_arousal in a follow-up route PR for the DMN
+    # governor + future stimmung-routing consumers.
+    mae = None
+    try:
+        from agents.hapax_daimonion.mood_arousal_engine import MoodArousalEngine
+
+        mae = MoodArousalEngine()
+        app.state.mood_arousal_engine = mae
+    except Exception:
+        _log.exception("MoodArousalEngine wire-in failed (continuing without it)")
+
     # Start chronicle sampler and periodic trim
     import asyncio
 
@@ -256,10 +304,27 @@ async def lifespan(app: FastAPI):
                 _log.debug("OperatorActivityEngine tick failed", exc_info=True)
             await asyncio.sleep(1.0)
 
+    async def _mood_arousal_tick_loop():
+        """1s-cadence tick — observes 4 mood-arousal signals + contributes to MAE."""
+        from agents.hapax_daimonion.backends.mood_arousal_observation import (
+            mood_arousal_observation,
+        )
+
+        stimmung_bridge = LogosStimmungBridge()
+
+        while True:
+            try:
+                if mae is not None:
+                    mae.contribute(mood_arousal_observation(stimmung_bridge))
+            except Exception:
+                _log.debug("MoodArousalEngine tick failed", exc_info=True)
+            await asyncio.sleep(1.0)
+
     _sampler_task = asyncio.create_task(run_sampler())
     _trim_task = asyncio.create_task(_chronicle_trim_loop())
     _sde_task = asyncio.create_task(_system_degraded_tick_loop()) if sde is not None else None
     _oae_task = asyncio.create_task(_operator_activity_tick_loop()) if oae is not None else None
+    _mae_task = asyncio.create_task(_mood_arousal_tick_loop()) if mae is not None else None
 
     yield
 
@@ -269,6 +334,8 @@ async def lifespan(app: FastAPI):
         _sde_task.cancel()
     if _oae_task is not None:
         _oae_task.cancel()
+    if _mae_task is not None:
+        _mae_task.cancel()
     if engine is not None:
         await engine.stop()
     await agent_run_manager.shutdown()

@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -319,6 +320,101 @@ class TestOperatorActivityObservation:
 
         obs = operator_activity_observation(_StubNone())
         assert obs == {"keyboard_active": None}
+
+
+# ── TestLogosStimmungBridge (Phase 6b-i.B wire-in) ──────────────────────
+
+
+class TestLogosStimmungBridge:
+    """Stimmung bridge: all 4 mood-arousal signal accessors.
+
+    Part 1 ships the protocol-matching surface with all accessors
+    returning ``None`` so the engine math runs with no live signal
+    contribution. Per-signal threshold wiring lands in subsequent PRs
+    (Part 2-5) — same additive pattern delta used in #1389.
+    """
+
+    def test_ambient_audio_rms_high_returns_none(self):
+        from logos.api.app import LogosStimmungBridge
+
+        assert LogosStimmungBridge().ambient_audio_rms_high() is None
+
+    def test_contact_mic_onset_rate_high_returns_none(self):
+        from logos.api.app import LogosStimmungBridge
+
+        assert LogosStimmungBridge().contact_mic_onset_rate_high() is None
+
+    def test_midi_clock_bpm_high_returns_none(self):
+        from logos.api.app import LogosStimmungBridge
+
+        assert LogosStimmungBridge().midi_clock_bpm_high() is None
+
+    def test_hr_bpm_above_baseline_returns_none(self):
+        from logos.api.app import LogosStimmungBridge
+
+        assert LogosStimmungBridge().hr_bpm_above_baseline() is None
+
+
+# ── TestMoodArousalObservation (Phase 6b-i.B adapter) ───────────────────
+
+
+class TestMoodArousalObservation:
+    def test_returns_four_signal_dict_with_none_values(self):
+        """Default scaffolding bridge returns all-None observation dict."""
+        from agents.hapax_daimonion.backends.mood_arousal_observation import (
+            mood_arousal_observation,
+        )
+        from logos.api.app import LogosStimmungBridge
+
+        obs = mood_arousal_observation(LogosStimmungBridge())
+        assert obs == {
+            "ambient_audio_rms_high": None,
+            "contact_mic_onset_rate_high": None,
+            "midi_clock_bpm_high": None,
+            "hr_bpm_above_baseline": None,
+        }
+
+    def test_propagates_signal_values_when_source_provides_them(self):
+        """Non-None values from the source flow through to the engine."""
+        from agents.hapax_daimonion.backends.mood_arousal_observation import (
+            mood_arousal_observation,
+        )
+
+        class _StubMixed:
+            def ambient_audio_rms_high(self) -> bool:
+                return True
+
+            def contact_mic_onset_rate_high(self) -> None:
+                return None
+
+            def midi_clock_bpm_high(self) -> bool:
+                return False
+
+            def hr_bpm_above_baseline(self) -> bool:
+                return True
+
+        obs = mood_arousal_observation(_StubMixed())
+        assert obs == {
+            "ambient_audio_rms_high": True,
+            "contact_mic_onset_rate_high": None,
+            "midi_clock_bpm_high": False,
+            "hr_bpm_above_baseline": True,
+        }
+
+    def test_engine_consumes_observation_without_error(self):
+        """Adapter output is a valid argument to MoodArousalEngine.contribute()."""
+        from agents.hapax_daimonion.backends.mood_arousal_observation import (
+            mood_arousal_observation,
+        )
+        from agents.hapax_daimonion.mood_arousal_engine import MoodArousalEngine
+        from logos.api.app import LogosStimmungBridge
+
+        engine = MoodArousalEngine()
+        for _ in range(5):
+            engine.contribute(mood_arousal_observation(LogosStimmungBridge()))
+        # All-None observations leave posterior at prior (no log-odds update).
+        assert engine.posterior == pytest.approx(0.30)
+        assert engine.state == "UNCERTAIN"
 
 
 # ── TestLogosDriftBridge ────────────────────────────────────────────────
