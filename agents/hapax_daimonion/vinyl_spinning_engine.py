@@ -94,7 +94,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from shared.claim import ClaimEngine, LRDerivation, TemporalProfile
+from shared.claim import Claim, ClaimEngine, LRDerivation, TemporalProfile
 
 log = logging.getLogger(__name__)
 
@@ -278,6 +278,30 @@ class VinylSpinningEngine:
         to honor the slow-enter discipline.
         """
         return self._engine.state == "ASSERTED"
+
+    def to_claim(self, *, narration_floor: float = 0.60) -> Claim:
+        """Render the current engine state as a Phase 4/5/6 ``Claim`` envelope.
+
+        Phase 6 wire-up: surfaces (director, persona, narrative) call this
+        to populate ``render_envelope``'s claim list. The proposition is
+        stable across ticks; the posterior reflects the live ClaimEngine
+        state. Below-floor posteriors render as ``[UNKNOWN] ...`` per
+        ``shared.claim_prompt``.
+        """
+        return Claim(
+            name="vinyl_spinning",
+            domain="activity",
+            proposition="The operator is spinning vinyl on the turntable.",
+            posterior=self.posterior,
+            prior_source="empirical",
+            prior_provenance_ref="vinyl_spinning",
+            evidence_sources=[],
+            last_update_t=time.time(),
+            temporal_profile=DEFAULT_PROFILE,
+            composition=None,
+            narration_floor=narration_floor,
+            staleness_cutoff_s=_TURNTABLE_ACTIVE_STALE_S,
+        )
 
     # ── Signal readers (private) ───────────────────────────────────
 
