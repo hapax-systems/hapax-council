@@ -1037,38 +1037,6 @@ def _reset_engines_for_testing() -> None:
     _MUSIC_ENGINE = None
 
 
-def _gather_director_claims() -> list[Claim]:
-    """Collect ``Claim`` envelopes from every engine the director surface reads.
-
-    Phase 6 wire-up (UBCC §10): the director's prompt envelope was
-    shipped on Phase 4 with an empty list (placeholder). This populates
-    it with live posteriors from the engines that already feed the
-    music-framing branch — vinyl + broadcast-music. Below-floor claims
-    render as ``[UNKNOWN]``; above-floor claims render with their
-    numeric posterior so the LLM can apply the uncertainty contract.
-
-    Returns an empty list on engine-init failure — the renderer
-    tolerates empty input and emits the contract-only envelope.
-    """
-    claims: list[Claim] = []
-    floor = SURFACE_FLOORS["director"]
-    vinyl = _vinyl_engine()
-    if vinyl is not None:
-        try:
-            vinyl.tick()
-            claims.append(vinyl.to_claim(narration_floor=floor))
-        except Exception:
-            log.debug("vinyl engine to_claim failed", exc_info=True)
-    music = _music_engine()
-    if music is not None:
-        try:
-            music.tick()
-            claims.append(music.to_claim(narration_floor=floor))
-        except Exception:
-            log.debug("music engine to_claim failed", exc_info=True)
-    return claims
-
-
 def _music_engine():  # type: ignore[no-untyped-def]
     """Lazy singleton MusicPlayingEngine (Phase 2b, AUDIT-07 layer 2)."""
     global _MUSIC_ENGINE
