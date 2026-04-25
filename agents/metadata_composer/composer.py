@@ -347,12 +347,20 @@ def _call_llm_balanced(
     except ImportError:
         return None
 
+    import os  # noqa: PLC0415
+
     from shared.config import MODELS  # noqa: PLC0415
 
     prompt = framing.build_llm_prompt(seed=seed, scope=scope, kind=kind, referent=referent)
+    # Raw litellm.completion needs an explicit provider prefix +
+    # api_base / api_key; the bare model alias hits the gateway with
+    # "LLM Provider NOT provided" 400. The balanced route lives behind
+    # the LiteLLM proxy at :4000, which is OpenAI-compatible.
     try:
         response = litellm.completion(
-            model=MODELS["balanced"],
+            model=f"openai/{MODELS['balanced']}",
+            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
+            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
             messages=[{"role": "user", "content": prompt}],
             max_tokens=512,
             temperature=0.5,

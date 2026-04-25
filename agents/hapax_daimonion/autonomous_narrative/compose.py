@@ -226,11 +226,19 @@ def _call_llm_grounded(*, prompt: str, seed: str) -> str | None:
     except ImportError:
         return None
 
+    import os  # noqa: PLC0415
+
     from shared.config import MODELS  # noqa: PLC0415
 
+    # Raw litellm.completion needs an explicit provider prefix +
+    # api_base / api_key; the bare model alias hits the gateway with
+    # "LLM Provider NOT provided" 400. The local-fast route lives
+    # behind the LiteLLM proxy at :4000, which is OpenAI-compatible.
     try:
         response = litellm.completion(
-            model=MODELS["local-fast"],
+            model=f"openai/{MODELS['local-fast']}",
+            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
+            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
             messages=[{"role": "user", "content": prompt}],
             max_tokens=_GROUNDED_MAX_TOKENS,
             temperature=_GROUNDED_TEMPERATURE,
