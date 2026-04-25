@@ -184,6 +184,56 @@ def render_publish_artifact(md_path: Path) -> PublishArtifact:
     )
 
 
+def compose_publish_markdown(artifact: PublishArtifact, *, title: str) -> str:
+    """Compose the publish-ready markdown form for ``artifact``.
+
+    The publish-ready form is what downstream renderers (Pandoc HTML,
+    Pandoc PDF, mkdocs, plain markdown) consume. It carries:
+
+      - title heading
+      - byline line (rendered per BylineVariant)
+      - unsettled-contribution sentence (italicized)
+      - the body (frontmatter-stripped)
+      - non-engagement clause footer (when bound)
+
+    No YAML frontmatter is re-emitted in the output. Frontmatter is
+    operator-internal (variant references, matrix keys); the publish-
+    ready form carries the rendered prose. Re-emitting frontmatter on
+    a public surface would leak the operator-internal artifact shape.
+    """
+    parts: list[str] = []
+
+    parts.append(f"# {title}")
+    parts.append("")
+    parts.append(f"**{artifact.attribution.byline_text}**")
+    parts.append("")
+    parts.append(f"*{artifact.attribution.unsettled_sentence}*")
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    body = artifact.body.lstrip("\n")
+    # Strip a duplicate top-level title from the body when the source
+    # body opens with the same H1; the composed output already has one
+    # at the top so we don't want a second below the byline.
+    body_lines = body.split("\n")
+    if body_lines and body_lines[0].startswith("# "):
+        body_lines = body_lines[1:]
+        # Drop the leading blank line that typically follows the H1.
+        if body_lines and body_lines[0].strip() == "":
+            body_lines = body_lines[1:]
+    parts.append("\n".join(body_lines))
+
+    if artifact.attribution.non_engagement_clause:
+        parts.append("")
+        parts.append("---")
+        parts.append("")
+        parts.append(f"**Non-engagement clause.** {artifact.attribution.non_engagement_clause}")
+
+    parts.append("")
+    return "\n".join(parts)
+
+
 def main(argv: list[str]) -> int:
     """CLI entry point.
 
@@ -226,5 +276,6 @@ __all__ = [
     "OPERATOR_NAME_ENV",
     "OPERATOR_NAME_FALLBACK",
     "PublishArtifact",
+    "compose_publish_markdown",
     "render_publish_artifact",
 ]
