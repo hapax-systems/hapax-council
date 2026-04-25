@@ -66,6 +66,14 @@ class TemporalProfile(BaseModel):
     and RETRACTED→UNCERTAIN use this third value). Defaults to 4 so
     PresenceEngine's existing behavior carries through bit-identical
     when refactored onto this engine in Phase 1.
+
+    BOCD changepoint detection (research §6) is deferred to Phase 7.
+    The previously-declared `bocd_hazard: float | None` field was never
+    consumed (AUDIT-09); removed in v4 audit-incorporated cycle. When
+    Phase 7 lands, BOCD support enters via a separate optional field
+    + an opt-in code path in `_required_ticks_for_transition` that
+    reads the live posterior-changepoint probability instead of fixed
+    dwell counts.
     """
 
     enter_threshold: float = Field(ge=0.0, le=1.0)
@@ -73,7 +81,6 @@ class TemporalProfile(BaseModel):
     k_enter: int = Field(ge=1)
     k_exit: int = Field(ge=1)
     k_uncertain: int = Field(default=4, ge=1)
-    bocd_hazard: float | None = None
 
 
 class LRDerivation(BaseModel):
