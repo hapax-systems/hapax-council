@@ -19,10 +19,12 @@ def list_active_broadcasts(client: YouTubeApiClient) -> list[dict]:
     """Return active broadcasts owned by the authenticated channel."""
     if not client.enabled:
         return []
+    # YouTube API v3 rejects ``mine`` and ``broadcastStatus`` together
+    # ("Incompatible parameters specified in the request: mine, broadcastStatus").
+    # ``broadcastStatus`` already scopes to the OAuth-authenticated channel.
     resp = client.execute(
         client.yt.liveBroadcasts().list(
             part="id,snippet,status,contentDetails",
-            mine=True,
             broadcastStatus="active",
             maxResults=5,
         ),

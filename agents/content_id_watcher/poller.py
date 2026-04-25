@@ -27,9 +27,12 @@ def poll_live_broadcasts(client: YouTubeApiClient) -> dict[str, dict]:
     """
     if not client.enabled:
         return {}
+    # YouTube API v3 rejects ``mine`` and ``broadcastStatus`` together
+    # ("Incompatible parameters specified in the request: mine, broadcastStatus").
+    # ``broadcastStatus`` already scopes to the OAuth-authenticated channel,
+    # so ``mine=True`` is redundant when filtering by status.
     request = client.yt.liveBroadcasts().list(
         part=LIVE_PARTS,
-        mine=True,
         broadcastStatus="active",
     )
     response = client.execute(request, endpoint="liveBroadcasts.list", quota_cost_hint=1)
