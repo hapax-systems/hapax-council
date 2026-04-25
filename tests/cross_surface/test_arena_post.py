@@ -203,3 +203,160 @@ class TestCredentials:
         monkeypatch.setenv("HAPAX_ARENA_TOKEN", "")
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "")
         assert _credentials_from_env() == (None, None)
+
+
+# ── Orchestrator entry-point (PUB-P1-C foundation) ───────────────────
+
+
+class _FakeArtifact:
+    """Minimal duck-type for ``publish_artifact`` tests.
+
+    Mirrors the surface ``PreprintArtifact`` exposes today: ``slug``,
+    ``title``, ``abstract``, ``attribution_block``, ``doi``,
+    ``embed_image_url``. Pydantic isn't pulled in here so the test
+    isn't coupled to model evolution.
+    """
+
+    def __init__(
+        self,
+        *,
+        slug: str = "test",
+        title: str = "",
+        abstract: str = "",
+        attribution_block: str = "",
+        doi: str | None = None,
+        embed_image_url: str | None = None,
+    ) -> None:
+        self.slug = slug
+        self.title = title
+        self.abstract = abstract
+        self.attribution_block = attribution_block
+        self.doi = doi
+        self.embed_image_url = embed_image_url
+
+
+class TestPublishArtifact:
+    def test_no_credentials_returns_no_credentials(self, monkeypatch):
+        from agents.cross_surface.arena_post import publish_artifact
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "")
+        artifact = _FakeArtifact(title="x", abstract="y")
+        assert publish_artifact(artifact) == "no_credentials"
+
+    def test_only_token_set_returns_no_credentials(self, monkeypatch):
+        from agents.cross_surface.arena_post import publish_artifact
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "")
+        artifact = _FakeArtifact(title="x", abstract="y")
+        assert publish_artifact(artifact) == "no_credentials"
+
+    def test_attribution_block_preferred(self, monkeypatch):
+        from agents.cross_surface import arena_post
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
+        client = mock.Mock()
+        client.add_block.return_value = None
+        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+            artifact = _FakeArtifact(
+                title="Title",
+                abstract="Abstract.",
+                attribution_block="Attribution Block",
+            )
+            assert arena_post.publish_artifact(artifact) == "ok"
+        kwargs = client.add_block.call_args.kwargs
+        args = client.add_block.call_args.args
+        assert args == ("ch",)
+        assert kwargs["content"] == "Attribution Block"
+        assert kwargs["source"] is None
+
+    def test_title_abstract_fallback(self, monkeypatch):
+        from agents.cross_surface import arena_post
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
+        client = mock.Mock()
+        client.add_block.return_value = None
+        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+            artifact = _FakeArtifact(title="Title", abstract="Abstract.")
+            assert arena_post.publish_artifact(artifact) == "ok"
+        assert client.add_block.call_args.kwargs["content"] == "Title — Abstract."
+
+    def test_doi_yields_source_url(self, monkeypatch):
+        from agents.cross_surface import arena_post
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
+        client = mock.Mock()
+        client.add_block.return_value = None
+        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+            artifact = _FakeArtifact(title="T", abstract="A", doi="10.5281/zenodo.1234")
+            assert arena_post.publish_artifact(artifact) == "ok"
+        assert client.add_block.call_args.kwargs["source"] == "https://doi.org/10.5281/zenodo.1234"
+
+    def test_embed_image_used_when_no_doi(self, monkeypatch):
+        from agents.cross_surface import arena_post
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
+        client = mock.Mock()
+        client.add_block.return_value = None
+        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+            artifact = _FakeArtifact(
+                title="T",
+                abstract="A",
+                embed_image_url="https://cdn.example/img.png",
+            )
+            assert arena_post.publish_artifact(artifact) == "ok"
+        assert client.add_block.call_args.kwargs["source"] == "https://cdn.example/img.png"
+
+    def test_content_truncated_to_limit(self, monkeypatch):
+        from agents.cross_surface import arena_post
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
+        client = mock.Mock()
+        client.add_block.return_value = None
+        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+            artifact = _FakeArtifact(attribution_block="x" * (ARENA_BLOCK_TEXT_LIMIT + 50))
+            assert arena_post.publish_artifact(artifact) == "ok"
+        assert len(client.add_block.call_args.kwargs["content"]) == ARENA_BLOCK_TEXT_LIMIT
+
+    def test_factory_failure_yields_auth_error(self, monkeypatch):
+        from agents.cross_surface import arena_post
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
+        with mock.patch.object(
+            arena_post,
+            "_default_client_factory",
+            side_effect=RuntimeError("boom"),
+        ):
+            artifact = _FakeArtifact(title="t", abstract="a")
+            assert arena_post.publish_artifact(artifact) == "auth_error"
+
+    def test_add_block_failure_yields_error(self, monkeypatch):
+        from agents.cross_surface import arena_post
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
+        client = mock.Mock()
+        client.add_block.side_effect = RuntimeError("api down")
+        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+            artifact = _FakeArtifact(title="t", abstract="a")
+            assert arena_post.publish_artifact(artifact) == "error"
+
+    def test_empty_artifact_returns_error_only_when_content_empty(self, monkeypatch):
+        from agents.cross_surface import arena_post
+
+        monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
+        monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
+        client = mock.Mock()
+        client.add_block.return_value = None
+        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+            # Bare artifact still gets a placeholder, so this is "ok".
+            artifact = _FakeArtifact()
+            assert arena_post.publish_artifact(artifact) == "ok"
+        assert client.add_block.call_args.kwargs["content"] == "hapax — publication artifact"

@@ -313,6 +313,83 @@ def _credentials_from_env() -> tuple[str | None, str | None]:
     return token, slug
 
 
+# ── Orchestrator entry-point (PUB-P1-C foundation) ───────────────────
+
+
+def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Dispatch a ``PreprintArtifact`` to Are.na.
+
+    Static entry-point consumed by ``agents/publish_orchestrator``'s
+    surface registry. Returns one of: ``ok | denied | auth_error |
+    error | no_credentials``. Never raises.
+
+    Composes via the artifact's ``attribution_block`` (preferred) or
+    ``title + abstract``, truncated to ``ARENA_BLOCK_TEXT_LIMIT``. If
+    the artifact carries a ``doi``, it is rendered as a ``https://doi.org/``
+    link and supplied as the block ``source`` (Are.na renders link
+    blocks distinctly from text blocks). The full ``BasePublisher``
+    refactor that consolidates the JSONL-tail mode with this
+    entry-point lands in a follow-up ticket; this adds the orchestrator
+    surface entry-point without the tail-mode rewrite.
+    """
+    token, slug = _credentials_from_env()
+    if not (token and slug):
+        return "no_credentials"
+
+    content = _compose_artifact_content(artifact)
+    if not content:
+        return "error"
+
+    source_url = _artifact_source_url(artifact)
+
+    try:
+        client = _default_client_factory(token)
+    except Exception:  # noqa: BLE001
+        log.exception("arena client init failed for artifact %s", getattr(artifact, "slug", "?"))
+        return "auth_error"
+
+    try:
+        client.add_block(slug, content=content, source=source_url)
+    except Exception:  # noqa: BLE001
+        log.exception("arena add_block raised for artifact %s", getattr(artifact, "slug", "?"))
+        return "error"
+    return "ok"
+
+
+def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Render a ``PreprintArtifact`` to Are.na-bounded block content.
+
+    Prefers ``attribution_block`` so per-artifact framing stays
+    authoritative; otherwise builds ``"{title} — {abstract}"``.
+    Truncated to ``ARENA_BLOCK_TEXT_LIMIT`` (4096).
+    """
+    title = getattr(artifact, "title", "") or ""
+    abstract = getattr(artifact, "abstract", "") or ""
+    attribution = getattr(artifact, "attribution_block", "") or ""
+
+    if attribution:
+        body = attribution
+    elif abstract:
+        body = f"{title} — {abstract}"
+    else:
+        body = title or "hapax — publication artifact"
+
+    return body[:ARENA_BLOCK_TEXT_LIMIT]
+
+
+def _artifact_source_url(artifact) -> str | None:  # type: ignore[no-untyped-def]
+    """Derive an Are.na block ``source`` URL from the artifact, if any.
+
+    DOI takes precedence (rendered as ``https://doi.org/{doi}``);
+    falls back to ``embed_image_url`` so image-bearing artifacts land
+    as media blocks rather than plain text.
+    """
+    doi = getattr(artifact, "doi", None)
+    if doi:
+        return f"https://doi.org/{doi}"
+    return getattr(artifact, "embed_image_url", None)
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agents.cross_surface.arena_post",
