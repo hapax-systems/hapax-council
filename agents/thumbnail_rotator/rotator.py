@@ -193,6 +193,38 @@ class ThumbnailRotator:
                 log.exception("tick failed; continuing on next cadence")
             self._stop_evt.wait(self._tick_s)
 
+    def run_forever_salience_triggered(self, trigger, *, poll_s: float = 5.0) -> None:
+        """Salience-triggered loop (Phase 2).
+
+        Polls ``trigger.should_fire()`` every ``poll_s`` seconds; when
+        it returns True, runs a rotation. The 5 s default poll keeps
+        cursor advance responsive without burning CPU on idle ticks.
+
+        ``trigger`` is duck-typed on ``should_fire() -> bool`` (production
+        wires :class:`SalienceTrigger`; tests inject a stub). Failures
+        in the trigger or rotation are logged but never raise — the
+        loop keeps running on the next poll.
+        """
+        for sig in (_signal.SIGTERM, _signal.SIGINT):
+            try:
+                _signal.signal(sig, lambda *_: self._stop_evt.set())
+            except ValueError:
+                pass
+
+        log.info(
+            "thumbnail rotator starting (salience-triggered); poll=%.1fs dry_run=%s video_id=%s",
+            poll_s,
+            self._dry_run,
+            self._video_id or "<unset>",
+        )
+        while not self._stop_evt.is_set():
+            try:
+                if trigger.should_fire():
+                    self.run_once()
+            except Exception:  # noqa: BLE001
+                log.exception("salience-triggered tick failed; continuing on next poll")
+            self._stop_evt.wait(poll_s)
+
     def stop(self) -> None:
         self._stop_evt.set()
 
