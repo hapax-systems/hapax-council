@@ -174,3 +174,84 @@ class TestSystemDegradedStatus:
         client = TestClient(_make_app())
         resp = client.get("/api/engine/system_degraded")
         assert resp.status_code == 503
+
+
+# ── TestLogosDriftBridge ────────────────────────────────────────────────
+
+
+class TestLogosDriftBridge:
+    """Drift bridge: collect_drift() → drift_score() Protocol."""
+
+    def test_no_summary_yields_zero_score(self):
+        from unittest.mock import patch
+
+        from logos.api.app import LogosDriftBridge
+
+        with patch("logos.data.drift.collect_drift", return_value=None):
+            assert LogosDriftBridge().drift_score() == 0.0
+
+    def test_no_high_items_yields_zero(self):
+        from unittest.mock import MagicMock, patch
+
+        from logos.api.app import LogosDriftBridge
+
+        summary = MagicMock()
+        item = MagicMock()
+        item.severity = "low"
+        summary.items = [item, item, item]
+        with patch("logos.data.drift.collect_drift", return_value=summary):
+            assert LogosDriftBridge().drift_score() == 0.0
+
+    def test_5_high_items_yields_half_score(self):
+        from unittest.mock import MagicMock, patch
+
+        from logos.api.app import LogosDriftBridge
+
+        summary = MagicMock()
+        items = [MagicMock(severity="HIGH") for _ in range(5)]
+        items.extend([MagicMock(severity="low") for _ in range(2)])
+        summary.items = items
+        with patch("logos.data.drift.collect_drift", return_value=summary):
+            assert LogosDriftBridge().drift_score() == 0.5
+
+    def test_score_saturates_at_one(self):
+        from unittest.mock import MagicMock, patch
+
+        from logos.api.app import LogosDriftBridge
+
+        summary = MagicMock()
+        summary.items = [MagicMock(severity="HIGH") for _ in range(50)]
+        with patch("logos.data.drift.collect_drift", return_value=summary):
+            assert LogosDriftBridge().drift_score() == 1.0
+
+    def test_severity_case_insensitive(self):
+        from unittest.mock import MagicMock, patch
+
+        from logos.api.app import LogosDriftBridge
+
+        summary = MagicMock()
+        summary.items = [
+            MagicMock(severity="High"),
+            MagicMock(severity="HIGH"),
+            MagicMock(severity="high"),
+        ]
+        with patch("logos.data.drift.collect_drift", return_value=summary):
+            assert LogosDriftBridge().drift_score() == 0.3
+
+    def test_drift_bridge_drives_engine_to_degraded(self):
+        from unittest.mock import MagicMock, patch
+
+        from agents.hapax_daimonion.backends.drift_significant import (
+            drift_significant_observation,
+        )
+        from agents.hapax_daimonion.system_degraded_engine import SystemDegradedEngine
+        from logos.api.app import LogosDriftBridge
+
+        summary = MagicMock()
+        summary.items = [MagicMock(severity="HIGH") for _ in range(15)]
+        with patch("logos.data.drift.collect_drift", return_value=summary):
+            bridge = LogosDriftBridge()
+            sde = SystemDegradedEngine(prior=0.1, enter_ticks=2)
+            for _ in range(8):
+                sde.contribute(drift_significant_observation(bridge))
+            assert sde.state == "DEGRADED"

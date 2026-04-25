@@ -23,6 +23,24 @@ from logos.api.sessions import agent_run_manager
 _log = logging.getLogger(__name__)
 
 
+# Phase 6d-i.B drift signal bridge. Adapts logos/data/drift.py's
+# DriftSummary into the _DriftSource Protocol that
+# drift_significant_observation expects. Saturation point of 10 high-
+# severity items lines up with the "operator burnt by drift" threshold
+# the session-context hook has surfaced (~16 high items at audit time).
+class LogosDriftBridge:
+    """Bridge collect_drift() → drift_score() Protocol for SystemDegradedEngine."""
+
+    def drift_score(self) -> float:
+        from logos.data.drift import collect_drift
+
+        summary = collect_drift()
+        if summary is None:
+            return 0.0
+        high = sum(1 for i in summary.items if i.severity.upper() == "HIGH")
+        return min(1.0, high / 10.0)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await start_refresh_loop()
@@ -94,13 +112,15 @@ async def lifespan(app: FastAPI):
         _log.exception("Reactive engine failed to start (continuing without it)")
         engine = None
 
-    # Phase 6d-i.B partial wire-in: SystemDegradedEngine observes the
-    # ReactiveEngine watcher's consumer-queue depth and exposes a
+    # Phase 6d-i.B wire-in: SystemDegradedEngine observes (1) the
+    # ReactiveEngine watcher's consumer-queue depth and (2) the drift
+    # detector's high-severity item count (post-#1379) and exposes a
     # Bayesian posterior for downstream consumers (DMN governor,
     # narration cadence, recruitment pipeline). Sourced from #1357
-    # (engine + signal contract) + #1362 (queue-depth adapter). Other
-    # 3 signals (drift / gpu / director_cadence) wire in subsequent
-    # PRs as their production sources land daimonion-side.
+    # (engine + signal contract) + #1362 (queue-depth adapter) +
+    # #1377 (drift / gpu / director adapters). Remaining 2 signals
+    # (gpu / director_cadence) wire in subsequent PRs as their
+    # production sources land daimonion-side.
     sde = None
     if engine is not None:
         try:
@@ -126,15 +146,23 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(60)
 
     async def _system_degraded_tick_loop():
-        """1s-cadence tick — observes queue depth + contributes to engine."""
+        """1s-cadence tick — observes queue depth + drift + contributes."""
+        from agents.hapax_daimonion.backends.drift_significant import (
+            drift_significant_observation,
+        )
         from agents.hapax_daimonion.backends.engine_queue_depth import (
             queue_depth_observation,
         )
 
+        drift_bridge = LogosDriftBridge()
+
         while True:
             try:
                 if engine is not None and sde is not None:
-                    sde.contribute(queue_depth_observation(engine.watcher))
+                    obs: dict[str, bool | None] = {}
+                    obs.update(queue_depth_observation(engine.watcher))
+                    obs.update(drift_significant_observation(drift_bridge))
+                    sde.contribute(obs)
             except Exception:
                 _log.debug("SystemDegradedEngine tick failed", exc_info=True)
             await asyncio.sleep(1.0)
