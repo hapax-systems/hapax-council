@@ -221,6 +221,7 @@ class RefusalGate:
             return RefusalResult(accepted=True)
 
         addendum = self._build_addendum(rejected, available_claims)
+        _emit_refusal_brief(self.surface, rejected)
         return RefusalResult(
             accepted=False,
             rejected_propositions=rejected,
@@ -238,6 +239,47 @@ class RefusalGate:
         for prop in rejected:
             lines.append(f"- rejected: {prop}")
         return "\n".join(lines)
+
+
+def _emit_refusal_brief(surface: NarrationSurface, rejected: list[str]) -> None:
+    """Append a structured event to the canonical refusal log.
+
+    One append per gate firing (not per rejected proposition) keeps
+    the log proportional to gate decisions rather than to LLM verbosity.
+    The first rejected proposition is the reason; the count of others
+    is appended in parentheses when rejected > 1. Best-effort: writer
+    failures log internally and never raise, so the gate decision
+    path is unaffected.
+
+    Import is local so a missing ``agents.refusal_brief`` (e.g., in a
+    minimal test environment that hasn't pulled the package) doesn't
+    break the gate. The substrate is part of the council baseline,
+    so production always has it.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from agents.refusal_brief import RefusalEvent, append
+
+        head = rejected[0] if rejected else "(no detail)"
+        # Cap at the model's REASON_MAX_CHARS (160). Pad the suffix
+        # last so head text takes priority.
+        suffix = f" (+{len(rejected) - 1} more)" if len(rejected) > 1 else ""
+        budget = 160 - len(suffix)
+        reason = (head[:budget] + suffix) if len(head) > budget else (head + suffix)
+        append(
+            RefusalEvent(
+                timestamp=datetime.now(UTC),
+                axiom="claim_below_floor",
+                surface=f"refusal_gate:{surface}",
+                reason=reason,
+            )
+        )
+    except Exception:
+        # Refusal-brief emission is observability — never let it
+        # break the gate. Log via the writer's own logger; do not
+        # raise here.
+        pass
 
 
 def claim_discipline_score(result: RefusalResult) -> float:

@@ -209,6 +209,80 @@ class TestClaimDisciplineScore:
         assert claim_discipline_score(result) == 0.0
 
 
+class TestRefusalBriefEmission:
+    """Reject path emits a structured event into the canonical refusal log
+    (``agents.refusal_brief``), one append per gate firing.
+    """
+
+    def test_emits_one_event_on_reject(self, monkeypatch) -> None:
+        # The gate calls ``append(event)`` without an explicit log_path,
+        # so monkeypatch the module-level append to capture the call.
+        from agents.refusal_brief import writer as _writer
+
+        captured: list[_writer.RefusalEvent] = []
+
+        def _spy(event, *, log_path=_writer.DEFAULT_LOG_PATH):
+            captured.append(event)
+            return True
+
+        # Patch the spy where the gate looks it up — gate imports
+        # ``from agents.refusal_brief import RefusalEvent, append``
+        # at call time, so monkeypatch the package-level attribute.
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", _spy)
+
+        gate = RefusalGate(surface="director")
+        result = gate.check(
+            "Vinyl is currently playing.",
+            available_claims=[_claim(posterior=0.45)],
+        )
+
+        assert result.accepted is False
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.surface == "refusal_gate:director"
+        assert ev.axiom == "claim_below_floor"
+        assert "vinyl" in ev.reason.lower()
+
+    def test_emits_no_event_on_accept(self, monkeypatch) -> None:
+        from agents.refusal_brief import writer as _writer
+
+        captured: list[_writer.RefusalEvent] = []
+
+        def _spy(event, *, log_path=_writer.DEFAULT_LOG_PATH):
+            captured.append(event)
+            return True
+
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", _spy)
+
+        gate = RefusalGate(surface="director")
+        result = gate.check(
+            "Vinyl is currently playing.", available_claims=[_claim(posterior=0.75)]
+        )
+        assert result.accepted is True
+        assert captured == []
+
+    def test_writer_failure_does_not_break_gate(self, monkeypatch) -> None:
+        """If refusal_brief.append raises, the gate still returns its decision."""
+        import agents.refusal_brief as _pkg
+
+        def _boom(event, *, log_path=None):
+            raise RuntimeError("writer is on fire")
+
+        monkeypatch.setattr(_pkg, "append", _boom)
+
+        gate = RefusalGate(surface="director")
+        # Must not raise; result must reflect the decision.
+        result = gate.check(
+            "Vinyl is currently playing.",
+            available_claims=[_claim(posterior=0.45)],
+        )
+        assert result.accepted is False
+
+
 class TestNarrationSurfaceLiteral:
     def test_known_surface_strings(self) -> None:
         # Compile-time + runtime check that Literal type lists the 5 surfaces
