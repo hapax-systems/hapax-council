@@ -1,7 +1,18 @@
-"""Tests for DURF (Display Under Reflective Frame) ward.
+"""Tests for DURF (Display Under Reflective Frame) ward — Phase 2.
 
-Covers: token classification, redaction regex, ring buffer, gate logic,
-alpha envelope, registration, layout parse.
+Phase 2 replaces Phase 1's text-classification + redaction approach with
+literal Hyprland window pixel capture (per operator directive 2026-04-24
+"BE my term content AS it IS"). Token classification, redaction regex,
+and ring buffer tests from Phase 1 are removed because the underlying
+``_classify_line_role`` / ``_PaneRing`` / ``_redact`` primitives no
+longer exist on ``DURFCairoSource``.
+
+What this file pins now:
+- Source registration in the cairo_sources registry
+- Construction with explicit + missing config
+- Gate behavior (off when desk inactive)
+- ``state()`` shape (alpha, now)
+- Layout integration (default.json includes durf surface + assignment)
 """
 
 from __future__ import annotations
@@ -12,110 +23,15 @@ import pytest
 import yaml
 
 from agents.studio_compositor.cairo_sources import get_cairo_source_class
-from agents.studio_compositor.durf_source import (
-    DURFCairoSource,
-    _classify_line_role,
-    _PaneRing,
-    _redact,
-)
-
-# ── Redaction ────────────────────────────────────────────────────────
-
-
-class TestRedaction:
-    def test_redacts_anthropic_key(self):
-        line = "export ANTHROPIC_API_KEY=sk-ant-api03-abc123xyz789-very-long-token"
-        out = _redact(line)
-        assert "sk-ant" not in out
-        assert "[REDACTED]" in out
-
-    def test_redacts_aws_key(self):
-        line = "aws_access_key_id AKIAIOSFODNN7EXAMPLE"
-        out = _redact(line)
-        assert "AKIA" not in out
-
-    def test_redacts_github_token(self):
-        line = "git push with ghp_abcdefghijklmnopqrstuvwxyz0123456789"
-        out = _redact(line)
-        assert "ghp_" not in out
-
-    def test_redacts_bearer_token(self):
-        line = 'headers["Authorization"] = "Bearer abcdef1234567890xyz.pqrst"'
-        out = _redact(line)
-        assert "Bearer abcdef" not in out
-
-    def test_redacts_ssh_path(self):
-        # Build the path at runtime to avoid pii-guard triggering on source text.
-        ssh_fragment = "/" + "home" + "/testuser/.ssh/id_ed25519"
-        line = f"reading key from {ssh_fragment}"
-        out = _redact(line)
-        assert "id_ed25519" not in out
-
-    def test_preserves_harmless_lines(self):
-        line = "The quick brown fox jumps over the lazy dog"
-        assert _redact(line) == line
-
-    def test_strips_ansi_sgr(self):
-        line = "\x1b[31mError\x1b[0m: something broke"
-        out = _redact(line)
-        assert "\x1b" not in out
-        assert "Error" in out
-
-
-# ── Classification ───────────────────────────────────────────────────
-
-
-class TestClassification:
-    def test_error_wins(self):
-        assert _classify_line_role("ERROR: build failed") == "error"
-        assert _classify_line_role("Traceback (most recent call last)") == "error"
-
-    def test_success(self):
-        assert _classify_line_role("All tests PASSED") == "success"
-        assert _classify_line_role("MERGED #1234") == "success"
-
-    def test_tool(self):
-        assert _classify_line_role("● Bash(ls)") == "tool"
-        assert _classify_line_role("Bash(git status)") == "tool"
-
-    def test_prompt(self):
-        assert _classify_line_role("$ ls -la") == "prompt"
-        assert _classify_line_role("> git log") == "prompt"
-
-    def test_text_default(self):
-        assert _classify_line_role("just some narrative text") == "text"
-
-
-# ── Ring buffer ──────────────────────────────────────────────────────
-
-
-class TestPaneRing:
-    def test_dedups_identical_lines(self):
-        ring = _PaneRing(size=10)
-        ring.update(["line1", "line2"])
-        ring.update(["line1", "line3"])
-        snap = ring.snapshot()
-        assert len(snap) == 3
-        assert snap[-1][0] == "line3"
-
-    def test_bytes_counts_net_added(self):
-        ring = _PaneRing(size=10)
-        ring.update(["hello", "world"])
-        assert ring.bytes_in_window() == 10
-
-    def test_empty_lines_skipped(self):
-        ring = _PaneRing(size=10)
-        ring.update(["", "   ", "actual"])
-        snap = ring.snapshot()
-        assert len(snap) == 1
-        assert snap[0][0] == "actual"
-
+from agents.studio_compositor.durf_source import DURFCairoSource
 
 # ── Source instantiation + registration ──────────────────────────────
 
 
 @pytest.fixture
 def minimal_config(tmp_path):
+    """Phase 2 config — same yaml shape as Phase 1, but only the
+    ``panes`` block carries forward as the discovery hint list."""
     cfg = {
         "panes": [
             {"role": "alpha", "tmux_target": "nowhere:0.0", "glyph": "A-//"},
@@ -136,9 +52,7 @@ class TestDURFSource:
         src = DURFCairoSource(config_path=minimal_config)
         try:
             assert src.source_id == "durf"
-            assert "alpha" in src._panes
-            assert "beta" in src._panes
-            assert src._glyphs["alpha"] == "A-//"
+            assert src._config_path == minimal_config
         finally:
             src.stop()
 
@@ -159,11 +73,14 @@ class TestDURFSource:
         finally:
             src.stop()
 
-    def test_missing_config_logs_warning_and_empty_panes(self, tmp_path):
+    def test_missing_config_handles_gracefully(self, tmp_path):
+        """No yaml file at config_path: source still constructs and
+        gates off — the discovery thread starts with no hints, finds
+        no sessions, and reports alpha=0.0."""
         src = DURFCairoSource(config_path=tmp_path / "nonexistent.yaml")
         try:
-            assert src._panes == {}
-            assert src.state()["alpha"] == 0.0
+            state = src.state()
+            assert state["alpha"] == 0.0
         finally:
             src.stop()
 
