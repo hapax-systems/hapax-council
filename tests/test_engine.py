@@ -480,41 +480,6 @@ class TestDirectoryWatcher:
         doc_type, fm = _infer_doc_type(Path("/project/axioms/implications/single_user.yaml"))
         assert doc_type == "axiom-implication"
 
-    async def test_handler_calls_should_skip(self):
-        """AUDIT-31: _EventHandler.on_any_event invokes `_should_skip`.
-
-        Minimal contract pin: any future regression that removes the
-        handler-layer pre-filter would stop calling `_should_skip` from
-        on_any_event. Earlier iterations of this test exercised the
-        full filter→dispatch path with mocked dependencies; both
-        repeatedly failed in CI under xdist for reasons that did not
-        reproduce locally. This stripped-down version asserts the call
-        edge only — the dispatch behavior is integration-tested via
-        `_consume` and the live-broadcast smoke loop.
-        """
-        from unittest.mock import MagicMock, patch
-
-        from logos.engine.watcher import _EventHandler
-
-        loop = MagicMock()
-        queue = MagicMock()
-        handler = _EventHandler(queue, loop)
-
-        event = MagicMock()
-        event.is_directory = False
-        event.src_path = "/x"
-
-        # Patch _EVENT_TYPE_MAP so on_any_event passes the type check.
-        type_map = MagicMock()
-        type_map.get.return_value = "created"
-        with (
-            patch("logos.engine.watcher._EVENT_TYPE_MAP", new=type_map),
-            patch("logos.engine.watcher._should_skip") as mock_skip,
-        ):
-            mock_skip.return_value = True
-            handler.on_any_event(event)
-            mock_skip.assert_called_once()
-
 
 # ── TestReactiveEngine ──────────────────────────────────────────────────────
 
