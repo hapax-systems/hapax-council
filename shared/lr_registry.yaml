@@ -384,3 +384,41 @@ operator_activity_signals:
 # the corresponding ClaimEngines ship:
 #   vinyl_spinning_signals: {turntable_rpm, ir_hand_turntable, audio_signal_present, ...}
 #   music_playing_signals: {yamnet_music_posterior, youtube_audio_active, local_player_active, ...}
+
+# Phase 2 — VinylSpinningEngine signals (companion to #1431; the
+# operator's reported "vinyl claimed playing when not" hallucination
+# is structurally fixed via the conjunctive cover_and_hand signal —
+# cover alone contributes None, hand alone contributes None, only
+# the conjunction is evidence).
+vinyl_spinning_signals:
+  operator_override:
+    claim_name: vinyl_spinning
+    source_category: expert_elicitation_shelf
+    p_true_given_h1: 0.99
+    p_true_given_h0: 0.01
+    positive_only: true
+    estimation_reference: "Operator-asserted ground truth via /dev/shm/hapax-compositor/vinyl-operator-active.flag — hard-conjunctive lift; operator wouldn't set the flag while the platter idles."
+    calibration_window_s: null
+  cover_and_hand:
+    claim_name: vinyl_spinning
+    source_category: expert_elicitation_shelf
+    p_true_given_h1: 0.95
+    p_true_given_h0: 0.05
+    positive_only: true
+    estimation_reference: "Conjunction of two readings: ALBUM_STATE_FILE fresh (<300s mtime, confidence ≥ 0.5 from gemini-flash IR overhead) AND Pi-6 NoIR ir_hand_zone == 'turntable' OR contact_mic_ir scratching activity (<120s mtime). Conjunction is load-bearing: cover alone fires while platter idles (Task #185 hallucination); hand alone fires when operator handles equipment without playing. Both together is strong evidence. Calibration baseline 2026-03-17 first-live-run + Task #185 retrospective."
+    calibration_window_s: 120.0
+
+# Phase 2b — MusicPlayingEngine signals (pure-audio evidence on
+# broadcast L-12). Structurally orthogonal to vinyl_spinning_signals:
+# music_playing answers "is music in the broadcast right now"
+# (audio-evidence ground truth); vinyl_spinning answers "is the
+# platter the source." Both engines compose at the consumer side.
+music_playing_signals:
+  yamnet_music_present:
+    claim_name: music_playing
+    source_category: calibrated_classifier
+    p_true_given_h1: 0.92
+    p_true_given_h0: 0.08
+    positive_only: false
+    estimation_reference: "PANNs (CNN14, AudioSet 527-class) classification on 3-second window from broadcast L-12 PipeWire monitor (hapax-livestream-tap.monitor); music-class posteriors summed (Music + Musical instrument + genre subclasses) with threshold 0.45 mapping to True/False. AudioSet ontology calibration baseline 2026-03-17 first-live-run + Phase 2b audio-evidence layer rationale. Bidirectional (positive_only=False) because audio absence IS direct evidence of music absence — distinct from cover/hand signals where absence is ambiguous."
+    calibration_window_s: 3.0

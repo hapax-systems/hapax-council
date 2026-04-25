@@ -8,13 +8,45 @@ Operator directives 2026-04-17:
 
 Each test pins one invariant so a regression surfaces here rather than
 weeks later on the livestream.
+
+Phase 2 / 2b note (#1431, #1433): vinyl-spinning detection is now a
+Bayesian posterior with slow-enter / fast-exit hysteresis (k_enter=6).
+Tests that previously asserted single-tick Boolean truth now settle the
+engine through enough ticks to cross the ASSERTED threshold. The
+operator-directive invariants still hold — the *evidence shape* (cover
++ hand, or operator override) is unchanged.
 """
 
 from __future__ import annotations
 
 import json
 
+import pytest
+
 from agents.studio_compositor import director_loop
+
+# k_enter=6 + a margin; covers the ASSERTED transition for both the
+# vinyl and music engines under sustained positive evidence.
+_SETTLE_TICKS = 10
+
+
+@pytest.fixture(autouse=True)
+def _reset_engine_singletons():
+    """Each test gets a clean Bayesian engine so monkeypatched paths /
+    callables actually take effect. Without this, the lazy singleton
+    persists across tests with stale construction-time state."""
+    director_loop._reset_engines_for_testing()
+    yield
+    director_loop._reset_engines_for_testing()
+
+
+def _settle_vinyl_to_asserted() -> None:
+    """Tick the vinyl engine through k_enter ticks to reach ASSERTED."""
+    engine = director_loop._vinyl_engine()
+    if engine is None:
+        return
+    for _ in range(_SETTLE_TICKS):
+        engine.tick()
 
 
 class TestVinylDecoupling:
@@ -80,6 +112,7 @@ class TestVinylDecoupling:
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
         self._set_override(tmp_path, monkeypatch, active=False)
         monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
+        monkeypatch.setattr(director_loop, "_vinyl_engine", lambda: None)
         assert director_loop._vinyl_is_playing() is True
 
     def test_vinyl_playing_via_operator_override_flag(self, tmp_path, monkeypatch):
@@ -88,6 +121,7 @@ class TestVinylDecoupling:
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", missing)
         self._set_override(tmp_path, monkeypatch, active=True)
         monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: False)
+        monkeypatch.setattr(director_loop, "_vinyl_engine", lambda: None)
         assert director_loop._vinyl_is_playing() is True
 
     def test_framing_when_vinyl_playing(self, tmp_path, monkeypatch):
@@ -96,6 +130,7 @@ class TestVinylDecoupling:
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
         self._set_override(tmp_path, monkeypatch, active=False)
         monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
+        monkeypatch.setattr(director_loop, "_vinyl_engine", lambda: None)
         framing = director_loop._curated_music_framing("yt-title", "yt-channel", "Oudepode")
         assert "spinning vinyl" in framing
         assert "Bobby Konders" in framing
@@ -104,6 +139,9 @@ class TestVinylDecoupling:
     def test_framing_when_no_vinyl_but_youtube_slot_active(self, tmp_path, monkeypatch):
         missing = tmp_path / "absent-album-state.json"
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", missing)
+        monkeypatch.setattr(director_loop, "_vinyl_engine", lambda: None)
+        # Phase 2b: framing requires audio-evidence; mock PANNs ASSERTED.
+        monkeypatch.setattr(director_loop, "_music_is_playing_in_broadcast", lambda: True)
         framing = director_loop._curated_music_framing("Some Track", "Some Channel", "OTO")
         assert "curated queue" in framing
         assert "Some Track" in framing
@@ -124,6 +162,7 @@ class TestVinylDecoupling:
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
         self._set_override(tmp_path, monkeypatch, active=False)
         monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
+        monkeypatch.setattr(director_loop, "_vinyl_engine", lambda: None)
         for referent in ("The Operator", "Oudepode", "Oudepode The Operator", "OTO"):
             framing = director_loop._curated_music_framing("yt-t", "yt-c", referent)
             assert referent in framing

@@ -983,35 +983,80 @@ def _hand_on_turntable_recent() -> bool:
     return False
 
 
-def _vinyl_is_playing() -> bool:
-    """True iff we have strong evidence the platter is spinning.
+# Phase 2 + Phase 2b: VinylSpinningEngine + MusicPlayingEngine replace
+# Boolean predicates with Bayesian posteriors. Engines are lazily
+# constructed singletons; HAPAX_BAYESIAN_BYPASS=1 disables them and
+# routes through the legacy Boolean fallbacks below.
+_VINYL_ENGINE = None
+_MUSIC_ENGINE = None
 
-    Three-signal gate (all are short-circuit paths; any one enables):
 
-    1. Operator override flag present at
-       :data:`_VINYL_OPERATOR_OVERRIDE_FLAG` — escape hatch for the
-       passive-play case where the operator wants to assert vinyl is
-       spinning without touching the deck.
-    2. Album cover identified (confidence >= threshold, mtime fresh)
-       AND recent hand-on-turntable perception within
-       :data:`_TURNTABLE_ACTIVE_STALE_S`. The conjunction is load-
-       bearing: cover identification alone is not a playing signal
-       (album-identifier keeps writing state when the cover is in the
-       IR field but the platter is idle).
-    3. (No third path — if the cover is stale / unidentified AND no
-       hand activity recent AND no override, vinyl is NOT playing.)
+def _vinyl_engine():  # type: ignore[no-untyped-def]
+    """Lazy singleton VinylSpinningEngine (Phase 2, AUDIT-07)."""
+    global _VINYL_ENGINE
+    if _VINYL_ENGINE is None:
+        try:
+            from agents.hapax_daimonion.vinyl_spinning_engine import VinylSpinningEngine
 
-    Task #185 fix; operator reported Hapax claiming vinyl-playing when
-    it was not. The prior impl trusted only the cover-confidence field,
-    which is the LLM's certainty about the COVER identity, not the
-    platter's spinning state.
+            _VINYL_ENGINE = VinylSpinningEngine(  # type: ignore[assignment]
+                album_state_file=ALBUM_STATE_FILE,
+                operator_override_flag=_VINYL_OPERATOR_OVERRIDE_FLAG,
+                hand_on_turntable_fn=_hand_on_turntable_recent,
+            )
+        except Exception:
+            log.warning(
+                "VinylSpinningEngine init failed; falling back to legacy Boolean", exc_info=True
+            )
+    else:
+        # Re-bind paths from the (potentially monkeypatched) module-level
+        # constants so test fixtures can redirect file reads without
+        # rebuilding the singleton. Production paths never change at
+        # runtime, so this is a no-op outside tests.
+        _VINYL_ENGINE._album_state_file = ALBUM_STATE_FILE  # type: ignore[union-attr]
+        _VINYL_ENGINE._operator_override_flag = _VINYL_OPERATOR_OVERRIDE_FLAG  # type: ignore[union-attr]
+        _VINYL_ENGINE._hand_on_turntable_fn = _hand_on_turntable_recent  # type: ignore[union-attr]
+    return _VINYL_ENGINE
+
+
+def _reset_engines_for_testing() -> None:
+    """Drop both Bayesian engine singletons.
+
+    Test-only seam used by ``test_music_decoupling`` and any other test
+    that needs to start the engines fresh after monkeypatching paths /
+    callables. Outside tests there is no scenario where engines need
+    to be rebuilt, so production code should never call this.
+    """
+    global _VINYL_ENGINE, _MUSIC_ENGINE
+    _VINYL_ENGINE = None
+    _MUSIC_ENGINE = None
+
+
+def _music_engine():  # type: ignore[no-untyped-def]
+    """Lazy singleton MusicPlayingEngine (Phase 2b, AUDIT-07 layer 2)."""
+    global _MUSIC_ENGINE
+    if _MUSIC_ENGINE is None:
+        try:
+            from agents.hapax_daimonion.music_playing_engine import MusicPlayingEngine
+
+            _MUSIC_ENGINE = MusicPlayingEngine()  # type: ignore[assignment]
+        except Exception:
+            log.warning(
+                "MusicPlayingEngine init failed; falling back to vinyl-only framing",
+                exc_info=True,
+            )
+    return _MUSIC_ENGINE
+
+
+def _vinyl_is_playing_legacy() -> bool:
+    """Legacy 3-signal Boolean predicate (rollback path / bypass fallback).
+
+    Retained for HAPAX_BAYESIAN_BYPASS=1 fallback + as a safety net
+    for engine-init failure. Will be removed once the
+    VinylSpinningEngine is fully validated against live broadcast.
     """
     try:
-        # Path 1: operator override flag. Fast + cheap.
         if _VINYL_OPERATOR_OVERRIDE_FLAG.exists():
             return True
-
-        # Path 2: cover visible AND recent hand activity on the deck.
         if not ALBUM_STATE_FILE.exists():
             return False
         age = time.time() - ALBUM_STATE_FILE.stat().st_mtime
@@ -1021,33 +1066,94 @@ def _vinyl_is_playing() -> bool:
         conf = float(data.get("confidence") or 0.0)
         if conf < _VINYL_CONFIDENCE_THRESHOLD:
             return False
-
-        # Cover visible — require the second signal before claiming playing.
         return _hand_on_turntable_recent()
     except Exception:
-        log.debug("vinyl-playing check failed", exc_info=True)
+        log.debug("legacy vinyl-playing check failed", exc_info=True)
+        return False
+
+
+def _vinyl_is_playing() -> bool:
+    """True iff we have strong evidence the platter is spinning.
+
+    Phase 2 (#1431): replaces the 3-signal Boolean short-circuit gate
+    with a Bayesian posterior. The underlying VinylSpinningEngine
+    fuses the same signal sources (operator override flag, album-cover
+    + hand-on-turntable conjunction) into a calibrated probability
+    with slow-enter / fast-exit hysteresis.
+
+    The structural fix for the operator's reported hallucination:
+    the engine treats cover_fresh AND hand_on_turntable as a CONJUNCTIVE
+    derived signal. Cover alone contributes None (no log-odds), hand
+    alone contributes None — only the conjunction is evidence, plus
+    the operator override flag as a hard-positive lift.
+
+    HAPAX_BAYESIAN_BYPASS=1 routes through the legacy Boolean fallback.
+    Engine construction failure also falls back to legacy.
+    """
+    engine = _vinyl_engine()
+    if engine is None:
+        return _vinyl_is_playing_legacy()
+    try:
+        engine.tick()
+        return engine.is_spinning
+    except Exception:
+        log.debug("VinylSpinningEngine tick failed; falling back to legacy", exc_info=True)
+        return _vinyl_is_playing_legacy()
+
+
+def _music_is_playing_in_broadcast() -> bool:
+    """True iff PANNs/YAMNet on broadcast L-12 reports music present.
+
+    Phase 2b: pure-audio evidence layer per AUDIT-07. Closes the third
+    hallucination axis (audio-silent + cover-fresh + hand-recent →
+    legacy-Boolean still claimed music). Returns False on engine-init
+    failure (caller can fall back to vinyl-only / curated-queue framing).
+    """
+    engine = _music_engine()
+    if engine is None:
+        return False
+    try:
+        engine.tick()
+        return engine.is_playing
+    except Exception:
+        log.debug("MusicPlayingEngine tick failed; treating as no music", exc_info=True)
         return False
 
 
 def _curated_music_framing(slot_title: str, slot_channel: str, referent: str) -> str:
-    """One-line "what's providing music" framing — vinyl-first, YouTube fallback.
+    """One-line "what's providing music" framing — audio-evidence first.
 
     Operator directive 2026-04-17:
       - Music featuring must work regardless of whether vinyl is playing.
       - All music surfaces must come from the operator's curated taste (the
         PLAYLIST_URL at module top), not from auto-recommendations.
 
+    Phase 2b composition (AUDIT-07):
+      1. Vinyl spinning (asserted) → "spinning vinyl: <album>".
+      2. NOT vinyl AND music in broadcast (PANNs ASSERTED) AND YT slot →
+         "from {referent}'s curated queue: '{slot_title}' by {slot_channel}".
+      3. NOT vinyl AND music in broadcast AND no YT slot →
+         "Music is playing from a curated source." (fallback to source-
+         agnostic phrasing — audio is present but identification is
+         off-line).
+      4. NOT vinyl AND NOT music in broadcast → "the room is quiet."
+         (silence is the asserted state; no hallucinated music claim).
+
     ``referent`` is the non-formal referent chosen by the tick-level picker
     (directive 2026-04-24, ``su-non-formal-referent-001``).
     """
     if _vinyl_is_playing():
         return f"{referent} is spinning vinyl: {_read_album_info()}."
-    if slot_title:
-        # slot_channel is the YouTube channel — part of the operator's
-        # curated playlist so it's still the operator's music taste.
+    music_in_broadcast = _music_is_playing_in_broadcast()
+    if music_in_broadcast and slot_title:
         return (
             f"Music is playing from {referent}'s curated queue: '{slot_title}' by {slot_channel}."
         )
+    if music_in_broadcast:
+        # PANNs heard music but no YT slot identified — audio-evidence
+        # ground truth disagrees with the queue-state file. Honest
+        # phrasing without claiming a specific source.
+        return f"Music is playing from {referent}'s curated source."
     return "No music is playing at the moment — the room is quiet."
 
 

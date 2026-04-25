@@ -91,6 +91,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from shared.claim import ClaimEngine, LRDerivation, TemporalProfile
@@ -204,6 +205,7 @@ class VinylSpinningEngine:
         album_state_file: Path = ALBUM_STATE_FILE,
         perception_state_file: Path = PERCEPTION_STATE_FILE,
         operator_override_flag: Path = VINYL_OPERATOR_OVERRIDE_FLAG,
+        hand_on_turntable_fn: Callable[[], bool] | None = None,
         prior: float = DEFAULT_PRIOR,
         profile: TemporalProfile | None = None,
         signal_weights: dict[str, LRDerivation] | None = None,
@@ -211,6 +213,12 @@ class VinylSpinningEngine:
         self._album_state_file = album_state_file
         self._perception_state_file = perception_state_file
         self._operator_override_flag = operator_override_flag
+        # Optional override: when provided, the engine delegates the
+        # hand-on-turntable read to this callable instead of parsing the
+        # perception state file directly. Used by ``director_loop`` to
+        # share the same predicate the legacy fallback uses, so test
+        # fixtures only need to monkeypatch one function.
+        self._hand_on_turntable_fn = hand_on_turntable_fn
 
         self._engine: ClaimEngine[bool] = ClaimEngine[bool](
             name="vinyl_spinning",
@@ -302,6 +310,12 @@ class VinylSpinningEngine:
 
     def _read_hand_on_turntable(self) -> bool | None:
         """Pi-6 IR overhead hand-zone == turntable, or scratch activity."""
+        if self._hand_on_turntable_fn is not None:
+            try:
+                return True if self._hand_on_turntable_fn() else None
+            except Exception:
+                log.debug("hand_on_turntable_fn raised; treating as no signal", exc_info=True)
+                return None
         try:
             if not self._perception_state_file.exists():
                 return None

@@ -105,3 +105,28 @@ operator_activity:
   constraint_narrowing: "Bias toward IDLE because activity is the assertion-requires-positive-evidence claim; absence of all five signals is genuine evidence of IDLE, not unknown. The asymmetric TemporalProfile (k_enter=1, k_exit=8) reflects that engagement bursts onto the stage immediately on a single strong cue (keyboard / MIDI clock) but recovery to IDLE requires sustained signal absence — brief reading pauses must not flip state."
   symmetry: "time-translation invariant within a single waking window; resets at process restart (no persistence across boots — activity belief is recomputed from current observations)"
   derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 + §6 (asymmetric profiles); beta scope direction 2026-04-25T02:18Z (Phase 6a delta-canonical)"
+
+vinyl_spinning:
+  claim_name: vinyl_spinning
+  structural_commitments:
+    - "single_user axiom: vinyl-spinning is a property of the (sole) operator's deck — no multi-deck fusion"
+    - "physical: vinyl-spinning manifests through bounded sensor channels (Pi-6 NoIR overhead camera + ALBUM_STATE_FILE freshness + contact_mic_ir scratch detection + future YAMNet on L-12). Most observations across a waking window are silence or non-vinyl audio."
+    - "tick-discrete: each signal is observed at the studio_compositor director cadence; engine state is derived from sustained conjunctive evidence via the slow-enter / fast-exit asymmetric TemporalProfile"
+    - "operator-perceptible cost asymmetry: false-positive vinyl claims break the livestream's grounding contract (operator's reported pain — Task #185, hallucination class fixed tactically in #1208/#1210/#1211/#1220 then structurally in #1431); false-negative vinyl claims silently degrade narration quality. Profile is biased to slow-enter / fast-exit accordingly (k_enter=6, k_exit=2, decay_rate=0.08)."
+  reference_prior: "Beta(1,9); 0.10 starting probability — vinyl-spinning is rare across a livestream window. Most ticks the platter is idle (operator working / curated playlist / dead air / recording / off-air). Refined empirically from live signal stream once Phase 2b YAMNet ships and the engine has audio-evidence ground truth to calibrate against."
+  constraint_narrowing: "Bias toward NOT_SPINNING because spinning is the assertion-requires-positive-evidence claim; absence of cover_and_hand AND operator_override is genuine evidence of NOT_SPINNING, not unknown. The conjunctive cover_and_hand signal (cover_fresh AND hand_on_turntable) is upstream of LR fusion to preserve the load-bearing AND from the legacy Boolean predicate — cover-alone-while-platter-idle (the operator's reported hallucination) contributes ZERO log-odds, not slowly-accumulating-weak-positive."
+  symmetry: "time-translation invariant within a single livestream window; resets at process restart (no persistence across boots)"
+  derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 (priors) + docs/operations/2026-04-25-workstream-realignment-v4-audit-incorporated.md AUDIT-07; Task #185 retrospective"
+
+music_playing:
+  claim_name: music_playing
+  structural_commitments:
+    - "single_user axiom: music-playing is a property of the (single) broadcast L-12 bus — no multi-bus fusion"
+    - "physical: music manifests through bounded perceptible channels (the broadcast audio itself, classified via PANNs/YAMNet on AudioSet 527-class ontology)"
+    - "tick-discrete: each tick captures a 3-second audio window from the broadcast L-12 monitor (hapax-livestream-tap.monitor) and runs PANNs classification on it"
+    - "audio-evidence layer: the PANNs music-class posterior on broadcast audio is structurally decoupled from upstream perception (album-identifier, IR camera, contact-mic). This is the third hallucination axis closer — audio-silent + cover-fresh + hand-recent → still claimed music in the legacy pipeline; PANNs on broadcast bus answers ground-truthfully."
+    - "structurally orthogonal to vinyl_spinning: music_playing answers 'is sound audible to the audience right now'; vinyl_spinning answers 'is the platter the source.' Both posteriors composed at the consumer (director_loop._curated_music_framing)."
+  reference_prior: "Beta(5,5); 0.50 starting probability — music is more common than vinyl-spinning across a livestream window (much of the stream has SOME music: vinyl, curated YouTube playlist, MPC pads, occasional SFX-only segments). The prior is symmetric because over a typical week of livestream the music-on / music-off distribution lands near 50/50."
+  constraint_narrowing: "Symmetric prior because music_playing is bidirectional: high audio-energy in music-class is direct evidence ON; low audio-energy across music classes is direct evidence OFF. This is unlike vinyl_spinning where cover/hand absence is ambiguous (hardware idle vs perception failure)."
+  symmetry: "time-translation invariant within a single livestream window; resets at process restart"
+  derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 (priors) + docs/operations/2026-04-25-workstream-realignment-v4-audit-incorporated.md AUDIT-07 layer 2; agents/hapax_daimonion/ambient_classifier.py PANNs + AudioSet basis"
