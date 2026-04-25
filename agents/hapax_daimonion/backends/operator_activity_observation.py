@@ -17,25 +17,19 @@ This adapter exposes a ``operator_activity_observation`` builder that
 takes any ``_PerceptionStateSource`` and returns a single-tick
 observation dict for ``OperatorActivityEngine.contribute()``.
 
-Wired so far (live perception-state.json signals):
+Wired (5/5 complete):
 - Part 1 (#1389): ``keyboard_active``
 - Part 2 (#1391): ``desk_active``
 - Part 3 (#1410): ``desktop_focus_changed_recent``
-- Part 4: ``midi_clock_active`` — ``MidiClockBackend.contribute()``
+- Part 4 (#1438): ``midi_clock_active`` — ``MidiClockBackend.contribute()``
   publishes ``midi_clock_transport`` (TransportState enum name); the
   perception-state writer surfaces it in the same file the bridge
   already reads, so no separate publisher is needed.
-
-Scaffolded (accessors return ``None`` until upstream publishers exist):
-- Part 5: ``watch_movement``. Source data flows through
-  ``hapax-watch-receiver`` HTTP endpoint to a per-tick state file;
-  bridge accessor needs a thin reader for that file.
-
-The all-None scaffolding pattern matches alpha's ``LogosStimmungBridge``
-for the mood-arousal cluster (#1392 + follow-ups) — keeps the protocol
-surface stable so downstream consumers can rely on the dict shape,
-while signal contribution lights up incrementally as upstream
-publishers ship.
+- Part 5: ``watch_movement`` — bridge reads
+  ``~/hapax-state/watch/activity.json`` directly (written by the
+  ``hapax-watch-receiver`` HTTP endpoint), with a 10 min staleness
+  cutoff so a dropped BLE link contributes None rather than spuriously
+  asserting STILL.
 
 Reference doc: ``docs/superpowers/research/2026-04-23-bayesian-claims-research.md``
 §Phase 6a + the OperatorActivityEngine module docstring.
@@ -91,9 +85,11 @@ def operator_activity_observation(
       STOPPED → False rather than None: the absence of a clock pulse
       from a known-good backend is itself evidence — same pattern as
       ``keyboard_active`` returning False on idle.
-    - ``watch_movement``: SCAFFOLDED. Bridge returns None until the
-      ``hapax-watch-receiver`` per-tick state file reader lands
-      (follow-up PR).
+    - ``watch_movement``: WIRED. Bidirectional, bridge reads
+      ``~/hapax-state/watch/activity.json``. State in
+      {STILL, RESTING, SEDENTARY} → False, any other state → True.
+      Stale data (>10 min) returns None to avoid spurious IDLE decay
+      on a dropped BLE link.
 
     Designed for callers like::
 

@@ -166,16 +166,67 @@ class LogosPerceptionStateBridge:
             return None
         return transport == "PLAYING"
 
-    def watch_movement(self) -> bool | None:
-        """SCAFFOLDED: returns None until watch-receiver state file reader lands.
+    # ``activity.json`` updated_at older than this is treated as stale —
+    # operator removed the watch, BLE dropped, sync agent died, etc. The
+    # cutoff is loose (10 min) because watch movement is a low-frequency
+    # ground-truth signal: long stretches of stillness are normal during
+    # focused desk work and should not be conflated with sensor outage.
+    _WATCH_STALENESS_S: float = 600.0
+    # ``activity.json`` ``state`` enum from hapax-watch (Pixel Watch).
+    # Anything other than these idle states counts as movement. Mirrors
+    # the ``_DESK_IDLE_STATES`` pattern above so the mapping is editable
+    # in one place.
+    _WATCH_IDLE_STATES: frozenset[str] = frozenset({"STILL", "RESTING", "SEDENTARY"})
 
-        Pixel Watch accelerometer state flows through the
-        ``hapax-watch-receiver`` HTTP endpoint to per-tick state files
-        under ``~/hapax-state/watch/``. A follow-up PR adds a thin
-        reader that surfaces the latest movement-delta with staleness
-        cutoff. Same scaffolding pattern as midi_clock_active above.
+    def watch_movement(self) -> bool | None:
+        """True iff the Pixel Watch reports a non-idle activity state.
+
+        Reads ``~/hapax-state/watch/activity.json`` (written by the
+        ``hapax-watch-receiver`` HTTP endpoint). The file shape is::
+
+            {"source": "pixel_watch_4",
+             "updated_at": "2026-04-25T19:30:00.000+00:00",
+             "state": "WALKING"}
+
+        Mapping:
+        - state in {STILL, RESTING, SEDENTARY} → False (real negative
+          evidence: watch live, body not moving — same shape as
+          ``keyboard_active`` False on idle)
+        - any other state → True (WALKING / RUNNING / EXERCISING / etc.)
+        - missing file or corrupt JSON → None
+        - ``updated_at`` older than ``_WATCH_STALENESS_S`` (10 min) →
+          None. Watch movement is a low-frequency signal and stale data
+          is uninformative; the BLE link dropping shouldn't decay the
+          posterior toward IDLE on a still-engaged operator.
         """
-        return None
+        import json
+        from datetime import UTC, datetime
+        from pathlib import Path
+
+        path = Path.home() / "hapax-state" / "watch" / "activity.json"
+        try:
+            data = json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+        if not isinstance(data, dict) or "state" not in data:
+            return None
+        # Staleness check — fail-soft on missing/malformed timestamp.
+        updated_at = data.get("updated_at")
+        if isinstance(updated_at, str):
+            try:
+                ts = datetime.fromisoformat(updated_at)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
+                age_s = (datetime.now(UTC) - ts).total_seconds()
+                if age_s > self._WATCH_STALENESS_S:
+                    return None
+            except ValueError:
+                # Malformed timestamp: treat as stale rather than trust it.
+                return None
+        state = str(data["state"]).upper()
+        if not state:
+            return None
+        return state not in self._WATCH_IDLE_STATES
 
 
 # Phase 6b-i.B partial wire-in. Bridge contract for the four

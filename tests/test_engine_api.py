@@ -661,38 +661,137 @@ class TestLogosPerceptionStateBridgeMidiClock:
         assert LogosPerceptionStateBridge().midi_clock_active() is None
 
 
-class TestLogosPerceptionStateBridgeScaffolding:
-    """Pin Part 5 scaffolding: watch_movement still returns None.
+class TestLogosPerceptionStateBridgeWatchMovement:
+    """Pin Part 5 wire-in: watch_movement reads activity.json.
 
-    Bridge accessor returns None until the ``hapax-watch-receiver``
-    per-tick state file reader lands (follow-up PR). All-None scaffold
-    keeps the protocol surface stable and matches alpha's
-    LogosStimmungBridge (#1392) pattern.
+    Bridge reads ``~/hapax-state/watch/activity.json`` (written by
+    hapax-watch-receiver). State enum maps {STILL, RESTING, SEDENTARY}
+    → False, anything else → True. Stale data (>10 min) returns None
+    to avoid spurious IDLE decay on a dropped BLE link. Closes the
+    OAE bridge surface 5/5 (4 wired + 1 was scaffolded → 5 wired).
     """
 
-    def test_watch_movement_returns_none(self):
+    @staticmethod
+    def _write_activity(tmp_path, payload: dict) -> None:
+        import json
+
+        d = tmp_path / "hapax-state" / "watch"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "activity.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _fresh_iso(self) -> str:
+        from datetime import UTC, datetime
+
+        return datetime.now(UTC).isoformat()
+
+    def test_walking_returns_true(self, tmp_path, monkeypatch):
         from logos.api.app import LogosPerceptionStateBridge
 
-        bridge = LogosPerceptionStateBridge()
-        assert bridge.watch_movement() is None
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._write_activity(tmp_path, {"updated_at": self._fresh_iso(), "state": "WALKING"})
+        assert LogosPerceptionStateBridge().watch_movement() is True
 
-    def test_watch_movement_independent_of_perception_state(self, tmp_path, monkeypatch):
-        """watch_movement returns None even when perception-state is live."""
+    def test_running_returns_true(self, tmp_path, monkeypatch):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._write_activity(tmp_path, {"updated_at": self._fresh_iso(), "state": "RUNNING"})
+        assert LogosPerceptionStateBridge().watch_movement() is True
+
+    def test_still_returns_false(self, tmp_path, monkeypatch):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._write_activity(tmp_path, {"updated_at": self._fresh_iso(), "state": "STILL"})
+        assert LogosPerceptionStateBridge().watch_movement() is False
+
+    def test_resting_returns_false(self, tmp_path, monkeypatch):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._write_activity(tmp_path, {"updated_at": self._fresh_iso(), "state": "RESTING"})
+        assert LogosPerceptionStateBridge().watch_movement() is False
+
+    def test_state_lowercase_normalised(self, tmp_path, monkeypatch):
+        """Pixel Watch shouldn't send lowercase but be tolerant of it."""
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._write_activity(tmp_path, {"updated_at": self._fresh_iso(), "state": "still"})
+        assert LogosPerceptionStateBridge().watch_movement() is False
+
+    def test_missing_file_returns_none(self, tmp_path, monkeypatch):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert LogosPerceptionStateBridge().watch_movement() is None
+
+    def test_corrupt_json_returns_none(self, tmp_path, monkeypatch):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        d = tmp_path / "hapax-state" / "watch"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "activity.json").write_text("not json", encoding="utf-8")
+        assert LogosPerceptionStateBridge().watch_movement() is None
+
+    def test_missing_state_field_returns_none(self, tmp_path, monkeypatch):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._write_activity(tmp_path, {"updated_at": self._fresh_iso()})
+        assert LogosPerceptionStateBridge().watch_movement() is None
+
+    def test_stale_data_returns_none(self, tmp_path, monkeypatch):
+        """updated_at older than 10 min → None (BLE drop, not still)."""
+        from datetime import UTC, datetime, timedelta
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        stale = (datetime.now(UTC) - timedelta(minutes=15)).isoformat()
+        self._write_activity(tmp_path, {"updated_at": stale, "state": "WALKING"})
+        assert LogosPerceptionStateBridge().watch_movement() is None
+
+    def test_naive_timestamp_treated_as_utc(self, tmp_path, monkeypatch):
+        """A timestamp lacking tz is assumed UTC (don't reject as stale on tz absence)."""
+        from datetime import UTC, datetime
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        naive = datetime.now(UTC).replace(tzinfo=None).isoformat()
+        self._write_activity(tmp_path, {"updated_at": naive, "state": "WALKING"})
+        assert LogosPerceptionStateBridge().watch_movement() is True
+
+    def test_malformed_timestamp_returns_none(self, tmp_path, monkeypatch):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._write_activity(tmp_path, {"updated_at": "not-a-timestamp", "state": "WALKING"})
+        assert LogosPerceptionStateBridge().watch_movement() is None
+
+    def test_independent_of_perception_state(self, tmp_path, monkeypatch):
+        """watch reads its own file — wired regardless of perception-state.json."""
         import json
 
         from logos.api.app import LogosPerceptionStateBridge
 
         monkeypatch.setenv("HOME", str(tmp_path))
-        state_dir = tmp_path / ".cache" / "hapax-daimonion"
-        state_dir.mkdir(parents=True)
-        (state_dir / "perception-state.json").write_text(
-            json.dumps({"keyboard_active": True, "desk_activity": "typing"}),
-            encoding="utf-8",
-        )
+        # No perception-state.json at all.
+        self._write_activity(tmp_path, {"updated_at": self._fresh_iso(), "state": "WALKING"})
         bridge = LogosPerceptionStateBridge()
-        assert bridge.keyboard_active() is True
-        assert bridge.desk_active() is True
-        assert bridge.watch_movement() is None
+        assert bridge.watch_movement() is True
+        assert bridge.keyboard_active() is None
+        # And vice versa: live perception-state, no watch file → None.
+        bridge2 = LogosPerceptionStateBridge()
+        (tmp_path / ".cache" / "hapax-daimonion").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".cache" / "hapax-daimonion" / "perception-state.json").write_text(
+            json.dumps({"keyboard_active": True}), encoding="utf-8"
+        )
+        (tmp_path / "hapax-state" / "watch" / "activity.json").unlink()
+        assert bridge2.keyboard_active() is True
+        assert bridge2.watch_movement() is None
 
 
 # ── TestLogosStimmungBridge (Phase 6b-i.B wire-in) ──────────────────────
