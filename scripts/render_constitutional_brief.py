@@ -234,37 +234,122 @@ def compose_publish_markdown(artifact: PublishArtifact, *, title: str) -> str:
     return "\n".join(parts)
 
 
+def emit_html_via_pandoc(publish_md: str, *, title: str) -> str:
+    """Pipe the publish-ready markdown through pandoc to produce HTML.
+
+    Returns the HTML string. Raises ``FileNotFoundError`` when pandoc
+    is not installed (callers should catch and skip / degrade).
+
+    The HTML uses pandoc's ``html5`` writer with ``--standalone`` so the
+    output is a complete document rather than a fragment. No
+    LaTeX-backend or external CSS is required; the result is
+    self-contained.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "pandoc",
+            "--standalone",
+            "--from",
+            "markdown",
+            "--to",
+            "html5",
+            "--metadata",
+            f"title={title}",
+        ],
+        input=publish_md,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout
+
+
+def _derive_title(artifact: PublishArtifact, fallback: str) -> str:
+    """Pull the title from the artifact's frontmatter, or fall back."""
+    title = artifact.frontmatter.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    return fallback
+
+
 def main(argv: list[str]) -> int:
     """CLI entry point.
 
     Usage:
-      uv run python scripts/render_constitutional_brief.py [<md_path>]
+      uv run python scripts/render_constitutional_brief.py [<md_path>] [opts]
 
     Default ``md_path`` is ``docs/audience/constitutional-brief.md``.
-    Prints the rendered byline + unsettled sentence + non-engagement
-    clause to stdout, one labeled line each. Suitable for a CI smoke
-    that asserts the brief renders cleanly.
-    """
-    if len(argv) > 1:
-        path = Path(argv[1])
-    else:
-        path = Path("docs/audience/constitutional-brief.md")
+    Without options, prints rendered metadata to stdout (smoke-test mode).
 
-    if not path.exists():
-        sys.stderr.write(f"ERROR: source not found: {path}\n")
+    Options:
+      --emit-md PATH    Write the publish-ready markdown to PATH.
+      --emit-html PATH  Write pandoc-rendered HTML to PATH (requires pandoc).
+
+    Both --emit options can be combined. The title for the HTML output is
+    pulled from the artifact's frontmatter ``title`` field; for the
+    publish-ready markdown title heading it is also pulled from
+    frontmatter.
+    """
+    args = list(argv[1:])
+    emit_md_path: Path | None = None
+    emit_html_path: Path | None = None
+    md_path: Path | None = None
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--emit-md":
+            emit_md_path = Path(args[i + 1])
+            i += 2
+        elif a == "--emit-html":
+            emit_html_path = Path(args[i + 1])
+            i += 2
+        else:
+            md_path = Path(a)
+            i += 1
+
+    if md_path is None:
+        md_path = Path("docs/audience/constitutional-brief.md")
+
+    if not md_path.exists():
+        sys.stderr.write(f"ERROR: source not found: {md_path}\n")
         return 2
 
-    result = render_publish_artifact(path)
-    print(f"surface: {result.surface_key}")
-    print(f"byline: {result.attribution.byline_text}")
-    print(f"byline_variant: {result.attribution.byline_variant.name}")
-    print(f"unsettled_variant: {result.attribution.unsettled_variant.name}")
-    print(f"unsettled_sentence: {result.attribution.unsettled_sentence}")
-    if result.attribution.non_engagement_clause:
-        print(
-            "non_engagement_clause:",
-            result.attribution.non_engagement_clause[:120] + "...",
-        )
+    result = render_publish_artifact(md_path)
+    title = _derive_title(result, fallback=md_path.stem.replace("-", " ").title())
+
+    if emit_md_path is not None:
+        publish_md = compose_publish_markdown(result, title=title)
+        emit_md_path.parent.mkdir(parents=True, exist_ok=True)
+        emit_md_path.write_text(publish_md, encoding="utf-8")
+        print(f"wrote publish-md: {emit_md_path}")
+
+    if emit_html_path is not None:
+        publish_md = compose_publish_markdown(result, title=title)
+        try:
+            html = emit_html_via_pandoc(publish_md, title=title)
+        except FileNotFoundError:
+            sys.stderr.write("ERROR: pandoc not installed; --emit-html requires pandoc on PATH\n")
+            return 3
+        emit_html_path.parent.mkdir(parents=True, exist_ok=True)
+        emit_html_path.write_text(html, encoding="utf-8")
+        print(f"wrote html: {emit_html_path}")
+
+    if emit_md_path is None and emit_html_path is None:
+        # Smoke-test mode: print rendered metadata to stdout.
+        print(f"surface: {result.surface_key}")
+        print(f"byline: {result.attribution.byline_text}")
+        print(f"byline_variant: {result.attribution.byline_variant.name}")
+        print(f"unsettled_variant: {result.attribution.unsettled_variant.name}")
+        print(f"unsettled_sentence: {result.attribution.unsettled_sentence}")
+        if result.attribution.non_engagement_clause:
+            print(
+                "non_engagement_clause:",
+                result.attribution.non_engagement_clause[:120] + "...",
+            )
     return 0
 
 
@@ -277,5 +362,6 @@ __all__ = [
     "OPERATOR_NAME_FALLBACK",
     "PublishArtifact",
     "compose_publish_markdown",
+    "emit_html_via_pandoc",
     "render_publish_artifact",
 ]
