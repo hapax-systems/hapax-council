@@ -4,7 +4,7 @@ authors:
   byline_variant: V2
   unsettled_variant: V1
   surface: triple-canopy
-  surface_deviation_matrix_key: lesswrong  # closest matrix entry; LessWrong V2/V2/LONG → Triple Canopy register
+  surface_deviation_matrix_key: triple_canopy
 status: outline
 target_word_count: 9000
 target_surfaces:

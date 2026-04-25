@@ -192,6 +192,33 @@ class TestSurfaceDeviationMatrix:
                 f"{surface} should be V2 or V5; got {entry['byline']}"
             )
 
+    def test_v5_lead_with_7_target_surfaces_present(self) -> None:
+        """V5 lead-with #7 (Self-Censorship as Aesthetic) target surfaces
+        — Triple Canopy / Bandcamp Daily / Wax Poetics — have direct
+        matrix entries (wk1 follow-on; previously the artifact fell back
+        to ``lesswrong``).
+
+        Pin: each entry has byline + unsettled + non_engagement_form
+        fields populated so the render pipeline does not produce
+        ``None`` clauses on these surfaces.
+        """
+        for surface in ("triple_canopy", "bandcamp_daily", "wax_poetics"):
+            entry = SURFACE_DEVIATION_MATRIX.get(surface)
+            assert entry is not None, f"{surface} matrix entry missing"
+            assert isinstance(entry["byline"], BylineVariant)
+            assert isinstance(entry["unsettled"], UnsettledContributionVariant)
+            assert "non_engagement_form" in entry
+
+    def test_long_form_essay_surfaces_use_long_clause(self) -> None:
+        """Triple Canopy + Wax Poetics + Bandcamp Daily are long-form
+        capacity surfaces; LONG non-engagement clause fits comfortably
+        and is the right register for editorial publications."""
+        for surface in ("triple_canopy", "bandcamp_daily", "wax_poetics"):
+            entry = SURFACE_DEVIATION_MATRIX[surface]
+            assert entry["non_engagement_form"] == NonEngagementForm.LONG, (
+                f"{surface} should use LONG form; got {entry['non_engagement_form']}"
+            )
+
 
 # ── Refusal Brief: non_engagement_clause ──────────────────────────────
 #

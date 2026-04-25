@@ -191,8 +191,9 @@ def test_actual_self_censorship_aesthetic_renders(
     declared frontmatter.
 
     Regression pin: V2 byline (full three-way) + V1 unsettled
-    (celebrated polysemy) per ``SURFACE_DEVIATION_MATRIX["lesswrong"]``
-    fallback (Triple Canopy lacks matrix entry).
+    (celebrated polysemy) + LONG clause per
+    ``SURFACE_DEVIATION_MATRIX["triple_canopy"]`` (entry added in
+    wk1 follow-on; previously fell back to ``lesswrong``).
     """
     monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Test Operator")
     artifact_path = REPO_ROOT / "docs" / "audience" / "self-censorship-aesthetic.md"
@@ -203,7 +204,7 @@ def test_actual_self_censorship_aesthetic_renders(
 
     result = render_publish_artifact(artifact_path)
 
-    assert result.surface_key == "lesswrong"
+    assert result.surface_key == "triple_canopy"
     # V2 byline: three-way comma-separated.
     assert "Test Operator" in result.attribution.byline_text
     assert "Hapax" in result.attribution.byline_text

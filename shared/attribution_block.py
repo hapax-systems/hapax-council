@@ -292,6 +292,40 @@ SURFACE_DEVIATION_MATRIX: Final[dict[str, _MatrixEntry]] = {
         "unsettled": UnsettledContributionVariant.V5,
         "non_engagement_form": NonEngagementForm.SHORT,
     },
+    # ── V5 lead-with #7 (Self-Censorship as Aesthetic) target surfaces ─
+    # Wk1 follow-on — these were declared as targets in the V5 weave §2.2
+    # but lacked matrix entries, falling back to LessWrong. Direct entries
+    # carry the surface-specific aesthetic register.
+    "triple_canopy": {
+        # Triple Canopy is a long-form essay magazine with deep editorial
+        # culture (per V5 weave §2.2 #7 primary surface). V2 byline
+        # honors the three-way co-publication; V1 unsettled framing
+        # ("celebrated polysemic-surface channel") matches the magazine's
+        # interest in form-as-argument.
+        "byline": BylineVariant.V2,
+        "unsettled": UnsettledContributionVariant.V1,
+        "non_engagement_form": NonEngagementForm.LONG,
+    },
+    "bandcamp_daily": {
+        # Bandcamp Daily is the editorial surface adjacent to Bandcamp's
+        # marketplace (per V5 weave §2.2 #7 secondary). V4 byline (Hapax-
+        # canonical with operator-of-record) parallels the bandcamp
+        # PROTO-precedent's operator-as-distributor framing without
+        # adopting the full V3 PROTO shape (Bandcamp Daily is editorial,
+        # not a music release surface).
+        "byline": BylineVariant.V4,
+        "unsettled": UnsettledContributionVariant.V5,
+        "non_engagement_form": NonEngagementForm.LONG,
+    },
+    "wax_poetics": {
+        # Wax Poetics is a long-form music-criticism journal (per V5 weave
+        # §2.2 #7 tertiary). V2 byline honors the three-way co-
+        # publication; V2 unsettled (production-record register) matches
+        # the journal's archival sensibility — the record IS the artifact.
+        "byline": BylineVariant.V2,
+        "unsettled": UnsettledContributionVariant.V2,
+        "non_engagement_form": NonEngagementForm.LONG,
+    },
     # ── Existing OMG / Hapax-canon surfaces ──────────────────────
     "omg_lol_weblog": {
         "byline": BylineVariant.V4,
