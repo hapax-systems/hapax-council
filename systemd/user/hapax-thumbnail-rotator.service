@@ -1,0 +1,32 @@
+[Unit]
+Description=hapax-thumbnail-rotator — YouTube thumbnail rotation from compositor snapshots (ytb-003)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/thumbnail_rotator/rotator.py
+Requires=hapax-secrets.service
+After=hapax-secrets.service network-online.target
+Wants=network-online.target
+
+# Disabled by default — enable only after the operator exports
+# HAPAX_YOUTUBE_VIDEO_ID (the target VOD/live broadcast id) and has
+# minted the YouTube-streaming sub-channel token via
+# `scripts/mint-google-token.py --pass-key google/token-youtube-streaming`.
+# Without HAPAX_YOUTUBE_VIDEO_ID the rotator ticks but logs
+# "no_video_id" and skips every rotation; the metric counter still
+# increments under that label so the operator can see the daemon is
+# alive and waiting for config.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/env
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.thumbnail_rotator --mode salience
+Restart=on-failure
+RestartSec=30
+
+# Idempotent rotation — safe to restart at any time. The A/B slot
+# pointer + chronicle salience cursor both persist on disk so a
+# restart resumes the alternation cadence and the salience-trigger
+# stream-position from where the last tick left off rather than
+# replaying backlog.
+
+[Install]
+WantedBy=default.target
