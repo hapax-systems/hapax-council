@@ -1,0 +1,13 @@
+surface: alphaxiv-comments
+state_kinds:
+  - publication.preprint
+  - chronicle.high_salience
+redactions:
+  - operator_profile.*
+  - operator_identity.*
+  - operator_legal_name
+  - chronicle.private_moments
+rate_limit:
+  per_hour: 4
+  per_day: 12
+cadence_hint: "alphaXiv comment attached to an arXiv-mirrored paper; arXiv-downstream amplification surface in the Refusal Brief FULL_AUTO tier (Agent A academic synthesis 2026-04-25). Comment carries the artifact's attribution_block; bearer-token authenticated via HAPAX_ALPHAXIV_TOKEN + HAPAX_ALPHAXIV_API_URL. Skips with `dropped` when the artifact has no arXiv-mirrored DOI (paper-attached surface — nothing to attach to without a paper)."
