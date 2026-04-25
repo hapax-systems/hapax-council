@@ -273,3 +273,94 @@ class TestEnvCredentials:
         monkeypatch.delenv("HAPAX_BLUESKY_HANDLE", raising=False)
         monkeypatch.delenv("HAPAX_BLUESKY_APP_PASSWORD", raising=False)
         assert _credentials_from_env() == (None, None)
+
+
+# ── Orchestrator entry-point ────────────────────────────────────────
+
+
+class TestPublishArtifact:
+    def test_no_credentials_short_circuits(self, monkeypatch):
+        from agents.cross_surface.bluesky_post import publish_artifact
+        from shared.preprint_artifact import PreprintArtifact
+
+        monkeypatch.delenv("HAPAX_BLUESKY_HANDLE", raising=False)
+        monkeypatch.delenv("HAPAX_BLUESKY_APP_PASSWORD", raising=False)
+        artifact = PreprintArtifact(slug="x", title="T", abstract="A")
+        assert publish_artifact(artifact) == "no_credentials"
+
+    def test_compose_uses_attribution_when_present(self, monkeypatch):
+        from agents.cross_surface.bluesky_post import _compose_artifact_text
+        from shared.preprint_artifact import PreprintArtifact
+
+        artifact = PreprintArtifact(
+            slug="x",
+            title="Title",
+            abstract="Abstract.",
+            attribution_block="Hapax + Claude Code + Oudepode (unsettled).",
+        )
+        assert _compose_artifact_text(artifact) == "Hapax + Claude Code + Oudepode (unsettled)."
+
+    def test_compose_falls_back_to_title_abstract(self):
+        from agents.cross_surface.bluesky_post import _compose_artifact_text
+        from shared.preprint_artifact import PreprintArtifact
+
+        artifact = PreprintArtifact(slug="x", title="Title", abstract="Abstract.")
+        assert _compose_artifact_text(artifact) == "Title — Abstract."
+
+    def test_compose_truncates_to_limit(self):
+        from agents.cross_surface.bluesky_post import (
+            BLUESKY_TEXT_LIMIT,
+            _compose_artifact_text,
+        )
+        from shared.preprint_artifact import PreprintArtifact
+
+        artifact = PreprintArtifact(
+            slug="x",
+            title="T",
+            abstract="x" * 500,
+        )
+        assert len(_compose_artifact_text(artifact)) == BLUESKY_TEXT_LIMIT
+
+    def test_publish_artifact_ok_path(self, monkeypatch):
+        from agents.cross_surface import bluesky_post
+        from shared.preprint_artifact import PreprintArtifact
+
+        monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "h.bsky.social")
+        monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
+
+        fake_client = mock.Mock()
+        fake_client.send_post.return_value = mock.Mock(uri="at://post/1")
+        monkeypatch.setattr(bluesky_post, "_default_client_factory", lambda h, p: fake_client)
+
+        artifact = PreprintArtifact(slug="x", title="T", abstract="A")
+        assert bluesky_post.publish_artifact(artifact) == "ok"
+        fake_client.send_post.assert_called_once()
+
+    def test_publish_artifact_auth_error(self, monkeypatch):
+        from agents.cross_surface import bluesky_post
+        from shared.preprint_artifact import PreprintArtifact
+
+        monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "h.bsky.social")
+        monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
+
+        def _raise(h, p):
+            raise RuntimeError("login failed")
+
+        monkeypatch.setattr(bluesky_post, "_default_client_factory", _raise)
+
+        artifact = PreprintArtifact(slug="x", title="T", abstract="A")
+        assert bluesky_post.publish_artifact(artifact) == "auth_error"
+
+    def test_publish_artifact_send_error(self, monkeypatch):
+        from agents.cross_surface import bluesky_post
+        from shared.preprint_artifact import PreprintArtifact
+
+        monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "h.bsky.social")
+        monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
+
+        fake_client = mock.Mock()
+        fake_client.send_post.side_effect = RuntimeError("send failed")
+        monkeypatch.setattr(bluesky_post, "_default_client_factory", lambda h, p: fake_client)
+
+        artifact = PreprintArtifact(slug="x", title="T", abstract="A")
+        assert bluesky_post.publish_artifact(artifact) == "error"

@@ -276,6 +276,66 @@ def _credentials_from_env() -> tuple[str | None, str | None]:
     return handle, pw
 
 
+# ── Orchestrator entry-point (PUB-P1-A foundation) ───────────────────
+
+
+def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Dispatch a ``PreprintArtifact`` to Bluesky.
+
+    Static entry-point consumed by ``agents/publish_orchestrator``'s
+    surface registry. Returns one of the orchestrator-recognized
+    result strings: ``ok | denied | auth_error | error |
+    no_credentials``. Never raises.
+
+    Composes via the artifact's ``title + abstract`` (truncated to the
+    300-char Bluesky limit). The full ``BasePublisher`` refactor that
+    consolidates the JSONL-tail mode with this entry-point lands in a
+    follow-up ticket; this adds the orchestrator surface entry-point
+    without the tail-mode rewrite.
+    """
+    handle, app_password = _credentials_from_env()
+    if not (handle and app_password):
+        return "no_credentials"
+
+    text = _compose_artifact_text(artifact)
+    if not text:
+        return "error"
+
+    try:
+        client = _default_client_factory(handle, app_password)
+    except Exception:  # noqa: BLE001
+        log.exception("bluesky login failed for artifact %s", getattr(artifact, "slug", "?"))
+        return "auth_error"
+
+    try:
+        client.send_post(text=text)
+    except Exception:  # noqa: BLE001
+        log.exception("bluesky send_post raised for artifact %s", getattr(artifact, "slug", "?"))
+        return "error"
+    return "ok"
+
+
+def _compose_artifact_text(artifact) -> str:  # type: ignore[no-untyped-def]
+    """Render a ``PreprintArtifact`` to Bluesky-bounded text.
+
+    Default form: ``"{title} — {abstract}"``, truncated to 300 chars.
+    If the artifact carries a non-empty ``attribution_block``, prefer
+    that as the body so per-artifact framing stays authoritative.
+    """
+    title = getattr(artifact, "title", "") or ""
+    abstract = getattr(artifact, "abstract", "") or ""
+    attribution = getattr(artifact, "attribution_block", "") or ""
+
+    if attribution:
+        body = attribution
+    elif abstract:
+        body = f"{title} — {abstract}"
+    else:
+        body = title or "hapax — publication artifact"
+
+    return body[:BLUESKY_TEXT_LIMIT]
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agents.cross_surface.bluesky_post",
