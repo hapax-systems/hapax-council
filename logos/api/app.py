@@ -145,6 +145,30 @@ class LogosPerceptionStateBridge:
         self._last_window_class = current
         return changed
 
+    def midi_clock_active(self) -> bool | None:
+        """SCAFFOLDED: returns None until MidiClockBackend cross-process publishes.
+
+        The OXI One MIDI clock currently runs as in-process daimonion
+        state (``MidiClockBackend``); it has no /dev/shm publication
+        path. A follow-up PR adds a thin publisher writing BPM + tick-
+        recency to ``/dev/shm/hapax-daimonion/midi-clock.json`` and
+        this accessor reads from there. Until then, returning None
+        keeps the engine's protocol shape stable while contributing
+        no MIDI-clock evidence.
+        """
+        return None
+
+    def watch_movement(self) -> bool | None:
+        """SCAFFOLDED: returns None until watch-receiver state file reader lands.
+
+        Pixel Watch accelerometer state flows through the
+        ``hapax-watch-receiver`` HTTP endpoint to per-tick state files
+        under ``~/hapax-state/watch/``. A follow-up PR adds a thin
+        reader that surfaces the latest movement-delta with staleness
+        cutoff. Same scaffolding pattern as midi_clock_active above.
+        """
+        return None
+
 
 # Phase 6b-i.B partial wire-in. Bridge contract for the four
 # mood-arousal signals (``ambient_audio_rms_high``,

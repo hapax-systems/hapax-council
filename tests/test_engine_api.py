@@ -211,6 +211,12 @@ class TestOperatorActivityStatus:
                 return None
 
             def desktop_focus_changed_recent(self) -> None:
+                return None
+
+            def midi_clock_active(self) -> None:
+                return None
+
+            def watch_movement(self) -> None:
                 # Other-signals stubs are kept at None so this test
                 # stays focused on the keyboard signal alone (engine
                 # treats None as skip-this-signal-for-this-tick).
@@ -491,7 +497,7 @@ class TestLogosPerceptionStateBridge:
 
 
 class TestOperatorActivityObservation:
-    def test_returns_dict_with_all_three_signals(self):
+    def test_returns_dict_with_all_five_signals(self):
         from agents.hapax_daimonion.backends.operator_activity_observation import (
             operator_activity_observation,
         )
@@ -506,11 +512,19 @@ class TestOperatorActivityObservation:
             def desktop_focus_changed_recent(self) -> bool:
                 return True
 
+            def midi_clock_active(self) -> bool:
+                return False
+
+            def watch_movement(self) -> bool:
+                return True
+
         obs = operator_activity_observation(_StubAll())
         assert obs == {
             "keyboard_active": True,
             "desk_active": False,
             "desktop_focus_changed_recent": True,
+            "midi_clock_active": False,
+            "watch_movement": True,
         }
 
     def test_returns_none_when_source_returns_none(self):
@@ -529,11 +543,19 @@ class TestOperatorActivityObservation:
             def desktop_focus_changed_recent(self) -> None:
                 return None
 
+            def midi_clock_active(self) -> None:
+                return None
+
+            def watch_movement(self) -> None:
+                return None
+
         obs = operator_activity_observation(_StubNone())
         assert obs == {
             "keyboard_active": None,
             "desk_active": None,
             "desktop_focus_changed_recent": None,
+            "midi_clock_active": None,
+            "watch_movement": None,
         }
 
     def test_signals_independent(self):
@@ -552,12 +574,64 @@ class TestOperatorActivityObservation:
             def desktop_focus_changed_recent(self) -> bool:
                 return False
 
+            def midi_clock_active(self) -> None:
+                return None
+
+            def watch_movement(self) -> None:
+                return None
+
         obs = operator_activity_observation(_StubMixed())
         assert obs == {
             "keyboard_active": True,
             "desk_active": None,
             "desktop_focus_changed_recent": False,
+            "midi_clock_active": None,
+            "watch_movement": None,
         }
+
+
+class TestLogosPerceptionStateBridgeScaffolding:
+    """Pin Part 4+5 scaffolding: midi_clock_active + watch_movement.
+
+    These accessors return None until upstream cross-process publishers
+    land (MidiClockBackend → /dev/shm publication for midi; watch-receiver
+    last-tick state file reader for watch). The all-None scaffold keeps
+    the protocol surface stable and matches alpha's LogosStimmungBridge
+    (#1392) pattern.
+    """
+
+    def test_midi_clock_active_returns_none(self):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        bridge = LogosPerceptionStateBridge()
+        assert bridge.midi_clock_active() is None
+
+    def test_watch_movement_returns_none(self):
+        from logos.api.app import LogosPerceptionStateBridge
+
+        bridge = LogosPerceptionStateBridge()
+        assert bridge.watch_movement() is None
+
+    def test_scaffolded_accessors_independent_of_perception_state(self, tmp_path, monkeypatch):
+        """Scaffolded accessors return None even when perception-state is live."""
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        (state_dir / "perception-state.json").write_text(
+            json.dumps({"keyboard_active": True, "desk_activity": "typing"}),
+            encoding="utf-8",
+        )
+        bridge = LogosPerceptionStateBridge()
+        # Wired accessors light up...
+        assert bridge.keyboard_active() is True
+        assert bridge.desk_active() is True
+        # ...scaffolded ones still return None
+        assert bridge.midi_clock_active() is None
+        assert bridge.watch_movement() is None
 
 
 # ── TestLogosStimmungBridge (Phase 6b-i.B wire-in) ──────────────────────
