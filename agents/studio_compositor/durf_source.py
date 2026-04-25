@@ -67,6 +67,16 @@ _EXIT_HYSTERESIS_S = 30.0
 _ENTER_RAMP_MS = 400.0
 _EXIT_RAMP_MS = 600.0
 
+# Slow stage-share cycle (operator directive 2026-04-25): prominent → recede
+# → repeat. NOT a pulse — long phases (~10s each) so it reads as breathing
+# rather than blinking. Phase 3 replaces with Hapax-driven dynamic.
+_CYCLE_FRONTED_ALPHA = 0.94
+_CYCLE_RECEDED_ALPHA = 0.40
+_CYCLE_FRONTED_S = 12.0  # prominent hold (viewer reads content)
+_CYCLE_RECEDED_S = 10.0  # receded hold (other wards take stage)
+_CYCLE_RAMP_S = 2.0  # cosine ease in/out between phases
+_CYCLE_PERIOD_S = _CYCLE_FRONTED_S + _CYCLE_RAMP_S + _CYCLE_RECEDED_S + _CYCLE_RAMP_S
+
 # Title-regex patterns the discovery routine matches against window titles.
 # Operator's foot terminal titles include "✳ alpha", "⠐ beta" etc.
 _SESSION_NAMES = ("alpha", "beta", "delta", "epsilon")
@@ -270,22 +280,72 @@ class DURFCairoSource(HomageTransitionalSource):
         return _desk_active()
 
     def _compute_alpha(self, now: float) -> float:
+        """Gate + slow cycle.
+
+        Operator directive 2026-04-25: 'It does need modulation, just not
+        a pulse like that, it's too heavy handed and distracting' AND
+        'It can't be static like that — it too needs to sometimes get out
+        of the way at regular rates, not the only thing that matters.'
+
+        Cycle (26s period):
+          0 → 12 s : prominent  (alpha 0.94, viewer reads content)
+         12 → 14 s : ramp down  (0.94 → 0.40 cosine ease)
+         14 → 24 s : receded    (0.40, other wards take stage)
+         24 → 26 s : ramp up    (0.40 → 0.94 cosine ease)
+
+        When gate is False, the prominent ceiling is whatever the gate
+        brought us to (entering ramp), and after hysteresis we ease all
+        the way to 0. The cycle runs only inside the gate window.
+
+        Phase 3+ replaces the deterministic cycle with a Hapax-driven
+        dynamic from the ClaimEngine `valuable-development-activity`
+        posterior + a stage-share signal from the director loop.
+        """
         gate = self._gate_active()
-        if gate:
-            self._gate_off_since = None
-            if self._gate_on_since is None:
-                self._gate_on_since = now
-            dt_ms = (now - self._gate_on_since) * 1000.0
-            target = min(1.0, dt_ms / _ENTER_RAMP_MS) * 0.94
+        if not gate:
+            if self._gate_off_since is None:
+                self._gate_off_since = now
+            if self._gate_on_since is not None and now - self._gate_off_since < _EXIT_HYSTERESIS_S:
+                return self._current_alpha
+            self._gate_on_since = None
+            if now - (self._gate_off_since or now) < _EXIT_HYSTERESIS_S:
+                return self._current_alpha
+            dt_ms = (now - self._gate_off_since - _EXIT_HYSTERESIS_S) * 1000.0
+            factor = max(0.0, 1.0 - dt_ms / _EXIT_RAMP_MS)
+            return self._current_alpha * factor
+
+        # Gate-on path
+        self._gate_off_since = None
+        if self._gate_on_since is None:
+            self._gate_on_since = now
+        gate_age = now - self._gate_on_since
+        # Initial enter-ramp before cycle takes over
+        if gate_age < (_ENTER_RAMP_MS / 1000.0):
+            target = (gate_age * 1000.0 / _ENTER_RAMP_MS) * _CYCLE_FRONTED_ALPHA
             return max(self._current_alpha, target)
-        if self._gate_off_since is None:
-            self._gate_off_since = now
-        if now - self._gate_off_since < _EXIT_HYSTERESIS_S:
-            return self._current_alpha
-        self._gate_on_since = None
-        dt_ms = (now - self._gate_off_since - _EXIT_HYSTERESIS_S) * 1000.0
-        factor = max(0.0, 1.0 - dt_ms / _EXIT_RAMP_MS)
-        return self._current_alpha * factor
+
+        # Slow cycle phases
+        cycle_t = (gate_age - _ENTER_RAMP_MS / 1000.0) % _CYCLE_PERIOD_S
+        if cycle_t < _CYCLE_FRONTED_S:
+            return _CYCLE_FRONTED_ALPHA
+        elif cycle_t < _CYCLE_FRONTED_S + _CYCLE_RAMP_S:
+            # cosine ease 0.94 → 0.40
+            ramp_t = (cycle_t - _CYCLE_FRONTED_S) / _CYCLE_RAMP_S
+            import math
+
+            ease = 0.5 - 0.5 * math.cos(math.pi * (1.0 - ramp_t))
+            return _CYCLE_RECEDED_ALPHA + (_CYCLE_FRONTED_ALPHA - _CYCLE_RECEDED_ALPHA) * (
+                1.0 - ease
+            )
+        elif cycle_t < _CYCLE_FRONTED_S + _CYCLE_RAMP_S + _CYCLE_RECEDED_S:
+            return _CYCLE_RECEDED_ALPHA
+        else:
+            # cosine ease 0.40 → 0.94
+            ramp_t = (cycle_t - _CYCLE_FRONTED_S - _CYCLE_RAMP_S - _CYCLE_RECEDED_S) / _CYCLE_RAMP_S
+            import math
+
+            ease = 0.5 - 0.5 * math.cos(math.pi * ramp_t)
+            return _CYCLE_RECEDED_ALPHA + (_CYCLE_FRONTED_ALPHA - _CYCLE_RECEDED_ALPHA) * ease
 
     # ── CairoSource protocol ─────────────────────────────────────────
 
