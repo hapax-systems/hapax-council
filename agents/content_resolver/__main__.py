@@ -28,6 +28,36 @@ MAX_FAILURES_PER_FRAGMENT = 5
 SKIP_DURATION_S = 60.0
 
 
+def _emit_content_refusal(*, surface: str, reason: str) -> None:
+    """Append a structured event to the canonical refusal log.
+
+    Fires from the resolver's failure-cap path: when a fragment hits
+    ``MAX_FAILURES_PER_FRAGMENT`` failed validation attempts in a
+    row, the daemon refuses to keep retrying for ``SKIP_DURATION_S``
+    seconds. That refusal is observability-relevant — operators
+    should be able to see "content_resolver gave up on N fragments
+    in the last hour" without scraping logs.
+
+    Best-effort: writer failures are swallowed so the resolver loop
+    is unaffected by an observability hiccup.
+    """
+    try:
+        from datetime import UTC, datetime
+
+        from agents.refusal_brief import RefusalEvent, append
+
+        append(
+            RefusalEvent(
+                timestamp=datetime.now(UTC),
+                axiom="resolver_failure_cap",
+                surface=surface,
+                reason=reason[:160],
+            )
+        )
+    except Exception:
+        pass
+
+
 def check_for_new_fragment(
     last_id: str, *, path: Path = CURRENT_PATH
 ) -> tuple[str | None, dict | None]:
@@ -106,6 +136,13 @@ class ContentResolverDaemon:
                                 self._skip_until[frag_id] = time.time() + SKIP_DURATION_S
                                 log.warning(
                                     "Skipping fragment %s after %d failures", frag_id, count
+                                )
+                                _emit_content_refusal(
+                                    surface="content_resolver:fragment_skip",
+                                    reason=(
+                                        f"fragment {frag_id[:24]} skipped after "
+                                        f"{count} validation failures"
+                                    ),
                                 )
                             else:
                                 log.debug(
