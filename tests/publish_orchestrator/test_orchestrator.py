@@ -244,3 +244,39 @@ class TestSurfaceRegistry:
         mod = importlib.import_module(module_path)
         fn = getattr(mod, attr)
         assert callable(fn)
+
+    def test_arena_post_wired(self):
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        assert "arena-post" in SURFACE_REGISTRY
+        assert SURFACE_REGISTRY["arena-post"] == (
+            "agents.cross_surface.arena_post:publish_artifact"
+        )
+
+    def test_arena_entry_resolves(self):
+        import importlib
+
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        module_path, attr = SURFACE_REGISTRY["arena-post"].split(":")
+        mod = importlib.import_module(module_path)
+        fn = getattr(mod, attr)
+        assert callable(fn)
+
+    def test_discord_webhook_wired(self):
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        assert "discord-webhook" in SURFACE_REGISTRY
+        assert SURFACE_REGISTRY["discord-webhook"] == (
+            "agents.cross_surface.discord_webhook:publish_artifact"
+        )
+
+    def test_discord_entry_resolves(self):
+        import importlib
+
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        module_path, attr = SURFACE_REGISTRY["discord-webhook"].split(":")
+        mod = importlib.import_module(module_path)
+        fn = getattr(mod, attr)
+        assert callable(fn)
