@@ -154,6 +154,20 @@ class DirectoryWatcher:
             return PollingObserver()
         return Observer()
 
+    def qsize(self) -> int:
+        """Return the consumer queue depth (0 if not started).
+
+        Used by Phase 6d SystemDegradedEngine `engine_queue_depth_high`
+        signal adapter (`agents/hapax_daimonion/backends/engine_queue_depth.py`)
+        — closes the post-3499-004 observability loop. Safe to call from
+        any thread; ``asyncio.Queue.qsize`` is non-blocking and best-effort
+        accurate (Python docs note qsize() is approximate under
+        contention, which is acceptable for posterior fusion).
+        """
+        if self._queue is None:
+            return 0
+        return self._queue.qsize()
+
     async def start(self) -> None:
         """Start watching directories and consuming events."""
         if self._loop is None:
