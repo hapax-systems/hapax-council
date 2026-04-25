@@ -296,3 +296,19 @@ class TestSurfaceRegistry:
         mod = importlib.import_module(module_path)
         fn = getattr(mod, attr)
         assert callable(fn)
+
+    def test_omg_weblog_wired(self):
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        assert "omg-weblog" in SURFACE_REGISTRY
+        assert SURFACE_REGISTRY["omg-weblog"] == ("agents.omg_weblog_publisher:publish_artifact")
+
+    def test_omg_weblog_entry_resolves(self):
+        import importlib
+
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+
+        module_path, attr = SURFACE_REGISTRY["omg-weblog"].split(":")
+        mod = importlib.import_module(module_path)
+        fn = getattr(mod, attr)
+        assert callable(fn)

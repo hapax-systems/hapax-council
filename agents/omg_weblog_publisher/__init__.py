@@ -20,6 +20,13 @@ from agents.omg_weblog_publisher.publisher import (
     derive_entry_slug,
     main,
     parse_draft,
+    publish_artifact,
 )
 
-__all__ = ["WeblogPublisher", "derive_entry_slug", "main", "parse_draft"]
+__all__ = [
+    "WeblogPublisher",
+    "derive_entry_slug",
+    "main",
+    "parse_draft",
+    "publish_artifact",
+]
