@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from agents.studio_compositor import metrics
 from agents.studio_compositor.audio_control import SlotAudioControl
@@ -381,6 +382,55 @@ def _parse_intent_from_llm(
 
 _DMN_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 _LLM_IN_FLIGHT_MARKER = Path("/dev/shm/hapax-director/llm-in-flight.json")
+_REFUSAL_BRIEF_LOG = Path("/dev/shm/hapax-refusals/log.jsonl")
+
+
+# Phase 5 RefusalGate metric — counts per-emission outcomes once the
+# gate is live (post 2026-04-25 activation). Optional; absent in test
+# environments without ``prometheus_client`` installed.
+HAPAX_REFUSAL_GATE_REROLLS: Any = None
+try:
+    from prometheus_client import Counter as _RefusalGateCounter
+
+    HAPAX_REFUSAL_GATE_REROLLS = _RefusalGateCounter(
+        "hapax_refusal_gate_rerolls_total",
+        "Phase 5 RefusalGate per-emission outcomes (R-Tuning re-roll path).",
+        ["surface", "outcome"],
+    )
+except Exception:
+    pass
+
+
+def _refusal_brief_log(
+    *,
+    surface: str,
+    rejected: list[str],
+    raw_first_pass: str,
+    raw_reroll: str,
+) -> None:
+    """Append a JSONL line to ``/dev/shm/hapax-refusals/log.jsonl``.
+
+    Non-blocking — failures are swallowed. The ``awareness-refusal-brief-
+    writer`` daemon (cc-task) consumes this file. If that daemon is not
+    yet shipped, the file accumulates safely on tmpfs and rotates on
+    reboot; no blocking dependency on its presence.
+    """
+    try:
+        _REFUSAL_BRIEF_LOG.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(
+            {
+                "timestamp": time.time(),
+                "surface": surface,
+                "outcome": "dropped_after_reroll",
+                "rejected": rejected,
+                "first_pass_chars": len(raw_first_pass),
+                "reroll_chars": len(raw_reroll),
+            }
+        )
+        with _REFUSAL_BRIEF_LOG.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        log.debug("refusal brief log failed", exc_info=True)
 
 
 class _LLMInFlight:
@@ -3099,35 +3149,106 @@ class DirectorLoop:
                 )
 
                 # Bayesian Phase 5 — refusal gate (R-Tuning post-emission
-                # verifier, Zhang et al. NAACL 2024 / UBCC §8). Shadow
-                # mode: rejection just logs ``claim_discipline=0.0`` to
-                # Langfuse without re-rolling. Once the per-surface
-                # rejection-rate baseline is calibrated (Phase 5 follow-
-                # up), the re-roll path lights up. Failures inside the
-                # gate are non-fatal — a bad gate must NEVER drop a
-                # legitimate emission on the floor.
+                # verifier, Zhang et al. NAACL 2024 / UBCC §8). ACTIVATED
+                # 2026-04-25 per operator directive
+                # ``feedback_features_on_by_default``. Re-roll once on
+                # below-floor / unmatched assertions; cap at 1 attempt to
+                # prevent loop on persistent miscalibration. Failures
+                # inside the gate are non-fatal — a bad gate must NEVER
+                # drop a legitimate emission on the floor.
+                reroll_outcome = "accepted_first_pass"
                 try:
                     from shared.claim_refusal import RefusalGate, claim_discipline_score
 
+                    available_claims = _gather_director_claims()
                     gate_result = RefusalGate(surface="director").check(
                         raw_content,
-                        available_claims=_gather_director_claims(),
+                        available_claims=available_claims,
                     )
+                    if not gate_result.accepted:
+                        log.info(
+                            "claim-discipline rejection: %d propositions; first: %r — re-rolling",
+                            len(gate_result.rejected_propositions),
+                            gate_result.rejected_propositions[:1],
+                        )
+                        # Re-roll once with the addendum appended to the
+                        # system prompt. Independent request — same model,
+                        # same timeout. The original ``messages`` list is
+                        # the caller-side variable defined upstream.
+                        reroll_messages = [dict(m) for m in messages]
+                        if reroll_messages and reroll_messages[0].get("role") == "system":
+                            reroll_messages[0]["content"] = (
+                                reroll_messages[0]["content"]
+                                + "\n\n"
+                                + gate_result.reroll_prompt_addendum
+                            )
+                        reroll_body = json.dumps(
+                            {
+                                "model": DIRECTOR_MODEL,
+                                "messages": reroll_messages,
+                                "max_tokens": 2048,
+                                "temperature": 0.7,
+                            }
+                        ).encode()
+                        reroll_req = urllib.request.Request(
+                            LITELLM_URL,
+                            reroll_body,
+                            {
+                                "Content-Type": "application/json",
+                                "Authorization": f"Bearer {LITELLM_KEY}",
+                            },
+                        )
+                        try:
+                            with urllib.request.urlopen(
+                                reroll_req, timeout=timeout_s
+                            ) as reroll_resp:
+                                reroll_data = json.loads(reroll_resp.read())
+                        except Exception:
+                            log.warning(
+                                "refusal-gate re-roll request failed; passing first-pass emission",
+                                exc_info=True,
+                            )
+                            reroll_data = None
+                        if reroll_data is not None:
+                            reroll_content = reroll_data["choices"][0]["message"].get("content")
+                            if reroll_content:
+                                reroll_check = RefusalGate(surface="director").check(
+                                    reroll_content,
+                                    available_claims=available_claims,
+                                )
+                                if reroll_check.accepted:
+                                    raw_content = reroll_content
+                                    reroll_outcome = "accepted_after_reroll"
+                                    gate_result = reroll_check
+                                else:
+                                    reroll_outcome = "dropped_after_reroll"
+                                    log.warning(
+                                        "claim-discipline reroll also failed; "
+                                        "dropping emission. rejected: %r",
+                                        reroll_check.rejected_propositions[:2],
+                                    )
+                                    _refusal_brief_log(
+                                        surface="director",
+                                        rejected=reroll_check.rejected_propositions,
+                                        raw_first_pass=raw_content,
+                                        raw_reroll=reroll_content,
+                                    )
+                                    return ""
                     if hapax_score is not None and span is not None:
                         hapax_score(
                             span,
                             "claim_discipline",
                             claim_discipline_score(gate_result),
                             comment=(
-                                f"surface=director rejected={len(gate_result.rejected_propositions)}"
+                                f"surface=director "
+                                f"rejected={len(gate_result.rejected_propositions)} "
+                                f"reroll_outcome={reroll_outcome}"
                             ),
                         )
-                    if not gate_result.accepted:
-                        log.info(
-                            "claim-discipline rejection (shadow): %d propositions; first: %r",
-                            len(gate_result.rejected_propositions),
-                            gate_result.rejected_propositions[:1],
-                        )
+                    if HAPAX_REFUSAL_GATE_REROLLS is not None:
+                        HAPAX_REFUSAL_GATE_REROLLS.labels(
+                            surface="director", outcome=reroll_outcome
+                        ).inc()
                 except Exception:
                     log.debug("refusal gate check failed; emission passes", exc_info=True)
 
