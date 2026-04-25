@@ -74,7 +74,7 @@ SURFACE_REGISTRY: dict[str, str] = {
     # "arena-post":     "agents.cross_surface.arena_post:publish_artifact",
     # "discord-webhook":"agents.cross_surface.discord_webhook:publish_artifact",
     # Phase 2 (queued)
-    # "osf-preprint":   "agents.osf_preprint_publisher:publish_artifact",
+    "osf-preprint": "agents.osf_preprint_publisher:publish_artifact",
     # "hf-papers":      "agents.hf_papers_publisher:publish_artifact",
     # "manifold":       "agents.manifold_publisher:publish_artifact",
     # "lesswrong":      "agents.lesswrong_publisher:publish_artifact",
