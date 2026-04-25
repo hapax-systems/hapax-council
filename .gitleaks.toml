@@ -9,7 +9,19 @@ description = "Operator full name"
 regex = '''(?i)Ryan\s+Kleeberger'''
 tags = ["pii", "name"]
 [rules.allowlist]
-paths = ['''hooks/''', '''tests/''', '''\.gitleaks\.toml''']
+# Formal-address-required contexts per operator referent directive 2026-04-24:
+# CITATION.cff `authors:`, codemeta.json `author:`, .zenodo.json `creators:`.
+# These are the only repository surfaces where legal name is permitted; body
+# text in NOTICE.md / READMEs / scripts / agents must use the non-formal
+# referent (The Operator / Oudepode / OTO).
+paths = [
+  '''hooks/''',
+  '''tests/''',
+  '''\.gitleaks\.toml''',
+  '''^CITATION\.cff$''',
+  '''^codemeta\.json$''',
+  '''^\.zenodo\.json$''',
+]
 
 [[rules]]
 id = "operator-location"
