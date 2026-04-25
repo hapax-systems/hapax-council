@@ -208,9 +208,12 @@ class TestOperatorActivityStatus:
                 return True
 
             def desk_active(self) -> None:
-                # Part 2 added desk_active to the adapter Protocol;
-                # leaving it None here keeps this test focused on the
-                # keyboard signal alone (engine treats None as skip).
+                return None
+
+            def desktop_focus_changed_recent(self) -> None:
+                # Other-signals stubs are kept at None so this test
+                # stays focused on the keyboard signal alone (engine
+                # treats None as skip-this-signal-for-this-tick).
                 return None
 
         oae = OperatorActivityEngine()
@@ -373,25 +376,142 @@ class TestLogosPerceptionStateBridge:
         bridge = LogosPerceptionStateBridge()
         assert bridge.desk_active() is False
 
+    def test_desktop_focus_first_call_returns_none(self, tmp_path, monkeypatch):
+        """First observation has no prior state — return None (skip signal)."""
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        (state_dir / "perception-state.json").write_text(
+            json.dumps({"active_window_class": "foot"}), encoding="utf-8"
+        )
+        bridge = LogosPerceptionStateBridge()
+        assert bridge.desktop_focus_changed_recent() is None
+
+    def test_desktop_focus_unchanged_returns_false(self, tmp_path, monkeypatch):
+        """Same active_window_class across two ticks → False (no change)."""
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        path = state_dir / "perception-state.json"
+        path.write_text(json.dumps({"active_window_class": "foot"}), encoding="utf-8")
+        bridge = LogosPerceptionStateBridge()
+        bridge.desktop_focus_changed_recent()  # prime
+        assert bridge.desktop_focus_changed_recent() is False
+
+    def test_desktop_focus_changed_returns_true(self, tmp_path, monkeypatch):
+        """Different active_window_class on the second tick → True."""
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        path = state_dir / "perception-state.json"
+        path.write_text(json.dumps({"active_window_class": "foot"}), encoding="utf-8")
+        bridge = LogosPerceptionStateBridge()
+        bridge.desktop_focus_changed_recent()  # prime with "foot"
+        path.write_text(json.dumps({"active_window_class": "firefox"}), encoding="utf-8")
+        assert bridge.desktop_focus_changed_recent() is True
+
+    def test_desktop_focus_sequential_changes_tracked(self, tmp_path, monkeypatch):
+        """Each tick compares to the immediately-prior, not the original."""
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        path = state_dir / "perception-state.json"
+        path.write_text(json.dumps({"active_window_class": "foot"}), encoding="utf-8")
+        bridge = LogosPerceptionStateBridge()
+        bridge.desktop_focus_changed_recent()  # prime: "foot"
+
+        path.write_text(json.dumps({"active_window_class": "firefox"}), encoding="utf-8")
+        assert bridge.desktop_focus_changed_recent() is True  # foot → firefox
+        path.write_text(json.dumps({"active_window_class": "firefox"}), encoding="utf-8")
+        assert bridge.desktop_focus_changed_recent() is False  # firefox → firefox
+        path.write_text(json.dumps({"active_window_class": "foot"}), encoding="utf-8")
+        assert bridge.desktop_focus_changed_recent() is True  # firefox → foot
+
+    def test_desktop_focus_missing_field_returns_none(self, tmp_path, monkeypatch):
+        """Missing active_window_class field → None and prior state preserved."""
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        path = state_dir / "perception-state.json"
+        path.write_text(json.dumps({"active_window_class": "foot"}), encoding="utf-8")
+        bridge = LogosPerceptionStateBridge()
+        bridge.desktop_focus_changed_recent()  # prime: "foot"
+
+        # Field temporarily disappears — None, prior state preserved
+        path.write_text(json.dumps({"keyboard_active": True}), encoding="utf-8")
+        assert bridge.desktop_focus_changed_recent() is None
+
+        # Field returns with same value — False (compared to preserved prior)
+        path.write_text(json.dumps({"active_window_class": "foot"}), encoding="utf-8")
+        assert bridge.desktop_focus_changed_recent() is False
+
+    def test_desktop_focus_missing_file_does_not_advance_state(self, tmp_path, monkeypatch):
+        """Transient daimonion outage must not produce spurious change reports."""
+        import json
+
+        from logos.api.app import LogosPerceptionStateBridge
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        state_dir = tmp_path / ".cache" / "hapax-daimonion"
+        state_dir.mkdir(parents=True)
+        path = state_dir / "perception-state.json"
+        path.write_text(json.dumps({"active_window_class": "foot"}), encoding="utf-8")
+        bridge = LogosPerceptionStateBridge()
+        bridge.desktop_focus_changed_recent()  # prime: "foot"
+
+        path.unlink()
+        assert bridge.desktop_focus_changed_recent() is None  # outage
+        path.write_text(json.dumps({"active_window_class": "foot"}), encoding="utf-8")
+        # Recovery on the same window — must be False, not True (would
+        # be a spurious change report if state had been wiped on outage)
+        assert bridge.desktop_focus_changed_recent() is False
+
 
 # ── TestOperatorActivityObservation (adapter-level) ─────────────────────
 
 
 class TestOperatorActivityObservation:
-    def test_returns_dict_with_both_signals(self):
+    def test_returns_dict_with_all_three_signals(self):
         from agents.hapax_daimonion.backends.operator_activity_observation import (
             operator_activity_observation,
         )
 
-        class _StubBoth:
+        class _StubAll:
             def keyboard_active(self) -> bool:
                 return True
 
             def desk_active(self) -> bool:
                 return False
 
-        obs = operator_activity_observation(_StubBoth())
-        assert obs == {"keyboard_active": True, "desk_active": False}
+            def desktop_focus_changed_recent(self) -> bool:
+                return True
+
+        obs = operator_activity_observation(_StubAll())
+        assert obs == {
+            "keyboard_active": True,
+            "desk_active": False,
+            "desktop_focus_changed_recent": True,
+        }
 
     def test_returns_none_when_source_returns_none(self):
         """None propagates per-signal so engine.tick skips that signal."""
@@ -406,11 +526,18 @@ class TestOperatorActivityObservation:
             def desk_active(self) -> None:
                 return None
 
+            def desktop_focus_changed_recent(self) -> None:
+                return None
+
         obs = operator_activity_observation(_StubNone())
-        assert obs == {"keyboard_active": None, "desk_active": None}
+        assert obs == {
+            "keyboard_active": None,
+            "desk_active": None,
+            "desktop_focus_changed_recent": None,
+        }
 
     def test_signals_independent(self):
-        """One signal can be live while the other is None."""
+        """Each signal can be live or None independently of the others."""
         from agents.hapax_daimonion.backends.operator_activity_observation import (
             operator_activity_observation,
         )
@@ -422,8 +549,15 @@ class TestOperatorActivityObservation:
             def desk_active(self) -> None:
                 return None
 
+            def desktop_focus_changed_recent(self) -> bool:
+                return False
+
         obs = operator_activity_observation(_StubMixed())
-        assert obs == {"keyboard_active": True, "desk_active": None}
+        assert obs == {
+            "keyboard_active": True,
+            "desk_active": None,
+            "desktop_focus_changed_recent": False,
+        }
 
 
 # ── TestLogosStimmungBridge (Phase 6b-i.B wire-in) ──────────────────────

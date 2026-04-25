@@ -68,15 +68,20 @@ class LogosGpuBridge:
 # perception-state.json (atomic write-then-rename by
 # ``agents.hapax_daimonion._perception_state_writer``) for the
 # OperatorActivityEngine signal stream. Wires ``keyboard_active``
-# (#1389) + ``desk_active`` (this PR). Remaining 3 activity signals
-# (midi_clock_active, desktop_focus_changed_recent, watch_movement)
-# wire in follow-up PRs as their adapter contracts land.
+# (#1389) + ``desk_active`` (#1391) + ``desktop_focus_changed_recent``
+# (this PR). Remaining 2 activity signals (midi_clock_active,
+# watch_movement) wire in follow-up PRs as their adapter contracts land.
 #
 # Missing/stale file → ``None`` from every accessor, which the engine
 # treats as "skip this signal" (no positive nor negative evidence) per
 # the ``ClaimEngine.tick`` contract — the alternative (assume idle on
 # missing file) would let a daimonion crash spuriously decay the
 # posterior to IDLE.
+#
+# Stateful: ``desktop_focus_changed_recent`` tracks the prior tick's
+# ``active_window_class`` so the bridge instance must persist across
+# ticks. Lifespan creates a single instance and reuses it, matching
+# the SystemDegradedEngine bridge pattern.
 class LogosPerceptionStateBridge:
     """Bridge perception-state.json → activity-signal Protocol for OAE."""
 
@@ -85,6 +90,13 @@ class LogosPerceptionStateBridge:
     # as engaged-with-the-desk activity. Centralised so the mapping is
     # reviewable in one place when tuning later.
     _DESK_IDLE_STATES: frozenset[str] = frozenset({"idle", "none"})
+
+    def __init__(self) -> None:
+        # Prior-tick focus state — None until the first observation
+        # lands. Used by ``desktop_focus_changed_recent`` to compute
+        # focus-change evidence across ticks. Reset by a fresh instance.
+        self._last_window_class: str | None = None
+        self._has_observed_window: bool = False
 
     def _load(self) -> dict | None:
         import json
@@ -108,6 +120,30 @@ class LogosPerceptionStateBridge:
             return None
         activity = str(data["desk_activity"]).lower()
         return activity not in self._DESK_IDLE_STATES
+
+    def desktop_focus_changed_recent(self) -> bool | None:
+        """True iff active_window_class differs from the prior tick.
+
+        First observation returns None — no prior state to compare. The
+        engine treats None as skip-this-signal so the first tick after
+        startup contributes neither positive nor negative evidence on
+        this signal. Subsequent ticks return True (changed) or False
+        (unchanged) and update the cached prior. Missing file or
+        missing field returns None and does NOT advance prior state —
+        a transient daimonion outage shouldn't cause a spurious
+        focus-change report on recovery.
+        """
+        data = self._load()
+        if data is None or "active_window_class" not in data:
+            return None
+        current = str(data["active_window_class"])
+        if not self._has_observed_window:
+            self._last_window_class = current
+            self._has_observed_window = True
+            return None
+        changed = current != self._last_window_class
+        self._last_window_class = current
+        return changed
 
 
 # Phase 6b-i.B partial wire-in. Bridge contract for the four

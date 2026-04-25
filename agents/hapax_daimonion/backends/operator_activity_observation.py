@@ -9,7 +9,8 @@ Activity signals live in the daimonion-side ``perception-state.json``
 - ``keyboard_active``: bool, derived from evdev raw HID input
 - ``desk_activity``: enum, contact-mic DSP gesture classifier
   (``idle`` / ``typing`` / ``tapping`` / ``drumming`` / ``active``)
-- ``desktop_active``: bool, derived from Hyprland focus events
+- ``active_window_class``: str, current Hyprland-focused window class
+- ``desktop_active``: bool, separate Hyprland focus-event flag
 - ``desk_energy``: float, contact-mic RMS energy
 
 This adapter exposes a ``operator_activity_observation`` builder that
@@ -18,11 +19,11 @@ observation dict for ``OperatorActivityEngine.contribute()``.
 
 Wired so far:
 - Part 1 (#1389): ``keyboard_active``
-- Part 2 (this PR): ``desk_active``
+- Part 2 (#1391): ``desk_active``
+- Part 3 (this PR): ``desktop_focus_changed_recent``
 
-Remaining 3 signals (``midi_clock_active``,
-``desktop_focus_changed_recent``, ``watch_movement``) wire in
-subsequent PRs as their production sources land — same additive
+Remaining 2 signals (``midi_clock_active``, ``watch_movement``) wire
+in subsequent PRs as their production sources land — same additive
 pattern beta uses in #1379 + #1377 + #1382 for SystemDegradedEngine.
 
 Reference doc: ``docs/superpowers/research/2026-04-23-bayesian-claims-research.md``
@@ -48,6 +49,7 @@ class _PerceptionStateSource(Protocol):
 
     def keyboard_active(self) -> bool | None: ...
     def desk_active(self) -> bool | None: ...
+    def desktop_focus_changed_recent(self) -> bool | None: ...
 
 
 def operator_activity_observation(
@@ -55,15 +57,20 @@ def operator_activity_observation(
 ) -> dict[str, bool | None]:
     """Build a single-tick observation dict for OperatorActivityEngine.
 
-    Currently emits ``keyboard_active`` (Part 1, #1389) +
-    ``desk_active`` (Part 2, this PR). Each signal's contract is
-    registered in ``shared/lr_registry.yaml::operator_activity_signals``:
+    Emits the three currently-wired activity signals. Each signal's
+    contract is registered in
+    ``shared/lr_registry.yaml::operator_activity_signals``:
 
     - ``keyboard_active``: bidirectional, idle keyboard → real negative
       evidence (no recent keystrokes in the perception window).
     - ``desk_active``: bidirectional, idle contact mic → mild negative
       evidence (LR weights 0.75/0.10 — operator may be reading without
       typing or tapping, but sustained silence is informative).
+    - ``desktop_focus_changed_recent``: bidirectional, focus change in
+      the perception window → positive evidence of active engagement
+      (LR weights 0.65/0.15 — workspace switching is a strong cue but
+      not exhaustive of activity, since deep focus on one window can
+      look like steady-state from this signal).
 
     Designed for callers like::
 
@@ -78,6 +85,7 @@ def operator_activity_observation(
     return {
         "keyboard_active": source.keyboard_active(),
         "desk_active": source.desk_active(),
+        "desktop_focus_changed_recent": source.desktop_focus_changed_recent(),
     }
 
 
