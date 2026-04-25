@@ -998,12 +998,37 @@ def _vinyl_engine():  # type: ignore[no-untyped-def]
         try:
             from agents.hapax_daimonion.vinyl_spinning_engine import VinylSpinningEngine
 
-            _VINYL_ENGINE = VinylSpinningEngine()  # type: ignore[assignment]
+            _VINYL_ENGINE = VinylSpinningEngine(  # type: ignore[assignment]
+                album_state_file=ALBUM_STATE_FILE,
+                operator_override_flag=_VINYL_OPERATOR_OVERRIDE_FLAG,
+                hand_on_turntable_fn=_hand_on_turntable_recent,
+            )
         except Exception:
             log.warning(
                 "VinylSpinningEngine init failed; falling back to legacy Boolean", exc_info=True
             )
+    else:
+        # Re-bind paths from the (potentially monkeypatched) module-level
+        # constants so test fixtures can redirect file reads without
+        # rebuilding the singleton. Production paths never change at
+        # runtime, so this is a no-op outside tests.
+        _VINYL_ENGINE._album_state_file = ALBUM_STATE_FILE  # type: ignore[union-attr]
+        _VINYL_ENGINE._operator_override_flag = _VINYL_OPERATOR_OVERRIDE_FLAG  # type: ignore[union-attr]
+        _VINYL_ENGINE._hand_on_turntable_fn = _hand_on_turntable_recent  # type: ignore[union-attr]
     return _VINYL_ENGINE
+
+
+def _reset_engines_for_testing() -> None:
+    """Drop both Bayesian engine singletons.
+
+    Test-only seam used by ``test_music_decoupling`` and any other test
+    that needs to start the engines fresh after monkeypatching paths /
+    callables. Outside tests there is no scenario where engines need
+    to be rebuilt, so production code should never call this.
+    """
+    global _VINYL_ENGINE, _MUSIC_ENGINE
+    _VINYL_ENGINE = None
+    _MUSIC_ENGINE = None
 
 
 def _music_engine():  # type: ignore[no-untyped-def]
