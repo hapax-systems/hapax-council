@@ -193,6 +193,51 @@ system_degraded_signals:
     estimation_reference: "DEFAULT_SIGNAL_WEIGHTS calibrated 2026-04-25 against post-3499-004 baseline; >2 consecutive ticks without narration emission when impingements queued"
     calibration_window_s: null
 
+# Phase 6b-i.A — mood_arousal_high (alpha, this PR)
+# Mood-claim posterior over operator's high-arousal state. Wired-in
+# signal sources land in Phase 6b-i.B follow-up. Signal LR weights
+# calibrated 2026-04-25 against PresenceEngine signal precedents
+# (Cortado contact mic, OXI MIDI clock, Pixel Watch HR, Blue Yeti room
+# mic). Quantize-into-tiers approach (option 1 from beta dispatch
+# 02:18Z); continuous-posterior ClaimEngine[float] deferred to 6b-i.B
+# if option 1 proves insufficient.
+mood_arousal_high_signals:
+  ambient_audio_rms_high:
+    claim_name: mood_arousal_high
+    source_category: expert_elicitation_shelf
+    p_true_given_h1: 0.78
+    p_true_given_h0: 0.18
+    positive_only: false  # bidirectional — quiet rooms genuinely downvote arousal
+    estimation_reference: "Blue Yeti room mic RMS energy above operator's recent quantile; threshold-source TBD in 6b-i.B"
+    calibration_window_s: null
+
+  contact_mic_onset_rate_high:
+    claim_name: mood_arousal_high
+    source_category: physical_model
+    p_true_given_h1: 0.80
+    p_true_given_h0: 0.10
+    positive_only: true  # absence ambiguous (focused-quiet flow vs. low arousal)
+    estimation_reference: "Cortado MKIII contact mic onset density above operator's recent quantile; physical-impact proxy"
+    calibration_window_s: null
+
+  midi_clock_bpm_high:
+    claim_name: mood_arousal_high
+    source_category: physical_model
+    p_true_given_h1: 0.85
+    p_true_given_h0: 0.08
+    positive_only: false  # bidirectional — slow MIDI clock evidences low arousal
+    estimation_reference: "OXI One MIDI clock pulse rate above tempo threshold; direct artefact of operator action"
+    calibration_window_s: null
+
+  hr_bpm_above_baseline:
+    claim_name: mood_arousal_high
+    source_category: physical_model
+    p_true_given_h1: 0.75
+    p_true_given_h0: 0.20
+    positive_only: false  # bidirectional — HR below baseline genuine CALM evidence
+    estimation_reference: "Pixel Watch heart rate vs. operator's session baseline; matches PresenceEngine watch_hr 120s BLE staleness cutoff"
+    calibration_window_s: 120.0
+
 # Phase 2 + Phase 2b will add claim-specific signal blocks below once
 # the corresponding ClaimEngines ship:
 #   vinyl_spinning_signals: {turntable_rpm, ir_hand_turntable, audio_signal_present, ...}

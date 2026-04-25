@@ -44,3 +44,15 @@ system_degraded:
   constraint_narrowing: "Bias toward HEALTHY because (a) most ticks do not breach watermarks; (b) the cost of false-DEGRADED (recruitment slowdown, narration quieting) is higher than false-HEALTHY in the hot path. The asymmetric TemporalProfile (k_enter=2, k_exit=12) further narrows toward conservative behavior under doubt."
   symmetry: "time-translation invariant within a single boot window; resets at process restart (no persistence across boots — degradation belief is recomputed from current observations)"
   derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 + §6 (asymmetric profiles)"
+
+mood_arousal_high:
+  claim_name: mood_arousal_high
+  structural_commitments:
+    - "single_user axiom: arousal is a property of the (sole) operator; no cross-operator fusion needed"
+    - "physical: arousal manifests through bounded sensor channels (contact mic onsets, room ambient RMS, MIDI clock rate, heart-rate-above-baseline)"
+    - "stimmung-adjacent: this claim is the Bayesian-posterior counterpart to the existing stimmung biometric/cognitive dimensions (operator_energy, operator_stress, physiological_coherence) — Phase 6b-i.B may wire stimmung as a posterior consumer"
+    - "quantize-tier discipline: the underlying continuous-arousal-magnitude signal is quantized into a high-tier boolean for ClaimEngine[bool]; continuous-posterior path lands in Phase 6b-i.B if option 1 proves insufficient"
+  reference_prior: "Beta(2,5); 0.30 starting probability — operator is below the high-arousal threshold during most working windows but high-arousal is not rare. Refined empirically in Phase 6b-i.B from baseline observation; 0.30 chosen to leave room for evidence in either direction without forcing the default to either tier extreme."
+  constraint_narrowing: "Mid prior reflects that the high-arousal claim is a tier-cut boolean (~30% of ticks fall in the upper tier under nominal operating distribution). The roughly-symmetric TemporalProfile (k_enter=3, k_exit=4) reflects that mood shifts move more readily in both directions than presence or system-degradation, but arousal-asserting events get a slight head start over recovery to avoid flicker on isolated calm bursts."
+  symmetry: "time-translation invariant within a working window; baseline (used by hr_bpm_above_baseline + ambient quantiles) recalibrates at session boundaries — claim semantics are conditioned on the current session's baseline, not absolute physiological values"
+  derivation_document_ref: "docs/research/2026-04-24-universal-bayesian-claim-confidence.md §4 (priors) + §6 (Phase 6b mood claims)"
