@@ -447,6 +447,26 @@ class TestDirectoryWatcher:
         assert _should_skip(Path("/data/processed/file.md")) is True
         assert _should_skip(Path("/data/profiles/health.jsonl")) is False
 
+    async def test_gmail_rag_subtree_filtered(self):
+        """3499-004: gmail-sync re-pull generates ~6k inotify events per run.
+
+        No engine rules consume gmail/*; entire subtree must skip to keep
+        the logos-API event loop from being starved by the deluge.
+        """
+        from logos.engine.watcher import _should_skip
+
+        # Under rag-sources/gmail/ at any depth → skip.
+        assert _should_skip(Path("/data/rag-sources/gmail/foo.md")) is True
+        assert _should_skip(Path("/data/rag-sources/gmail/2024/01/x.md")) is True
+        # The directory itself is skipped.
+        assert _should_skip(Path("/data/rag-sources/gmail")) is True
+
+        # Other rag-sources subtrees (web, obsidian) must NOT skip.
+        assert _should_skip(Path("/data/rag-sources/web/article.md")) is False
+        assert _should_skip(Path("/data/rag-sources/obsidian/note.md")) is False
+        # A file literally named "gmail" outside rag-sources/ must not skip.
+        assert _should_skip(Path("/data/notes/gmail.md")) is False
+
     async def test_doc_type_inference_path_based(self):
         from logos.engine.watcher import _infer_doc_type
 

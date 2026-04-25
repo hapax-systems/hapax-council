@@ -79,12 +79,23 @@ def _infer_doc_type(path: Path) -> tuple[str | None, dict | None]:
 
 
 def _should_skip(path: Path) -> bool:
-    """Filter out dotfiles and processed/ directories."""
+    """Filter out dotfiles, processed/ directories, and gmail RAG subtree.
+
+    The gmail RAG filter (3499-004): gmail-sync.timer fires every 6h and
+    re-pulls all 6,400+ .md files in ``rag-sources/gmail/`` via apparent
+    atomic rewrite, generating ~6,000 inotify DELETE events that drain
+    the engine for ~100 minutes per run, starving the logos-API event
+    loop. The reactive engine has no rules consuming gmail/* events
+    (downstream RAG queries hit Qdrant via ingest, not the engine), so
+    the entire subtree is skip-eligible.
+    """
     parts = path.parts
-    for part in parts:
+    for i, part in enumerate(parts):
         if part.startswith("."):
             return True
         if part == "processed":
+            return True
+        if part == "rag-sources" and i + 1 < len(parts) and parts[i + 1] == "gmail":
             return True
     return False
 
