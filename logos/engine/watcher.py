@@ -114,6 +114,13 @@ class _EventHandler(FileSystemEventHandler):
         event_type = _EVENT_TYPE_MAP.get(type(event))
         if event_type is None:
             return
+        # AUDIT-31: filter at handler layer to avoid queueing skip-eligible
+        # events. Closes 3499-004 at the dispatch boundary — gmail-sync
+        # bursts (~6,000 events / 6h cycle) no longer cross the asyncio
+        # queue. Consumer-side _should_skip in `_consume` remains as
+        # defense-in-depth.
+        if _should_skip(Path(event.src_path)):
+            return
         self._loop.call_soon_threadsafe(self._queue.put_nowait, (event.src_path, event_type))
 
 
