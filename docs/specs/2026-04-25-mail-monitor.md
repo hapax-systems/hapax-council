@@ -1,11 +1,40 @@
 ---
 type: spec
 date: 2026-04-25
-title: Mail-monitor daemon — Gmail (Pub/Sub) + omg.lol (Mailhook) → category-routing plumbing
+title: Mail-monitor daemon — Gmail Pub/Sub category-routing plumbing
 status: draft
 research_drop: docs/research/2026-04-25-mail-monitoring.md
 cc_task: mail-monitor-001-design-spec
+amendment_2026_04_26: omg.lol Mailhook ingress dropped — feature not shipped
 ---
+
+> **Pivot — 2026-04-26.** The omg.lol Mailhook ingress described in
+> §1 / §5.2 / §8.2 is **dropped from this design**. Independent
+> reconnaissance on the live `home.omg.lol/dashboard` confirmed the
+> Mailhook UI is not present on shipped accounts, the bundled
+> `main.js` contains zero Mailhook references, `/mailhook` and
+> `/mailhooks` 404, and the official tracking issue
+> ([neatnik/omg.lol#124](https://github.com/neatnik/omg.lol/issues/124))
+> has been open since 2021-10-29 with zero comments. The feature was
+> announced but never publicly shipped — capturing its API shape via
+> DevTools is impossible because no client code surfaces the path.
+>
+> **Replacement (already operational): omg.lol address forwarding to
+> the operator's Gmail.** `hapax@omg.lol` and `oudepode@omg.lol`
+> forward to `rylklee@gmail.com` via standard email forwarding (set
+> via `/address/{addr}/email`). Gmail receives the forwarded message
+> with the original `To:` header preserved, so server-side filter B
+> (``subject:SUPPRESS AND (to:hapax@omg.lol OR
+> to:oudepode@omg.lol)``) still matches and ``Hapax/Suppress`` still
+> applies. Single ingress channel; no parallel-fallback; one less
+> webhook receiver to operate.
+>
+> Findings: `docs/research/2026-04-26-omg-lol-mailhook-api-discovery.md`.
+> Refusal record: `mail-monitor-refused-omg-lol-mailhook-not-shipped`.
+> Affected sections (now historical): §1 ingress description, §7.2
+> sequence diagram, §8.2 webhook receiver, §9 file layout entries
+> (`webhook.py` JWT-only, no HMAC; `omg_lol_client.py` extension
+> dropped). The daemon ships with Gmail/Pub/Sub ingress only.
 
 # Mail-monitor design spec
 
@@ -27,9 +56,9 @@ Single daemon `agents/mail_monitor/runner.py`, systemd user unit
 `hapax-mail-monitor.service`, `Type=notify`, `WatchdogSec=60s`,
 `Restart=always`.
 
-**Two ingress paths** in parallel:
+**Single ingress path** (post-2026-04-26 amendment):
 
-- **Push (primary):** Google Cloud Pub/Sub topic
+- **Push:** Google Cloud Pub/Sub topic
   `projects/<project>/topics/hapax-mail-monitor` with a push subscription
   pointed at `https://logos.tail<…>.ts.net:8051/webhook/gmail`. A
   `users.watch()` call (renewed daily) instructs Gmail to publish events
@@ -37,10 +66,14 @@ Single daemon `agents/mail_monitor/runner.py`, systemd user unit
   `labelFilterAction=INCLUDE`. The webhook handler validates the Google
   IAM JWT and passes the `historyId` to
   `mail_monitor.runner.process_history()`.
-- **Mailhook (omg.lol, parallel for first 30 days):** omg.lol Mailhooks
-  POST to `https://logos.tail<…>.ts.net:8051/api/awareness/inbound/omg-lol`
-  with HMAC-SHA256-signed payloads. Discard-after-POST is set, so omg.lol
-  retains nothing.
+
+omg.lol mail (`hapax@omg.lol`, `oudepode@omg.lol`) reaches the daemon
+via standard address-level forwarding to `rylklee@gmail.com`. The
+forwarded message preserves the original `To:` header, so filter B
+catches SUPPRESS replies on the omg.lol surface without any
+webhook-side machinery. The original BETA omg.lol-Mailhook ingress
+described in this spec's pre-amendment text is *not* implemented —
+see the amendment block at the top of this file.
 
 **Cron fallback:** every 15 minutes, the daemon checks
 `/dev/shm/mail-monitor/last-push.json`; if no push has arrived in 60
@@ -52,8 +85,9 @@ Covers Pub/Sub regional outages without manufacturing constant API load.
 - Cursor: `~/.cache/mail-monitor/cursor.json` (`{"history_id": str,
   "last_push_at": iso8601}`), atomic tmp+rename.
 - Dedup: SHA-1 of `Message-ID` written to a rocksdb-backed seen-set
-  with 90-day TTL. Both Mailhook + Gmail paths consult the same
-  seen-set so the parallel-30-day overlap dedups trivially.
+  with 90-day TTL. The single Gmail path consults the seen-set;
+  forwarded omg.lol mail dedups against itself by `Message-ID` (Gmail
+  preserves it across forwarding).
 - Concurrency: `flock(/run/user/$UID/mail-monitor.lock)` — single
   execution at a time across both ingress paths.
 - Audit log: `~/.cache/mail-monitor/api-calls.jsonl` (see §6).
@@ -323,7 +357,12 @@ sequenceDiagram
   W-->>PS: 200 OK (under 30s)
 ```
 
-### 7.2 omg.lol Mailhook (parallel ingress)
+### 7.2 omg.lol Mailhook (parallel ingress) — DROPPED 2026-04-26
+
+*Historical sequence below — the omg.lol Mailhook surface was never
+publicly shipped. omg.lol mail reaches the Gmail path via standard
+address forwarding; see the amendment block at the top of this spec.*
+
 
 ```mermaid
 sequenceDiagram
@@ -399,7 +438,13 @@ hands off the historyId.
 `google.oauth2.id_token.verify_oauth2_token(jwt, GOOGLE_CERTS,
 audience=...)`.
 
-### 8.2 `POST /api/awareness/inbound/omg-lol`
+### 8.2 `POST /api/awareness/inbound/omg-lol` — DROPPED 2026-04-26
+
+*Historical schema below — the omg.lol Mailhook surface was never
+publicly shipped, so this receiver was never built. omg.lol mail
+arrives via address forwarding to Gmail and routes through `8.1
+/webhook/gmail` like any other inbound message. See the amendment
+block at the top of this spec.*
 
 omg.lol Mailhook receiver. HMAC-SHA256-signed body.
 
@@ -496,7 +541,7 @@ systemd/units/
 └── hapax-mail-monitor-watch-renewal.timer
 
 shared/
-└── omg_lol_client.py                # extend with set_mailhook(), get_mailhook()
+└── omg_lol_client.py                # NOT extended — see amendment block (omg.lol Mailhook dropped 2026-04-26)
 
 hapax-state/
 ├── contact-suppression-list.yaml    # Category C output
