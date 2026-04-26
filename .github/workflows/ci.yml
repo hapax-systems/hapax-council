@@ -81,6 +81,32 @@ jobs:
       - name: HPX003+HPX004 claim/LR registry validators
         run: uv run python scripts/check-claim-registry.py
 
+      # Operator legal-name leak guard. Per `interpersonal_transparency`
+      # axiom + the 2026-04-24 operator-referent policy, the operator's
+      # legal name appears only in formal-context locations
+      # (axioms/contracts/, profiles/, .github/CODEOWNERS). Any other
+      # occurrence in source/docs/config is a leak. The script's
+      # whitelist is the authoritative allowed-locations list.
+      # SHAs are not user-input but env: pattern is used per safe-CI
+      # idiom regardless.
+      - name: Operator legal-name leak guard
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ -n "$PR_BASE_SHA" ]; then
+            git fetch --quiet origin "$PR_BASE_SHA" || true
+            bash scripts/check-legal-name-leaks.sh --diff "$PR_BASE_SHA..$PR_HEAD_SHA"
+          else
+            if [ -z "$PUSH_BEFORE_SHA" ] || [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+              echo "no base SHA; skipping (initial push or shallow checkout)"
+              exit 0
+            fi
+            git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
+            bash scripts/check-legal-name-leaks.sh --diff "$PUSH_BEFORE_SHA..HEAD"
+          fi
+
 
   typecheck:
     runs-on: ubuntu-latest
