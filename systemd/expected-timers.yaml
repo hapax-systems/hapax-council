@@ -1,6 +1,18 @@
-# DEPRECATED: Timer definitions now live in agents/manifests/*.yaml
-# and are queried via shared.agent_registry.get_registry().expected_timers().
-# This file is kept for documentation only.
+# Frozen baseline of pre-registry-migration timers — DO NOT add new timers here.
+#
+# New timers go in agents/manifests/*.yaml and are queried via
+# shared.agent_registry.get_registry().expected_timers().
+#
+# This file is kept as a SUPERSET-CHECK BASELINE for
+# tests/test_agent_registry.py::test_expected_timers_matches_legacy. The
+# test asserts that the registry-derived timer set is a superset of the
+# 11 historical entries below; if any of these regress, the test breaks
+# and we know the registry has dropped a load-bearing timer.
+#
+# This file therefore has two readers:
+#   1. The regression test (frozen baseline; do not modify).
+#   2. Humans grep-ing for "where do timers live" (the answer is
+#      agents/manifests/*.yaml; this file is a historical anchor).
 #
 # Format: agent_name → timer unit name
 
