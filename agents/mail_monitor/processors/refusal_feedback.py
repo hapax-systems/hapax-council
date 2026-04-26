@@ -43,7 +43,7 @@ def _load_or_init_salt() -> str:
     if _SALT_PATH.exists():
         return _SALT_PATH.read_text().strip()
     _SALT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    salt = hashlib.sha1(os.urandom(32)).hexdigest()  # noqa: S324 — non-crypto
+    salt = hashlib.sha1(os.urandom(32), usedforsecurity=False).hexdigest()  # noqa: S324 — non-crypto
     _SALT_PATH.write_text(salt)
     return salt
 
@@ -52,7 +52,7 @@ def _hash_field(value: str | None) -> str:
     if not value:
         return ""
     salt = _load_or_init_salt()
-    return hashlib.sha1((salt + value.lower().strip()).encode()).hexdigest()  # noqa: S324
+    return hashlib.sha1((salt + value.lower().strip()).encode(), usedforsecurity=False).hexdigest()  # noqa: S324
 
 
 def emit_refusal_feedback(message: dict[str, Any], *, kind: str = "feedback") -> dict[str, Any]:
