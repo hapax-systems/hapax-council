@@ -167,3 +167,147 @@ def build_condense_prompt(awareness_section: str) -> list[dict[str, str]]:
             ),
         },
     ]
+
+
+# ── Fortress-mode trigger semantics ───────────────────────────────────
+#
+# Fortress mode is council's third working-mode for studio livestream
+# gating. The digest read should adapt:
+#
+# * Entering fortress: pre-stream last-look — cross_account state +
+#   pending refusals.
+# * Exiting fortress: post-stream summary — events accumulated during
+#   the stream window (refusals deferred, outbound publishes,
+#   publishing pipeline state).
+# * Within fortress: SUPPRESS all stimmung-driven digests. Daimonion
+#   stays silent on awareness while the livestream is live (governed
+#   by `feedback_l12_equals_livestream_invariant` and
+#   `feedback_consent_latency_obligation` — the daemon must not
+#   interrupt the stream's consent flow).
+#
+# Mode-shift triggers (research↔rnd) land in the base `is_mode_shift`
+# helper above; the helpers below are fortress-specific so the watcher
+# loop (deferred PR) can branch cleanly.
+
+FORTRESS_MODE = "fortress"
+
+
+def is_entering_fortress(state: AwarenessDigestState, new_mode: str) -> bool:
+    """``True`` iff ``new_mode == 'fortress'`` and prior mode was not.
+
+    Pre-stream last-look fires here. Note that the very first event of
+    any session that lands on ``fortress`` (when ``last_mode is None``)
+    counts as entering — daimonion has no prior context, so the
+    pre-stream digest is informative.
+    """
+    return new_mode == FORTRESS_MODE and state.last_mode != FORTRESS_MODE
+
+
+def is_exiting_fortress(state: AwarenessDigestState, new_mode: str) -> bool:
+    """``True`` iff prior mode was ``'fortress'`` and ``new_mode`` is not.
+
+    Post-stream summary fires here. Returns ``False`` if there is no
+    prior mode (a session that boots in non-fortress mode has nothing
+    to summarize).
+    """
+    return state.last_mode == FORTRESS_MODE and new_mode != FORTRESS_MODE
+
+
+def is_within_fortress(state: AwarenessDigestState) -> bool:
+    """``True`` iff the last observed mode is ``'fortress'``.
+
+    Used by the stimmung-trigger path to suppress within-fortress
+    digests. The fortress entry/exit transitions handle their own
+    summaries; in-stream stimmung crossings would interrupt the
+    livestream consent flow per
+    ``feedback_consent_latency_obligation``.
+    """
+    return state.last_mode == FORTRESS_MODE
+
+
+def should_emit_stimmung_digest(state: AwarenessDigestState) -> bool:
+    """``True`` iff a stimmung-bucket-cross should fire a digest read.
+
+    Returns ``False`` when within fortress mode (livestream gating).
+    Other contexts (research, rnd, or pre-first-mode) emit normally.
+    """
+    return not is_within_fortress(state)
+
+
+# ── Fortress-mode condense prompts ────────────────────────────────────
+
+# Per the cc-task spec, fortress entry/exit prose is brief (≤40 words),
+# factual, no rhetorical valence (per `feedback_scientific_register`).
+# These prompts intentionally use the same operator-referent rules and
+# scientific register as `CONDENSE_SYSTEM_PROMPT`.
+
+FORTRESS_PRE_STREAM_SYSTEM_PROMPT = (
+    "You are condensing the operator's pre-stream context into a single "
+    "≤40-word factual paragraph for daimonion to read aloud just before "
+    "the livestream goes live. Use scientific register: no rhetorical "
+    "flourish, no second-person address, no generated coaching language. "
+    "Refer to the operator only as 'The Operator', 'Oudepode', "
+    "'Oudepode The Operator', or 'OTO' (sticky-per-utterance: pick one "
+    "and stay consistent). Output prose only — no headers, no bullets, "
+    "no closing remarks. Focus on cross-account state and pending "
+    "refusals — items the operator should know before going live. "
+    "If the source is empty, output the literal string '(no pre-stream "
+    "context).'"
+)
+
+
+FORTRESS_POST_STREAM_SYSTEM_PROMPT = (
+    "You are condensing the operator's post-stream window into a single "
+    "≤40-word factual paragraph for daimonion to read aloud just after "
+    "the livestream ends. Use scientific register: no rhetorical "
+    "flourish, no second-person address, no generated coaching language. "
+    "Refer to the operator only as 'The Operator', 'Oudepode', "
+    "'Oudepode The Operator', or 'OTO' (sticky-per-utterance: pick one "
+    "and stay consistent). Output prose only — no headers, no bullets, "
+    "no closing remarks. Focus on events that accumulated during the "
+    "fortress window: refusals deferred, outbound publishes, pipeline "
+    "state changes. If the source is empty, output the literal string "
+    "'(no post-stream events).'"
+)
+
+
+def build_fortress_pre_stream_prompt(context_section: str) -> list[dict[str, str]]:
+    """Compose the messages list for the pre-stream condense call.
+
+    ``context_section`` is the assembled cross-account + pending-refusal
+    snapshot (the watcher loop assembles this from awareness state).
+    Empty input is permitted; the system prompt instructs the model to
+    emit the canonical empty-string sentinel.
+    """
+    return [
+        {"role": "system", "content": FORTRESS_PRE_STREAM_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Pre-stream context:\n\n"
+                f"{context_section if context_section else '(empty)'}\n\n"
+                "Condense to one factual paragraph, ≤40 words."
+            ),
+        },
+    ]
+
+
+def build_fortress_post_stream_prompt(events_section: str) -> list[dict[str, str]]:
+    """Compose the messages list for the post-stream condense call.
+
+    ``events_section`` is the assembled summary of events accumulated
+    during the fortress window (refusals deferred, publishes shipped,
+    pipeline transitions). Empty input emits the canonical empty-string
+    sentinel via the system prompt.
+    """
+    return [
+        {"role": "system", "content": FORTRESS_POST_STREAM_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Post-stream events:\n\n"
+                f"{events_section if events_section else '(empty)'}\n\n"
+                "Condense to one factual paragraph, ≤40 words."
+            ),
+        },
+    ]
