@@ -7,7 +7,10 @@ Requires=hapax-secrets.service
 [Service]
 Type=simple
 WorkingDirectory=/home/hapax/projects/hapax-council
-EnvironmentFile=-/home/hapax/.config/hapax/hapax.env
+# No EnvironmentFile — `agents.publish_orchestrator` reads only HAPAX_STATE
+# (default `~/hapax-state`) and HAPAX_LOG_LEVEL (default INFO). Audit
+# 2026-04-26 R-19: dropped optional `EnvironmentFile=-/home/hapax/.config/hapax/hapax.env`
+# which referenced a never-existed file (absence-class dead reference).
 ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.publish_orchestrator
 Restart=on-failure
 RestartSec=5s
