@@ -108,6 +108,15 @@ FORBIDDEN_PACKAGE_PATHS: Final[tuple[str, ...]] = (
     "agents/soundcloud_inflater",
     "agents/soundcloud_inflator",
     "agents/sc_inflater",
+    # Per cc-task leverage-REFUSED-tutorial-videos:
+    # tutorial-video production is operator-physical (on-camera or
+    # voiced narration). Existing agents/video_capture/ +
+    # agents/video_processor/ are livestream infrastructure (per
+    # project_livestream_is_research) and remain permitted.
+    "agents/tutorial_publisher",
+    "agents/tutorial_videos",
+    "agents/youtube_tutorials",
+    "agents/educational_content",
 )
 """Refused package directory paths.
 
