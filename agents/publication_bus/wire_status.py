@@ -43,7 +43,7 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
         module="agents.publication_bus.bluesky_publisher",
         surface_slug="bluesky-atproto-multi-identity",
         status="CRED_BLOCKED",
-        pass_key_required="bluesky/operator-app-password",
+        pass_key_required="bluesky/operator-app-password, bluesky/operator-did",
         rationale=(
             "AT Protocol XRPC publisher; multi-identity (operator + oudepode). "
             "Substrate complete + tested. Awaiting operator app-password "
