@@ -8,6 +8,17 @@ const SLOW = 300_000; // 5min
 export const useHealth = () =>
   useQuery({ queryKey: ["health"], queryFn: api.health, refetchInterval: FAST });
 
+// Refusals — polled every FAST tick (30s). When the
+// awareness-tauri-sse-bridge ships, this hook can swap to an SSE
+// subscription with the same RefusalsResponse shape (zero call-site
+// churn).
+export const useRefusals = (limit = 50) =>
+  useQuery({
+    queryKey: ["refusals", limit],
+    queryFn: () => api.refusals(limit),
+    refetchInterval: FAST,
+  });
+
 export const useGpu = () =>
   useQuery({ queryKey: ["gpu"], queryFn: api.gpu, refetchInterval: FAST });
 
