@@ -8,6 +8,7 @@ from agents.publication_bus.publisher_kit import (
     RefusedPublisher,
 )
 from agents.publication_bus.publisher_kit.refused import (
+    AlphaXivCommentsRefusedPublisher,
     BandcampRefusedPublisher,
     CrossrefEventDataRefusedPublisher,
     DiscogsRefusedPublisher,
@@ -38,11 +39,12 @@ class TestRefusedPublisherBase:
 
 
 class TestRegisteredRefusedClasses:
-    def test_four_refused_classes_registered(self) -> None:
-        """The keystone task acceptance criterion #6 enumerates 4
+    def test_five_refused_classes_registered(self) -> None:
+        """The keystone task acceptance criterion #6 enumerated 4
         REFUSED-class publishers (bandcamp / discogs / rym /
-        crossref-event-data); the registry mirrors that count."""
-        assert len(REFUSED_PUBLISHER_CLASSES) == 4
+        crossref-event-data); cc-task `cold-contact-alphaxiv-comments`
+        adds the 5th (alphaxiv-comments)."""
+        assert len(REFUSED_PUBLISHER_CLASSES) == 5
 
     def test_all_refused_classes_subclass_refused_publisher(self) -> None:
         for cls in REFUSED_PUBLISHER_CLASSES:
@@ -78,6 +80,15 @@ class TestSpecificRefusedClasses:
 
     def test_crossref_surface_name(self) -> None:
         assert CrossrefEventDataRefusedPublisher.surface_name == "crossref-event-data"
+
+    def test_alphaxiv_surface_name(self) -> None:
+        assert AlphaXivCommentsRefusedPublisher.surface_name == "alphaxiv-comments"
+
+    def test_alphaxiv_refusal_reason_cites_tos(self) -> None:
+        # Per cc-task: alphaXiv community guidelines prohibit LLM-generated comments
+        reason = AlphaXivCommentsRefusedPublisher.refusal_reason
+        assert reason
+        assert "LLM" in reason or "guidelines" in reason or "community" in reason
 
     def test_each_publishes_returns_refused(self) -> None:
         """Smoke: each registered class returns refused on publish()."""

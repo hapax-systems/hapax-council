@@ -129,17 +129,40 @@ class CrossrefEventDataRefusedPublisher(RefusedPublisher):
     )
 
 
+class AlphaXivCommentsRefusedPublisher(RefusedPublisher):
+    """alphaXiv comments — community guidelines prohibit LLM-generated comments.
+
+    Per cc-task ``cold-contact-alphaxiv-comments``: alphaXiv community
+    guidelines prohibit LLM-generated comments per drop 2 §3 mechanic
+    #3. Even AI-authorship disclosure does not lift the prohibition;
+    operator-approval-gating during a "trial period" is itself the
+    pattern that ``feedback_full_automation_or_no_engagement`` rejects.
+    PR #1444's allowlist contract is governance-shape only and does
+    not make the surface daemon-tractable.
+    """
+
+    surface_name = "alphaxiv-comments"
+    refusal_reason = (
+        "alphaXiv community guidelines prohibit LLM-generated comments; "
+        "AI-authorship disclosure does not lift the prohibition. "
+        "Operator-approval gating during a 'trial period' violates the "
+        "full-automation-or-no-engagement constitutional posture."
+    )
+
+
 # Registry of refused-publisher classes for module-load auditing.
 REFUSED_PUBLISHER_CLASSES: list[type[RefusedPublisher]] = [
     BandcampRefusedPublisher,
     DiscogsRefusedPublisher,
     RymRefusedPublisher,
     CrossrefEventDataRefusedPublisher,
+    AlphaXivCommentsRefusedPublisher,
 ]
 
 
 __all__ = [
     "REFUSED_PUBLISHER_CLASSES",
+    "AlphaXivCommentsRefusedPublisher",
     "BandcampRefusedPublisher",
     "CrossrefEventDataRefusedPublisher",
     "DiscogsRefusedPublisher",

@@ -115,6 +115,11 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         scope_note="bootstrap login via Playwright session daemon (one-time)",
     ),
     # ── REFUSED ────────────────────────────────────────────────────
+    "alphaxiv-comments": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/cold-contact-alphaxiv-comments.md",
+        scope_note="alphaXiv community guidelines prohibit LLM-generated comments",
+    ),
     "bandcamp-upload": SurfaceSpec(
         automation_status=AutomationStatus.REFUSED,
         refusal_link="docs/refusal-briefs/bandcamp-no-upload-api.md",
