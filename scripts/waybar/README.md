@@ -38,9 +38,14 @@ the module list) to `~/.config/waybar/config.jsonc`.
 | Script | Source | Interval | cc-task |
 |---|---|---|---|
 | `hapax-waybar-refusals-1h` | `/dev/shm/hapax-refusals/log.jsonl` | 60s | `awareness-waybar-refusals-1h` |
+| `hapax-waybar-publishing` | `state.json:.publishing_pipeline` | 30s | `awareness-waybar-publishing` |
+| `hapax-waybar-fleet` | `state.json:.hardware_fleet` | 30s | `awareness-waybar-fleet` |
+| `hapax-waybar-stream` | `state.json:.stream` | 1s | `awareness-waybar-stream` |
+| `hapax-waybar-oudepode` | `state.json:.music_soundcloud` | 30s | `awareness-waybar-oudepode` |
 
-(Additional modules ship under their own cc-tasks; this directory will
-fill out as each one merges.)
+State-derived modules treat `mtime > 90s` on `state.json` as stale and
+emit `class:"stale"` rather than dummy zeroes — so the bar visibly
+dims when the awareness runner has stopped publishing.
 
 ## waybar config snippet — refusals-1h
 

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# waybar custom/fleet module — Pi NoIR + watch + phone heartbeats.
+#
+# Reads /dev/shm/hapax-awareness/state.json (canonical state spine)
+# and surfaces hardware fleet online count. The aggregator side
+# (collect_fleet_block) classifies online vs total based on per-Pi
+# JSON file mtime; this script displays the resulting summary.
+#
+# Spec field-name drift: cc-task references per-Pi colored dots
+# from a list-of-Pis structure; FleetBlock in state.py exposes
+# pi_count_online + pi_count_total + watch_last_heartbeat_at +
+# phone_last_heartbeat_at. This script renders the totals + a
+# heartbeat freshness check for watch / phone (60s window).
+#
+# No click handler.
+
+set -uo pipefail
+
+state=/dev/shm/hapax-awareness/state.json
+ttl=90
+heartbeat_fresh=120
+
+if [[ ! -f "$state" ]]; then
+    echo '{"text":"fleet --","tooltip":"awareness state not yet present","class":"stale"}'
+    exit 0
+fi
+
+mtime=$(stat -c %Y "$state" 2>/dev/null || echo 0)
+now=$(date +%s)
+if (( now - mtime > ttl )); then
+    echo '{"text":"fleet stale","tooltip":"awareness state stale","class":"stale"}'
+    exit 0
+fi
+
+read -r online total watch_ts phone_ts <<<"$(jq -r \
+    '.hardware_fleet | "\(.pi_count_online) \(.pi_count_total) \(.watch_last_heartbeat_at // "null") \(.phone_last_heartbeat_at // "null")"' \
+    "$state" 2>/dev/null || echo "0 0 null null")"
+
+[[ "$online" =~ ^[0-9]+$ ]] || online=0
+[[ "$total" =~ ^[0-9]+$ ]] || total=0
+
+# Heartbeat-fresh classifier — watch + phone post via Tailscale every
+# 30s when present; 120s window catches a missed heartbeat without
+# flapping. ISO-8601 lex-comparison works for sort ordering.
+cutoff=$(date -u -d "$heartbeat_fresh seconds ago" --iso-8601=seconds)
+watch_ok=0
+phone_ok=0
+[[ "$watch_ts" != "null" ]] && [[ "$watch_ts" > "$cutoff" ]] && watch_ok=1
+[[ "$phone_ts" != "null" ]] && [[ "$phone_ts" > "$cutoff" ]] && phone_ok=1
+
+cls=""
+if (( total > 0 && online < total )); then
+    cls="degraded"
+fi
+
+watch_dot="○"
+phone_dot="○"
+(( watch_ok )) && watch_dot="●"
+(( phone_ok )) && phone_dot="●"
+
+text=$(printf 'pi %d/%d w%s p%s' "$online" "$total" "$watch_dot" "$phone_dot")
+tooltip=$(printf 'pi-noir %d/%d online · watch heartbeat %s · phone heartbeat %s' \
+    "$online" "$total" "$watch_ts" "$phone_ts")
+
+printf '{"text":"%s","tooltip":"%s","class":"%s"}\n' "$text" "$tooltip" "$cls"

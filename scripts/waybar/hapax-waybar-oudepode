@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#
+# waybar custom/oudepode module — currently-playing music state.
+#
+# Reads /dev/shm/hapax-awareness/state.json (canonical state spine).
+# Surfaces the music_soundcloud block: current track + source +
+# is_playing flag.
+#
+# Spec field-name drift: cc-task references plays_last_1h and
+# skip_rate_pct which do not exist on MusicBlock; the actual fields
+# are current_track, source ("soundcloud"/"vinyl"/"bed-music"/""),
+# is_playing. This script renders those — operator's decision-
+# critical info on the bar is "what's playing right now," not "1h
+# play count."
+#
+# Track names render literal (not censored) — the operator's own
+# SoundCloud library is the dominant source per the music-soundcloud-
+# bed-music routing decision.
+
+set -uo pipefail
+
+state=/dev/shm/hapax-awareness/state.json
+ttl=90
+
+if [[ ! -f "$state" ]]; then
+    echo '{"text":"oude --","tooltip":"awareness state not yet present","class":"stale"}'
+    exit 0
+fi
+
+mtime=$(stat -c %Y "$state" 2>/dev/null || echo 0)
+now=$(date +%s)
+if (( now - mtime > ttl )); then
+    echo '{"text":"oude --","tooltip":"awareness state stale","class":"stale"}'
+    exit 0
+fi
+
+read -r playing source <<<"$(jq -r \
+    '.music_soundcloud | "\(.is_playing) \(.source)"' \
+    "$state" 2>/dev/null || echo "false ")"
+track=$(jq -r '.music_soundcloud.current_track // ""' "$state" 2>/dev/null || echo "")
+
+# Track name truncation — keep the bar string short. waybar's tooltip
+# carries the full title.
+truncate_at=40
+display_track="$track"
+if (( ${#display_track} > truncate_at )); then
+    display_track="${display_track:0:$((truncate_at - 1))}…"
+fi
+
+if [[ "$playing" == "true" ]] && [[ -n "$track" ]]; then
+    text=$(printf '♪ %s' "$display_track")
+    tooltip=$(printf '%s · source %s' "$track" "${source:-—}")
+    cls="playing"
+else
+    text="oude silent"
+    tooltip="no music currently playing"
+    cls="silent"
+fi
+
+# Escape backslash + double-quote in the JSON-emitted strings (track
+# titles can contain either).
+escape_json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+printf '{"text":"%s","tooltip":"%s","class":"%s"}\n' \
+    "$(escape_json "$text")" "$(escape_json "$tooltip")" "$cls"

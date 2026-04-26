@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# waybar custom/stream module — live indicator + chronicle event count.
+#
+# Reads /dev/shm/hapax-awareness/state.json (canonical state spine).
+# Live = chronicle events fired in last 5min (per StreamBlock spec
+# in agents/operator_awareness/aggregator.py:collect_stream_block).
+#
+# Spec field-name drift: cc-task references stream.live_indicator
+# and stream.posterior_decile which do not exist. The actual
+# StreamBlock fields are live (bool), chronicle_events_5min (int),
+# rotation_state (str). This script binds to those.
+#
+# 1s interval per cc-task (live-mode freshness). Sub-microsecond
+# tmpfs reads make the polling cost negligible.
+
+set -uo pipefail
+
+state=/dev/shm/hapax-awareness/state.json
+ttl=90
+
+if [[ ! -f "$state" ]]; then
+    echo '{"text":"--","tooltip":"awareness state not yet present","class":"stale"}'
+    exit 0
+fi
+
+mtime=$(stat -c %Y "$state" 2>/dev/null || echo 0)
+now=$(date +%s)
+if (( now - mtime > ttl )); then
+    echo '{"text":"stream stale","tooltip":"awareness state stale","class":"stale"}'
+    exit 0
+fi
+
+read -r live events5m rotation <<<"$(jq -r \
+    '.stream | "\(.live) \(.chronicle_events_5min) \(.rotation_state)"' \
+    "$state" 2>/dev/null || echo "false 0 ")"
+
+[[ "$events5m" =~ ^[0-9]+$ ]] || events5m=0
+
+if [[ "$live" == "true" ]]; then
+    text=$(printf '● live %d/5m' "$events5m")
+    tooltip=$(printf 'broadcast live · %d chronicle events last 5min · rotation %s' \
+        "$events5m" "${rotation:-—}")
+    cls="live"
+else
+    text="○ off"
+    tooltip="broadcast off-air"
+    cls="offair"
+fi
+
+printf '{"text":"%s","tooltip":"%s","class":"%s"}\n' "$text" "$tooltip" "$cls"

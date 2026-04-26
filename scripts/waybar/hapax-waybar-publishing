@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# waybar custom/publishing module — publication-bus pipeline counts.
+#
+# Reads /dev/shm/hapax-awareness/state.json (canonical state spine,
+# 30s tick) and surfaces inbox + in-flight + 24h-published counts.
+# Stale-state (mtime > 90s) renders dimmed rather than erroring.
+#
+# Spec field-name drift: cc-task references queue_depth /
+# refused_count_24h / last_error which do not exist on PublishingBlock
+# in agents/operator_awareness/state.py. The actual fields are
+# inbox_count, in_flight_count, published_24h, last_publish_at — this
+# script binds to those.
+#
+# No click handler — publication-bus surface lives elsewhere.
+
+set -uo pipefail
+
+state=/dev/shm/hapax-awareness/state.json
+ttl=90
+
+if [[ ! -f "$state" ]]; then
+    echo '{"text":"pub --","tooltip":"awareness state not yet present","class":"stale"}'
+    exit 0
+fi
+
+mtime=$(stat -c %Y "$state" 2>/dev/null || echo 0)
+now=$(date +%s)
+if (( now - mtime > ttl )); then
+    echo '{"text":"pub stale","tooltip":"awareness state stale","class":"stale"}'
+    exit 0
+fi
+
+read -r inbox in_flight pub24h <<<"$(jq -r \
+    '.publishing_pipeline | "\(.inbox_count) \(.in_flight_count) \(.published_24h)"' \
+    "$state" 2>/dev/null || echo "0 0 0")"
+
+[[ "$inbox" =~ ^[0-9]+$ ]] || inbox=0
+[[ "$in_flight" =~ ^[0-9]+$ ]] || in_flight=0
+[[ "$pub24h" =~ ^[0-9]+$ ]] || pub24h=0
+
+cls=""
+(( inbox > 0 || in_flight > 0 )) && cls="active"
+
+text=$(printf 'pub %d→%d ✓%d' "$inbox" "$in_flight" "$pub24h")
+tooltip=$(printf 'inbox %d · in-flight %d · published 24h %d' \
+    "$inbox" "$in_flight" "$pub24h")
+
+printf '{"text":"%s","tooltip":"%s","class":"%s"}\n' "$text" "$tooltip" "$cls"
