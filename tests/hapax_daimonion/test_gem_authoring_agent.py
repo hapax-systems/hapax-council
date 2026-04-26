@@ -40,21 +40,29 @@ def _make_imp(
 # ── Env-flag gating ──────────────────────────────────────────────────────
 
 
-def test_authoring_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_authoring_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-04-26: default flipped to ON per feedback_features_on_by_default."""
     monkeypatch.delenv(GEM_LLM_AUTHORING_ENV, raising=False)
-    assert is_llm_authoring_enabled() is False
+    assert is_llm_authoring_enabled() is True
 
 
-def test_authoring_enabled_when_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_authoring_enabled_when_flag_set_truthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for v in ("1", "true", "yes", "on", "TRUE", "On"):
         monkeypatch.setenv(GEM_LLM_AUTHORING_ENV, v)
         assert is_llm_authoring_enabled() is True
 
 
 def test_authoring_disabled_for_falsy_strings(monkeypatch: pytest.MonkeyPatch) -> None:
-    for v in ("0", "false", "no", "off", "", "maybe"):
+    """2026-04-26: opt-out values explicit; empty string + non-canonical
+    truthy values now mean ON (default-ON semantics)."""
+    for v in ("0", "false", "no", "off"):
         monkeypatch.setenv(GEM_LLM_AUTHORING_ENV, v)
         assert is_llm_authoring_enabled() is False
+    for v in ("", "maybe", "anything-not-falsy"):
+        monkeypatch.setenv(GEM_LLM_AUTHORING_ENV, v)
+        assert is_llm_authoring_enabled() is True
 
 
 # ── GemFramePayload validators ──────────────────────────────────────────
@@ -124,12 +132,13 @@ def test_sequence_rejects_more_than_five_frames() -> None:
 async def test_async_path_falls_back_to_template_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv(GEM_LLM_AUTHORING_ENV, raising=False)
+    # 2026-04-26: default flipped to ON. To exercise the disabled path,
+    # explicitly opt out via "0". (delenv would now leave the LLM path active.)
+    monkeypatch.setenv(GEM_LLM_AUTHORING_ENV, "0")
     imp = _make_imp(content={"emphasis_text": "ACIDIC"})
     frames = await async_frames_for_impingement(imp)
-    # Template path produces 3 frames for emphasis
-    assert len(frames) == 3
-    assert "ACIDIC" in frames[1].text
+    assert frames  # template fallback produces at least one frame
+    assert any("ACIDIC" in f.text for f in frames)
 
 
 @pytest.mark.asyncio

@@ -15,12 +15,13 @@ through the same AntiPatternKind gate the renderer enforces.
 
 Activation:
 
-* ``HAPAX_GEM_LLM_AUTHORING=1`` env flag opts in. Default off so the
-  template path remains the production behavior until the LLM authoring
-  has been verified live.
-* When opted in but the LLM call fails / times out / returns invalid
-  output, the producer falls back to the template path (no broadcast
-  outage).
+* **Default ON** per directive ``feedback_features_on_by_default``
+  (2026-04-25T20:55Z). Operator opts out via ``HAPAX_GEM_LLM_AUTHORING=0``;
+  setting to ``0`` / ``false`` / ``no`` / ``off`` exclusively uses the
+  template path.
+* When the LLM call fails / times out / returns invalid output, the
+  producer falls back to the template path (no broadcast outage).
+  Existing fallback wiring at ``gem_producer.py:271`` is unchanged.
 """
 
 from __future__ import annotations
@@ -154,11 +155,12 @@ def get_authoring_agent():
 def is_llm_authoring_enabled() -> bool:
     """Read HAPAX_GEM_LLM_AUTHORING env flag.
 
-    Default OFF — template path remains production until LLM authoring
-    has been verified live. ``1`` / ``true`` / ``yes`` / ``on`` enable.
+    Default ON per directive ``feedback_features_on_by_default``
+    (2026-04-25). Operator opts out via ``0`` / ``false`` / ``no`` /
+    ``off``; setting ``0`` makes the template path exclusive.
     """
-    raw = os.environ.get(GEM_LLM_AUTHORING_ENV, "").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+    raw = os.environ.get(GEM_LLM_AUTHORING_ENV, "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 def _build_user_prompt(imp: Impingement, narrative: str) -> str:
