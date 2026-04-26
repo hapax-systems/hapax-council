@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax CC-task hygiene sweeper (read-only diagnostic, 8 checks)
+Documentation=file://%h/projects/hapax-council/docs/research/2026-04-26-task-list-hygiene-operator-visibility.md
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/.venv/bin/python %h/projects/hapax-council/scripts/cc-hygiene-sweeper.py
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+# Killswitch: set HAPAX_CC_HYGIENE_OFF=1 in the environment to skip all checks.
+
+[Install]
+WantedBy=default.target

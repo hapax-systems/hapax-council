@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax CC-hygiene sweeper timer (5 min)
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=5min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

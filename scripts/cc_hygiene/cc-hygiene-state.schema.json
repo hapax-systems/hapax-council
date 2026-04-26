@@ -1,0 +1,202 @@
+{
+  "$defs": {
+    "CheckSummary": {
+      "description": "Aggregate counters for one check across the latest sweep.",
+      "properties": {
+        "check_id": {
+          "enum": [
+            "stale_in_progress",
+            "ghost_claimed",
+            "duplicate_claim",
+            "orphan_pr",
+            "relay_yaml_stale",
+            "wip_limit",
+            "offered_stale",
+            "refusal_dormancy"
+          ],
+          "title": "Check Id",
+          "type": "string"
+        },
+        "fired": {
+          "default": 0,
+          "title": "Fired",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "check_id"
+      ],
+      "title": "CheckSummary",
+      "type": "object"
+    },
+    "HygieneEvent": {
+      "description": "One detected hygiene issue, append-only-logged.\n\nEvents are emitted both to the markdown event log and to the JSON\nstate file. The schema is identical in both surfaces.",
+      "properties": {
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "check_id": {
+          "enum": [
+            "stale_in_progress",
+            "ghost_claimed",
+            "duplicate_claim",
+            "orphan_pr",
+            "relay_yaml_stale",
+            "wip_limit",
+            "offered_stale",
+            "refusal_dormancy"
+          ],
+          "title": "Check Id",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "violation"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "task_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Id"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "timestamp",
+        "check_id",
+        "severity",
+        "message"
+      ],
+      "title": "HygieneEvent",
+      "type": "object"
+    },
+    "SessionState": {
+      "description": "Per-session current-claim summary, derived from relay yaml + vault.",
+      "properties": {
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "current_claim": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current Claim"
+        },
+        "relay_updated": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relay Updated"
+        },
+        "in_progress_count": {
+          "default": 0,
+          "title": "In Progress Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "SessionState",
+      "type": "object"
+    }
+  },
+  "description": "Top-level state snapshot persisted to JSON.\n\nDownstream PRs (waybar, Logos, ntfy) read this file. Bumping\n`schema_version` is a breaking change.",
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "sweep_timestamp": {
+      "format": "date-time",
+      "title": "Sweep Timestamp",
+      "type": "string"
+    },
+    "sweep_duration_ms": {
+      "title": "Sweep Duration Ms",
+      "type": "integer"
+    },
+    "killswitch_active": {
+      "default": false,
+      "title": "Killswitch Active",
+      "type": "boolean"
+    },
+    "sessions": {
+      "items": {
+        "$ref": "#/$defs/SessionState"
+      },
+      "title": "Sessions",
+      "type": "array"
+    },
+    "check_summaries": {
+      "items": {
+        "$ref": "#/$defs/CheckSummary"
+      },
+      "title": "Check Summaries",
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/HygieneEvent"
+      },
+      "title": "Events",
+      "type": "array"
+    }
+  },
+  "required": [
+    "sweep_timestamp",
+    "sweep_duration_ms"
+  ],
+  "title": "HygieneState",
+  "type": "object"
+}
