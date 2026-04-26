@@ -640,6 +640,7 @@ except Exception:
 
 from logos.api.routes.accommodations import router as accommodations_router
 from logos.api.routes.agents import router as agents_router
+from logos.api.routes.awareness import router as awareness_router
 from logos.api.routes.cbip import router as cbip_router
 from logos.api.routes.chat import router as chat_router
 from logos.api.routes.chronicle import router as chronicle_router
@@ -700,6 +701,7 @@ app.include_router(dmn_router)
 app.include_router(events_router)
 app.include_router(exploration_router)
 app.include_router(orientation_router)
+app.include_router(awareness_router)
 app.include_router(vault_router)
 app.include_router(chronicle_router)
 app.include_router(predictions_router)
