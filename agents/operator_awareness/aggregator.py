@@ -6,11 +6,16 @@ than raising. Goal: no aggregator failure can crash the runner; a
 broken source produces an empty block that downstream surfaces dim
 on (per the TTL semantics in ``state.py``).
 
-This Phase-2 ship wires 3 concrete sources (refusals_recent,
-health_system, stream) and leaves the remaining 5 sources as
-default-empty blocks for Phase 3 follow-ups. Each source is
-independently testable; the ``Aggregator.collect()`` orchestrator
-composes them into a single ``AwarenessState`` per tick.
+Wired sources: refusals_recent, health_system, stream, monetization,
+daimonion_voice (stimmung), time_sprint (sprint), hardware_fleet
+(pi-noir per-Pi heartbeats), publishing_pipeline (publish/ inbox +
+draft + published mtime). Remaining default-empty blocks
+(marketing_outreach, research_dispatches, music_soundcloud,
+cross_account, governance, content_programmes) wait on producer-side
+substrate to land before the helpers can do better than the typed
+default. Each source is independently testable; the
+``Aggregator.collect()`` orchestrator composes them into a single
+``AwarenessState`` per tick.
 """
 
 from __future__ import annotations
@@ -30,8 +35,12 @@ from agents.operator_awareness.sources.monetization import (
 )
 from agents.operator_awareness.state import (
     AwarenessState,
+    DaimonionBlock,
+    FleetBlock,
     HealthBlock,
+    PublishingBlock,
     RefusalEvent,
+    SprintBlock,
     StreamBlock,
 )
 from agents.payment_processors.event_log import DEFAULT_PAYMENT_LOG_PATH
@@ -67,6 +76,30 @@ DEFAULT_CHRONICLE_EVENTS = Path(
         "/dev/shm/hapax-chronicle/events.jsonl",
     )
 )
+DEFAULT_STIMMUNG_PATH = Path(
+    os.environ.get(
+        "HAPAX_STIMMUNG_STATE_PATH",
+        "/dev/shm/hapax-stimmung/state.json",
+    )
+)
+DEFAULT_SPRINT_PATH = Path(
+    os.environ.get(
+        "HAPAX_SPRINT_STATE_PATH",
+        "/dev/shm/hapax-sprint/state.json",
+    )
+)
+DEFAULT_FLEET_DIR = Path(
+    os.environ.get(
+        "HAPAX_PI_NOIR_DIR",
+        str(Path.home() / "hapax-state/pi-noir"),
+    )
+)
+DEFAULT_PUBLISH_DIR = Path(
+    os.environ.get(
+        "HAPAX_PUBLISH_DIR",
+        str(Path.home() / "hapax-state/publish"),
+    )
+)
 
 # Bounded tail length for the refusals_recent block. Spec: 50 entries.
 # Surfaces (waybar, sidebar, omg.lol fanout) display individuals; we
@@ -75,6 +108,14 @@ REFUSALS_TAIL_LIMIT = 50
 
 # Stream block window for chronicle event count. Spec: 5min.
 STREAM_EVENT_WINDOW_S = 300.0
+
+# Pi NoIR heartbeat freshness window. Per IR perception design, the
+# edge daemons POST every ~3s; 120s gives 40 ticks of margin before
+# we mark a Pi offline (handles brief WiFi blips without flapping).
+FLEET_FRESHNESS_S = 120.0
+
+# Publishing pipeline 24h count window.
+PUBLISH_COUNT_WINDOW_S = 86400.0
 
 
 def collect_refusals_recent(
@@ -244,6 +285,168 @@ def collect_stream_block(
     return StreamBlock(live=count > 0, chronicle_events_5min=count)
 
 
+def collect_daimonion_block(
+    state_path: Path = DEFAULT_STIMMUNG_PATH,
+) -> DaimonionBlock:
+    """Read the stimmung state file and project ``overall_stance``.
+
+    The stimmung daemon publishes a flat JSON object with an
+    ``overall_stance`` string (e.g. ``"cautious"`` / ``"engaged"``).
+    Missing file is the pre-rollout case (stimmung daemon not yet
+    started) — return defaults without incrementing the failure
+    metric. Malformed payload is a real source failure.
+    """
+    if not state_path.exists():
+        return DaimonionBlock()
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        log.debug("stimmung state unreadable at %s", state_path)
+        aggregator_source_failures_total.labels(source="daimonion_voice").inc()
+        return DaimonionBlock()
+    if not isinstance(data, dict):
+        aggregator_source_failures_total.labels(source="daimonion_voice").inc()
+        return DaimonionBlock()
+    raw_stance = data.get("overall_stance")
+    stance = str(raw_stance) if raw_stance else "unknown"
+    return DaimonionBlock(stance=stance)
+
+
+def collect_sprint_block(
+    state_path: Path = DEFAULT_SPRINT_PATH,
+) -> SprintBlock:
+    """Read the sprint tracker state and map to ``SprintBlock``.
+
+    The obsidian-hapax sprint tracker writes a flat JSON object with
+    ``current_sprint``, ``current_day``, ``measures_completed``,
+    ``measures_blocked``. Coerce sprint id to string (the tracker
+    writes ints). Missing file is pre-rollout; do not raise the
+    failure metric.
+    """
+    if not state_path.exists():
+        return SprintBlock()
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        log.debug("sprint state unreadable at %s", state_path)
+        aggregator_source_failures_total.labels(source="time_sprint").inc()
+        return SprintBlock()
+    if not isinstance(data, dict):
+        aggregator_source_failures_total.labels(source="time_sprint").inc()
+        return SprintBlock()
+    sprint_raw = data.get("current_sprint")
+    sprint_id = "" if sprint_raw is None else str(sprint_raw)
+    return SprintBlock(
+        sprint_id=sprint_id,
+        sprint_day=_safe_int(data.get("current_day")),
+        completed_measures=_safe_int(data.get("measures_completed")),
+        blocked_measures=_safe_int(data.get("measures_blocked")),
+    )
+
+
+def collect_fleet_block(
+    pi_noir_dir: Path = DEFAULT_FLEET_DIR,
+    *,
+    now: float | None = None,
+    freshness_s: float = FLEET_FRESHNESS_S,
+) -> FleetBlock:
+    """Count Pi NoIR edge daemons + classify online by mtime.
+
+    Each Pi (desk / room / overhead) writes its IR state JSON to
+    ``~/hapax-state/pi-noir/{role}.json`` on every successful POST.
+    ``*-cadence.json`` siblings hold per-Pi cadence config and are
+    not heartbeats — exclude from the count. Total = number of role
+    files; online = count where stat().st_mtime is within
+    ``freshness_s`` seconds of wall clock. Missing dir is
+    pre-rollout (no Pis configured yet).
+    """
+    if not pi_noir_dir.exists() or not pi_noir_dir.is_dir():
+        return FleetBlock()
+    try:
+        candidates = [p for p in pi_noir_dir.glob("*.json") if not p.stem.endswith("-cadence")]
+    except OSError:
+        log.debug("pi-noir dir unreadable at %s", pi_noir_dir)
+        aggregator_source_failures_total.labels(source="hardware_fleet").inc()
+        return FleetBlock()
+    cutoff = (now if now is not None else time.time()) - freshness_s
+    pi_count_online = sum(1 for p in candidates if _safe_mtime(p) >= cutoff)
+    return FleetBlock(
+        pi_count_total=len(candidates),
+        pi_count_online=pi_count_online,
+    )
+
+
+def collect_publishing_block(
+    publish_dir: Path = DEFAULT_PUBLISH_DIR,
+    *,
+    now: float | None = None,
+    window_s: float = PUBLISH_COUNT_WINDOW_S,
+) -> PublishingBlock:
+    """Compose publishing-pipeline counters from the publish/ tree.
+
+    Publication-bus persistence layout: ``inbox/`` queued items,
+    ``draft/`` in-flight, ``published/`` completed. Counts are file
+    counts (one item per file). ``published_24h`` filters by mtime;
+    ``last_publish_at`` is the max mtime in published/. Missing tree
+    is pre-rollout — bus configured but no items queued/published.
+    """
+    if not publish_dir.exists() or not publish_dir.is_dir():
+        return PublishingBlock()
+    inbox_count = _count_dir_files(publish_dir / "inbox")
+    in_flight_count = _count_dir_files(publish_dir / "draft")
+    published_dir = publish_dir / "published"
+    if not published_dir.exists() or not published_dir.is_dir():
+        return PublishingBlock(
+            inbox_count=inbox_count,
+            in_flight_count=in_flight_count,
+        )
+    cutoff_24h = (now if now is not None else time.time()) - window_s
+    published_24h = 0
+    last_mtime = 0.0
+    try:
+        for entry in published_dir.iterdir():
+            if not entry.is_file():
+                continue
+            mtime = _safe_mtime(entry)
+            if mtime >= cutoff_24h:
+                published_24h += 1
+            if mtime > last_mtime:
+                last_mtime = mtime
+    except OSError:
+        log.debug("publish/published dir unreadable at %s", published_dir)
+        aggregator_source_failures_total.labels(source="publishing_pipeline").inc()
+        return PublishingBlock(
+            inbox_count=inbox_count,
+            in_flight_count=in_flight_count,
+        )
+    last_publish_at: datetime | None = None
+    if last_mtime > 0:
+        last_publish_at = datetime.fromtimestamp(last_mtime, tz=UTC)
+    return PublishingBlock(
+        inbox_count=inbox_count,
+        in_flight_count=in_flight_count,
+        published_24h=published_24h,
+        last_publish_at=last_publish_at,
+    )
+
+
+def _count_dir_files(directory: Path) -> int:
+    """Count regular files in ``directory``; missing dir → 0."""
+    if not directory.exists() or not directory.is_dir():
+        return 0
+    try:
+        return sum(1 for entry in directory.iterdir() if entry.is_file())
+    except OSError:
+        return 0
+
+
+def _safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def _safe_int(value: object) -> int:
     try:
         return int(value) if value is not None else 0
@@ -277,23 +480,33 @@ class Aggregator:
         infra_snapshot_path: Path = DEFAULT_INFRA_SNAPSHOT,
         chronicle_events_path: Path = DEFAULT_CHRONICLE_EVENTS,
         monetization_log_path: Path = DEFAULT_PAYMENT_LOG_PATH,
+        stimmung_state_path: Path = DEFAULT_STIMMUNG_PATH,
+        sprint_state_path: Path = DEFAULT_SPRINT_PATH,
+        pi_noir_dir: Path = DEFAULT_FLEET_DIR,
+        publish_dir: Path = DEFAULT_PUBLISH_DIR,
         clock=None,
     ) -> None:
         self._refusals_log_path = refusals_log_path
         self._infra_snapshot_path = infra_snapshot_path
         self._chronicle_events_path = chronicle_events_path
         self._monetization_log_path = monetization_log_path
+        self._stimmung_state_path = stimmung_state_path
+        self._sprint_state_path = sprint_state_path
+        self._pi_noir_dir = pi_noir_dir
+        self._publish_dir = publish_dir
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def collect(self) -> AwarenessState:
-        """Build one AwarenessState by pulling each source.
+        """Build one AwarenessState by pulling each wired source.
 
-        Phase 2 wires 3 source helpers (refusals, health, stream)
-        plus the Phase-money-rails monetization source. Remaining
-        sub-blocks fall through to AwarenessState's default
-        factories (empty-typed instances) — surfaces see
-        dimmed/empty blocks for those categories until they're
-        wired.
+        Wires 8 source helpers: refusals_recent, health_system,
+        stream, monetization, daimonion_voice (stimmung overall
+        stance), time_sprint (obsidian sprint tracker),
+        hardware_fleet (pi-noir per-Pi heartbeats), publishing
+        (publish/ inbox/draft/published mtime). Remaining sub-blocks
+        (marketing_outreach, research_dispatches, music_soundcloud,
+        cross_account, governance, content_programmes) fall through
+        to default-empty until producer-side substrate ships.
         """
         return AwarenessState(
             timestamp=self._clock(),
@@ -301,18 +514,32 @@ class Aggregator:
             health_system=collect_health_block(self._infra_snapshot_path),
             stream=collect_stream_block(self._chronicle_events_path),
             monetization=collect_monetization_block(self._monetization_log_path),
+            daimonion_voice=collect_daimonion_block(self._stimmung_state_path),
+            time_sprint=collect_sprint_block(self._sprint_state_path),
+            hardware_fleet=collect_fleet_block(self._pi_noir_dir),
+            publishing_pipeline=collect_publishing_block(self._publish_dir),
         )
 
 
 __all__ = [
     "DEFAULT_CHRONICLE_EVENTS",
+    "DEFAULT_FLEET_DIR",
     "DEFAULT_INFRA_SNAPSHOT",
+    "DEFAULT_PUBLISH_DIR",
     "DEFAULT_REFUSALS_LOG",
+    "DEFAULT_SPRINT_PATH",
+    "DEFAULT_STIMMUNG_PATH",
+    "FLEET_FRESHNESS_S",
+    "PUBLISH_COUNT_WINDOW_S",
     "REFUSALS_TAIL_LIMIT",
     "STREAM_EVENT_WINDOW_S",
     "Aggregator",
     "aggregator_source_failures_total",
+    "collect_daimonion_block",
+    "collect_fleet_block",
     "collect_health_block",
+    "collect_publishing_block",
     "collect_refusals_recent",
+    "collect_sprint_block",
     "collect_stream_block",
 ]

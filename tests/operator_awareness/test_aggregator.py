@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import UTC, datetime
 
 from agents.operator_awareness.aggregator import (
     Aggregator,
+    collect_daimonion_block,
+    collect_fleet_block,
     collect_health_block,
+    collect_publishing_block,
     collect_refusals_recent,
+    collect_sprint_block,
     collect_stream_block,
 )
 from agents.operator_awareness.state import HealthBlock
@@ -401,3 +406,273 @@ class TestSourceFailureMetric:
         monkeypatch.setattr(_Path, "open", _boom)
         collect_stream_block(path)
         assert self._label_value("stream") == before + 1
+
+
+# ── collect_daimonion_block ────────────────────────────────────────
+
+
+class TestCollectDaimonionBlock:
+    def test_missing_file_returns_default(self, tmp_path):
+        block = collect_daimonion_block(tmp_path / "absent.json")
+        assert block.stance == "unknown"
+        assert block.voice_session_active is False
+
+    def test_reads_overall_stance(self, tmp_path):
+        path = tmp_path / "stimmung.json"
+        path.write_text(
+            json.dumps({"overall_stance": "engaged", "health": {"value": 0.1}}),
+            encoding="utf-8",
+        )
+        block = collect_daimonion_block(path)
+        assert block.stance == "engaged"
+
+    def test_missing_stance_field_yields_unknown(self, tmp_path):
+        path = tmp_path / "stimmung.json"
+        path.write_text(json.dumps({"health": {}}), encoding="utf-8")
+        block = collect_daimonion_block(path)
+        assert block.stance == "unknown"
+
+    def test_malformed_json_returns_default(self, tmp_path):
+        path = tmp_path / "stimmung.json"
+        path.write_text("not json {", encoding="utf-8")
+        block = collect_daimonion_block(path)
+        assert block.stance == "unknown"
+
+
+# ── collect_sprint_block ───────────────────────────────────────────
+
+
+class TestCollectSprintBlock:
+    def test_missing_file_returns_default(self, tmp_path):
+        block = collect_sprint_block(tmp_path / "absent.json")
+        assert block.sprint_id == ""
+        assert block.sprint_day == 0
+        assert block.completed_measures == 0
+        assert block.blocked_measures == 0
+
+    def test_maps_tracker_fields(self, tmp_path):
+        path = tmp_path / "sprint.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "current_sprint": 0,
+                    "current_day": 28,
+                    "measures_completed": 14,
+                    "measures_blocked": 1,
+                    "measures_total": 28,
+                }
+            ),
+            encoding="utf-8",
+        )
+        block = collect_sprint_block(path)
+        assert block.sprint_id == "0"  # int coerced to string
+        assert block.sprint_day == 28
+        assert block.completed_measures == 14
+        assert block.blocked_measures == 1
+
+    def test_string_sprint_id_preserved(self, tmp_path):
+        path = tmp_path / "sprint.json"
+        path.write_text(
+            json.dumps({"current_sprint": "S2"}),
+            encoding="utf-8",
+        )
+        block = collect_sprint_block(path)
+        assert block.sprint_id == "S2"
+
+    def test_malformed_json_returns_default(self, tmp_path):
+        path = tmp_path / "sprint.json"
+        path.write_text("not json", encoding="utf-8")
+        block = collect_sprint_block(path)
+        assert block.sprint_id == ""
+
+
+# ── collect_fleet_block ────────────────────────────────────────────
+
+
+class TestCollectFleetBlock:
+    def test_missing_dir_returns_default(self, tmp_path):
+        block = collect_fleet_block(tmp_path / "absent")
+        assert block.pi_count_total == 0
+        assert block.pi_count_online == 0
+
+    def test_counts_role_files_excluding_cadence(self, tmp_path):
+        # 3 role files + 2 cadence files (not heartbeats)
+        for name in ("desk.json", "room.json", "overhead.json"):
+            (tmp_path / name).write_text("{}", encoding="utf-8")
+        for name in ("desk-cadence.json", "room-cadence.json"):
+            (tmp_path / name).write_text("{}", encoding="utf-8")
+        block = collect_fleet_block(tmp_path)
+        assert block.pi_count_total == 3
+
+    def test_online_count_uses_freshness_window(self, tmp_path):
+        fresh = tmp_path / "desk.json"
+        stale = tmp_path / "room.json"
+        fresh.write_text("{}", encoding="utf-8")
+        stale.write_text("{}", encoding="utf-8")
+        # Make stale file 5 minutes old.
+        old_mtime = time.time() - 300
+        os.utime(stale, (old_mtime, old_mtime))
+        block = collect_fleet_block(tmp_path, freshness_s=120.0)
+        assert block.pi_count_total == 2
+        assert block.pi_count_online == 1
+
+    def test_path_to_file_returns_default(self, tmp_path):
+        # Path exists but is not a directory.
+        path = tmp_path / "not-a-dir.json"
+        path.write_text("{}", encoding="utf-8")
+        block = collect_fleet_block(path)
+        assert block.pi_count_total == 0
+
+
+# ── collect_publishing_block ───────────────────────────────────────
+
+
+class TestCollectPublishingBlock:
+    def test_missing_dir_returns_default(self, tmp_path):
+        block = collect_publishing_block(tmp_path / "absent")
+        assert block.inbox_count == 0
+        assert block.in_flight_count == 0
+        assert block.published_24h == 0
+        assert block.last_publish_at is None
+
+    def test_counts_inbox_and_draft_files(self, tmp_path):
+        (tmp_path / "inbox").mkdir()
+        (tmp_path / "draft").mkdir()
+        (tmp_path / "inbox" / "a.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "inbox" / "b.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "draft" / "c.json").write_text("{}", encoding="utf-8")
+        block = collect_publishing_block(tmp_path)
+        assert block.inbox_count == 2
+        assert block.in_flight_count == 1
+        assert block.published_24h == 0
+        assert block.last_publish_at is None
+
+    def test_published_24h_window_filters_old(self, tmp_path):
+        published = tmp_path / "published"
+        published.mkdir()
+        recent = published / "today.json"
+        old = published / "month-old.json"
+        recent.write_text("{}", encoding="utf-8")
+        old.write_text("{}", encoding="utf-8")
+        # Make old file 30 days old.
+        old_mtime = time.time() - 30 * 86400
+        os.utime(old, (old_mtime, old_mtime))
+        block = collect_publishing_block(tmp_path)
+        assert block.published_24h == 1
+        # last_publish_at picks the max mtime → recent file.
+        assert block.last_publish_at is not None
+
+    def test_only_inbox_no_published_dir(self, tmp_path):
+        # Common case: queue exists but no completed publishes yet.
+        (tmp_path / "inbox").mkdir()
+        (tmp_path / "inbox" / "queued.json").write_text("{}", encoding="utf-8")
+        block = collect_publishing_block(tmp_path)
+        assert block.inbox_count == 1
+        assert block.published_24h == 0
+        assert block.last_publish_at is None
+
+
+# ── Aggregator with new sources wired ──────────────────────────────
+
+
+class TestAggregatorAllSourcesWired:
+    """Verifies the 4 new spec-mandated sources are wired in collect()."""
+
+    def test_collect_populates_daimonion_from_stimmung(self, tmp_path):
+        stimmung = tmp_path / "stim.json"
+        stimmung.write_text(json.dumps({"overall_stance": "cautious"}), encoding="utf-8")
+        agg = Aggregator(
+            refusals_log_path=tmp_path / "absent1",
+            infra_snapshot_path=tmp_path / "absent2",
+            chronicle_events_path=tmp_path / "absent3",
+            stimmung_state_path=stimmung,
+        )
+        state = agg.collect()
+        assert state.daimonion_voice.stance == "cautious"
+
+    def test_collect_populates_sprint(self, tmp_path):
+        sprint = tmp_path / "sprint.json"
+        sprint.write_text(
+            json.dumps(
+                {
+                    "current_sprint": 1,
+                    "current_day": 5,
+                    "measures_completed": 3,
+                    "measures_blocked": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        agg = Aggregator(
+            refusals_log_path=tmp_path / "absent1",
+            infra_snapshot_path=tmp_path / "absent2",
+            chronicle_events_path=tmp_path / "absent3",
+            sprint_state_path=sprint,
+        )
+        state = agg.collect()
+        assert state.time_sprint.sprint_id == "1"
+        assert state.time_sprint.sprint_day == 5
+        assert state.time_sprint.completed_measures == 3
+
+    def test_collect_populates_fleet_from_pi_noir_dir(self, tmp_path):
+        pi_noir = tmp_path / "pi-noir"
+        pi_noir.mkdir()
+        (pi_noir / "desk.json").write_text("{}", encoding="utf-8")
+        (pi_noir / "overhead.json").write_text("{}", encoding="utf-8")
+        agg = Aggregator(
+            refusals_log_path=tmp_path / "absent1",
+            infra_snapshot_path=tmp_path / "absent2",
+            chronicle_events_path=tmp_path / "absent3",
+            pi_noir_dir=pi_noir,
+        )
+        state = agg.collect()
+        assert state.hardware_fleet.pi_count_total == 2
+
+    def test_collect_populates_publishing(self, tmp_path):
+        publish = tmp_path / "publish"
+        (publish / "inbox").mkdir(parents=True)
+        (publish / "inbox" / "a.json").write_text("{}", encoding="utf-8")
+        agg = Aggregator(
+            refusals_log_path=tmp_path / "absent1",
+            infra_snapshot_path=tmp_path / "absent2",
+            chronicle_events_path=tmp_path / "absent3",
+            publish_dir=publish,
+        )
+        state = agg.collect()
+        assert state.publishing_pipeline.inbox_count == 1
+
+
+# ── Source failure metric — new sources ────────────────────────────
+
+
+class TestNewSourceFailureMetrics:
+    def _label_value(self, source: str) -> float:
+        from agents.operator_awareness.aggregator import (
+            aggregator_source_failures_total,
+        )
+
+        return aggregator_source_failures_total.labels(source=source)._value.get()
+
+    def test_daimonion_malformed_increments(self, tmp_path):
+        before = self._label_value("daimonion_voice")
+        path = tmp_path / "stim.json"
+        path.write_text("not json", encoding="utf-8")
+        collect_daimonion_block(path)
+        assert self._label_value("daimonion_voice") == before + 1
+
+    def test_sprint_malformed_increments(self, tmp_path):
+        before = self._label_value("time_sprint")
+        path = tmp_path / "sprint.json"
+        path.write_text("[1,2,3]", encoding="utf-8")  # list root, not dict
+        collect_sprint_block(path)
+        assert self._label_value("time_sprint") == before + 1
+
+    def test_daimonion_missing_does_not_increment(self, tmp_path):
+        before = self._label_value("daimonion_voice")
+        collect_daimonion_block(tmp_path / "missing.json")
+        assert self._label_value("daimonion_voice") == before
+
+    def test_sprint_missing_does_not_increment(self, tmp_path):
+        before = self._label_value("time_sprint")
+        collect_sprint_block(tmp_path / "missing.json")
+        assert self._label_value("time_sprint") == before
