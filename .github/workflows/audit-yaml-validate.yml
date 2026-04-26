@@ -1,0 +1,47 @@
+name: Audit-yaml schema validate
+
+# P-1 + P-7 enforcement. Runs scripts/validate-audit-yaml.py against any
+# audits/audit-PR-*.yaml file changed in a PR. Fails when the schema is
+# malformed OR (for tier-2 PRs) the cross-session invariant is violated
+# (authored_by == audited_by).
+
+on:
+  pull_request:
+    paths:
+      - 'audits/**'
+      - 'scripts/validate-audit-yaml.py'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install pyyaml
+        run: pip install pyyaml
+      - name: Validate any audit-PR-*.yaml in the PR diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'audits/audit-PR-*.yaml' || true)
+          if [ -z "$changed" ]; then
+            echo "no audit-PR-*.yaml changes"
+            exit 0
+          fi
+          fail=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if [ ! -f "$f" ]; then
+              echo "::warning::$f deleted in this PR; skipping schema check"
+              continue
+            fi
+            python scripts/validate-audit-yaml.py "$f" || fail=1
+          done <<< "$changed"
+          exit $fail
