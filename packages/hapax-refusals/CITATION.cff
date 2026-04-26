@@ -1,0 +1,101 @@
+cff-version: 1.2.0
+message: If you use this software in your research, please cite it as below.
+type: software
+title: hapax-refusals
+abstract: |
+  Refusal-as-data primitives extracted from the Hapax operating
+  environment. Implements the surface-floored RefusalGate (R-Tuning
+  post-emission verifier, Zhang et al. NAACL 2024 / arXiv 2311.09677)
+  with calibrated per-surface posterior floors (0.60-0.90) and the
+  refusal-as-data registry (append-only JSONL log of structured
+  refusal events). Drop-in wrapper around any LLM emission point: the
+  ``refuse_and_reroll`` helper turns a one-shot LLM call into a
+  bounded re-roll loop that rejects below-floor or unmatched
+  assertions and re-rolls with a stricter prompt addendum. Each
+  rejection is recorded as data, not narrative — citable substrate
+  for downstream calibration work.
+authors:
+- name: Hapax (Oudepode)
+  affiliation: Oudepode Studio
+- name: Claude Code (Anthropic)
+  affiliation: Anthropic
+- given-names: Ryan
+  family-names: Kleeberger
+  affiliation: Oudepode Studio
+repository-code: https://github.com/ryanklee/hapax-council
+url: https://github.com/ryanklee/hapax-council/tree/main/packages/hapax-refusals
+license: LicenseRef-PolyForm-Strict-1.0.0
+keywords:
+- refusal-gate
+- r-tuning
+- llm-safety
+- bayesian
+- calibration
+- claim-discipline
+- research-software
+- single-operator
+- infrastructure-as-argument
+references:
+- type: article
+  authors:
+  - given-names: Hanning
+    family-names: Zhang
+  - given-names: Shizhe
+    family-names: Diao
+  - given-names: Yong
+    family-names: Lin
+  - given-names: Yi
+    family-names: Mao
+  - given-names: Qizhe
+    family-names: Xie
+  - given-names: Xiang
+    family-names: Liu
+  - given-names: Heng
+    family-names: Ji
+  - given-names: Tong
+    family-names: Zhang
+  title: "R-Tuning: Instructing Large Language Models to Say 'I Don't Know'"
+  year: 2024
+  notes: "NAACL 2024; arXiv:2311.09677. Original prescription of the
+    refuse-rather-than-overcommit instruction-tuning regime that
+    motivates the post-emission verifier branch implemented here."
+- type: article
+  authors:
+  - given-names: Katherine
+    family-names: Tian
+  - given-names: Eric
+    family-names: Mitchell
+  - given-names: Allan
+    family-names: Zhou
+  - given-names: Archit
+    family-names: Sharma
+  - given-names: Rafael
+    family-names: Rafailov
+  - given-names: Huaxiu
+    family-names: Yao
+  - given-names: Chelsea
+    family-names: Finn
+  - given-names: Christopher D.
+    family-names: Manning
+  title: "Just Ask for Calibration: Strategies for Eliciting Calibrated
+    Confidence Scores from Language Models Fine-Tuned with Human
+    Feedback"
+  year: 2023
+  notes: "EMNLP 2023. Establishes that numeric confidences outperform
+    verbal qualifiers on ECE — supports rendering posteriors
+    numerically in the prompt envelope rather than translating them
+    into 'likely' / 'possibly'."
+preferred-citation:
+  type: software
+  title: "hapax-refusals: surface-floored refusal gate as drop-in for any LLM emission point"
+  authors:
+  - name: Hapax (Oudepode)
+  - name: Claude Code (Anthropic)
+  - given-names: Ryan
+    family-names: Kleeberger
+  year: 2026
+  url: https://hapax.weblog.lol/velocity-report-2026-04-25
+  notes: |
+    Authorship is dual Hapax + Claude Code. The operator's
+    contribution is structurally unsettled; this is celebrated as a
+    7th polysemic surface channel in the methodology, not erased.

@@ -1,0 +1,106 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hapax-refusals"
+version = "0.1.0"
+description = "Refusal-as-data primitives — surface-floored RefusalGate as a drop-in re-roll wrapper for any LLM emission point."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "LicenseRef-PolyForm-Strict-1.0.0"
+license-files = ["LICENSE.txt"]
+authors = [
+    { name = "Hapax (Oudepode)", email = "hapax@oudepode.studio" },
+    { name = "Claude Code", email = "noreply@anthropic.com" },
+]
+keywords = [
+    "refusal-gate",
+    "r-tuning",
+    "llm-safety",
+    "bayesian",
+    "calibration",
+    "claim-discipline",
+    "research-software",
+    "single-operator",
+    "infrastructure-as-argument",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/ryanklee/hapax-council"
+Repository = "https://github.com/ryanklee/hapax-council"
+"Bug Tracker" = "https://github.com/ryanklee/hapax-council/issues"
+"Methodology" = "https://hapax.weblog.lol/velocity-report-2026-04-25"
+"Citation" = "https://github.com/ryanklee/hapax-council/blob/main/packages/hapax-refusals/CITATION.cff"
+
+[project.optional-dependencies]
+metrics = [
+    "prometheus-client>=0.24.0",
+]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.14.0",
+    "prometheus-client>=0.24.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hapax_refusals"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/hapax_refusals/**",
+    "tests/**",
+    "README.md",
+    "LICENSE.txt",
+    "CITATION.cff",
+    "pyproject.toml",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "TCH",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hapax_refusals"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pydantic models need annotations available at runtime; TC003 is wrong here.
+"src/hapax_refusals/registry.py" = ["TC003"]
+# Test files instantiate Path / datetime at runtime — TC003 false-positive.
+"tests/**/*.py" = ["TC001", "TC002", "TC003"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
