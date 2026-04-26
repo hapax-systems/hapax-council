@@ -188,13 +188,26 @@ class ParecCapture:
             self._proc = None
 
     def read_window(self, window_samples: int) -> np.ndarray:
-        """Read one window of audio. Returns float32 normalised in [-1, 1]."""
+        """Read one window of audio. Returns float32 normalised in [-1, 1].
+
+        ``stdout.read(n)`` on a pipe with bufsize=0 returns *up to* n
+        bytes, not exactly n — partial reads are normal when the pipe
+        buffer is smaller than the requested window. Loop until we
+        either fill the buffer or hit a true EOF (``read`` returns b'').
+        """
         if self._proc is None or self._proc.stdout is None:
             raise RuntimeError("parec not started")
         n_bytes = window_samples * self.channels * _PAREC_SAMPLE_BYTES
-        raw = self._proc.stdout.read(n_bytes)
-        if len(raw) < n_bytes:
-            raise EOFError(f"parec underread: got {len(raw)}/{n_bytes} bytes")
+        chunks: list[bytes] = []
+        remaining = n_bytes
+        while remaining > 0:
+            chunk = self._proc.stdout.read(remaining)
+            if not chunk:
+                got = n_bytes - remaining
+                raise EOFError(f"parec EOF after {got}/{n_bytes} bytes")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
         # s32le → int32 → float32 in [-1, 1].
         arr = np.frombuffer(raw, dtype="<i4").reshape(window_samples, self.channels)
         return (arr.astype(np.float32) / 2_147_483_648.0).astype(np.float32, copy=False)
@@ -430,6 +443,13 @@ class FeedbackLoopDaemon:
         self._sd_notify(f"STATUS=watching {self._detector.channels} channels")
 
         while not self._stop_event.is_set():
+            # Kick the watchdog at the top of every loop iteration —
+            # including EOF-restart cycles and exception backoff. The
+            # tail-side WATCHDOG=1 alone fails systemd's WatchdogSec
+            # timer if parec hits sustained EOF (loop never reaches
+            # the tail). 4 reads/sec × WatchdogSec=120s gives a 480×
+            # safety margin in steady-state.
+            self._sd_notify("WATCHDOG=1")
             try:
                 buffer = self._capture.read_window(window_samples)
             except EOFError:

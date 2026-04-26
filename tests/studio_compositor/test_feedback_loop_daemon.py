@@ -136,6 +136,94 @@ class TestMakeWpctlAutoMute:
         assert "test-sink" in sink_used
 
 
+# ── partial-read regression ────────────────────────────────────────────────
+
+
+class TestParecCaptureReadWindow:
+    def test_assembles_partial_reads_into_full_window(self) -> None:
+        """``stdout.read(n)`` may return < n bytes per call. The wrapper
+        must loop until either n_bytes are accumulated or a true EOF
+        (``read`` returns b'') occurs. Pre-fix: any short read raised
+        EOFError; production hit this every ~400ms and entered a
+        restart-flap that watchdog-killed the service every 120s.
+        """
+        import io
+
+        import numpy as np
+
+        sample_rate = 48_000
+        window_samples = 12_000
+        channels = 14
+        n_bytes = window_samples * channels * 4
+        # Build the synthetic raw buffer (zeros).
+        full_buf = b"\x00" * n_bytes
+        # Wrap in a stub that doles out bytes in chunks of ~4096
+        # (smaller than the 168 KB window) — exact pipe-reads-short scenario.
+
+        class _ChunkedReader:
+            def __init__(self, data: bytes, chunk: int = 4096) -> None:
+                self._buf = io.BytesIO(data)
+                self._chunk = chunk
+
+            def read(self, n: int) -> bytes:
+                return self._buf.read(min(n, self._chunk))
+
+        capture = fld_daemon.ParecCapture(source="ignored", sample_rate_hz=sample_rate)
+        # Inject a fake Popen-shaped object.
+        capture._proc = type("FakeProc", (), {"stdout": _ChunkedReader(full_buf)})()  # type: ignore[assignment]
+        arr = capture.read_window(window_samples)
+        assert arr.shape == (window_samples, channels)
+        assert arr.dtype == np.float32
+
+    def test_raises_eoferror_only_on_true_eof(self) -> None:
+        """Empty read (``b''``) is the real EOF signal."""
+        capture = fld_daemon.ParecCapture(source="ignored")
+        capture._proc = type("FakeProc", (), {"stdout": __import__("io").BytesIO(b"")})()  # type: ignore[assignment]
+        with pytest.raises(EOFError, match="parec EOF"):
+            capture.read_window(window_samples=12_000)
+
+
+class TestRunLoopWatchdogKick:
+    def test_watchdog_kick_at_top_of_loop_survives_eof_flap(self) -> None:
+        """Pre-fix: EOF-restart loop never reached the tail-side WATCHDOG=1
+        kick, so sustained parec EOF starvation killed the service after
+        WatchdogSec. Post-fix: kick happens at the TOP of each iteration
+        regardless of whether read_window succeeds.
+        """
+        sd_calls: list[str] = []
+        capture = MagicMock(spec=fld_daemon.ParecCapture)
+        # Always raise EOFError — simulates parec stuck.
+        capture.read_window.side_effect = EOFError("simulated")
+        capture.start.return_value = None
+        capture.stop.return_value = None
+
+        daemon = fld_daemon.FeedbackLoopDaemon(
+            capture=capture,
+            auto_mute=MagicMock(),
+            awareness_writer=MagicMock(),
+            refusal_logger=MagicMock(),
+            notifier=MagicMock(),
+            counter_inc=MagicMock(),
+            sd_notify=lambda msg: sd_calls.append(msg),
+        )
+
+        import threading as _threading
+
+        def _stopper() -> None:
+            import time as _t
+
+            _t.sleep(0.5)
+            daemon.stop()
+
+        _threading.Thread(target=_stopper, daemon=True).start()
+        rc = daemon.run()
+        assert rc == 0
+        watchdog_kicks = [s for s in sd_calls if s == "WATCHDOG=1"]
+        assert len(watchdog_kicks) >= 1, (
+            f"watchdog should kick at top of EOF-restart cycles; got sd_calls={sd_calls}"
+        )
+
+
 # ── source discovery ───────────────────────────────────────────────────────
 
 
