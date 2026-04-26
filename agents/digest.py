@@ -396,7 +396,7 @@ async def main() -> None:
         digest_md = format_digest_md(digest)
 
         # Axiom enforcement check before write (Gap 8)
-        from agents._axiom_enforcer import enforce_output
+        from shared.axiom_enforcer import enforce_output
 
         enforcement = enforce_output(digest_md, "digest", DIGEST_MD_FILE)
         if not enforcement.allowed:

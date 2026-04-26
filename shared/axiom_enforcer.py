@@ -41,14 +41,15 @@ class EnforcementResult:
     allowed: bool
     violations: list[PatternViolation] = field(default_factory=list)
     quarantine_path: Path | None = None
-    audit_only: bool = False  # True during tuning period
+    audit_only: bool = False  # True only when caller passes block_enabled=False
 
 
 # ── Enforcement mode ─────────────────────────────────────────────────────────
-# Start in audit-only mode. Set AXIOM_ENFORCE_BLOCK=1 to enable T0 blocking.
+# Default ON per directive feedback_features_on_by_default 2026-04-25T20:55Z.
+# Operator opts out via AXIOM_ENFORCE_BLOCK=0 (emergency kill-switch).
 import os
 
-_BLOCK_ENABLED = os.environ.get("AXIOM_ENFORCE_BLOCK", "0") == "1"
+_BLOCK_ENABLED = os.environ.get("AXIOM_ENFORCE_BLOCK", "1") != "0"
 
 
 def _load_exceptions() -> dict[str, dict]:

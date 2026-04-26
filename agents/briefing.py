@@ -977,7 +977,7 @@ async def main() -> None:
         briefing_md = format_briefing_md(briefing)
 
         # Axiom enforcement check before write (Gap 8)
-        from agents._axiom_enforcer import enforce_output
+        from shared.axiom_enforcer import enforce_output
 
         enforcement = enforce_output(briefing_md, "briefing", BRIEFING_FILE)
         if not enforcement.allowed:
