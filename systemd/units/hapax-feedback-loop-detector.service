@@ -1,0 +1,27 @@
+[Unit]
+Description=Hapax L-12 feedback-loop detector + smooth auto-mute
+Documentation=https://github.com/ryanklee/hapax-council/pull/1517
+After=hapax-secrets.service pipewire.service
+PartOf=hapax.target
+Requires=hapax-secrets.service
+Wants=pipewire.service
+
+[Service]
+Type=notify
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/secrets.env
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.studio_compositor.feedback_loop_daemon
+Restart=always
+RestartSec=5s
+WatchdogSec=120s
+
+# Memory cap per cc-task spec.
+MemoryMax=200M
+
+# The detector reads from the existing parec capture; it must NOT be killed
+# under memory pressure ahead of less-load-bearing services. Default OOM
+# score (0) is fine — this is a safety service.
+OOMScoreAdjust=-100
+
+[Install]
+WantedBy=hapax.target

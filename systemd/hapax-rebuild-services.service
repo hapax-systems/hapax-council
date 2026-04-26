@@ -20,3 +20,6 @@ ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/project
 
 # hapax-mcp: pull-only (MCP server restarts on Claude Code reconnect)
 ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-mcp --sha-key hapax-mcp --pull-only
+
+# hapax-feedback-loop-detector: restart if detector core or daemon code changed
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-feedback-loop-detector.service --watch "agents/studio_compositor/feedback_loop_" --sha-key feedback-loop-detector
