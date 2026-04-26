@@ -1,4 +1,9 @@
-"""Forbidden-import CI guard for social-media client libraries.
+"""Forbidden-import CI guard for multi-user-platform client libraries.
+
+The "social_media" in the filename is shorthand: this guard covers
+all multi-user platform clients where engagement expectations
+collide with the single-operator axiom or the full-automation
+envelope.
 
 Per cc-tasks:
   - ``leverage-REFUSED-twitter-linkedin-substack-accounts``: Twitter/X,
@@ -8,6 +13,9 @@ Per cc-tasks:
     single-operator axiom precludes community moderation. Per
     ``awareness-refused-slack-discord-dm-bots`` precedent, slack and
     discord webhook clients are also refused.
+  - ``leverage-REFUSED-wikipedia-auto-edit``: Wikipedia is multi-user;
+    ToS forbids unflagged bot editing; flagged-bot path requires
+    operator-mediated edit-approval workflow.
 
 All refusals trace to ``feedback_full_automation_or_no_engagement``
 (operator constitutional directive 2026-04-25). The guard is a
@@ -15,9 +23,9 @@ grep-based test (no AST parsing required) that walks the agents/,
 shared/, scripts/, and logos/ trees.
 
 Bridgy POSSE fan-out from omg.lol weblog reaches Mastodon + Bluesky;
-that is the only authorized social fan-out path. Any direct social-
-media client adoption must go through a constitutional review that
-removes the underlying refusal.
+that is the only authorized social fan-out path. Wikipedia citations
+to Hapax can arrive organically via third-party editors who notice
+arXiv preprint / Zenodo DOI — daemon participation is unnecessary.
 
 Editing the forbidden list directly is governance-protected — these
 strings come out of the operator's constitutional posture and
@@ -45,14 +53,21 @@ FORBIDDEN_IMPORTS: Final[tuple[str, ...]] = (
     "discord.py",
     "slack_sdk",
     "slack-sdk",
+    # Per cc-task leverage-REFUSED-wikipedia-auto-edit
+    "pywikibot",
+    "mwclient",
 )
-"""Python clients for refused social-media + chat-platform surfaces.
+"""Python clients for refused multi-user-platform surfaces.
 
 The discord/slack additions are per
 ``leverage-REFUSED-discord-community`` and the
 ``awareness-refused-slack-discord-dm-bots`` precedent. Multi-user
 chat-platform community moderation violates the single-operator axiom;
-direct DM bots also violate the consent gate."""
+direct DM bots also violate the consent gate.
+
+The Wikipedia additions are per ``leverage-REFUSED-wikipedia-auto-edit``.
+Wikipedia ToS forbids unflagged bot editing; the flagged-bot path
+requires per-edit operator decisions, violating full-automation."""
 
 SCAN_ROOTS: Final[tuple[str, ...]] = (
     "agents",
