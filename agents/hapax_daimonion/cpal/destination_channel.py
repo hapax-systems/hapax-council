@@ -196,6 +196,46 @@ def resolve_target(destination: DestinationChannel) -> str | None:
     return LIVESTREAM_SINK
 
 
+# pw-cat ``--media-role`` values for each destination. The role
+# selects which WirePlumber role-based loopback the stream lands in.
+# ``Assistant`` for PRIVATE keeps the existing duck behavior + can be
+# routed to ``hapax-private`` via ``50-hapax-voice-duck.conf``.
+# ``Broadcast`` for LIVESTREAM is the new role added 2026-04-26 to
+# allow a per-destination split — it lands in
+# ``loopback.sink.role.broadcast`` whose ``preferred-target`` is
+# ``hapax-voice-fx-capture`` (broadcast chain). Without this split,
+# both kinds of stream share role=Assistant and wireplumber's policy
+# can't tell them apart, forcing the operator to choose between leak
+# protection and broadcast TTS.
+PRIVATE_MEDIA_ROLE: str = "Assistant"
+BROADCAST_MEDIA_ROLE: str = "Broadcast"
+
+
+def resolve_role(destination: DestinationChannel) -> str:
+    """Translate a ``DestinationChannel`` to a pw-cat ``--media-role``.
+
+    Behavior:
+
+    * ``PRIVATE`` → :data:`PRIVATE_MEDIA_ROLE` (``"Assistant"``).
+      Wireplumber's existing assistant role-based loopback handles
+      ducking + routing.
+    * ``LIVESTREAM`` → :data:`BROADCAST_MEDIA_ROLE` (``"Broadcast"``).
+      A separate role-based loopback (added 2026-04-26 to
+      ``50-hapax-voice-duck.conf``) routes Broadcast streams to
+      ``hapax-voice-fx-capture`` so they reach the livestream chain.
+
+    The split is what lets wireplumber simultaneously enforce the
+    ``feedback_l12_equals_livestream_invariant`` (livestream gets
+    voice) AND ``interpersonal_transparency`` (private cognition stays
+    on operator monitor). Before the split, both rules used
+    ``role=Assistant`` and wireplumber had to pick one target —
+    either broadcast (leak risk) or private (silent stream).
+    """
+    if destination == DestinationChannel.PRIVATE:
+        return PRIVATE_MEDIA_ROLE
+    return BROADCAST_MEDIA_ROLE
+
+
 class _DestinationCounter:
     """``hapax_tts_destination_total{destination}`` counter wrapper.
 
@@ -282,12 +322,15 @@ def classify_and_record(
 __all__ = [
     "DESTINATION_ROUTING_ENV",
     "DEFAULT_TARGET_ENV",
+    "BROADCAST_MEDIA_ROLE",
     "LIVESTREAM_SINK",
+    "PRIVATE_MEDIA_ROLE",
     "PRIVATE_SINK",
     "DestinationChannel",
     "classify_and_record",
     "classify_destination",
     "is_routing_active",
     "record_destination",
+    "resolve_role",
     "resolve_target",
 ]
