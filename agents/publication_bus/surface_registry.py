@@ -71,6 +71,11 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         automation_status=AutomationStatus.FULL_AUTO,
         api="S3",
     ),
+    "marketing-refusal-annex": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="local-file",
+        scope_note="renders refusal annex markdown to ~/hapax-state/publications/",
+    ),
     "omg-lol-weblog-bearer-fanout": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
