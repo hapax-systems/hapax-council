@@ -301,6 +301,10 @@ Destructive command detection strips quoted strings before matching to prevent f
 
 **Prediction monitor:** `agents/reverie_prediction_monitor.py` (1-min systemd timer) tracks 6 behavioral predictions + live operational metrics. Grafana dashboard at `localhost:3001/d/reverie-predictions/`. Prometheus scrape at 30s. Metrics at `/api/predictions/metrics`.
 
+## Citation Graph Mirror
+
+`agents/publication_bus/datacite_mirror.py` — daily GraphQL mirror of the operator's authored works from DataCite Commons (`https://api.datacite.org/graphql`, public + unauthenticated). Snapshots persist to `~/hapax-state/datacite-mirror/{iso-date}.json`; `compute_diff()` returns added/removed DOIs and citation-count deltas. systemd unit `hapax-datacite-mirror.{service,timer}` runs daily at 04:00 UTC. Operator action: set `HAPAX_OPERATOR_ORCID` env var (e.g. via `~/.config/hapax/datacite-mirror.env`) — daemon no-ops with `outcome=no-orcid-configured` until configured. Phase 2 (cred-gated): graph_publisher mints version-DOI under "Hapax Citation Graph" concept-DOI when diff is non-empty.
+
 ## Key Modules
 
 - **`shared/config.py`** — Model aliases (`fast`→gemini-flash, `balanced`→claude-sonnet, `local-fast`/`coding`/`reasoning`→TabbyAPI Command-R 35B EXL3 5bpw), `get_model_adaptive()` for stimmung-aware routing, LiteLLM/Qdrant clients
