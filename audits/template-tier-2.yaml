@@ -6,6 +6,12 @@
 pr_number: 0  # set to the GitHub PR number
 tier: 2
 
+# P-7 cross-session audit invariant — tier-2 PRs must be audited by a
+# peer session, not the author. authored_by != audited_by; both
+# required.
+authored_by: ""  # session role that authored the PR (alpha|beta|delta|epsilon|gamma)
+audited_by: ""   # peer session role that performed the audit; MUST differ from authored_by
+
 # Tier-1 fields
 tests_run: true   # was `uv run pytest <relevant>` green at merge-base + HEAD?
 lint_passed: true # was `uv run ruff check` + `uv run pyright` clean?

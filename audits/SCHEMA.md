@@ -16,7 +16,7 @@ A PR is one of three tiers, determined by what it touches:
 |---|---|---|---|
 | 0 | docs only (`.md`, `docs/**`, `CLAUDE.md`) | none beyond title/summary | 0 |
 | 1 | tests, scripts, configs (no daemon code) | `tests_run`, `lint_passed` | <30s |
-| 2 | daemon code (`agents/**`, `shared/**`, `logos/**`) | tier-1 fields PLUS the 4 substrate-truth fields below | ~2 min |
+| 2 | daemon code (`agents/**`, `shared/**`, `logos/**`) | tier-1 fields PLUS the 4 substrate-truth fields PLUS `authored_by` + `audited_by` (P-7 cross-session invariant; author ≠ auditor) | ~2 min |
 
 ## Tier-2 substrate-truth fields
 
@@ -46,6 +46,14 @@ A list (possibly empty) of file:line locations where any newly-introduced public
 
 Catches B1's 30-strong "defined but never called" cluster directly.
 
+### `authored_by` + `audited_by` (P-7 cross-session invariant)
+
+Two non-empty session-role strings (e.g. `"alpha"`, `"beta"`, `"delta"`, `"epsilon"`, `"gamma"`). The validator REJECTS any tier-2 audit-yaml where `authored_by == audited_by` — a session cannot audit its own merges.
+
+Why: the same session that wrote the PR is fluent in the same prose that produced the absence-class bug; an LLM-fluent self-audit shares the prior. Routing audit to a peer breaks that shared prior. P-7 of the epic.
+
+The four prior-cycle PRs that shipped without yamls (#1604, #1614, #1616, plus several B1-source clusters) are the failure mode. Once this PR lands, tier-2 PRs cannot merge without a peer-attested audit.
+
 ## File location
 
 Each PR ships its audit-yaml at `audits/audit-PR-<N>.yaml`. The yaml is part of the PR commit; CI validates the schema before merge.
@@ -54,11 +62,11 @@ For PRs landing without a yaml (most pre-P-1 PRs in flight): tier-0 default appl
 
 ## Sequencing
 
-P-1 is the schema + validator + templates only. Subsequent items in the epic:
+P-1 (schema + validator + templates) and P-7 (cross-session invariant) ship together in the same diff because P-7 is enforced inside the validator. Subsequent items in the epic:
 
-- **P-7** cross-session audit invariant — hook that prevents a session from auditing its own merges (audit goes to a peer); requires P-1 to define what an audit *is*
 - **P-3** substrate smoke tests — per-substrate fixtures that exercise the production path; complement to `production_path_verified`
 - **P-5** post-merge-trace.service — daemon-side runtime witness that confirms the production path actually fired post-merge (counterpart to the static attestation here)
+- **P-8** semgrep peer-module-glob-coherence — AST-level lint complement to the `peer_module_glob_match` attestation
 
 ## Cross-references
 

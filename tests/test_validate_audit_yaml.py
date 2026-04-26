@@ -33,6 +33,8 @@ def tier2_payload():
     return {
         "pr_number": 1234,
         "tier": 2,
+        "authored_by": "beta",
+        "audited_by": "alpha",
         "tests_run": True,
         "lint_passed": True,
         "data_flow_traced": True,
@@ -101,3 +103,36 @@ def test_tier_mismatch_invalidates(mod, tier2_payload) -> None:
 def test_pr_number_required(mod) -> None:
     errors = mod._validate({"tier": 0}, tier=0)
     assert any("pr_number" in e for e in errors)
+
+
+def test_p7_self_audit_is_rejected(mod, tier2_payload) -> None:
+    """P-7: a session cannot audit its own merges."""
+    tier2_payload["authored_by"] = "beta"
+    tier2_payload["audited_by"] = "beta"
+    errors = mod._validate(tier2_payload, tier=2)
+    assert any("authored_by == audited_by" in e for e in errors)
+
+
+def test_p7_missing_authored_by_invalidates(mod, tier2_payload) -> None:
+    del tier2_payload["authored_by"]
+    errors = mod._validate(tier2_payload, tier=2)
+    assert any("authored_by missing" in e for e in errors)
+
+
+def test_p7_missing_audited_by_invalidates(mod, tier2_payload) -> None:
+    del tier2_payload["audited_by"]
+    errors = mod._validate(tier2_payload, tier=2)
+    assert any("audited_by missing" in e for e in errors)
+
+
+def test_p7_does_not_apply_to_tier_0_or_1(mod) -> None:
+    """tier-0/1 PRs don't require the cross-session attestation."""
+    tier1_payload = {
+        "pr_number": 999,
+        "tier": 1,
+        "tests_run": True,
+        "lint_passed": True,
+        # no authored_by / audited_by
+    }
+    errors = mod._validate(tier1_payload, tier=1)
+    assert errors == []

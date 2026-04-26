@@ -61,6 +61,28 @@ def _validate(data: dict[str, Any], *, tier: int) -> list[str]:
                 if not isinstance(note, str) or not note.strip():
                     errors.append(f"{f} is false but {f}_note is missing or empty")
 
+        # P-7 cross-session audit invariant: a tier-2 PR's audit MUST come
+        # from a peer session, not the author. Both fields are required;
+        # equality is rejected. Self-auditing is the failure mode that
+        # made #1604/#1614/#1616 ship without yamls and the absence-class
+        # bugs slip past LLM-fluent attestation.
+        authored_by = data.get("authored_by")
+        audited_by = data.get("audited_by")
+        if not isinstance(authored_by, str) or not authored_by.strip():
+            errors.append("authored_by missing or not a non-empty string (tier-2 P-7 invariant)")
+        if not isinstance(audited_by, str) or not audited_by.strip():
+            errors.append("audited_by missing or not a non-empty string (tier-2 P-7 invariant)")
+        if (
+            isinstance(authored_by, str)
+            and isinstance(audited_by, str)
+            and authored_by.strip() == audited_by.strip()
+            and authored_by.strip()
+        ):
+            errors.append(
+                f"authored_by == audited_by ({authored_by!r}) — P-7 invariant: "
+                "tier-2 PRs must be audited by a peer session, not the author"
+            )
+
     return errors
 
 
