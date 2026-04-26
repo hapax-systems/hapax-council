@@ -1,0 +1,19 @@
+[Unit]
+Description=Hapax application stack — non-visual services
+# Top-level grouping target for the non-visual application stack:
+# broadcast/audio (mastodon-post, bluesky-post, omg-lol-fanout, channel-trailer,
+# live-cuepoints), awareness (operator-awareness), marketing/observability
+# (chronicle-quality-exporter, feedback-loop-detector, impingement-sampler,
+# quota-observability, youtube-telemetry), mail-monitor (watch-renewal,
+# weekly-digest), broadcast-orchestrator, discord-webhook.
+#
+# Sibling to hapax-visual-stack.target (which groups the visual surface
+# pipeline: imagination, logos, dmn, reverie, content-resolver, vla,
+# studio-compositor). Together these form the complete Hapax service stack.
+#
+# Pattern: dependent units declare `WantedBy=hapax.target`; enabling each
+# unit creates a symlink under `~/.config/systemd/user/hapax.target.wants/`,
+# and starting/stopping this target pulls the whole stack along.
+
+[Install]
+WantedBy=default.target

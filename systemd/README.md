@@ -32,6 +32,15 @@ Managed by:                         studio-fx-output  → ffmpeg /dev/video50
   llm-stack-analytics.service       31 timers         → sync, health, backups
 ```
 
+## Grouping Targets
+
+Two top-level grouping targets organise the application stack:
+
+- **`hapax-visual-stack.target`** — visual surface pipeline: `hapax-imagination`, `hapax-imagination-loop`, `hapax-logos`, `hapax-dmn`, `hapax-reverie`, `hapax-content-resolver`, `visual-layer-aggregator`, `studio-compositor`. Lists dependents explicitly via `Wants=`.
+- **`hapax.target`** — non-visual application services: broadcast/audio (`hapax-mastodon-post`, `hapax-bluesky-post`, `hapax-omg-lol-fanout`, `hapax-channel-trailer`, `hapax-live-cuepoints`), awareness (`hapax-operator-awareness`), marketing/observability (`hapax-chronicle-quality-exporter`, `hapax-feedback-loop-detector`, `hapax-impingement-sampler`, `hapax-quota-observability`, `hapax-youtube-telemetry`), mail-monitor (`hapax-mail-monitor-watch-renewal`, `hapax-mail-monitor-weekly-digest`), `hapax-broadcast-orchestrator`, `hapax-discord-webhook`. Dependent units declare `WantedBy=hapax.target`; enabling each unit creates a symlink under `~/.config/systemd/user/hapax.target.wants/`, and starting the target pulls the whole stack.
+
+Both targets are `WantedBy=default.target` so they activate on user login.
+
 ## Boot Sequence
 
 ```
