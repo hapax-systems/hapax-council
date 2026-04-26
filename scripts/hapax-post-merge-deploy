@@ -15,13 +15,33 @@
 #   systemd/units/*.service|timer  → cp + daemon-reload + restart
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
 #
-# Usage: hapax-post-merge-deploy <commit-sha>
+# Usage:
+#   hapax-post-merge-deploy <commit-sha>
+#       deploy classified files for the given commit
+#   hapax-post-merge-deploy --report-coverage <commit-sha>
+#       drift-report mode — exit 1 if any systemd/** path in the commit
+#       falls outside the case-globs above. Used by CI to catch the
+#       absence-class deploy bug where a new systemd unit lands at a
+#       path the deploy script doesn't case-match (P-4 of the
+#       absence-class-bug-prevention-and-remediation epic).
 #
 # Exits 0 if nothing needed deploying or all deploys succeeded.
-# Exits non-zero if any deploy step failed.
+# Exits non-zero if any deploy step failed (or, in --report-coverage
+# mode, if any systemd/** path is unclassified).
 set -euo pipefail
 
-SHA="${1:?commit SHA required}"
+REPORT_COVERAGE=0
+COVERAGE_FROM_STDIN=0
+SHA=""
+if [ "${1:-}" = "--report-coverage" ]; then
+    REPORT_COVERAGE=1
+    SHA="${2:?commit SHA required after --report-coverage}"
+elif [ "${1:-}" = "--report-coverage-stdin" ]; then
+    REPORT_COVERAGE=1
+    COVERAGE_FROM_STDIN=1
+else
+    SHA="${1:?commit SHA required}"
+fi
 REPO="$HOME/projects/hapax-council"
 PW_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
 WP_CONF_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
@@ -33,7 +53,12 @@ cd "$REPO"
 # pulled yet; git-show against an unfetched SHA would fail and falsely signal
 # "file deleted" to the per-file branches below.
 git fetch --quiet origin main 2>/dev/null || true
-FILES="$(git show --name-only --format='' "$SHA")"
+
+if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
+    FILES="$(cat)"
+else
+    FILES="$(git show --name-only --format='' "$SHA")"
+fi
 
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
 # to read commit-time content, decoupling the deploy decision from local
@@ -46,8 +71,13 @@ if [ -z "$FILES" ]; then
     exit 0
 fi
 
-# Classify the file list
+# Classify the file list. SYSTEMD_UNCLASSIFIED captures systemd/** paths
+# that DON'T match the case-globs below — used by --report-coverage to
+# catch the absence-class deploy bug where a new unit lands at a path
+# this script can't reach (P-4 of the absence-class-bug-prevention-and-
+# remediation epic).
 PW=(); WP=(); SYSTEMD=(); SCRIPTS=(); SCRIPT_PY=()
+SYSTEMD_UNCLASSIFIED=()
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     case "$f" in
@@ -56,8 +86,27 @@ while IFS= read -r f; do
         systemd/units/*.service|systemd/units/*.timer) SYSTEMD+=("$f") ;;
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
+        systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
+        systemd/README.md)                ;; # docs
+        systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;
     esac
 done <<< "$FILES"
+
+if [ "$REPORT_COVERAGE" = "1" ]; then
+    if [ "${#SYSTEMD_UNCLASSIFIED[@]}" -gt 0 ]; then
+        echo "ERROR: ${#SYSTEMD_UNCLASSIFIED[@]} systemd/** path(s) in $SHA fall outside hapax-post-merge-deploy case-globs:" >&2
+        for f in "${SYSTEMD_UNCLASSIFIED[@]}"; do
+            echo "  $f" >&2
+        done
+        echo "" >&2
+        echo "Either move the files to a covered glob (systemd/units/*.service|*.timer)" >&2
+        echo "or extend the case statement in hapax-post-merge-deploy. The current" >&2
+        echo "supported globs are documented at the top of the script." >&2
+        exit 1
+    fi
+    echo "ok: all systemd/** paths in $SHA are covered by case-globs"
+    exit 0
+fi
 
 DID_ANYTHING=0
 

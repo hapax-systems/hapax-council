@@ -1,0 +1,36 @@
+name: Post-merge deploy coverage
+
+# P-4 of the absence-class-bug-prevention-and-remediation epic. Fails
+# the PR when any systemd/** file is changed but doesn't match the
+# case-globs in scripts/hapax-post-merge-deploy. Catches the deploy-
+# path mismatch absence bug at merge time rather than at incident time.
+
+on:
+  pull_request:
+    paths:
+      - 'systemd/**'
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Compute changed systemd paths
+        id: changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'systemd/**')
+          printf '%s\n' "$changed" > /tmp/changed-systemd.txt
+          count=$(grep -cv '^$' /tmp/changed-systemd.txt || true)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - name: Run report-coverage
+        if: steps.changed.outputs.count != '0'
+        run: bash scripts/hapax-post-merge-deploy --report-coverage-stdin < /tmp/changed-systemd.txt
