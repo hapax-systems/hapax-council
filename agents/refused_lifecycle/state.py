@@ -42,6 +42,12 @@ class ProbeResult(BaseModel):
     evidence_url: str | None = None
     snippet: str | None = Field(default=None, max_length=500)
     error: str | None = None
+    # Conditional-GET state (populated by structural watcher; persisted
+    # back into task.evaluation_probe so the next probe sends If-None-Match
+    # / If-Modified-Since instead of burning a full GET).
+    etag: str | None = None
+    last_modified: str | None = None
+    fingerprint: str | None = None
 
 
 class TransitionEvent(BaseModel):

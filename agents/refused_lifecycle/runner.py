@@ -209,6 +209,13 @@ def apply_transition(
     metadata["refusal_history"] = history
     metadata["last_evaluated_at"] = now
 
+    # Round-trip evaluation_probe so watcher mutations (etag / last_lm /
+    # last_fingerprint persisted by the structural watcher's
+    # _persist_probe_state) survive the YAML rewrite. Without this the
+    # next probe burns a full GET every cycle instead of a 304 fast-path.
+    if task.evaluation_probe:
+        metadata["evaluation_probe"] = task.evaluation_probe
+
     if event.transition == "accepted":
         metadata["automation_status"] = "OFFERED"
         metadata["acceptance_evidence"] = {

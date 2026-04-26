@@ -136,6 +136,52 @@ class TestProbeUrl:
         assert result.snippet is not None
         assert "upload api" in result.snippet.lower()
 
+    @pytest.mark.asyncio
+    async def test_200_response_carries_etag_and_fingerprint(self):
+        """P0-2 regression: probe must round-trip ETag/LM/SHA so the next
+        probe sends conditional-GET headers instead of burning a full GET.
+        """
+        body = "stable policy text"
+        headers = {"ETag": '"abc123"', "Last-Modified": "Mon, 01 Apr 2026 12:00:00 GMT"}
+        task = _structural_task()
+        with patch(
+            "httpx.AsyncClient.get",
+            new=AsyncMock(return_value=_mock_response(200, body, headers)),
+        ):
+            result = await probe_url(task)
+        assert result.etag == '"abc123"'
+        assert result.last_modified == "Mon, 01 Apr 2026 12:00:00 GMT"
+        assert result.fingerprint is not None
+        assert len(result.fingerprint) == 64  # sha256 hex
+
+    @pytest.mark.asyncio
+    async def test_304_preserves_previous_etag(self):
+        # 304 carries no body; ETag/LM should still survive into the next probe
+        task = _structural_task(last_etag='"prev"', last_fingerprint="prev-sha")
+        with patch(
+            "httpx.AsyncClient.get",
+            new=AsyncMock(return_value=_mock_response(304)),
+        ):
+            result = await probe_url(task)
+        assert result.changed is False
+        assert result.etag == '"prev"'
+        assert result.fingerprint == "prev-sha"
+
+    @pytest.mark.asyncio
+    async def test_conditional_get_sends_if_none_match_header(self):
+        # When task.evaluation_probe.last_etag is populated, the probe must
+        # send If-None-Match. Verify by capturing the headers passed to httpx.
+        task = _structural_task(last_etag='"persisted"')
+        captured = {}
+
+        async def _capture(self, url, headers=None):
+            captured["headers"] = headers or {}
+            return _mock_response(304)
+
+        with patch("httpx.AsyncClient.get", new=_capture):
+            await probe_url(task)
+        assert captured["headers"].get("If-None-Match") == '"persisted"'
+
 
 # ── cadence_for_task ───────────────────────────────────────────────
 

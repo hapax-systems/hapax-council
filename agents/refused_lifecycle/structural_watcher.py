@@ -113,8 +113,17 @@ async def probe_url(task: RefusalTask) -> ProbeResult:
         probe_failures_total.labels(trigger="structural", slug=task.slug, reason="http-error").inc()
         return ProbeResult(changed=False, error=f"http: {exc!r}")
 
+    resp_etag = resp.headers.get("ETag")
+    resp_lm = resp.headers.get("Last-Modified")
+
     if resp.status_code == 304:
-        return ProbeResult(changed=False)
+        # 304 carries no body; preserve previous ETag/LM if server omitted them
+        return ProbeResult(
+            changed=False,
+            etag=resp_etag or probe.get("last_etag"),
+            last_modified=resp_lm or probe.get("last_lm"),
+            fingerprint=probe.get("last_fingerprint"),
+        )
     if resp.status_code >= 400:
         probe_failures_total.labels(
             trigger="structural", slug=task.slug, reason=f"http-{resp.status_code}"
@@ -124,20 +133,34 @@ async def probe_url(task: RefusalTask) -> ProbeResult:
     body = resp.text
     fingerprint = hashlib.sha256(body.encode()).hexdigest()
     if fingerprint == probe.get("last_fingerprint"):
-        return ProbeResult(changed=False)
+        return ProbeResult(
+            changed=False,
+            etag=resp_etag,
+            last_modified=resp_lm,
+            fingerprint=fingerprint,
+        )
 
     keywords = probe.get("lift_keywords") or []
     body_lower = body.lower()
     matched_keyword = next((kw for kw in keywords if kw.lower() in body_lower), None)
     if matched_keyword is None:
-        # Content changed but not in lift direction — re-affirm
-        return ProbeResult(changed=False)
+        # Content changed but not in lift direction — re-affirm; still persist
+        # the new fingerprint/etag so the next probe gets a fast 304 path
+        return ProbeResult(
+            changed=False,
+            etag=resp_etag,
+            last_modified=resp_lm,
+            fingerprint=fingerprint,
+        )
 
     snippet = extract_snippet_around_keyword(body, keywords)
     return ProbeResult(
         changed=True,
         evidence_url=str(resp.url),
         snippet=snippet[:SNIPPET_MAX_CHARS],
+        etag=resp_etag,
+        last_modified=resp_lm,
+        fingerprint=fingerprint,
     )
 
 
@@ -164,6 +187,9 @@ async def _tick_async(now: datetime, active_dir: Path) -> int:
         if task.next_evaluation_at and task.next_evaluation_at > now:
             continue
         result = await probe_url(task)
+        # Persist conditional-GET state BEFORE apply_transition so the
+        # frontmatter rewrite captures the latest ETag / LM / fingerprint
+        _persist_probe_state(task, result.etag, result.last_modified, result.fingerprint)
         event = decide_transition(task, [result])
         # Cadence-decision feeds the next_evaluation_at reset
         cadence = cadence_for_task(task)

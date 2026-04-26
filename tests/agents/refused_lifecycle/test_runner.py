@@ -193,6 +193,39 @@ class TestApplyTransitionAccept:
 # ── apply_transition: removal ────────────────────────────────────────
 
 
+class TestApplyTransitionRoundTripsProbe:
+    """P0-2 regression: apply_transition must persist evaluation_probe so
+    watcher mutations (etag / last_lm / last_fingerprint) survive the YAML
+    rewrite. Without round-trip the next probe burns a full GET every cycle.
+    """
+
+    def test_evaluation_probe_round_trips(self, tmp_path: Path):
+        f = tmp_path / "x.md"
+        _write_task_file(f)
+        task = parse_frontmatter(f)
+        # Watcher mutated the in-memory probe state (simulating
+        # _persist_probe_state having run with new etag/fingerprint)
+        task.evaluation_probe = {
+            "url": "https://example.com",
+            "last_etag": '"new-etag"',
+            "last_fingerprint": "abc" * 21 + "x",
+            "lift_keywords": ["upload"],
+        }
+        event = TransitionEvent(
+            timestamp=_NOW,
+            cc_task_slug=task.slug,
+            from_state="REFUSED",
+            to_state="REFUSED",
+            transition="re-affirmed",
+            trigger=["structural"],
+            reason="probe-content-unchanged",
+        )
+        apply_transition(f, task, event, _NOW)
+        task2 = parse_frontmatter(f)
+        assert task2.evaluation_probe["last_etag"] == '"new-etag"'
+        assert task2.evaluation_probe["last_fingerprint"] == "abc" * 21 + "x"
+
+
 class TestApplyTransitionRemoval:
     def test_status_flipped_to_removed(self, tmp_path: Path):
         f = tmp_path / "x.md"
