@@ -330,7 +330,16 @@ class TestFeedbackLoopDaemon:
         silent_buf = np.zeros((window_samples, 14), dtype=np.float32)
 
         # Seed with silence (so baseline = floor 1e-6), then 2× sine to fire.
-        capture.read_window.side_effect = [silent_buf, sine_buf, sine_buf, EOFError("done")]
+        # sustain_windows defaults to 4 post-deploy → need silence seed +
+        # 4 sine windows to fire.
+        capture.read_window.side_effect = [
+            silent_buf,
+            sine_buf,
+            sine_buf,
+            sine_buf,
+            sine_buf,
+            EOFError("done"),
+        ]
         capture.start.return_value = None
         capture.stop.return_value = None
 

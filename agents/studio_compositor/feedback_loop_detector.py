@@ -78,11 +78,19 @@ oscillation peaks from broadband musical content."""
 DEFAULT_BASELINE_TAU_S = 10.0
 """Time constant for the exponentially-weighted baseline RMS."""
 
-# Trigger thresholds (research §Trigger condition). All conservative.
+# Trigger thresholds (research §Trigger condition). Field-tuned post-deploy.
 DEFAULT_PEAK_OVER_BASELINE_DB = 12.0
-DEFAULT_SPECTRAL_RATIO_DB = 6.0
-DEFAULT_SUSTAIN_WINDOWS = 2
-"""Both conditions must hold across two consecutive 250 ms windows."""
+DEFAULT_SPECTRAL_RATIO_DB = 12.0
+"""Spectral peak/RMS ratio threshold. Bumped from 6 → 12 dB after field
+deploy: sustained vocal notes, MPC sample loops, synth tails routinely
+hit 20–26 dB, well above the 6 dB design threshold but below feedback-
+whistle territory (typically 25+ dB on a single bin). 12 dB filters
+mid-content while keeping feedback whistle margin."""
+DEFAULT_SUSTAIN_WINDOWS = 4
+"""Both conditions must hold across four consecutive 250 ms windows
+(≥ 1 s sustained). Bumped from 2 → 4: real digital feedback whistles
+persist until something corrects them (operator action, auto-mute);
+musical content rarely sustains a single peak frequency for 1+ s."""
 
 DEFAULT_COOLDOWN_S = 30.0
 """Per-channel re-arm timeout after a trigger fires."""
