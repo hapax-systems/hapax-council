@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax omg.lol statuslog fanout — single-tick public-safe summary post
+After=hapax-secrets.service hapax-operator-awareness.service
+Requires=hapax-secrets.service
+PartOf=hapax.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/.local/bin/uv run python -m agents.operator_awareness.omg_lol_fanout
+TimeoutStartSec=60s
+MemoryMax=256M

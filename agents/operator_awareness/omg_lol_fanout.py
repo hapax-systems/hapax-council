@@ -183,12 +183,80 @@ def fanout(
     return "http_error"
 
 
+def fanout_once(
+    state_path: Path = DEFAULT_STATE_PATH,
+    *,
+    address: str | None = None,
+    token: str | None = None,
+    last_hash_path: Path = DEFAULT_LAST_HASH_PATH,
+) -> str:
+    """Single-tick fanout entry — read state.json + post once.
+
+    Reads the canonical awareness state from ``state_path``,
+    pulls credentials from ``HAPAX_OMG_LOL_ADDRESS`` and
+    ``HAPAX_OMG_LOL_TOKEN`` env vars when not passed explicitly
+    (the systemd timer wires this via the secrets EnvironmentFile),
+    and delegates to :func:`fanout`. Designed for hourly invocation
+    from ``hapax-omg-lol-fanout.service`` — exits 0 on any outcome
+    (fanout treats network errors as "skip this hour" to avoid
+    timer-restart loops on transient API outages).
+
+    Returns the same outcome label as :func:`fanout`, plus
+    ``"no_state"`` when the awareness spine hasn't published yet
+    and ``"no_creds"`` when env vars are missing.
+    """
+    if address is None:
+        address = os.environ.get("HAPAX_OMG_LOL_ADDRESS", "")
+    if token is None:
+        token = os.environ.get("HAPAX_OMG_LOL_TOKEN", "")
+    if not address or not token:
+        log.info("omg.lol fanout skipped: missing address/token env vars")
+        _record("no_creds")
+        return "no_creds"
+    if not state_path.exists():
+        log.info("omg.lol fanout skipped: %s does not exist yet", state_path)
+        _record("no_state")
+        return "no_state"
+    try:
+        state = AwarenessState.model_validate_json(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        log.warning("omg.lol fanout skipped: cannot parse %s", state_path, exc_info=True)
+        _record("no_state")
+        return "no_state"
+    return fanout(
+        state,
+        address=address,
+        token=token,
+        last_hash_path=last_hash_path,
+    )
+
+
+def main() -> int:
+    """CLI entry: ``uv run python -m agents.operator_awareness.omg_lol_fanout``."""
+    logging.basicConfig(
+        level=os.environ.get("HAPAX_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    outcome = fanout_once()
+    log.info("omg.lol fanout outcome: %s", outcome)
+    # Always exit 0 — the systemd timer should fire on cadence, not
+    # crash-restart on a single bad tick. Outcomes are visible via
+    # the Prometheus counter + journalctl.
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
 __all__ = [
     "DEFAULT_LAST_HASH_PATH",
     "DEFAULT_STATE_PATH",
     "OMG_LOL_API_URL",
     "STATUS_TEXT_BUDGET",
     "fanout",
+    "fanout_once",
     "hapax_awareness_omg_lol_posts_total",
+    "main",
     "render_status",
 ]

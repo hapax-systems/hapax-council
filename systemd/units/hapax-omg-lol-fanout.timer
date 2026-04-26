@@ -1,0 +1,16 @@
+[Unit]
+Description=Hourly cadence for omg.lol statuslog public-safe fanout
+PartOf=hapax.target
+
+[Timer]
+# Hourly cadence per cc-task awareness-omg-lol-public-safe-filter spec.
+# Persistent=true catches up missed firings after a sleep/reboot rather
+# than waiting for the next OnCalendar tick — single-operator workstation
+# is offline overnight, so the morning catch-up post is the right shape.
+OnCalendar=hourly
+RandomizedDelaySec=120
+Persistent=true
+Unit=hapax-omg-lol-fanout.service
+
+[Install]
+WantedBy=hapax.target

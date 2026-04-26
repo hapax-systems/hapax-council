@@ -206,3 +206,55 @@ class TestFanout:
         )
         body = sess.post.call_args.kwargs["json"]
         assert body["skip_mastodon_post"] is True
+
+
+# ── fanout_once / CLI entry ────────────────────────────────────────
+
+
+class TestFanoutOnce:
+    """Exercises the systemd-timer-driven entry point."""
+
+    def test_no_creds_returns_skip(self, tmp_path, monkeypatch):
+        from agents.operator_awareness.omg_lol_fanout import fanout_once
+
+        monkeypatch.delenv("HAPAX_OMG_LOL_ADDRESS", raising=False)
+        monkeypatch.delenv("HAPAX_OMG_LOL_TOKEN", raising=False)
+        outcome = fanout_once(
+            state_path=tmp_path / "state.json",
+            last_hash_path=tmp_path / "hash.txt",
+        )
+        assert outcome == "no_creds"
+
+    def test_no_state_returns_skip(self, tmp_path):
+        from agents.operator_awareness.omg_lol_fanout import fanout_once
+
+        outcome = fanout_once(
+            state_path=tmp_path / "absent.json",
+            address="hapax",
+            token="t",
+            last_hash_path=tmp_path / "hash.txt",
+        )
+        assert outcome == "no_state"
+
+    def test_malformed_state_returns_no_state(self, tmp_path):
+        from agents.operator_awareness.omg_lol_fanout import fanout_once
+
+        path = tmp_path / "state.json"
+        path.write_text("not json", encoding="utf-8")
+        outcome = fanout_once(
+            state_path=path,
+            address="hapax",
+            token="t",
+            last_hash_path=tmp_path / "hash.txt",
+        )
+        assert outcome == "no_state"
+
+    def test_main_exits_zero_even_on_skip(self, monkeypatch):
+        """systemd timer should not see an exit code that triggers
+        backoff just because there are no creds yet (catch-22 during
+        bootstrap). main() always returns 0."""
+        from agents.operator_awareness.omg_lol_fanout import main
+
+        monkeypatch.delenv("HAPAX_OMG_LOL_ADDRESS", raising=False)
+        monkeypatch.delenv("HAPAX_OMG_LOL_TOKEN", raising=False)
+        assert main() == 0
