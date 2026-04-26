@@ -48,6 +48,10 @@ def test_service_bootstrappers_match_keys_registry(mod):
 
 def test_pass_has_returns_false_for_unknown(mod):
     # Sentinel key the operator's pass-store will NEVER contain
+    import shutil
+
+    if shutil.which("pass") is None:
+        pytest.skip("pass CLI not available in this environment")
     assert mod.pass_has("hapax-test/sentinel-never-set") is False
 
 

@@ -78,6 +78,7 @@ class TestGetManifestSection:
 
 
 class TestQueryLangfuseCost:
+    @patch("shared.langfuse_client.LANGFUSE_PK", "pk-test")
     @patch("shared.langfuse_client.langfuse_get")
     def test_returns_cost_breakdown(self, mock_get):
         mock_get.return_value = {
@@ -99,6 +100,7 @@ class TestQueryLangfuseCost:
         assert "claude-sonnet" in result
         assert "0.05" in result or "0.06" in result
 
+    @patch("shared.langfuse_client.LANGFUSE_PK", "pk-test")
     @patch("shared.langfuse_client.langfuse_get", return_value={})
     def test_unavailable_returns_message(self, mock_get):
         result = query_langfuse_cost(days=7)
