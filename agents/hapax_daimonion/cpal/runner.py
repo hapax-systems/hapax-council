@@ -21,6 +21,7 @@ from pathlib import Path
 
 from agents.hapax_daimonion.cpal.destination_channel import (
     classify_and_record,
+    resolve_role,
     resolve_target,
 )
 from agents.hapax_daimonion.cpal.evaluator import CpalEvaluator
@@ -728,6 +729,7 @@ class CpalRunner:
             register = self._register_bridge.current_register()
             destination = classify_and_record(impingement, voice_register=register)
             destination_target = resolve_target(destination)
+            destination_role = resolve_role(destination)
 
             # T0 visual signal
             self._production.produce_t0(
@@ -751,6 +753,7 @@ class CpalRunner:
                         impingement,
                         register_hint=register_hint,
                         destination_target=destination_target,
+                        destination_role=destination_role,
                     )
                 except TypeError:
                     # Older pipelines without one of the new kwargs — fall
@@ -765,10 +768,19 @@ class CpalRunner:
                         await self._pipeline.generate_spontaneous_speech(
                             impingement,
                             register_hint=register_hint,
+                            destination_target=destination_target,
                         )
                     except TypeError:
                         try:
-                            await self._pipeline.generate_spontaneous_speech(impingement)
+                            await self._pipeline.generate_spontaneous_speech(
+                                impingement,
+                                register_hint=register_hint,
+                            )
+                        except TypeError:
+                            try:
+                                await self._pipeline.generate_spontaneous_speech(impingement)
+                            except Exception:
+                                log.debug("Spontaneous speech failed", exc_info=True)
                         except Exception:
                             log.debug("Spontaneous speech failed", exc_info=True)
                     except Exception:

@@ -34,7 +34,7 @@ class TestMediaRoleOnPersistentSubprocess:
             mock_proc = MagicMock()
             mock_proc.poll.return_value = None
             mock_popen.return_value = mock_proc
-            out._ensure_process(target=None)
+            out._ensure_process(target=None, media_role="Assistant")
 
         cmd = mock_popen.call_args[0][0]
         assert "pw-cat" in cmd
@@ -48,7 +48,7 @@ class TestMediaRoleOnPersistentSubprocess:
             mock_proc = MagicMock()
             mock_proc.poll.return_value = None
             mock_popen.return_value = mock_proc
-            out._ensure_process(target="hapax-voice-fx-capture")
+            out._ensure_process(target="hapax-voice-fx-capture", media_role="Assistant")
 
         cmd = mock_popen.call_args[0][0]
         assert "--media-role" in cmd
@@ -57,6 +57,43 @@ class TestMediaRoleOnPersistentSubprocess:
         # Sanity: --target still set
         target_idx = cmd.index("--target")
         assert cmd[target_idx + 1] == "hapax-voice-fx-capture"
+
+    def test_media_role_broadcast_routed_via_per_call_override(self) -> None:
+        """cc-task voice-broadcast-role-split — write(media_role="Broadcast")
+        spawns a separate subprocess with ``--media-role Broadcast`` so the
+        wireplumber loopback for ``loopback.sink.role.broadcast`` picks it
+        up, leaving the constructor-default Assistant subprocess untouched."""
+        out = PwAudioOutput(sample_rate=24000, channels=1, target=None)
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.poll.return_value = None
+            mock_proc.stdin = MagicMock()
+            mock_popen.return_value = mock_proc
+
+            out.write(b"\x00" * 100, target="hapax-voice-fx-capture", media_role="Broadcast")
+
+        cmd = mock_popen.call_args[0][0]
+        idx = cmd.index("--media-role")
+        assert cmd[idx + 1] == "Broadcast"
+        target_idx = cmd.index("--target")
+        assert cmd[target_idx + 1] == "hapax-voice-fx-capture"
+
+    def test_per_role_subprocesses_cached_independently(self) -> None:
+        """Two writes with different media_role values spawn TWO pw-cat
+        subprocesses, cached separately by the (target, role) key."""
+        out = PwAudioOutput(sample_rate=24000, channels=1, target="t1")
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.poll.return_value = None
+            mock_proc.stdin = MagicMock()
+            mock_popen.return_value = mock_proc
+
+            out.write(b"\x00" * 100, media_role="Assistant")
+            out.write(b"\x00" * 100, media_role="Broadcast")
+            out.write(b"\x00" * 100, media_role="Assistant")  # cache hit
+
+        # 2 unique (t1, Assistant) and (t1, Broadcast) → 2 spawns, third is cached.
+        assert mock_popen.call_count == 2
 
 
 class TestMediaRoleOnOneShotPlayback:

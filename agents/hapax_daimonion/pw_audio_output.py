@@ -46,10 +46,14 @@ class PwAudioOutput:
         self._rate = sample_rate
         self._channels = channels
         self._default_target = target
-        self._media_role = media_role
-        # One subprocess per distinct target. ``None`` keys the "no --target"
-        # invocation, which pw-cat routes via the system default sink.
-        self._processes: dict[str | None, subprocess.Popen] = {}
+        self._default_media_role = media_role
+        # One subprocess per distinct (target, media_role) tuple. ``None``
+        # in the target slot keys the "no --target" invocation, which
+        # pw-cat routes via the system default sink. The media_role is
+        # part of the cache key so private (role=Assistant) and broadcast
+        # (role=Broadcast) clips can route through different role-based
+        # loopback chains simultaneously without sharing a subprocess.
+        self._processes: dict[tuple[str | None, str], subprocess.Popen] = {}
         self._lock = threading.Lock()
 
     @property
@@ -57,12 +61,18 @@ class PwAudioOutput:
         """The target passed to ``__init__``. Used when ``write`` has no override."""
         return self._default_target
 
-    def _ensure_process(self, target: str | None) -> subprocess.Popen | None:
-        """Start or restart the pw-cat subprocess for ``target``.
+    @property
+    def default_media_role(self) -> str:
+        """The media_role passed to ``__init__``. Used when ``write`` has no override."""
+        return self._default_media_role
+
+    def _ensure_process(self, target: str | None, media_role: str) -> subprocess.Popen | None:
+        """Start or restart the pw-cat subprocess for ``(target, media_role)``.
 
         Must be called with ``self._lock`` held.
         """
-        existing = self._processes.get(target)
+        key = (target, media_role)
+        existing = self._processes.get(key)
         if existing is not None and existing.poll() is None:
             return existing
         try:
@@ -76,17 +86,20 @@ class PwAudioOutput:
                 str(self._rate),
                 "--channels",
                 str(self._channels),
-                # media.role=Assistant lets WirePlumber's role-based
-                # ducker (config/wireplumber/50-hapax-voice-duck.conf,
-                # linking.role-based.duck-level=0.3) lower bed-music
-                # streams while TTS is active. Without this tag the
-                # duck never fires — every untagged stream defaults
-                # to Multimedia per node.stream.default-media-role,
-                # so the duck sees "everything Multimedia, nothing
-                # Assistant" and does nothing. Surfaced in
-                # ~/.cache/hapax/relay/delta-ducking-gap-20260421-05h00.md.
+                # ``--media-role`` selects the WirePlumber role-based
+                # loopback the stream lands in. ``Assistant`` is the
+                # legacy ducker hook (50-hapax-voice-duck.conf,
+                # linking.role-based.duck-level=0.3). ``Broadcast`` is
+                # the 2026-04-26 split that lets livestream-classified
+                # clips route through their own loopback chain to
+                # broadcast WHILE private clips stay on Assistant
+                # (operator monitor). Without per-call role override,
+                # both classifications share one role and wireplumber
+                # has to pick a single target — see
+                # ``feedback_l12_equals_livestream_invariant`` +
+                # ``interpersonal_transparency`` tension.
                 "--media-role",
-                self._media_role,
+                media_role,
             ]
             if target:
                 cmd.extend(["--target", target])
@@ -97,22 +110,34 @@ class PwAudioOutput:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self._processes[target] = proc
+            self._processes[key] = proc
             log.info(
-                "pw-cat playback started (pid=%d, rate=%d, target=%s)",
+                "pw-cat playback started (pid=%d, rate=%d, target=%s, role=%s)",
                 proc.pid,
                 self._rate,
                 target or "<default>",
+                media_role,
             )
             return proc
         except FileNotFoundError:
             log.error("pw-cat not found — install pipewire")
             return None
         except Exception as exc:
-            log.warning("Failed to start pw-cat playback (target=%s): %s", target, exc)
+            log.warning(
+                "Failed to start pw-cat playback (target=%s, role=%s): %s",
+                target,
+                media_role,
+                exc,
+            )
             return None
 
-    def write(self, pcm: bytes, *, target: str | None = None) -> None:
+    def write(
+        self,
+        pcm: bytes,
+        *,
+        target: str | None = None,
+        media_role: str | None = None,
+    ) -> None:
         """Write PCM data to the playback stream. Thread-safe, blocking.
 
         Sleeps for the audio duration after writing so callers experience
@@ -121,9 +146,11 @@ class PwAudioOutput:
         and play back-to-back with no gaps.
 
         ``target`` overrides the constructor default for this call only.
-        The subprocess for the resolved target is spawned lazily and cached
-        for subsequent writes to the same sink. Omit (or pass ``None``) to
-        keep the legacy single-sink behavior.
+        ``media_role`` overrides the constructor default for this call only.
+        The subprocess for the resolved ``(target, media_role)`` tuple is
+        spawned lazily and cached for subsequent writes to the same combo.
+        Omit both (or pass ``None``) to keep the legacy single-sink
+        single-role behavior.
         """
         # Calculate audio duration before acquiring lock
         bytes_per_sample = 2  # int16
@@ -131,9 +158,11 @@ class PwAudioOutput:
         duration_s = n_samples / self._rate if self._rate > 0 else 0.0
 
         resolved_target = target if target is not None else self._default_target
+        resolved_role = media_role if media_role is not None else self._default_media_role
+        key = (resolved_target, resolved_role)
 
         with self._lock:
-            proc = self._ensure_process(resolved_target)
+            proc = self._ensure_process(resolved_target, resolved_role)
             if proc is None or proc.stdin is None:
                 return
             try:
@@ -141,17 +170,22 @@ class PwAudioOutput:
                 proc.stdin.flush()
             except BrokenPipeError:
                 log.warning(
-                    "pw-cat playback pipe broken (target=%s) — restarting",
+                    "pw-cat playback pipe broken (target=%s, role=%s) — restarting",
                     resolved_target or "<default>",
+                    resolved_role,
                 )
-                self._processes.pop(resolved_target, None)
-                proc = self._ensure_process(resolved_target)
+                self._processes.pop(key, None)
+                proc = self._ensure_process(resolved_target, resolved_role)
                 if proc is not None and proc.stdin is not None:
                     try:
                         proc.stdin.write(pcm)
                         proc.stdin.flush()
                     except Exception:
-                        log.warning("pw-cat retry failed (target=%s)", resolved_target)
+                        log.warning(
+                            "pw-cat retry failed (target=%s, role=%s)",
+                            resolved_target,
+                            resolved_role,
+                        )
                         return
 
         # Block for audio duration — paces sentence delivery
@@ -164,7 +198,7 @@ class PwAudioOutput:
     def close(self) -> None:
         """Terminate every pw-cat subprocess."""
         with self._lock:
-            for target, proc in list(self._processes.items()):
+            for key, proc in list(self._processes.items()):
                 try:
                     if proc.stdin is not None:
                         proc.stdin.close()
@@ -175,7 +209,7 @@ class PwAudioOutput:
                     proc.wait(timeout=3)
                 except Exception:
                     pass
-                self._processes.pop(target, None)
+                self._processes.pop(key, None)
 
 
 def play_pcm(
@@ -206,8 +240,10 @@ def play_pcm(
             # ducker dependency. play_pcm() handles chimes/samples,
             # which the operator hears alongside bed music; tagging
             # them as Assistant lets the duck fire for those too.
+            # Callers pass ``media_role="Notification"`` for chime
+            # playback, ``"Broadcast"`` for livestream samples.
             "--media-role",
-            self._media_role,
+            media_role,
         ]
         if target:
             cmd.extend(["--target", target])

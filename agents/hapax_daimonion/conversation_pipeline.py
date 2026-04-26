@@ -198,6 +198,7 @@ class ConversationPipeline:
         *,
         register_hint: str | None = None,
         destination_target: str | None = None,
+        destination_role: str | None = None,
     ) -> None:
         """Generate and speak a spontaneous utterance from an impingement.
 
@@ -315,7 +316,11 @@ class ConversationPipeline:
             text = response.choices[0].message.content.strip()
             if text and "[silence]" not in text.lower():
                 log.info("Spontaneous speech: %s", text[:80])
-                await self._speak_sentence(text, destination_target=destination_target)
+                await self._speak_sentence(
+                    text,
+                    destination_target=destination_target,
+                    destination_role=destination_role,
+                )
             else:
                 log.debug("Cascade recruited speech but LLM chose silence")
         except Exception:
@@ -1760,7 +1765,13 @@ class ConversationPipeline:
 
         self._last_user_topic = lower
 
-    async def _speak_sentence(self, text: str, *, destination_target: str | None = None) -> None:
+    async def _speak_sentence(
+        self,
+        text: str,
+        *,
+        destination_target: str | None = None,
+        destination_role: str | None = None,
+    ) -> None:
         """Synthesize and play a single sentence/clause.
 
         TTS runs in _tts_executor, audio write runs in _audio_executor.
@@ -1773,6 +1784,12 @@ class ConversationPipeline:
         route destination-specifically (conversation turns, bridge
         phrases, error messages) omit it and fall through to the audio
         output's default sink.
+
+        ``destination_role`` (optional) passes a per-utterance pw-cat
+        ``--media-role`` override. CPAL pairs this with
+        ``destination_target`` so livestream clips pick up the
+        ``Broadcast`` role (and its loopback chain) and private clips
+        pick up the ``Assistant`` role (and the legacy duck behavior).
         """
         if not self._running:
             return
@@ -1829,6 +1846,7 @@ class ConversationPipeline:
                     ec,
                     pcm,
                     destination_target,
+                    destination_role,
                 )
         except Exception:
             log.debug("TTS/playback failed for: %s", text[:50], exc_info=True)
@@ -1839,6 +1857,7 @@ class ConversationPipeline:
         echo_canceller,
         pcm: bytes,
         destination_target: str | None = None,
+        destination_role: str | None = None,
     ) -> None:
         """Write PCM to audio output and feed AEC reference. Runs in _audio_executor.
 
@@ -1849,22 +1868,36 @@ class ConversationPipeline:
         for this write only. Used by the sidechat-reply path to route
         private replies to ``hapax-private`` (24c RIGHT). Writes that do
         not pass a target remain on the default livestream subprocess.
+
+        ``destination_role`` overrides the audio output's default
+        ``--media-role`` for this write only. Together with
+        ``destination_target`` this lets the caller route a single clip
+        through the wireplumber loopback that matches its
+        :class:`DestinationChannel` (``Broadcast`` for livestream,
+        ``Assistant`` for private). ``None`` keeps the audio output's
+        constructor default.
         """
         try:
             if echo_canceller:
                 echo_canceller.feed_reference(pcm)
             else:
                 log.debug("_write_audio: echo_canceller is None!")
-            if destination_target is None:
+            if destination_target is None and destination_role is None:
                 audio_output.write(pcm)
                 return
+            kwargs: dict[str, str] = {}
+            if destination_target is not None:
+                kwargs["target"] = destination_target
+            if destination_role is not None:
+                kwargs["media_role"] = destination_role
             try:
-                audio_output.write(pcm, target=destination_target)
+                audio_output.write(pcm, **kwargs)
             except TypeError:
-                # Older audio-output shim that doesn't accept target=;
-                # fall through to the default sink rather than dropping.
+                # Older audio-output shim that doesn't accept target= /
+                # media_role=; fall through to the default sink/role
+                # rather than dropping.
                 log.debug(
-                    "audio output lacks target= kwarg; falling back to default sink",
+                    "audio output lacks target=/media_role= kwargs; falling back to default sink",
                     exc_info=True,
                 )
                 audio_output.write(pcm)

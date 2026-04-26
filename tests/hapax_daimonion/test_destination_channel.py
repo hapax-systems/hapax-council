@@ -23,14 +23,17 @@ import pytest
 
 from agents.hapax_daimonion.cpal import destination_channel
 from agents.hapax_daimonion.cpal.destination_channel import (
+    BROADCAST_MEDIA_ROLE,
     DEFAULT_TARGET_ENV,
     DESTINATION_ROUTING_ENV,
     LIVESTREAM_SINK,
+    PRIVATE_MEDIA_ROLE,
     PRIVATE_SINK,
     DestinationChannel,
     classify_and_record,
     classify_destination,
     is_routing_active,
+    resolve_role,
     resolve_target,
 )
 from shared.impingement import Impingement, ImpingementType
@@ -258,3 +261,27 @@ class TestModuleShape:
             classify_and_record(imp)
         joined = "\n".join(record.getMessage() for record in caplog.records)
         assert "REDACTED_SECRET_NOTE" not in joined
+
+
+# --- resolve_role (cc-task voice-broadcast-role-split) ----------------------
+
+
+class TestResolveRole:
+    """``resolve_role`` maps each :class:`DestinationChannel` to the
+    pw-cat ``--media-role`` value that selects the matching wireplumber
+    role-based loopback. Pin the mapping so an accidental swap doesn't
+    quietly route private cognition to broadcast (or vice-versa)."""
+
+    def test_private_resolves_to_assistant(self) -> None:
+        assert resolve_role(DestinationChannel.PRIVATE) == "Assistant"
+        assert resolve_role(DestinationChannel.PRIVATE) == PRIVATE_MEDIA_ROLE
+
+    def test_livestream_resolves_to_broadcast(self) -> None:
+        assert resolve_role(DestinationChannel.LIVESTREAM) == "Broadcast"
+        assert resolve_role(DestinationChannel.LIVESTREAM) == BROADCAST_MEDIA_ROLE
+
+    def test_role_constants_are_distinct(self) -> None:
+        """If somebody accidentally aliases one to the other, the
+        wireplumber loopback can't tell broadcast from private and the
+        leak returns. Pin the distinctness."""
+        assert PRIVATE_MEDIA_ROLE != BROADCAST_MEDIA_ROLE
