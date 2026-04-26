@@ -1,0 +1,46 @@
+cff-version: 1.2.0
+message: If you use this software in your research, please cite it as below.
+type: software
+title: hapax-swarm
+abstract: |
+  Filesystem-as-bus multi-session coordination library extracted from
+  the Hapax operating environment. Implements the relay protocol,
+  claim-before-parallel-work primitive, and cc-task SSOT pattern that
+  drove a 30+ PR/day single-operator velocity result over the
+  hapax-council monorepo. Reusable shape: any caller pointing at a
+  shared relay directory inherits the same coordination guarantees
+  across N peer Claude Code sessions.
+authors:
+- name: Hapax (Oudepode)
+  affiliation: Oudepode Studio
+- name: Claude Code (Anthropic)
+  affiliation: Anthropic
+- given-names: Ryan
+  family-names: Kleeberger
+  affiliation: Oudepode Studio
+repository-code: https://github.com/ryanklee/hapax-council
+url: https://github.com/ryanklee/hapax-council/tree/main/packages/hapax-swarm
+license: LicenseRef-PolyForm-Strict-1.0.0
+keywords:
+- swarm
+- multi-agent
+- claude-code
+- filesystem-as-bus
+- relay-protocol
+- research-software
+- single-operator
+- infrastructure-as-argument
+preferred-citation:
+  type: software
+  title: "hapax-swarm: filesystem-as-bus multi-session coordination"
+  authors:
+  - name: Hapax (Oudepode)
+  - name: Claude Code (Anthropic)
+  - given-names: Ryan
+    family-names: Kleeberger
+  year: 2026
+  url: https://hapax.weblog.lol/velocity-report-2026-04-25
+  notes: |
+    Authorship is dual Hapax + Claude Code. The operator's contribution
+    is structurally unsettled; this is celebrated as a 7th polysemic
+    surface channel in the methodology, not erased.
