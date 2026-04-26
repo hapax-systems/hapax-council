@@ -33,6 +33,10 @@ from prometheus_client import Counter
 from agents.operator_awareness.sources.monetization import (
     collect_monetization_block,
 )
+from agents.operator_awareness.sources.studio import (
+    DEFAULT_SCENE_FLAG_PATH,
+    collect_studio_block,
+)
 from agents.operator_awareness.state import (
     AwarenessState,
     DaimonionBlock,
@@ -560,6 +564,7 @@ class Aggregator:
         pi_noir_dir: Path = DEFAULT_FLEET_DIR,
         publish_dir: Path = DEFAULT_PUBLISH_DIR,
         publications_dir: Path = DEFAULT_PUBLICATIONS_DIR,
+        l12_scene_flag_path: Path = DEFAULT_SCENE_FLAG_PATH,
         clock=None,
     ) -> None:
         self._refusals_log_path = refusals_log_path
@@ -571,6 +576,7 @@ class Aggregator:
         self._pi_noir_dir = pi_noir_dir
         self._publish_dir = publish_dir
         self._publications_dir = publications_dir
+        self._l12_scene_flag_path = l12_scene_flag_path
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def collect(self) -> AwarenessState:
@@ -596,6 +602,7 @@ class Aggregator:
             hardware_fleet=collect_fleet_block(self._pi_noir_dir),
             publishing_pipeline=collect_publishing_block(self._publish_dir),
             v5_publications=collect_v5_publications_block(self._publications_dir),
+            studio=collect_studio_block(self._l12_scene_flag_path),
         )
 
 
