@@ -147,3 +147,45 @@ class TestSeedSlugs:
         assert len(REFUSAL_ANNEX_SLUGS) >= 8
         assert "declined-bandcamp" in REFUSAL_ANNEX_SLUGS
         assert "declined-alphaxiv" in REFUSAL_ANNEX_SLUGS
+
+
+class TestPublishAllAnnexesDispatchesThroughPublisher:
+    def test_routes_through_v5_publisher_chain(self, tmp_path: Path) -> None:
+        """Phase 2b: publish_all_annexes must go through RefusalAnnexPublisher
+        so the V5 pub-bus counter (and allowlist, legal-name guard) applies."""
+        from agents.marketing.refusal_annex_renderer import publish_all_annexes
+        from agents.publication_bus.publisher_kit.base import Publisher
+
+        log_path = tmp_path / "log.jsonl"
+        _write_log(
+            log_path,
+            [
+                {
+                    "timestamp": "2026-04-25T10:00:00+00:00",
+                    "axiom": "single_user",
+                    "surface": "publication-bus:bandcamp-upload",
+                    "reason": "manual upload only",
+                    "public": False,
+                    "refusal_brief_link": None,
+                },
+            ],
+        )
+
+        # Capture pub-bus counter state before publish
+        counter = Publisher._get_counter()
+        if counter is not None:
+            before = counter.labels(surface="marketing-refusal-annex", result="ok")._value.get()
+        else:
+            before = 0
+
+        output_dir = tmp_path / "publications"
+        written = publish_all_annexes(log_path=log_path, output_dir=output_dir)
+
+        # File written
+        assert "declined-bandcamp" in written
+        assert (output_dir / "refusal-annex-declined-bandcamp.md").exists()
+
+        # V5 pub-bus counter incremented
+        if counter is not None:
+            after = counter.labels(surface="marketing-refusal-annex", result="ok")._value.get()
+            assert after == before + 1

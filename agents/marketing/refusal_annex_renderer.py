@@ -232,24 +232,41 @@ def publish_all_annexes(
 ) -> dict[str, Path]:
     """Render every annex with at least one log entry + the series index.
 
+    Phase 2b dispatches each annex through
+    :class:`agents.marketing.refusal_annex_publisher.RefusalAnnexPublisher`
+    so the V5 publication-bus invariants (allowlist gate, legal-name-leak
+    guard, canonical Counter) apply to every write. The legacy
+    ``hapax_leverage_refusal_annexes_published_total`` counter
+    continues to record per-slug outcomes for backward compatibility.
+
     Returns ``{slug: output_path}`` for the per-annex files. The index
     file is always written (even when empty) so downstream tooling
     can rely on its existence.
     """
+    # Lazy import to avoid a hard import-cycle: the publisher module
+    # imports renderer constants (REFUSAL_ANNEX_SLUGS,
+    # PER_ANNEX_FILENAME_PREFIX, DEFAULT_ANNEX_OUTPUT_DIR) at module load.
+    from agents.marketing.refusal_annex_publisher import RefusalAnnexPublisher
+    from agents.publication_bus.publisher_kit import PublisherPayload
+
     output_dir.mkdir(parents=True, exist_ok=True)
     annexes = discover_annex_entries(log_path=log_path)
+    publisher = RefusalAnnexPublisher(output_dir=output_dir)
     written: dict[str, Path] = {}
 
     for annex in annexes:
         slug = annex["slug"]
-        path = output_dir / f"{PER_ANNEX_FILENAME_PREFIX}{slug}.md"
-        try:
-            path.write_text(render_annex(slug=slug, title=annex["title"], events=annex["events"]))
+        body = render_annex(slug=slug, title=annex["title"], events=annex["events"])
+        result = publisher.publish(PublisherPayload(target=slug, text=body))
+        if result.ok:
             refusal_annexes_published_total.labels(slug=slug, outcome="ok").inc()
-            written[slug] = path
-        except OSError as exc:  # pragma: no cover — defensive
-            log.warning("annex write failed for %s: %s", slug, exc)
+            written[slug] = output_dir / f"{PER_ANNEX_FILENAME_PREFIX}{slug}.md"
+        elif result.refused:
+            refusal_annexes_published_total.labels(slug=slug, outcome="refused").inc()
+            log.info("annex publish refused for %s: %s", slug, result.detail)
+        else:
             refusal_annexes_published_total.labels(slug=slug, outcome="write-failed").inc()
+            log.warning("annex publish errored for %s: %s", slug, result.detail)
 
     index_path = output_dir / INDEX_FILENAME
     index_path.write_text(render_index([annex["slug"] for annex in annexes]))
