@@ -94,6 +94,14 @@ export const api = {
   // Orientation
   orientation: () => invoke<import("./types").OrientationState>("get_orientation"),
 
+  // Refusals — first-class display surface for the refusal-as-data
+  // substrate. Polls the awareness API every 30s; SSE-driven refresh
+  // arrives via the awareness-tauri-sse-bridge cc-task (separate ship).
+  refusals: (limit = 50) =>
+    invoke<import("./types").RefusalsResponse>("proxy_get_generic", {
+      path: `/refusals?limit=${limit}`,
+    }),
+
   // Fortress
   fortressState: () => invoke<import("./types").FortressState>("proxy_fortress_state"),
   fortressGovernance: () =>

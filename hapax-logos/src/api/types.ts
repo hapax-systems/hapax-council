@@ -755,3 +755,22 @@ export interface FortressChronicleEntry {
 export interface FortressChronicle {
   entries: FortressChronicleEntry[];
 }
+
+// One refusal event from /api/refusals — raw individual, NEVER aggregated.
+// Constitutional load-bearing: per feedback_full_automation_or_no_engagement
+// + drop §3 fresh patterns, refusal events are first-class displayed
+// elements; UI must not collapse, summarize, or offer ack/dismiss/archive
+// affordances.
+export interface RefusalEvent {
+  timestamp: string; // ISO-8601 UTC
+  surface: string; // e.g. "twitter" / "linkedin" / "bandcamp"
+  reason: string; // short rationale string
+  refused_artifact_slug?: string | null;
+  // Optional axiom tag — surface field naming varies by emitter.
+  axiom?: string;
+}
+
+export interface RefusalsResponse {
+  refusals: RefusalEvent[];
+  total_in_window: number;
+}
