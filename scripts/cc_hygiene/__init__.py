@@ -10,4 +10,4 @@ Auto-actions are PR2 territory; this package is strictly observational.
 
 from __future__ import annotations
 
-__all__ = ["checks", "events", "models", "state"]
+__all__ = ["actions", "checks", "dashboard", "events", "models", "ntfy", "state"]

@@ -49,6 +49,11 @@ from cc_hygiene.checks import (
     check_wip_limit,
     parse_task_note,
 )
+from cc_hygiene.dashboard import (
+    DEFAULT_DASHBOARD_PATH,
+    DEFAULT_VAULT_ACTIVE,
+    update_dashboard,
+)
 from cc_hygiene.events import DEFAULT_EVENT_LOG_PATH, append_events
 from cc_hygiene.models import (
     CheckId,
@@ -58,6 +63,7 @@ from cc_hygiene.models import (
     SessionState,
     TaskNote,
 )
+from cc_hygiene.ntfy import DEFAULT_THROTTLE_PATH, dispatch_alerts
 from cc_hygiene.state import DEFAULT_STATE_PATH, write_state
 
 LOG = logging.getLogger("cc-hygiene-sweeper")
@@ -210,10 +216,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT)
     parser.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH)
     parser.add_argument("--event-log-path", type=Path, default=DEFAULT_EVENT_LOG_PATH)
+    parser.add_argument("--dashboard-path", type=Path, default=DEFAULT_DASHBOARD_PATH)
+    parser.add_argument("--vault-active", type=Path, default=DEFAULT_VAULT_ACTIVE)
+    parser.add_argument("--throttle-path", type=Path, default=DEFAULT_THROTTLE_PATH)
     parser.add_argument(
         "--no-write",
         action="store_true",
         help="Run the sweep but do not write event log or state JSON (diagnostic mode).",
+    )
+    parser.add_argument(
+        "--no-ntfy",
+        action="store_true",
+        help="Skip the PR5 ntfy dispatch (dashboard renderer still runs).",
+    )
+    parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="Skip the PR5 dashboard renderer (ntfy still runs).",
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
@@ -249,6 +268,28 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_write:
         append_events(state.events, state.sweep_timestamp, path=args.event_log_path)
         write_state(state, path=args.state_path)
+        # PR5 surface A — high-severity ntfy alerts (gated + throttled)
+        if not args.no_ntfy:
+            try:
+                dispatch_alerts(
+                    state.events,
+                    now=state.sweep_timestamp,
+                    throttle_path=args.throttle_path,
+                )
+            except Exception:  # noqa: BLE001
+                LOG.exception("ntfy dispatch raised; continuing")
+        # PR5 surface B — vault dashboard sentinel-block rewrite
+        if not args.no_dashboard:
+            try:
+                update_dashboard(
+                    state,
+                    dashboard_path=args.dashboard_path,
+                    event_log_path=args.event_log_path,
+                    vault_active=args.vault_active,
+                    now=state.sweep_timestamp,
+                )
+            except Exception:  # noqa: BLE001
+                LOG.exception("dashboard render raised; continuing")
     if args.verbose:
         for event in state.events:
             LOG.debug("%s: %s", event.check_id, event.message)
