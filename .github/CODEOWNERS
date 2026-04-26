@@ -16,9 +16,6 @@ axioms/                      @ryanklee
 hooks/                       @ryanklee
 systemd/                     @ryanklee
 
-# Backup scripts
-hapax-backup-*.sh            @ryanklee
-
 # Scripts
 scripts/                     @ryanklee
 
