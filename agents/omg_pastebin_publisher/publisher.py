@@ -13,6 +13,7 @@ pair plus a source-loader callback injected at construction.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
@@ -27,6 +28,28 @@ import yaml
 
 from shared.governance.omg_referent import OperatorNameLeak, safe_render
 from shared.governance.publication_allowlist import check as allowlist_check
+
+
+def _content_sha_excluding_compiled_stamp(content: str) -> str:
+    """SHA-256 of digest content with the ``_digest compiled:`` line stripped.
+
+    Closes the idempotency-flake bug surfaced by epsilon's inflection
+    20260426T034000Z. Each ``build_*_digest`` builder appends a
+    ``_digest compiled: <real-time-now>_`` metadata line; if two
+    consecutive ``publish_*`` calls straddle a second boundary (CI is
+    typically slower than local), the SHAs differ and the
+    "already published" short-circuit fails to fire — the second call
+    re-publishes instead of returning ``"unchanged"``.
+
+    Stripping the line before hashing keeps the SHA stable across
+    second-boundary calls without changing the published content (the
+    timestamp metadata is still rendered into the posted paste).
+    """
+    body = "\n".join(
+        line for line in content.splitlines() if not line.lstrip().startswith("_digest compiled:")
+    )
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
 
 log = logging.getLogger(__name__)
 
@@ -478,9 +501,8 @@ class PastebinArtifactPublisher:
             return "allowlist-denied"
 
         state_key = f"digest_sha_{slug}"
-        import hashlib
 
-        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        content_sha = _content_sha_excluding_compiled_stamp(content)
         persisted = self._read_state()
         if persisted.get(state_key) == content_sha:
             _record(self.CATEGORY_CHRONICLE, "unchanged")
@@ -558,9 +580,8 @@ class PastebinArtifactPublisher:
             return "allowlist-denied"
 
         state_key = f"digest_sha_{slug}"
-        import hashlib
 
-        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        content_sha = _content_sha_excluding_compiled_stamp(content)
         persisted = self._read_state()
         if persisted.get(state_key) == content_sha:
             _record(self.CATEGORY_PROGRAMME, "unchanged")
@@ -627,9 +648,8 @@ class PastebinArtifactPublisher:
             return "allowlist-denied"
 
         state_key = f"digest_sha_{slug}"
-        import hashlib
 
-        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        content_sha = _content_sha_excluding_compiled_stamp(content)
         persisted = self._read_state()
         if persisted.get(state_key) == content_sha:
             _record(self.CATEGORY_PRECEDENT, "unchanged")
@@ -697,9 +717,8 @@ class PastebinArtifactPublisher:
             return "allowlist-denied"
 
         state_key = f"digest_sha_{slug}"
-        import hashlib
 
-        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        content_sha = _content_sha_excluding_compiled_stamp(content)
         persisted = self._read_state()
         if persisted.get(state_key) == content_sha:
             _record(self.CATEGORY_RESEARCH, "unchanged")

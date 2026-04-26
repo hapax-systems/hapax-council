@@ -158,6 +158,33 @@ class TestPublisherProgrammeFlow:
         assert publisher.publish_programme("turntable-arc-01") == "published"
         assert publisher.publish_programme("turntable-arc-01") == "unchanged"
 
+    def test_idempotent_across_second_boundary(self, tmp_path: Path, monkeypatch) -> None:
+        """Regression for epsilon-flagged CI flake (inflection 20260426T034000Z).
+
+        ``build_programme_digest`` embeds ``datetime.now(UTC)`` in a
+        ``_digest compiled:`` line. If two consecutive ``publish_programme``
+        calls straddle a second boundary, the post-build SHAs differ
+        and the second call would re-publish instead of short-circuiting.
+        Patching ``datetime.now`` to advance by 1 s between calls
+        triggers the flake; the fix
+        (``_content_sha_excluding_compiled_stamp``) keeps SHA stable.
+        """
+        publisher = self._publisher(tmp_path, programmes=[_programme()])
+        from agents.omg_pastebin_publisher import publisher as pub_mod
+
+        clock = {"now": datetime(2026, 4, 26, 3, 55, 0, tzinfo=UTC)}
+
+        class _AdvancingDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                return clock["now"].replace(tzinfo=tz) if tz else clock["now"]
+
+        monkeypatch.setattr(pub_mod, "datetime", _AdvancingDatetime)
+        assert publisher.publish_programme("turntable-arc-01") == "published"
+        # Advance time past the second boundary.
+        clock["now"] = datetime(2026, 4, 26, 3, 55, 1, tzinfo=UTC)
+        assert publisher.publish_programme("turntable-arc-01") == "unchanged"
+
     def test_disabled_client_short_circuits(self, tmp_path: Path) -> None:
         publisher = self._publisher(
             tmp_path,
