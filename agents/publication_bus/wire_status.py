@@ -111,12 +111,15 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
     "agents.publication_bus.refusal_brief_publisher": WireEntry(
         module="agents.publication_bus.refusal_brief_publisher",
         surface_slug="zenodo-refusal-deposit",
-        status="CRED_BLOCKED",
-        pass_key_required="zenodo/api-token",
+        status="WIRED",
+        pass_key_required=None,
         rationale=(
-            "Zenodo deposit specialised for refusal-brief deposit-type per "
-            "drop-5 §2. RelatedIdentifier graph composition (IsRequiredBy + "
-            "IsObsoletedBy) ships with the publisher. Wire on Zenodo PAT."
+            "Wired via agents/refusal_brief_zenodo_adapter into "
+            "publish_orchestrator._DISPATCH_MAP entry "
+            "`zenodo-refusal-deposit`. Token from env HAPAX_ZENODO_TOKEN "
+            "(hapax-secrets.service from pass `zenodo/api-token`). "
+            "RelatedIdentifier graph composition (IsRequiredBy + "
+            "IsObsoletedBy) ships with the publisher."
         ),
     ),
     "agents.attribution.crossref_depositor": WireEntry(

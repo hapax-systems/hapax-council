@@ -119,6 +119,7 @@ SURFACE_REGISTRY: dict[str, str] = {
     # Phase 2 (FULL_AUTO confirmed per 2026-04-25 audit)
     "osf-preprint": "agents.osf_preprint_publisher:publish_artifact",
     "zenodo-doi": "agents.zenodo_publisher:publish_artifact",  # primary DOI minter
+    "zenodo-refusal-deposit": "agents.refusal_brief_zenodo_adapter:publish_artifact",  # V5 RefusalBrief publisher (#1650 wire-status WIRED)
     "omg-weblog": "agents.omg_weblog_publisher:publish_artifact",  # operator-owned (hapax address)
     "oudepode-omg-weblog": "agents.omg_weblog_publisher:publish_artifact_oudepode",  # music-side identity
     # "hf-papers":      "agents.hf_papers_publisher:publish_artifact",  # arXiv-downstream Mon-Fri

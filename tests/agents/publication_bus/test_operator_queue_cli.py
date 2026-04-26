@@ -48,8 +48,11 @@ def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
     from agents.publication_bus import __main__ as m
 
     def fake_present(key: str) -> bool:
-        # zenodo "arrived"; everything else still missing
-        return key == "zenodo/api-token"
+        # bluesky app-password "arrived"; everything else still missing
+        # (test uses an in-the-list key — zenodo/api-token was removed
+        # from cred_blocked_pass_keys when refusal_brief_publisher
+        # flipped to WIRED in #1672)
+        return key == "bluesky/operator-app-password"
 
     monkeypatch.setattr(m, "_key_present_in_pass", fake_present)
     rc = m.main(["--check-creds"])
@@ -57,9 +60,9 @@ def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
     captured = capsys.readouterr()
     assert "PRESENT:   1" in captured.out
     assert "Ready-to-wire" in captured.out
-    assert "+ zenodo/api-token" in captured.out
+    assert "+ bluesky/operator-app-password" in captured.out
     assert "Still cred-blocked" in captured.out
-    assert "- bluesky/operator-app-password" in captured.out
+    assert "- bluesky/operator-did" in captured.out
 
 
 def test_check_creds_all_missing_renders_correctly(capsys, monkeypatch):
