@@ -278,16 +278,6 @@ def load_expected_timers() -> dict[str, str]:
     return get_registry().expected_timers()
 
 
-def validate_embed_dimensions() -> None:
-    """Verify embedding model returns expected dimensions."""
-    test = embed("dimension check", prefix="search_query")
-    if len(test) != EXPECTED_EMBED_DIMENSIONS:
-        raise RuntimeError(
-            f"Embedding model returned {len(test)}d, expected {EXPECTED_EMBED_DIMENSIONS}d. "
-            f"Check EMBED_MODEL={EMBEDDING_MODEL}"
-        )
-
-
 def ensure_studio_moments_collection() -> None:
     """Create the studio-moments Qdrant collection if it does not exist."""
     from qdrant_client.models import Distance, VectorParams
