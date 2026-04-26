@@ -192,6 +192,88 @@ class TestTriggerConditions:
         assert ev[0].channel_index == 5
 
 
+class TestMinFrequencyFloor:
+    def test_low_freq_sine_below_floor_does_not_trigger(self) -> None:
+        """Field-tuning regression: 70 Hz contact-mic rumble triggered the
+        spectral test on initial deploy. With min_frequency_hz=200 the peak
+        bin is forced above 200 Hz; a 70 Hz sine concentrates spectral
+        energy below the floor → peak picked from the (silent) spectrum
+        above 200 Hz → low ratio → no trigger.
+        """
+        det = _build(min_frequency_hz=200.0)
+        low_sine = _sine_buffer(frequency_hz=70.0, target_channel=5, amplitude=0.5)
+        det.process_buffer(_silent_buffer())  # seed
+        det.process_buffer(low_sine)  # would have set counter=1 pre-fix
+        ev = det.process_buffer(low_sine)
+        assert ev == []
+
+    def test_high_freq_sine_above_floor_still_triggers(self) -> None:
+        """Real feedback at 1 kHz must still fire — the floor only filters
+        below the threshold, not above it.
+        """
+        det = _build(min_frequency_hz=200.0)
+        high_sine = _sine_buffer(frequency_hz=1000.0, target_channel=5, amplitude=0.5)
+        det.process_buffer(_silent_buffer())
+        det.process_buffer(high_sine)
+        ev = det.process_buffer(high_sine)
+        assert len(ev) == 1
+        assert ev[0].channel_index == 5
+        assert ev[0].dominant_frequency_hz > 200.0
+
+    def test_min_frequency_zero_disables_floor(self) -> None:
+        """Setting min_frequency_hz=0 reverts to pre-fix behavior."""
+        det = _build(min_frequency_hz=0.0)
+        low_sine = _sine_buffer(frequency_hz=70.0, target_channel=5, amplitude=0.5)
+        det.process_buffer(_silent_buffer())
+        det.process_buffer(low_sine)
+        ev = det.process_buffer(low_sine)
+        assert len(ev) == 1
+        assert ev[0].channel_index == 5
+
+
+class TestWatchChannels:
+    def test_unwatched_channel_skipped_entirely(self) -> None:
+        """Sine on channel 5; detector configured to watch only [0, 2, 3].
+        No analysis on ch 5 → no trigger even with sustained narrow-band.
+        """
+        det = _build(watch_channels=(0, 2, 3))
+        sine = _sine_buffer(target_channel=5, amplitude=0.5)
+        det.process_buffer(_silent_buffer())
+        det.process_buffer(sine)
+        ev = det.process_buffer(sine)
+        assert ev == []
+
+    def test_watched_channel_still_triggers(self) -> None:
+        det = _build(watch_channels=(0, 2, 3, 4, 5))
+        sine = _sine_buffer(target_channel=5, amplitude=0.5)
+        det.process_buffer(_silent_buffer())
+        det.process_buffer(sine)
+        ev = det.process_buffer(sine)
+        assert len(ev) == 1
+        assert ev[0].channel_index == 5
+
+    def test_watch_channels_none_analyses_all(self) -> None:
+        """Default watch_channels=None must analyze every channel."""
+        det = _build(watch_channels=None)
+        sine = _sine_buffer(target_channel=11, amplitude=0.5)  # outside broadcast set
+        det.process_buffer(_silent_buffer())
+        det.process_buffer(sine)
+        ev = det.process_buffer(sine)
+        assert len(ev) == 1
+        assert ev[0].channel_index == 11
+
+    def test_baseline_does_not_advance_for_unwatched_channels(self) -> None:
+        """Skipping a channel must not seed/update its baseline (state stays
+        clean if watch_channels later expands at restart)."""
+        det = _build(watch_channels=(0,))
+        det.process_buffer(_silent_buffer())
+        det.process_buffer(_sine_buffer(target_channel=5))
+        # Channel 5 was never analyzed → baseline still None.
+        assert det._states[5].baseline_rms is None
+        # Channel 0 was analyzed → baseline seeded.
+        assert det._states[0].baseline_rms is not None
+
+
 # ── cooldown ──────────────────────────────────────────────────────────────
 
 

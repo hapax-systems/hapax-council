@@ -87,6 +87,19 @@ DEFAULT_SUSTAIN_WINDOWS = 2
 DEFAULT_COOLDOWN_S = 30.0
 """Per-channel re-arm timeout after a trigger fires."""
 
+DEFAULT_MIN_FREQUENCY_HZ = 200.0
+"""Spectral-peak frequency floor.
+
+Field-tuning post-deploy: low-frequency content (HVAC at ~70 Hz, room
+modes at 40-150 Hz, contact-mic table rumble at 0-50 Hz) routinely
+exhibits high single-bin spectral concentration and trips the 6 dB
+peak-to-RMS test. Real digital feedback whistles concentrate at the
+loop's resonant frequency, which sits above 200 Hz for typical
+analog↔digital paths (low-end-trimmed by loudnorm + AUX-send bus).
+Skip FFT bins below this frequency when picking the peak; the
+peak/RMS-of-spectrum is still computed across the full band so
+broadband content above the floor stays discriminating."""
+
 # Numerical safety: clamp baseline RMS at this floor so a long stretch
 # of digital silence doesn't make the +12 dB threshold trivially
 # exceeded by ordinary noise floor on the next non-silent sample.
@@ -165,15 +178,27 @@ class FeedbackLoopDetector:
     spectral_ratio_db: float = DEFAULT_SPECTRAL_RATIO_DB
     sustain_windows: int = DEFAULT_SUSTAIN_WINDOWS
     cooldown_s: float = DEFAULT_COOLDOWN_S
+    min_frequency_hz: float = DEFAULT_MIN_FREQUENCY_HZ
+    """Skip FFT bins below this frequency when picking the spectral peak."""
+    watch_channels: tuple[int, ...] | None = None
+    """If set, only analyze these channel indices (0-based). ``None`` analyzes
+    all channels. Production daemon scopes to broadcast-path channels per the
+    L-12 narrowing in PR #1471 — feedback on a channel that does not reach
+    broadcast is irrelevant to the broadcast_no_loopback invariant."""
 
     _states: list[_ChannelState] = field(default_factory=list, init=False)
     _hann_window: np.ndarray = field(init=False)
+    _watch_set: frozenset[int] = field(init=False)
 
     def __post_init__(self) -> None:
         self._states = [_ChannelState() for _ in range(self.channels)]
         # Pre-compute the Hann window once. FFT input is the most-recent
         # ``fft_size`` samples of the analysis window.
         self._hann_window = np.hanning(self.fft_size).astype(np.float32)
+        if self.watch_channels is None:
+            self._watch_set = frozenset(range(self.channels))
+        else:
+            self._watch_set = frozenset(self.watch_channels)
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -219,6 +244,8 @@ class FeedbackLoopDetector:
 
         events: list[TriggerEvent] = []
         for ch in range(self.channels):
+            if ch not in self._watch_set:
+                continue
             channel_data = buffer[:, ch].astype(np.float32, copy=False)
             event = self._analyse_channel(ch, channel_data, now=now, epoch_now=epoch_now)
             if event is not None:
@@ -305,14 +332,24 @@ class FeedbackLoopDetector:
         tail = samples[-self.fft_size :]
         windowed = tail * self._hann_window
         spectrum = np.abs(np.fft.rfft(windowed))
-        peak_idx = int(np.argmax(spectrum))
-        peak_mag = float(spectrum[peak_idx])
+        # rfft bin spacing = sample_rate / fft_size.
+        bin_hz = self.sample_rate_hz / self.fft_size
+        # Skip bins below ``min_frequency_hz`` when picking the peak — low-freq
+        # room noise (HVAC, contact-mic rumble) routinely concentrates spectral
+        # energy and false-positives the ratio test. Total RMS is still computed
+        # across the full band so the ratio remains a meaningful contrast.
+        min_bin = int(math.ceil(self.min_frequency_hz / bin_hz)) if bin_hz > 0 else 0
+        min_bin = min(max(min_bin, 0), len(spectrum) - 1)
+        if min_bin >= len(spectrum):
+            return -math.inf, 0.0
+        search_spectrum = spectrum.copy()
+        search_spectrum[:min_bin] = 0.0
+        peak_idx = int(np.argmax(search_spectrum))
+        peak_mag = float(search_spectrum[peak_idx])
         total_rms = float(np.sqrt(np.mean(spectrum * spectrum)))
         if total_rms <= 0.0 or peak_mag <= 0.0:
             return -math.inf, 0.0
         ratio_db = 20.0 * math.log10(peak_mag / total_rms)
-        # rfft bin spacing = sample_rate / fft_size.
-        bin_hz = self.sample_rate_hz / self.fft_size
         return ratio_db, peak_idx * bin_hz
 
 
@@ -382,4 +419,5 @@ __all__ = [
     "DEFAULT_WINDOW_MS",
     "DEFAULT_FFT_SIZE",
     "DEFAULT_COOLDOWN_S",
+    "DEFAULT_MIN_FREQUENCY_HZ",
 ]

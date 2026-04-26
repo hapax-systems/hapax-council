@@ -90,6 +90,20 @@ DEFAULT_REFUSAL_LOG_PATH = Path("/dev/shm/hapax-refusals/log.jsonl")
 # Killswitch: mirrors the cc-hygiene pattern.
 KILLSWITCH_ENV = "HAPAX_FEEDBACK_LOOP_DETECTOR_OFF"
 
+BROADCAST_PATH_CHANNELS: tuple[int, ...] = (0, 2, 3, 4, 5)
+"""Per L-12 narrowing PR #1471, only AUX1/3/4/5_L/5_R reach broadcast.
+
+Channel indices in the raw 14-channel parec stream (0-based):
+  0 = strip 1 (AUX1, contact mic)
+  2 = strip 3 (AUX3, sampler)
+  3 = strip 4 (AUX4, rode vocal)
+  4 = strip 5 (AUX5_L, Evil Pet wet L)
+  5 = strip 6 (AUX5_R, Evil Pet wet R)
+
+Strips 2 + 7-12 (indices 1, 6-11) and the MASTER bus (12-13) are NOT in
+the broadcast path — feedback there is irrelevant to broadcast_no_loopback
+and was the dominant false-positive source on initial deploy."""
+
 
 # ── parec subprocess wrapper ──────────────────────────────────────────────
 
@@ -411,7 +425,11 @@ class FeedbackLoopDaemon:
         sd_notify: Callable[[str], None] | None = None,
     ) -> None:
         self._capture = capture or ParecCapture()
-        self._detector = detector or FeedbackLoopDetector()
+        # Default detector scopes to the broadcast-path channels per
+        # PR #1471's L-12 narrowing — feedback off-broadcast is a false-
+        # positive surface (contact mic + spare strips dominated initial
+        # field-test trigger volume).
+        self._detector = detector or FeedbackLoopDetector(watch_channels=BROADCAST_PATH_CHANNELS)
         self._auto_mute = auto_mute or make_wpctl_auto_mute()
         self._awareness_writer = awareness_writer or make_awareness_writer()
         self._refusal_logger = refusal_logger or make_refusal_logger()
@@ -531,6 +549,7 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "BROADCAST_PATH_CHANNELS",
     "DEFAULT_AWARENESS_STATE_PATH",
     "DEFAULT_BROADCAST_SINK",
     "DEFAULT_L12_SOURCE_SUBSTRING",
