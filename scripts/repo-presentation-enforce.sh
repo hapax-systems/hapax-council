@@ -62,6 +62,21 @@ apply_or_check() {
   if [[ "$cur_projects" != "false" ]]; then needs_patch=1; fi
   if [[ "$cur_discussions" != "false" ]]; then needs_patch=1; fi
 
+  # cc-task repo-pres-funding-yml-disable: assert no FUNDING.yml exists.
+  # Drop 3 §3 — empty FUNDING.yml does NOT hide Sponsorships, but
+  # absence of FUNDING.yml DOES. The repo Sponsorships UI is also
+  # gated behind a Settings flag that the gh API doesn't expose;
+  # controlling FUNDING.yml absence is the deterministic half.
+  # `|| true` because gh api returns non-zero on 404 (file absent
+  # IS what we want).
+  local funding_status
+  funding_status=$(gh api "repos/$OWNER/$repo/contents/.github/FUNDING.yml" 2>&1 | head -1 || true)
+  if echo "$funding_status" | grep -q '"name"'; then
+    printf '  → DRIFT-funding (FUNDING.yml exists; want absent)\n'
+    drift=1
+    return 0
+  fi
+
   if [[ $needs_patch -eq 0 ]]; then
     printf '  → ok\n'
     return 0
