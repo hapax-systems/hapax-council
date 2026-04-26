@@ -42,7 +42,7 @@ elif [ "${1:-}" = "--report-coverage-stdin" ]; then
 else
     SHA="${1:?commit SHA required}"
 fi
-REPO="$HOME/projects/hapax-council"
+REPO="${REPO:-${GITHUB_WORKSPACE:-$HOME/projects/hapax-council}}"
 PW_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
 WP_CONF_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
