@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Install the M8 udev rule + modprobe.d + modules-load.d to /etc/.
+# Install the M8 udev rule to /etc/udev/rules.d/.
 # Idempotent: skips files whose content already matches.
 # Requires sudo for the install steps.
 #
 # After this script:
 #   - /dev/hapax-m8-serial appears whenever the M8 is plugged in
-#   - /dev/video15 exists at boot via v4l2loopback module
 #   - hapax-m8-monitor.service is pulled into the user graph on M8 plug
 #
 # Operator flow:
@@ -13,7 +12,9 @@
 #   $ systemctl --user daemon-reload
 #   $ systemctl --user enable hapax-m8-monitor.service  # optional; udev pulls it
 #
-# cc-task: re-splay-homage-ward-m8
+# cc-task: re-splay-homage-ward-m8 (post-SHM-pivot — the v4l2loopback
+# module-load + modprobe.d configs are no longer needed; m8c-hapax
+# writes RGBA frames to /dev/shm/hapax-sources/m8-display.rgba directly).
 
 set -euo pipefail
 
@@ -22,8 +23,6 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # (source-path, target-path) pairs.
 INSTALLS=(
     "${REPO_DIR}/systemd/udev/99-hapax-m8.rules:/etc/udev/rules.d/99-hapax-m8.rules"
-    "${REPO_DIR}/config/modprobe.d/hapax-m8.conf:/etc/modprobe.d/hapax-m8.conf"
-    "${REPO_DIR}/config/modules-load.d/hapax-m8.conf:/etc/modules-load.d/hapax-m8.conf"
 )
 
 # Need root.
@@ -56,14 +55,6 @@ done
 if [[ $changed -eq 1 ]]; then
     echo "reloading udev rules"
     udevadm control --reload-rules
-
-    # Load v4l2loopback now (no reboot required) so /dev/video15 appears
-    # immediately. Idempotent — modprobe is a no-op if already loaded
-    # with matching options.
-    if ! lsmod | grep -q "^v4l2loopback "; then
-        echo "loading v4l2loopback module"
-        modprobe v4l2loopback
-    fi
 
     # Trigger udev to re-evaluate already-plugged USB devices so the M8
     # gets the new SYMLINK + SYSTEMD_USER_WANTS without a replug.
