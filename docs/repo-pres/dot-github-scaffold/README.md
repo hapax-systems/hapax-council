@@ -57,11 +57,88 @@ jobs:
         run: hapax-sdlc render --check
 ```
 
-Companion workflows that the same repo should host:
-- `citation-validate.yml` — validates `CITATION.cff` against [citation-file-format/cff-converter](https://github.com/citation-file-format/cff-converter-python)
-- `codemeta-validate.yml` — validates `codemeta.json` against [codemeta/codemeta-generator](https://codemeta.github.io)
+Companion workflows that the same repo should host (per cc-task `repo-pres-shared-workflows`):
 
-Both follow the same `workflow_call` shape and are intentionally minimal — they exist only to be `uses:`-referenced from consumer repos like `hapax-council`, `hapax-officium`, etc.
+### `citation-validate.yml` — CITATION.cff schema validation
+
+```yaml
+# .github/workflows/citation-validate.yml
+name: CITATION.cff validate
+on:
+  workflow_call:
+    inputs:
+      python-version: { type: string, default: "3.12" }
+permissions: { contents: read }
+jobs:
+  citation-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: { python-version: ${{ inputs.python-version }} }
+      - name: Install cffconvert
+        run: pip install cffconvert
+      - name: Validate CITATION.cff
+        run: cffconvert --validate
+```
+
+Validates that the consumer repo's `CITATION.cff` parses cleanly under the [Citation File Format schema](https://citation-file-format.github.io/) (1.2.0+). Uses the [`cffconvert`](https://github.com/citation-file-format/cff-converter-python) reference validator. No-op when the consumer has no `CITATION.cff`; the action checks `--validate` only.
+
+### `codemeta-validate.yml` — codemeta.json schema validation
+
+```yaml
+# .github/workflows/codemeta-validate.yml
+name: codemeta.json validate
+on:
+  workflow_call:
+    inputs:
+      python-version: { type: string, default: "3.12" }
+permissions: { contents: read }
+jobs:
+  codemeta-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: { python-version: ${{ inputs.python-version }} }
+      - name: Install jsonschema + codemeta schema
+        run: pip install jsonschema requests
+      - name: Validate codemeta.json
+        run: |
+          python - <<'PY'
+          import json, sys, requests, jsonschema
+          schema = requests.get(
+              "https://raw.githubusercontent.com/codemeta/codemeta/2.0/codemeta.jsonld",
+              timeout=10,
+          ).json()
+          with open("codemeta.json") as fp:
+              data = json.load(fp)
+          jsonschema.validate(data, schema)
+          print("codemeta.json validates against codemeta v2.0 schema")
+          PY
+```
+
+Validates that the consumer repo's `codemeta.json` conforms to [codemeta v2.0](https://codemeta.github.io). Fetches the canonical schema at validation time (no vendoring). Cached fetches via the standard `actions/setup-python` cache; the schema is small (~20 KB).
+
+### Consumer-side pattern
+
+A consumer repo (e.g., `hapax-council`, `hapax-mcp`) calls these via `workflow_call`:
+
+```yaml
+# .github/workflows/metadata-validate.yml in the CONSUMER repo
+name: Metadata validate
+on: [push, pull_request]
+permissions: { contents: read }
+jobs:
+  citation:
+    uses: ryanklee/.github/.github/workflows/citation-validate.yml@main
+  codemeta:
+    uses: ryanklee/.github/.github/workflows/codemeta-validate.yml@main
+  render-check:
+    uses: ryanklee/.github/.github/workflows/render-check.yml@main
+```
+
+Pinning to `@main` is the bootstrap; once a stable SHA is available, consumers should pin to the exact commit per [GitHub's actions-supply-chain guidance](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions).
 
 ## Handoff to operator
 
