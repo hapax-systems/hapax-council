@@ -29,6 +29,7 @@ from agents.mail_monitor.classifier import Category, classify
 from agents.mail_monitor.processors.discard import process_discard
 from agents.mail_monitor.processors.refusal_feedback import emit_refusal_feedback
 from agents.mail_monitor.processors.suppress import process_suppress
+from agents.mail_monitor.processors.verify import process_verify
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +49,6 @@ for _category in Category:
 # the gap is visible in Grafana.
 _DEFERRED_CATEGORIES: set[Category] = {
     Category.A_ACCEPT,  # mail-monitor-010 auto-clicker
-    Category.B_VERIFY,  # mail-monitor-009 verify processor
     Category.D_OPERATIONAL,  # mail-monitor-011 operational awareness
 }
 
@@ -94,6 +94,14 @@ def dispatch_message(service: Any, message: dict[str, Any]) -> Category:
 
     if category is Category.C_SUPPRESS:
         ok = process_suppress(service, message)
+        DISPATCH_COUNTER.labels(
+            category=category.value,
+            result="processed" if ok else "error",
+        ).inc()
+        return category
+
+    if category is Category.B_VERIFY:
+        ok = process_verify(service, message)
         DISPATCH_COUNTER.labels(
             category=category.value,
             result="processed" if ok else "error",

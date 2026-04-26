@@ -84,21 +84,21 @@ def test_dispatch_routes_refusal_feedback_to_emit(
 def test_dispatch_marks_deferred_categories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Categories A/B/C/D land in 008/009/010/011 — until those merge,
-    the dispatch records `deferred` outcome and does no IO."""
+    """Categories A and D still land in 010/011 — those still record
+    `deferred` outcome and do no IO until their processors merge."""
     from agents.mail_monitor import audit
 
     monkeypatch.setattr(audit, "AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
-    before = _counter("B_VERIFY", "deferred")
+    before = _counter("D_OPERATIONAL", "deferred")
     fake_service = mock.Mock()
 
     cat = runner.dispatch_message(
         fake_service,
-        {"id": "M-verify", "label_names": ["Hapax/Verify"]},
+        {"id": "M-op", "label_names": ["Hapax/Operational"]},
     )
 
-    assert cat is Category.B_VERIFY
-    assert _counter("B_VERIFY", "deferred") - before == 1.0
+    assert cat is Category.D_OPERATIONAL
+    assert _counter("D_OPERATIONAL", "deferred") - before == 1.0
     fake_service.users.return_value.messages.return_value.modify.assert_not_called()
 
 
