@@ -117,6 +117,14 @@ FORBIDDEN_PACKAGE_PATHS: Final[tuple[str, ...]] = (
     "agents/tutorial_videos",
     "agents/youtube_tutorials",
     "agents/educational_content",
+    # Per cc-task leverage-REFUSED-consulting-methodology-as-service:
+    # consulting requires operator-mediated client engagement.
+    # Methodology is shipped as PyPI packages (daemon-tractable);
+    # consulting itself is not.
+    "agents/consulting_dispatcher",
+    "agents/consulting",
+    "agents/calcom_integration",
+    "agents/calendly_integration",
 )
 """Refused package directory paths.
 
