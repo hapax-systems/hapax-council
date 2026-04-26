@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax DataCite citation-graph snapshot Timer (nightly 03:30 UTC)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target
