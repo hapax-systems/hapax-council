@@ -21,9 +21,9 @@ def test_render_includes_pass_insert_commands():
 
 def test_render_includes_known_surface():
     text = render_operator_queue()
-    # bluesky-atproto-multi-identity is one of the CRED_BLOCKED surfaces;
-    # its slug must appear in the queue rendering
-    assert "bluesky-atproto-multi-identity" in text
+    # crossref-doi-deposit is one of the remaining CRED_BLOCKED surfaces
+    # (paid-membership operator-action gated); its slug must appear in queue
+    assert "crossref-doi-deposit" in text
 
 
 def test_keys_only_mode_prints_one_per_line(capsys):
@@ -48,21 +48,23 @@ def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
     from agents.publication_bus import __main__ as m
 
     def fake_present(key: str) -> bool:
-        # bluesky app-password "arrived"; everything else still missing
-        # (test uses an in-the-list key — zenodo/api-token was removed
-        # from cred_blocked_pass_keys when refusal_brief_publisher
-        # flipped to WIRED in #1672)
-        return key == "bluesky/operator-app-password"
+        # crossref creds "arrived"; everything else still missing
+        # (must use an in-the-list key — most non-Crossref keys flipped
+        # to WIRED via PRs #1676 / #1680 / and this PR's batch wiring)
+        return key == "crossref/depositor-credentials"
 
     monkeypatch.setattr(m, "_key_present_in_pass", fake_present)
     rc = m.main(["--check-creds"])
     assert rc == 0
     captured = capsys.readouterr()
+    # Only crossref/depositor-credentials remains cred-blocked after the
+    # batch wire-PR. When the mock says it's present, every cred-blocked
+    # key has arrived — no "Still cred-blocked" block renders.
     assert "PRESENT:   1" in captured.out
+    assert "MISSING:   0" in captured.out
     assert "Ready-to-wire" in captured.out
-    assert "+ bluesky/operator-app-password" in captured.out
-    assert "Still cred-blocked" in captured.out
-    assert "- bluesky/operator-did" in captured.out
+    assert "+ crossref/depositor-credentials" in captured.out
+    assert "Still cred-blocked" not in captured.out
 
 
 def test_check_creds_all_missing_renders_correctly(capsys, monkeypatch):
