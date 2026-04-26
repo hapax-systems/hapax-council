@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax DataCite GraphQL mirror Timer (daily 04:00 UTC)
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
