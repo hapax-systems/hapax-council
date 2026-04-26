@@ -305,6 +305,46 @@ Destructive command detection strips quoted strings before matching to prevent f
 
 `agents/publication_bus/datacite_mirror.py` — daily GraphQL mirror of the operator's authored works from DataCite Commons (`https://api.datacite.org/graphql`, public + unauthenticated). Snapshots persist to `~/hapax-state/datacite-mirror/{iso-date}.json`; `compute_diff()` returns added/removed DOIs and citation-count deltas. systemd unit `hapax-datacite-mirror.{service,timer}` runs daily at 04:00 UTC. Operator action: set `HAPAX_OPERATOR_ORCID` env var (e.g. via `~/.config/hapax/datacite-mirror.env`) — daemon no-ops with `outcome=no-orcid-configured` until configured. Phase 2 (cred-gated): graph_publisher mints version-DOI under "Hapax Citation Graph" concept-DOI when diff is non-empty.
 
+`agents/attribution/datacite_graphql_snapshot.py` — nightly snapshot of the citation network AROUND specific DOI/SWHID/ORCID nodes (distinct from the operator-authored mirror above). systemd unit `hapax-datacite-snapshot.{service,timer}` at 03:30 UTC. Snapshots persist to `~/hapax-state/attribution/datacite-snapshot-{iso-date}.json`. Phase 1 ships DOI tier; SWHID + ORCID tiers in Phase 2.
+
+## V5 Publication Bus
+
+Per V5 weave §2.1 PUB-P0-B keystone (`agents/publication_bus/publisher_kit/`). Three load-bearing invariants every publisher enforces in the superclass `publish()` method: AllowlistGate, legal-name-leak guard (skipped for `requires_legal_name=True` surfaces like Zenodo creators), Prometheus Counter `hapax_publication_bus_publishes_total`. Subclass shape ~80 LOC: surface metadata as ClassVar + `_emit()` override.
+
+**Surface registry** (`agents/publication_bus/surface_registry.py`): canonical 14-surface dict. Three tiers — `FULL_AUTO` (daemon-side end-to-end after one-time credential bootstrap), `CONDITIONAL_ENGAGE` (one-time human action, e.g. Playwright login), `REFUSED` (subclass exists to record refusal, never to attempt publication). Helpers `is_engageable()`, `refused_surfaces()`, `auto_surfaces()`.
+
+**Concrete publishers shipped:**
+- `BridgyPublisher` (`bridgy-webmention-publish`) — POSSE webmention to brid.gy/publish/webmention
+- `RefusalAnnexPublisher` (`marketing-refusal-annex`) — local file write to `~/hapax-state/publications/refusal-annex-{slug}.md`
+- `OmgLolWeblogPublisher` (`omg-lol-weblog-bearer-fanout`) — wraps `OmgLolClient.set_entry`
+- `InternetArchiveS3Publisher` (`internet-archive-ias3`) — bare-`requests` PUT against `https://s3.us.archive.org/{item}/{filename}` with `LOW {access}:{secret}` header
+- `BlueskyPublisher` (`bluesky-atproto-multi-identity`) — 2-step XRPC auth (`createSession` → `createRecord`)
+- `BandcampRefusedPublisher` / `DiscogsRefusedPublisher` / `RymRefusedPublisher` / `CrossrefEventDataRefusedPublisher` — REFUSED tier; `__init_subclass__` auto-wires empty AllowlistGate so any `publish()` call records refusal-as-data via the canonical refusal_brief log
+
+**Helper modules:**
+- `RelatedIdentifier` graph (`agents/publication_bus/related_identifier.py`) — DataCite RelatedIdentifier dataclass + 6 RelationType + 7 IdentifierType, `to_zenodo_dict()` for snake_case Zenodo REST
+- `RefusalFooterInjector` (`agents/publication_bus/refusal_footer_injector.py`) — auto-injects `NON_ENGAGEMENT_CLAUSE_LONG` into deposit descriptions; reads recent refusals from the canonical log
+- `omg_rss_fanout` (`agents/publication_bus/omg_rss_fanout.py`) — cross-weblog fanout helper composes multiple `OmgLolWeblogPublisher` instances
+- `orcid_verifier` (`agents/publication_bus/orcid_verifier.py`) — daily verification of operator's ORCID record vs minted concept-DOIs (no auth; ORCID public API)
+
+**Marketing surfaces** (`agents/marketing/`):
+- `RefusalAnnex` series (renderer + cross-linker) writes per-annex markdown to `~/hapax-state/publications/`. 8 seed annex slugs (`declined-bandcamp`, `declined-alphaxiv`, etc.). Cross-linker resolves slug ↔ cc-task ID for the operator dashboard.
+
+**Cold-contact path** (`agents/cold_contact/`):
+- `candidate_registry` — Pydantic CandidateEntry + 14-vector AUDIENCE_VECTORS controlled vocabulary; **no email/telephone fields by design** (direct outreach is REFUSED per family-wide stance)
+- `orcid_validator` — validates each entry against ORCID public API
+- `graph_touch_policy` — citation-graph-only touch path; ≤5 candidates/deposit, ≤3/year/candidate cadence cap, JSONL touch log at `~/hapax-state/cold-contact/touches.jsonl`
+
+**SWH attribution** (`agents/attribution/`):
+- `swh_register` — Software Heritage save-origin endpoint (unauthenticated)
+- `swh_archive_daemon` — daemon orchestrates trigger → poll → resolve over HAPAX_REPOS; persists `~/hapax-state/attribution/swhids.yaml`
+- `citation_feature` — pulls BibTeX from SWH Citation Feature endpoint per resolved SWHID
+- `citation_cff_updater` — adds/replaces `identifiers: [{type: swh}]` in CITATION.cff
+- `bibtex_collector` — orchestrates SWHIDs → BibTeX → `~/hapax-state/attribution/bibtex.bib`
+
+**Self-federate** (`agents/self_federate/`):
+- `rss_validator` — weekly Sunday 03:00 UTC validation of Hapax weblog RSS feed (https://hapax.weblog.lol/rss); DOI cross-link extraction via Crossref-spec regex
+
 ## Key Modules
 
 - **`shared/config.py`** — Model aliases (`fast`→gemini-flash, `balanced`→claude-sonnet, `local-fast`/`coding`/`reasoning`→TabbyAPI Command-R 35B EXL3 5bpw), `get_model_adaptive()` for stimmung-aware routing, LiteLLM/Qdrant clients
