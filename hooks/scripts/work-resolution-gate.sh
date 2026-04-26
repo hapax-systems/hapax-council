@@ -61,6 +61,14 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
     compare_ref="$default_branch"
   fi
   ahead="$(git rev-list --count "${compare_ref}..HEAD" 2>/dev/null || echo 0)"
+
+  # Fresh branch with no commits ahead of main = nothing to protect.
+  # Allow edits — the gate's job is only to protect commits that risk
+  # being lost without a PR.
+  if [[ "$ahead" -eq 0 ]]; then
+    exit 0
+  fi
+
   if [[ "$ahead" -gt 0 ]]; then
     pr_json="$(gh pr list --head "$branch" --state open --json number,statusCheckRollup 2>/dev/null || echo "error")"
     if [[ "$pr_json" == "error" ]]; then
@@ -69,8 +77,29 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
 
     pr_count="$(printf '%s' "$pr_json" | jq 'length' 2>/dev/null || echo 0)"
 
-    # No PR → must submit one
+    # No PR for current branch → if our HEAD is reachable from another
+    # open PR's branch (stacked-PR workflow), the inherited commits are
+    # already protected by that PR; allow edits. Otherwise block.
     if [[ "$pr_count" -eq 0 ]]; then
+      stacked=false
+      open_branches="$(gh pr list --state open --json headRefName --jq '.[].headRefName' 2>/dev/null || true)"
+      my_head="$(git rev-parse HEAD 2>/dev/null || true)"
+      while IFS= read -r other; do
+        [[ -z "$other" || "$other" == "$branch" ]] && continue
+        other_tip="$(git rev-parse "origin/${other}" 2>/dev/null || true)"
+        [[ -z "$other_tip" ]] && continue
+        # We're stacked iff every commit we have ahead of main is also
+        # reachable from another open PR's tip — i.e. that PR's tip
+        # contains all of our work.
+        if git merge-base --is-ancestor "$my_head" "$other_tip" 2>/dev/null; then
+          stacked=true
+          break
+        fi
+      done <<< "$open_branches"
+
+      if [[ "$stacked" == true ]]; then
+        exit 0
+      fi
       echo "BLOCKED: Branch '${branch}' has ${ahead} commit(s) ahead of ${default_branch} with no PR. Submit a PR before starting new work." >&2
       exit 2
     fi
