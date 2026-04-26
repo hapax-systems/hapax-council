@@ -1,0 +1,49 @@
+cff-version: 1.2.0
+message: If you use hapax-velocity-meter in your research or development reporting, please cite both the package and the methodology source.
+type: software
+title: hapax-velocity-meter
+abstract: Measure development velocity from any git history. Reads git log primitives (commits/day, PRs/day, LOC churn/day, author rotation) and emits BibTeX self-citations referencing the Hapax velocity methodology. Single-operator infrastructure-as-argument package, PolyForm Strict 1.0.0 source-available noncommercial.
+authors:
+- given-names: Hapax
+  family-names: Oudepode
+  email: hapax@oudepode.studio
+- given-names: Claude
+  family-names: Code
+  email: noreply@anthropic.com
+repository-code: https://github.com/ryanklee/hapax-council
+url: https://hapax.weblog.lol/velocity-report-2026-04-25
+license: LicenseRef-PolyForm-Strict-1.0.0
+keywords:
+- velocity
+- git
+- metrics
+- research-software
+- single-operator
+- infrastructure-as-argument
+references:
+- type: report
+  title: "Hapax Velocity Report 2026-04-25"
+  authors:
+  - given-names: Hapax
+    family-names: Oudepode
+  - given-names: Claude
+    family-names: Code
+  url: https://hapax.weblog.lol/velocity-report-2026-04-25
+  date-published: 2026-04-25
+- type: article
+  title: "Hapax Velocity Methodology (preprint, forthcoming)"
+  authors:
+  - given-names: Hapax
+    family-names: Oudepode
+  - given-names: Claude
+    family-names: Code
+  identifiers:
+  - type: other
+    value: arXiv:TBD
+    description: arXiv preprint identifier (pending submission)
+  - type: doi
+    value: 10.5281/zenodo.TBD
+    description: Zenodo DOI (minted upon arXiv submission via DataCite RelatedIdentifier graph)
+  - type: swh
+    value: swh:1:rev:TBD
+    description: Software Heritage SWHID (minted via Software Heritage save-code-now)
