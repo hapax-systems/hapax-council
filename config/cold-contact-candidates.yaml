@@ -1,0 +1,21 @@
+# Cold-contact candidate registry
+#
+# Per cc-task `cold-contact-candidate-registry`. This is the seed
+# scaffolding; Phase 2 (operator+Hapax review pass) populates the
+# 37 named candidates from drop 2 §3.
+#
+# Constitutional posture: every entry here is a citation-graph touch
+# target. There is NO direct-outreach affordance — the family-wide
+# refusal stance precludes email, DM, LinkedIn, etc. Entries
+# participate only in the academic citation graph (DataCite
+# RelatedIdentifier, Zenodo IsCitedBy/References, ORCID auto-update).
+#
+# Audience vectors are drawn from a fixed controlled vocabulary
+# (see `agents/cold_contact/candidate_registry.py::AUDIENCE_VECTORS`).
+# Expansion beyond the 14+ vectors requires constitutional discussion.
+#
+# Suppression: an entry can be moved to
+# `hapax-state/contact-suppression-list.yaml` at any time; suppression
+# takes precedence over registry membership.
+
+candidates: []
