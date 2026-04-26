@@ -24,9 +24,6 @@ Example:
     since = datetime.now(UTC) - timedelta(days=14)
     for trace in _langfuse_local.query_traces(since):
         ...
-
-    cost_per_model = _langfuse_local.cost_by_model(since)
-    daily = _langfuse_local.daily_cost_trend(days=30)
 """
 
 from __future__ import annotations
@@ -34,7 +31,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger("agents._langfuse_local")
@@ -93,58 +90,10 @@ def query_traces(since: datetime, until: datetime | None = None) -> Iterator[dic
             continue
 
 
-def trace_count(since: datetime, until: datetime | None = None) -> int:
-    """Total trace count in window."""
-    return sum(1 for _ in query_traces(since, until))
-
-
-def cost_by_model(since: datetime, until: datetime | None = None) -> dict[str, float]:
-    """Aggregate ``total_cost`` by model name within window."""
-    totals: dict[str, float] = {}
-    for trace in query_traces(since, until):
-        model = trace.get("model") or "unknown"
-        cost = float(trace.get("total_cost", 0.0) or 0.0)
-        totals[model] = totals.get(model, 0.0) + cost
-    return totals
-
-
-def count_by_model(since: datetime, until: datetime | None = None) -> dict[str, int]:
-    """Trace count by model name within window."""
-    counts: dict[str, int] = {}
-    for trace in query_traces(since, until):
-        model = trace.get("model") or "unknown"
-        counts[model] = counts.get(model, 0) + 1
-    return counts
-
-
-def daily_cost_trend(days: int) -> dict[str, float]:
-    """Daily cost rollup for the last N days. Returns {YYYY-MM-DD: cost}."""
-    until = datetime.now(UTC)
-    since = until - timedelta(days=days)
-    daily: dict[str, float] = {}
-    for trace in query_traces(since, until):
-        ts = trace.get("timestamp", "")
-        day = ts[:10]
-        if not day:
-            continue
-        daily[day] = daily.get(day, 0.0) + float(trace.get("total_cost", 0.0) or 0.0)
-    return daily
-
-
-def filter_by_name(
-    name_substring: str,
-    since: datetime,
-    until: datetime | None = None,
-    *,
-    case_sensitive: bool = False,
-) -> Iterator[dict]:
-    """Yield traces whose ``name`` contains the given substring.
-
-    Useful for governance accounting (e.g. ``axiom_gate``, ``consent_check``).
-    """
-    needle = name_substring if case_sensitive else name_substring.lower()
-    for trace in query_traces(since, until):
-        name = trace.get("name", "")
-        haystack = name if case_sensitive else name.lower()
-        if needle in haystack:
-            yield trace
+# Audit 2026-04-26 B1 P0 #16-20: removed 5 unused query helpers
+# (trace_count / cost_by_model / count_by_model / daily_cost_trend /
+# filter_by_name). All five had zero call sites — apparent matches in
+# `agents/langfuse_sync.py` + `agents/activity_analyzer.py` were string-
+# literal coincidences, not function calls. The reader's load-bearing
+# API is `is_available()` + `query_traces(since, until)`; both retained.
+# Re-add helpers when an actual consumer materialises.
