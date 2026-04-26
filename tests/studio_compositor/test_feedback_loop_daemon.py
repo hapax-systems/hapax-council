@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agents.studio_compositor import feedback_loop_daemon as fld_daemon
 from agents.studio_compositor.feedback_loop_detector import TriggerEvent
 
@@ -132,6 +134,62 @@ class TestMakeWpctlAutoMute:
         assert any("set-volume" in c for c in calls), f"calls: {calls}"
         sink_used = {c[2] for c in calls if len(c) >= 3 and "set-volume" in c}
         assert "test-sink" in sink_used
+
+
+# ── source discovery ───────────────────────────────────────────────────────
+
+
+class TestDiscoverL12Source:
+    _PACTL_OUTPUT = (
+        "210\talsa_output.usb-Torso_Electronics_S-4_xxx-03.multichannel-output.monitor\t"
+        "PipeWire\ts16le 10ch 48000Hz\tSUSPENDED\n"
+        "211\talsa_input.usb-Torso_Electronics_S-4_xxx-03.multichannel-input\t"
+        "PipeWire\ts16le 10ch 48000Hz\tSUSPENDED\n"
+        "213\talsa_input.usb-ZOOM_Corporation_L-12_8253...-00.multichannel-input\t"
+        "PipeWire\ts32le 14ch 48000Hz\tRUNNING\n"
+    )
+
+    def test_finds_l12_by_substring(self) -> None:
+        with patch.object(fld_daemon.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pactl"], returncode=0, stdout=self._PACTL_OUTPUT, stderr=""
+            )
+            source = fld_daemon.discover_l12_source()
+        assert source == "alsa_input.usb-ZOOM_Corporation_L-12_8253...-00.multichannel-input"
+
+    def test_returns_none_when_l12_absent(self) -> None:
+        with patch.object(fld_daemon.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pactl"],
+                returncode=0,
+                stdout="210\tsome-other-source\tPipeWire\ts16le\tSUSPENDED\n",
+                stderr="",
+            )
+            source = fld_daemon.discover_l12_source()
+        assert source is None
+
+    def test_returns_none_when_pactl_fails(self) -> None:
+        with patch.object(fld_daemon.subprocess, "run", side_effect=OSError("pactl missing")):
+            assert fld_daemon.discover_l12_source() is None
+
+    def test_pareccapture_resolves_via_discovery_when_source_none(self) -> None:
+        capture = fld_daemon.ParecCapture(source=None)
+        with patch.object(fld_daemon.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pactl"], returncode=0, stdout=self._PACTL_OUTPUT, stderr=""
+            )
+            resolved = capture._resolve_source()
+        assert "ZOOM_Corporation_L-12" in resolved
+        assert "multichannel-input" in resolved
+
+    def test_pareccapture_raises_oserror_when_l12_absent(self) -> None:
+        capture = fld_daemon.ParecCapture(source=None)
+        with patch.object(fld_daemon.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pactl"], returncode=0, stdout="", stderr=""
+            )
+            with pytest.raises(OSError, match="L-12 multichannel-input source not found"):
+                capture._resolve_source()
 
 
 # ── prometheus counter (skip on absence) ───────────────────────────────────

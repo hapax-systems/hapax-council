@@ -50,9 +50,23 @@ LOG = logging.getLogger("feedback-loop-daemon")
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-# Defaults match `hapax-l12-evilpet-capture.conf` source layout.
-DEFAULT_PAREC_SOURCE = "alsa_input.usb-ZOOM_Corporation_ZOOM_L-12_Audio-00.multichannel-input"
-"""ALSA source name for the L-12 USB capture (14-channel s32 multichannel)."""
+DEFAULT_PAREC_SOURCE: str | None = None
+"""ALSA source name for the L-12 USB capture (14-channel s32 multichannel).
+
+``None`` means "auto-discover via :func:`discover_l12_source` at start
+time" — production use should always leave this None because the
+hardware serial is encoded into the source name and varies per device.
+Tests can pin to a specific name via the constructor.
+"""
+
+DEFAULT_L12_SOURCE_SUBSTRING = "ZOOM_Corporation_L-12"
+"""Substring matched against ``pactl list sources short`` output.
+
+The full source name carries the device serial, e.g.
+``alsa_input.usb-ZOOM_Corporation_L-12_8253...-00.multichannel-input``.
+Matching the vendor-and-model substring is robust across device serials
+while still pinning to the L-12 (ignoring other USB audio interfaces
+such as the S-4 or Studio 24c)."""
 
 # 250 ms windows × 14 channels × 4 bytes (s32) ≈ 168 kB per read at 48 kHz.
 _PAREC_FORMAT = "s32le"
@@ -80,18 +94,50 @@ KILLSWITCH_ENV = "HAPAX_FEEDBACK_LOOP_DETECTOR_OFF"
 # ── parec subprocess wrapper ──────────────────────────────────────────────
 
 
+def discover_l12_source(substring: str = DEFAULT_L12_SOURCE_SUBSTRING) -> str | None:
+    """Find the L-12 multichannel-input source by vendor/model substring.
+
+    Returns the full ALSA source name on success, ``None`` if no match
+    (the L-12 isn't currently exposed by PipeWire/PulseAudio). Robust
+    against the device-serial portion of the name varying per unit.
+    """
+    try:
+        result = subprocess.run(
+            ["pactl", "list", "sources", "short"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        LOG.debug("pactl list sources short failed", exc_info=True)
+        return None
+    for line in result.stdout.splitlines():
+        cols = line.split("\t")
+        if len(cols) < 2:
+            continue
+        name = cols[1]
+        if substring in name and "multichannel-input" in name:
+            return name
+    return None
+
+
 class ParecCapture:
     """Thin wrapper that streams 14-channel s32 frames from PulseAudio.
 
     ``read_window`` returns one numpy array shaped ``(window_samples,
     channels)`` normalised to float32 [-1, 1]. Subprocess restart is
     the daemon's responsibility — the wrapper raises on EOF.
+
+    ``source`` defaults to ``None``, which triggers
+    :func:`discover_l12_source` at :meth:`start` time. Tests pin to a
+    specific name via the constructor.
     """
 
     def __init__(
         self,
         *,
-        source: str = DEFAULT_PAREC_SOURCE,
+        source: str | None = DEFAULT_PAREC_SOURCE,
         sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
         channels: int = DEFAULT_CHANNELS,
     ) -> None:
@@ -100,11 +146,23 @@ class ParecCapture:
         self.channels = channels
         self._proc: subprocess.Popen | None = None
 
+    def _resolve_source(self) -> str:
+        if self.source is not None:
+            return self.source
+        discovered = discover_l12_source()
+        if discovered is None:
+            raise OSError(
+                "L-12 multichannel-input source not found via pactl; no parec device to attach to"
+            )
+        LOG.info("L-12 source auto-discovered: %s", discovered)
+        return discovered
+
     def start(self) -> None:
         """Spawn the parec child."""
+        device = self._resolve_source()
         cmd = [
             "parec",
-            f"--device={self.source}",
+            f"--device={device}",
             f"--rate={self.sample_rate_hz}",
             f"--channels={self.channels}",
             f"--format={_PAREC_FORMAT}",
@@ -455,11 +513,13 @@ if __name__ == "__main__":
 __all__ = [
     "DEFAULT_AWARENESS_STATE_PATH",
     "DEFAULT_BROADCAST_SINK",
+    "DEFAULT_L12_SOURCE_SUBSTRING",
     "DEFAULT_PAREC_SOURCE",
     "DEFAULT_REFUSAL_LOG_PATH",
     "FeedbackLoopDaemon",
     "ParecCapture",
     "default_notifier",
+    "discover_l12_source",
     "make_awareness_writer",
     "make_prometheus_counter",
     "make_refusal_logger",
