@@ -42,6 +42,14 @@ PROBE_TIMEOUT_SECONDS = 15.0
 SNIPPET_MAX_CHARS = 500
 SNIPPET_HALF_WINDOW = 200  # chars on each side of the keyword match
 
+# Identifying User-Agent so external infrastructure (Bandcamp / Discogs /
+# RYM / Crossref / alphaXiv) can attribute probes to a specific bot, rate-
+# limit if needed, and reach the operator out-of-band. Mailto is the
+# operator's published contact per the cold-contact substrate.
+PROBE_USER_AGENT = (
+    "hapax-refused-lifecycle-watcher/1.0 (+https://github.com/ryanklee/hapax-council)"
+)
+
 
 def extract_snippet_around_keyword(text: str, keywords: list[str]) -> str:
     """Return ≤500 chars of context around the first matching keyword.
@@ -96,7 +104,7 @@ async def probe_url(task: RefusalTask) -> ProbeResult:
     if not url:
         return ProbeResult(changed=False, error="no probe url configured")
 
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"User-Agent": PROBE_USER_AGENT}
     if probe.get("last_etag"):
         headers["If-None-Match"] = probe["last_etag"]
     if probe.get("last_lm"):

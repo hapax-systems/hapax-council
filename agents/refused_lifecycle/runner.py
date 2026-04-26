@@ -21,11 +21,11 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-from prometheus_client import Counter
 
 from agents.refusal_brief import writer as refusal_brief_writer
 from agents.refusal_brief.writer import REASON_MAX_CHARS, RefusalEvent
 from agents.refused_lifecycle.evaluator import decide_transition  # re-exported
+from agents.refused_lifecycle.metrics import transitions_total
 from agents.refused_lifecycle.state import (
     ProbeResult,
     RefusalHistoryEntry,
@@ -48,15 +48,6 @@ DEFAULT_ACTIVE_DIR = Path(
 # refusal persists indefinitely — the substrate must continue evaluating it.
 # Mirror SUBDIRS = ("active", "closed") from scripts/refused_lifecycle_classify.py.
 _VAULT_SUBDIRS = ("active", "closed")
-
-
-# Per-transition counter labelled with from_state, to_state, slug. Slug
-# label is high-cardinality but bounded by the active cc-task set (~20).
-transitions_total = Counter(
-    "hapax_refused_lifecycle_transitions_total",
-    "Refused-lifecycle state-machine transitions emitted by the runner.",
-    ["from_state", "to_state", "slug"],
-)
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:

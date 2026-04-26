@@ -182,6 +182,22 @@ class TestProbeUrl:
             await probe_url(task)
         assert captured["headers"].get("If-None-Match") == '"persisted"'
 
+    @pytest.mark.asyncio
+    async def test_user_agent_header_sent_for_attribution(self):
+        # P2-6 audit follow-up: probes must self-identify so external infra
+        # can attribute / rate-limit / reach the operator out-of-band.
+        task = _structural_task()
+        captured = {}
+
+        async def _capture(self, url, headers=None):
+            captured["headers"] = headers or {}
+            return _mock_response(304)
+
+        with patch("httpx.AsyncClient.get", new=_capture):
+            await probe_url(task)
+        ua = captured["headers"].get("User-Agent", "")
+        assert "hapax-refused-lifecycle-watcher" in ua
+
 
 # ── cadence_for_task ───────────────────────────────────────────────
 
