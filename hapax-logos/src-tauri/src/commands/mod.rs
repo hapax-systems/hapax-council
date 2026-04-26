@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod cc_hygiene;
 pub mod cost;
 pub mod directive_watcher;
 pub mod governance;

@@ -102,6 +102,10 @@ export const api = {
       path: `/refusals?limit=${limit}`,
     }),
 
+  // CC-hygiene state — Tauri-direct file read (Rust commands::cc_hygiene)
+  ccHygieneState: () =>
+    invoke<import("./types").CcHygieneStateResponse>("get_cc_hygiene_state"),
+
   // Fortress
   fortressState: () => invoke<import("./types").FortressState>("proxy_fortress_state"),
   fortressGovernance: () =>

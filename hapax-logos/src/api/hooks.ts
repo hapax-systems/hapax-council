@@ -272,6 +272,15 @@ export const useOrientation = () =>
     refetchInterval: SLOW,
   });
 
+// --- CC-hygiene ---
+
+export const useCcHygieneState = () =>
+  useQuery({
+    queryKey: ["ccHygieneState"],
+    queryFn: api.ccHygieneState,
+    refetchInterval: FAST,
+  });
+
 // --- Fortress ---
 
 const FORTRESS = 30_000; // 30s for fortress state (was 5s — too aggressive)

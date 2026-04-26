@@ -774,3 +774,43 @@ export interface RefusalsResponse {
   refusals: RefusalEvent[];
   total_in_window: number;
 }
+
+// --- CC-hygiene state (workstream hygiene panel) ---
+//
+// Schema mirrors scripts/cc_hygiene/cc-hygiene-state.schema.json. Kept
+// loose (Record<string, unknown>) on the wrapper to absorb schema
+// evolution without a coordinated TS/Rust/Python triple-update.
+
+export interface CcHygieneSession {
+  role: string;
+  current_claim: string | null;
+  relay_updated: string | null;
+  in_progress_count: number;
+}
+
+export interface CcHygieneCheckSummary {
+  check_id: string;
+  fired: number;
+}
+
+export interface CcHygieneEvent {
+  timestamp: string;
+  check_id: string;
+  task_id?: string | null;
+  message: string;
+}
+
+export interface CcHygieneState {
+  schema_version: number;
+  sweep_timestamp: string;
+  sweep_duration_ms: number;
+  killswitch_active: boolean;
+  sessions: CcHygieneSession[];
+  check_summaries: CcHygieneCheckSummary[];
+  events: CcHygieneEvent[];
+}
+
+export interface CcHygieneStateResponse {
+  state: CcHygieneState | null;
+  mtime_unix: number | null;
+}

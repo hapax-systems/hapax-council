@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# waybar custom/cc-hygiene module — workstream hygiene 4-dot widget.
+#
+# Reads ~/.cache/hapax/cc-hygiene-state.json (canonical state from
+# scripts/cc-hygiene-sweeper.py) and surfaces a compact 4-dot status
+# row: one dot per session role plus a fired-checks count.
+#
+# Glyphs:
+#   ● = session has an in-progress claim
+#   ◐ = session has a claim that hasn't transitioned to in_progress
+#   ○ = session has no current claim
+# A trailing "Nf" suffix shows the number of distinct check_ids that
+# fired in the most recent sweep (stale_in_progress, ghost_claimed,
+# duplicate_claim, orphan_pr, relay_yaml_stale, wip_limit,
+# offered_stale, refusal_dormancy).
+#
+# Click handlers wired by waybar config consume waybar's left/middle/
+# right click events; this script is read-only display only.
+#
+# Stale state (sweep older than $ttl seconds): row is dim'd by the
+# "stale" CSS class.
+
+set -uo pipefail
+
+state="${HAPAX_CC_HYGIENE_STATE:-$HOME/.cache/hapax/cc-hygiene-state.json}"
+ttl=${HAPAX_CC_HYGIENE_TTL:-180}
+
+if [[ ! -f "$state" ]]; then
+    echo '{"text":"cc --","tooltip":"cc-hygiene state not yet present","class":"stale"}'
+    exit 0
+fi
+
+mtime=$(stat -c %Y "$state" 2>/dev/null || echo 0)
+now=$(date +%s)
+if (( now - mtime > ttl )); then
+    echo '{"text":"cc stale","tooltip":"cc-hygiene state stale","class":"stale"}'
+    exit 0
+fi
+
+# Roles in display order. cc-tasks SSOT recognizes these four
+# session names; render an explicit dot per role even if the sweep
+# state omits one (treat-as-empty-claim).
+roles="alpha beta delta epsilon"
+
+dots=""
+tooltip_lines=""
+for role in $roles; do
+    line=$(jq -r --arg r "$role" '
+        (.sessions[] | select(.role == $r)) // empty
+        | "\(.current_claim // "null")|\(.in_progress_count // 0)"
+    ' "$state" 2>/dev/null | head -1)
+    claim="${line%|*}"
+    inprog="${line#*|}"
+    [[ -z "$line" ]] && { claim="null"; inprog=0; }
+    [[ "$inprog" =~ ^[0-9]+$ ]] || inprog=0
+
+    if [[ "$claim" == "null" || -z "$claim" ]]; then
+        dot="○"
+    elif (( inprog > 0 )); then
+        dot="●"
+    else
+        dot="◐"
+    fi
+    dots+="$dot"
+
+    tooltip_lines+="$role: ${claim} (in_progress=${inprog})\n"
+done
+
+# Fired-checks count: number of distinct check_ids with fired > 0
+# in the most recent sweep. Surfaces things-needing-attention without
+# enumerating each event in the row.
+fired=$(jq '[.check_summaries[]? | select(.fired > 0)] | length' "$state" 2>/dev/null || echo 0)
+[[ "$fired" =~ ^[0-9]+$ ]] || fired=0
+
+cls=""
+if (( fired > 0 )); then
+    cls="degraded"
+fi
+
+# Killswitch flag (operator stop): if active, surface 'KS' marker so
+# the row visibly indicates the sweeper is paused — distinct from
+# the "stale" failure mode (sweeper never ran / crashed).
+ks=$(jq -r '.killswitch_active // false' "$state" 2>/dev/null || echo false)
+if [[ "$ks" == "true" ]]; then
+    dots="KS $dots"
+    cls="degraded"
+fi
+
+text=$(printf 'cc %s %df' "$dots" "$fired")
+# JSON-escape tooltip newlines.
+tooltip=$(printf 'cc-hygiene\n%s\nfired_checks: %d' "$tooltip_lines" "$fired" | sed -z 's/\n/\\n/g')
+
+printf '{"text":"%s","tooltip":"%s","class":"%s"}\n' "$text" "$tooltip" "$cls"

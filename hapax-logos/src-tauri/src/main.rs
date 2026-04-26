@@ -45,6 +45,8 @@ fn main() {
             commands::governance::get_briefing,
             // Cost (Tier 2: Langfuse)
             commands::cost::get_cost,
+            // CC-hygiene state (workstream hygiene panel)
+            commands::cc_hygiene::get_cc_hygiene_state,
             // System flow (live anatomy)
             commands::system_flow::get_system_flow,
             // Visual surface control

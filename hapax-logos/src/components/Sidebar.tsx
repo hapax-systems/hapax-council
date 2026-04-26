@@ -20,6 +20,7 @@ import { OverheadPanel } from "./sidebar/OverheadPanel";
 import { PrecedentPanel } from "./sidebar/PrecedentPanel";
 import { CbipPanel } from "./sidebar/CbipPanel";
 import { RefusalBriefPanel } from "./sidebar/RefusalBriefPanel";
+import { WorkstreamHygieneView } from "./sidebar/WorkstreamHygieneView";
 import { SidebarStrip } from "./sidebar/SidebarStrip";
 
 interface PanelEntry {
@@ -50,6 +51,9 @@ const panels: PanelEntry[] = [
   // Refusals near the top — high salience by design (constitutional
   // load-bearing surface per drop §3 fresh patterns).
   { id: "refusals", component: RefusalBriefPanel, defaultOrder: 7 },
+  // Workstream hygiene — adjacent to refusals; both surface
+  // session-state-of-the-substrate signals.
+  { id: "workstream-hygiene", component: WorkstreamHygieneView, defaultOrder: 19 },
 ];
 
 export function Sidebar() {
