@@ -140,6 +140,25 @@ class StreamBlock(_Block):
     rotation_state: str = ""  # "ACTIVE" / "ROTATING_NEW" / etc.
 
 
+class StudioBlock(_Block):
+    """Studio mixer state — informational signals from the L-12 scene
+    layer.
+
+    Per cc-task ``monitor-aggregate-awareness-signal``: pure polish
+    fields. No safety implication, no broadcast effect. Populated by
+    the L-12 scene-watcher source (``monitor-aggregate-l12-scene-config``,
+    closed) and surfaced to the scribble-strip ward and the awareness
+    panel.
+
+    ``monitor_aux_c_active`` flips ``True`` when L-12 Scene 8
+    (MONITOR-WORK) is loaded and the operator-monitor mix is live —
+    on-screen confirmation that AUX-C is routing audio to the
+    operator monitor, separate from broadcast.
+    """
+
+    monitor_aux_c_active: bool = False
+
+
 class CrossAccountBlock(_Block):
     """Bluesky/Mastodon/Are.na/Discord publish counts (24h)."""
 
@@ -287,6 +306,7 @@ class AwarenessState(BaseModel):
     health_system: HealthBlock = Field(default_factory=HealthBlock)
     daimonion_voice: DaimonionBlock = Field(default_factory=DaimonionBlock)
     stream: StreamBlock = Field(default_factory=StreamBlock)
+    studio: StudioBlock = Field(default_factory=StudioBlock)
     cross_account: CrossAccountBlock = Field(default_factory=CrossAccountBlock)
     governance: GovernanceBlock = Field(default_factory=GovernanceBlock)
     content_programmes: ProgrammeBlock = Field(default_factory=ProgrammeBlock)

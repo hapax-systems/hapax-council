@@ -20,8 +20,33 @@ from agents.operator_awareness.state import (
     ResearchDispatchBlock,
     SprintBlock,
     StreamBlock,
+    StudioBlock,
     write_state_atomic,
 )
+
+# ── StudioBlock — monitor-aggregate-awareness-signal cc-task ──────
+
+
+class TestStudioBlock:
+    def test_default_monitor_aux_c_inactive(self):
+        block = StudioBlock()
+        assert block.monitor_aux_c_active is False
+        assert block.public is False  # defaults to private per public_filter contract
+
+    def test_explicit_active(self):
+        block = StudioBlock(monitor_aux_c_active=True, public=True)
+        assert block.monitor_aux_c_active is True
+        assert block.public is True
+
+    def test_attached_to_awareness_state_default(self):
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from agents.operator_awareness.state import AwarenessState
+
+        state = AwarenessState(timestamp=_dt.now(UTC))
+        assert isinstance(state.studio, StudioBlock)
+        assert state.studio.monitor_aux_c_active is False
 
 
 def _now() -> datetime:
