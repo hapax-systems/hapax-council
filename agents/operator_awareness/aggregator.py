@@ -25,12 +25,16 @@ from pathlib import Path
 
 from prometheus_client import Counter
 
+from agents.operator_awareness.sources.monetization import (
+    collect_monetization_block,
+)
 from agents.operator_awareness.state import (
     AwarenessState,
     HealthBlock,
     RefusalEvent,
     StreamBlock,
 )
+from agents.payment_processors.event_log import DEFAULT_PAYMENT_LOG_PATH
 
 log = logging.getLogger(__name__)
 
@@ -272,27 +276,31 @@ class Aggregator:
         refusals_log_path: Path = DEFAULT_REFUSALS_LOG,
         infra_snapshot_path: Path = DEFAULT_INFRA_SNAPSHOT,
         chronicle_events_path: Path = DEFAULT_CHRONICLE_EVENTS,
+        monetization_log_path: Path = DEFAULT_PAYMENT_LOG_PATH,
         clock=None,
     ) -> None:
         self._refusals_log_path = refusals_log_path
         self._infra_snapshot_path = infra_snapshot_path
         self._chronicle_events_path = chronicle_events_path
+        self._monetization_log_path = monetization_log_path
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def collect(self) -> AwarenessState:
         """Build one AwarenessState by pulling each source.
 
-        Phase 2 wires 3 source helpers (refusals, health, stream).
-        Remaining 5 sub-blocks fall through to AwarenessState's
-        default factories (empty-typed instances) — surfaces see
-        dimmed/empty blocks for those categories until Phase 3
-        wires them.
+        Phase 2 wires 3 source helpers (refusals, health, stream)
+        plus the Phase-money-rails monetization source. Remaining
+        sub-blocks fall through to AwarenessState's default
+        factories (empty-typed instances) — surfaces see
+        dimmed/empty blocks for those categories until they're
+        wired.
         """
         return AwarenessState(
             timestamp=self._clock(),
             refusals_recent=collect_refusals_recent(self._refusals_log_path),
             health_system=collect_health_block(self._infra_snapshot_path),
             stream=collect_stream_block(self._chronicle_events_path),
+            monetization=collect_monetization_block(self._monetization_log_path),
         )
 
 

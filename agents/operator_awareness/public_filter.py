@@ -21,6 +21,7 @@ from agents.operator_awareness.state import (
     GovernanceBlock,
     HealthBlock,
     MarketingOutreachBlock,
+    MonetizationBlock,
     MusicBlock,
     ProgrammeBlock,
     PublishingBlock,
@@ -48,6 +49,7 @@ _BLOCK_REDACTORS = {
     "content_programmes": ProgrammeBlock,
     "hardware_fleet": FleetBlock,
     "time_sprint": SprintBlock,
+    "monetization": MonetizationBlock,
 }
 
 

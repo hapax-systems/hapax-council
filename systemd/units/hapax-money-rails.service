@@ -1,0 +1,29 @@
+[Unit]
+Description=Hapax money rails — Lightning + Nostr Zap + Liberapay receive-only aggregator
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/payment_processors/__init__.py
+After=hapax-secrets.service network-online.target
+Wants=network-online.target
+Requires=hapax-secrets.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStartPre=/home/hapax/.local/bin/hapax-env-setup
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.payment_processors
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+Environment=HAPAX_MONEY_RAILS_LOG_LEVEL=INFO
+Restart=on-failure
+RestartSec=15s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-money-rails
+MemoryMax=512M
+CPUQuota=20%
+
+[Install]
+WantedBy=default.target

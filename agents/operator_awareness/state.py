@@ -1,6 +1,6 @@
 """Awareness state model + atomic writer.
 
-Pydantic types for the 13-category operator-awareness state per the
+Pydantic types for the 14-category operator-awareness state per the
 ``awareness-state-stream-canonical`` spec. Each block carries a
 ``public: bool`` field that ``public_filter.py`` (Phase 3) consults
 when fanning out to the omg.lol public-safe weblog payload.
@@ -23,6 +23,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -159,6 +160,58 @@ class SprintBlock(_Block):
     blocked_measures: int = 0
 
 
+class PaymentEvent(BaseModel):
+    """One receive-rail payment event — never aggregated, raw individuals.
+
+    Lightning, Nostr Zap (NIP-57), and Liberapay each emit one
+    PaymentEvent per received receipt. Receivers append to a JSONL log
+    in /dev/shm; the awareness aggregator tails the log and pushes the
+    latest event into the MonetizationBlock.
+
+    Anti-anthropomorphization: structured fields, no narrative voice.
+    The ``sender_excerpt`` field caps zap/sponsorship messages at 80
+    chars per the spec; longer content is truncated at the receiver
+    rather than reshaped into prose.
+
+    READ-ONLY contract: PaymentEvent has no fields and no methods that
+    initiate, send, or refund value. ``rail`` is the source of receipt,
+    not a destination.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    timestamp: datetime
+    rail: Literal["lightning", "nostr_zap", "liberapay"]
+    amount_sats: int | None = None
+    amount_usd: float | None = None
+    amount_eur: float | None = None
+    sender_excerpt: str = Field(default="", max_length=80)
+    external_id: str | None = None  # invoice id / zap event id / sponsorship id
+
+
+class MonetizationBlock(_Block):
+    """Receive-rail monetization counters + last-event surface.
+
+    Aggregator (or the dedicated `MonetizationAggregator`) writes the
+    counts since process start and the most recent ``PaymentEvent``
+    across all three rails. ``surfaces_dot_grid_compact`` is a
+    one-line tag-string that surfaces (waybar, sidebar) can render
+    directly without re-formatting — e.g. ``"L:5 N:2 LP:1"``.
+
+    Defaults to ``public=False`` so a misconfigured surface cannot
+    leak amounts. The omg.lol public-safe filter ``public_filter.py``
+    consults the same flag.
+    """
+
+    surfaces_dot_grid_compact: str = ""
+    last_event: PaymentEvent | None = None
+    lightning_receipts_count: int = 0
+    nostr_zap_receipts_count: int = 0
+    liberapay_receipts_count: int = 0
+    total_sats_received: int = 0
+    total_eur_received: float = 0.0
+
+
 class RefusalEvent(BaseModel):
     """One refusal-gate fire — NEVER aggregated; raw individuals.
 
@@ -215,6 +268,7 @@ class AwarenessState(BaseModel):
     content_programmes: ProgrammeBlock = Field(default_factory=ProgrammeBlock)
     hardware_fleet: FleetBlock = Field(default_factory=FleetBlock)
     time_sprint: SprintBlock = Field(default_factory=SprintBlock)
+    monetization: MonetizationBlock = Field(default_factory=MonetizationBlock)
     # Raw refusal events — NEVER aggregated. Last 50 from the
     # `/dev/shm/hapax-refusals/log.jsonl` tail.
     refusals_recent: list[RefusalEvent] = Field(default_factory=list)
@@ -256,7 +310,9 @@ __all__ = [
     "GovernanceBlock",
     "HealthBlock",
     "MarketingOutreachBlock",
+    "MonetizationBlock",
     "MusicBlock",
+    "PaymentEvent",
     "ProgrammeBlock",
     "PublishingBlock",
     "RefusalEvent",
