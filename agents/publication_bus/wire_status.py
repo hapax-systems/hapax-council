@@ -66,11 +66,14 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
     "agents.publication_bus.internet_archive_publisher": WireEntry(
         module="agents.publication_bus.internet_archive_publisher",
         surface_slug="internet-archive-ias3",
-        status="CRED_BLOCKED",
-        pass_key_required="ia/access-key, ia/secret-key",
+        status="WIRED",
+        pass_key_required=None,
         rationale=(
-            "Internet Archive S3 PUT; bare-requests. Substrate complete + "
-            "tested. Wire when operator inserts IA credentials."
+            "Wired via agents/internet_archive_ias3_adapter into "
+            "publish_orchestrator.SURFACE_REGISTRY entry "
+            "`internet-archive-ias3`. Access + secret keys from env "
+            "HAPAX_IA_ACCESS_KEY + HAPAX_IA_SECRET_KEY (hapax-secrets.service "
+            "from pass `ia/access-key` + `ia/secret-key`)."
         ),
     ),
     "agents.publication_bus.omg_weblog_publisher": WireEntry(
@@ -88,25 +91,27 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
     "agents.publication_bus.osf_prereg_publisher": WireEntry(
         module="agents.publication_bus.osf_prereg_publisher",
         surface_slug="osf-prereg",
-        status="CRED_BLOCKED",
-        pass_key_required="osf/api-token",
+        status="WIRED",
+        pass_key_required=None,
         rationale=(
-            "OSF preregistration JSON:API publisher; distinct from the legacy "
-            "agents/osf_preprint_publisher. Substrate complete + tested. "
-            "Wire when operator inserts OSF token (separate from any "
-            "preprint flow)."
+            "Wired via agents/osf_prereg_adapter into "
+            "publish_orchestrator.SURFACE_REGISTRY entry `osf-prereg`. "
+            "Token from env HAPAX_OSF_TOKEN. Distinct from the legacy "
+            "agents/osf_preprint_publisher (preprints `/v2/preprints/`); "
+            "preregistration is `/v2/registrations/`."
         ),
     ),
     "agents.publication_bus.philarchive_publisher": WireEntry(
         module="agents.publication_bus.philarchive_publisher",
         surface_slug="philarchive-deposit",
-        status="CRED_BLOCKED",
-        pass_key_required="philarchive/session-cookie, philarchive/author-id",
+        status="WIRED",
+        pass_key_required=None,
         rationale=(
-            "PhilArchive form-POST via session cookie; CONDITIONAL_ENGAGE per "
-            "drop-5 §2 (one-time Playwright login produces the cookie). "
-            "Substrate complete + tested. Wire when operator runs the cookie-"
-            "extraction step."
+            "Wired via agents/philarchive_adapter into "
+            "publish_orchestrator.SURFACE_REGISTRY entry "
+            "`philarchive-deposit`. Session cookie + author ID from env "
+            "HAPAX_PHILARCHIVE_SESSION_COOKIE + HAPAX_PHILARCHIVE_AUTHOR_ID. "
+            "requires_legal_name=True per ORCID linkage."
         ),
     ),
     "agents.publication_bus.refusal_brief_publisher": WireEntry(

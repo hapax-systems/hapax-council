@@ -119,6 +119,9 @@ SURFACE_REGISTRY: dict[str, str] = {
     # Phase 2 (FULL_AUTO confirmed per 2026-04-25 audit)
     "osf-preprint": "agents.osf_preprint_publisher:publish_artifact",
     "zenodo-doi": "agents.zenodo_publisher:publish_artifact",  # primary DOI minter
+    "internet-archive-ias3": "agents.internet_archive_ias3_adapter:publish_artifact",  # V5 InternetArchiveS3Publisher
+    "osf-prereg": "agents.osf_prereg_adapter:publish_artifact",  # V5 OSFPreregPublisher
+    "philarchive-deposit": "agents.philarchive_adapter:publish_artifact",  # V5 PhilArchivePublisher
     "bluesky-atproto-multi-identity": "agents.bluesky_atproto_adapter:publish_artifact",  # V5 BlueskyPublisher (#1676 zenodo wire-pattern)
     "zenodo-refusal-deposit": "agents.refusal_brief_zenodo_adapter:publish_artifact",  # V5 RefusalBrief publisher (#1650 wire-status WIRED)
     "omg-weblog": "agents.omg_weblog_publisher:publish_artifact",  # operator-owned (hapax address)
