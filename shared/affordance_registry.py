@@ -276,6 +276,29 @@ STUDIO_AFFORDANCES = [
         daemon="compositor",
         operational=OperationalProperties(latency_class="fast"),
     ),
+    # Re-Splay Homage Ward — Dirtywave M8 LCD reveal. cc-task
+    # re-splay-homage-ward-m8 Phase 4. Recruitment is narrative-first +
+    # presence-gated: the ward is only recruitable when m8c-hapax has
+    # written a recent frame to /dev/shm/hapax-sources/m8-display.rgba
+    # (camera_pipeline checks via the source's heartbeat); director-tick
+    # impingement narratives mentioning instrument / sequencer / tracker /
+    # drum-machine / synth / live-parameter concepts drive recruitment.
+    # No auto-on-plug per feedback_no_expert_system_rules + per
+    # project_programmes_enable_grounding (programmes can boost via
+    # capability_bias_multiplier but never pre-determine appearance).
+    CapabilityRecord(
+        name="studio.m8_lcd_reveal",
+        description=(
+            "Reveal the Dirtywave M8's LCD display in the broadcast composite "
+            "when the instrument is the subject of attention"
+        ),
+        daemon="compositor",
+        operational=OperationalProperties(
+            latency_class="fast",
+            medium="visual",
+            consent_required=False,
+        ),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
