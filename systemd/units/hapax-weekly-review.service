@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax weekly review aggregator — Sunday rollup of daily-note Awareness/Refused sections
+After=hapax-secrets.service
+PartOf=hapax.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/.local/bin/uv run python -m agents.operator_awareness.weekly_review
+TimeoutStartSec=120s
+MemoryMax=256M
