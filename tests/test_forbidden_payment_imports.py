@@ -31,13 +31,19 @@ FORBIDDEN_IMPORTS: Final[tuple[str, ...]] = (
     # Per cc-task leverage-money-square-REFUSED (anticipated; same KYC posture)
     "squareup",
     "square",
+    # Per cc-task leverage-REFUSED-patreon-sponsorship — subscriber-relationship-management
+    "patreon",
+    "patreon_python",
+    "patreon-python",
 )
-"""Python clients for refused payment-processor surfaces.
+"""Python clients for refused monetization surfaces.
 
-KYC bootstrap (government ID + bank-account verification + tax-form
-threshold acceptance) is operator-physical and not daemon-tractable.
-The authorized money paths are Lightning / Nostr Zaps + Liberapay,
-both of which avoid KYC."""
+The KYC-blocked clients (stripe / paypal / square) are refused because
+KYC bootstrap (government ID + bank verification + 1099-K threshold)
+is operator-physical. Patreon is refused because its tier-perks model
++ subscriber-relationship management is operator-physical. The
+authorized money paths are Lightning / Nostr Zaps + Liberapay
+(no KYC, no tiers, no subscriber-comms)."""
 
 SCAN_ROOTS: Final[tuple[str, ...]] = (
     "agents",
