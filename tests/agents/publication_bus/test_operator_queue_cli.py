@@ -40,3 +40,48 @@ def test_default_mode_prints_full_report(capsys):
     assert rc == 0
     captured = capsys.readouterr()
     assert "Publication-bus wire-status" in captured.out
+
+
+def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
+    # Stub `pass` lookup to deterministic results without touching the
+    # operator's actual pass-store.
+    from agents.publication_bus import __main__ as m
+
+    def fake_present(key: str) -> bool:
+        # zenodo "arrived"; everything else still missing
+        return key == "zenodo/api-token"
+
+    monkeypatch.setattr(m, "_key_present_in_pass", fake_present)
+    rc = m.main(["--check-creds"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "PRESENT:   1" in captured.out
+    assert "Ready-to-wire" in captured.out
+    assert "+ zenodo/api-token" in captured.out
+    assert "Still cred-blocked" in captured.out
+    assert "- bluesky/operator-app-password" in captured.out
+
+
+def test_check_creds_all_missing_renders_correctly(capsys, monkeypatch):
+    from agents.publication_bus import __main__ as m
+
+    monkeypatch.setattr(m, "_key_present_in_pass", lambda _k: False)
+    rc = m.main(["--check-creds"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "PRESENT:   0" in captured.out
+    assert "MISSING:" in captured.out
+    assert "Ready-to-wire" not in captured.out  # no PRESENT block
+    assert "Run scripts/bootstrap_cred_tokens.py" in captured.out
+
+
+def test_check_creds_all_present_renders_correctly(capsys, monkeypatch):
+    from agents.publication_bus import __main__ as m
+
+    monkeypatch.setattr(m, "_key_present_in_pass", lambda _k: True)
+    rc = m.main(["--check-creds"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "MISSING:   0" in captured.out
+    assert "Ready-to-wire" in captured.out
+    assert "Still cred-blocked" not in captured.out
