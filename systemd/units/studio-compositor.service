@@ -2,7 +2,14 @@
 Description=Studio Compositor — GPU-accelerated camera tiling, recording, HLS streaming, and visual effects
 After=hapax-daimonion.service
 Wants=hapax-daimonion.service
-Conflicts=hapax-video-cam@brio.service hapax-video-cam@c920-desk.service hapax-video-cam@c920-room.service hapax-video-cam@c920-overhead.service
+# R-11 (audit 2026-04-26): drop hapax-video-cam@c920-desk.service +
+# hapax-video-cam@c920-overhead.service from Conflicts. Their env files
+# (~/.config/hapax-video/c920-desk.env, c920-overhead.env) do not exist
+# and never did in this deployment — only brio.env + c920-room.env are
+# present. Naming non-existent instances was a no-op (templated services
+# without an env file fail to start), but it polluted the systemd
+# dependency graph and read as live wiring during audit.
+Conflicts=hapax-video-cam@brio.service hapax-video-cam@c920-room.service
 # Raised from 5/300 — the old limit was exhausted in under 3 minutes when
 # reconnect loops went rampant. 20 restarts per hour is enough for genuine
 # infrastructure churn without running away on a stuck camera.
