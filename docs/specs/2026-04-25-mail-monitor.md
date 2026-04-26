@@ -581,6 +581,78 @@ violation, not merely an out-of-scope feature.
   ORCID consent). Each callsite must be updated when its workstream
   ships.
 
+## Bootstrap (one-time operator-physical)
+
+OAuth requires a human at the consent screen — Google does not expose
+an API path that bypasses it. This is the only operator-physical step
+in the mail-monitor family. After bootstrap completes, every other
+operation is daemon-side and the refresh token is valid until revoked.
+
+### Console steps
+
+1. Open <https://console.cloud.google.com/projectcreate>. Create a new
+   project (or reuse `hapax-personal`); set the **billing account** to
+   *No organization* and the **project name** to a recognizable
+   string.
+2. **APIs & Services → Library** → enable **Gmail API** and
+   **Cloud Pub/Sub API**.
+3. **APIs & Services → OAuth consent screen** →
+   - User type: **External** (required for personal Google accounts).
+   - App name: `hapax-mail-monitor` (operator-facing only).
+   - User support email + developer contact email: operator's address.
+   - Scopes: leave the consent-screen scope list empty; the daemon
+     will request `gmail.modify` at runtime.
+   - Test users: add the operator's Gmail address. The app stays in
+     **Testing** mode — no Google verification process is required for
+     a single-user testing app.
+4. **APIs & Services → Credentials** → **Create Credentials → OAuth
+   client ID** →
+   - Application type: **Desktop app**.
+   - Name: `hapax-mail-monitor desktop client`.
+   - Download the resulting `client_secret_*.json`.
+
+### Pass-store + first-consent
+
+```bash
+# Insert the OAuth client id + secret. Both values come from the
+# downloaded JSON's `installed.client_id` / `installed.client_secret`
+# fields — copy them out individually, do NOT paste the whole JSON.
+pass insert mail-monitor/google-client-id
+pass insert mail-monitor/google-client-secret
+
+# Run the first-consent flow. A browser window opens at the Google
+# consent screen — approve the gmail.modify scope. The refresh token
+# Google returns is persisted to pass mail-monitor/google-refresh-token.
+uv run python -m agents.mail_monitor.oauth --first-consent
+
+# Verify the bootstrap. Loads the cached refresh token, exchanges it
+# for a fresh access token, and calls users.getProfile. Should print
+# the operator's email + total message count.
+uv run python -m agents.mail_monitor.oauth --verify
+```
+
+If `--verify` fails, check:
+
+- All three `pass show mail-monitor/google-*` keys return non-empty
+  values.
+- The OAuth consent screen still has the operator's address listed
+  under **Test users**.
+- The refresh token has not been revoked at
+  <https://myaccount.google.com/connections>.
+
+### Revocation drill (smoke test)
+
+The operator can revoke the daemon's access at any time via Google
+Account → Security → **Third-party access** → revoke for the
+`hapax-mail-monitor` client. The next ``messages.modify`` /
+``users.watch()`` call returns HTTP 401; ``load_credentials`` returns
+``None`` and increments
+``hapax_mail_monitor_oauth_refresh_total{result="revoked"}``. The
+daemon emits ``awareness.mail.degraded=true`` and exits the runner
+loop. systemd restarts the unit; the next startup observes the same
+failure and exits again. The operator must re-run ``--first-consent``
+to mint a fresh refresh token.
+
 ## 12. Out of scope (deliberate)
 
 - Multi-account / multi-user Gmail support. `single_user` axiom:

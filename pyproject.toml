@@ -71,6 +71,14 @@ sync-pipeline = [
     "google-auth-oauthlib>=1.2.0",
     "langfuse>=3.14.5",
 ]
+mail-monitor = [
+    # cc-task mail-monitor-002 — gmail.modify-scoped OAuth client + Pub/Sub
+    # watch consumer. Same Google deps as sync-pipeline but a separate
+    # extra so a daemon-only install can skip langfuse.
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.30.0",
+    "google-auth-oauthlib>=1.2.0",
+]
 audio = [
     "faster-whisper>=1.1.0",
     "mediapipe>=0.10.0",
@@ -114,6 +122,7 @@ ci = [
     # CI testing — everything except hardware-only audio deps
     "hapax-council[logos-api]",
     "hapax-council[sync-pipeline]",
+    "hapax-council[mail-monitor]",
     "google-genai>=1.0.0",
     "matplotlib>=3.9",
     "moviepy>=2.0.0",

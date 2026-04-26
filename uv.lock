@@ -2072,6 +2072,7 @@ audio = [
 ci = [
     { name = "fastapi" },
     { name = "google-api-python-client" },
+    { name = "google-auth" },
     { name = "google-auth-oauthlib" },
     { name = "google-genai" },
     { name = "jinja2" },
@@ -2092,6 +2093,7 @@ host = [
     { name = "fastapi" },
     { name = "faster-whisper" },
     { name = "google-api-python-client" },
+    { name = "google-auth" },
     { name = "google-auth-oauthlib" },
     { name = "google-genai" },
     { name = "hsemotion-onnx" },
@@ -2134,6 +2136,11 @@ logos-api = [
     { name = "uvicorn" },
     { name = "watchdog" },
 ]
+mail-monitor = [
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+    { name = "google-auth-oauthlib" },
+]
 studio = [
     { name = "ultralytics" },
 ]
@@ -2164,13 +2171,17 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.135.1" },
     { name = "fastapi", marker = "extra == 'logos-api'", specifier = ">=0.115.0" },
     { name = "faster-whisper", marker = "extra == 'audio'", specifier = ">=1.1.0" },
+    { name = "google-api-python-client", marker = "extra == 'mail-monitor'", specifier = ">=2.100.0" },
     { name = "google-api-python-client", marker = "extra == 'sync-pipeline'", specifier = ">=2.100.0" },
+    { name = "google-auth", marker = "extra == 'mail-monitor'", specifier = ">=2.30.0" },
+    { name = "google-auth-oauthlib", marker = "extra == 'mail-monitor'", specifier = ">=1.2.0" },
     { name = "google-auth-oauthlib", marker = "extra == 'sync-pipeline'", specifier = ">=1.2.0" },
     { name = "google-cloud-monitoring", specifier = ">=2.30.0" },
     { name = "google-genai", marker = "extra == 'ci'", specifier = ">=1.0.0" },
     { name = "hapax-council", extras = ["audio"], marker = "extra == 'host'" },
     { name = "hapax-council", extras = ["ci"], marker = "extra == 'host'" },
     { name = "hapax-council", extras = ["logos-api"], marker = "extra == 'ci'" },
+    { name = "hapax-council", extras = ["mail-monitor"], marker = "extra == 'ci'" },
     { name = "hapax-council", extras = ["studio"], marker = "extra == 'host'" },
     { name = "hapax-council", extras = ["sync-pipeline"], marker = "extra == 'ci'" },
     { name = "hsemotion-onnx", marker = "extra == 'audio'", specifier = ">=0.3" },
@@ -2237,7 +2248,7 @@ requires-dist = [
     { name = "watchdog", marker = "extra == 'ci'", specifier = ">=6.0.0" },
     { name = "watchdog", marker = "extra == 'logos-api'", specifier = ">=6.0.0" },
 ]
-provides-extras = ["logos-api", "sync-pipeline", "audio", "ci", "studio", "host"]
+provides-extras = ["logos-api", "sync-pipeline", "mail-monitor", "audio", "ci", "studio", "host"]
 
 [package.metadata.requires-dev]
 dev = [
