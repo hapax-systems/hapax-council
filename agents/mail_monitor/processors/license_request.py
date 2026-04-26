@@ -63,7 +63,7 @@ def _extract_addr(sender: str | None) -> str | None:
 def _sender_hash(sender: str | None) -> str:
     """Short SHA-1 prefix of the sender address — privacy-preserving identifier."""
     addr = _extract_addr(sender) or "unknown"
-    return hashlib.sha1(addr.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(addr.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
 
 def detect_license_request(message: dict[str, Any]) -> bool:
@@ -76,7 +76,7 @@ def _vault_path(message: dict[str, Any], now: datetime) -> Path:
     """Compute the deterministic vault filename for this message."""
     sender_h = _sender_hash(message.get("sender"))
     msg_id = message.get("id") or message.get("messageId") or "unknown"
-    msg_id_h = hashlib.sha1(str(msg_id).encode("utf-8")).hexdigest()[:8]
+    msg_id_h = hashlib.sha1(str(msg_id).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
     iso = now.strftime("%Y-%m-%d")
     return LICENSE_REQUEST_DIR / f"{iso}-{sender_h}-{msg_id_h}.eml"
 
