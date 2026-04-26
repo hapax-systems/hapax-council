@@ -66,3 +66,40 @@ class TestTickFloor:
     def test_tick_s_floor(self):
         runner = AwarenessRunner(tick_s=1.0, registry=CollectorRegistry())
         assert runner._tick_s >= 5.0
+
+
+class TestSdNotifyIntegration:
+    """sd_notify must be a no-op outside systemd; ready+watchdog under it."""
+
+    def test_no_notifier_when_sdnotify_absent(self, monkeypatch):
+        from agents.operator_awareness import runner as runner_mod
+
+        # Reset cache then force the import to fail.
+        monkeypatch.setattr(runner_mod, "_sd_notifier", None)
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kw):
+            if name == "sdnotify":
+                raise ImportError("no sdnotify in test env")
+            return real_import(name, *args, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+        # Should not raise — silently no-op.
+        runner_mod.sd_notify_ready()
+        runner_mod.sd_notify_watchdog()
+        # Cached negative — second call hits the cache, not import.
+        assert runner_mod._sd_notifier is False
+
+    def test_ready_and_watchdog_call_through(self, monkeypatch):
+        from agents.operator_awareness import runner as runner_mod
+
+        notifier = mock.Mock()
+        monkeypatch.setattr(runner_mod, "_sd_notifier", notifier)
+        runner_mod.sd_notify_ready()
+        runner_mod.sd_notify_watchdog()
+        assert notifier.notify.call_args_list == [
+            mock.call("READY=1"),
+            mock.call("WATCHDOG=1"),
+        ]

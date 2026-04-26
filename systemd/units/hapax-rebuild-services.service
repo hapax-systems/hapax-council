@@ -78,3 +78,10 @@ ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/project
 # evil_pet_presets) so the live daemon picks up CC-table changes /
 # scene additions / preset additions without manual intervention.
 ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-audio-router.service --watch "agents/audio_router/ shared/s4_midi.py shared/s4_scenes.py shared/evil_pet_presets.py shared/" --sha-key audio-router
+
+# hapax-operator-awareness: 30s tick canonical state aggregator (the MAPE-K
+# Knowledge layer). Restart on edits to the awareness package, the payment
+# event log (which the monetization source reads), or shared modules so
+# all consumers (waybar, watch, sidebar, omg.lol fanout) see new fields
+# the moment a producer ships them.
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-operator-awareness.service --watch "agents/operator_awareness/ agents/payment_processors/event_log.py shared/" --sha-key operator-awareness

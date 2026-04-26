@@ -1,0 +1,20 @@
+[Unit]
+Description=Hapax operator-awareness state runner — 30s tick that aggregates 8 sources and atomically writes /dev/shm/hapax-awareness/state.json
+After=hapax-secrets.service
+PartOf=hapax.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/.local/bin/uv run python -m agents.operator_awareness
+Restart=always
+RestartSec=5s
+WatchdogSec=120s
+MemoryMax=256M
+
+[Install]
+WantedBy=hapax.target

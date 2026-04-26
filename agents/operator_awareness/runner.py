@@ -15,6 +15,14 @@ metric counts ticks where any wired source returned a default-empty
 block when its source path existed (e.g. corrupt JSON). For now,
 each tick that succeeds at writing increments the writes_total
 ``ok`` counter; a write failure increments ``error``.
+
+systemd integration: when run under ``Type=notify``, the runner
+calls ``sd_notify(READY=1)`` after the first successful tick so
+systemd marks the unit active only after state.json exists. Each
+subsequent tick pings ``WATCHDOG=1``; pair with ``WatchdogSec=120``
+in the unit file and crash-recovery is automatic without external
+monitoring scaffolding. Outside systemd (tests, manual run) the
+notifier resolves to a no-op, matching the studio-compositor pattern.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ import logging
 import os
 import signal as _signal
 import threading
+from typing import Any
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter
 
@@ -31,6 +40,44 @@ from agents.operator_awareness.state import (
     DEFAULT_STATE_PATH,
     write_state_atomic,
 )
+
+# sd_notify integration — lazy load so unit tests + non-systemd hosts
+# don't pay the import cost or fail when sdnotify is absent. Cached
+# negative (False) avoids re-attempting the import on every tick.
+_sd_notifier: Any = None
+
+
+def _get_notifier() -> Any:
+    """Resolve ``sdnotify.SystemdNotifier``; None when unavailable."""
+    global _sd_notifier
+    if _sd_notifier is None:
+        try:
+            import sdnotify  # noqa: PLC0415
+
+            _sd_notifier = sdnotify.SystemdNotifier()
+        except ImportError:
+            _sd_notifier = False  # cache negative
+    return _sd_notifier if _sd_notifier else None
+
+
+def sd_notify_ready() -> None:
+    """Signal systemd Type=notify that the service is up.
+
+    Called once after the first successful tick (state.json exists),
+    so systemd marks the unit active only when consumers actually
+    have data to read — not on process start.
+    """
+    notifier = _get_notifier()
+    if notifier is not None:
+        notifier.notify("READY=1")
+
+
+def sd_notify_watchdog() -> None:
+    """Ping the systemd watchdog (paired with ``WatchdogSec=`` in unit)."""
+    notifier = _get_notifier()
+    if notifier is not None:
+        notifier.notify("WATCHDOG=1")
+
 
 log = logging.getLogger(__name__)
 
@@ -100,15 +147,28 @@ class AwarenessRunner:
             self._tick_s,
             self._state_path,
         )
+        ready_signaled = False
         while not self._stop_evt.is_set():
+            result = "error"
             try:
-                self.run_once()
+                result = self.run_once()
             except Exception:  # noqa: BLE001
                 log.exception("tick failed; continuing on next cadence")
+            # Defer READY=1 until the first successful tick so consumers
+            # see state.json the moment systemd marks the unit active.
+            if not ready_signaled and result == "ok":
+                sd_notify_ready()
+                ready_signaled = True
+            sd_notify_watchdog()
             self._stop_evt.wait(self._tick_s)
 
     def stop(self) -> None:
         self._stop_evt.set()
 
 
-__all__ = ["DEFAULT_TICK_S", "AwarenessRunner"]
+__all__ = [
+    "DEFAULT_TICK_S",
+    "AwarenessRunner",
+    "sd_notify_ready",
+    "sd_notify_watchdog",
+]
