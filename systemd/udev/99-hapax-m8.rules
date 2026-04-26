@@ -1,0 +1,29 @@
+# Hapax — Re-Splay Homage Ward (Dirtywave M8 hotplug).
+# See docs/superpowers/plans/... and cc-task re-splay-homage-ward-m8.
+#
+# When the M8 USB device appears (16c0:048a — Van Ooijen / Teensy CDC
+# serial + UAC audio), TAG+="systemd" + SYSTEMD_USER_WANTS pulls the
+# user-scope hapax-m8-monitor.service into the active dependency graph.
+# The service spawns m8c-hapax which:
+#   - reads /dev/ttyACM0 (M8 display protocol over CDC)
+#   - publishes M8 LCD frames (320x240 ARGB) to /dev/video15 (v4l2-loopback)
+# The M8's UAC audio is handled separately by wireplumber rule 54-hapax-m8-instrument.conf.
+#
+# USB autosuspend is also disabled here — same pattern as studio cameras
+# (USB autosuspend is a documented contributor to mid-stream drops on
+# class-compliant audio + video devices).
+
+# Disable USB autosuspend on the M8 specifically.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="16c0", ATTR{idProduct}=="048a", ATTR{power/control}="on"
+
+# Stable symlink so consumers don't depend on /dev/ttyACM* numbering
+# (which can shift if other CDC devices arrive first). The M8 always
+# appears at /dev/hapax-m8-serial post-rule.
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="048a", \
+    SYMLINK+="hapax-m8-serial"
+
+# Pull hapax-m8-monitor.service into the active dependency graph when
+# the M8 appears. Runs in the user systemd instance (matches the rest
+# of the application stack).
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="048a", \
+    TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="hapax-m8-monitor.service"

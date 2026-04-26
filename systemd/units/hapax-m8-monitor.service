@@ -1,0 +1,36 @@
+[Unit]
+Description=Hapax Re-Splay Homage Ward — m8c-hapax bridge for M8 LCD → /dev/video15
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/packages/m8c-hapax/README.md
+# Pulled into the active graph by the udev rule at systemd/udev/99-hapax-m8.rules
+# (TAG+="systemd" + SYSTEMD_USER_WANTS) when the M8 USB device appears.
+# StopWhenUnneeded ensures clean teardown when the M8 is unplugged.
+After=graphical-session.target
+PartOf=hapax.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+# m8c-hapax is the carry-fork at packages/m8c-hapax with the v4l2 sink
+# patch enabled. Coexists with stock m8c which lives at /usr/bin/m8c.
+ExecStart=/usr/local/bin/m8c-hapax
+# m8c is an SDL3 application; under a systemd user unit with no display
+# attached it will run headless once SDL_VIDEODRIVER is set to dummy.
+# The visible surface comes via /dev/video15 (v4l2-loopback), not via
+# an X/Wayland window.
+Environment=SDL_VIDEODRIVER=dummy
+# v4l2 loopback target for the bridge (override of compile-time default).
+# Matches the pin in /etc/modprobe.d/hapax-m8.conf.
+Environment=M8C_V4L2_SINK_PATH=/dev/video15
+# Restart on every failure — m8c can exit on transient serial errors
+# while the M8 is rebooting itself, and we want the bridge back up as
+# soon as /dev/hapax-m8-serial reappears. RestartSec is short because
+# the M8 typically returns within 1-2 s.
+Restart=on-failure
+RestartSec=2
+# Serial-port wedge / hung SDL takes <30 s to detect; cap startup so
+# we don't sit forever in a stalled state.
+TimeoutStartSec=30
+MemoryMax=256M
+
+[Install]
+WantedBy=hapax.target
