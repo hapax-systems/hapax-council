@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly mail-monitor audit-log digest (mail-monitor-012)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/docs/specs/2026-04-25-mail-monitor.md
+
+[Timer]
+# Monday 04:00 UTC, weekly. Persistent=true ensures a missed run
+# (host off / suspended) fires on next boot. 30-min jitter spreads
+# load across multiple host installs.
+OnCalendar=Mon *-*-* 04:00:00 UTC
+RandomizedDelaySec=1800
+Persistent=true
+Unit=hapax-mail-monitor-weekly-digest.service
+
+[Install]
+WantedBy=timers.target
