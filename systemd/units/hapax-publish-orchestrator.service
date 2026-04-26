@@ -7,10 +7,15 @@ Requires=hapax-secrets.service
 [Service]
 Type=simple
 WorkingDirectory=/home/hapax/projects/hapax-council
-# No EnvironmentFile — `agents.publish_orchestrator` reads only HAPAX_STATE
-# (default `~/hapax-state`) and HAPAX_LOG_LEVEL (default INFO). Audit
-# 2026-04-26 R-19: dropped optional `EnvironmentFile=-/home/hapax/.config/hapax/hapax.env`
-# which referenced a never-existed file (absence-class dead reference).
+# 2026-04-26 Phase-3 fanout activation: surface adapters (bluesky, IA, OSF,
+# PhilArchive, Zenodo refusal-deposit) read HAPAX_*_TOKEN / HAPAX_*_KEY /
+# HAPAX_BLUESKY_* env vars from hapax-secrets.service via
+# /run/user/1000/hapax-secrets.env. Without this EnvironmentFile every
+# adapter returns ``auth_error`` and refusal-annex fanout (and every
+# other enqueued artefact) silently no-ops. The `-` prefix makes the file
+# optional — service still starts on hosts where hapax-secrets isn't
+# materialised yet (CI runners, fresh VMs).
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
 ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.publish_orchestrator
 Restart=on-failure
 RestartSec=5s
