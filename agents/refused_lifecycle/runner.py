@@ -1,0 +1,201 @@
+"""Runner — parse cc-task frontmatter, dispatch decisions, atomically rewrite.
+
+Orchestration layer: pulls REFUSED tasks from the active vault directory,
+calls the pure evaluator, then commits the transition by rewriting
+frontmatter via tmp+rename. Body of the cc-task markdown is preserved
+verbatim — the runner only mutates the YAML header.
+
+Refusal-brief integration is a stub here: ``_to_refusal_event`` adapts a
+TransitionEvent to a RefusalEvent shape, ready to be wired into
+``agents.refusal_brief.writer.append`` once the integration cc-task ships
+the schema extension. Until then the stub returns the adapter dict, the
+caller can opt in.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from collections.abc import Callable, Iterator
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+from prometheus_client import Counter
+
+from agents.refused_lifecycle.evaluator import decide_transition  # re-exported
+from agents.refused_lifecycle.state import (
+    ProbeResult,
+    RefusalHistoryEntry,
+    RefusalTask,
+    TransitionEvent,
+)
+
+log = logging.getLogger(__name__)
+
+# Default vault location for active cc-task notes. Tests pass tmp_path.
+DEFAULT_ACTIVE_DIR = Path(
+    os.environ.get(
+        "HAPAX_CC_TASK_ACTIVE_DIR",
+        str(Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"),
+    )
+)
+
+
+# Per-transition counter labelled with from_state, to_state, slug. Slug
+# label is high-cardinality but bounded by the active cc-task set (~20).
+transitions_total = Counter(
+    "hapax_refused_lifecycle_transitions_total",
+    "Refused-lifecycle state-machine transitions emitted by the runner.",
+    ["from_state", "to_state", "slug"],
+)
+
+
+def _split_frontmatter(text: str) -> tuple[dict, str]:
+    """Split a YAML-frontmatter markdown file into (metadata, body)."""
+    if not text.startswith("---\n"):
+        raise ValueError("missing opening --- frontmatter delimiter")
+    rest = text[4:]
+    end = rest.find("\n---\n")
+    if end == -1:
+        raise ValueError("missing closing --- frontmatter delimiter")
+    fm_text = rest[:end]
+    body = rest[end + len("\n---\n") :]
+    metadata = yaml.safe_load(fm_text) or {}
+    return metadata, body
+
+
+def parse_frontmatter(path: Path) -> RefusalTask:
+    """Parse a cc-task markdown file into a RefusalTask."""
+    text = path.read_text(encoding="utf-8")
+    metadata, _ = _split_frontmatter(text)
+
+    history_raw = metadata.get("refusal_history") or []
+    history = [RefusalHistoryEntry(**entry) for entry in history_raw]
+
+    # Default to empty string when missing — `iter_refused_tasks` filters by
+    # exact "REFUSED" match, so missing-status tasks are correctly excluded
+    # from the substrate's evaluation set. Defaulting to "REFUSED" would mass-
+    # mutate every legacy task that lacks the field.
+    return RefusalTask(
+        slug=path.stem,
+        path=str(path),
+        automation_status=metadata.get("automation_status", ""),
+        refusal_reason=metadata.get("refusal_reason", ""),
+        last_evaluated_at=metadata.get("last_evaluated_at"),
+        next_evaluation_at=metadata.get("next_evaluation_at"),
+        evaluation_trigger=metadata.get("evaluation_trigger") or [],
+        evaluation_probe=metadata.get("evaluation_probe") or {},
+        refusal_history=history,
+        superseded_by=metadata.get("superseded_by"),
+        acceptance_evidence=metadata.get("acceptance_evidence"),
+    )
+
+
+def iter_refused_tasks(active_dir: Path = DEFAULT_ACTIVE_DIR) -> Iterator[RefusalTask]:
+    """Yield REFUSED-status tasks from the active vault directory."""
+    if not active_dir.exists():
+        return
+    for path in sorted(active_dir.glob("*.md")):
+        try:
+            task = parse_frontmatter(path)
+        except (ValueError, yaml.YAMLError) as exc:
+            log.warning("skipping %s: %s", path, exc)
+            continue
+        if task.automation_status == "REFUSED":
+            yield task
+
+
+def apply_transition(
+    path: Path,
+    task: RefusalTask,
+    event: TransitionEvent,
+    now: datetime,
+) -> None:
+    """Atomically commit a transition by rewriting frontmatter.
+
+    Body after the closing ``---`` delimiter is preserved verbatim. Mutation
+    rules per transition:
+
+    - re-affirmed: append history, bump ``last_evaluated_at``, status unchanged
+    - accepted: status → OFFERED, populate ``acceptance_evidence``, append history
+    - regressed: status → REFUSED, preserve prior ``acceptance_evidence``,
+      append history
+    - removed: status → REMOVED, populate ``removed_reason``, append history
+    """
+    text = path.read_text(encoding="utf-8")
+    metadata, body = _split_frontmatter(text)
+
+    history = metadata.get("refusal_history") or []
+    history.append(
+        {
+            "date": event.timestamp,
+            "transition": event.transition,
+            "reason": event.reason,
+            "evidence_url": event.evidence_url,
+        }
+    )
+    metadata["refusal_history"] = history
+    metadata["last_evaluated_at"] = now
+
+    if event.transition == "accepted":
+        metadata["automation_status"] = "OFFERED"
+        metadata["acceptance_evidence"] = {
+            "evidence_url": event.evidence_url,
+            "accepted_at": now,
+            "reason": event.reason,
+        }
+    elif event.transition == "regressed":
+        metadata["automation_status"] = "REFUSED"
+    elif event.transition == "removed":
+        metadata["automation_status"] = "REMOVED"
+        metadata["removed_reason"] = event.reason
+    # re-affirmed: status unchanged
+
+    new_text = "---\n" + yaml.safe_dump(metadata, sort_keys=False) + "---\n" + body
+    tmp = path.with_suffix(f".md.tmp.{os.getpid()}")
+    try:
+        tmp.write_text(new_text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        raise
+
+    transitions_total.labels(
+        from_state=event.from_state, to_state=event.to_state, slug=task.slug
+    ).inc()
+
+
+def tick(
+    now: datetime,
+    *,
+    active_dir: Path = DEFAULT_ACTIVE_DIR,
+    dispatch_probes: Callable[[RefusalTask], list[ProbeResult]] | None = None,
+) -> list[TransitionEvent]:
+    """One orchestration tick — iterate REFUSED tasks, dispatch, apply.
+
+    ``dispatch_probes`` is the seam where Phase 3 watchers plug in. When
+    None, all tasks re-affirm (no probes → conservative default per the
+    evaluator).
+    """
+    events: list[TransitionEvent] = []
+    for task in iter_refused_tasks(active_dir):
+        if task.next_evaluation_at and task.next_evaluation_at > now:
+            continue
+        probes = dispatch_probes(task) if dispatch_probes else []
+        event = decide_transition(task, probes)
+        apply_transition(Path(task.path), task, event, now)
+        events.append(event)
+    return events
+
+
+__all__ = [
+    "DEFAULT_ACTIVE_DIR",
+    "apply_transition",
+    "decide_transition",
+    "iter_refused_tasks",
+    "parse_frontmatter",
+    "tick",
+    "transitions_total",
+]
