@@ -2,7 +2,12 @@
 Description=Studio Compositor — GPU-accelerated camera tiling, recording, HLS streaming, and visual effects
 After=hapax-daimonion.service
 Wants=hapax-daimonion.service
-Conflicts=hapax-video-cam@brio.service hapax-video-cam@c920-desk.service hapax-video-cam@c920-room.service hapax-video-cam@c920-overhead.service
+# Conflicts: only list instances whose env file actually exists at
+# %h/.config/hapax-video/%i.env (template at hapax-video-cam@.service:8).
+# Dead references (c920-desk, c920-overhead — env files were never
+# authored) removed 2026-04-26 per R-11 of the absence-class-bug-
+# prevention-and-remediation epic.
+Conflicts=hapax-video-cam@brio.service hapax-video-cam@c920-room.service
 # Raised from 5/300 — the old limit was exhausted in under 3 minutes when
 # reconnect loops went rampant. 20 restarts per hour is enough for genuine
 # infrastructure churn without running away on a stuck camera.
