@@ -19,7 +19,7 @@ CLAUDE.md rotation policy: `docs/superpowers/specs/2026-04-13-claude-md-excellen
 
 **Reactive engine** (`logos/engine/`): inotify watcher → rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).
 
-**Infrastructure**: Docker Compose for databases/proxies (13 containers), systemd user units for all application services. No process-compose in production. See `systemd/README.md` for boot sequence, resource isolation, and recovery chain.
+**Infrastructure**: Docker Compose for databases/proxies (13 containers), systemd user units for all application services. No process-compose in production. See `systemd/README.md` for boot sequence, resource isolation, and recovery chain. **Canonical path for new systemd units: `systemd/units/`** — `scripts/hapax-post-merge-deploy` matches `systemd/units/*.service|*.timer` only; files placed elsewhere (e.g., `systemd/user/`) are silently invisible to the deploy chain.
 
 **Key services**: `hapax-secrets` (credentials) → `logos-api` (:8051) → `waybar` (GTK4 status bar) → `tabbyapi` (GPU, EXL3 inference :5000) → `hapax-daimonion` (GPU STT, CPU TTS) → `visual-layer-aggregator` → `studio-compositor` (GPU). Timers for sync, health, backups. Archival pipeline (audio/video recording, classification, RAG ingest) disabled — see `systemd/README.md § Disabled Services`.
 
