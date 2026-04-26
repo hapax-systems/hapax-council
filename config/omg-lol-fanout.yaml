@@ -1,0 +1,11 @@
+# omg.lol cross-weblog fanout configuration
+#
+# Operator-owned addresses that participate in the cross-weblog fanout.
+# Each address fans out to every other address via the bearer-token
+# API; loop-prevention is handled by the X-Hapax-Fanout-Source header
+# embedded in the content.
+#
+# When the list is empty (the default, until the operator registers
+# additional addresses), the fanout is a no-op. This is the seed
+# state — operator adds addresses as they are bootstrapped.
+addresses: []
