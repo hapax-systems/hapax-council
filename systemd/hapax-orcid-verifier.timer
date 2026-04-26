@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax ORCID auto-update verifier Timer (daily 06:00 UTC)
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

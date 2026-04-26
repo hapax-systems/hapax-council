@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax ORCID auto-update verifier — daily check that minted concept-DOIs flow to operator's ORCID record
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.publication_bus.orcid_verifier
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+EnvironmentFile=-%h/.cache/hapax/secrets.env
+EnvironmentFile=-%h/.config/hapax/orcid-verifier.env
+
+[Install]
+WantedBy=default.target

@@ -24,6 +24,7 @@ on the ORCID side).
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from prometheus_client import Counter
@@ -137,11 +138,75 @@ def verify_dois_present(
     return {doi for doi in expected_dois if doi.lower() not in fetched_lower}
 
 
+DEFAULT_RECENT_CONCEPT_DOIS_PATH = (
+    Path.home() / "hapax-state" / "publications" / "recent-concept-dois.txt"
+)
+"""Local newline-delimited list of concept-DOIs recently minted by
+the publication bus. The Phase 2 daemon reads this file as the
+"expected DOIs" set; the Zenodo deposit_builder writes to it on each
+successful mint (Phase 2 of pub-bus-zenodo-related-identifier-graph)."""
+
+
+def load_recent_concept_dois(*, path: Path = DEFAULT_RECENT_CONCEPT_DOIS_PATH) -> set[str]:
+    """Read the newline-delimited concept-DOI list; return empty set if absent."""
+    if not path.exists():
+        return set()
+    return {line.strip() for line in path.read_text().splitlines() if line.strip()}
+
+
+def main() -> int:
+    """Single-pass verification entry for systemd timer.
+
+    Reads ``HAPAX_OPERATOR_ORCID`` env var; fetches the operator's
+    ORCID works; loads expected concept-DOIs from
+    ``~/hapax-state/publications/recent-concept-dois.txt``; logs any
+    missing DOIs (ntfy escalation on >72h-old gaps belongs in Phase 3
+    once the recent-DOIs file carries timestamps).
+    """
+    import os
+
+    logging.basicConfig(level=logging.INFO)
+    orcid = os.environ.get("HAPAX_OPERATOR_ORCID")
+    if not orcid:
+        log.info("HAPAX_OPERATOR_ORCID not set; orcid verifier skipping this tick")
+        orcid_works_total.labels(orcid="unset", outcome="no-orcid-configured").inc()
+        return 0
+
+    works = fetch_orcid_works(orcid)
+    if works is None:
+        log.info("orcid works fetch failed; will retry next tick")
+        return 0
+
+    fetched = extract_dois(works)
+    expected = load_recent_concept_dois()
+    missing = verify_dois_present(expected_dois=expected, fetched_dois=fetched)
+
+    if missing:
+        log.info(
+            "orcid auto-update verification: %d DOIs minted but not yet visible in ORCID: %s",
+            len(missing),
+            sorted(missing),
+        )
+    else:
+        log.info(
+            "orcid auto-update verification ok: %d DOIs all visible in ORCID",
+            len(expected),
+        )
+    return 0
+
+
 __all__ = [
+    "DEFAULT_RECENT_CONCEPT_DOIS_PATH",
     "ORCID_PUBLIC_API_BASE",
     "ORCID_REQUEST_TIMEOUT_S",
     "extract_dois",
     "fetch_orcid_works",
+    "load_recent_concept_dois",
+    "main",
     "orcid_works_total",
     "verify_dois_present",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
