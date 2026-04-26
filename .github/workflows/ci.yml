@@ -32,6 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
       - uses: astral-sh/ruff-action@v3
         with:
           args: "check"
@@ -91,6 +93,13 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+      - name: Cache pyright analysis
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pyright
+          key: pyright-${{ runner.os }}-${{ hashFiles('pyrightconfig.json', 'uv.lock', 'pyproject.toml') }}
+          restore-keys: |
+            pyright-${{ runner.os }}-
       - run: uv sync --extra ci
       - run: uv run pyright
 
@@ -144,17 +153,20 @@ jobs:
           # that force-closes cached Qdrant + LiteLLM + httpx clients, so
           # teardown exits cleanly (~0.1s) instead of hanging to the timeout.
           #
-          # Parallelism: pytest-xdist -n 2 --dist loadfile runs two worker
+          # Parallelism: pytest-xdist -n 4 --dist loadfile runs four worker
           # processes, distributed per-file so tests within a file stay
           # serial (preserves file-scoped fixture state + /dev/shm and
-          # /tmp write patterns). GitHub Actions ubuntu-latest has 4 cores;
-          # -n 2 leaves headroom for subprocess / system load.
+          # /tmp write patterns). GitHub Actions ubuntu-latest has 4 vCPUs;
+          # -n 4 fully saturates the runner. Bumped from -n 2 in CI/CD
+          # speedup PR1 (research drop docs/research/2026-04-26-cicd-speedup.md
+          # §2 #2). Monitor first 3 PRs for OOM or socket-conflict regressions;
+          # if a flake surfaces, fall back to -n 3.
           #
           # Timeout reduced 25m → 15m after socket-hang fix + xdist (real
           # tests: ~6-8 min parallel; was 11-15 min serial).
           set +e
           timeout -s KILL 900 \
-            uv run pytest tests/ -q --tb=line -n 2 --dist loadfile \
+            uv run pytest tests/ -q --tb=line -n 4 --dist loadfile \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \
               --ignore=tests/test_frame_gate.py \
               --ignore=tests/test_hapax_daimonion_pipecat_tts.py \
@@ -310,7 +322,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          # Shallow clone vs full-history. gitleaks scans current diff;
+          # 50 commits is sufficient for typical PRs.
+          fetch-depth: 50
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -322,6 +336,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
       - run: pip install bandit
       - name: Run Bandit security scan
         run: bandit -r . -x ./tests,./hapax-logos,./vscode --severity-level medium -f json -o bandit-report.json || true
