@@ -18,15 +18,18 @@ with header ``X-Awareness-State-Stale: true``. Surfaces interpret
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 from agents.operator_awareness.public_filter import public_filter
 from agents.operator_awareness.state import AwarenessState
@@ -43,19 +46,47 @@ DEFAULT_REFUSALS_PATH = Path("/dev/shm/hapax-refusals/log.jsonl")
 # returns the live tail only — historical archives are out of scope.
 DEFAULT_REFUSALS_LIMIT = 50
 
+# SSE polling cadence — mtime check on a tmpfs file is sub-microsecond,
+# so 1Hz is plenty cheap. Heartbeat at 30s by industry convention
+# (covers most TCP-keepalive intervals so dead-connection detection
+# happens within a single heartbeat window).
+_SSE_POLL_INTERVAL_S = 1.0
+_SSE_HEARTBEAT_INTERVAL_S = 30.0
+
 # Per-endpoint request counter. Optional: route serves traffic even
 # without prometheus_client (minimal test environments).
 hapax_awareness_api_requests_total: Any = None
+hapax_awareness_sse_subscribers: Any = None
+hapax_awareness_sse_events_total: Any = None
 try:
     from prometheus_client import Counter as _APICounter
+    from prometheus_client import Gauge as _APIGauge
 
     hapax_awareness_api_requests_total = _APICounter(
         "hapax_awareness_api_requests_total",
         "Awareness REST endpoint request outcomes.",
         ["endpoint", "status"],
     )
+    hapax_awareness_sse_subscribers = _APIGauge(
+        "hapax_awareness_sse_subscribers",
+        "Currently-connected SSE subscribers on /api/awareness/stream.",
+    )
+    hapax_awareness_sse_events_total = _APICounter(
+        "hapax_awareness_sse_events_total",
+        "SSE events emitted by the awareness stream, per event type.",
+        ["type"],
+    )
 except Exception:
     pass
+
+
+def _record_sse_event(event_type: str) -> None:
+    if hapax_awareness_sse_events_total is None:
+        return
+    try:
+        hapax_awareness_sse_events_total.labels(type=event_type).inc()
+    except Exception:
+        pass
 
 
 def _record(endpoint: str, status: int) -> None:
@@ -222,6 +253,129 @@ async def get_refusals(
         "refusals": entries[-limit:],
         "total_in_window": len(entries),
     }
+
+
+async def _awareness_sse_generator(
+    *,
+    public: bool,
+    poll_interval_s: float = _SSE_POLL_INTERVAL_S,
+    heartbeat_interval_s: float = _SSE_HEARTBEAT_INTERVAL_S,
+    state_path: Path | None = None,
+    iter_limit: int | None = None,
+    sleep_fn: Any = None,
+) -> AsyncIterator[dict[str, str]]:
+    """Generate the SSE event stream for awareness state.
+
+    Three event types:
+
+    * ``state`` — full ``AwarenessState`` JSON (or its public-filtered
+      view); fired on first observation and on every state-file
+      mtime change thereafter.
+    * ``stale`` — fired once when the file's age crosses the TTL,
+      and again whenever the next ``state`` resolves the staleness.
+    * ``heartbeat`` — fired every ``heartbeat_interval_s`` seconds
+      so clients can detect dead connections in absence of state
+      changes.
+
+    Pure async generator with all I/O bound to the arguments — tests
+    inject ``state_path`` + ``iter_limit`` + ``sleep_fn`` to drive
+    deterministic exercises.
+    """
+    path = state_path if state_path is not None else DEFAULT_STATE_PATH
+    sleep = sleep_fn or asyncio.sleep
+    last_mtime = -1.0
+    # Seed the emission clock to "now" so the first heartbeat fires
+    # one full ``heartbeat_interval_s`` after the generator starts —
+    # not immediately on iteration 1 (which would happen if seeded
+    # to 0.0, since wall-clock seconds-since-epoch dwarfs any sane
+    # heartbeat interval).
+    last_emit_ts = time.time()
+    last_was_stale = False
+    iters = 0
+
+    while True:
+        if iter_limit is not None and iters >= iter_limit:
+            return
+        iters += 1
+        now = time.time()
+
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
+
+        if mtime is not None and mtime != last_mtime:
+            last_mtime = mtime
+            try:
+                raw = path.read_text(encoding="utf-8")
+                state = AwarenessState.model_validate_json(raw)
+            except Exception:
+                log.warning("awareness SSE: state unreadable", exc_info=True)
+                state = None
+
+            if state is not None:
+                age_s = now - mtime
+                stale = age_s > state.ttl_seconds
+                payload = public_filter(state) if public else state
+                yield {
+                    "event": "state",
+                    "data": payload.model_dump_json(),
+                }
+                _record_sse_event("state")
+                last_emit_ts = now
+                if stale and not last_was_stale:
+                    yield {
+                        "event": "stale",
+                        "data": json.dumps({"age_s": age_s}),
+                    }
+                    _record_sse_event("stale")
+                    last_was_stale = True
+                elif not stale and last_was_stale:
+                    last_was_stale = False
+        elif now - last_emit_ts >= heartbeat_interval_s:
+            yield {
+                "event": "heartbeat",
+                "data": json.dumps({"ts": now}),
+            }
+            _record_sse_event("heartbeat")
+            last_emit_ts = now
+
+        await sleep(poll_interval_s)
+
+
+@router.get("/awareness/stream")
+async def stream_awareness(public: bool = _PUBLIC_QUERY) -> EventSourceResponse:
+    """Server-sent event stream of awareness state changes.
+
+    Single-operator design: the consumer set is small (Logos sidebar,
+    Tauri webview, occasional weekly-review job). The server doesn't
+    multicast — each subscriber gets its own generator, polls the
+    same tmpfs file, and emits independently. mtime poll is sub-µs
+    so 0..N concurrent subscribers cost effectively nothing.
+
+    On connection: emits the current ``state`` event immediately.
+    Subsequent ``state`` events fire on file-mtime change.
+    ``heartbeat`` every 30s so dead connections are detectable
+    inside one window.
+    """
+
+    async def _stream() -> AsyncIterator[dict[str, str]]:
+        if hapax_awareness_sse_subscribers is not None:
+            try:
+                hapax_awareness_sse_subscribers.inc()
+            except Exception:
+                pass
+        try:
+            async for event in _awareness_sse_generator(public=public):
+                yield event
+        finally:
+            if hapax_awareness_sse_subscribers is not None:
+                try:
+                    hapax_awareness_sse_subscribers.dec()
+                except Exception:
+                    pass
+
+    return EventSourceResponse(_stream())
 
 
 __all__ = ["router"]
