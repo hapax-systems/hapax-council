@@ -34,6 +34,21 @@ REPOS_KEEP_WIKI=(
   hapax-constitution
 )
 
+# Topics policy per repos.yaml. Non-runtime repos (mcp/phone/watch) get the
+# 3-topic shorter set; runtime + spec repos (council/officium/constitution)
+# get the 5-topic full set including governance + philosophy-of-science.
+# All sets are schema.org-aligned + sparse per drop 4 §7.
+declare -A REPO_TOPICS
+REPO_TOPICS[hapax-council]="research-software single-operator philosophy-of-science governance infrastructure-as-argument"
+REPO_TOPICS[hapax-officium]="research-software single-operator philosophy-of-science governance infrastructure-as-argument"
+REPO_TOPICS[hapax-constitution]="research-software single-operator philosophy-of-science governance infrastructure-as-argument"
+REPO_TOPICS[hapax-mcp]="research-software single-operator infrastructure-as-argument"
+REPO_TOPICS[hapax-phone]="research-software single-operator infrastructure-as-argument"
+REPO_TOPICS[hapax-watch]="research-software single-operator infrastructure-as-argument"
+
+# Banned topics — drop 4 §7. Trend-chasing surfaces wrong audience.
+BANNED_TOPICS=(ai agents framework tool library awesome)
+
 OWNER="ryanklee"
 MODE="enforce"  # or "check"
 
@@ -61,6 +76,36 @@ apply_or_check() {
   if [[ "$cur_wiki" != "$want_wiki" ]]; then needs_patch=1; fi
   if [[ "$cur_projects" != "false" ]]; then needs_patch=1; fi
   if [[ "$cur_discussions" != "false" ]]; then needs_patch=1; fi
+
+  # cc-task repo-pres-topics: schema.org-aligned sparse topics + no banned
+  # tags. Set drift surfaces but does not fail enforce-mode patch (we
+  # write the canonical set unconditionally).
+  local current_topics
+  current_topics=$(gh api "repos/$OWNER/$repo/topics" --jq '.names[]?' 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')
+  local want_topics
+  want_topics=$(echo "${REPO_TOPICS[$repo]:-}" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')
+  if [[ "$current_topics" != "$want_topics" ]]; then
+    if [[ "$MODE" == "check" ]]; then
+      printf '  → DRIFT-topics (have: %s; want: %s)\n' "$current_topics" "$want_topics"
+      drift=1
+      return 0
+    fi
+    # Apply via /topics PUT
+    local args=()
+    for t in ${REPO_TOPICS[$repo]:-}; do args+=(-f "names[]=$t"); done
+    gh api -X PUT "repos/$OWNER/$repo/topics" \
+      -H "Accept: application/vnd.github.mercy-preview+json" \
+      "${args[@]}" >/dev/null
+    printf '  → topics-patched\n'
+  fi
+
+  # Banned topics check (intersection — should be empty)
+  for banned in "${BANNED_TOPICS[@]}"; do
+    if echo "$current_topics" | grep -qw "$banned"; then
+      printf '  → DRIFT-banned-topic (%s)\n' "$banned"
+      drift=1
+    fi
+  done
 
   # cc-task repo-pres-funding-yml-disable: assert no FUNDING.yml exists.
   # Drop 3 §3 — empty FUNDING.yml does NOT hide Sponsorships, but
