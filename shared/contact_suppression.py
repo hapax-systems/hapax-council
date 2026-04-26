@@ -50,10 +50,24 @@ SuppressionInitiator = Literal["hapax_send", "operator_manual", "target_optout"]
 
 
 class SuppressionEntry(BaseModel):
-    orcid: str = Field(min_length=19, max_length=19)
+    """One suppression entry. Either ORCID, email_domain, or both must be set.
+
+    Email-domain entries arrive from the mail-monitor SUPPRESS path
+    (cc-task ``mail-monitor-008``). ORCID entries arrive from the
+    citation-graph touch path (`cold_contact/graph_touch_policy`) and
+    operator-manual additions.
+    """
+
+    orcid: str | None = Field(default=None, min_length=19, max_length=19)
+    email_domain: str | None = Field(default=None, min_length=1, max_length=255)
     reason: str = Field(min_length=1, max_length=500)
     initiator: SuppressionInitiator
     date: datetime
+    message_id: str | None = Field(default=None, max_length=998)
+
+    def model_post_init(self, _ctx: object) -> None:
+        if not self.orcid and not self.email_domain:
+            raise ValueError("SuppressionEntry requires at least one of orcid / email_domain")
 
 
 class SuppressionList(BaseModel):
@@ -85,26 +99,41 @@ def load(path: Path | None = None) -> SuppressionList:
 
 
 def append_entry(
-    orcid: str,
-    reason: str,
-    initiator: SuppressionInitiator,
+    orcid: str | None = None,
+    reason: str = "",
+    initiator: SuppressionInitiator = "operator_manual",
     *,
+    email_domain: str | None = None,
+    message_id: str | None = None,
     date: datetime | None = None,
     path: Path | None = None,
 ) -> SuppressionEntry:
     """Atomically append a new entry. Refuses to rewrite existing entries.
 
-    Idempotent on (orcid, initiator) — if the same orcid+initiator pair is
-    already present, returns the existing entry unmodified.
+    Idempotent on the entry's identity tuple ``(orcid, email_domain,
+    initiator)`` — a matching entry returns unchanged. Either ``orcid``
+    or ``email_domain`` must be supplied; passing both narrows
+    deduplication to entries that match both.
     """
     resolved = _resolved_path(path)
     when = date or datetime.now(UTC)
-    new_entry = SuppressionEntry(orcid=orcid, reason=reason, initiator=initiator, date=when)
+    new_entry = SuppressionEntry(
+        orcid=orcid,
+        email_domain=email_domain,
+        reason=reason,
+        initiator=initiator,
+        date=when,
+        message_id=message_id,
+    )
 
     with _lock:
         current = load(path)
         for existing in current.entries:
-            if existing.orcid == orcid and existing.initiator == initiator:
+            if (
+                existing.orcid == orcid
+                and existing.email_domain == email_domain
+                and existing.initiator == initiator
+            ):
                 return existing
         current.entries.append(new_entry)
 
@@ -113,7 +142,10 @@ def append_entry(
         with tmp.open("w") as f:
             f.write(_HEADER)
             yaml.safe_dump(
-                current.model_dump(mode="json"), f, sort_keys=False, default_flow_style=False
+                current.model_dump(mode="json", exclude_none=True),
+                f,
+                sort_keys=False,
+                default_flow_style=False,
             )
         os.replace(tmp, resolved)
 
@@ -124,9 +156,21 @@ def append_entry(
 
 
 def is_suppressed(orcid: str, *, path: Path | None = None) -> bool:
-    """Return True if any entry for ``orcid`` exists, regardless of initiator."""
+    """Return True if any ORCID entry for ``orcid`` exists."""
     current = load(path)
     return any(e.orcid == orcid for e in current.entries)
+
+
+def is_suppressed_by_email_domain(domain: str, *, path: Path | None = None) -> bool:
+    """Return True if any email-domain entry for ``domain`` exists.
+
+    Mail-monitor's ``Category C`` consult before any cold-contact path
+    that has only an email domain (no ORCID). Citation-graph paths that
+    have an ORCID should still call :func:`is_suppressed` — both lookups
+    are independent.
+    """
+    current = load(path)
+    return any(e.email_domain == domain for e in current.entries)
 
 
 _HEADER = """\
