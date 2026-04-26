@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# waybar custom/refusals-1h module — refusal count last 1h.
+#
+# Reads /dev/shm/hapax-refusals/log.jsonl directly (the authoritative
+# refusal-as-data source), counts entries with timestamp > now-1h,
+# and emits waybar JSON. The count is the ONLY aggregation the
+# refusal log permits — it's a count, not a summary, not a verdict
+# (per cc-task awareness-waybar-refusals-1h).
+#
+# Output: {"text":"refused N","tooltip":"refusal events last 1h","class":"high|empty"}
+#
+# CSS class "high" applies a slight contrast bump on count > 10
+# (NEVER a blink/strobe per feedback_no_blinking_homage_wards).
+# No click handler — refusal log is for daemon consumption; operator
+# who wants detail reads the Logos sidebar.
+#
+# Install: copy to ~/.local/bin/hapax-waybar-refusals-1h (chmod +x)
+# Wire:    see scripts/waybar/README.md for waybar config snippet.
+
+set -uo pipefail
+
+log=/dev/shm/hapax-refusals/log.jsonl
+
+if [[ ! -f "$log" ]]; then
+    # Pre-rollout: refusal-brief writer not started, or fresh boot
+    # before the first refusal event. Render a clean "0" rather than
+    # an error class so the bar doesn't flag a startup race.
+    echo '{"text":"refused 0","tooltip":"refusal log not yet present","class":""}'
+    exit 0
+fi
+
+cutoff=$(date -u -d '1 hour ago' --iso-8601=seconds)
+
+# jq -s slurps the file into one array. Each entry is one JSONL line.
+# Filter on the spec'd `timestamp` field (ISO-8601). Lexicographic
+# string comparison works because ISO-8601 is sort-stable.
+count=$(jq -s --arg c "$cutoff" \
+    '[.[] | select(.timestamp > $c)] | length' \
+    "$log" 2>/dev/null || echo 0)
+
+# Validate the count is numeric — defensive against corrupt log lines
+# breaking the jq pipeline. Falls back to "0" so the bar never goes
+# blank during a transient log-write race.
+if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+    count=0
+fi
+
+cls=""
+if (( count > 10 )); then
+    cls="high"
+fi
+
+# Single-line JSON; waybar parses one tick per execution.
+printf '{"text":"refused %s","tooltip":"refusal events last 1h","class":"%s"}\n' \
+    "$count" "$cls"
