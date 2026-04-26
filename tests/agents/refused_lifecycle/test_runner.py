@@ -164,6 +164,56 @@ class TestApplyTransitionReAffirm:
         body_part = text.split("---\n", 2)[2]
         assert body_part == unique_body
 
+    def test_body_preserved_with_multi_paragraph_and_code_blocks(self, tmp_path: Path):
+        # Audit P2-7 follow-up: pin body preservation across the realistic
+        # cc-task body shape — multiple paragraphs, fenced code blocks,
+        # blockquotes, nested lists, and a trailing blank line. Original
+        # body-preservation test only covered a 6-line snippet.
+        f = tmp_path / "realistic.md"
+        unique_body = """# refused-lifecycle: realistic body
+
+## Intent
+
+This cc-task body has *multiple* paragraphs, fenced code, blockquotes,
+nested lists, and trailing whitespace patterns that must round-trip
+verbatim through atomic frontmatter rewrite.
+
+```python
+def example():
+    return {"key": "value", "list": [1, 2, 3]}
+```
+
+> Quoted paragraph with **bold** and `inline code`.
+> Second line of the quote.
+
+- top-level item
+  - nested item with `backticks`
+  - another nested item
+- second top-level
+
+## Acceptance
+
+- [ ] Body content preserved across atomic rewrites
+- [ ] Trailing newlines preserved
+
+End of document.
+"""
+        _write_task_file(f, body=unique_body)
+        task = parse_frontmatter(f)
+        event = TransitionEvent(
+            timestamp=_NOW,
+            cc_task_slug=task.slug,
+            from_state="REFUSED",
+            to_state="REFUSED",
+            transition="re-affirmed",
+            trigger=["constitutional"],
+            reason="multi-paragraph regression",
+        )
+        apply_transition(f, task, event, _NOW)
+        text = f.read_text(encoding="utf-8")
+        body_part = text.split("---\n", 2)[2]
+        assert body_part == unique_body, "body must round-trip byte-for-byte"
+
 
 # ── apply_transition: accept ─────────────────────────────────────────
 
