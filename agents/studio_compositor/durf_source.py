@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path(os.path.expanduser("~/projects/hapax-council/config/durf-panes.yaml"))
-DEFAULT_FONT_DESCRIPTION = "Px437 IBM VGA 8x16 11"
+DEFAULT_FONT_DESCRIPTION = "Px437 IBM VGA 8x16 16"
 
 _DESK_ACTIVE_PATH = Path(os.path.expanduser("~/.cache/hapax-daimonion/perception-state.json"))
 _CONSENT_SAFE_PATH = Path("/dev/shm/hapax-compositor/consent-state.txt")

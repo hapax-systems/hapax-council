@@ -43,7 +43,7 @@ LINE_SPACING = 6.0  # extra px between rows
 # emissively via ``paint_emissive_glyph`` style so the strip reads as
 # point-of-light text rather than flat anti-aliased labels. Sizes chosen
 # so the CP437 raster cell stays legible on the 1920x1080 frame.
-FONT_PRESET = "Px437 IBM VGA 8x16 18"
+FONT_PRESET = "Px437 IBM VGA 8x16 16"
 FONT_METRICS = "Px437 IBM VGA 8x16 16"
 
 

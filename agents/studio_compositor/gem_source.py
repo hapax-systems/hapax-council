@@ -57,7 +57,7 @@ else:
 log = logging.getLogger(__name__)
 
 DEFAULT_FRAMES_PATH = Path("/dev/shm/hapax-compositor/gem-frames.json")
-DEFAULT_FONT_DESCRIPTION = "Px437 IBM VGA 8x16 24"
+DEFAULT_FONT_DESCRIPTION = "Px437 IBM VGA 8x16 32"
 FALLBACK_FRAME_TEXT = "» hapax «"
 
 # Codepoint range Unicode emoji blocks fall into. Conservative — covers

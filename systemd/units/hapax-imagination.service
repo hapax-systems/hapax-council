@@ -28,6 +28,16 @@ Environment=RUST_BACKTRACE=1
 # ShmRgbaReader reads this). No winit window is created — reverie
 # no longer spawns as a standalone surface outside Logos.
 Environment=HAPAX_IMAGINATION_HEADLESS=1
+# 2026-04-26 visual-quality remediation Tier-A item 9: shader render
+# target 640x360 → 960x540 (1.5× per axis = 2.25× shader cost). Composited
+# as PiP into 1280×720 canvas → upscaled to 4K TV. Net shader-source
+# upscale drops from 6× to 4× per axis at 4K, substantially reduces
+# jaggies/pixel crawl on reverie panels. VRAM cost: ~200-400 MiB
+# additional on 3090; live nvidia-smi 2026-04-26 18:15 CDT showed
+# ~3.7 GiB free (20.86/24 GiB used). Revert this block if VRAM pressure
+# shows up in journal.
+Environment=HAPAX_IMAGINATION_WIDTH=960
+Environment=HAPAX_IMAGINATION_HEIGHT=540
 
 [Install]
 WantedBy=default.target

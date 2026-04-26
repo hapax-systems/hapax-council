@@ -475,7 +475,7 @@ class AlbumOverlayCairoSource(HomageTransitionalSource):
 
         style = TextStyle(
             text=escaped,
-            font_description=f"{font_family} 14",
+            font_description=f"{font_family} 16",
             color_rgba=(1.0, 0.97, 0.90, 1.0),
             outline_color_rgba=(0.0, 0.0, 0.0, 0.85),
             outline_offsets=OUTLINE_OFFSETS_4,
