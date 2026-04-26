@@ -1,0 +1,91 @@
+# repo-registry.yaml — canonical license-class source-of-truth
+#
+# Per cc-task `repo-pres-license-policy` (decision recorded
+# 2026-04-25T18:00Z): per-repo license divergence is settled here, NOT
+# in `LICENSE` files (which are derivatives of this matrix). The
+# `hapax_sdlc render --check` command consumes this file to validate
+# that each repo's `LICENSE`, `CITATION.cff` (`license:` field), and
+# `codemeta.json` (`license` URL) all agree on the SPDX identifier.
+#
+# Drift is treated as a CI failure (the eventual hapax-sdlc renderer
+# will fail-fast); for the council-local audit, see
+# `scripts/check-license-policy.py`.
+#
+# AGPL-3 is flagged as anti-pattern: AGPL assumes downstream
+# contributors, contradicting the `single_user` axiom. AGPL-3 must be
+# absent from all repos in this registry.
+
+schema_version: 1
+
+repos:
+  - name: hapax-council
+    license: PolyForm-Strict-1.0.0
+    license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    rationale: Runtime code; single-operator stance.
+
+  - name: hapax-officium
+    license: PolyForm-Strict-1.0.0
+    license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    rationale: Runtime code; single-operator stance.
+
+  - name: hapax-watch
+    license: PolyForm-Strict-1.0.0
+    license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    rationale: Runtime code (Wear OS app); single-operator stance.
+
+  - name: hapax-phone
+    license: PolyForm-Strict-1.0.0
+    license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    rationale: Runtime code (Android app); single-operator stance.
+
+  - name: hapax-mcp
+    license: MIT
+    license_url: https://opensource.org/licenses/MIT
+    rationale: |
+      MCP ecosystem norm; downstream MCP clients require permissive
+      license to integrate. Ecosystem-pragmatic exception to the
+      otherwise-uniform PolyForm Strict policy.
+
+  - name: hapax-constitution
+    license: CC-BY-NC-ND-4.0
+    license_url: https://creativecommons.org/licenses/by-nc-nd/4.0/
+    rationale: |
+      Specification / docs surface; preserves attribution + non-
+      commercial + no-derivatives. Not runtime code.
+
+  - name: distro-work
+    license: PolyForm-Strict-1.0.0
+    license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    rationale: Runtime scripts; single-operator stance.
+
+upstream_clones:
+  # These repos are local clones whose upstream license MUST NOT be
+  # relicensed. They are excluded from the policy gate.
+  - name: tabbyAPI
+    upstream: theroyallab/tabbyAPI
+    license: Apache-2.0
+    note: "Upstream license preserved; never relicensed locally."
+  - name: atlas-voice-training
+    upstream: briankelley/atlas-voice-training
+    license: MIT
+    note: "Upstream license preserved; never relicensed locally."
+
+assets_repos:
+  # Asset repos carry per-asset license declarations rather than a
+  # single repo-level license; the per-asset declarations live in
+  # `_manifest.yaml` + `provenance.yaml` files within the repo.
+  - name: hapax-assets
+    license_policy: per-asset (BSD-3-Clause / CC-BY-SA-4.0)
+    rationale: |
+      BitchX = BSD-3-Clause (modified-or-not OK), Px437 IBM VGA =
+      CC-BY-SA-4.0 (unmodified-only). See provenance.yaml siblings.
+
+anti_patterns:
+  - license: AGPL-3.0
+    why: |
+      AGPL assumes downstream contributors and a network-service-
+      modification redistribution model. Both contradict the
+      single_user axiom (no auth, no roles, no multi-user code) and
+      the full-automation-or-no-engagement directive (the operator is
+      the only formal-action actor). AGPL-3 MUST be absent from every
+      repo in `repos:` above.
