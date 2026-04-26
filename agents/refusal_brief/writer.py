@@ -14,6 +14,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from prometheus_client import Counter
 from pydantic import BaseModel, ConfigDict, Field
@@ -59,6 +60,14 @@ class RefusalEvent(BaseModel):
     reason: str = Field(max_length=REASON_MAX_CHARS)
     public: bool = False
     refusal_brief_link: str | None = None
+    # Refused-lifecycle extension (additive; defaults preserve existing
+    # subscribers' behaviour). `transition` discriminates the five state-
+    # machine transitions; `evidence_url` carries the upstream lift-evidence
+    # for accepted/regressed; `cc_task_slug` ties the event back to its
+    # vault note for sidebar/dashboard cross-linking.
+    transition: Literal["created", "re-affirmed", "accepted", "removed", "regressed"] = "created"
+    evidence_url: str | None = None
+    cc_task_slug: str | None = None
 
 
 # Module-level lock + counter. The lock serialises concurrent appends

@@ -23,6 +23,8 @@ from pathlib import Path
 import yaml
 from prometheus_client import Counter
 
+from agents.refusal_brief import writer as refusal_brief_writer
+from agents.refusal_brief.writer import REASON_MAX_CHARS, RefusalEvent
 from agents.refused_lifecycle.evaluator import decide_transition  # re-exported
 from agents.refused_lifecycle.state import (
     ProbeResult,
@@ -106,11 +108,46 @@ def iter_refused_tasks(active_dir: Path = DEFAULT_ACTIVE_DIR) -> Iterator[Refusa
             yield task
 
 
+_PUBLIC_SAFE_PREFIXES = ("pub-bus-", "repo-pres-", "awareness-refused-")
+_PRIVATE_PREFIXES = ("cold-contact-",)
+
+
+def is_public_safe(slug: str) -> bool:
+    """Classify a refusal-brief surface as safe for omg.lol weblog fanout.
+
+    Cold-contact surfaces touch operator-personal-mail context and are
+    always private. Pub-bus / repo-pres / awareness-refused surfaces are
+    public per Refusal Brief Tier-3 policy. Conservative default: any
+    unrecognised slug is treated as private.
+    """
+    if not slug:
+        return False
+    if any(slug.startswith(p) for p in _PRIVATE_PREFIXES):
+        return False
+    return any(slug.startswith(p) for p in _PUBLIC_SAFE_PREFIXES)
+
+
+def _to_refusal_event(transition_event: TransitionEvent) -> RefusalEvent:
+    """Adapt a TransitionEvent into the canonical RefusalEvent log shape."""
+    return RefusalEvent(
+        timestamp=transition_event.timestamp,
+        axiom=", ".join(transition_event.trigger),
+        surface=f"refused-lifecycle:{transition_event.cc_task_slug}",
+        reason=transition_event.reason[:REASON_MAX_CHARS],
+        public=is_public_safe(transition_event.cc_task_slug),
+        transition=transition_event.transition,
+        evidence_url=transition_event.evidence_url,
+        cc_task_slug=transition_event.cc_task_slug,
+    )
+
+
 def apply_transition(
     path: Path,
     task: RefusalTask,
     event: TransitionEvent,
     now: datetime,
+    *,
+    refusal_log_path: Path | None = None,
 ) -> None:
     """Atomically commit a transition by rewriting frontmatter.
 
@@ -166,6 +203,13 @@ def apply_transition(
         from_state=event.from_state, to_state=event.to_state, slug=task.slug
     ).inc()
 
+    # Emit to the canonical refusal-brief log so transitions become first-
+    # class log rows alongside axiom violations. Failures are logged and
+    # swallowed inside the writer — refusal emission must never break the
+    # transition-commit path.
+    log_path = refusal_log_path or refusal_brief_writer.DEFAULT_LOG_PATH
+    refusal_brief_writer.append(_to_refusal_event(event), log_path=log_path)
+
 
 def tick(
     now: datetime,
@@ -192,8 +236,10 @@ def tick(
 
 __all__ = [
     "DEFAULT_ACTIVE_DIR",
+    "_to_refusal_event",
     "apply_transition",
     "decide_transition",
+    "is_public_safe",
     "iter_refused_tasks",
     "parse_frontmatter",
     "tick",
