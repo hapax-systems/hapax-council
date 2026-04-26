@@ -94,6 +94,11 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
     ),
+    "zenodo-refusal-deposit": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        scope_note="Refusal Brief deposits with refusal-shaped RelatedIdentifier edges",
+    ),
     "zenodo-related-identifier-graph": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
