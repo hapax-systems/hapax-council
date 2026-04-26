@@ -1,0 +1,38 @@
+# mail-monitor auto-click allowlists.
+#
+# Spec: ``docs/specs/2026-04-25-mail-monitor.md`` §4 (5-condition gate).
+#
+# Two narrow lists for the auto-click gate:
+#
+# - ``allow_senders``: SMTP envelope-from domains we'll consider clicking
+#   verify links from. Each entry must independently pass DKIM+SPF+DMARC
+#   per the message's ``Authentication-Results`` header — these are the
+#   senders Hapax-side daemons KNOW will issue verify mail in response to
+#   an outbound action (Zenodo deposit, OSF connect, ORCID consent,
+#   DataCite mint). No social platforms; no operator-facing services.
+#
+# - ``allow_link_domains``: hosts the auto-clicker may HTTP GET. The link
+#   the verify mail provides may be on a different domain than the
+#   sender (Zenodo signs from ``noreply@zenodo.org`` but verify links
+#   resolve through ``zenodo.org/`` directly). The single-redirect
+#   resolver may follow at most one ``Location`` IFF the redirect target
+#   is also in this list.
+#
+# Adding a domain here is a constitutional review: every entry expands
+# the auto-click attack surface. Default to refusing.
+
+allow_senders:
+  - noreply@zenodo.org
+  - DoNotReply@notify.orcid.org
+  - noreply@osf.io
+  - support@datacite.org
+  - noreply@datacite.org
+
+allow_link_domains:
+  - zenodo.org
+  - sandbox.zenodo.org
+  - orcid.org
+  - sandbox.orcid.org
+  - osf.io
+  - api.datacite.org
+  - doi.org
