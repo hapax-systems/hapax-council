@@ -1,0 +1,25 @@
+[Unit]
+Description=hapax-refused-lifecycle-conditional — type-C cc-task close-event watcher (inotify fallback for git-mv → closed/)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/refused_lifecycle/conditional_watcher.py
+
+# Always-on inotify daemon. Catches `MOVED_FROM` events on the active/
+# vault dir — when a cc-task is moved out (typically `cc-close <slug>`,
+# fallback for manual `git mv`). On any close, walks all type-C REFUSED
+# tasks whose `depends_on_slug` includes the closed slug and re-evaluates
+# via the underlying probe (delegated to structural or constitutional
+# watcher logic).
+#
+# No periodic poll — cc-task closes are sparse. Conservative-by-default:
+# the dependency closing is a *trigger* for re-checking; whether the
+# refusal lifts depends on the underlying probe's verdict.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/env
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.refused_lifecycle.conditional_watcher
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=default.target
