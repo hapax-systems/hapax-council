@@ -85,6 +85,11 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         api="OAuth+REST",
         scope_note="concept-DOI granularity only",
     ),
+    "osf-prereg": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        scope_note="OSF preregistrations with named-related-work cross-references",
+    ),
     "zenodo-deposit": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
