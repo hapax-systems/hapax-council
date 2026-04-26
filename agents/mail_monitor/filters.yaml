@@ -1,0 +1,42 @@
+# mail-monitor server-side Gmail filter specifications.
+#
+# Spec: docs/specs/2026-04-25-mail-monitor.md §2 Label taxonomy.
+#
+# Each entry installs ONE filter via `users.settings.filters.create`.
+# `query` is the raw Gmail search expression sent as `criteria.query` —
+# the same syntax the operator types in Gmail's search bar.
+#
+# `id` is a human-readable handle used only in our own logs and metrics
+# (Gmail's filter resource has no name field). It does NOT appear in any
+# API call.
+#
+# Idempotency rule (filter_bootstrap.py): a filter is considered
+# already-installed when an existing filter on the account has the
+# *exact same* `criteria.query` AND the same set of `addLabelIds` /
+# `removeLabelIds` after label-name → label-id resolution. The bootstrap
+# never deletes operator-managed filters; it only creates missing ones.
+
+filters:
+  - id: verify
+    query: "from:(noreply@zenodo.org OR DoNotReply@notify.orcid.org OR noreply@osf.io OR support@datacite.org)"
+    add_labels: [Hapax/Verify]
+    remove_labels: [INBOX]
+
+  - id: suppress
+    # Operator may still want INBOX visibility on SUPPRESS replies, so
+    # we deliberately do NOT remove INBOX here.
+    query: "subject:SUPPRESS AND (to:hapax@omg.lol OR to:oudepode@omg.lol)"
+    add_labels: [Hapax/Suppress]
+    remove_labels: []
+
+  - id: operational
+    query: "from:(noreply@letsencrypt.org OR noreply@github.com OR support@porkbun.com)"
+    add_labels: [Hapax/Operational]
+    remove_labels: []
+
+  - id: discard
+    # `has:list-unsubscribe-post` matches RFC-8058 marketing mail —
+    # caught even if the From: header isn't in our explicit list.
+    query: "from:(noreply@linkedin.com OR notifications@x.com OR noreply@twitter.com OR noreply@mastodon.social) OR has:list-unsubscribe-post"
+    add_labels: [Hapax/Discard]
+    remove_labels: [INBOX]
