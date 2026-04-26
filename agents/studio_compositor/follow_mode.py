@@ -22,11 +22,12 @@ hero-override consumer (``agents.studio_compositor.state``) falls back
 to this file when no manual override is set, at which point a
 ``hapax_follow_mode_cuts_total{from_role,to_role}`` counter is bumped.
 
-Feature flag: ``HAPAX_FOLLOW_MODE_ACTIVE`` gates the publisher (OFF by
-default for safe opt-in). The controller *always* computes the
-recommendation so tests and observability work even when the flag is
-off; it just marks ``active=False`` and the hero-override consumer
-refuses to fall back to it.
+Feature flag: ``HAPAX_FOLLOW_MODE_ACTIVE`` gates the publisher (ON by
+default per directive ``feedback_features_on_by_default`` 2026-04-25;
+opt out with ``HAPAX_FOLLOW_MODE_ACTIVE=0``). The controller *always*
+computes the recommendation so tests and observability work even when
+the flag is off; it just marks ``active=False`` and the hero-override
+consumer refuses to fall back to it. Manual hero-override always wins.
 
 See docs/superpowers/plans/... task #136.
 """
@@ -359,7 +360,12 @@ class FollowModeController:
 
 
 def _feature_flag_active() -> bool:
-    return os.environ.get(_FEATURE_FLAG_ENV, "0").strip() in {"1", "true", "TRUE", "yes", "on"}
+    """ON by default per directive ``feedback_features_on_by_default``
+    (2026-04-25). Opt out by setting ``HAPAX_FOLLOW_MODE_ACTIVE`` to
+    ``0`` / ``false`` / ``off`` / ``no``.
+    """
+    raw = os.environ.get(_FEATURE_FLAG_ENV, "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
 
 
 def _read_ir_report(path: Path, now: float) -> dict[str, Any] | None:

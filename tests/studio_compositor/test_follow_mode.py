@@ -284,7 +284,9 @@ class TestPublishAndFlag:
     def test_tick_publishes_inactive_marker_when_flag_off(
         self, tmp_path: Path, monkeypatch: mock.MagicMock
     ) -> None:
-        monkeypatch.delenv("HAPAX_FOLLOW_MODE_ACTIVE", raising=False)
+        # 2026-04-26: default flipped to ON per feedback_features_on_by_default;
+        # explicit "0" is the new opt-out path.
+        monkeypatch.setenv("HAPAX_FOLLOW_MODE_ACTIVE", "0")
         ctrl = _make_controller(
             tmp_path,
             ir_reports={"overhead": _person_report("overhead")},
@@ -296,10 +298,25 @@ class TestPublishAndFlag:
         payload = json.loads(ctrl.recommendation_path.read_text(encoding="utf-8"))
         assert payload["active"] is False
 
+    def test_tick_publishes_active_marker_when_env_unset(
+        self, tmp_path: Path, monkeypatch: mock.MagicMock
+    ) -> None:
+        # 2026-04-26: default-ON per feedback_features_on_by_default. Env
+        # unset must produce active=True so the controller is live by default.
+        monkeypatch.delenv("HAPAX_FOLLOW_MODE_ACTIVE", raising=False)
+        ctrl = _make_controller(
+            tmp_path,
+            ir_reports={"overhead": _person_report("overhead")},
+        )
+        rec = ctrl.tick()
+        assert rec is not None and rec.active is True
+        payload = json.loads(ctrl.recommendation_path.read_text(encoding="utf-8"))
+        assert payload["active"] is True
+
     def test_read_recommendation_returns_none_when_inactive(
         self, tmp_path: Path, monkeypatch: mock.MagicMock
     ) -> None:
-        monkeypatch.delenv("HAPAX_FOLLOW_MODE_ACTIVE", raising=False)
+        monkeypatch.setenv("HAPAX_FOLLOW_MODE_ACTIVE", "0")
         ctrl = _make_controller(
             tmp_path,
             ir_reports={"overhead": _person_report("overhead")},
