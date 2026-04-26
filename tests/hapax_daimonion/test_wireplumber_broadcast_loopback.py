@@ -88,3 +88,38 @@ class TestWireplumberRoleBroadcastLoopback:
             "Broadcast loopback's intended-roles list does not match daimonion's "
             'BROADCAST_MEDIA_ROLE = "Broadcast"'
         )
+
+    def test_assistant_loopback_targets_hapax_private(self) -> None:
+        """Phase-3 pin: role.assistant must route to hapax-private, NOT broadcast.
+
+        Once the broadcast loopback exists (asserted above), Assistant
+        becomes the private-only path. Any revert of this target back
+        to ``hapax-voice-fx-capture`` re-introduces the leak that the
+        2026-04-26 morning fix targeted: every Assistant-role utterance
+        (sidechat replies, debug, exploration cognition) lands on
+        broadcast. Triage the daimonion classifier instead.
+        """
+        content = WIREPLUMBER_CONFIG.read_text(encoding="utf-8")
+        assistant_start = content.find('node.name = "loopback.sink.role.assistant"')
+        assert assistant_start != -1
+        assistant_end = content.find("provides = loopback.sink.role.assistant", assistant_start)
+        assistant_block = content[assistant_start:assistant_end]
+        # The block must declare hapax-private and must NOT declare the
+        # broadcast chain target. Comments inside the block are allowed
+        # to mention either name; the assertion targets the live
+        # ``policy.role-based.preferred-target = "..."`` directive.
+        target_line = next(
+            (
+                line
+                for line in assistant_block.splitlines()
+                if "policy.role-based.preferred-target" in line
+                and not line.lstrip().startswith("#")
+            ),
+            None,
+        )
+        assert target_line is not None, (
+            "role.assistant block missing policy.role-based.preferred-target line"
+        )
+        assert '"hapax-private"' in target_line, (
+            f"role.assistant must target hapax-private, found: {target_line.strip()}"
+        )
