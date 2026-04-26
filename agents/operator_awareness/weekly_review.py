@@ -304,6 +304,34 @@ def write_weekly_review(
     return path
 
 
+def main() -> int:
+    """CLI entry: ``uv run python -m agents.operator_awareness.weekly_review``.
+
+    Single-tick aggregator invocation — wraps :func:`write_weekly_review`
+    for the systemd timer (Sunday 18:00 local). Exits 0 on any
+    outcome including the empty-week case (operator off-grid all week
+    legitimately produces an empty rollup; the daemon still writes
+    the note so the weekly note slot exists). Errors log + exit 0
+    so the timer fires on cadence rather than entering systemd
+    backoff after a transient vault-write failure.
+    """
+    logging.basicConfig(
+        level=os.environ.get("HAPAX_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    log = logging.getLogger(__name__)
+    try:
+        path = write_weekly_review()
+        log.info("wrote weekly review to %s", path)
+    except Exception:
+        log.exception("weekly review write failed; will retry next cadence")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
 __all__ = [
     "DEFAULT_DAILY_NOTE_DIR",
     "DEFAULT_WEEKLY_NOTE_DIR",

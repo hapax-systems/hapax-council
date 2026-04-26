@@ -1,0 +1,15 @@
+[Unit]
+Description=Sunday-evening cadence for hapax weekly review aggregator
+PartOf=hapax.target
+
+[Timer]
+# Sunday 18:00 local — operator's natural reflection slot per cc-task spec.
+# Persistent=true so a Sunday spent off-grid catches up on Monday morning
+# rather than skipping the week entirely (rolls forward to next boot).
+OnCalendar=Sun *-*-* 18:00:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=hapax-weekly-review.service
+
+[Install]
+WantedBy=hapax.target
