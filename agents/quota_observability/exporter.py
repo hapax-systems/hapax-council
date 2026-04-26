@@ -184,7 +184,9 @@ def main() -> None:
     )
     project_id = project_id_from_env()
     client = QuotaClient(project_id=project_id)
-    start_http_server(METRICS_PORT, addr="127.0.0.1")
+    # 0.0.0.0 so the dockerised Prometheus can scrape via host.docker.internal.
+    # Other host-running Hapax exporters (compositor :9482) follow this convention.
+    start_http_server(METRICS_PORT, addr="0.0.0.0")  # noqa: S104 — single-user host, firewalled LAN
     exporter = QuotaExporter(client=client)
     exporter.run_forever()
 
