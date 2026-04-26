@@ -47,7 +47,15 @@ COMPONENT_OWNERS: dict[str, str] = {
     "input_activity": "hapax-daimonion",
     "content_resolver": "hapax-content-resolver",
     "apperception": "visual-layer-aggregator",
-    "voice_state": "hapax-daimonion",
+    # `voice_state` was registered in PR #1070 (2026-04-18) without the
+    # corresponding writer in agents/hapax_daimonion/. The probe's
+    # missing-file branch issued ``systemctl --user restart
+    # hapax-daimonion`` every 15 min via the health-monitor timer, which
+    # cost daimonion 80–150 s of cold-start (Kokoro preload + bridge
+    # phrases) on each cycle and prevented it from ever reaching
+    # steady-state TTS production — voice silence on stream for hours.
+    # Re-add this entry once a daimonion module actually calls
+    # `publish_exploration_signal("voice_state", ...)`.
 }
 
 
