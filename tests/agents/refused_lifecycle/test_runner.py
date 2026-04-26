@@ -89,6 +89,32 @@ class TestIterRefusedTasks:
         results = list(iter_refused_tasks(tmp_path))
         assert results == []
 
+    def test_walks_both_active_and_closed_subdirs(self, tmp_path: Path):
+        # Regression pin for the P0 vault-scope-fix: when scan_root has an
+        # `active/` subdir, walk both `active/` and `closed/`. Most refusal
+        # cc-tasks live in closed/ once their refusal-briefs ship, but the
+        # constitutional refusal persists indefinitely.
+        active = tmp_path / "active"
+        closed = tmp_path / "closed"
+        active.mkdir()
+        closed.mkdir()
+        _write_task_file(active / "refused-active.md", slug="refused-active")
+        _write_task_file(closed / "refused-closed.md", slug="refused-closed")
+        results = list(iter_refused_tasks(tmp_path))
+        assert {t.slug for t in results} == {"refused-active", "refused-closed"}
+
+    def test_active_dir_passed_directly_promotes_to_vault_base(self, tmp_path: Path):
+        # Production shape: the env-var default points at .../active. We
+        # auto-promote to the parent so closed/ is scanned too.
+        active = tmp_path / "active"
+        closed = tmp_path / "closed"
+        active.mkdir()
+        closed.mkdir()
+        _write_task_file(active / "a.md", slug="a")
+        _write_task_file(closed / "c.md", slug="c")
+        results = list(iter_refused_tasks(active))
+        assert {t.slug for t in results} == {"a", "c"}
+
 
 # ── apply_transition: re-affirm ─────────────────────────────────────
 
