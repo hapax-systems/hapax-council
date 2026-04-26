@@ -72,12 +72,14 @@ sync-pipeline = [
     "langfuse>=3.14.5",
 ]
 mail-monitor = [
-    # cc-task mail-monitor-002 — gmail.modify-scoped OAuth client + Pub/Sub
-    # watch consumer. Same Google deps as sync-pipeline but a separate
-    # extra so a daemon-only install can skip langfuse.
+    # cc-tasks mail-monitor-002 / -004 / -005 — gmail.modify-scoped
+    # OAuth client + label/filter bootstrap + Pub/Sub watch + renewal
+    # consumer. Same Google deps as sync-pipeline plus pubsub, kept as a
+    # separate extra so a daemon-only install can skip langfuse.
     "google-api-python-client>=2.100.0",
     "google-auth>=2.30.0",
     "google-auth-oauthlib>=1.2.0",
+    "google-cloud-pubsub>=2.25.0",
 ]
 audio = [
     "faster-whisper>=1.1.0",

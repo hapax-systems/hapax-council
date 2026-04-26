@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily Gmail users.watch() renewal for mail-monitor (mail-monitor-005)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/docs/specs/2026-04-25-mail-monitor.md
+
+[Timer]
+# Gmail watch lifetime is 7 days. Renewing daily gives a 6-day safety
+# margin so a single missed run never expires the watch.
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=600
+Persistent=true
+Unit=hapax-mail-monitor-watch-renewal.service
+
+[Install]
+WantedBy=timers.target
