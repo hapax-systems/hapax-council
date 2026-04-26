@@ -43,6 +43,12 @@ DEFAULT_ACTIVE_DIR = Path(
     )
 )
 
+# Refusal cc-tasks live in BOTH active/ and closed/. When a refusal-brief
+# ships, the cc-task moves to closed/ (status: done), but the constitutional
+# refusal persists indefinitely — the substrate must continue evaluating it.
+# Mirror SUBDIRS = ("active", "closed") from scripts/refused_lifecycle_classify.py.
+_VAULT_SUBDIRS = ("active", "closed")
+
 
 # Per-transition counter labelled with from_state, to_state, slug. Slug
 # label is high-cardinality but bounded by the active cc-task set (~20).
@@ -94,18 +100,46 @@ def parse_frontmatter(path: Path) -> RefusalTask:
     )
 
 
-def iter_refused_tasks(active_dir: Path = DEFAULT_ACTIVE_DIR) -> Iterator[RefusalTask]:
-    """Yield REFUSED-status tasks from the active vault directory."""
-    if not active_dir.exists():
+def _resolve_scan_dirs(scan_root: Path) -> list[Path]:
+    """Return the list of directories to glob for cc-task markdown files.
+
+    If ``scan_root`` is itself a vault-base (contains ``active/`` subdir),
+    walk both ``active/`` and ``closed/`` so the substrate sees REFUSED
+    cc-tasks regardless of whether their refusal-brief already shipped.
+    Otherwise treat ``scan_root`` as a single dir of markdown files (used
+    by tests + the legacy single-dir caller shape).
+    """
+    if (scan_root / "active").is_dir():
+        return [scan_root / sub for sub in _VAULT_SUBDIRS if (scan_root / sub).is_dir()]
+    return [scan_root]
+
+
+def iter_refused_tasks(scan_root: Path = DEFAULT_ACTIVE_DIR) -> Iterator[RefusalTask]:
+    """Yield REFUSED-status cc-tasks from the vault.
+
+    ``scan_root`` may be either a vault base containing ``active/`` and
+    ``closed/`` subdirs (production shape — both walked), or a single dir
+    of markdown files (test shape). When the caller passes the legacy
+    DEFAULT_ACTIVE_DIR pointing directly at ``active/``, the function
+    auto-promotes to the vault base (parent dir) so closed/ is scanned
+    too — this fixes the substrate-92%-dead bug where 39 closed REFUSED
+    tasks were invisible.
+    """
+    if scan_root.name == "active" and scan_root.parent.is_dir():
+        scan_root = scan_root.parent
+
+    if not scan_root.exists():
         return
-    for path in sorted(active_dir.glob("*.md")):
-        try:
-            task = parse_frontmatter(path)
-        except (ValueError, yaml.YAMLError) as exc:
-            log.warning("skipping %s: %s", path, exc)
-            continue
-        if task.automation_status == "REFUSED":
-            yield task
+
+    for scan_dir in _resolve_scan_dirs(scan_root):
+        for path in sorted(scan_dir.glob("*.md")):
+            try:
+                task = parse_frontmatter(path)
+            except (ValueError, yaml.YAMLError) as exc:
+                log.warning("skipping %s: %s", path, exc)
+                continue
+            if task.automation_status == "REFUSED":
+                yield task
 
 
 _PUBLIC_SAFE_PREFIXES = ("pub-bus-", "repo-pres-", "awareness-refused-")
