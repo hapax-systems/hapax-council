@@ -1,0 +1,37 @@
+# Audit attestation template — tier 2 (daemon code).
+# Authoring rule: copy to audits/audit-PR-<N>.yaml in your PR commit;
+# CI validates via scripts/validate-audit-yaml.py.
+# Schema: audits/SCHEMA.md.
+
+pr_number: 0  # set to the GitHub PR number
+tier: 2
+
+# Tier-1 fields
+tests_run: true   # was `uv run pytest <relevant>` green at merge-base + HEAD?
+lint_passed: true # was `uv run ruff check` + `uv run pyright` clean?
+
+# Tier-2 substrate-truth fields. Each must be true OR carry a `note:`
+# explaining the deferral / partial state. Auditor reads these as
+# attestations, not as checkboxes.
+
+data_flow_traced: true
+data_flow_traced_note: |
+  (optional — describe the producer→consumer trace OR the deferral
+  reason. Required only when data_flow_traced is false.)
+
+production_path_verified: true
+production_path_verified_note: |
+  (optional — describe the runtime witness OR the deferral reason.
+  Required only when production_path_verified is false.)
+
+peer_module_glob_match: true
+peer_module_glob_match_note: |
+  (optional — describe peer modules + their globs OR mark N/A if
+  no glob/path constant was introduced. Required only when
+  peer_module_glob_match is false.)
+
+new_function_call_sites:
+  # List of file:line locations for any new public callable in this PR.
+  # Empty list means "no new public callable" — auditor verifies.
+  # - agents/foo/bar.py:42  # called from agents/baz/qux.py:128
+  []
