@@ -49,7 +49,6 @@ RECREATE_TASKS: frozenset[str] = frozenset(
         "gem_producer_loop",
         "programme_manager_loop",
         "salience_publish_loop",
-        "autonomous_narrative_loop",
     }
 )
 LOG_AND_CONTINUE_TASKS: frozenset[str] = frozenset()
@@ -255,7 +254,6 @@ def _emit_crash_event(
 async def run_inner(daemon: VoiceDaemon) -> None:
     """Inner run loop — executes within consent_scope context."""
     from agents.hapax_daimonion.activity_mode import classify_activity_mode
-    from agents.hapax_daimonion.autonomous_narrative import autonomous_narrative_loop
     from agents.hapax_daimonion.init_pipeline import precompute_pipeline_deps
     from agents.hapax_daimonion.run_loops import (
         actuation_loop,
@@ -447,17 +445,10 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "sidechat_consumer_loop",
         lambda: sidechat_consumer_loop(daemon),
     )
-    # ytb-SS1: autonomous narrative director. Default ON per directive
-    # feedback_features_on_by_default 2026-04-25T20:55Z; opt-out via
-    # HAPAX_AUTONOMOUS_NARRATIVE_ENABLED=0. Emits one substantive
-    # narration every ~2-3 min during operator-absent stretches via
-    # the existing impingement → CPAL → spontaneous-speech path.
-    # See agents/hapax_daimonion/autonomous_narrative/.
-    _make_task(
-        daemon,
-        "autonomous_narrative_loop",
-        lambda: autonomous_narrative_loop(daemon),
-    )
+    # ytb-SS1: autonomous narrative is now dispatched via the
+    # AffordancePipeline (narration.autonomous_first_system) in
+    # impingement_consumer_loop. The standalone polling loop + hardcoded
+    # gates are retired per feedback_no_expert_system_rules.
     # GEM producer — Hapax authors the Graffiti Emphasis Mural ward by
     # tailing gem.* impingements and writing /dev/shm/hapax-compositor/
     # gem-frames.json. Phase 3 of the GEM activation plan.

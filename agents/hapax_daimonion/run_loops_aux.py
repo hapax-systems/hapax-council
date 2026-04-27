@@ -304,6 +304,111 @@ def _dispatch_compositional(candidate, imp, daemon) -> None:
         log.warning("Compositional dispatch failed", exc_info=True)
 
 
+# Refractory period after a successful narration emission. Replaces the
+# hardcoded 120s rate-limit gate in gates.py with a pipeline-native
+# inhibition mechanism.
+_NARRATION_REFRACTORY_S: float = 120.0
+
+
+def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
+    """Dispatch recruited autonomous narration through compose → emit.
+
+    Called by ``impingement_consumer_loop`` when the AffordancePipeline
+    recruits ``narration.autonomous_first_system``. This replaces the
+    standalone ``loop.py`` + ``gates.py`` polling architecture — narration
+    now fires because the pipeline recruited it via cosine similarity,
+    not because a timer ticked and 5 hardcoded gates all returned True.
+
+    After successful emission, ``add_inhibition()`` enforces a refractory
+    period (120s) so cadence emerges from the pipeline's base_level decay
+    + inhibition mechanism rather than a hardcoded interval.
+    """
+    try:
+        from agents.hapax_daimonion.autonomous_narrative import compose, emit
+        from agents.hapax_daimonion.autonomous_narrative.state_readers import assemble_context
+
+        context = assemble_context(daemon)
+        narrative = compose.compose_narrative(context)
+        if narrative is None:
+            emit.record_metric("llm_silent")
+            daemon._affordance_pipeline.record_outcome(
+                candidate.capability_name,
+                success=False,
+                context={"source": imp.source, "reason": "llm_silent"},
+            )
+            return
+
+        now = time.time()
+        programme_id = _programme_id_from_context(context)
+        referent = _pick_referent_for_narration(programme_id)
+
+        ok = emit.emit_narrative(
+            narrative,
+            programme_id=programme_id,
+            operator_referent=referent,
+            now=now,
+        )
+        if ok:
+            emit.record_metric("allow")
+            daemon._affordance_pipeline.record_outcome(
+                candidate.capability_name,
+                success=True,
+                context={
+                    "source": imp.source,
+                    "programme_id": programme_id or "",
+                    "stimmung": getattr(context, "stimmung_tone", ""),
+                },
+            )
+            # Refractory inhibition — pipeline-native replacement for the
+            # hardcoded 120s rate-limit gate. base_level decay handles the
+            # longer-term cadence (150s+), but the hard floor prevents
+            # burst-firing when multiple impingements recruit narration
+            # within a short window.
+            daemon._affordance_pipeline.add_inhibition(imp, duration_s=_NARRATION_REFRACTORY_S)
+            _publish_recruitment_log(
+                "narration",
+                candidate.capability_name,
+                candidate.combined,
+                imp.source,
+                narrative[:160],
+            )
+            log.info(
+                "Autonomous narration emitted via recruitment (score=%.2f, source=%s)",
+                candidate.combined,
+                imp.source[:40],
+            )
+        else:
+            emit.record_metric("write_failed")
+            daemon._affordance_pipeline.record_outcome(
+                candidate.capability_name,
+                success=False,
+                context={"source": imp.source, "reason": "write_failed"},
+            )
+    except Exception:
+        log.warning("Autonomous narration dispatch failed", exc_info=True)
+
+
+def _programme_id_from_context(context) -> str | None:
+    """Extract programme_id from a NarrativeContext."""
+    prog = getattr(context, "programme", None)
+    if prog is None:
+        return None
+    pid = getattr(prog, "programme_id", None)
+    return str(pid) if pid is not None else None
+
+
+def _pick_referent_for_narration(programme_id: str | None) -> str | None:
+    """Pick operator referent for narration — mirrors loop.py logic."""
+    if programme_id is None:
+        return None
+    try:
+        from shared.operator_referent import OperatorReferentPicker  # noqa: PLC0415
+
+        return OperatorReferentPicker.pick_for_vod_segment(f"narrative-{programme_id}")
+    except (ImportError, Exception):
+        return None
+
+
 async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
     """Poll DMN impingements and dispatch recruited affordances.
 
@@ -438,6 +543,17 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     success=True,
                                     context={"source": imp.source},
                                 )
+                            continue
+
+                        # --- Autonomous narration dispatch (de-expert-system) ---
+                        # Replaces the standalone loop.py + gates.py polling
+                        # architecture. Narration now fires because the
+                        # pipeline recruited it, not because a timer ticked.
+                        # Cadence emerges from base_level decay + refractory
+                        # inhibition (120s) rather than hardcoded gates.
+                        if c.capability_name == "narration.autonomous_first_system":
+                            if c.combined >= 0.3:
+                                _dispatch_autonomous_narration(daemon, imp, c)
                             continue
 
                         # --- Studio control dispatch ---

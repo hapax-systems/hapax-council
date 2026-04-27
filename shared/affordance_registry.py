@@ -867,6 +867,22 @@ GEM_AFFORDANCES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Domain 10: Expression (narration.*)
+# ---------------------------------------------------------------------------
+
+EXPRESSION_AFFORDANCES = [
+    CapabilityRecord(
+        name="narration.autonomous_first_system",
+        description=(
+            "Compose neutral first-system narration grounding observed perceptual"
+            " events into TTS-ready prose during operator-absent stretches"
+        ),
+        daemon="daimonion",
+        operational=OperationalProperties(latency_class="slow", medium="speech"),
+    ),
+]
+
+# ---------------------------------------------------------------------------
 # Legacy bridge entries (pre-dot-namespace names)
 # ---------------------------------------------------------------------------
 
@@ -905,6 +921,7 @@ AFFORDANCE_DOMAINS: dict[str, list[CapabilityRecord]] = {
     "social": SOCIAL_AFFORDANCES,
     "system": SYSTEM_AFFORDANCES,
     "world": WORLD_AFFORDANCES,
+    "narration": EXPRESSION_AFFORDANCES,
 }
 
 ALL_AFFORDANCES: list[CapabilityRecord] = (

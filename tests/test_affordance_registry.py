@@ -14,6 +14,7 @@ def test_all_domains_present():
         "social",
         "system",
         "world",
+        "narration",
     }
     assert set(AFFORDANCE_DOMAINS.keys()) == expected
 
