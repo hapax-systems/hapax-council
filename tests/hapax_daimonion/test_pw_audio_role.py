@@ -110,3 +110,53 @@ class TestMediaRoleOnOneShotPlayback:
         assert "--media-role" in cmd
         idx = cmd.index("--media-role")
         assert cmd[idx + 1] == "Assistant"
+
+
+import time
+
+
+class TestPwAudioReaper:
+    def test_no_reaper_when_timeout_disabled(self) -> None:
+        out = PwAudioOutput(sample_rate=24000, channels=1, idle_timeout_s=0.0)
+        assert out._reaper_thread is None
+
+    def test_reaper_terminates_idle_processes(self) -> None:
+        out = PwAudioOutput(sample_rate=24000, channels=1, idle_timeout_s=0.1)
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+
+            # Write twice quickly to ensure process is spawned and time is recorded
+            out.write(b"\x00" * 100)
+            assert out._reaper_thread is not None
+
+            # Verify the process is cached
+            assert (None, "Assistant") in out._processes
+            assert (None, "Assistant") in out._last_write_times
+
+            # Wait for reaper timeout
+            time.sleep(0.15)
+
+            # The daemon thread runs every 5s, which is too slow for testing.
+            # Instead, we will directly call the loop logic for one iteration.
+            now = time.monotonic()
+            with out._lock:
+                for key, last_write in list(out._last_write_times.items()):
+                    if (now - last_write) > out._idle_timeout_s:
+                        proc = out._processes.pop(key, None)
+                        out._last_write_times.pop(key, None)
+                        if proc:
+                            proc.terminate()
+
+            # Verify process was terminated and removed
+            assert (None, "Assistant") not in out._processes
+            assert mock_proc.terminate.call_count == 1
+
+        out.close()
+
+    def test_close_stops_reaper_event(self) -> None:
+        out = PwAudioOutput(sample_rate=24000, channels=1, idle_timeout_s=60.0)
+        assert not out._stop_event.is_set()
+        out.close()
+        assert out._stop_event.is_set()

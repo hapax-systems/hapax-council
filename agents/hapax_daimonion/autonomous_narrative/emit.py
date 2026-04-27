@@ -26,6 +26,9 @@ import time
 import uuid
 from pathlib import Path
 
+from shared.chronicle import ChronicleEvent, current_otel_ids
+from shared.chronicle import record as chronicle_record
+
 log = logging.getLogger(__name__)
 
 
@@ -99,6 +102,23 @@ def emit_narrative(
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(impingement, default=str) + "\n")
             fh.write(json.dumps(chronicle_event, default=str) + "\n")
+
+        trace_id, span_id = current_otel_ids()
+        ev = ChronicleEvent(
+            ts=ts,
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_span_id=None,
+            source="self_authored_narrative",
+            event_type="narrative.emitted",
+            payload={
+                "narrative": text,
+                "programme_id": programme_id,
+                "impingement_id": impingement_id,
+                "salience": 0.6,
+            },
+        )
+        chronicle_record(ev)
     except OSError as exc:
         log.warning("autonomous_narrative emit write failed: %s", exc)
         return False

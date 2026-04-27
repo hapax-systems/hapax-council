@@ -161,6 +161,14 @@ impl Renderer {
         self.content_source_mgr.tick_fades(dt);
 
         let opacities = self.content_source_mgr.slot_opacities();
+
+        // HOMAGE Phase 6 - Ward↔Shader bidirectional coupling
+        crate::homage_feedback::emit_shader_feedback(
+            self.state_reader.smoothed.audio_energy as f64,
+            0.0,  // drift
+            true, // is_fresh
+        );
+
         self.pipeline.render(
             &self.device,
             &self.queue,
