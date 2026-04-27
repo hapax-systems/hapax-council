@@ -55,12 +55,15 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
     "agents.publication_bus.bridgy_publisher": WireEntry(
         module="agents.publication_bus.bridgy_publisher",
         surface_slug="bridgy-webmention-publish",
-        status="CRED_BLOCKED",
-        pass_key_required=None,  # No creds; needs hapax-assets repo
+        status="WIRED",
+        pass_key_required=None,
         rationale=(
-            "POSSE webmention via brid.gy/publish/webmention. No API key "
-            "needed, but depends on the operator's omg.lol weblog being "
-            "live as the source URL. Wire when assets/weblog are bootstrapped."
+            "Wired via agents/bridgy_adapter into "
+            "publish_orchestrator.SURFACE_REGISTRY entry "
+            "`bridgy-webmention-publish`. No publish-time credentials — "
+            "Bridgy was OAuth'd to the operator's downstream silos at "
+            "bootstrap and reads source URL microformats at crawl time. "
+            "Source URL constructed as https://hapax.omg.lol/weblog/{slug}."
         ),
     ),
     "agents.publication_bus.internet_archive_publisher": WireEntry(
