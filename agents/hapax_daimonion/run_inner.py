@@ -445,10 +445,21 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "sidechat_consumer_loop",
         lambda: sidechat_consumer_loop(daemon),
     )
-    # ytb-SS1: autonomous narrative is now dispatched via the
-    # AffordancePipeline (narration.autonomous_first_system) in
-    # impingement_consumer_loop. The standalone polling loop + hardcoded
-    # gates are retired per feedback_no_expert_system_rules.
+    # Endogenous narrative drive — evaluates a Bayesian posterior every
+    # 10s and emits impingements to the DMN bus when internal pressure
+    # (time since last narration × chronicle richness × role affinity)
+    # crosses a stochastic threshold.  The pipeline then recruits
+    # narration.autonomous_first_system from those impingements.
+    # Replaces the decommissioned expert-system loop+gates per
+    # feedback_no_expert_system_rules.
+    # Design: docs/research/2026-04-27-endogenous-drive-role-semantic-surfacing.md
+    from agents.hapax_daimonion.narrative_drive import narrative_drive_loop
+
+    _make_task(
+        daemon,
+        "narrative_drive_loop",
+        lambda: narrative_drive_loop(daemon),
+    )
     # GEM producer — Hapax authors the Graffiti Emphasis Mural ward by
     # tailing gem.* impingements and writing /dev/shm/hapax-compositor/
     # gem-frames.json. Phase 3 of the GEM activation plan.

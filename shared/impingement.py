@@ -31,6 +31,7 @@ class ImpingementType(StrEnum):
     BOREDOM = "boredom"  # system-internal: nothing interesting
     CURIOSITY = "curiosity"  # system-internal: something novel found
     EXPLORATION_OPPORTUNITY = "exploration_opp"  # system-internal: bored but see a target
+    ENDOGENOUS = "endogenous"  # system-internal: accumulated drive pressure crossed threshold
 
 
 class Impingement(BaseModel, frozen=True):
