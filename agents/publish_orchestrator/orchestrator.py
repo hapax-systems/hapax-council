@@ -126,6 +126,7 @@ SURFACE_REGISTRY: dict[str, str] = {
     "zenodo-refusal-deposit": "agents.refusal_brief_zenodo_adapter:publish_artifact",  # V5 RefusalBrief publisher (#1650 wire-status WIRED)
     "omg-weblog": "agents.omg_weblog_publisher:publish_artifact",  # operator-owned (hapax address)
     "oudepode-omg-weblog": "agents.omg_weblog_publisher:publish_artifact_oudepode",  # music-side identity
+    "bridgy-webmention-publish": "agents.bridgy_adapter:publish_artifact",  # V5 BridgyPublisher POSSE fan-out
     # "hf-papers":      "agents.hf_papers_publisher:publish_artifact",  # arXiv-downstream Mon-Fri
     # "ghost-blog":     "agents.ghost_publisher:publish_artifact",  # self-hosted, richest API
     # "smtp-newsletter":"agents.smtp_newsletter_publisher:publish_artifact",  # operator-sovereign

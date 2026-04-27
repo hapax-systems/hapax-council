@@ -197,3 +197,38 @@ def test_warn_emits_info_when_all_fonts_present(
 def test_homage_required_fonts_contains_px437() -> None:
     """Regression pin: BitchX primary font must remain in the required list."""
     assert "Px437 IBM VGA 8x16" in text_render.HOMAGE_REQUIRED_FONTS
+
+
+# ── _font_options_for ───────────────────────────────────────────────────────
+
+
+def test_font_options_pixel_font_drops_antialiasing() -> None:
+    """Px437 / VGA-named families render with ANTIALIAS_NONE (pixel grid)."""
+    import cairo
+
+    style = text_render.TextStyle(text="hi", font_description="Px437 IBM VGA 8x16 14")
+    opts = text_render._font_options_for(style)
+    assert opts.get_antialias() == cairo.ANTIALIAS_NONE
+    assert opts.get_hint_style() == cairo.HINT_STYLE_FULL
+    assert opts.get_hint_metrics() == cairo.HINT_METRICS_ON
+
+
+def test_font_options_non_pixel_font_keeps_grayscale_aa() -> None:
+    """Non-pixel families keep ANTIALIAS_GRAY but force full hinting."""
+    import cairo
+
+    style = text_render.TextStyle(text="hi", font_description="JetBrains Mono Bold 14")
+    opts = text_render._font_options_for(style)
+    assert opts.get_antialias() == cairo.ANTIALIAS_GRAY
+    assert opts.get_hint_style() == cairo.HINT_STYLE_FULL
+    assert opts.get_hint_metrics() == cairo.HINT_METRICS_ON
+
+
+def test_font_options_marker_match_is_case_insensitive() -> None:
+    """Marker match folds case so ``PX437`` / ``vga`` both trigger pixel path."""
+    import cairo
+
+    for fd in ("PX437 IBM VGA 8x16 14", "VGA Bold 14", "px437 small 12"):
+        style = text_render.TextStyle(text="hi", font_description=fd)
+        opts = text_render._font_options_for(style)
+        assert opts.get_antialias() == cairo.ANTIALIAS_NONE, fd

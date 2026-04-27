@@ -1,4 +1,4 @@
-"""Self-citation graph DOI minter — Phase 1 dry-run scaffold.
+"""Self-citation graph DOI minter — entry point + dry-run scaffold.
 
 Per drop 5 §3 fresh-pattern #1: mint a Zenodo DOI for the DataCite
 GraphQL query that resolves to Hapax's constellation graph. The query
@@ -6,15 +6,18 @@ string + its expected response shape together form a Zenodo deposit;
 subsequent runs of the query produce version-DOIs under a stable
 concept-DOI when the graph topology materially shifts.
 
-Phase 1 (this module): scaffold + scan + material-change detector +
-deposit-assembly preview. No actual Zenodo minting until ``--commit``
-is implemented and operator authorizes per-run.
+Phase 1 (this module's pre-Phase-2 history): scaffold + scan +
+material-change detector + deposit-assembly preview.
 
-Phase 2 will wire actual concept-DOI mint + version-DOI mint on
-material change + frontmatter writeback to the DataCite mirror.
+Phase 2 (now): ``--commit`` wires actual minting via
+``agents.publication_bus.graph_publisher`` (concept-DOI on first
+run, version-DOI on subsequent material changes). Token comes from
+env ``HAPAX_ZENODO_TOKEN`` (hapax-secrets.service from pass
+``zenodo/api-token``); no token → skip-with-message + zero exit.
 
 Spec: ``agents/publication_bus/datacite_mirror.py`` (provides the
-GraphQL snapshots) + drop-5 §3 fresh-pattern #1.
+GraphQL snapshots) + drop-5 §3 fresh-pattern #1 + cc-task
+``pub-bus-datacite-mirror``.
 """
 
 from __future__ import annotations
@@ -23,8 +26,8 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -176,6 +179,58 @@ def render_dry_run_report(
     return "\n".join(lines)
 
 
+def _run_commit(
+    *,
+    snapshot: Path,
+    fingerprint: str,
+    has_change: bool,
+    metadata: dict | None,
+    graph_dir: Path,
+) -> int:
+    """Phase 2 commit path: mint via graph_publisher + persist state."""
+    if not has_change:
+        sys.stdout.write("(no material change since last deposit; skipping mint)\n")
+        return 0
+
+    token = os.environ.get("HAPAX_ZENODO_TOKEN", "").strip()
+    if not token:
+        sys.stderr.write(
+            "# --commit: HAPAX_ZENODO_TOKEN not set; skipping mint (operator action: "
+            "configure pass zenodo/api-token; hapax-secrets.service exports it)\n"
+        )
+        return 0
+
+    from agents.publication_bus.graph_publisher import (
+        GraphPublisherError,
+        mint_or_version,
+        persist_graph_state,
+    )
+
+    try:
+        concept_doi, version_doi, deposit_id = mint_or_version(
+            zenodo_token=token,
+            graph_dir=graph_dir,
+            snapshot_path=snapshot,
+            fingerprint=fingerprint,
+            metadata=dict(metadata or {}),
+        )
+    except GraphPublisherError as exc:
+        sys.stderr.write(f"# --commit: mint failed: {exc}\n")
+        return 1
+
+    persist_graph_state(
+        graph_dir=graph_dir,
+        concept_doi=concept_doi,
+        version_doi=version_doi,
+        fingerprint=fingerprint,
+        deposit_id=deposit_id,
+    )
+    sys.stdout.write(
+        f"minted concept-DOI={concept_doi} version-DOI={version_doi} (deposit_id={deposit_id})\n"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -227,13 +282,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.commit:
-        print(
-            "# --commit recognised; minting loop is the Phase 2 sub-PR. "
-            f"(snapshot={snapshot}, fingerprint={fingerprint[:12]}..., change={has_change})",
-            file=sys.stderr,
+        return _run_commit(
+            snapshot=snapshot,
+            fingerprint=fingerprint,
+            has_change=has_change,
+            metadata=metadata,
+            graph_dir=args.graph_dir,
         )
-        _ = datetime.now(UTC)  # placeholder for future timestamp use
-        return 0
 
     sys.stdout.write(
         render_dry_run_report(
