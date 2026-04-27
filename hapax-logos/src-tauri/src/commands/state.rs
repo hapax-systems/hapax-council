@@ -600,7 +600,7 @@ fn is_goal_stale(status: &str, last_activity: &Option<String>) -> bool {
         _ => return false, // planned/completed goals are never stale
     };
     match last_activity {
-        Some(ts) => hours_since(ts).map_or(true, |h| h / 24.0 > threshold_days),
+        Some(ts) => hours_since(ts).is_none_or(|h| h / 24.0 > threshold_days),
         None => true,
     }
 }

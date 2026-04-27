@@ -39,22 +39,19 @@ struct ShmVisualState {
 #[tauri::command]
 pub fn get_visual_surface_state() -> VisualSurfaceState {
     let path = "/dev/shm/hapax-visual/state.json";
-    match std::fs::read_to_string(path) {
-        Ok(data) => {
-            if let Ok(state) = serde_json::from_str::<ShmVisualState>(&data) {
-                return VisualSurfaceState {
-                    stance: state.stance,
-                    speed: state.speed,
-                    turbulence: state.turbulence,
-                    color_warmth: state.color_warmth,
-                    brightness: state.brightness,
-                    layer_opacities: state.layer_opacities,
-                    fps: state.fps,
-                    frame_time_ms: state.frame_time_ms,
-                };
-            }
+    if let Ok(data) = std::fs::read_to_string(path) {
+        if let Ok(state) = serde_json::from_str::<ShmVisualState>(&data) {
+            return VisualSurfaceState {
+                stance: state.stance,
+                speed: state.speed,
+                turbulence: state.turbulence,
+                color_warmth: state.color_warmth,
+                brightness: state.brightness,
+                layer_opacities: state.layer_opacities,
+                fps: state.fps,
+                frame_time_ms: state.frame_time_ms,
+            };
         }
-        Err(_) => {}
     }
 
     // Fall back to reading the visual-layer-state from compositor shm
