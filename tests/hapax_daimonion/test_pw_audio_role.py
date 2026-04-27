@@ -110,3 +110,97 @@ class TestMediaRoleOnOneShotPlayback:
         assert "--media-role" in cmd
         idx = cmd.index("--media-role")
         assert cmd[idx + 1] == "Assistant"
+
+
+class TestIdleReaperPin:
+    """Regression pin: persistent pw-cat subprocesses must be reaped after
+    going idle.
+
+    Live regression observed 2026-04-27 (operator dropouts pre-L-12): three
+    TTS playback pw-cat subprocesses (daimonion Assistant + Broadcast,
+    studio-compositor director-narration Assistant) accumulated 100k–240k
+    xrun errors each over ~25 minutes of intermittent TTS activity. Each
+    starved consumer applies real-time scheduling pressure to the audio
+    graph, observable as periodic dropouts on USB capture/playback paths
+    (the L-12 USB output was the canary).
+
+    The reaper terminates any (target, media_role) subprocess that hasn't
+    received a write within ``DEFAULT_IDLE_TIMEOUT_S``. The next write
+    re-spawns lazily via ``_ensure_process``.
+    """
+
+    def test_idle_subprocess_is_reaped(self) -> None:
+        import time
+        from unittest.mock import MagicMock, patch
+
+        from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
+
+        out = PwAudioOutput(
+            sample_rate=24000,
+            channels=1,
+            target=None,
+            idle_timeout_s=0.05,
+        )
+        try:
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = MagicMock()
+                mock_proc.poll.return_value = None
+                mock_proc.stdin = MagicMock()
+                mock_popen.return_value = mock_proc
+
+                out.write(b"\x00" * 16, target=None, media_role="Assistant")
+                key = (None, "Assistant")
+                assert key in out._processes
+
+                time.sleep(0.1)
+                out._reap_idle()
+
+                assert key not in out._processes, "stale subprocess should be reaped"
+                mock_proc.terminate.assert_called_once()
+        finally:
+            out.close()
+
+    def test_active_subprocess_is_not_reaped(self) -> None:
+        import time
+        from unittest.mock import MagicMock, patch
+
+        from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
+
+        out = PwAudioOutput(
+            sample_rate=24000,
+            channels=1,
+            target=None,
+            idle_timeout_s=0.5,
+        )
+        try:
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = MagicMock()
+                mock_proc.poll.return_value = None
+                mock_proc.stdin = MagicMock()
+                mock_popen.return_value = mock_proc
+
+                out.write(b"\x00" * 16, target=None, media_role="Assistant")
+                key = (None, "Assistant")
+                out._reap_idle()
+                assert key in out._processes, "fresh subprocess must not be reaped"
+
+                time.sleep(0.6)
+                out.write(b"\x00" * 16, target=None, media_role="Assistant")
+                out._reap_idle()
+                assert key in out._processes, "recently-written subprocess must not be reaped"
+        finally:
+            out.close()
+
+    def test_idle_timeout_zero_disables_reaper(self) -> None:
+        from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
+
+        out = PwAudioOutput(
+            sample_rate=24000,
+            channels=1,
+            target=None,
+            idle_timeout_s=0,
+        )
+        try:
+            assert out._reaper_thread is None
+        finally:
+            out.close()

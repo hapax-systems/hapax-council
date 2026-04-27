@@ -36,17 +36,40 @@ class PwAudioOutput:
     without disturbing the livestream LEFT subprocess.
     """
 
+    # Idle subprocesses are reaped after this many seconds without a
+    # write. A persistent pw-cat that's connected to PipeWire but not
+    # being fed will accumulate one xrun per quantum cycle (the audio
+    # graph asks for samples and gets none from the empty stdin pipe).
+    # In aggregate across many roles/targets these starved streams
+    # apply real-time scheduling pressure to OTHER nodes on the graph,
+    # observable as periodic dropouts on USB capture/playback paths
+    # (the L-12 USB output was the canary on 2026-04-27 — three TTS
+    # playback streams accumulated 100k–240k xrun errors each over
+    # ~25 minutes of intermittent activity, peaking under load avg 14+
+    # while studio-compositor was at 250-380% CPU). Re-spawn cost on
+    # the next write is ~50ms — acceptable trade vs. continuous xrun
+    # accumulation. Set to ``0`` to disable the reaper (legacy behavior).
+    DEFAULT_IDLE_TIMEOUT_S: float = 60.0
+
+    # How often the background thread wakes to check idle subprocesses.
+    # Cheap because it just walks ``self._processes`` under the lock.
+    _REAPER_TICK_S: float = 15.0
+
     def __init__(
         self,
         sample_rate: int = 24000,
         channels: int = 1,
         target: str | None = None,
         media_role: str = "Assistant",
+        idle_timeout_s: float | None = None,
     ) -> None:
         self._rate = sample_rate
         self._channels = channels
         self._default_target = target
         self._default_media_role = media_role
+        self._idle_timeout_s = (
+            idle_timeout_s if idle_timeout_s is not None else self.DEFAULT_IDLE_TIMEOUT_S
+        )
         # One subprocess per distinct (target, media_role) tuple. ``None``
         # in the target slot keys the "no --target" invocation, which
         # pw-cat routes via the system default sink. The media_role is
@@ -54,7 +77,65 @@ class PwAudioOutput:
         # (role=Broadcast) clips can route through different role-based
         # loopback chains simultaneously without sharing a subprocess.
         self._processes: dict[tuple[str | None, str], subprocess.Popen] = {}
+        # Last-write timestamp per ``(target, media_role)`` key. The
+        # reaper terminates any subprocess whose key has been idle for
+        # longer than ``self._idle_timeout_s``.
+        self._last_write_at: dict[tuple[str | None, str], float] = {}
         self._lock = threading.Lock()
+        self._reaper_stop = threading.Event()
+        if self._idle_timeout_s > 0:
+            self._reaper_thread: threading.Thread | None = threading.Thread(
+                target=self._reaper_loop,
+                name="pw-audio-reaper",
+                daemon=True,
+            )
+            self._reaper_thread.start()
+        else:
+            self._reaper_thread = None
+
+    def _reaper_loop(self) -> None:
+        """Background reaper — terminate idle pw-cat subprocesses.
+
+        Idle is defined as no ``write()`` for ``self._idle_timeout_s``
+        seconds. The next write to that ``(target, media_role)`` key
+        re-spawns the subprocess via ``_ensure_process``.
+        """
+        while not self._reaper_stop.wait(self._REAPER_TICK_S):
+            self._reap_idle()
+
+    def _reap_idle(self) -> None:
+        """Terminate subprocesses idle longer than ``self._idle_timeout_s``."""
+        now = time.monotonic()
+        with self._lock:
+            stale_keys = [
+                key
+                for key in list(self._processes)
+                if now - self._last_write_at.get(key, now) > self._idle_timeout_s
+            ]
+            for key in stale_keys:
+                proc = self._processes.pop(key, None)
+                self._last_write_at.pop(key, None)
+                if proc is None:
+                    continue
+                try:
+                    if proc.stdin is not None:
+                        proc.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                log.info(
+                    "pw-cat playback reaped (idle > %.0fs, target=%s, role=%s)",
+                    self._idle_timeout_s,
+                    key[0] or "<default>",
+                    key[1],
+                )
 
     @property
     def default_target(self) -> str | None:
@@ -165,6 +246,7 @@ class PwAudioOutput:
             proc = self._ensure_process(resolved_target, resolved_role)
             if proc is None or proc.stdin is None:
                 return
+            self._last_write_at[key] = time.monotonic()
             try:
                 proc.stdin.write(pcm)
                 proc.stdin.flush()
@@ -197,6 +279,7 @@ class PwAudioOutput:
 
     def close(self) -> None:
         """Terminate every pw-cat subprocess."""
+        self._reaper_stop.set()
         with self._lock:
             for key, proc in list(self._processes.items()):
                 try:
@@ -210,6 +293,7 @@ class PwAudioOutput:
                 except Exception:
                     pass
                 self._processes.pop(key, None)
+            self._last_write_at.clear()
 
 
 def play_pcm(
