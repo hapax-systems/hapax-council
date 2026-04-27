@@ -164,7 +164,8 @@ def test_main_dry_run_with_snapshot(tmp_path: Path, capsys):
     assert "Would-mint" in captured.out
 
 
-def test_main_commit_reports_unimplemented(tmp_path: Path, capsys):
+def test_main_commit_no_token_skips_mint(tmp_path: Path, capsys, monkeypatch):
+    monkeypatch.delenv("HAPAX_ZENODO_TOKEN", raising=False)
     mirror = tmp_path / "mirror"
     mirror.mkdir()
     _seed_snapshot(mirror / "2026-04-26.json", [("10.x/y", 1)])
@@ -179,4 +180,64 @@ def test_main_commit_reports_unimplemented(tmp_path: Path, capsys):
     )
     assert rc == 0
     captured = capsys.readouterr()
-    assert "minting loop is the Phase 2 sub-PR" in captured.err
+    assert "HAPAX_ZENODO_TOKEN" in captured.err
+
+
+def test_main_commit_no_change_skips(tmp_path: Path, capsys, monkeypatch):
+    """--commit no-ops when fingerprint matches last-fingerprint."""
+    monkeypatch.setenv("HAPAX_ZENODO_TOKEN", "ztk")
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    graph = tmp_path / "graph"
+    graph.mkdir()
+    _seed_snapshot(mirror / "2026-04-26.json", [("10.x/y", 1)])
+    # Pre-seed last-fingerprint matching the current snapshot to force no-change branch.
+    from agents.publication_bus.self_citation_graph_doi import graph_topology_fingerprint
+
+    fp = graph_topology_fingerprint(mirror / "2026-04-26.json")
+    assert fp is not None
+    (graph / "last-fingerprint.txt").write_text(fp + "\n", encoding="utf-8")
+
+    rc = main(
+        [
+            "--mirror-dir",
+            str(mirror),
+            "--graph-dir",
+            str(graph),
+            "--commit",
+        ]
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "no material change" in captured.out
+
+
+def test_main_commit_with_token_calls_publisher(tmp_path: Path, capsys, monkeypatch):
+    """--commit with token + material change → calls mint_or_version + persists state."""
+    monkeypatch.setenv("HAPAX_ZENODO_TOKEN", "ztk")
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    graph = tmp_path / "graph"
+    _seed_snapshot(mirror / "2026-04-26.json", [("10.x/y", 1)])
+
+    from unittest.mock import patch
+
+    with patch(
+        "agents.publication_bus.graph_publisher.mint_or_version",
+        return_value=("10.5281/zenodo.99", "10.5281/zenodo.100", 100),
+    ):
+        rc = main(
+            [
+                "--mirror-dir",
+                str(mirror),
+                "--graph-dir",
+                str(graph),
+                "--commit",
+            ]
+        )
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "minted concept-DOI=10.5281/zenodo.99" in captured.out
+    assert "version-DOI=10.5281/zenodo.100" in captured.out
+    # State persisted
+    assert (graph / "concept-doi.txt").read_text().strip() == "10.5281/zenodo.99"
