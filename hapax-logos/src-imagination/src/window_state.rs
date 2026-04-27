@@ -96,7 +96,7 @@ impl WindowState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    
 
     #[test]
     fn default_values_correct() {
