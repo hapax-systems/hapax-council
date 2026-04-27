@@ -119,7 +119,7 @@ def emit_narrative(
             },
         )
         chronicle_record(ev)
-    except OSError as exc:
+    except Exception as exc:
         log.warning("autonomous_narrative emit write failed: %s", exc)
         return False
     return True
