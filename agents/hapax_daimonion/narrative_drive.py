@@ -27,6 +27,13 @@ log = logging.getLogger(__name__)
 
 _IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 _TICK_SLEEP_S: float = 10.0
+# Minimum cooldown between impingement emissions.  Without this, high
+# chronicle counts (250+ events) push the posterior above threshold on
+# every tick because the chronicle modifier overwhelms the base_pressure
+# exponential reset.  The pipeline's own 120s refractory inhibition
+# prevents actual narration re-dispatch, but we should not flood the
+# impingement bus with drive signals.
+_EMISSION_COOLDOWN_S: float = 60.0
 
 
 def _read_chronicle_count(now: float, window_s: float = 600.0) -> int:
@@ -155,26 +162,38 @@ async def narrative_drive_loop(daemon: Any) -> None:
 
     On each tick:
     1. Assemble DriveContext from daemon state
-    2. Evaluate drive posterior
-    3. If posterior > threshold, emit impingement + record emission
+    2. Check cooldown (skip if within _EMISSION_COOLDOWN_S of last emission)
+    3. Evaluate drive posterior
+    4. If posterior > threshold, emit impingement + record emission
     """
     drive = EndogenousDrive(tau=120.0, threshold=0.12, name="narration")
+    last_emission_at: float = 0.0
 
     log.info(
-        "Narrative drive loop started (tau=%.0fs, threshold=%.2f)",
+        "Narrative drive loop started (tau=%.0fs, threshold=%.2f, cooldown=%.0fs)",
         drive.tau,
         drive.threshold,
+        _EMISSION_COOLDOWN_S,
     )
 
     while getattr(daemon, "_running", True):
         try:
             now = time.time()
+
+            # Cooldown: don't evaluate or emit within _EMISSION_COOLDOWN_S
+            # of the last emission to prevent bus flooding when contextual
+            # modifiers (high chronicle count) overwhelm base_pressure reset.
+            if (now - last_emission_at) < _EMISSION_COOLDOWN_S:
+                await asyncio.sleep(_TICK_SLEEP_S)
+                continue
+
             context = _assemble_drive_context(daemon, now)
 
             if drive.should_emit(context):
                 ok = _emit_drive_impingement(drive, context)
                 if ok:
                     drive.record_emission(now)
+                    last_emission_at = now
         except Exception:
             log.exception("Narrative drive tick raised; continuing")
 
