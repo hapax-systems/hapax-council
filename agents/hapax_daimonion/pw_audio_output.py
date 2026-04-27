@@ -42,19 +42,24 @@ class PwAudioOutput:
         channels: int = 1,
         target: str | None = None,
         media_role: str = "Assistant",
+        idle_timeout_s: float | None = 60.0,
     ) -> None:
         self._rate = sample_rate
         self._channels = channels
         self._default_target = target
         self._default_media_role = media_role
-        # One subprocess per distinct (target, media_role) tuple. ``None``
-        # in the target slot keys the "no --target" invocation, which
-        # pw-cat routes via the system default sink. The media_role is
-        # part of the cache key so private (role=Assistant) and broadcast
-        # (role=Broadcast) clips can route through different role-based
-        # loopback chains simultaneously without sharing a subprocess.
+        self._idle_timeout_s = idle_timeout_s
+        # One subprocess per distinct (target, media_role) tuple.
         self._processes: dict[tuple[str | None, str], subprocess.Popen] = {}
+        self._last_write_times: dict[tuple[str | None, str], float] = {}
         self._lock = threading.Lock()
+
+        self._stop_event = threading.Event()
+        if self._idle_timeout_s is not None and self._idle_timeout_s > 0:
+            self._reaper_thread = threading.Thread(target=self._reaper_loop, daemon=True)
+            self._reaper_thread.start()
+        else:
+            self._reaper_thread = None
 
     @property
     def default_target(self) -> str | None:
@@ -65,6 +70,36 @@ class PwAudioOutput:
     def default_media_role(self) -> str:
         """The media_role passed to ``__init__``. Used when ``write`` has no override."""
         return self._default_media_role
+
+    def _reaper_loop(self) -> None:
+        """Daemon loop to kill pw-cat processes idle for > idle_timeout_s."""
+        while not self._stop_event.is_set():
+            self._stop_event.wait(5.0)
+            if self._stop_event.is_set():
+                break
+
+            now = time.monotonic()
+            with self._lock:
+                # Need to use list() since we are modifying the dicts during iteration
+                for key, last_write in list(self._last_write_times.items()):
+                    if self._idle_timeout_s and (now - last_write) > self._idle_timeout_s:
+                        proc = self._processes.pop(key, None)
+                        self._last_write_times.pop(key, None)
+                        if proc is not None:
+                            try:
+                                if proc.stdin:
+                                    proc.stdin.close()
+                            except Exception:
+                                pass
+                            try:
+                                proc.terminate()
+                                log.info(
+                                    "Reaped idle pw-cat subprocess (target=%s, role=%s)",
+                                    key[0],
+                                    key[1],
+                                )
+                            except Exception:
+                                pass
 
     def _ensure_process(self, target: str | None, media_role: str) -> subprocess.Popen | None:
         """Start or restart the pw-cat subprocess for ``(target, media_role)``.
@@ -168,6 +203,7 @@ class PwAudioOutput:
             try:
                 proc.stdin.write(pcm)
                 proc.stdin.flush()
+                self._last_write_times[key] = time.monotonic()
             except BrokenPipeError:
                 log.warning(
                     "pw-cat playback pipe broken (target=%s, role=%s) — restarting",
@@ -180,6 +216,7 @@ class PwAudioOutput:
                     try:
                         proc.stdin.write(pcm)
                         proc.stdin.flush()
+                        self._last_write_times[key] = time.monotonic()
                     except Exception:
                         log.warning(
                             "pw-cat retry failed (target=%s, role=%s)",
@@ -197,6 +234,7 @@ class PwAudioOutput:
 
     def close(self) -> None:
         """Terminate every pw-cat subprocess."""
+        self._stop_event.set()
         with self._lock:
             for key, proc in list(self._processes.items()):
                 try:
