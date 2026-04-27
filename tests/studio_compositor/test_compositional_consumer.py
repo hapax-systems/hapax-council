@@ -23,7 +23,6 @@ def tmp_shm(monkeypatch, tmp_path):
     monkeypatch.setattr(cc, "_RECENT_RECRUITMENT", tmp_path / "recent-recruitment.json")
     monkeypatch.setattr(cc, "_YOUTUBE_DIRECTION", tmp_path / "youtube-direction.json")
     monkeypatch.setattr(cc, "_STREAM_MODE_INTENT", tmp_path / "stream-mode-intent.json")
-    monkeypatch.setattr(cc, "_CAMERA_ROLE_HISTORY", [])
     return tmp_path
 
 
@@ -150,7 +149,6 @@ class TestCatalogConsistency:
         from shared.compositional_affordances import COMPOSITIONAL_CAPABILITIES
 
         for cap in COMPOSITIONAL_CAPABILITIES:
-            monkeypatch.setattr(cc, "_CAMERA_ROLE_HISTORY", [])
             rec = cc.RecruitmentRecord(name=cap.name)
             family = cc.dispatch(rec)
             assert family != "unknown", f"no dispatcher for {cap.name}"
@@ -409,7 +407,6 @@ class TestB2IntentFamilyRoutingAggressiveEnvelope:
             cc, "_OVERLAY_ALPHA_OVERRIDES", tmp_path / "overlay-alpha-overrides.json"
         )
         monkeypatch.setattr(cc, "_RECENT_RECRUITMENT", tmp_path / "recent-recruitment.json")
-        monkeypatch.setattr(cc, "_CAMERA_ROLE_HISTORY", [])
         return tmp_path
 
     def _read_ward(self, tmp_path, ward_id):
