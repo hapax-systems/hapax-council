@@ -116,15 +116,12 @@ impl ShmOutput {
             format: turbojpeg::PixelFormat::RGBX,
         };
 
-        match compressor.compress_to_vec(image) {
-            Ok(jpeg_data) => {
-                if let Ok(mut file) = fs::File::create(JPEG_TMP_FILE) {
-                    if file.write_all(&jpeg_data).is_ok() {
-                        fs::rename(JPEG_TMP_FILE, JPEG_FILE).ok();
-                    }
+        if let Ok(jpeg_data) = compressor.compress_to_vec(image) {
+            if let Ok(mut file) = fs::File::create(JPEG_TMP_FILE) {
+                if file.write_all(&jpeg_data).is_ok() {
+                    fs::rename(JPEG_TMP_FILE, JPEG_FILE).ok();
                 }
             }
-            Err(_) => {}
         }
     }
 

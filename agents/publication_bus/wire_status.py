@@ -141,6 +141,16 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "tested. Wire on Crossref membership creds (operator-action gated)."
         ),
     ),
+    "agents.publication_bus.graph_publisher": WireEntry(
+        module="agents.publication_bus.graph_publisher",
+        surface_slug="datacite-graph-mint",
+        status="WIRED",
+        pass_key_required=None,
+        rationale=(
+            "Wired via agents/datacite_adapter into "
+            "publish_orchestrator.SURFACE_REGISTRY entry `datacite-graph-mint`."
+        ),
+    ),
 }
 
 

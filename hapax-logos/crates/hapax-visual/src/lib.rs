@@ -1,3 +1,4 @@
+#![allow(dead_code, clippy::too_many_arguments, clippy::map_entry)]
 pub mod content_sources;
 pub mod control;
 pub mod dynamic_pipeline;

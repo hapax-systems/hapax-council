@@ -13,10 +13,9 @@ fn socket_path() -> String {
 }
 
 fn connect() -> Option<UnixStream> {
-    UnixStream::connect(socket_path()).ok().map(|s| {
+    UnixStream::connect(socket_path()).ok().inspect(|s| {
         s.set_read_timeout(Some(Duration::from_secs(2))).ok();
         s.set_write_timeout(Some(Duration::from_secs(2))).ok();
-        s
     })
 }
 
