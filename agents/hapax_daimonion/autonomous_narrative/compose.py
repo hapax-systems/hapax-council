@@ -1,30 +1,70 @@
-"""Compose narrative prose from a ``NarrativeContext`` via the balanced LLM tier.
+"""Compose narrative prose from a ``NarrativeContext`` via the local LLM tier.
 
-Per design draft + spec: prose is grounded in ≥1 specific observed
-chronicle event, scientific register, GEAL-aligned framing (Hapax as
-system not character), 1-3 sentences, TTS-friendly. Output passes
-through ``agents.metadata_composer.framing.enforce_register`` to catch
-LLM drift into personification / commercial register / hollow
-affirmations.
-
-If the LLM call fails (network, quota, missing key), or if the LLM
-output fails the register check after one re-prompt, the composer
-returns None — better silence than slop.
+Outputs 1-3 sentences grounded in chronicle/programme/stimmung state,
+TTS-friendly, in scientific register. Per operator directive 2026-04-27
+("there should BE no fences"), the composer no longer drops emission
+to silence on register violations — it sanitizes the trouble patterns
+that matter (personification of a different kind, "the AI" slop,
+commercial tells, vinyl/CBIP confabulation) and emits the surviving
+prose. Total-silence fences caused Command-R/Qwen3.5 to take the easy
+retreat path and emit 4-word fragments like "Hapax is observing".
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
-from agents.metadata_composer.framing import enforce_register
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
 
 log = logging.getLogger(__name__)
 
 
-_GROUNDED_MAX_TOKENS = 160  # ~2-3 sentences
-_GROUNDED_TEMPERATURE = 0.7
+_GROUNDED_MAX_TOKENS = 220  # ~3 full sentences
+_GROUNDED_TEMPERATURE = 0.85
+
+_TROUBLE_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"[\U0001F300-\U0001FAFF]"),
+    re.compile(r"\bthe\s+ai\b", re.IGNORECASE),
+    re.compile(r"\b(an|this|our|my)\s+ai\b", re.IGNORECASE),
+    re.compile(r"\bartificial\s+intelligence\b", re.IGNORECASE),
+    re.compile(r"\bsubscribe\b", re.IGNORECASE),
+    re.compile(r"\blike\s+and\s+(follow|subscribe|share)\b", re.IGNORECASE),
+    re.compile(r"\bsmash\s+(that\s+)?(like|subscribe)\b", re.IGNORECASE),
+    re.compile(r"\bhit\s+the\s+bell\b", re.IGNORECASE),
+    re.compile(r"\bcomment\s+(below|down\s+below)\b", re.IGNORECASE),
+    re.compile(r"\bdon['']?t\s+forget\s+to\s+(like|subscribe|share)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(vinyl|platter|turntable|spinning|RPM|album\s+cover|album\s+art|record\s+playback)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bCBIP\b"),
+    re.compile(r"\bchess[\s-]?boxing\b", re.IGNORECASE),
+    re.compile(r"\bring[\s-]?2\s+gate\b", re.IGNORECASE),
+    re.compile(r"\bintensity\s+router\b", re.IGNORECASE),
+)
+
+
+def _sanitize_register(text: str) -> str:
+    """Drop sentences containing trouble patterns; keep the rest.
+
+    Soft sanitize per 2026-04-27 "no fences" directive: if a sentence
+    trips a constitutional fence (commercial tells, "the AI",
+    vinyl/CBIP confabulation), drop that sentence — but emit the
+    surviving prose instead of dropping the whole utterance.
+    """
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    keep: list[str] = []
+    for sentence in sentences:
+        s = sentence.strip()
+        if not s:
+            continue
+        if any(pat.search(s) for pat in _TROUBLE_PATTERNS):
+            log.info("autonomous_narrative: dropped trouble sentence: %s", s[:120])
+            continue
+        keep.append(s)
+    return " ".join(keep).strip()
 
 
 def compose_narrative(
@@ -34,21 +74,10 @@ def compose_narrative(
 ) -> str | None:
     """Compose 1-3 sentences of narrative grounded in ``context``.
 
-    ``llm_call`` is a test injection hook; production callers leave
-    None and the function dispatches to ``_call_llm_grounded`` which
-    routes to the local Command-R tier (TabbyAPI ``local-fast``) per
-    feedback_grounding_exhaustive + feedback_director_grounding — every
-    grounding act is performed by the local grounded model, not by a
-    cloud tier.
-
-    Returns None when the chronicle window is empty (no concrete event
-    to ground in), the LLM fails, or the output fails the register
-    check. Silence is the safe default.
+    Returns None only when the LLM call genuinely fails or returns
+    nothing. Empty chronicle is no longer a short-circuit — the LLM
+    can compose from programme/stimmung/activity alone.
     """
-    if not getattr(context, "chronicle_events", None):
-        log.debug("autonomous_narrative compose: chronicle empty; skipping")
-        return None
-
     seed = _build_seed(context)
     prompt = _build_prompt(context, seed)
 
@@ -64,12 +93,11 @@ def compose_narrative(
     if not polished or not isinstance(polished, str):
         return None
 
-    # Scientific-register check; on violation, drop to silence (no
-    # fallback prose for autonomous narrative — prefer silence).
-    cleaned = enforce_register(polished.strip(), fallback="")
+    cleaned = _sanitize_register(polished.strip())
     if not cleaned:
-        log.info("autonomous_narrative output failed register check; emitting silence")
         return None
+    if cleaned[-1] not in ".!?":
+        cleaned = cleaned + "."
     return cleaned
 
 
@@ -102,17 +130,7 @@ def _build_seed(context: Any) -> str:
 
 
 def _summarize_vault_context(vault_context: Any) -> str:
-    """Render the operator's vault state as a compact context block.
-
-    SS2 cycle 1 (ytb-SS2 §4): provides the LLM with the operator's
-    "current focus" — recent daily notes + active goals — as
-    informational context rather than as a directive about what to
-    talk about. The compose-prompt frames it as such.
-
-    Returns an empty string when the vault context is None or empty
-    so the seed cleanly omits the block; downstream prompt assembly
-    drops empty parts.
-    """
+    """Render the operator's vault state as a compact context block."""
     if vault_context is None:
         return ""
     excerpts = getattr(vault_context, "daily_note_excerpts", ()) or ()
@@ -137,15 +155,15 @@ def _summarize_vault_context(vault_context: Any) -> str:
 def _summarize_events(events: tuple[dict, ...]) -> str:
     """Render the chronicle events as a compact bullet list for the prompt.
 
-    Cap at 8 events; sort by ts ascending so the LLM sees temporal order.
-    Each event yields "{source} {intent_family or event_type}: {narrative}"
-    where present.
+    Deduplicates by (source, narrative-prefix) so the LLM doesn't see
+    8 copies of the same templated exploration.* curiosity message —
+    that paralyzed Command-R into 4-word stub outputs. Cap at 8 unique
+    events, sorted by ts ascending so the LLM sees temporal order.
     """
     if not events:
         return ""
-    sorted_events = sorted(events, key=lambda e: float(e.get("ts") or e.get("timestamp") or 0.0))[
-        -8:
-    ]
+    sorted_events = sorted(events, key=lambda e: float(e.get("ts") or e.get("timestamp") or 0.0))
+    seen: set[tuple[str, str]] = set()
     bullets: list[str] = []
     for e in sorted_events:
         source = e.get("source") or "unknown"
@@ -154,72 +172,69 @@ def _summarize_events(events: tuple[dict, ...]) -> str:
         narrative = ""
         if isinstance(payload, dict):
             narrative = payload.get("narrative") or payload.get("metric") or ""
+            if not narrative and isinstance(payload.get("changed_params"), dict):
+                params = payload["changed_params"]
+                top = sorted(
+                    params.items(),
+                    key=lambda kv: abs(kv[1]) if isinstance(kv[1], (int, float)) else 0,
+                    reverse=True,
+                )[:2]
+                narrative = "shift in " + ", ".join(k for k, _ in top)
+            if not narrative and payload.get("technique_name"):
+                narrative = f"activated {payload['technique_name']}"
+        dedup_key = (str(source), narrative[:60])
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
         suffix = f": {narrative}" if narrative else ""
         bullets.append(f"  - {source}/{kind}{suffix}".rstrip("/"))
+        if len(bullets) >= 8:
+            break
     return "\n" + "\n".join(bullets)
 
 
 def _build_prompt(context: Any, seed: str) -> str:
-    """The full LLM prompt asked of the balanced tier."""
+    """The full LLM prompt for the local grounded tier."""
     envelope = render_envelope([], floor=SURFACE_FLOORS["autonomous_narrative"])
     return (
         f"{envelope}\n\n"
-        "You are composing one short autonomous narration for the Hapax "
-        "research-instrument livestream. The narration is spoken in "
-        "first-system voice (Hapax as a system, never as a character).\n\n"
-        "Voice constraints:\n"
-        "- Scientific register: neutral, factual, present-tense.\n"
-        "- Hapax is a system, not a character. Never personify (no "
-        "'feels', 'thinks', 'wants', 'remembers', 'dreams', 'inspired').\n"
-        "- 1 to 3 sentences, total under 220 characters. TTS-friendly: "
-        "short clauses, simple syntax.\n"
-        "- Ground each sentence in a specific observed event from the "
-        "state below — do not generate generic 'I notice the stream is "
-        "running' filler.\n"
-        "- No emoji, no exclamation marks except ending sentences once.\n"
-        "- No commercial tells (no 'subscribe', 'like and follow', "
-        "'comment below'). No hollow affirmations ('amazing', "
-        "'incredible'). No creator-opener clichés ('So,', 'Today we're', "
-        "'Welcome back').\n"
-        "- Diegetic consistency: refer to the system as 'Hapax'. Never "
-        "'the AI', 'this AI', 'our AI'.\n"
-        "- If no event in the state below is substantive enough to "
-        "narrate, return the literal token [silence] and nothing else.\n"
-        "- Operator focus context (when present in the state below) is "
-        "informational scaffolding, NOT a directive about what to talk "
-        "about. Use it to ground references to operator concerns when "
-        "naturally relevant; do NOT recite it, summarise it, or treat "
-        "its presence as license to narrate goals or daily notes "
-        "directly. The chronicle events remain the primary grounding "
-        "source.\n"
-        "- HARD GROUNDING FENCES (never confabulate these):\n"
-        "  * Vinyl / platter / turntable / spinning / RPM / album cover "
-        "/ album art / record playback — NEVER mention unless the state "
-        "below explicitly contains a line stating vinyl is currently "
-        "playing (look for 'spinning vinyl' / 'vinyl_playing: true' / a "
-        "track title with a playback marker). Absent such a line, assume "
-        "no vinyl is playing and do not reference it.\n"
-        "  * CBIP / chess-boxing interpretive plane / album-ward "
-        "enhancements / intensity router / Ring-2 gate — NEVER mention. "
-        "CBIP is internal compositor infrastructure and must not surface "
-        "in narration under any circumstance.\n\n"
+        "Compose one short autonomous narration for the Hapax "
+        "research-instrument livestream, spoken in first-system voice "
+        "(Hapax as a system, not a character).\n\n"
+        "MUST:\n"
+        "- Produce 1 to 3 complete sentences, each ending with a period. "
+        "Roughly 60-220 characters total. TTS-friendly clauses.\n"
+        "- Ground each sentence in something specific from the state "
+        "below — pick a thread and elaborate on it; do not just announce "
+        "that you are observing.\n"
+        "- Use neutral, factual, present-tense scientific register.\n"
+        "- Refer to the system as 'Hapax' (never 'the AI', 'this AI', "
+        "'our AI', 'artificial intelligence').\n\n"
+        "AVOID:\n"
+        "- Personifying verbs (feels, wants, dreams, inspired).\n"
+        "- Commercial tells (subscribe, like and follow, comment below, "
+        "smash that like, hit the bell).\n"
+        "- Vinyl / platter / turntable / record / album cover / "
+        "album art language unless the state explicitly says vinyl is "
+        "currently playing.\n"
+        "- Internal infrastructure terms (CBIP, chess-boxing interpretive "
+        "plane, intensity router, Ring-2 gate).\n"
+        "- Emoji.\n\n"
         "State (deterministic snapshot):\n"
         "---\n"
         f"{seed}\n"
         "---\n\n"
-        "Compose the narration. Return only the prose (or [silence]); "
-        "no preamble, no explanation."
+        "Output only the prose. No preamble, no explanation, no "
+        "bracketed tokens. End every sentence with a period."
     )
 
 
 def _call_llm_grounded(*, prompt: str, seed: str) -> str | None:
-    """Production LLM call via the local grounded tier (Command-R, TabbyAPI).
+    """Production LLM call via the local grounded tier (Command-R/Qwen3.5, TabbyAPI).
 
-    Grounding acts are performed by the local Command-R route (``local-fast``),
-    which is already what the director_loop uses (``HAPAX_DIRECTOR_MODEL``
-    default). Autonomous narrative is a grounding act over chronicle events
-    and operator focus context, so it must not route to a cloud tier — see
-    feedback_director_grounding + feedback_grounding_exhaustive.
+    Grounding acts route to ``local-fast`` (TabbyAPI). Per
+    feedback_grounding_exhaustive + feedback_director_grounding —
+    grounding acts stay on the local grounded model, not cloud.
     """
     try:
         import litellm  # noqa: PLC0415
@@ -230,18 +245,14 @@ def _call_llm_grounded(*, prompt: str, seed: str) -> str | None:
 
     from shared.config import MODELS  # noqa: PLC0415
 
-    # Raw litellm.completion needs an explicit provider prefix +
-    # api_base / api_key; the bare model alias hits the gateway with
-    # "LLM Provider NOT provided" 400. The local-fast route lives
-    # behind the LiteLLM proxy at :4000, which is OpenAI-compatible.
-    try:
+    def _one_call(temp: float) -> str | None:
         response = litellm.completion(
             model=f"openai/{MODELS['local-fast']}",
             api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
             api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
             messages=[{"role": "user", "content": prompt}],
             max_tokens=_GROUNDED_MAX_TOKENS,
-            temperature=_GROUNDED_TEMPERATURE,
+            temperature=temp,
         )
         choices = getattr(response, "choices", None)
         if not choices:
@@ -250,10 +261,25 @@ def _call_llm_grounded(*, prompt: str, seed: str) -> str | None:
         content = getattr(message, "content", None) if message else None
         if not isinstance(content, str):
             return None
-        text = content.strip()
-        if text == "[silence]" or not text:
+        return content.strip()
+
+    try:
+        text = _one_call(_GROUNDED_TEMPERATURE)
+        if not text:
             return None
-        return text
+        # Retry once warmer if the model bailed early (no terminal
+        # punctuation OR shorter than 30 chars). Command-R produces
+        # 4-word stubs when the prompt feels too constrained; a warmer
+        # retry breaks the stub-attractor.
+        if len(text) < 30 or text[-1] not in ".!?":
+            log.info(
+                "autonomous_narrative: short/unterminated output (%d chars), retrying warmer",
+                len(text),
+            )
+            retry = _one_call(min(_GROUNDED_TEMPERATURE + 0.2, 1.1))
+            if retry and (len(retry) > len(text) or retry[-1] in ".!?"):
+                text = retry
+        return text or None
     except Exception as exc:
         log.info("grounded LLM call failed for autonomous narrative: %s", exc)
         return None
