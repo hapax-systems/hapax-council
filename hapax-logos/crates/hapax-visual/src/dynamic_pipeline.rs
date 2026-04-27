@@ -775,7 +775,7 @@ impl DynamicPipeline {
                             .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
                             .collect();
                         while v.len() < 4 { v.push(0.0); }
-                        while (v.len() * 4) % 16 != 0 { v.push(0.0); }
+                        while !(v.len() * 4).is_multiple_of(16) { v.push(0.0); }
                         v
                     },
                     inputs: plan_pass.inputs.clone(),
@@ -857,7 +857,7 @@ impl DynamicPipeline {
                         data.push(val);
                     }
                     while data.len() < 4 { data.push(0.0); }
-                    while (data.len() * 4) % 16 != 0 { data.push(0.0); }
+                    while !(data.len() * 4).is_multiple_of(16) { data.push(0.0); }
 
                     let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some(&format!("{} params", plan_pass.node_id)),
@@ -891,7 +891,7 @@ impl DynamicPipeline {
                             .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
                             .collect();
                         while v.len() < 4 { v.push(0.0); }
-                        while (v.len() * 4) % 16 != 0 { v.push(0.0); }
+                        while !(v.len() * 4).is_multiple_of(16) { v.push(0.0); }
                         v
                     },
                     inputs: plan_pass.inputs.clone(),
@@ -935,96 +935,90 @@ impl DynamicPipeline {
 
         // Apply uniforms.json signal overrides (flat dict from Python modulator)
         // Format: {"signal.key": val, "node.param": val}
-        match std::fs::read_to_string(UNIFORMS_JSON) {
-            Ok(data) => {
-                match serde_json::from_str::<UniformsOverride>(&data) {
-                    Ok(overrides) => {
-                        // F7 — signal.{9dim} is a dormant override hook.
-                        // ``signal.color_warmth`` is the only key Python
-                        // currently writes (``agents/reverie/_uniforms.py``);
-                        // the other 12 arms exist so the visual chain *could*
-                        // override DMN-state-sourced dimensions when the
-                        // reverie mixer has an opinion. The primary path for
-                        // the 9 dimensions is alive via
-                        // ``UniformBuffer::from_state`` reading from
-                        // ``StateReader.imagination.dimensions`` — these arms
-                        // would override that read on a per-frame basis if
-                        // anything wrote them. They are kept rather than
-                        // pruned because the override capability is part of
-                        // the chain → GPU contract; pruning would require
-                        // re-adding them when the visual chain wants to drive
-                        // a dimension directly. See F7 in the 2026-04-12
-                        // beta session 3 retirement handoff.
-                        for (key, &val) in &overrides {
-                            if let Some(signal) = key.strip_prefix("signal.") {
-                                let v = val as f32;
-                                match signal {
-                                    "color_warmth" => uniform_data.color_warmth = v,
-                                    "speed" => uniform_data.speed = v,
-                                    "turbulence" => uniform_data.turbulence = v,
-                                    "brightness" => uniform_data.brightness = v,
-                                    "intensity" => uniform_data.intensity = v,
-                                    "tension" => uniform_data.tension = v,
-                                    "depth" => uniform_data.depth = v,
-                                    "coherence" => uniform_data.coherence = v,
-                                    "spectral_color" => uniform_data.spectral_color = v,
-                                    "temporal_distortion" => uniform_data.temporal_distortion = v,
-                                    "degradation" => uniform_data.degradation = v,
-                                    "pitch_displacement" => uniform_data.pitch_displacement = v,
-                                    "diffusion" => uniform_data.diffusion = v,
-                                    _ => {}
-                                }
-                            } else if let Some(content) = key.strip_prefix("content.") {
-                                // F8: content_layer.wgsl has no @group(2) Params
-                                // binding (it composites 4 content slots and
-                                // reads its material/salience/intensity knobs
-                                // from uniforms.custom[0]). The per-node
-                                // params_buffer path skips it. Route the three
-                                // content.* keys into custom[0][0..2] so
-                                // Bachelard Amendment 3 (material quality) is
-                                // actually reachable at runtime. Python writes
-                                // these keys as floats already (see
-                                // agents/reverie/_uniforms.py MATERIAL_MAP).
-                                let v = val as f32;
-                                match content {
-                                    "material" => uniform_data.custom[0][0] = v,
-                                    "salience" => uniform_data.custom[0][1] = v,
-                                    "intensity" => uniform_data.custom[0][2] = v,
-                                    _ => {}
-                                }
-                            }
+        if let Ok(data) = std::fs::read_to_string(UNIFORMS_JSON) {
+            if let Ok(overrides) = serde_json::from_str::<UniformsOverride>(&data) {
+                // F7 — signal.{9dim} is a dormant override hook.
+                // ``signal.color_warmth`` is the only key Python
+                // currently writes (``agents/reverie/_uniforms.py``);
+                // the other 12 arms exist so the visual chain *could*
+                // override DMN-state-sourced dimensions when the
+                // reverie mixer has an opinion. The primary path for
+                // the 9 dimensions is alive via
+                // ``UniformBuffer::from_state`` reading from
+                // ``StateReader.imagination.dimensions`` — these arms
+                // would override that read on a per-frame basis if
+                // anything wrote them. They are kept rather than
+                // pruned because the override capability is part of
+                // the chain → GPU contract; pruning would require
+                // re-adding them when the visual chain wants to drive
+                // a dimension directly. See F7 in the 2026-04-12
+                // beta session 3 retirement handoff.
+                for (key, &val) in &overrides {
+                    if let Some(signal) = key.strip_prefix("signal.") {
+                        let v = val as f32;
+                        match signal {
+                            "color_warmth" => uniform_data.color_warmth = v,
+                            "speed" => uniform_data.speed = v,
+                            "turbulence" => uniform_data.turbulence = v,
+                            "brightness" => uniform_data.brightness = v,
+                            "intensity" => uniform_data.intensity = v,
+                            "tension" => uniform_data.tension = v,
+                            "depth" => uniform_data.depth = v,
+                            "coherence" => uniform_data.coherence = v,
+                            "spectral_color" => uniform_data.spectral_color = v,
+                            "temporal_distortion" => uniform_data.temporal_distortion = v,
+                            "degradation" => uniform_data.degradation = v,
+                            "pitch_displacement" => uniform_data.pitch_displacement = v,
+                            "diffusion" => uniform_data.diffusion = v,
+                            _ => {}
                         }
+                    } else if let Some(content) = key.strip_prefix("content.") {
+                        // F8: content_layer.wgsl has no @group(2) Params
+                        // binding (it composites 4 content slots and
+                        // reads its material/salience/intensity knobs
+                        // from uniforms.custom[0]). The per-node
+                        // params_buffer path skips it. Route the three
+                        // content.* keys into custom[0][0..2] so
+                        // Bachelard Amendment 3 (material quality) is
+                        // actually reachable at runtime. Python writes
+                        // these keys as floats already (see
+                        // agents/reverie/_uniforms.py MATERIAL_MAP).
+                        let v = val as f32;
+                        match content {
+                            "material" => uniform_data.custom[0][0] = v,
+                            "salience" => uniform_data.custom[0][1] = v,
+                            "intensity" => uniform_data.custom[0][2] = v,
+                            _ => {}
+                        }
+                    }
+                }
 
-                        // Apply per-node param overrides from uniforms.json
-                        for pass in &mut self.passes {
-                            if pass.params_buffer.is_none() || pass.param_order.is_empty() {
-                                continue;
-                            }
-                            let mut updated = false;
-                            for (i, name) in pass.param_order.iter().enumerate() {
-                                if i >= pass.current_params.len() {
-                                    break;
-                                }
-                                let key = format!("{}.{}", pass.node_id, name);
-                                if let Some(&val) = overrides.get(&key) {
-                                    let v = val as f32;
-                                    if (pass.current_params[i] - v).abs() > f32::EPSILON {
-                                        pass.current_params[i] = v;
-                                        updated = true;
-                                    }
-                                }
-                            }
-                            if updated {
-                                if let Some(ref buf) = pass.params_buffer {
-                                    queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
-                                }
+                // Apply per-node param overrides from uniforms.json
+                for pass in &mut self.passes {
+                    if pass.params_buffer.is_none() || pass.param_order.is_empty() {
+                        continue;
+                    }
+                    let mut updated = false;
+                    for (i, name) in pass.param_order.iter().enumerate() {
+                        if i >= pass.current_params.len() {
+                            break;
+                        }
+                        let key = format!("{}.{}", pass.node_id, name);
+                        if let Some(&val) = overrides.get(&key) {
+                            let v = val as f32;
+                            if (pass.current_params[i] - v).abs() > f32::EPSILON {
+                                pass.current_params[i] = v;
+                                updated = true;
                             }
                         }
                     }
-                    Err(_) => {}
+                    if updated {
+                        if let Some(ref buf) = pass.params_buffer {
+                            queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
+                        }
+                    }
                 }
             }
-            Err(_) => {}
         }
 
         self.uniform_buffer.update(queue, &uniform_data);
@@ -1072,7 +1066,7 @@ impl DynamicPipeline {
                 fn hash(x: f32, y: f32) -> f32 {
                     // Two-axis hash — avoids diagonal correlation from single dot product
                     let h = ((x * 127.1 + y * 311.7).sin() * 43758.547
-                        + (x * 269.5 + y * 183.3).cos() * 28461.321)
+                        + (x * 269.5 + y * 183.3).cos() * 28_461.32)
                         * 0.5;
                     h - h.floor()
                 }
@@ -1258,8 +1252,8 @@ impl DynamicPipeline {
                 let storage_bind_group =
                     self.create_storage_bind_group(device, &pass.output);
 
-                let workgroups_x = (self.width + 7) / 8;
-                let workgroups_y = (self.height + 7) / 8;
+                let workgroups_x = self.width.div_ceil(8);
+                let workgroups_y = self.height.div_ceil(8);
 
                 for _ in 0..pass.steps_per_frame {
                     let mut cpass =
@@ -1325,7 +1319,7 @@ impl DynamicPipeline {
         // other frame to save bandwidth. Phase 5b1: SHM consumers
         // (the visual surface frame.jpg path) always read the main
         // target — additional targets aren't routed through SHM.
-        if self.frame_count % 2 == 0 {
+        if self.frame_count.is_multiple_of(2) {
             if let Some(final_tex) = self.intermediate(MAIN_FINAL_TEXTURE) {
                 self.shm_output
                     .copy_to_staging(&mut encoder, &final_tex.texture);
@@ -1335,7 +1329,7 @@ impl DynamicPipeline {
         queue.submit(std::iter::once(encoder.finish()));
 
         // Write SHM frame (every other frame)
-        if self.frame_count % 2 == 0 {
+        if self.frame_count.is_multiple_of(2) {
             self.shm_output.write_frame(device);
         }
 
@@ -1530,9 +1524,7 @@ impl DynamicPipeline {
     ) -> wgpu::BindGroupLayout {
         let has_content_slots = input_names.iter().any(|n| n.starts_with("content_slot_"));
         if !has_content_slots {
-            if !layouts.contains_key(&input_count) {
-                layouts.insert(input_count, Self::create_input_layout(device, input_count));
-            }
+            layouts.entry(input_count).or_insert_with(|| Self::create_input_layout(device, input_count));
         }
         // Always create a fresh one to return — wgpu layouts are not Clone,
         // but two layouts created with the same descriptor are compatible.
