@@ -155,6 +155,39 @@ class _LayoutBundle:
     height_px: int
 
 
+_PIXEL_FONT_MARKERS: tuple[str, ...] = ("px437", "vga")
+"""Lowercase substrings that mark a font as a pixel/bitmap face.
+
+Pango/Cairo's default antialiasing (ANTIALIAS_GRAY + HINT_STYLE_DEFAULT)
+produces grayscale-blended edges that smudge a pixel font's glyph grid.
+For the matched faces we drop antialiasing entirely and force full
+hinting on metrics so the integer pixel grid is preserved 1:1.
+"""
+
+
+def _font_options_for(style: TextStyle) -> cairo.FontOptions:
+    """Cairo font options tuned for ``style``'s font family.
+
+    Pixel fonts (Px437 IBM VGA, generic VGA-named bitmap families) get
+    ``ANTIALIAS_NONE`` so glyph edges remain on the integer pixel grid;
+    other faces get ``HINT_STYLE_FULL`` + ``HINT_METRICS_ON`` for sharper
+    glyph metrics on small sizes (the default ``HINT_STYLE_DEFAULT``
+    leaves hinting up to the font, which produces inconsistent edge
+    sharpness across faces).
+    """
+    options = cairo.FontOptions()
+    family = style.font_description.casefold()
+    if any(marker in family for marker in _PIXEL_FONT_MARKERS):
+        options.set_antialias(cairo.ANTIALIAS_NONE)
+        options.set_hint_style(cairo.HINT_STYLE_FULL)
+        options.set_hint_metrics(cairo.HINT_METRICS_ON)
+    else:
+        options.set_antialias(cairo.ANTIALIAS_GRAY)
+        options.set_hint_style(cairo.HINT_STYLE_FULL)
+        options.set_hint_metrics(cairo.HINT_METRICS_ON)
+    return options
+
+
 def _build_layout(cr: cairo.Context, style: TextStyle) -> _LayoutBundle:
     """Construct a Pango layout for ``style`` on ``cr``.
 
@@ -165,6 +198,7 @@ def _build_layout(cr: cairo.Context, style: TextStyle) -> _LayoutBundle:
     if not _HAS_PANGO:
         return _LayoutBundle(layout=None, width_px=0, height_px=0)
 
+    cr.set_font_options(_font_options_for(style))
     layout = PangoCairo.create_layout(cr)
     font = Pango.FontDescription.from_string(style.font_description)
     layout.set_font_description(font)

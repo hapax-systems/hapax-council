@@ -158,7 +158,10 @@ class RtmpOutputBin:
             # Stage 0 holds at 3000 but loosens substantially at 9000).
             # Per docs/research/2026-04-20-tauri-decommission-freed-
             # resources.md §11.
-            encoder.set_property("preset", 7)  # 7 = p7 (slowest/highest-quality)
+            # String nick "p7" is build-stable across gst-plugins-bad
+            # versions; the legacy integer enum 7 maps to "lossless-hp"
+            # in older builds, NOT to p7. Always pass the nick.
+            encoder.set_property("preset", "p7")
             # A+ Stage 0: tune=ull (ultra low latency). ll keeps lookahead
             # buffer for quality; at CBR the buffer gains nothing since
             # bitrate is pinned. ull disables B-frames, lookahead, reorder.
@@ -169,6 +172,29 @@ class RtmpOutputBin:
                 encoder.set_property("bframes", 0)
             except Exception:
                 log.debug("nvh264enc: bframes property not available", exc_info=True)
+            # Free NVENC quality wins, each conditional on encoder support.
+            # Per gst-plugins-bad nvh264enc property table:
+            #   rc-lookahead — extra lookahead frames (improves bitrate
+            #     allocation under CBR; up to 32 frames is the documented
+            #     useful upper bound for h264).
+            #   spatial-aq — adaptive quantization across regions of one
+            #     frame. Pulls bits toward visually demanding areas
+            #     (edges, faces) and away from flat zones.
+            #   temporal-aq — same idea over time; benefits motion regions.
+            #   weighted-pred — only meaningful when bframes>0 (we set 0
+            #     above), so this property typically no-ops on our pipe.
+            #     Kept for forward compatibility if the b-frames decision
+            #     reverses on a future tune.
+            for prop, value in (
+                ("rc-lookahead", 32),
+                ("spatial-aq", True),
+                ("temporal-aq", True),
+                ("weighted-pred", True),
+            ):
+                try:
+                    encoder.set_property(prop, value)
+                except Exception:
+                    log.debug("nvh264enc: %s property not available", prop, exc_info=True)
 
             h264_parse = Gst.ElementFactory.make("h264parse", "rtmp_h264parse")
             if h264_parse is None:
