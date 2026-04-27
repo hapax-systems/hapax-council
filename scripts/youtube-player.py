@@ -181,7 +181,14 @@ class VideoSlot:
             audio_tempo,
             "-f",
             "pulse",
-            # Rely on WirePlumber role-based routing
+            # Route through hapax-yt-loudnorm rather than the default sink.
+            # WirePlumber role-based fallback sends Multimedia content to
+            # hapax-pc-loudnorm (operator monitor) and bypasses both the
+            # loudnorm and the voice-over ducker — see
+            # config/pipewire/yt-loudnorm.conf + voice-over-ytube-duck.conf
+            # for the intended chain.
+            "-device",
+            "hapax-yt-loudnorm",
             "-ac",
             "2",
             f"youtube-audio-{self.slot_id}",
