@@ -720,6 +720,66 @@ class CpalRunner:
         if effect.gain_update is not None:
             self._evaluator.gain_controller.apply(effect.gain_update)
 
+        # AUTONOMOUS-NARRATIVE BYPASS — fires regardless of effect.should_surface
+        # because the autonomous narrative composer's emissions are designed to
+        # always reach broadcast (strength=0.6 doesn't trip the per-programme
+        # surface threshold but autonomous narration must speak anyway).
+        # Decouples livestream Hapax from operator-private conversation
+        # pipeline state per operator directive 2026-04-27: "livestream …
+        # should be independent of private comms". The autonomous narrative
+        # composer produces speech-ready first-person text; we synthesize
+        # and play it directly via daemon.tts + play_pcm with Broadcast role,
+        # bypassing ConversationPipeline.generate_spontaneous_speech (which
+        # gates on `_running` and would silently drop livestream narration
+        # whenever the operator hasn't spoken in 30s).
+        source = getattr(impingement, "source", "")
+        if source == "autonomous_narrative" and self._daemon is not None:
+            tts = getattr(self._daemon, "tts", None)
+            narrative = getattr(impingement, "content", {}).get("narrative") or effect.narrative
+            if tts is not None and narrative:
+                from functools import partial
+
+                from agents.hapax_daimonion.pw_audio_output import play_pcm
+
+                # Resolve broadcast destination explicitly — autonomous
+                # narrative is always livestream-bound.
+                register = self._register_bridge.current_register()
+                destination = classify_and_record(impingement, voice_register=register)
+                destination_target = resolve_target(destination)
+                destination_role = resolve_role(destination) or "Broadcast"
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    pcm = await loop.run_in_executor(
+                        None, tts.synthesize, narrative, "proactive"
+                    )
+                    if pcm:
+                        await loop.run_in_executor(
+                            None,
+                            partial(
+                                play_pcm,
+                                pcm,
+                                24000,
+                                1,
+                                destination_target,
+                                destination_role,
+                            ),
+                        )
+                        log.info(
+                            "Autonomous narrative spoken: %s",
+                            narrative[:60],
+                        )
+                except Exception:
+                    log.warning(
+                        "Autonomous narrative TTS failed",
+                        exc_info=True,
+                    )
+            # Always return — autonomous narrative does not fall through to
+            # the conversation pipeline path. If the bypass synthesis fails,
+            # the impingement is dropped for this tick (next autonomous
+            # narrative will retry; never blocks broadcast).
+            return
+
         if effect.should_surface:
             log.info("CPAL: impingement surfacing: %s", effect.narrative[:60])
             # Classify destination BEFORE T0 so both signals (visual and
@@ -736,6 +796,7 @@ class CpalRunner:
                 signal_type="impingement_alert",
                 intensity=min(1.0, effect.error_boost + 0.5),
             )
+
             # T3 via pipeline spontaneous speech (if available)
             if self._pipeline is not None and hasattr(
                 self._pipeline, "generate_spontaneous_speech"
