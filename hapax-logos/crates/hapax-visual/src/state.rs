@@ -374,6 +374,12 @@ pub struct StateReader {
     last_poll: Instant,
 }
 
+impl Default for StateReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StateReader {
     pub fn new() -> Self {
         let mut reader = Self {
