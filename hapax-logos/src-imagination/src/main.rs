@@ -224,7 +224,7 @@ impl ImaginationApp {
         output.present();
 
         self.frame_count += 1;
-        if self.frame_count % 300 == 0 {
+        if self.frame_count.is_multiple_of(300) {
             let stance_val = match self.state_reader.smoothed.stance {
                 hapax_visual::state::Stance::Nominal => 0.0,
                 hapax_visual::state::Stance::Cautious => 0.25,
