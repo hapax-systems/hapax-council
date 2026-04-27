@@ -161,6 +161,14 @@ impl Renderer {
         self.content_source_mgr.tick_fades(dt);
 
         let opacities = self.content_source_mgr.slot_opacities();
+
+        // HOMAGE Phase 6 - Ward↔Shader bidirectional coupling
+        crate::homage_feedback::emit_shader_feedback(
+            self.state_reader.smoothed.audio_energy as f64,
+            0.0,  // drift
+            true, // is_fresh
+        );
+
         self.pipeline.render(
             &self.device,
             &self.queue,
@@ -174,7 +182,7 @@ impl Renderer {
         );
 
         self.frame_count = self.frame_count.wrapping_add(1);
-        if self.frame_count % 600 == 0 {
+        if self.frame_count.is_multiple_of(600) {
             log::info!(
                 "headless frame_count={} ({:.1}s elapsed)",
                 self.frame_count,
@@ -187,7 +195,7 @@ impl Renderer {
         // so the compositor's Python Prometheus exporter on :9482 can
         // surface reverie_pool_* gauges. One JSON write per second at
         // the 60fps render interval.
-        if self.frame_count % POOL_METRICS_PUBLISH_EVERY_FRAMES == 0 {
+        if self.frame_count.is_multiple_of(POOL_METRICS_PUBLISH_EVERY_FRAMES) {
             publish_pool_metrics(&self.pipeline.pool_metrics());
         }
 
@@ -196,7 +204,7 @@ impl Renderer {
         // re-publishes it as `hapax_imagination_shader_rollback_total`.
         // Lower cadence than pool metrics (~10 s) because rollback events
         // are rare and the counter only changes when one fires.
-        if self.frame_count % SHADER_HEALTH_PUBLISH_EVERY_FRAMES == 0 {
+        if self.frame_count.is_multiple_of(SHADER_HEALTH_PUBLISH_EVERY_FRAMES) {
             publish_shader_health(self.pipeline.shader_rollback_total());
         }
     }

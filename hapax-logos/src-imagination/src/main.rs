@@ -5,6 +5,7 @@
 //! for external control (window management, render commands, status queries).
 
 mod headless;
+mod homage_feedback;
 mod ipc;
 mod window_state;
 
@@ -208,6 +209,14 @@ impl ImaginationApp {
         if let Some(pipeline) = &mut self.dynamic_pipeline {
             let opacities = self.content_source_mgr.as_ref()
                 .map(|cs| cs.slot_opacities()).unwrap_or([0.0; 4]);
+
+            // HOMAGE Phase 6 - Ward↔Shader bidirectional coupling
+            crate::homage_feedback::emit_shader_feedback(
+                self.state_reader.smoothed.audio_energy as f64,
+                0.0,  // drift
+                true, // is_fresh
+            );
+
             pipeline.render(
                 &gpu.device,
                 &gpu.queue,
@@ -224,7 +233,7 @@ impl ImaginationApp {
         output.present();
 
         self.frame_count += 1;
-        if self.frame_count % 300 == 0 {
+        if self.frame_count.is_multiple_of(300) {
             let stance_val = match self.state_reader.smoothed.stance {
                 hapax_visual::state::Stance::Nominal => 0.0,
                 hapax_visual::state::Stance::Cautious => 0.25,

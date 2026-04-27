@@ -750,9 +750,7 @@ class CpalRunner:
 
                 try:
                     loop = asyncio.get_running_loop()
-                    pcm = await loop.run_in_executor(
-                        None, tts.synthesize, narrative, "proactive"
-                    )
+                    pcm = await loop.run_in_executor(None, tts.synthesize, narrative, "proactive")
                     if pcm:
                         await loop.run_in_executor(
                             None,
