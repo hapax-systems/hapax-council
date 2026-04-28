@@ -147,6 +147,36 @@ foot_color_theme_for_current_mode() {
   esac
 }
 
+active_hyprland_workspace_name() {
+  if [ -n "${HAPAX_CODEX_FOOT_WORKSPACE:-}" ]; then
+    printf '%s\n' "$HAPAX_CODEX_FOOT_WORKSPACE"
+    return 0
+  fi
+  command -v hyprctl >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  hyprctl activeworkspace -j 2>/dev/null | jq -r '.name // empty' 2>/dev/null | sed -n '1p'
+}
+
+move_foot_window_to_workspace() {
+  local session="$1"
+  local workspace="$2"
+  [ -n "$workspace" ] || return 0
+  command -v hyprctl >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local class="hapax-codex-$session"
+  local address=""
+  local _
+  for _ in {1..20}; do
+    address="$(hyprctl clients -j 2>/dev/null | jq -r --arg class "$class" '[.[] | select(.class == $class) | .address][0] // empty' 2>/dev/null || true)"
+    if [ -n "$address" ]; then
+      hyprctl dispatch movetoworkspacesilent "name:$workspace,address:$address" >/dev/null 2>&1 || true
+      return 0
+    fi
+    sleep 0.1
+  done
+}
+
 codex_default_worktree_path() {
   local session="$1"
   local slot="$2"
@@ -654,6 +684,11 @@ if [ "$TERMINAL" = "none" ]; then
   exec "$CODEX_BIN" "${CODEX_ARGS[@]}"
 fi
 
+FOOT_TARGET_WORKSPACE=""
+if [ "$TERMINAL" = "foot" ]; then
+  FOOT_TARGET_WORKSPACE="$(active_hyprland_workspace_name || true)"
+fi
+
 RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION").sh"
 CHILD_ARGS=(--session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
 if [ "$FORCE" -eq 1 ]; then
@@ -702,6 +737,7 @@ case "$TERMINAL" in
           --title "$SESSION" \
           --working-directory "$WORKDIR" \
           "$RUNNER"
+        move_foot_window_to_workspace "$SESSION" "$FOOT_TARGET_WORKSPACE"
         ;;
       *)
         setsid -f "$FOOT_BIN" -H \
@@ -710,6 +746,7 @@ case "$TERMINAL" in
           --title "$SESSION" \
           --working-directory "$WORKDIR" \
           "$RUNNER" >/dev/null 2>&1
+        move_foot_window_to_workspace "$SESSION" "$FOOT_TARGET_WORKSPACE"
         ;;
     esac
     ;;

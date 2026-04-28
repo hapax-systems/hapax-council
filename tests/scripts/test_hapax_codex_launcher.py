@@ -419,6 +419,7 @@ printf '%s\\n' "$@" > {foot_args}
 def test_terminal_foot_prefers_direct_foot_when_available(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     foot_args = tmp_path / "foot-args.txt"
+    hyprctl_args = tmp_path / "hyprctl-args.txt"
     fake_foot = tmp_path / "bin" / "foot"
     fake_foot.write_text(
         f"""#!/usr/bin/env bash
@@ -435,6 +436,23 @@ exit 99
 """
     )
     fake_footclient.chmod(0o755)
+    fake_hyprctl = tmp_path / "bin" / "hyprctl"
+    fake_hyprctl.write_text(
+        f"""#!/usr/bin/env bash
+case "$1" in
+  activeworkspace)
+    printf '%s\\n' '{{"name":"1"}}'
+    ;;
+  clients)
+    printf '%s\\n' '[{{"class":"hapax-codex-cx-violet","address":"0xabc"}}]'
+    ;;
+  dispatch)
+    printf '%s\\n' "$*" >> {hyprctl_args}
+    ;;
+esac
+"""
+    )
+    fake_hyprctl.chmod(0o755)
 
     result = subprocess.run(
         [
@@ -492,3 +510,4 @@ exit 99
     assert "--app-id\nhapax-codex-cx-violet" in args
     assert "--title\ncx-violet" in args
     assert "--working-directory" in args
+    assert "dispatch movetoworkspacesilent name:1,address:0xabc" in hyprctl_args.read_text()
