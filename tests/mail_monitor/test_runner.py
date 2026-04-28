@@ -39,12 +39,18 @@ def test_dispatch_routes_discard_label_to_process_discard(
 
     cat = runner.dispatch_message(
         fake_service,
-        {"id": "M-discard", "label_names": ["Hapax/Discard"]},
+        {
+            "id": "M-discard",
+            "label_names": ["Hapax/Discard"],
+            "label_ids_by_name": {"Hapax/Discard": "L_discard"},
+        },
     )
 
     assert cat is Category.F_ANTIPATTERN
     assert _counter("F_ANTIPATTERN", "processed") - before == 1.0
-    fake_service.users.return_value.messages.return_value.modify.assert_called_once()
+    modify = fake_service.users.return_value.messages.return_value.modify
+    modify.assert_called_once()
+    assert modify.call_args.kwargs["body"]["addLabelIds"] == ["L_discard"]
 
 
 def test_dispatch_routes_refusal_feedback_to_emit(
@@ -138,7 +144,11 @@ def test_dispatch_writes_audit_log_entry(tmp_path: Path, monkeypatch: pytest.Mon
 
     runner.dispatch_message(
         fake_service,
-        {"id": "M-1", "label_names": ["Hapax/Discard"]},
+        {
+            "id": "M-1",
+            "label_names": ["Hapax/Discard"],
+            "label_ids_by_name": {"Hapax/Discard": "L_discard"},
+        },
     )
 
     entries = audit.read_audit_entries(audit_path)

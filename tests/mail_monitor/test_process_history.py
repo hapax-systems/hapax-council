@@ -138,6 +138,10 @@ def test_process_history_reads_each_hapax_label_and_dispatches_once(
     assert [call["id"] for call in messages.get_calls] == ["M1", "M2"]
     first_enriched = dispatch.call_args_list[0].args[1]
     assert first_enriched["label_names"] == ["Hapax/Verify"]
+    assert first_enriched["label_ids_by_name"] == {
+        "Hapax/Verify": "L_v",
+        "Hapax/Operational": "L_o",
+    }
     assert first_enriched["sender"] == "sender@example.com"
     assert first_enriched["subject"] == "A subject"
     assert first_enriched["body_text"] == "plain body"

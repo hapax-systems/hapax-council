@@ -113,9 +113,16 @@ existing filters via `users.settings.filters.list`, computes the
 diff, creates only missing ones. Removal of a Hapax filter is treated
 as operator intent and never auto-restored.
 
-The OAuth scope is `https://www.googleapis.com/auth/gmail.modify`.
-Filter / label creation requires `gmail.modify` (read-only is
-insufficient).
+The OAuth scope pair is:
+
+- `https://www.googleapis.com/auth/gmail.modify` for label creation,
+  `users.watch()`, history reads, and Hapax-labelled message actions.
+- `https://www.googleapis.com/auth/gmail.settings.basic` for
+  server-side filter creation. Live bootstrap with `gmail.modify`
+  alone returned `403 insufficientPermissions` from
+  `users.settings.filters.create`.
+
+The daemon deliberately does not request `https://mail.google.com/`.
 
 ## 3. Six-purpose flow (A–F)
 
@@ -231,9 +238,9 @@ the failed-condition index. Never escalates to operator-surface.
 
 ## 5. Privacy / scope-control mechanism
 
-`gmail.modify` is mailbox-wide; cryptographic proof of "Hapax-only" is
-not possible at the OAuth scope layer. The spec compensates with five
-complementary mechanisms. Each addresses a different failure mode.
+The Gmail scopes are mailbox-wide; cryptographic proof of "Hapax-only"
+is not possible at the OAuth scope layer. The spec compensates with
+five complementary mechanisms. Each addresses a different failure mode.
 
 ### 5.1 Server-side filter installs at bootstrap
 
@@ -626,12 +633,12 @@ violation, not merely an out-of-scope feature.
   ORCID consent). Each callsite must be updated when its workstream
   ships.
 
-## Bootstrap (one-time operator-physical)
+## Bootstrap
 
 OAuth requires a human at the consent screen — Google does not expose
-an API path that bypasses it. This is the only operator-physical step
-in the mail-monitor family. After bootstrap completes, every other
-operation is daemon-side and the refresh token is valid until revoked.
+an API path that bypasses it. This is the only browser-consent step in
+the mail-monitor family. After bootstrap completes, renewal and Pub/Sub
+operation are daemon-side and the refresh token is valid until revoked.
 
 ### Console steps
 
@@ -640,13 +647,14 @@ operation is daemon-side and the refresh token is valid until revoked.
    *No organization* and the **project name** to a recognizable
    string.
 2. **APIs & Services → Library** → enable **Gmail API** and
-   **Cloud Pub/Sub API**.
+   **Cloud Pub/Sub API**. Pub/Sub push with OIDC also requires IAM and
+   IAMCredentials APIs.
 3. **APIs & Services → OAuth consent screen** →
    - User type: **External** (required for personal Google accounts).
    - App name: `hapax-mail-monitor` (operator-facing only).
    - User support email + developer contact email: operator's address.
    - Scopes: leave the consent-screen scope list empty; the daemon
-     will request `gmail.modify` at runtime.
+     requests `gmail.modify` and `gmail.settings.basic` at runtime.
    - Test users: add the operator's Gmail address. The app stays in
      **Testing** mode — no Google verification process is required for
      a single-user testing app.
@@ -665,9 +673,10 @@ operation is daemon-side and the refresh token is valid until revoked.
 pass insert mail-monitor/google-client-id
 pass insert mail-monitor/google-client-secret
 
-# Run the first-consent flow. A browser window opens at the Google
-# consent screen — approve the gmail.modify scope. The refresh token
-# Google returns is persisted to pass mail-monitor/google-refresh-token.
+# Run the first-consent flow. The CLI prints a Google consent URL;
+# open it, approve the requested Gmail scopes, and let the browser
+# redirect back to localhost. The refresh token Google returns is
+# persisted to pass mail-monitor/google-refresh-token.
 uv run python -m agents.mail_monitor.oauth --first-consent
 
 # Verify the bootstrap. Loads the cached refresh token, exchanges it
@@ -675,6 +684,35 @@ uv run python -m agents.mail_monitor.oauth --first-consent
 # the operator's email + total message count.
 uv run python -m agents.mail_monitor.oauth --verify
 ```
+
+### Pub/Sub bootstrap
+
+The Pub/Sub bootstrap is daemon-side once credentials are in `pass`.
+It creates/reuses the topic, grants Gmail's fixed publisher service
+account `roles/pubsub.publisher` on that topic, and creates/reuses the
+push subscription with Google OIDC JWT auth.
+
+```bash
+pass insert mail-monitor/google-project-id
+pass insert mail-monitor/webhook-url       # must be https://.../webhook/gmail
+pass insert mail-monitor/pubsub-sa-email   # service account used for push OIDC
+
+# Optional but preferred on this workstation: lets the bootstrap use
+# pass-stored Google credentials instead of ambient ADC.
+pass insert -m mail-monitor/google-service-account-json
+
+uv run python -m agents.mail_monitor.pubsub_bootstrap
+```
+
+IAM prerequisites for the administrative service account:
+
+- It can create/read Pub/Sub topics and subscriptions, and set topic IAM.
+- It has `iam.serviceAccounts.actAs` on the service account configured
+  in `mail-monitor/pubsub-sa-email`, because Pub/Sub must mint an OIDC
+  token as that account.
+- The Google-managed Pub/Sub service agent has
+  `roles/iam.serviceAccountTokenCreator` so push delivery can sign the
+  OIDC token.
 
 If `--verify` fails, check:
 

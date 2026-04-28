@@ -91,7 +91,7 @@ def dispatch_message(service: Any, message: dict[str, Any]) -> Category:
     )
 
     if category is Category.F_ANTIPATTERN:
-        ok = process_discard(service, message_id)
+        ok = process_discard(service, message)
         DISPATCH_COUNTER.labels(
             category=category.value,
             result="processed" if ok else "error",
@@ -254,10 +254,12 @@ def _enrich_message(
     label_names = [
         id_to_name[label_id] for label_id in raw.get("labelIds", []) if label_id in id_to_name
     ]
+    hapax_label_ids_by_name = {name: label_id for name, label_id in label_ids_by_name.items()}
     payload = raw.get("payload") or {}
     headers = _headers(payload)
     enriched = dict(raw)
     enriched["label_names"] = label_names
+    enriched["label_ids_by_name"] = hapax_label_ids_by_name
     enriched["sender"] = headers.get("from", "")
     enriched["subject"] = headers.get("subject", "")
     enriched["body_text"] = _body_text(payload)

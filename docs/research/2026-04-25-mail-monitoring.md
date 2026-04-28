@@ -41,18 +41,21 @@ brief / orientation operational column.
 
 | Path | Daemon-tractable | Min OAuth scope | 2026 status |
 |---|---|---|---|
-| Gmail API + `users.watch` + Pub/Sub | YES — push, label-filtered | `gmail.modify` (restricted) | CASA Tier 2 not required for self-hosted single-user; in-house use exempt from app verification |
+| Gmail API + `users.watch` + Pub/Sub | YES — push, label-filtered | `gmail.modify` + `gmail.settings.basic` (restricted/sensitive pair) | CASA Tier 2 not required for self-hosted single-user; in-house use exempt from app verification |
 | Gmail API polling (`history.list`) | YES — fallback only | `gmail.readonly` or `gmail.modify` | Wastes quota; use only when Pub/Sub down |
 | IMAP + app-password (personal) | YES, FRAGILE | n/a | Personal accounts with 2SV still allowed; Workspace blocked since 2025-05-01 |
 | IMAP + OAuth XOAUTH2 | YES | `https://mail.google.com/` (restricted) | Coarser than gmail.modify |
 | Postmaster Tools API | NO | n/a | v1 retired 2025-09-30; v2 deliverability-only |
 | Service account + Domain-Wide Delegation | Workspace-only | DWD | Personal Gmail does NOT support DWD |
 
-**Decision:** `gmail.modify` over Pub/Sub, `watch()`-filtered to `Hapax/*` labelIds.
+**Decision:** Gmail API over Pub/Sub, `watch()`-filtered to `Hapax/*` labelIds, with the narrow scope pair required by live bootstrap.
 
 `gmail.modify` (instead of `gmail.readonly`) is required so the daemon can `addLabelIds` /
-`removeLabelIds` / `INBOX` removal during dispatch. It is mailbox-wide in principle; the privacy /
-scope-control story (below) compensates with filter-side gating + audit log.
+`removeLabelIds` / `INBOX` removal during dispatch. Live bootstrap also showed
+`gmail.settings.basic` is required for `users.settings.filters.create`; `gmail.modify` alone returns
+`403 insufficientPermissions`. These scopes are mailbox-wide in principle; the privacy / scope-control
+story (below) compensates with filter-side gating + audit log. The daemon still does not request
+`https://mail.google.com/`.
 
 ## omg.lol Mailhooks (the killer move)
 
