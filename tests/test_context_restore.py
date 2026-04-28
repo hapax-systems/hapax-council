@@ -18,6 +18,7 @@ from agents.context_restore import (
     collect_last_queries,
     collect_system_status,
     collect_time_since_last_session,
+    collect_voice_events_summary,
     determine_start_here,
     format_context,
 )
@@ -170,6 +171,57 @@ class TestCollectTimeSinceLastSession(unittest.TestCase):
                 assert "hours ago" in result
         finally:
             path.unlink()
+
+
+class TestCollectVoiceEventsSummary(unittest.TestCase):
+    def test_counts_presence_transitions_when_private(self):
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        with tempfile.TemporaryDirectory() as td:
+            events_dir = Path(td)
+            events_file = events_dir / f"events-{today}.jsonl"
+            events_file.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "presence_transition", "to": "away"}),
+                        "not-json",
+                        json.dumps({"type": "other", "to": "likely_present"}),
+                        json.dumps({"type": "presence_transition", "to": "likely_present"}),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("agents.context_restore.VOICE_EVENTS_DIR", events_dir):
+                with patch("shared.transcript_read_gate.is_publicly_visible", return_value=False):
+                    result = collect_voice_events_summary()
+
+        assert result == {"transitions": 2, "present": True}
+
+    def test_redacted_public_stream_keeps_safe_defaults_without_reading(self):
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        with tempfile.TemporaryDirectory() as td:
+            events_dir = Path(td)
+            events_file = events_dir / f"events-{today}.jsonl"
+            events_file.write_text(
+                json.dumps(
+                    {
+                        "type": "presence_transition",
+                        "to": "away",
+                        "transcript": "protected operator speech",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("agents.context_restore.VOICE_EVENTS_DIR", events_dir):
+                with patch("shared.transcript_read_gate.is_publicly_visible", return_value=True):
+                    with patch(
+                        "pathlib.Path.read_text",
+                        side_effect=AssertionError("redacted event content was read"),
+                    ):
+                        result = collect_voice_events_summary()
+
+        assert result == {"transitions": 0, "present": True}
 
 
 class TestDetermineStartHere(unittest.TestCase):
