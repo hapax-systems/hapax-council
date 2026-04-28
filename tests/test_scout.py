@@ -5,8 +5,7 @@ All I/O mocked: Langfuse, Tavily HTTP, filesystem, LLM calls.
 
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import yaml
 
@@ -23,6 +22,7 @@ from agents.scout import (
     search_component,
     send_notification,
 )
+from shared.tavily_client import TavilyResult
 
 # ── Registry tests ──────────────────────────────────────────────────────────
 
@@ -122,13 +122,22 @@ def test_load_registry_handles_missing_fields(mock_file):
 # ── Tavily search tests ─────────────────────────────────────────────────────
 
 
-@patch("agents.scout.TAVILY_API_KEY", "test-key")
-@patch("agents.scout.urlopen")
-def test_tavily_search_returns_results(mock_urlopen):
-    mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps(
-        {
-            "results": [
+class _FakeTavilyClient:
+    def __init__(self, result: TavilyResult):
+        self.result = result
+        self.calls: list[dict] = []
+
+    def search(self, query: str, **kwargs):
+        self.calls.append({"query": query, **kwargs})
+        return self.result
+
+
+def test_tavily_search_returns_results():
+    client = _FakeTavilyClient(
+        TavilyResult(
+            operation="search",
+            status="ok",
+            results=[
                 {
                     "title": "Qdrant vs Milvus",
                     "url": "https://example.com",
@@ -139,42 +148,36 @@ def test_tavily_search_returns_results(mock_urlopen):
                     "url": "https://bench.io",
                     "content": "Results...",
                 },
-            ]
-        }
-    ).encode()
-    mock_response.__enter__ = lambda s: s
-    mock_response.__exit__ = MagicMock(return_value=False)
-    mock_urlopen.return_value = mock_response
+            ],
+        )
+    )
 
-    results = _tavily_search("qdrant alternatives", max_results=5)
+    results = _tavily_search("qdrant alternatives", max_results=5, client=client)
+
     assert len(results) == 2
     assert results[0]["title"] == "Qdrant vs Milvus"
     assert results[0]["url"] == "https://example.com"
+    assert client.calls[0]["caller"] == "agents.scout"
 
 
-@patch("agents.scout.TAVILY_API_KEY", "")
 def test_tavily_search_no_api_key():
-    """Should return empty list when no API key set."""
-    results = _tavily_search("query")
+    """Should return empty list when shared client reports no key."""
+    client = _FakeTavilyClient(TavilyResult(operation="search", status="no_key"))
+    results = _tavily_search("query", client=client)
     assert results == []
 
 
-@patch("agents.scout.TAVILY_API_KEY", "test-key")
-@patch("agents.scout.urlopen")
-def test_tavily_search_handles_error(mock_urlopen):
-    from urllib.error import URLError
-
-    mock_urlopen.side_effect = URLError("Connection refused")
-    results = _tavily_search("query")
+def test_tavily_search_handles_error():
+    client = _FakeTavilyClient(TavilyResult(operation="search", status="error"))
+    results = _tavily_search("query", client=client)
     assert results == []
 
 
 # ── search_component tests ──────────────────────────────────────────────────
 
 
-@patch("agents.scout.time.sleep")  # Don't actually sleep
 @patch("agents.scout._tavily_search")
-def test_search_component_aggregates_results(mock_search, mock_sleep):
+def test_search_component_aggregates_results(mock_search):
     spec = ComponentSpec(
         key="test",
         role="test",
@@ -195,9 +198,8 @@ def test_search_component_aggregates_results(mock_search, mock_sleep):
     assert mock_search.call_count == 2
 
 
-@patch("agents.scout.time.sleep")
 @patch("agents.scout._tavily_search")
-def test_search_component_deduplicates_by_url(mock_search, mock_sleep):
+def test_search_component_deduplicates_by_url(mock_search):
     spec = ComponentSpec(
         key="test",
         role="test",
@@ -216,9 +218,8 @@ def test_search_component_deduplicates_by_url(mock_search, mock_sleep):
     assert text.count("### Same") == 1
 
 
-@patch("agents.scout.time.sleep")
 @patch("agents.scout._tavily_search")
-def test_search_component_no_results(mock_search, mock_sleep):
+def test_search_component_no_results(mock_search):
     spec = ComponentSpec(
         key="test",
         role="test",

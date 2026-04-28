@@ -44,17 +44,18 @@ exceptions:
     next_review: "2026-06-13"
 
   - id: exception-tavily-scout
-    component: agents/scout.py
+    component: shared/tavily_client.py
     axiom_id: corporate_boundary
     implication_id: cb-network-001
     reason: >
-      Scout agent uses Tavily API for web search to scan technology
-      landscape. This is an intentional external API dependency for
-      horizon scanning capability.
+      Scout and demo research use Tavily API for web search to scan
+      technology landscape and gather public industry context. This is
+      an intentional external API dependency for horizon scanning capability.
     compensating_controls:
-      - API key in environment variable (not committed)
-      - Scout runs on-demand only (not scheduled)
-      - Results cached locally, no PII sent
+      - API key resolved inside the child process from env or pass entry api/tavily
+      - Scheduled scout uses shared Tavily client cache, budget, guard, and ledger
+      - Payload guard denies obvious local paths, secrets, vault paths, and work-context strings
+      - Results cached locally; cache hits avoid network calls
     approved_by: operator
     approved_at: "2026-03-13"
     review_interval: quarterly

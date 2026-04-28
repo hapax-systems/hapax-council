@@ -25,8 +25,10 @@ from agents.demo_pipeline.research import (
     _gather_profile_facts_rich,
     _gather_scout_summary,
     _gather_system_docs,
+    _gather_web_research,
     gather_research,
 )
+from shared.tavily_client import TavilyResult
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -802,6 +804,38 @@ def test_backward_compat_audience_sources():
     # Verify old source names still have section headers
     assert "profile_facts" in _SECTION_HEADERS
     assert "component_registry" in _SECTION_HEADERS
+
+
+def test_gather_web_research_uses_shared_tavily_client():
+    mock_client = MagicMock()
+    mock_client.search.return_value = TavilyResult(
+        operation="search",
+        status="ok",
+        results=[
+            {
+                "title": "Agent systems",
+                "url": "https://example.com",
+                "content": "Architecture context for autonomous systems",
+            }
+        ],
+    )
+    with patch("agents.demo_pipeline.research.TavilyClient.from_config", return_value=mock_client):
+        output = _gather_web_research("hapax", "technical-peer")
+
+    assert "Agent systems" in output
+    mock_client.search.assert_called_once()
+    assert mock_client.search.call_args.kwargs["caller"] == "agents.demo_pipeline.research"
+
+
+def test_gather_web_research_returns_empty_when_tavily_denies():
+    mock_client = MagicMock()
+    mock_client.search.return_value = TavilyResult(
+        operation="search",
+        status="guard_denied",
+        error_class="local_path_payload",
+    )
+    with patch("agents.demo_pipeline.research.TavilyClient.from_config", return_value=mock_client):
+        assert _gather_web_research("hapax", "technical-peer") == ""
 
 
 # ── New research source tests ─────────────────────────────────────────────

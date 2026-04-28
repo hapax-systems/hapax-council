@@ -5,11 +5,11 @@ set -euo pipefail
 
 cd /home/hapax/projects/hapax-council
 
-# Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
+# Load non-Tavily credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME).
+# Tavily is resolved inside shared.tavily_client so cache/budget/ledger paths stay authoritative.
 export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
 export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null || true)
 export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null || true)
-export TAVILY_API_KEY=$(pass show api/tavily 2>/dev/null || true)
 
 PROFILES=/home/hapax/projects/hapax-council/profiles
 UV=/home/hapax/.local/bin/uv

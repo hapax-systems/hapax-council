@@ -1,0 +1,39 @@
+base_url: "https://api.tavily.com"
+timeout_s: 15
+cache_ttl_s: 86400
+global_daily_cap_units: 100
+max_concurrent_requests: 1
+default_max_results: 5
+
+state:
+  cache_path: "~/.cache/hapax/tavily/cache.json"
+  budget_path: "~/.cache/hapax/tavily/budget.json"
+  ledger_path: "~/.cache/hapax/tavily/ledger.jsonl"
+  lock_path: "~/.cache/hapax/tavily/state.lock"
+
+operations:
+  search:
+    enabled: true
+    daily_budget_units: 80
+    estimated_cost_units: 1
+  extract:
+    enabled: false
+    daily_budget_units: 0
+    estimated_cost_units: 1
+  crawl:
+    enabled: false
+    daily_budget_units: 0
+    estimated_cost_units: 1
+  map:
+    enabled: false
+    daily_budget_units: 0
+    estimated_cost_units: 1
+  research:
+    enabled: false
+    daily_budget_units: 0
+    estimated_cost_units: 2
+
+caller_daily_budgets:
+  agents.scout: 60
+  agents.demo_pipeline.research: 10
+  default: 20

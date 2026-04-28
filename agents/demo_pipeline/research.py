@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from collections.abc import Callable
 from pathlib import Path
 
 import yaml
+
+from shared.tavily_client import TavilyClient
 
 log = logging.getLogger(__name__)
 
@@ -284,27 +285,18 @@ def _gather_profile_facts(scope: str) -> str:
 
 def _gather_web_research(scope: str, audience: str) -> str:
     """Search the web for industry context relevant to the demo scope."""
-    api_key = os.environ.get("TAVILY_API_KEY", "")
-    if not api_key:
-        log.debug("No TAVILY_API_KEY set, skipping web research")
-        return ""
     try:
-        import httpx
-
         query = f"{scope} autonomous agent system architecture trends"
-        resp = httpx.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": api_key,
-                "query": query,
-                "max_results": 5,
-                "search_depth": "basic",
-            },
-            timeout=15,
+        result = TavilyClient.from_config().search(
+            query,
+            caller="agents.demo_pipeline.research",
+            max_results=5,
+            search_depth="basic",
         )
-        resp.raise_for_status()
-        data = resp.json()
-        results = data.get("results", [])
+        if not result.ok:
+            log.debug("Tavily web research skipped/failed: %s", result.status)
+            return ""
+        results = result.results
         if not results:
             return ""
         lines = []
