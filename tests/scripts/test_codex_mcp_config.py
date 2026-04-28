@@ -51,6 +51,14 @@ def test_codex_config_template_does_not_commit_operator_home_path() -> None:
     assert "/home/hapax/" not in CODEX_CONFIG.read_text()
 
 
+def test_codex_config_trusts_projects_and_council_root(tmp_path: Path) -> None:
+    config = _installed_config(tmp_path)
+
+    projects = config["projects"]
+    assert projects[str(tmp_path / "home" / "projects")]["trust_level"] == "trusted"
+    assert projects[str(REPO_ROOT)]["trust_level"] == "trusted"
+
+
 def test_tavily_config_uses_stdio_wrapper_only(tmp_path: Path) -> None:
     config = _installed_config(tmp_path)
 
@@ -62,7 +70,9 @@ def test_tavily_token_is_not_exported_by_parent_launcher() -> None:
     text = CODEX_LAUNCHER.read_text()
 
     assert "mcp_servers.tavily.command" in text
-    assert "TAVILY_API_KEY" not in text
+    assert "load_first_available_pass_secret TAVILY_API_KEY" not in text
+    assert "export TAVILY_API_KEY" not in text
+    assert "unset TAVILY_API_KEY" in text
 
 
 def test_playwright_mcp_uses_noninteractive_wrapper(tmp_path: Path) -> None:
@@ -98,6 +108,8 @@ def test_github_mcp_uses_secret_loading_wrapper(tmp_path: Path) -> None:
     assert config["mcp_servers"]["github"] == {"command": str(GITHUB_WRAPPER)}
     assert 'mcp_servers.github.command=\\"$COUNCIL_DIR/scripts/hapax-github-mcp\\"' in launcher
     assert "bearer_token_env_var" not in str(config["mcp_servers"]["github"])
+    assert "load_first_available_pass_secret CODEX_GITHUB_PERSONAL_ACCESS_TOKEN" not in launcher
+    assert 'GITHUB_PERSONAL_ACCESS_TOKEN="$CODEX_GITHUB_PERSONAL_ACCESS_TOKEN"' not in launcher
     assert "load_first_available_pass_secret GITHUB_PERSONAL_ACCESS_TOKEN" in wrapper
     assert "github/codex-personal-access-token" in wrapper
     assert "-e GITHUB_PERSONAL_ACCESS_TOKEN" in wrapper

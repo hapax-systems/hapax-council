@@ -6,6 +6,9 @@ sandbox_mode = "danger-full-access"
 [projects."__HAPAX_PROJECTS__"]
 trust_level = "trusted"
 
+[projects."__HAPAX_COUNCIL_DIR__"]
+trust_level = "trusted"
+
 [mcp_servers.hapax]
 command = "__HAPAX_HOME__/.local/bin/uv"
 args = ["--directory", "__HAPAX_MCP_DIR__", "run", "hapax-mcp"]

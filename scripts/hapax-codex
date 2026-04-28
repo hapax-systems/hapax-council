@@ -205,29 +205,6 @@ load_first_available_pass_secret() {
   return 1
 }
 
-load_bearer_from_claude_mcp() {
-  local env_name="$1"
-  local server="$2"
-  [ -n "${!env_name:-}" ] && return 0
-  [ -r "$HOME/.claude.json" ] || return 1
-  command -v jq >/dev/null 2>&1 || return 1
-  local header token
-  header="$(jq -r --arg server "$server" '.mcpServers[$server].headers.Authorization // empty' "$HOME/.claude.json" 2>/dev/null || true)"
-  case "$header" in
-    "Bearer "*)
-      token="${header#Bearer }"
-      ;;
-    *)
-      token="$header"
-      ;;
-  esac
-  if [ -n "$token" ]; then
-    export "$env_name=$token"
-    return 0
-  fi
-  return 1
-}
-
 load_header_from_claude_mcp() {
   local env_name="$1"
   local server="$2"
@@ -237,19 +214,6 @@ load_header_from_claude_mcp() {
   command -v jq >/dev/null 2>&1 || return 1
   local value
   value="$(jq -r --arg server "$server" --arg header "$header_name" '.mcpServers[$server].headers[$header] // empty' "$HOME/.claude.json" 2>/dev/null || true)"
-  if [ -n "$value" ]; then
-    export "$env_name=$value"
-    return 0
-  fi
-  return 1
-}
-
-load_github_token_from_gh() {
-  local env_name="$1"
-  [ -n "${!env_name:-}" ] && return 0
-  command -v gh >/dev/null 2>&1 || return 1
-  local value
-  value="$(gh auth token 2>/dev/null || true)"
   if [ -n "$value" ]; then
     export "$env_name=$value"
     return 0
@@ -557,7 +521,7 @@ First actions:
 Coordination rules:
 
 - Single operator only.
-- Use pass and hapax-secrets for credentials; do not print secret values.
+- Use pass and child MCP wrappers for credentials; do not print secret values.
 - Use scripts/hapax-codex for child Codex sessions; do not introduce a parallel Claude launcher.
 - Maintain Obsidian cc-task and relay discipline.
 - Do not claim a persistent watch timer unless you are actively running a loop; after a final response, the session is idle, not watching.
@@ -565,42 +529,11 @@ Coordination rules:
 EOF
 fi
 
-for secrets_file in "/run/user/$(id -u)/hapax-secrets.env" "$HOME/.cache/hapax/secrets.env"; do
-  if [ -r "$secrets_file" ]; then
-    # systemd EnvironmentFile syntax is not shell syntax. Values may contain
-    # '$' and other secret bytes that must not be expanded by Bash.
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
-        ""|\#*) continue ;;
-        *=*)
-          key="${line%%=*}"
-          value="${line#*=}"
-          case "$key" in
-            [A-Za-z_][A-Za-z0-9_]*)
-              export "$key=$value"
-              ;;
-          esac
-          ;;
-      esac
-    done < "$secrets_file"
-    break
-  fi
-done
-
-load_first_available_pass_secret CODEX_GITHUB_PERSONAL_ACCESS_TOKEN \
-  github/codex-personal-access-token \
-  github/personal-access-token \
-  github/pat \
-  github/token \
-  github/copilot-mcp-token \
-  github/copilot-token \
-  || load_github_token_from_gh CODEX_GITHUB_PERSONAL_ACCESS_TOKEN \
-  || load_bearer_from_claude_mcp CODEX_GITHUB_PERSONAL_ACCESS_TOKEN github \
-  || true
-
-if [ -n "${CODEX_GITHUB_PERSONAL_ACCESS_TOKEN:-}" ] && [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
-  export GITHUB_PERSONAL_ACCESS_TOKEN="$CODEX_GITHUB_PERSONAL_ACCESS_TOKEN"
-fi
+# Keep the long-lived Codex session from becoming a credential sink. MCP
+# wrappers resolve their own tokens at server start via pass/gh/legacy config.
+unset GITHUB_PERSONAL_ACCESS_TOKEN
+unset CODEX_GITHUB_PERSONAL_ACCESS_TOKEN
+unset TAVILY_API_KEY
 
 load_first_available_pass_secret CONTEXT7_API_KEY context7/api-key \
   || load_header_from_claude_mcp CONTEXT7_API_KEY context7 CONTEXT7_API_KEY \
@@ -633,6 +566,7 @@ CODEX_ARGS=(
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'
   -c "projects.\"$HOME/projects\".trust_level=\"trusted\""
+  -c "projects.\"$WORKDIR\".trust_level=\"trusted\""
   -c "hooks.SessionStart=[{command=\"$HOOK\",timeout=20,statusMessage=\"Loading Hapax context\"}]"
   -c "hooks.PreToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax guardrails\"}]"
   -c "hooks.PostToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax audit\"}]"
