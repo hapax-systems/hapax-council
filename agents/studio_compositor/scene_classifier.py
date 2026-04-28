@@ -25,7 +25,7 @@ Prometheus:
 
 The design follows ``director_loop._call_activity_llm`` for LiteLLM
 invocation (OpenAI-compatible ``image_url`` content with a base64-encoded
-JPEG, explicit ``budget_tokens: 0`` per CLAUDE.md §Tauri-Only Runtime for
+JPEG, explicit disabled-thinking body per CLAUDE.md §Tauri-Only Runtime for
 Gemini Flash 2.5 vision).
 """
 
@@ -255,9 +255,11 @@ def _call_gemini_flash(image_b64: str, *, timeout: float = LLM_TIMEOUT_S) -> str
             "messages": messages,
             "max_tokens": 128,
             "temperature": 0.0,
-            # CLAUDE.md §Tauri-Only Runtime — Gemini Flash 2.5 requires
-            # budget_tokens: 0 for vision. LiteLLM forwards this verbatim.
-            "budget_tokens": 0,
+            "response_format": {"type": "json_object"},
+            # Match the repo's other Gemini vision callers: top-level
+            # budget_tokens starves the text response through LiteLLM because
+            # Gemini spends the completion budget on hidden reasoning tokens.
+            "thinking": {"type": "disabled", "budget_tokens": 0},
         }
     ).encode()
 
@@ -277,6 +279,13 @@ def _call_gemini_flash(image_b64: str, *, timeout: float = LLM_TIMEOUT_S) -> str
         return payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"litellm response shape unexpected: {exc}") from exc
+
+
+def _looks_like_truncated_json(text: str) -> bool:
+    """Return True for the short partial JSON prefixes observed in journald."""
+    if text == "":
+        return True
+    return text.startswith("{") or text.startswith("[")
 
 
 def _parse_classification(raw: str, now: float) -> Classification:
@@ -301,6 +310,14 @@ def _parse_classification(raw: str, now: float) -> Classification:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
+        if _looks_like_truncated_json(text):
+            log.warning("scene_classifier: truncated JSON from LLM: %r", raw[:200])
+            return Classification(
+                scene=FALLBACK_SCENE,
+                confidence=0.0,
+                evidence="truncated-json",
+                ts=now,
+            )
         log.error("scene_classifier: malformed JSON from LLM: %r", raw[:200])
         return Classification(scene=FALLBACK_SCENE, confidence=0.0, evidence="parse-error", ts=now)
 
