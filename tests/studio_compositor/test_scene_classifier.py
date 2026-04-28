@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from random import Random
+from unittest.mock import patch
 
 import pytest
 
@@ -231,6 +232,56 @@ class TestClassifyOnce:
         result = clf.classify_once()
         assert result is not None
         assert result.scene == "hands-manipulating-gear"
+
+    def test_truncated_fenced_json_is_classified_without_error_log(
+        self, tmp_shm: Path, hero_override: Path, hero_snapshot: Path, caplog
+    ) -> None:
+        clf = sc.SceneClassifier(
+            shm_dir=tmp_shm,
+            override_path=hero_override,
+            classification_path=tmp_shm / "scene-classification.json",
+            call_llm=lambda _b64: "```json\n{\n  ",
+        )
+        with caplog.at_level("WARNING"):
+            result = clf.classify_once()
+        assert result is not None
+        assert result.scene == sc.FALLBACK_SCENE
+        assert result.confidence == 0.0
+        assert result.evidence == "truncated-json"
+        assert any("truncated JSON" in rec.message for rec in caplog.records)
+        assert not any(rec.levelname == "ERROR" for rec in caplog.records)
+
+    def test_call_gemini_flash_uses_disabled_thinking_body(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            def __enter__(self) -> FakeResponse:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode()
+
+        def fake_urlopen(req, *, timeout: float):
+            captured["timeout"] = timeout
+            captured["body"] = json.loads(req.data.decode())
+            return FakeResponse()
+
+        with (
+            patch.object(sc, "_get_litellm_key", return_value="test-key"),
+            patch("urllib.request.urlopen", fake_urlopen),
+        ):
+            assert sc._call_gemini_flash("abc123", timeout=1.5) == "{}"
+
+        body = captured["body"]
+        assert isinstance(body, dict)
+        assert body["model"] == sc.SCENE_MODEL
+        assert body["response_format"] == {"type": "json_object"}
+        assert body["thinking"] == {"type": "disabled", "budget_tokens": 0}
+        assert "budget_tokens" not in body
+        assert captured["timeout"] == 1.5
 
 
 class TestFeatureFlag:
