@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/spectacle-control-plane.schema.json",
+  "title": "SpectacleLaneState",
+  "description": "Schema seed for a controllable livestream spectacle lane.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "lane_id",
+    "display_name",
+    "lane_kind",
+    "content_substrate_refs",
+    "state",
+    "mounted",
+    "renderable",
+    "renderability_evidence",
+    "claim_bearing",
+    "rights_risk",
+    "consent_risk",
+    "monetization_risk",
+    "director_verbs",
+    "programme_hooks",
+    "fallback",
+    "public_claim_allowed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version for spectacle lane rows."
+    },
+    "lane_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Stable snake_case identifier for the lane."
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable lane label."
+    },
+    "lane_kind": {
+      "type": "string",
+      "enum": [
+        "caption",
+        "control",
+        "hardware",
+        "metadata",
+        "mobile",
+        "music",
+        "narrative",
+        "overlay",
+        "public_aperture",
+        "refusal",
+        "research",
+        "status",
+        "studio",
+        "visual_substrate",
+        "ward"
+      ],
+      "description": "Broad lane family used for routing and conflict policy."
+    },
+    "content_substrate_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "uniqueItems": true,
+      "description": "ContentSubstrate substrate_id values that back this lane."
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "unmounted",
+        "candidate",
+        "dry-run",
+        "private",
+        "mounted",
+        "degraded",
+        "public-live",
+        "blocked"
+      ],
+      "description": "Lifecycle state for public/director control."
+    },
+    "mounted": {
+      "type": "boolean",
+      "description": "Whether the lane is attached to a producer or control path."
+    },
+    "renderable": {
+      "type": "boolean",
+      "description": "Whether the lane can produce visible, audible, textual, or control output now."
+    },
+    "renderability_evidence": {
+      "type": "object",
+      "required": ["owner", "status_ref", "freshness_ref", "evidence_kind"],
+      "additionalProperties": false,
+      "properties": {
+        "owner": {"type": "string", "minLength": 1},
+        "status_ref": {"type": "string", "minLength": 1},
+        "freshness_ref": {"type": ["string", "null"]},
+        "evidence_kind": {
+          "type": "string",
+          "enum": [
+            "api_state",
+            "artifact",
+            "device_probe",
+            "event",
+            "health_signal",
+            "operator_gate",
+            "schema_only",
+            "service_state"
+          ]
+        }
+      },
+      "description": "Where renderability truth is read from."
+    },
+    "claim_bearing": {
+      "type": "string",
+      "enum": [
+        "none",
+        "private",
+        "dry_run",
+        "public_live",
+        "archive",
+        "monetizable",
+        "operator_control"
+      ],
+      "description": "Strongest claim this lane can currently carry."
+    },
+    "rights_risk": {
+      "$ref": "#/$defs/risk_tier"
+    },
+    "consent_risk": {
+      "$ref": "#/$defs/risk_tier"
+    },
+    "monetization_risk": {
+      "$ref": "#/$defs/risk_tier"
+    },
+    "director_verbs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "foreground",
+          "background",
+          "hold",
+          "suppress",
+          "transition",
+          "crossfade",
+          "intensify",
+          "stabilize",
+          "route_attention",
+          "mark_boundary"
+        ]
+      },
+      "uniqueItems": true,
+      "description": "Control verbs allowed after state and risk filtering."
+    },
+    "programme_hooks": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Programme planner hooks that can bias or schedule the lane."
+    },
+    "fallback": {
+      "type": "object",
+      "required": ["mode", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "no_op_explain",
+            "dry_run_badge",
+            "hold_last_safe",
+            "suppress",
+            "private_only",
+            "degraded_status",
+            "operator_prompt",
+            "kill_switch"
+          ]
+        },
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "description": "Fail-closed behavior when lane evidence or policy is missing."
+    },
+    "public_claim_allowed": {
+      "type": "boolean",
+      "description": "Whether public surfaces may claim this lane is live or available."
+    },
+    "control_inputs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Optional private or public controls that can affect the lane."
+    },
+    "child_task_anchors": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Active or proposed cc-task ids that own implementation."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Short dependency, policy, or adapter note."
+    }
+  },
+  "$defs": {
+    "risk_tier": {
+      "type": "string",
+      "enum": ["none", "low", "medium", "high", "blocking", "unknown"]
+    }
+  }
+}
