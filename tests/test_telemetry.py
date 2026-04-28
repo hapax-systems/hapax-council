@@ -115,6 +115,49 @@ class TestHapaxEvent:
         with patch("shared.telemetry._get_langfuse", return_value=None):
             hapax_event("stimmung", "stance_change", level="WARNING")
 
+    def test_event_uses_supported_span_observation_type(self):
+        import sys
+        import types
+
+        calls: list[tuple[str, dict]] = []
+
+        class _NullCtx:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class _FakeClient:
+            def start_as_current_observation(self, **kwargs):
+                calls.append(("observation", kwargs))
+                return _NullCtx()
+
+        fake_langfuse = types.ModuleType("langfuse")
+
+        def _propagate_attributes(**kwargs):
+            calls.append(("propagate", kwargs))
+            return _NullCtx()
+
+        fake_langfuse.propagate_attributes = _propagate_attributes  # type: ignore[attr-defined]
+
+        with patch.dict(sys.modules, {"langfuse": fake_langfuse}):
+            with patch("shared.telemetry._get_langfuse", return_value=_FakeClient()):
+                hapax_event(
+                    "stimmung",
+                    "stance_change",
+                    metadata={"from": "nominal", "to": "cautious"},
+                    level="WARNING",
+                )
+
+        observation = [kwargs for kind, kwargs in calls if kind == "observation"][0]
+        assert observation["as_type"] == "span"
+        assert observation["level"] == "WARNING"
+        assert observation["metadata"]["event_kind"] == "hapax_event"
+        assert observation["metadata"]["event_system"] == "stimmung"
+        assert observation["metadata"]["event_name"] == "stance_change"
+        assert observation["metadata"]["from"] == "nominal"
+
 
 class TestHapaxScore:
     def test_score_none_span_noop(self):
