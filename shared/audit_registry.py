@@ -1,8 +1,8 @@
 """shared/audit_registry.py — Cross-agent audit point registry.
 
 Enumerates every Gemini call-site in the council runtime as an ``AuditPoint``.
-All entries default to ``enabled=False`` — this module is scaffolding. No
-audit dispatches without explicit opt-in per call-site.
+All entries default to ``enabled=False``. The dispatcher can process queued
+records, but no audit dispatches without explicit opt-in per call-site.
 
 Governance doc: ``docs/governance/cross-agent-audit.md``.
 
@@ -35,7 +35,7 @@ class AuditPoint:
             findings can score higher; they cannot score lower.
         sampling_rate: Fraction of calls sampled for audit (0.0..1.0). Only
             consulted when ``enabled=True``.
-        enabled: Master switch. ALL DEFAULT OFF — this is scaffolding.
+        enabled: Master switch. All entries default to the inactive posture.
         dimensions: Which of the six audit dimensions are examined. An empty
             tuple defaults to "all six" at audit time.
     """
@@ -164,7 +164,7 @@ def get_by_id(audit_id: str) -> AuditPoint | None:
 def active_points() -> list[AuditPoint]:
     """Return every audit point with ``enabled=True``.
 
-    In scaffolding posture this always returns an empty list. Tests rely on
+    In the default inactive posture this returns an empty list. Tests rely on
     this invariant — see ``test_audit_registry.py``.
     """
     return [p for p in AUDIT_POINTS if p.enabled]

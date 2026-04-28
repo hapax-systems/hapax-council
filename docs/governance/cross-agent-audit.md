@@ -1,6 +1,6 @@
 # Cross-Agent Audit — Claude Audits Gemini
 
-**Status:** Scaffolding (all audit points disabled). No live audits dispatch yet.
+**Status:** Dispatcher implemented; all audit points disabled. No live call-site dispatch yet.
 **Owner:** Governance
 **Companion spec:** `docs/superpowers/specs/2026-04-18-heterogeneous-agent-audit-design.md` (PR/plan/research/hooks/axioms surfaces)
 **This doc scope:** runtime LLM call-sites where Gemini is the provider (vision, multimodal, fast text). The companion spec covers human-review surfaces (commits, plans, research, hooks, axioms).
@@ -175,7 +175,7 @@ Auditor output is a structured finding with a score per dimension and an aggrega
 
 ### 4.1 Async, non-blocking
 
-The primary call-site runs as usual. The audit is dispatched by enqueueing a record to `/dev/shm/hapax-audit-queue.jsonl`. A separate loop (`shared.audit_dispatcher.run_audit_cycle`) drains the queue at its own cadence.
+The primary call-site runs as usual. The audit is dispatched by enqueueing a record to `/dev/shm/hapax-audit-queue.jsonl`. A separate loop (`shared.audit_dispatcher.run_audit_cycle`, runnable once via `uv run python -m shared.audit_dispatcher`) drains the queue and invokes the configured Claude auditor through LiteLLM.
 
 ### 4.2 Queue schema
 
@@ -188,6 +188,9 @@ JSONL, one record per line. Each record:
   "provider": "gemini-flash",
   "call_site": "agents/hapax_daimonion/tools.py:846",
   "auditor": "claude-sonnet",
+  "severity_floor": "medium",
+  "sampling_rate": 1.0,
+  "dimensions": [],
   "input_context": { "prompt": "...", "images": ["sha256:..."], "route": "vision-tool" },
   "provider_output": "..."
 }
@@ -197,11 +200,11 @@ Image content is hashed and referenced by digest; the actual image bytes are sto
 
 ### 4.3 Fail-quiet
 
-The audit dispatcher is strictly non-load-bearing. If it fails, crashes, or the queue fills, the primary path is unaffected. Prometheus metrics surface the failure; no operator notification unless queue depth exceeds threshold.
+The audit dispatcher is strictly non-load-bearing. If enqueue fails, auditor invocation fails, or the queue fills, the primary path is unaffected. Auditor invocation failures write an explicit failure ledger entry rather than a placeholder finding; Prometheus metrics surface enqueue, completion, sampled-out, backpressure, auditor-error, and write-error outcomes. No operator notification is emitted by this module.
 
 ### 4.4 Disabled by default
 
-Every `AuditPoint` in `shared/audit_registry.py` defaults to `enabled=False`. The registry is scaffolding; live enabling is staged per call-site, not all at once.
+Every `AuditPoint` in `shared/audit_registry.py` defaults to `enabled=False`. The registry is inactive by default; live enabling is staged per call-site, not all at once.
 
 ---
 
@@ -236,7 +239,7 @@ Once verified, audit points move to `sampling_rate=0.1` (10%) with the exception
 
 ### 6.3 Dynamic sampling
 
-Sampling rate is tunable at runtime by editing `shared/audit_registry.py` (no hot-reload; restart scope). Future work can move this to a runtime config file — out of scope for scaffolding.
+Sampling rate is tunable at runtime by editing `shared/audit_registry.py` (no hot-reload; restart scope). Future work can move this to a runtime config file — out of scope for the current dispatcher runtime.
 
 ### 6.4 Backpressure
 
@@ -264,20 +267,20 @@ The operator has explicitly traded cost for trust (`feedback_model_routing_patie
 
 ---
 
-## 9. What This Scaffolding Ships
+## 9. What This Runtime Ships
 
 - **This document.**
-- **`shared/audit_registry.py`** — Pydantic-style dataclass registry, seeded with entries for every call-site in §2.
-- **`shared/audit_dispatcher.py`** — Stubbed enqueue + cycle runner. No LLM invocation. Metrics stubs. Early-return when disabled.
-- **`tests/shared/test_audit_registry.py`** — Defaults, enumeration, dispatcher no-op, no network.
+- **`shared/audit_registry.py`** — Dataclass registry, seeded with entries for every call-site in §2. All entries remain disabled until a deliberate activation.
+- **`shared/audit_dispatcher.py`** — Enqueue + cycle runner. The cycle runner invokes Claude via LiteLLM, requests structured audit output across §3 dimensions, writes markdown findings, enforces `severity_floor`, and records explicit auditor failures.
+- **`tests/shared/test_audit_registry.py`** — Defaults, enumeration, enqueue/backpressure/sampling behavior, real dispatcher boundary via fake auditor, failure-ledger regression.
 
 ### 9.1 Explicitly out of scope
 
-- No audit point is wired into any live call-site. Search the repo for `enqueue_audit(` — it appears only in the scaffolding module and its tests.
-- No LLM is actually invoked by `run_audit_cycle`. The TODO marker at the dispatch boundary is intentional.
-- No systemd unit ships with this change. Audit-cycle activation is a later PR.
-- No digest or ntfy escalation is implemented — §5 describes the target, not the shipped behavior.
-- No backpressure is implemented beyond a queue-depth check inside `enqueue_audit`.
+- No audit point is wired into any live call-site. Runtime-code search for `enqueue_audit(` finds only the dispatcher module; tests exercise it with synthetic `AuditPoint`s.
+- No audit point is enabled in the default registry, so production stays silent until activation.
+- No systemd unit ships with this runtime; audit-cycle scheduling is an activation-time decision.
+- No digest, ntfy escalation, or GitHub issue automation is implemented — §5 describes the target behavior for follow-on surfaces that read the finding ledger.
+- Queue backpressure is line-count based and single-worker oriented; it is sufficient for staged activation but not a high-throughput audit bus.
 
 ---
 
@@ -307,9 +310,9 @@ Cross-reference rule: any finding here that implicates authored code (e.g., Gemi
 1. Pick one `AuditPoint` from §2 (start with §2.2 vision-observer — lowest stakes, easiest to verify).
 2. In `shared/audit_registry.py`, set `enabled=True` for that one entry.
 3. Wire `enqueue_audit` into the matching call-site (single call, after Gemini returns).
-4. Start the audit-cycle loop as a systemd user service (not shipped in this PR).
+4. Start the audit-cycle loop manually (`uv run python -m shared.audit_dispatcher`) or as a systemd user service/timer once queue volume is understood.
 5. Watch Prometheus `hapax_audit_enqueued_total{audit_id}` and `hapax_audit_completed_total{audit_id,severity}` for a week.
 6. If queue depth stays bounded and ntfy volume is acceptable, promote to the next audit point.
 7. Never enable more than one new audit point per week.
 
-The gradual activation discipline is the main reason this is scaffolding-first. Activating all eleven audit points at once would generate unbounded ntfy volume and drown the operator.
+The gradual activation discipline is the main reason this remains staged. Activating all eleven audit points at once would generate unbounded ntfy volume and drown the operator.
