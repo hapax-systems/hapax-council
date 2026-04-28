@@ -384,6 +384,54 @@ jobs:
       - run: pnpm lint
       - run: pnpm build
 
+  rust-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # Match hooks/scripts/cargo-check-rust.sh: only crate source edits under
+      # hapax-logos/crates/** need the fast Rust check. The job still reports
+      # success when skipped so branch protection sees an honest status.
+      - name: Detect Rust crate changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            rust_crates:
+              - 'hapax-logos/Cargo.toml'
+              - 'hapax-logos/crates/**'
+      - name: Install Rust toolchain
+        if: steps.filter.outputs.rust_crates == 'true'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry and build output
+        if: steps.filter.outputs.rust_crates == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            hapax-logos/target
+          key: cargo-crates-${{ runner.os }}-${{ hashFiles('hapax-logos/Cargo.toml', 'hapax-logos/crates/**/Cargo.toml') }}
+          restore-keys: |
+            cargo-crates-${{ runner.os }}-
+      - name: Run crate cargo checks
+        if: steps.filter.outputs.rust_crates == 'true'
+        working-directory: hapax-logos
+        run: |
+          set -euo pipefail
+          found=0
+          for manifest in crates/*/Cargo.toml; do
+            [ -f "$manifest" ] || continue
+            crate="$(basename "$(dirname "$manifest")")"
+            cargo check -p "$crate"
+            found=1
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "No hapax-logos/crates/* Cargo.toml files found."
+          fi
+      - name: Report skipped Rust check
+        if: steps.filter.outputs.rust_crates != 'true'
+        run: echo "Skipped — this change does not touch hapax-logos Rust crate inputs."
+
   vscode-build:
     runs-on: ubuntu-latest
     defaults:
