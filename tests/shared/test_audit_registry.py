@@ -1,13 +1,13 @@
 """Tests for shared.audit_registry and shared.audit_dispatcher.
 
-Scaffolding contract:
+Inactive-default contract:
 
 - Every ``AuditPoint`` defaults to ``enabled=False``.
 - ``active_points()`` returns an empty list in the default registry.
 - The registry carries at least three Gemini call-site entries.
 - ``enqueue_audit`` is a no-op when the point is disabled.
 - ``enqueue_audit`` writes a JSONL record when enabled.
-- ``run_audit_cycle`` processes the queue without invoking any LLM.
+- ``run_audit_cycle`` invokes the auditor path and writes a structured ledger.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ class TestRegistrySeed:
 
     def test_every_entry_disabled_by_default(self) -> None:
         for point in AUDIT_POINTS:
-            assert point.enabled is False, f"{point.audit_id} is enabled in scaffolding"
+            assert point.enabled is False, f"{point.audit_id} is enabled by default"
 
     def test_every_entry_has_gemini_provider(self) -> None:
         for point in AUDIT_POINTS:
@@ -181,7 +181,7 @@ class TestDispatcherDisabled:
 
         assert not audit_dispatcher.AUDIT_QUEUE_PATH.exists()
 
-    def test_active_registry_empty_confirms_scaffolding(self) -> None:
+    def test_active_registry_empty_confirms_inactive_default(self) -> None:
         assert active_points() == []
 
 
@@ -211,6 +211,7 @@ class TestDispatcherEnabled:
         assert record["provider"] == "gemini-flash"
         assert record["auditor"] == "claude-sonnet"
         assert record["severity_floor"] == "medium"
+        assert record["dimensions"] == []
         assert record["input_context"] == {"prompt": "hello", "route": "test"}
         assert record["provider_output"] == "mock output"
 
@@ -255,13 +256,54 @@ class TestDispatcherEnabled:
         lines = audit_dispatcher.AUDIT_QUEUE_PATH.read_text().splitlines()
         assert len(lines) == 2
 
+    def test_enqueue_respects_zero_sampling_rate(self) -> None:
+        enabled_point = AuditPoint(
+            audit_id="gemini-test-sampled-out",
+            provider="gemini-flash",
+            call_site="x.py:1",
+            purpose="test",
+            auditor="claude-sonnet",
+            severity_floor="low",
+            sampling_rate=0.0,
+            enabled=True,
+        )
+
+        audit_dispatcher.enqueue_audit(
+            enabled_point,
+            input_context={"prompt": "hello"},
+            provider_output="mock output",
+        )
+
+        assert not audit_dispatcher.AUDIT_QUEUE_PATH.exists()
+
+    def test_enqueue_serialization_failure_does_not_raise(self) -> None:
+        enabled_point = AuditPoint(
+            audit_id="gemini-test-serialize-error",
+            provider="gemini-flash",
+            call_site="x.py:1",
+            purpose="test",
+            auditor="claude-sonnet",
+            severity_floor="low",
+            enabled=True,
+        )
+        cyclic_context: dict[str, object] = {}
+        cyclic_context["self"] = cyclic_context
+
+        audit_dispatcher.enqueue_audit(
+            enabled_point,
+            input_context=cyclic_context,
+            provider_output="mock output",
+        )
+
+        assert not audit_dispatcher.AUDIT_QUEUE_PATH.exists()
+
 
 class TestRunAuditCycle:
     def test_cycle_returns_zero_on_empty_queue(self) -> None:
         processed = asyncio.run(audit_dispatcher.run_audit_cycle())
         assert processed == 0
 
-    def test_cycle_processes_enqueued_records_without_llm(self) -> None:
+    def test_cycle_processes_enqueued_records_with_auditor(self) -> None:
         enabled_point = AuditPoint(
             audit_id="gemini-cycle-test",
             provider="gemini-flash",
@@ -277,7 +319,24 @@ class TestRunAuditCycle:
             provider_output="abc",
         )
 
-        processed = asyncio.run(audit_dispatcher.run_audit_cycle())
+        async def fake_auditor(record: dict) -> audit_dispatcher.AuditFinding:
+            assert record["audit_id"] == "gemini-cycle-test"
+            return audit_dispatcher.AuditFinding(
+                summary="Gemini output is acceptable.",
+                severity="low",
+                dimension_scores=[
+                    audit_dispatcher.AuditDimensionFinding(
+                        dimension="Correctness",
+                        severity="low",
+                        rationale="No contradiction in the supplied record.",
+                    )
+                ],
+                finding="The queued output is grounded in the available context.",
+                recommended_action="No action.",
+                confidence="high",
+            )
+
+        processed = asyncio.run(audit_dispatcher.run_audit_cycle(auditor=fake_auditor))
         assert processed == 1
 
         assert (
@@ -288,5 +347,72 @@ class TestRunAuditCycle:
         findings = list(audit_dispatcher.AUDIT_FINDINGS_DIR.glob("*.md"))
         assert len(findings) == 1
         body = findings[0].read_text()
-        assert "Placeholder finding" in body
+        assert "Placeholder finding" not in body
+        assert "Gemini output is acceptable." in body
+        assert "| Correctness | low | No contradiction in the supplied record. |" in body
         assert "gemini-cycle-test" in body
+
+    def test_default_cycle_invokes_real_auditor_boundary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        enabled_point = AuditPoint(
+            audit_id="gemini-default-boundary-test",
+            provider="gemini-flash",
+            call_site="x.py:1",
+            purpose="test",
+            auditor="claude-sonnet",
+            severity_floor="medium",
+            enabled=True,
+        )
+        audit_dispatcher.enqueue_audit(
+            enabled_point,
+            input_context={"k": "v"},
+            provider_output="abc",
+        )
+        seen: list[str] = []
+
+        async def fake_invoke(record: dict) -> audit_dispatcher.AuditFinding:
+            seen.append(record["audit_id"])
+            return audit_dispatcher.AuditFinding(
+                summary="Auditor invoked.",
+                severity="low",
+                finding="The default cycle used the configured auditor boundary.",
+            )
+
+        monkeypatch.setattr(audit_dispatcher, "_invoke_auditor", fake_invoke)
+
+        processed = asyncio.run(audit_dispatcher.run_audit_cycle())
+
+        assert processed == 1
+        assert seen == ["gemini-default-boundary-test"]
+        body = next(audit_dispatcher.AUDIT_FINDINGS_DIR.glob("*.md")).read_text()
+        assert "- severity: medium" in body
+        assert "Auditor invoked." in body
+
+    def test_cycle_writes_failure_ledger_when_auditor_fails(self) -> None:
+        enabled_point = AuditPoint(
+            audit_id="gemini-auditor-error-test",
+            provider="gemini-flash",
+            call_site="x.py:1",
+            purpose="test",
+            auditor="claude-sonnet",
+            severity_floor="critical",
+            enabled=True,
+        )
+        audit_dispatcher.enqueue_audit(
+            enabled_point,
+            input_context={"k": "v"},
+            provider_output="abc",
+        )
+
+        async def failing_auditor(record: dict) -> audit_dispatcher.AuditFinding:
+            raise RuntimeError(f"auditor failed for {record['audit_id']}")
+
+        processed = asyncio.run(audit_dispatcher.run_audit_cycle(auditor=failing_auditor))
+
+        assert processed == 1
+        body = next(audit_dispatcher.AUDIT_FINDINGS_DIR.glob("*.md")).read_text()
+        assert "Auditor invocation failed" in body
+        assert "RuntimeError" in body
+        assert "Placeholder finding" not in body
+        assert "- severity: critical" in body
