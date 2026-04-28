@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
+      CLAUDE_REVIEW_CONFIGURED: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
       REVIEW_APP_CONFIGURED: ${{ secrets.REVIEW_APP_ID != '' && secrets.REVIEW_APP_KEY != '' }}
     steps:
       - uses: actions/checkout@v6
@@ -34,6 +35,7 @@ jobs:
           fetch-depth: 0
 
       - uses: anthropics/claude-code-action@567fe954a4527e81f132d87d1bdbcc94f7737434
+        if: env.CLAUDE_REVIEW_CONFIGURED == 'true'
         id: claude
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
