@@ -66,13 +66,14 @@ class TestStartLayoutOnly:
             "activity_header",
             "stance_indicator",
             "grounding_provenance_ticker",
-            "captions",
             "impingement_cascade",
             "recruitment_candidate_panel",
             "thinking_indicator",
             "pressure_gauge",
             "activity_variety_log",
             "whos_here",
+            "durf",
+            "m8-display",
             "gem",
         }
         assert {s.id for s in layout.sources} == expected_ids
@@ -95,13 +96,14 @@ class TestStartLayoutOnly:
             "activity_header",
             "stance_indicator",
             "grounding_provenance_ticker",
-            "captions",
             "impingement_cascade",
             "recruitment_candidate_panel",
             "thinking_indicator",
             "pressure_gauge",
             "activity_variety_log",
             "whos_here",
+            "durf",
+            "m8-display",
             "gem",
         }
 

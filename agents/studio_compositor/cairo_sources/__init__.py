@@ -100,9 +100,10 @@ def _register_builtins() -> None:
     register("TokenPoleCairoSource", TokenPoleCairoSource)
     register("AlbumOverlayCairoSource", AlbumOverlayCairoSource)
     register("SierpinskiCairoSource", SierpinskiCairoSource)
-    # LRR Phase 9 §3.6 — scientific-register caption overlay. Registered
-    # so the class is declarable from Layout JSON; operator decides when
-    # to add a captions surface.
+    # LRR Phase 9 §3.6 — scientific-register caption overlay. The
+    # production default layout retired captions at GEM cutover; keep
+    # the class registered for legacy rollback layouts and direct source
+    # tests until those surfaces are explicitly removed.
     register("CaptionsCairoSource", CaptionsCairoSource)
     # Phase 4 legibility surfaces — volitional-director epic (PR #1017 §3.5).
     # Make the directorial intent visible to viewers on every frame.
