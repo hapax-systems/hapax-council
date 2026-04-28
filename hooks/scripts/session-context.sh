@@ -483,6 +483,65 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     fi
   done
 
+  # Show urgent relay broadcasts delivered directly into this session's
+  # relay yaml. The producer appends p0_broadcast_inbox_<timestamp>
+  # entries; keep a small per-session cursor so old entries do not appear
+  # on every new shell.
+  OWN_RELAY="$RELAY_DIR/${ROLE}.yaml"
+  BROADCAST_SEEN_DIR="$RELAY_DIR/.seen"
+  BROADCAST_SEEN_FILE="$BROADCAST_SEEN_DIR/${ROLE}-p0-broadcast.seen"
+  if [ -f "$OWN_RELAY" ]; then
+    BROADCAST_LINES="$(
+      awk '
+        /^p0_broadcast_inbox_[0-9TZ]+:/ {
+          key=$1
+          sub(/:$/, "", key)
+          value=$0
+          sub(/^[^:]+:[[:space:]]*/, "", value)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+          gsub(/^"|"$/, "", value)
+          if (key != "" && value != "") {
+            print key "\t" value
+          }
+        }
+      ' "$OWN_RELAY" 2>/dev/null || true
+    )"
+    if [ -n "$BROADCAST_LINES" ]; then
+      mkdir -p "$BROADCAST_SEEN_DIR" 2>/dev/null || true
+      touch "$BROADCAST_SEEN_FILE" 2>/dev/null || true
+      NEW_BROADCASTS=""
+      SEEN_APPEND=""
+      while IFS="$(printf '\t')" read -r BROADCAST_KEY INFLECTION_PATH; do
+        [ -n "$BROADCAST_KEY" ] || continue
+        if [ -f "$BROADCAST_SEEN_FILE" ] && grep -Fxq "$BROADCAST_KEY" "$BROADCAST_SEEN_FILE" 2>/dev/null; then
+          continue
+        fi
+
+        if [ -f "$INFLECTION_PATH" ]; then
+          BROADCAST_TITLE="$(head -1 "$INFLECTION_PATH" 2>/dev/null | sed 's/^# *//')"
+          BROADCAST_SEVERITY="$(grep -m1 '^\*\*Severity:\*\*' "$INFLECTION_PATH" 2>/dev/null | sed 's/^\*\*Severity:\*\*[[:space:]]*//')"
+        else
+          BROADCAST_TITLE="missing inflection body"
+          BROADCAST_SEVERITY="P0"
+        fi
+        [ -n "$BROADCAST_TITLE" ] || BROADCAST_TITLE="$BROADCAST_KEY"
+        [ -n "$BROADCAST_SEVERITY" ] || BROADCAST_SEVERITY="P0"
+        NEW_BROADCASTS="${NEW_BROADCASTS}  [${BROADCAST_SEVERITY}] ${BROADCAST_TITLE} (${INFLECTION_PATH})\n"
+        SEEN_APPEND="${SEEN_APPEND}${BROADCAST_KEY}\n"
+      done <<< "$BROADCAST_LINES"
+
+      if [ -n "$NEW_BROADCASTS" ]; then
+        echo "P0 BROADCAST INBOX:"
+        printf "%b" "$NEW_BROADCASTS"
+        if [ -n "$SEEN_APPEND" ] && [ -f "$BROADCAST_SEEN_FILE" ]; then
+          BROADCAST_SEEN_TMP="${BROADCAST_SEEN_FILE}.$$"
+          { cat "$BROADCAST_SEEN_FILE" 2>/dev/null || true; printf "%b" "$SEEN_APPEND"; } | sort -u > "$BROADCAST_SEEN_TMP" 2>/dev/null && mv -f "$BROADCAST_SEEN_TMP" "$BROADCAST_SEEN_FILE"
+          rm -f "$BROADCAST_SEEN_TMP" 2>/dev/null || true
+        fi
+      fi
+    fi
+  fi
+
   # Show work queue items for this role
   if [ -d "$RELAY_DIR/queue" ]; then
     QUEUE_ITEMS=$(grep -l "assigned_to: $ROLE" "$RELAY_DIR/queue/"*.yaml 2>/dev/null | head -5)
