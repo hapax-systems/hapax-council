@@ -13,6 +13,13 @@ from typing import Any
 
 log = logging.getLogger("hapax.telemetry")
 
+try:
+    from shared.langfuse_logging import install_langfuse_exporter_noise_filter
+
+    install_langfuse_exporter_noise_filter()
+except Exception:
+    pass
+
 _langfuse = None
 _available: bool | None = None
 _LANGFUSE_ENV_FILE = Path.home() / ".cache" / "hapax" / "langfuse-env"
@@ -106,14 +113,25 @@ def hapax_event(
         return
 
     full_name = f"{system}.{name}"
+    event_metadata = {
+        "event_kind": "hapax_event",
+        "event_system": system,
+        "event_name": name,
+        **(metadata or {}),
+    }
     try:
-        with client.start_as_current_observation(
-            as_type="event",
-            name=full_name,
-            metadata=metadata or {},
-            level=level,
-        ):
-            pass
+        from langfuse import propagate_attributes
+
+        with propagate_attributes(tags=_system_tags(system, tags), metadata=event_metadata):
+            # Langfuse 3.x no longer accepts as_type="event" here. Represent
+            # point-in-time events as short spans to avoid SDK fallback warnings.
+            with client.start_as_current_observation(
+                as_type="span",
+                name=full_name,
+                metadata=event_metadata,
+                level=level,
+            ):
+                pass
     except Exception:
         log.debug("Langfuse event failed: %s", full_name, exc_info=True)
 
