@@ -726,12 +726,16 @@ class AffordancePipeline:
             if c.payload.get("latency_class") == "slow":
                 cost = max(cost, 0.5)
             c.cost_weight = 1.0 - cost * 0.5
+            c.exact_recency_penalty = (
+                self._recency.exact_match_penalty(c.capability_name, window_size=3) * 0.15
+            )
             c.combined = (
                 W_SIMILARITY * c.similarity
                 + W_BASE_LEVEL * c.base_level
                 + W_CONTEXT * c.context_boost
                 + W_THOMPSON * c.thompson_score
                 + w_recency * c.recency_distance
+                - c.exact_recency_penalty
             ) * c.cost_weight
         # Phase 4 of programme-layer plan (D-28): apply programme bias as
         # SOFT PRIOR multiplier on the composed score. Per

@@ -165,11 +165,6 @@ def _safe_load_json(path: Path) -> dict:
 # ── Per-family dispatchers ─────────────────────────────────────────────────
 
 
-_CAMERA_ROLE_HISTORY: list[tuple[float, str]] = []
-_CAMERA_MIN_DWELL_S = 12.0
-_CAMERA_VARIETY_WINDOW = 3
-
-
 def _hero_gate_enabled() -> bool:
     """Vision Phase 3 (#150) feature flag, default ON per spec §10.
 
@@ -217,17 +212,6 @@ def _camera_has_people(role: str) -> bool:
         return True
 
 
-def _record_camera_role(role: str) -> None:
-    now = time.time()
-    _CAMERA_ROLE_HISTORY.append((now, role))
-    # Keep last 20 or whatever's in the variety window span
-    cutoff = now - 600.0
-    while _CAMERA_ROLE_HISTORY and _CAMERA_ROLE_HISTORY[0][0] < cutoff:
-        _CAMERA_ROLE_HISTORY.pop(0)
-    if len(_CAMERA_ROLE_HISTORY) > 20:
-        del _CAMERA_ROLE_HISTORY[:-20]
-
-
 @observe_dispatch("camera.hero")
 def dispatch_camera_hero(capability_name: str, ttl_s: float) -> bool:
     """cam.hero.<role-slug>.<context> → hero-camera-override.json.
@@ -262,17 +246,6 @@ def dispatch_camera_hero(capability_name: str, ttl_s: float) -> bool:
         )
         return False
     now = time.time()
-    # Min-dwell: refuse the swap if the same role was applied very recently.
-    if _CAMERA_ROLE_HISTORY:
-        last_ts, last_role = _CAMERA_ROLE_HISTORY[-1]
-        if last_role == role and (now - last_ts) < _CAMERA_MIN_DWELL_S:
-            log.info(
-                "camera.hero dwell-gate: %s applied %.1fs ago (< %.0fs), skipping",
-                role,
-                now - last_ts,
-                _CAMERA_MIN_DWELL_S,
-            )
-            return False
     # Variety-window gate retired 2026-04-19 (HOMAGE Phase F1). The rule
     # dropped 6,358/45,178 (14%) of camera.hero dispatches over 12h by
     # rejecting any role present in the last N picks — the pipeline
@@ -302,7 +275,6 @@ def dispatch_camera_hero(capability_name: str, ttl_s: float) -> bool:
             "source_capability": capability_name,
         },
     )
-    _record_camera_role(role)
     _mark_recruitment("camera.hero")
     return True
 

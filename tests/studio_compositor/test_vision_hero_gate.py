@@ -29,7 +29,6 @@ def isolated_shm(monkeypatch, tmp_path):
     monkeypatch.setattr(cc, "_HERO_CAMERA_OVERRIDE", tmp_path / "hero-camera-override.json")
     monkeypatch.setattr(cc, "_RECENT_RECRUITMENT", tmp_path / "recent-recruitment.json")
     monkeypatch.setattr(cc, "_PERCEPTION_STATE", tmp_path / "perception-state.json")
-    monkeypatch.setattr(cc, "_CAMERA_ROLE_HISTORY", [])
     # Default: flag explicitly enabled (spec default is ON; env unset still
     # reads as ON, but set it for clarity and to override any caller env).
     monkeypatch.setenv("HAPAX_VISION_HERO_GATE", "1")
@@ -114,14 +113,3 @@ class TestVisionHeroGate:
             encoding="utf-8",
         )
         assert cc.dispatch_camera_hero("cam.hero.overhead.vinyl-spinning", 30.0)
-
-    def test_rejection_does_not_pollute_history(self, isolated_shm):
-        """Vision-gate rejection must NOT update _CAMERA_ROLE_HISTORY.
-
-        The variety fallback depends on a clean history. If the gate
-        wrote to history on rejection, the next candidate for the same
-        role would be variety-rejected too, masking the fallback.
-        """
-        _write_perception(isolated_shm, {"c920-overhead": 0})
-        assert not cc.dispatch_camera_hero("cam.hero.overhead.vinyl-spinning", 30.0)
-        assert cc._CAMERA_ROLE_HISTORY == []

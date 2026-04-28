@@ -193,6 +193,7 @@ class SelectionCandidate(BaseModel):
     # AffordancePipeline folds this into ``combined`` via W_RECENCY when
     # ``HAPAX_AFFORDANCE_RECENCY_WEIGHT`` is non-zero.
     recency_distance: float = 0.0
+    exact_recency_penalty: float = 0.0
     cost_weight: float = 1.0
     combined: float = 0.0
     suppressed: bool = False
@@ -247,6 +248,20 @@ class _RecencyTracker(BaseModel):
             if sim > max_sim:
                 max_sim = sim
         return max(0.0, min(1.0, 1.0 - max_sim))
+
+    def exact_match_penalty(self, capability_name: str, window_size: int = 3) -> float:
+        """Returns 1.0 if the capability was used in the last `window_size` ticks, else 0.0.
+
+        This replaces the hardcoded variety-gate in compositional_consumer, allowing
+        the affordance pipeline to apply a soft prior against rapid re-selection of
+        the exact same capability (e.g. camera hero roles) while still permitting
+        it if the perceptual similarity is overwhelming.
+        """
+        recent = self.entries[-window_size:] if window_size > 0 else self.entries
+        for name, _ in reversed(recent):
+            if name == capability_name:
+                return 1.0
+        return 0.0
 
     def cluster_similarity(self) -> float:
         """Return the mean pairwise cosine similarity across the window.
