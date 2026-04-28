@@ -100,6 +100,7 @@ def test_valid_codex_session_execs_codex_with_no_ask_flags(tmp_path: Path) -> No
     assert "--dangerously-bypass-approvals-and-sandbox" in args
     assert "--cd" in args
     assert str(REPO_ROOT) in args
+    assert f'projects."{REPO_ROOT}".trust_level="trusted"' in args
     assert "mcp list" in args
 
     launched_env = env_file.read_text()

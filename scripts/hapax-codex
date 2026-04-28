@@ -566,6 +566,7 @@ CODEX_ARGS=(
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'
   -c "projects.\"$HOME/projects\".trust_level=\"trusted\""
+  -c "projects.\"$WORKDIR\".trust_level=\"trusted\""
   -c "hooks.SessionStart=[{command=\"$HOOK\",timeout=20,statusMessage=\"Loading Hapax context\"}]"
   -c "hooks.PreToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax guardrails\"}]"
   -c "hooks.PostToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax audit\"}]"

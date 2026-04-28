@@ -51,6 +51,14 @@ def test_codex_config_template_does_not_commit_operator_home_path() -> None:
     assert "/home/hapax/" not in CODEX_CONFIG.read_text()
 
 
+def test_codex_config_trusts_projects_and_council_root(tmp_path: Path) -> None:
+    config = _installed_config(tmp_path)
+
+    projects = config["projects"]
+    assert projects[str(tmp_path / "home" / "projects")]["trust_level"] == "trusted"
+    assert projects[str(REPO_ROOT)]["trust_level"] == "trusted"
+
+
 def test_tavily_config_uses_stdio_wrapper_only(tmp_path: Path) -> None:
     config = _installed_config(tmp_path)
 
