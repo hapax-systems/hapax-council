@@ -95,17 +95,26 @@ async def collect_systemd() -> tuple[list[SystemdUnit], list[SystemdUnit]]:
     return services, timers
 
 
-async def collect_listening_ports() -> list[str]:
-    """Get ports bound to 127.0.0.1 by our stack."""
-    rc, out, _ = await run_cmd(["ss", "-tlnp"])
+async def collect_listening_ports_observation() -> tuple[list[str], str, str]:
+    """Get currently listening TCP ports with observation status."""
+    rc, out, err = await run_cmd(["ss", "-tlnp"])
     if rc != 0:
-        return []
+        detail = err.strip() or f"exit code {rc}"
+        return [], "inconclusive", f"ss -tlnp failed: {detail}"
 
     ports: list[str] = []
     for line in out.splitlines()[1:]:
-        if "127.0.0.1" in line:
-            parts = line.split()
-            if len(parts) >= 4:
-                addr = parts[3]
-                ports.append(addr)
-    return sorted(set(ports))
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == "LISTEN":
+            ports.append(parts[3])
+
+    if not ports:
+        return [], "inconclusive", "ss -tlnp returned no TCP listeners"
+
+    return sorted(set(ports)), "observed", ""
+
+
+async def collect_listening_ports() -> list[str]:
+    """Get currently listening TCP ports."""
+    ports, _, _ = await collect_listening_ports_observation()
+    return ports

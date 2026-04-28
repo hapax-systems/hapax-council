@@ -58,25 +58,19 @@ def scan_sufficiency_gaps() -> list[DriftItem]:
     """Run sufficiency probes and convert failures to DriftItems."""
     with _tracer.start_as_current_span("drift.scan_sufficiency_gaps"):
         try:
-            from .sufficiency_probes import run_probes
+            from .sufficiency_probes import PROBES, run_probes
         except ImportError:
             return []
 
         results = run_probes()
         items: list[DriftItem] = []
+        probes_by_id = {p.id: p for p in PROBES}
 
         for r in results:
             if r.met:
                 continue
 
-            probe = next(
-                (
-                    p
-                    for p in __import__("shared.sufficiency_probes", fromlist=["PROBES"]).PROBES
-                    if p.id == r.probe_id
-                ),
-                None,
-            )
+            probe = probes_by_id.get(r.probe_id)
             if probe:
                 severity = {"T0": "high", "T1": "medium", "T2": "low"}.get(
                     _get_implication_tier(probe.implication_id), "low"
@@ -84,14 +78,25 @@ def scan_sufficiency_gaps() -> list[DriftItem]:
             else:
                 severity = "low"
 
+            status = r.status or ("met" if r.met else "failed")
+            if status in ("inconclusive", "stale"):
+                severity = "low"
+                category = f"axiom-sufficiency-{status}"
+                reality = f"{status}: {r.evidence}"
+                suggestion = f"Re-run or refresh sufficiency evidence: {r.evidence}"
+            else:
+                category = "axiom-sufficiency-gap"
+                reality = r.evidence
+                suggestion = f"Address sufficiency gap: {r.evidence}"
+
             items.append(
                 DriftItem(
                     severity=severity,
-                    category="axiom-sufficiency-gap",
+                    category=category,
                     doc_file=f"probe:{r.probe_id}",
                     doc_claim=probe.question if probe else r.probe_id,
-                    reality=r.evidence,
-                    suggestion=f"Address sufficiency gap: {r.evidence}",
+                    reality=reality,
+                    suggestion=suggestion,
                 )
             )
 

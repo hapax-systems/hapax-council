@@ -16,62 +16,93 @@ from .sufficiency_probes import SufficiencyProbe
 
 
 def _check_plugin_direct_api_support() -> tuple[bool, str]:
-    """Check obsidian-hapax supports direct API calls without localhost proxy."""
-    providers_dir = OBSIDIAN_HAPAX_DIR / "src" / "providers"
-    if not providers_dir.exists():
-        return False, "obsidian-hapax providers directory not found"
+    """Check obsidian-hapax calls Logos directly through the current src layout."""
+    src_dir = OBSIDIAN_HAPAX_DIR / "src"
+    if not src_dir.is_dir():
+        return False, "obsidian-hapax src directory not found"
 
-    has_anthropic = (providers_dir / "anthropic.ts").exists()
-    has_openai = (providers_dir / "openai-compatible.ts").exists()
+    required = {
+        "logos-client.ts": src_dir / "logos-client.ts",
+        "types.ts": src_dir / "types.ts",
+        "settings.ts": src_dir / "settings.ts",
+        "main.ts": src_dir / "main.ts",
+    }
+    missing_files = [name for name, path in required.items() if not path.is_file()]
+    if missing_files:
+        return False, f"obsidian-hapax current src layout missing: {', '.join(missing_files)}"
 
-    index_file = providers_dir / "index.ts"
-    if not index_file.exists():
-        return False, "providers/index.ts not found"
+    client_content = required["logos-client.ts"].read_text(errors="replace")
+    types_content = required["types.ts"].read_text(errors="replace")
+    settings_content = required["settings.ts"].read_text(errors="replace")
+    main_content = required["main.ts"].read_text(errors="replace")
 
-    content = index_file.read_text()
-    has_provider_switch = "anthropic" in content and "openai" in content
+    has_request_url = "requestUrl" in client_content
+    has_configurable_url = "logosApiUrl" in types_content and "Logos API URL" in settings_content
+    has_client_wiring = "new LogosClient" in main_content and "updateBaseUrl" in client_content
 
-    if has_anthropic and has_openai and has_provider_switch:
-        return True, "plugin has anthropic + openai direct providers with switch in index.ts"
+    if has_request_url and has_configurable_url and has_client_wiring:
+        return (
+            True,
+            "obsidian-hapax current src layout uses LogosClient + Obsidian requestUrl with configurable logosApiUrl",
+        )
     missing: list[str] = []
-    if not has_anthropic:
-        missing.append("anthropic.ts")
-    if not has_openai:
-        missing.append("openai-compatible.ts")
-    if not has_provider_switch:
-        missing.append("provider switch")
-    return False, f"missing direct API support: {', '.join(missing)}"
+    if not has_request_url:
+        missing.append("requestUrl transport")
+    if not has_configurable_url:
+        missing.append("configurable logosApiUrl setting")
+    if not has_client_wiring:
+        missing.append("LogosClient wiring")
+    return False, f"missing current plugin API support: {', '.join(missing)}"
 
 
 def _check_plugin_graceful_degradation() -> tuple[bool, str]:
-    """Check obsidian-hapax degrades gracefully for localhost services."""
-    qdrant_file = OBSIDIAN_HAPAX_DIR / "src" / "qdrant-client.ts"
-    if not qdrant_file.exists():
-        return False, "qdrant-client.ts not found"
+    """Check obsidian-hapax degrades gracefully for localhost Logos API calls."""
+    src_dir = OBSIDIAN_HAPAX_DIR / "src"
+    client_file = src_dir / "logos-client.ts"
+    panel_file = src_dir / "context-panel.ts"
+    if not client_file.is_file() or not panel_file.is_file():
+        return False, "logos-client.ts or context-panel.ts not found"
 
-    content = qdrant_file.read_text()
-    has_error_handling = "catch" in content
-    has_console_warn = "console.warn" in content or "console.error" in content
+    client_content = client_file.read_text(errors="replace")
+    panel_content = panel_file.read_text(errors="replace")
 
-    if has_error_handling and has_console_warn:
-        return True, "qdrant-client.ts has catch blocks with console.warn for graceful degradation"
+    has_error_handling = "catch" in client_content and "catch" in panel_content
+    has_availability_flag = "apiAvailable = false" in client_content
+    has_timeout = "Request timeout" in client_content and "timeoutMs" in client_content
+    has_user_visible_error = "renderError" in panel_content or "Hapax error" in panel_content
+
+    if has_error_handling and has_availability_flag and has_timeout and has_user_visible_error:
+        return (
+            True,
+            "logos-client.ts has timeout/error handling and context-panel.ts renders bounded error state",
+        )
     missing: list[str] = []
     if not has_error_handling:
         missing.append("catch blocks")
-    if not has_console_warn:
-        missing.append("warning output")
-    return False, f"qdrant-client.ts missing graceful degradation: {', '.join(missing)}"
+    if not has_availability_flag:
+        missing.append("apiAvailable failure state")
+    if not has_timeout:
+        missing.append("request timeout")
+    if not has_user_visible_error:
+        missing.append("bounded panel error render")
+    return False, f"logos-client.ts missing graceful degradation: {', '.join(missing)}"
 
 
 def _check_plugin_credentials_in_settings() -> tuple[bool, str]:
     """Check obsidian-hapax stores API keys in plugin settings only."""
     settings_file = OBSIDIAN_HAPAX_DIR / "src" / "settings.ts"
     types_file = OBSIDIAN_HAPAX_DIR / "src" / "types.ts"
-    if not settings_file.exists() or not types_file.exists():
+    main_file = OBSIDIAN_HAPAX_DIR / "src" / "main.ts"
+    if not settings_file.exists() or not types_file.exists() or not main_file.exists():
         return False, "settings.ts or types.ts not found"
 
     types_content = types_file.read_text()
-    has_api_key_field = "apiKey" in types_content
+    main_content = main_file.read_text(errors="replace")
+    has_settings_storage = "HapaxSettings" in types_content and "DEFAULT_SETTINGS" in types_content
+    has_obsidian_storage = "loadData" in main_content and "saveData" in main_content
+    has_api_key_field = any(
+        field in types_content for field in ("apiKey", "apiToken", "accessToken")
+    )
 
     src_dir = OBSIDIAN_HAPAX_DIR / "src"
     env_patterns = [r"process\.env", r"dotenv", r"\.env\b"]
@@ -84,12 +115,17 @@ def _check_plugin_credentials_in_settings() -> tuple[bool, str]:
             if re.search(pat, file_content):
                 return False, f"env-based secret access found in {ts_file.name}"
 
-    if has_api_key_field:
+    if has_settings_storage and has_obsidian_storage and not has_api_key_field:
         return (
             True,
-            "API keys stored in plugin settings (data.json via Obsidian), no env-based secrets",
+            "plugin declares no API credential fields; configurable settings are stored via Obsidian data.json and no env-based secrets are used",
         )
-    return False, "apiKey field not found in types.ts"
+    if has_settings_storage and has_obsidian_storage and has_api_key_field:
+        return (
+            True,
+            "API credential fields are stored in plugin settings (data.json via Obsidian), no env-based secrets",
+        )
+    return False, "plugin settings storage not wired through Obsidian loadData/saveData"
 
 
 def _check_gitignore_security() -> tuple[bool, str]:

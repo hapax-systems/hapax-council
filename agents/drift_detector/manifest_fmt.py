@@ -64,7 +64,11 @@ def format_summary(m: InfrastructureManifest) -> str:
 
     lines.append(f"Pass Entries ({len(m.pass_entries)}): {', '.join(m.pass_entries)}")
     lines.append(f"Profile Files: {', '.join(m.profile_files)}")
-    lines.append(f"Listening Ports: {', '.join(m.listening_ports)}")
+    port_summary = ", ".join(m.listening_ports) if m.listening_ports else "(none)"
+    if m.listening_ports_status != "observed":
+        detail = f": {m.listening_ports_error}" if m.listening_ports_error else ""
+        port_summary = f"{port_summary} [{m.listening_ports_status}{detail}]"
+    lines.append(f"Listening Ports: {port_summary}")
 
     if m.edge_nodes:
         lines.append("")

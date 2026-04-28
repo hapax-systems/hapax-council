@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from .config import AI_AGENTS_DIR
-from .sufficiency_probes import SufficiencyProbe
+from .sufficiency_probes import ProbeCheckResult, SufficiencyProbe
 
 
-def _check_systemd_timer_coverage() -> tuple[bool, str]:
+def _check_systemd_timer_coverage() -> ProbeCheckResult:
     """Check that systemd timer count matches recurring agent count."""
     try:
         result = subprocess.run(
@@ -23,8 +24,8 @@ def _check_systemd_timer_coverage() -> tuple[bool, str]:
             if ".timer" in line and "NEXT" not in line and "timers listed" not in line
         ]
         timer_count = len(timer_lines)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False, "could not query systemd timers"
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return False, f"could not query systemd timers: {exc}", "inconclusive"
 
     try:
         from agents._config import load_expected_timers
@@ -85,15 +86,43 @@ def _check_profile_context_chain() -> tuple[bool, str]:
     return False, "context tools chain incomplete"
 
 
-def _check_proactive_alert_surfacing() -> tuple[bool, str]:
-    """Check health_monitor pushes alerts proactively."""
-    hm_file = AI_AGENTS_DIR / "agents" / "health_monitor.py"
-    if not hm_file.exists():
-        return False, "health_monitor.py not found"
+def _health_monitor_sources() -> list[Path]:
+    legacy_file = AI_AGENTS_DIR / "agents" / "health_monitor.py"
+    if legacy_file.is_file():
+        return [legacy_file]
 
-    content = hm_file.read_text()
+    package_dir = AI_AGENTS_DIR / "agents" / "health_monitor"
+    if package_dir.is_dir():
+        return sorted(p for p in package_dir.rglob("*.py") if p.is_file())
+
+    return []
+
+
+def _check_proactive_alert_surfacing() -> ProbeCheckResult:
+    """Check health_monitor pushes alerts proactively."""
+    sources = _health_monitor_sources()
+    if not sources:
+        return (
+            False,
+            "health_monitor implementation not found; checked agents/health_monitor.py and agents/health_monitor/",
+        )
+
+    contents: list[str] = []
+    for source in sources:
+        try:
+            contents.append(source.read_text(errors="replace"))
+        except OSError:
+            continue
+    content = "\n".join(contents)
     has_notify = "notify" in content.lower()
     has_ntfy = "ntfy" in content
+
+    service_file = AI_AGENTS_DIR / "systemd" / "units" / "health-monitor.service"
+    try:
+        service_content = service_file.read_text(errors="replace") if service_file.is_file() else ""
+    except OSError:
+        service_content = ""
+    has_on_failure_notify = "OnFailure=notify-failure" in service_content
 
     try:
         result = subprocess.run(
@@ -103,14 +132,23 @@ def _check_proactive_alert_surfacing() -> tuple[bool, str]:
             timeout=5,
         )
         timer_active = result.stdout.strip() == "active"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        timer_active = False
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return (
+            False,
+            f"could not query health-monitor.timer live state: {exc}",
+            "inconclusive",
+        )
 
-    if has_notify and timer_active:
-        return True, f"health_monitor has notification calls and timer is active (ntfy: {has_ntfy})"
+    if (has_notify or has_on_failure_notify) and timer_active:
+        layout = "package" if len(sources) > 1 else "module"
+        return (
+            True,
+            f"health_monitor {layout} has proactive alert path and timer is active "
+            f"(ntfy: {has_ntfy}, service OnFailure notify: {has_on_failure_notify})",
+        )
     problems: list[str] = []
-    if not has_notify:
-        problems.append("no notification calls")
+    if not (has_notify or has_on_failure_notify):
+        problems.append("no notification calls or systemd OnFailure notification")
     if not timer_active:
         problems.append("timer not active")
     return False, f"proactive alerting incomplete: {', '.join(problems)}"
