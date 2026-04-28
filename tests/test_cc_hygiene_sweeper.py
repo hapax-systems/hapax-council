@@ -109,6 +109,7 @@ def test_parse_task_note_happy_path(tmp_path: Path) -> None:
         tmp_path,
         "cc-foo-bar",
         status="offered",
+        automation_status="FULL_AUTO",
         assigned_to="unassigned",
         claimed_at=None,
         created_at=_now(),
@@ -118,6 +119,7 @@ def test_parse_task_note_happy_path(tmp_path: Path) -> None:
     assert note is not None
     assert note.task_id == "cc-foo-bar"
     assert note.status == "offered"
+    assert note.automation_status == "FULL_AUTO"
     assert note.assigned_to == "unassigned"
     assert note.claimed_at is None
 
@@ -449,6 +451,18 @@ def test_refusal_dormancy_recent_refused_no_event() -> None:
         path="x",
         task_id="cc-refused",
         status="refused",
+        updated_at=now - timedelta(days=1),
+    )
+    assert check_refusal_pipeline_dormancy([note], now=now) == []
+
+
+def test_refusal_dormancy_recent_canonical_refused_no_event() -> None:
+    now = _now()
+    note = TaskNote(
+        path="x",
+        task_id="cc-refused-done",
+        status="done",
+        automation_status="REFUSED",
         updated_at=now - timedelta(days=1),
     )
     assert check_refusal_pipeline_dormancy([note], now=now) == []
