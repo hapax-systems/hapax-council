@@ -6,6 +6,7 @@ import json
 import os
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from agents.operator_awareness.aggregator import (
     Aggregator,
@@ -19,6 +20,23 @@ from agents.operator_awareness.aggregator import (
     collect_v5_publications_block,
 )
 from agents.operator_awareness.state import HealthBlock
+
+
+def _egress(
+    *,
+    public_claim_allowed: bool = False,
+    state: str = "offline",
+    public_ready: bool = False,
+    research_capture_ready: bool = False,
+    operator_action: str = "",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        public_claim_allowed=public_claim_allowed,
+        public_ready=public_ready,
+        research_capture_ready=research_capture_ready,
+        operator_action=operator_action,
+        state=SimpleNamespace(value=state),
+    )
 
 
 def _now() -> datetime:
@@ -219,7 +237,7 @@ class TestCollectHealthBlock:
 
 class TestCollectStreamBlock:
     def test_missing_file_returns_offline(self, tmp_path):
-        block = collect_stream_block(tmp_path / "absent.jsonl")
+        block = collect_stream_block(tmp_path / "absent.jsonl", egress_resolver=lambda: _egress())
         assert block.live is False
         assert block.chronicle_events_5min == 0
 
@@ -230,11 +248,11 @@ class TestCollectStreamBlock:
             json.dumps({"ts": old_ts, "event_type": "test"}) + "\n",
             encoding="utf-8",
         )
-        block = collect_stream_block(path, now=time.time())
+        block = collect_stream_block(path, now=time.time(), egress_resolver=lambda: _egress())
         assert block.live is False
         assert block.chronicle_events_5min == 0
 
-    def test_recent_events_live(self, tmp_path):
+    def test_recent_events_do_not_make_live_without_egress_claim(self, tmp_path):
         path = tmp_path / "events.jsonl"
         now = time.time()
         path.write_text(
@@ -242,10 +260,22 @@ class TestCollectStreamBlock:
             + "\n",
             encoding="utf-8",
         )
-        block = collect_stream_block(path, now=now)
-        assert block.live is True
+        block = collect_stream_block(path, now=now, egress_resolver=lambda: _egress())
+        assert block.live is False
         # 5min window covers ts >= now-300, so events at -0..-240 (i=0..8) → 8 events.
         assert block.chronicle_events_5min == 8
+
+    def test_egress_claim_sets_live_even_without_chronicle_events(self, tmp_path):
+        path = tmp_path / "events.jsonl"
+        path.write_text("", encoding="utf-8")
+        block = collect_stream_block(
+            path,
+            now=time.time(),
+            egress_resolver=lambda: _egress(public_claim_allowed=True, state="public_live"),
+        )
+        assert block.live is True
+        assert block.egress_state == "public_live"
+        assert block.public_claim_allowed is True
 
     def test_skips_malformed_lines(self, tmp_path):
         path = tmp_path / "events.jsonl"
@@ -254,7 +284,7 @@ class TestCollectStreamBlock:
             "not json\n" + json.dumps({"ts": now, "event_type": "test"}) + "\n" + "{broken\n",
             encoding="utf-8",
         )
-        block = collect_stream_block(path, now=now)
+        block = collect_stream_block(path, now=now, egress_resolver=lambda: _egress())
         assert block.chronicle_events_5min == 1
 
 
@@ -298,6 +328,12 @@ class TestAggregatorCollect:
             refusals_log_path=refusals,
             infra_snapshot_path=infra,
             chronicle_events_path=chronicle,
+            egress_resolver=lambda: _egress(
+                public_claim_allowed=True,
+                state="public_live",
+                public_ready=True,
+                research_capture_ready=True,
+            ),
         )
         state = agg.collect()
 
@@ -316,6 +352,7 @@ class TestAggregatorCollect:
             refusals_log_path=tmp_path / "absent1.jsonl",
             infra_snapshot_path=tmp_path / "absent2.json",
             chronicle_events_path=tmp_path / "absent3.jsonl",
+            egress_resolver=lambda: _egress(),
         )
         state = agg.collect()
         # No source crashes; every block falls back to default.
@@ -329,6 +366,7 @@ class TestAggregatorCollect:
             refusals_log_path=tmp_path / "a.jsonl",
             infra_snapshot_path=tmp_path / "b.json",
             chronicle_events_path=tmp_path / "c.jsonl",
+            egress_resolver=lambda: _egress(),
             clock=lambda: fixed,
         )
         state = agg.collect()
@@ -405,7 +443,7 @@ class TestSourceFailureMetric:
             raise OSError("disk full")
 
         monkeypatch.setattr(_Path, "open", _boom)
-        collect_stream_block(path)
+        collect_stream_block(path, egress_resolver=lambda: _egress())
         assert self._label_value("stream") == before + 1
 
 

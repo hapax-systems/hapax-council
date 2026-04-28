@@ -138,6 +138,11 @@ class StreamBlock(_Block):
     live: bool = False
     chronicle_events_5min: int = 0
     rotation_state: str = ""  # "ACTIVE" / "ROTATING_NEW" / etc.
+    egress_state: str = "unknown"
+    public_claim_allowed: bool = False
+    public_ready: bool = False
+    research_capture_ready: bool = False
+    operator_action: str = ""
 
 
 class StudioBlock(_Block):
