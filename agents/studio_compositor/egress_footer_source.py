@@ -19,23 +19,14 @@ Design:
   (no container), matching the 2026-04-23 "zero container opacity"
   directive. Uses the HOMAGE ``muted`` colour role so it always
   reads as chrome rather than content.
-* **Feature-flagged OFF by default.** Flipped by the operator via
-  ``HAPAX_EGRESS_FOOTER_ENABLED=1`` after visual sign-off on a live
-  broadcast. Registered in ``cairo_sources.__init__`` so the ward is
-  declarable in layout JSON before flip.
-
-Not in scope this PR:
-
-* Compositor ``default.json`` layout registration — operator decides
-  when to flip.
-* Startup-time validate call — the ward handles this lazily on first
-  render.
+* **Always mounted.** The default compositor layout includes this ward.
+  Validation still fails closed: if Ring 2 rejects or is unavailable,
+  the source renders empty instead of dropping the compositor loop.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING, Any
 
 from agents.studio_compositor.homage import get_active_package
@@ -51,23 +42,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_FEATURE_FLAG_ENV: str = "HAPAX_EGRESS_FOOTER_ENABLED"
-
 _DEFAULT_NATURAL_W: int = 1920
 _DEFAULT_NATURAL_H: int = 30
 
 #: Alpha ceiling for the text. Keeps the footer present but not
 #: prominent — spec §Phase 9 requires ≤ 0.55.
 _MUTED_ALPHA: float = 0.55
-
-
-def _feature_flag_enabled() -> bool:
-    return os.environ.get(_FEATURE_FLAG_ENV, "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
 
 
 def _fallback_package() -> HomagePackage:
@@ -145,8 +125,6 @@ class EgressFooterCairoSource(HomageTransitionalSource):
         t: float,
         state: dict[str, Any],
     ) -> None:
-        if not _feature_flag_enabled():
-            return
         self._ensure_validated()
         if self._withheld:
             return

@@ -1,7 +1,7 @@
 """Tests for the anti-personification egress footer cairo ward.
 
-ef7b-165 Phase 9 Part 2 (delta, 2026-04-24). Pins the feature flag,
-Ring 2 validation gating, and registry binding.
+ef7b-165 Phase 9 Part 2 (delta, 2026-04-24). Pins the always-mounted
+render path, Ring 2 validation gating, and registry binding.
 """
 
 from __future__ import annotations
@@ -12,10 +12,7 @@ from unittest.mock import patch
 
 import cairo
 
-from agents.studio_compositor.egress_footer_source import (
-    _FEATURE_FLAG_ENV,
-    EgressFooterCairoSource,
-)
+from agents.studio_compositor.egress_footer_source import EgressFooterCairoSource
 from shared.governance.monetization_safety import RiskAssessment, SurfaceKind
 
 if TYPE_CHECKING:
@@ -32,31 +29,58 @@ class _StubClassifier:
         return self.verdict
 
 
-def _ctx() -> cairo.Context:
-    """Create a throwaway cairo context for render_content calls."""
+def _surface_ctx() -> tuple[cairo.ImageSurface, cairo.Context]:
+    """Create a throwaway cairo surface/context for render_content calls."""
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1920, 30)
-    return cairo.Context(surface)
+    return surface, cairo.Context(surface)
 
 
-# ── feature-flag gating ───────────────────────────────────────────────
+def _ctx() -> cairo.Context:
+    return _surface_ctx()[1]
 
 
-def test_render_noop_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(_FEATURE_FLAG_ENV, raising=False)
+# ── always-mounted render path ────────────────────────────────────────
+
+
+def test_render_validates_without_feature_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HAPAX_EGRESS_FOOTER_ENABLED", raising=False)
     source = EgressFooterCairoSource()
-    # Render should not raise and should not invoke Ring 2.
-    with patch("agents.studio_compositor.egress_footer_source.validate_footer_once") as m_validate:
+    verdict = RiskAssessment(allowed=True, risk="none", reason="stub", surface=SurfaceKind.OVERLAY)
+    with patch(
+        "agents.studio_compositor.egress_footer_source.validate_footer_once",
+        return_value=verdict,
+    ) as m_validate:
         source.render_content(_ctx(), 1920, 30, t=0.0, state={})
-    m_validate.assert_not_called()
-    assert source._validated is False
+    m_validate.assert_called_once_with(source._text)
+    assert source._validated is True
 
 
-def test_render_respects_explicit_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(_FEATURE_FLAG_ENV, "0")
+def test_render_ignores_legacy_explicit_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_EGRESS_FOOTER_ENABLED", "0")
     source = EgressFooterCairoSource()
-    with patch("agents.studio_compositor.egress_footer_source.validate_footer_once") as m_validate:
+    verdict = RiskAssessment(allowed=True, risk="none", reason="stub", surface=SurfaceKind.OVERLAY)
+    with patch(
+        "agents.studio_compositor.egress_footer_source.validate_footer_once",
+        return_value=verdict,
+    ) as m_validate:
         source.render_content(_ctx(), 1920, 30, t=0.0, state={})
-    m_validate.assert_not_called()
+    m_validate.assert_called_once_with(source._text)
+
+
+def test_render_paints_footer_pixels_when_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_EGRESS_FOOTER_ENABLED", "0")
+    source = EgressFooterCairoSource()
+    verdict = RiskAssessment(allowed=True, risk="none", reason="stub", surface=SurfaceKind.OVERLAY)
+    surface, ctx = _surface_ctx()
+
+    with patch(
+        "agents.studio_compositor.egress_footer_source.validate_footer_once",
+        return_value=verdict,
+    ):
+        source.render_content(ctx, 1920, 30, t=0.0, state={})
+
+    surface.flush()
+    assert any(surface.get_data()), "allowed egress footer should paint visible pixels"
 
 
 # ── Ring 2 validation gating ──────────────────────────────────────────
@@ -65,7 +89,7 @@ def test_render_respects_explicit_off(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_render_validates_exactly_once_on_first_render(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(_FEATURE_FLAG_ENV, "1")
+    monkeypatch.delenv("HAPAX_EGRESS_FOOTER_ENABLED", raising=False)
     source = EgressFooterCairoSource()
     verdict = RiskAssessment(allowed=True, risk="none", reason="stub", surface=SurfaceKind.OVERLAY)
     with patch(
@@ -82,7 +106,7 @@ def test_render_validates_exactly_once_on_first_render(
 
 
 def test_render_withholds_on_ring2_reject(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(_FEATURE_FLAG_ENV, "1")
+    monkeypatch.delenv("HAPAX_EGRESS_FOOTER_ENABLED", raising=False)
     source = EgressFooterCairoSource()
     verdict = RiskAssessment(
         allowed=False, risk="high", reason="stub reject", surface=SurfaceKind.OVERLAY
@@ -100,7 +124,7 @@ def test_render_withholds_when_validator_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Classifier backend down → fail-closed withhold, no exception bubbles up."""
-    monkeypatch.setenv(_FEATURE_FLAG_ENV, "1")
+    monkeypatch.delenv("HAPAX_EGRESS_FOOTER_ENABLED", raising=False)
     source = EgressFooterCairoSource()
 
     def _boom(text: str, **_: object) -> RiskAssessment:

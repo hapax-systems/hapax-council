@@ -49,6 +49,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "whos_here",
         "durf",
         "m8-display",
+        "egress_footer",
         # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
         # Mural) is the 15th HOMAGE ward; lower-band geometry, retires
         # captions in same surface area. See
@@ -82,6 +83,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "whos-here-tr",
         "durf-fullframe",
         "m8-display-surface",
+        "egress-footer-bottom",
         # HOMAGE follow-on #191 — GEM mural surface (lower-band).
         "gem-mural-bottom",
     }
@@ -108,6 +110,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("whos_here", "whos-here-tr"),
         ("durf", "durf-fullframe"),
         ("m8-display", "m8-display-surface"),
+        ("egress_footer", "egress-footer-bottom"),
         # HOMAGE follow-on #191 — GEM mural assignment.
         ("gem", "gem-mural-bottom"),
     }
@@ -140,6 +143,7 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "whos_here": "cairo",
         "durf": "cairo",
         "m8-display": "shm_rgba",
+        "egress_footer": "cairo",
     }
 
 
@@ -255,6 +259,7 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "whos_here",
         "durf",
         "m8-display",
+        "egress_footer",
         # HOMAGE follow-on #191 — GEM mural ward (15th HOMAGE).
         "gem",
     }

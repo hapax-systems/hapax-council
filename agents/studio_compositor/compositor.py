@@ -220,6 +220,19 @@ _FALLBACK_LAYOUT = Layout(
                 "shm_path": "/dev/shm/hapax-sources/m8-display.rgba",
             },
         ),
+        SourceSchema(
+            id="egress_footer",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "EgressFooterCairoSource",
+                "natural_w": 1920,
+                "natural_h": 30,
+            },
+            update_cadence="rate",
+            rate_hz=1.0,
+            tags=["governance", "anti-personification", "egress"],
+        ),
         # HARDM dot-matrix source retired 2026-04-23 (GEAL Phase 0).
         # Replaced by the Sierpinski-native expression layer defined in
         # ``docs/superpowers/specs/2026-04-23-geal-spec.md``.
@@ -305,7 +318,7 @@ _FALLBACK_LAYOUT = Layout(
             z_order=35,
         ),
         # 2026-04-23 Gemini-reapproach Plan B Phase B1 — move grounding-ticker
-        # ABOVE gem-mural-bottom (y=820..1060) and to the RIGHT of pip-ll
+        # ABOVE gem-mural-bottom (now y=810..1050) and to the RIGHT of pip-ll
         # (x=20..420, the album quadrant). New (440, 770, 480, 40) sits in
         # the dead strip between pip-lr/activity-variety-log-mid and GEM.
         SurfaceSchema(
@@ -357,7 +370,7 @@ _FALLBACK_LAYOUT = Layout(
         # HOMAGE #191 GEM mural — lower-band, replaces captions geometry.
         SurfaceSchema(
             id="gem-mural-bottom",
-            geometry=SurfaceGeometry(kind="rect", x=40, y=820, w=1840, h=240),
+            geometry=SurfaceGeometry(kind="rect", x=40, y=810, w=1840, h=240),
             z_order=30,
         ),
         SurfaceSchema(
@@ -370,6 +383,12 @@ _FALLBACK_LAYOUT = Layout(
             id="m8-display-surface",
             geometry=SurfaceGeometry(kind="rect", x=600, y=80, w=1280, h=960),
             z_order=25,
+        ),
+        SurfaceSchema(
+            id="egress-footer-bottom",
+            geometry=SurfaceGeometry(kind="rect", x=0, y=1050, w=1920, h=30),
+            z_order=60,
+            update_cadence="rate",
         ),
     ],
     assignments=[
@@ -408,6 +427,7 @@ _FALLBACK_LAYOUT = Layout(
         Assignment(source="gem", surface="gem-mural-bottom", opacity=0.95),
         Assignment(source="durf", surface="durf-fullframe", opacity=0.96),
         Assignment(source="m8-display", surface="m8-display-surface", opacity=0.0),
+        Assignment(source="egress_footer", surface="egress-footer-bottom"),
     ],
 )
 

@@ -311,6 +311,26 @@
       "pair_role": "solo",
       "pair_leg": null,
       "ward_id": null
+    },
+    {
+      "id": "egress_footer",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "EgressFooterCairoSource",
+        "natural_w": 1920,
+        "natural_h": 30
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": [
+        "governance",
+        "anti-personification",
+        "egress"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     }
   ],
   "surfaces": [
@@ -481,7 +501,7 @@
       "geometry": {
         "kind": "rect",
         "x": 40,
-        "y": 820,
+        "y": 810,
         "w": 1840,
         "h": 240,
         "mask": null,
@@ -655,6 +675,24 @@
       "blend_mode": "over",
       "z_order": 25,
       "update_cadence": "always"
+    },
+    {
+      "id": "egress-footer-bottom",
+      "geometry": {
+        "kind": "rect",
+        "x": 0,
+        "y": 1050,
+        "w": 1920,
+        "h": 30,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 60,
+      "update_cadence": "rate"
     }
   ],
   "assignments": [
@@ -798,6 +836,15 @@
       "surface": "m8-display-surface",
       "transform": {},
       "opacity": 0.0,
+      "per_assignment_effects": [],
+      "non_destructive": true,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "egress_footer",
+      "surface": "egress-footer-bottom",
+      "transform": {},
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "pre_fx"

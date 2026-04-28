@@ -178,9 +178,8 @@ def _register_builtins() -> None:
     register("DURFCairoSource", DURFCairoSource)
     # ef7b-165 Phase 9 Part 2 (2026-04-24) — anti-personification egress
     # footer. Static text strip framing the channel as a research
-    # instrument. Default OFF via HAPAX_EGRESS_FOOTER_ENABLED; operator
-    # flips after visual sign-off. Registered so layout JSON can declare
-    # the ward independent of the flag.
+    # instrument. Mounted in default.json; the source fails closed to an
+    # empty render if Ring 2 validation rejects the text.
     from agents.studio_compositor.egress_footer_source import EgressFooterCairoSource
 
     register("EgressFooterCairoSource", EgressFooterCairoSource)
