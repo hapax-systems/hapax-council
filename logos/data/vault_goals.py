@@ -28,6 +28,7 @@ DEFAULT_STALENESS_DAYS: dict[str, int] = {
 
 DEFAULT_VAULT_BASE = Path.home() / "Documents" / "Personal"
 DEFAULT_VAULT_NAME = "Personal"
+TEMPLATE_DIR_NAMES = {"50-templates"}
 
 
 @dataclass
@@ -88,6 +89,23 @@ def _build_obsidian_uri(vault_name: str, vault_base: Path, file_path: Path) -> s
     return f"obsidian://open?vault={quote(vault_name, safe='')}&file={quote(file_ref, safe='/')}"
 
 
+def _is_template_goal_note(vault_base: Path, file_path: Path, frontmatter: dict) -> bool:
+    """Return True for reusable goal templates, which are not live goals."""
+    try:
+        relative_parts = file_path.relative_to(vault_base).parts
+    except ValueError:
+        relative_parts = file_path.parts
+
+    if any(part in TEMPLATE_DIR_NAMES for part in relative_parts):
+        return True
+
+    if file_path.name.startswith("tpl-"):
+        return True
+
+    templater_fields = ("title", "domain", "priority", "started_at", "target_date")
+    return any("<%" in str(frontmatter.get(field, "")) for field in templater_fields)
+
+
 def collect_vault_goals(
     *,
     vault_base: Path | None = None,
@@ -95,6 +113,7 @@ def collect_vault_goals(
     domain_filter: str | None = None,
     staleness_days: dict[str, int] | None = None,
     sprint_measure_statuses: dict[str, str] | None = None,
+    include_templates: bool = False,
 ) -> list[VaultGoal]:
     """Scan an Obsidian vault for goal notes and return structured data.
 
@@ -104,6 +123,8 @@ def collect_vault_goals(
         domain_filter: If set, only return goals matching this domain.
         staleness_days: Per-domain staleness thresholds (days). Uses defaults if None.
         sprint_measure_statuses: Map of measure ID → status for progress calculation.
+        include_templates: Include reusable template notes that have type: goal
+            frontmatter. Defaults to False because templates are not live goals.
 
     Returns:
         Sorted list of VaultGoal instances. Sorted by priority (P0 first) then
@@ -125,6 +146,9 @@ def collect_vault_goals(
             continue
 
         if not fm or fm.get("type") != "goal":
+            continue
+
+        if not include_templates and _is_template_goal_note(base, md_path, fm):
             continue
 
         domain = str(fm.get("domain", ""))
