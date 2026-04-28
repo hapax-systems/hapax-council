@@ -20,6 +20,7 @@ Live-graph + recovery subcommands (Phase 4 + Phase 5):
 
 - ``verify``    — assert live graph matches descriptor
 - ``audit``     — full drift report
+- ``l12-forward-check`` — static L-12 forward/private route guard
 - ``watchdog``  — Ryzen codec pin-glitch recovery sequence (manual)
 - ``pin-check`` — single-shot pin-glitch detection with persisted
   silence-window state for systemd-timer composition; --auto-fix
@@ -46,6 +47,7 @@ from shared.audio_topology import (
 )
 from shared.audio_topology_generator import generate_confs
 from shared.audio_topology_inspector import (
+    check_l12_forward_invariant,
     check_tts_broadcast_path,
     descriptor_from_dump_file,
     descriptor_from_live,
@@ -471,6 +473,14 @@ def cmd_tts_broadcast_check(args: argparse.Namespace) -> int:
     return 0 if result.ok else 2
 
 
+def cmd_l12_forward_check(args: argparse.Namespace) -> int:
+    """Verify the static L-12 forward/private directionality contract."""
+    descriptor = _load(args.descriptor)
+    result = check_l12_forward_invariant(descriptor)
+    print(result.format())
+    return 0 if result.ok else 2
+
+
 _DEFAULT_PIN_GLITCH_STATE_FILE = Path("/run/user/1000/hapax-pin-glitch-state.json")
 
 
@@ -687,6 +697,16 @@ def main() -> int:
         help="Saved pw-dump JSON path instead of invoking pw-dump live.",
     )
     p_tts_broadcast.set_defaults(func=cmd_tts_broadcast_check)
+
+    p_l12_forward = sub.add_parser(
+        "l12-forward-check",
+        help=(
+            "Static CI guard: verify L-12 producers have allowed forward "
+            "paths and private routes cannot reach broadcast."
+        ),
+    )
+    p_l12_forward.add_argument("descriptor")
+    p_l12_forward.set_defaults(func=cmd_l12_forward_check)
 
     p_watchdog = sub.add_parser(
         "watchdog",

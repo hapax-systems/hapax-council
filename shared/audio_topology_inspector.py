@@ -94,6 +94,73 @@ class TtsBroadcastPathCheck:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class L12ForwardInvariantViolation:
+    """One static L-12 directionality violation in a topology descriptor."""
+
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class L12ForwardInvariantCheck:
+    """Result of the static L-12 forward/private directionality check."""
+
+    ok: bool
+    violations: tuple[L12ForwardInvariantViolation, ...]
+
+    def format(self) -> str:
+        """Operator-readable single report block."""
+        lines = ["L-12 forward invariant: " + ("OK" if self.ok else "FAIL")]
+        for violation in self.violations:
+            lines.append(f"{violation.code}: {violation.message}")
+        return "\n".join(lines)
+
+
+_REQUIRED_L12_DIRECTIONALITY_NODES = {
+    "l12-capture",
+    "l12-usb-return",
+    "livestream-tap",
+    "l12-evilpet-capture",
+    "private-sink",
+    "notification-private-sink",
+    "role-multimedia",
+    "role-notification",
+    "role-assistant",
+    "role-broadcast",
+    "pc-loudnorm",
+    "voice-fx",
+    "tts-loudnorm",
+    "tts-duck",
+    "tts-broadcast-capture",
+    "tts-broadcast-playback",
+}
+_ALLOWED_L12_RETURN_PRODUCERS = {"tts-duck", "pc-loudnorm", "music-duck"}
+_PRIVATE_ONLY_ROOTS = {
+    "role-assistant",
+    "role-notification",
+    "private-sink",
+    "notification-private-sink",
+}
+_PRIVATE_FORBIDDEN_REACHABILITY = {
+    "l12-capture",
+    "l12-usb-return",
+    "l12-evilpet-capture",
+    "livestream-tap",
+    "livestream-legacy",
+    "broadcast-master-capture",
+    "broadcast-normalized-capture",
+    "obs-broadcast-remap-capture",
+    "role-multimedia",
+    "pc-loudnorm",
+    "voice-fx",
+    "tts-loudnorm",
+    "tts-duck",
+    "tts-broadcast-capture",
+    "tts-broadcast-playback",
+}
+
+
 def run_pw_dump() -> str:
     """Invoke ``pw-dump`` and return the JSON text.
 
@@ -363,3 +430,246 @@ def check_tts_broadcast_path(
         missing_nodes=tuple(missing_nodes),
         missing_edges=tuple(missing_edges),
     )
+
+
+def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInvariantCheck:
+    """Validate the current static L-12 directionality contract.
+
+    This is the CI/static complement to ``scripts/audio-leak-guard.sh``.
+    It consumes the canonical ``TopologyDescriptor`` instead of parsing
+    conf text directly, so topology drift and the guard stay on the same
+    source of truth.
+    """
+    violations: list[L12ForwardInvariantViolation] = []
+    by_id = {node.id: node for node in descriptor.nodes}
+    graph = _static_directionality_graph(descriptor)
+
+    for node_id in sorted(_REQUIRED_L12_DIRECTIONALITY_NODES - by_id.keys()):
+        violations.append(
+            L12ForwardInvariantViolation(
+                code="missing_required_node",
+                message=f"{node_id} is required by the L-12 directionality contract",
+            )
+        )
+
+    def node(node_id: str) -> Node | None:
+        return by_id.get(node_id)
+
+    def expect_target(node_id: str, expected: str, code: str) -> None:
+        n = node(node_id)
+        if n is None:
+            return
+        if n.target_object != expected:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code=code,
+                    message=(f"{node_id} targets {n.target_object!r}; expected {expected!r}"),
+                )
+            )
+
+    expect_target("role-assistant", "hapax-private", "assistant_target_not_private")
+    expect_target(
+        "role-notification",
+        "hapax-notification-private",
+        "notification_target_not_private",
+    )
+    expect_target("role-multimedia", "hapax-pc-loudnorm", "multimedia_target_not_pc")
+    expect_target("role-broadcast", "hapax-voice-fx-capture", "broadcast_target_not_voice_fx")
+
+    for node_id in ("private-sink", "notification-private-sink"):
+        private = node(node_id)
+        if private is None:
+            continue
+        if private.target_object is not None or private.params.get("fail_closed") is not True:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="private_sink_not_fail_closed",
+                    message=(f"{node_id} must be a fail-closed sink with no downstream target"),
+                )
+            )
+
+    pc_loudnorm = node("pc-loudnorm")
+    if pc_loudnorm is not None and pc_loudnorm.params.get("notification_excluded") is not True:
+        violations.append(
+            L12ForwardInvariantViolation(
+                code="pc_loudnorm_allows_notifications",
+                message="pc-loudnorm must keep notification_excluded=true",
+            )
+        )
+
+    l12_return = node("l12-usb-return")
+    if l12_return is not None:
+        l12_return_refs = {l12_return.id, l12_return.pipewire_name}
+        for candidate in descriptor.nodes:
+            if _node_targets_any(candidate, l12_return_refs):
+                if candidate.id not in _ALLOWED_L12_RETURN_PRODUCERS:
+                    violations.append(
+                        L12ForwardInvariantViolation(
+                            code="unexpected_l12_return_producer",
+                            message=(
+                                f"{candidate.id} targets L-12 return without an explicit "
+                                "allowed-direction contract"
+                            ),
+                        )
+                    )
+
+    capture = node("l12-evilpet-capture")
+    if capture is not None:
+        capture_positions = str(capture.params.get("capture_positions", ""))
+        forbidden_positions = str(capture.params.get("forbidden_capture_positions", ""))
+        if capture_positions != "AUX1 AUX3 AUX4 AUX5":
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="l12_capture_positions_not_narrowed",
+                    message="l12-evilpet-capture must bind only AUX1 AUX3 AUX4 AUX5",
+                )
+            )
+        for pos in ("AUX8", "AUX9", "AUX10", "AUX11", "AUX12", "AUX13"):
+            if pos not in forbidden_positions.split():
+                violations.append(
+                    L12ForwardInvariantViolation(
+                        code="l12_forbidden_capture_position_missing",
+                        message=f"l12-evilpet-capture must forbid {pos}",
+                    )
+                )
+
+    if not _can_reach(graph, "l12-capture", "livestream-tap"):
+        violations.append(
+            L12ForwardInvariantViolation(
+                code="l12_capture_missing_livestream_forward_path",
+                message="L-12 capture must forward through l12-evilpet-capture to livestream-tap",
+            )
+        )
+
+    if not _can_reach(graph, "role-broadcast", "livestream-tap"):
+        violations.append(
+            L12ForwardInvariantViolation(
+                code="broadcast_role_missing_livestream_forward_path",
+                message="role-broadcast must reach voice-fx, TTS loudnorm/duck, and livestream-tap",
+            )
+        )
+
+    tts_duck = node("tts-duck")
+    if tts_duck is not None:
+        forward_path = _param_words(tts_duck.params.get("broadcast_forward_path"))
+        expected_forward_path = [
+            "hapax-tts-broadcast-capture",
+            "hapax-tts-broadcast-playback",
+            "hapax-livestream-tap",
+        ]
+        if forward_path != expected_forward_path:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="tts_broadcast_forward_path_not_declared",
+                    message=(
+                        "tts-duck must declare broadcast_forward_path="
+                        + " ".join(expected_forward_path)
+                    ),
+                )
+            )
+        if not _can_reach(graph, "tts-duck", "livestream-tap"):
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="tts_l12_missing_livestream_forward_path",
+                    message=("tts-duck targets L-12 return but does not also reach livestream-tap"),
+                )
+            )
+
+    for root in sorted(_PRIVATE_ONLY_ROOTS & by_id.keys()):
+        reachable_forbidden = sorted(_reachable_from(graph, root) & _PRIVATE_FORBIDDEN_REACHABILITY)
+        if reachable_forbidden:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="private_route_reaches_broadcast_path",
+                    message=f"{root} can reach forbidden node(s): {', '.join(reachable_forbidden)}",
+                )
+            )
+
+    return L12ForwardInvariantCheck(
+        ok=not violations,
+        violations=tuple(violations),
+    )
+
+
+def _node_targets_any(node: Node, refs: set[str]) -> bool:
+    if node.target_object in refs:
+        return True
+    playback_target = node.params.get("playback_target")
+    return isinstance(playback_target, str) and playback_target in refs
+
+
+def _param_words(value: str | int | float | bool | None) -> list[str]:
+    if not isinstance(value, str):
+        return []
+    return [word for word in value.split() if word]
+
+
+def _static_directionality_graph(descriptor: TopologyDescriptor) -> dict[str, set[str]]:
+    """Build a conservative directed graph from descriptor edges and params."""
+    by_id = {node.id: node for node in descriptor.nodes}
+    ref_to_id = _reference_to_node_id(descriptor)
+    graph: dict[str, set[str]] = {node.id: set() for node in descriptor.nodes}
+
+    def add(source: str | None, target: str | None) -> None:
+        if source is None or target is None:
+            return
+        if source not in by_id or target not in by_id:
+            return
+        graph.setdefault(source, set()).add(target)
+
+    for edge in descriptor.edges:
+        add(edge.source, edge.target)
+
+    for node in descriptor.nodes:
+        target_id = ref_to_id.get(node.target_object or "")
+        if target_id is not None:
+            if node.kind == NodeKind.FILTER_CHAIN and node.id.endswith("-capture"):
+                add(target_id, node.id)
+            else:
+                add(node.id, target_id)
+
+        playback_target = node.params.get("playback_target")
+        if isinstance(playback_target, str):
+            add(node.id, ref_to_id.get(playback_target))
+
+        forward_path = [
+            ref_to_id[token]
+            for token in _param_words(node.params.get("broadcast_forward_path"))
+            if token in ref_to_id
+        ]
+        if forward_path:
+            add(node.id, forward_path[0])
+            for source, target in zip(forward_path, forward_path[1:], strict=False):
+                add(source, target)
+
+    return graph
+
+
+def _reference_to_node_id(descriptor: TopologyDescriptor) -> dict[str, str]:
+    """Map stable descriptor IDs and PipeWire node names to descriptor IDs."""
+    refs: dict[str, str] = {}
+    for node in descriptor.nodes:
+        refs[node.id] = node.id
+        refs[node.pipewire_name] = node.id
+        playback_source = node.params.get("playback_source")
+        if isinstance(playback_source, str) and playback_source:
+            refs[playback_source] = node.id
+    return refs
+
+
+def _reachable_from(graph: dict[str, set[str]], start: str) -> set[str]:
+    seen: set[str] = set()
+    frontier = list(graph.get(start, ()))
+    while frontier:
+        current = frontier.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        next_nodes = graph.get(current)
+        if next_nodes:
+            frontier.extend(next_nodes - seen)
+    return seen
+
+
+def _can_reach(graph: dict[str, set[str]], source: str, target: str) -> bool:
+    return target in _reachable_from(graph, source)

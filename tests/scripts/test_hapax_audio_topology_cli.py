@@ -9,7 +9,10 @@ from textwrap import dedent
 
 import pytest
 
+from shared.audio_topology import Node, TopologyDescriptor
+
 CLI_PATH = Path(__file__).resolve().parents[2] / "scripts" / "hapax-audio-topology"
+CANONICAL_YAML = Path(__file__).resolve().parents[2] / "config" / "audio-topology.yaml"
 
 
 def _run(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -27,6 +30,17 @@ def _write_yaml(tmp: Path, body: str) -> Path:
     path = tmp / "topo.yaml"
     path.write_text(dedent(body).strip() + "\n")
     return path
+
+
+def _replace_node(
+    descriptor: TopologyDescriptor,
+    node_id: str,
+    **updates: object,
+) -> TopologyDescriptor:
+    nodes: list[Node] = []
+    for node in descriptor.nodes:
+        nodes.append(node.model_copy(update=updates) if node.id == node_id else node)
+    return descriptor.model_copy(update={"nodes": nodes})
 
 
 @pytest.fixture
@@ -628,6 +642,30 @@ class TestTtsBroadcastCheck:
         assert result.returncode == 2
         assert "TTS broadcast path: FAIL" in result.stdout
         assert "hapax-tts-broadcast-*" in result.stdout
+
+
+class TestL12ForwardCheck:
+    def test_l12_forward_check_accepts_canonical_descriptor(self) -> None:
+        result = _run(["l12-forward-check", str(CANONICAL_YAML)])
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "L-12 forward invariant: OK" in result.stdout
+
+    def test_l12_forward_check_fails_private_to_broadcast_path(self, tmp_path: Path) -> None:
+        descriptor = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+        descriptor = _replace_node(
+            descriptor,
+            "role-assistant",
+            target_object="hapax-voice-fx-capture",
+        )
+        broken = tmp_path / "broken-audio-topology.yaml"
+        broken.write_text(descriptor.to_yaml(), encoding="utf-8")
+
+        result = _run(["l12-forward-check", str(broken)])
+
+        assert result.returncode == 2
+        assert "L-12 forward invariant: FAIL" in result.stdout
+        assert "private_route_reaches_broadcast_path" in result.stdout
 
 
 class TestWatchdog:
