@@ -31,6 +31,7 @@ from cc_hygiene.dashboard import (  # noqa: E402
     DEFAULT_DASHBOARD_PATH,
     DEFAULT_VAULT_ACTIVE,
     update_dashboard,
+    update_dashboard_unavailable,
 )
 from cc_hygiene.events import DEFAULT_EVENT_LOG_PATH  # noqa: E402
 from cc_hygiene.models import HygieneState  # noqa: E402
@@ -90,8 +91,13 @@ def main(argv: list[str] | None = None) -> int:
 
     state = _load_state(args.state_path)
     if state is None:
-        LOG.info("no state file at %s — nothing to render", args.state_path)
-        return 0
+        reason = f"missing or invalid state file: {args.state_path}"
+        out = update_dashboard_unavailable(
+            dashboard_path=args.dashboard_path,
+            reason=reason,
+        )
+        LOG.error("%s; wrote visible dashboard warning to %s", reason, out)
+        return 1
 
     out = update_dashboard(
         state,

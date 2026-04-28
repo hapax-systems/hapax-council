@@ -9,3 +9,5 @@ enable hapax-orcid-verifier.timer
 enable hapax-self-federate-rss.timer
 enable hapax-datacite-snapshot.timer
 enable hapax-datacite-mirror.timer
+enable hapax-cc-hygiene.timer
+enable hapax-cc-pr-merge-watcher.timer
