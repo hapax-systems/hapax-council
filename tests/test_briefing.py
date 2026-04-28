@@ -6,6 +6,7 @@ LLM calls and I/O are mocked.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -271,7 +272,17 @@ class _FakeActivity:
     data_sources = _FakeDataSources()
 
     def model_dump_json(self, indent=None):
-        return '{"langfuse": {}, "health": {}, "drift": {}}'
+        return json.dumps(
+            {
+                "langfuse": {},
+                "health": {},
+                "drift": {
+                    "latest_drift_count": self.drift.latest_drift_count,
+                    "latest_summary": getattr(self.drift, "latest_summary", ""),
+                },
+            },
+            indent=indent,
+        )
 
 
 class _FakeHealthReport:
@@ -287,7 +298,6 @@ class _FakeBriefingResult:
     )
 
 
-from datetime import UTC
 from unittest.mock import AsyncMock
 
 
@@ -386,6 +396,170 @@ async def test_generate_briefing_with_scout_report(
 @patch("agents.briefing.run_checks")
 @patch("agents.briefing.format_health", return_value="Healthy")
 @patch("agents.briefing.briefing_agent")
+@patch("agents.briefing.DRIFT_REPORT")
+@patch("agents.briefing.SCOUT_REPORT")
+@patch("agents.briefing.DIGEST_REPORT")
+@patch("agents._operator.get_goals", return_value=[])
+async def test_generate_briefing_suppresses_stale_drift_and_scout_actions(
+    mock_goals,
+    mock_digest_path,
+    mock_scout_path,
+    mock_drift_path,
+    mock_agent,
+    mock_fmt_health,
+    mock_run_checks,
+    mock_activity,
+):
+    """Stale drift/scout artifacts cannot become current facts or component actions."""
+    from agents.briefing import generate_briefing
+
+    activity = _FakeActivity()
+    activity.drift = MagicMock(latest_drift_count=72, latest_summary="72 drift items")
+    mock_activity.return_value = activity
+    mock_run_checks.return_value = _FakeHealthReport()
+    mock_digest_path.exists.return_value = False
+
+    old = datetime.now(UTC) - timedelta(days=8)
+    mock_drift_path.exists.return_value = True
+    mock_drift_path.stat.return_value.st_mtime = old.timestamp()
+    mock_drift_path.read_text.return_value = json.dumps(
+        {"drift_items": [{"severity": "high"} for _ in range(72)], "summary": "72 items"}
+    )
+    mock_scout_path.exists.return_value = True
+    mock_scout_path.read_text.return_value = json.dumps(
+        {
+            "generated_at": old.isoformat().replace("+00:00", "Z"),
+            "recommendations": [
+                {"component": "vector-db", "tier": "evaluate", "summary": "Try Milvus"},
+            ],
+        }
+    )
+    mock_agent.run = AsyncMock(
+        return_value=MagicMock(
+            output=Briefing(
+                generated_at="2026-03-01T07:00:00Z",
+                hours=24,
+                headline="Stack healthy with 72 drift items and scout recommendations",
+                body="Stale facts should be guarded.",
+                action_items=[
+                    ActionItem(
+                        priority="high",
+                        action="Review 72 drift items",
+                        reason="Drift report found current issues",
+                    ),
+                    ActionItem(
+                        priority="high",
+                        action="Evaluate vector-db",
+                        reason="Scout recommends trying Milvus",
+                    ),
+                    ActionItem(
+                        priority="low",
+                        action="Refresh scout report",
+                        reason="Scout source is stale",
+                    ),
+                    ActionItem(priority="low", action="Check unrelated note", reason="Manual"),
+                ],
+            )
+        )
+    )
+
+    briefing = await generate_briefing(hours=24)
+    prompt = mock_agent.run.call_args[0][0]
+    actions = "\n".join(item.action for item in briefing.action_items)
+
+    assert briefing.stats.drift_items == 0
+    assert "current drift not asserted" in briefing.headline
+    assert '"latest_drift_count": 0' in prompt
+    assert "vector-db" not in prompt
+    assert "Review 72 drift items" not in actions
+    assert "Evaluate vector-db" not in actions
+    assert "Refresh scout report" in actions
+    assert "Check unrelated note" in actions
+
+
+@pytest.mark.asyncio
+@patch("agents.briefing.generate_activity_report")
+@patch("agents.briefing.run_checks")
+@patch("agents.briefing.format_health", return_value="Healthy")
+@patch("agents.briefing.briefing_agent")
+@patch("agents.briefing.DRIFT_REPORT")
+@patch("agents.briefing.SCOUT_REPORT")
+@patch("agents.briefing.DIGEST_REPORT")
+@patch("agents._operator.get_goals", return_value=[])
+async def test_generate_briefing_preserves_fresh_drift_and_scout_actions(
+    mock_goals,
+    mock_digest_path,
+    mock_scout_path,
+    mock_drift_path,
+    mock_agent,
+    mock_fmt_health,
+    mock_run_checks,
+    mock_activity,
+):
+    """Fresh drift/scout fixtures retain current actionable behavior."""
+    from agents.briefing import generate_briefing
+
+    activity = _FakeActivity()
+    activity.drift = MagicMock(latest_drift_count=3, latest_summary="3 current drift items")
+    mock_activity.return_value = activity
+    mock_run_checks.return_value = _FakeHealthReport()
+    mock_digest_path.exists.return_value = False
+
+    now = datetime.now(UTC)
+    mock_drift_path.exists.return_value = True
+    mock_drift_path.stat.return_value.st_mtime = now.timestamp()
+    mock_drift_path.read_text.return_value = json.dumps(
+        {"drift_items": [{"severity": "medium"} for _ in range(3)], "summary": "3 items"}
+    )
+    mock_scout_path.exists.return_value = True
+    mock_scout_path.read_text.return_value = json.dumps(
+        {
+            "generated_at": now.isoformat().replace("+00:00", "Z"),
+            "recommendations": [
+                {"component": "vector-db", "tier": "evaluate", "summary": "Try Milvus"},
+            ],
+        }
+    )
+    mock_agent.run = AsyncMock(
+        return_value=MagicMock(
+            output=Briefing(
+                generated_at="2026-03-01T07:00:00Z",
+                hours=24,
+                headline="Stack healthy with 3 drift items",
+                body="Fresh facts can drive actions.",
+                action_items=[
+                    ActionItem(
+                        priority="medium",
+                        action="Review drift report",
+                        reason="3 current drift items",
+                    ),
+                    ActionItem(
+                        priority="medium",
+                        action="Evaluate vector-db",
+                        reason="Scout recommends trying Milvus",
+                    ),
+                ],
+            )
+        )
+    )
+
+    briefing = await generate_briefing(hours=24)
+    prompt = mock_agent.run.call_args[0][0]
+    actions = "\n".join(item.action for item in briefing.action_items)
+
+    assert briefing.stats.drift_items == 3
+    assert briefing.headline == "Stack healthy with 3 drift items"
+    assert '"latest_drift_count": 3' in prompt
+    assert "vector-db" in prompt
+    assert "Review drift report" in actions
+    assert "Evaluate vector-db" in actions
+
+
+@pytest.mark.asyncio
+@patch("agents.briefing.generate_activity_report")
+@patch("agents.briefing.run_checks")
+@patch("agents.briefing.format_health", return_value="Healthy")
+@patch("agents.briefing.briefing_agent")
 @patch("agents.briefing.SCOUT_REPORT")
 @patch("agents.briefing.DIGEST_REPORT")
 @patch("agents._operator.get_goals", return_value=[])
@@ -408,6 +582,7 @@ async def test_generate_briefing_with_digest(
     mock_scout_path.exists.return_value = False
 
     digest_data = {
+        "generated_at": datetime.now(UTC).isoformat()[:19] + "Z",
         "headline": "5 new docs ingested",
         "stats": {"new_documents": 5},
         "notable_items": [

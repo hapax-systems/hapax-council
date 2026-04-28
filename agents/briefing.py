@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import logging
 import sys
@@ -111,6 +112,8 @@ from agents.health_monitor import run_checks
 PROFILES_DIR: Path = Path(__file__).resolve().parent.parent / "profiles"
 SCOUT_REPORT = PROFILES_DIR / "scout-report.json"
 DIGEST_REPORT = PROFILES_DIR / "digest.json"
+DRIFT_REPORT = PROFILES_DIR / "drift-report.json"
+PROFILE_DIGEST_REPORT = PROFILES_DIR / "operator-digest.json"
 
 
 def should_deliver_briefing(
@@ -172,15 +175,19 @@ class SourceFreshness(BaseModel):
     source: str
     age_s: float | None = None  # seconds since source data was produced
     stale: bool = False  # True if age exceeds source-specific threshold
+    status: str = "fresh"  # fresh, stale, missing, or inconclusive
+    detail: str = ""
 
 
 # Per-source staleness thresholds in seconds
 SOURCE_STALENESS_THRESHOLDS: dict[str, float] = {
-    "profile_digest": 3600.0,  # 1h — digest updates on profiler run
+    "profile_digest": 50400.0,  # 14h — profile-update runs every 12h + jitter
     "health_snapshot": 300.0,  # 5min — health runs every 5min
     "deliberation_metrics": 1800.0,  # 30min — metrics from recent queries
     "axiom_status": 3600.0,  # 1h — axiom state changes rarely
-    "scout_report": 691200.0,  # 8d — scout runs weekly
+    "scout_report": 604800.0,  # 7d — scout runs weekly
+    "drift_report": 129600.0,  # 36h — live-state drift claims age quickly
+    "content_digest": 93600.0,  # 26h — digest runs daily before briefing
     "goals": 600.0,  # 10min — goals change on operator action
 }
 
@@ -411,16 +418,206 @@ async def generate_briefing(hours: int = 24) -> Briefing:
         return await _generate_briefing_impl(hours)
 
 
-def _source_freshness(source: str, file_path: Path | None = None) -> SourceFreshness:
-    """Compute freshness for a data source based on file mtime."""
+def _source_freshness(
+    source: str,
+    file_path: Path | None = None,
+    *,
+    produced_at: datetime | None = None,
+) -> SourceFreshness:
+    """Compute freshness for a data source based on content timestamp or file mtime."""
     threshold = SOURCE_STALENESS_THRESHOLDS.get(source, 3600.0)
     if file_path is None or not file_path.exists():
-        return SourceFreshness(source=source, age_s=None, stale=True)
+        return SourceFreshness(
+            source=source,
+            age_s=None,
+            stale=True,
+            status="missing",
+            detail="source artifact not found",
+        )
     try:
-        age_s = time.time() - file_path.stat().st_mtime
-        return SourceFreshness(source=source, age_s=round(age_s, 1), stale=age_s > threshold)
+        if produced_at is None:
+            produced_at = datetime.fromtimestamp(file_path.stat().st_mtime, tz=UTC)
+        age_s = max(0.0, (datetime.now(UTC) - produced_at).total_seconds())
+        stale = age_s > threshold
+        return SourceFreshness(
+            source=source,
+            age_s=round(age_s, 1),
+            stale=stale,
+            status="stale" if stale else "fresh",
+            detail=f"threshold={threshold:.0f}s",
+        )
     except (OSError, TypeError):
-        return SourceFreshness(source=source, age_s=None, stale=True)
+        return SourceFreshness(
+            source=source,
+            age_s=None,
+            stale=True,
+            status="inconclusive",
+            detail="could not stat source artifact",
+        )
+
+
+def _parse_report_timestamp(raw: object) -> datetime | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _json_report_freshness(
+    source: str,
+    file_path: Path,
+    *,
+    timestamp_fields: tuple[str, ...] = ("generated_at", "timestamp"),
+) -> tuple[SourceFreshness, dict | None]:
+    """Read a JSON report and return its trust state plus parsed payload."""
+    if not file_path.exists():
+        return _source_freshness(source, file_path), None
+    try:
+        data = json.loads(file_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return (
+            SourceFreshness(
+                source=source,
+                age_s=None,
+                stale=True,
+                status="inconclusive",
+                detail="could not read or parse source artifact",
+            ),
+            None,
+        )
+    if not isinstance(data, dict):
+        return (
+            SourceFreshness(
+                source=source,
+                age_s=None,
+                stale=True,
+                status="inconclusive",
+                detail="source artifact is not a JSON object",
+            ),
+            None,
+        )
+
+    for field in timestamp_fields:
+        if field in data:
+            produced_at = _parse_report_timestamp(data.get(field))
+            if produced_at is None:
+                return (
+                    SourceFreshness(
+                        source=source,
+                        age_s=None,
+                        stale=True,
+                        status="inconclusive",
+                        detail=f"invalid {field} timestamp",
+                    ),
+                    data,
+                )
+            return _source_freshness(source, file_path, produced_at=produced_at), data
+
+    return _source_freshness(source, file_path), data
+
+
+def _format_age(sf: SourceFreshness) -> str:
+    if sf.age_s is None:
+        return "age unknown"
+    if sf.age_s >= 86400:
+        return f"{sf.age_s / 86400:.1f}d old"
+    if sf.age_s >= 3600:
+        return f"{sf.age_s / 3600:.1f}h old"
+    return f"{sf.age_s / 60:.0f}m old"
+
+
+def _source_is_fresh(sf: SourceFreshness) -> bool:
+    return sf.status == "fresh" and not sf.stale
+
+
+def _action_requests_refresh(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        term in lowered
+        for term in (
+            "refresh",
+            "rerun",
+            "re-run",
+            "regenerate",
+            "update the report",
+            "run scout",
+            "run drift",
+            "latest report",
+        )
+    )
+
+
+def _filter_actions_for_stale_sources(
+    actions: list[ActionItem],
+    *,
+    drift_freshness: SourceFreshness,
+    scout_freshness: SourceFreshness,
+    stale_scout_terms: set[str],
+) -> list[ActionItem]:
+    """Keep stale-source actions constrained to refresh/historical framing."""
+    filtered: list[ActionItem] = []
+    drift_trusted = _source_is_fresh(drift_freshness)
+    scout_trusted = _source_is_fresh(scout_freshness)
+    for item in actions:
+        text = f"{item.action} {item.reason} {item.command}".lower()
+        if not drift_trusted and "drift" in text:
+            if _action_requests_refresh(text) or "stale" in text or "historical" in text:
+                filtered.append(item)
+            continue
+        if not scout_trusted:
+            component_hit = any(term and term.lower() in text for term in stale_scout_terms)
+            scout_hit = "scout" in text or component_hit
+            if scout_hit:
+                if _action_requests_refresh(text) and not component_hit:
+                    filtered.append(item)
+                continue
+        filtered.append(item)
+    return filtered
+
+
+def _scout_recommendation_terms(recommendations: list[object]) -> set[str]:
+    terms: set[str] = set()
+    stop_words = {"about", "adopt", "after", "before", "evaluate", "recommend", "should"}
+    for rec in recommendations:
+        if not isinstance(rec, dict):
+            continue
+        for field in ("component", "summary"):
+            value = str(rec.get(field, "")).strip()
+            if not value:
+                continue
+            terms.add(value.lower())
+            for token in value.replace("/", " ").replace("-", " ").split():
+                cleaned = token.strip(".,:;()[]{}").lower()
+                if len(cleaned) >= 5 and cleaned not in stop_words:
+                    terms.add(cleaned)
+    return terms
+
+
+def _guard_headline_for_stale_drift(
+    briefing: Briefing, stats: BriefingStats, drift_freshness: SourceFreshness
+) -> None:
+    """Prevent stale drift counts from being presented as current in the headline."""
+    if _source_is_fresh(drift_freshness) or "drift" not in briefing.headline.lower():
+        return
+    health = stats.health_current or "unknown"
+    briefing.headline = (
+        f"Health {health}; drift report {drift_freshness.status} ({_format_age(drift_freshness)}), "
+        "current drift not asserted"
+    )
+
+
+def _source_freshness_lines(freshness: list[SourceFreshness]) -> str:
+    lines = []
+    for sf in freshness:
+        age = f"{sf.age_s:.0f}s" if sf.age_s is not None else "age unknown"
+        detail = f"; {sf.detail}" if sf.detail else ""
+        lines.append(f"- {sf.source}: {sf.status} ({age}{detail})")
+    return "\n".join(lines)
 
 
 async def _generate_briefing_impl(hours: int = 24) -> Briefing:
@@ -435,6 +632,26 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
     health_summary = format_health(health_report)
     freshness.append(SourceFreshness(source="health_snapshot", age_s=0.0, stale=False))
 
+    drift_freshness, _drift_data = _json_report_freshness("drift_report", DRIFT_REPORT)
+    profile_freshness, _profile_digest = _json_report_freshness(
+        "profile_digest", PROFILE_DIGEST_REPORT
+    )
+    scout_freshness, scout_data = _json_report_freshness("scout_report", SCOUT_REPORT)
+    digest_freshness, digest_data = _json_report_freshness("content_digest", DIGEST_REPORT)
+    freshness.extend([drift_freshness, profile_freshness, scout_freshness, digest_freshness])
+
+    activity_for_prompt = (
+        activity.model_copy(deep=True)
+        if hasattr(activity, "model_copy")
+        else copy.deepcopy(activity)
+    )
+    if not _source_is_fresh(drift_freshness):
+        activity_for_prompt.drift.latest_drift_count = 0
+        activity_for_prompt.drift.latest_summary = (
+            f"Latest drift report is {drift_freshness.status} ({_format_age(drift_freshness)}); "
+            "withheld from current drift assertions."
+        )
+
     # Build stats
     stats = BriefingStats(
         llm_calls=activity.langfuse.total_generations,
@@ -442,33 +659,27 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
         llm_errors=activity.langfuse.error_count,
         health_uptime_pct=activity.health.uptime_pct if activity.health.total_runs > 0 else -1,
         health_current=health_report.overall_status,
-        drift_items=activity.drift.latest_drift_count,
+        drift_items=activity.drift.latest_drift_count if _source_is_fresh(drift_freshness) else 0,
         service_events=len(activity.service_events),
     )
     if activity.langfuse.models:
         stats.top_model = max(activity.langfuse.models, key=lambda m: m.call_count).model_group
 
-    # Track profile digest freshness
-    freshness.append(_source_freshness("profile_digest", PROFILES_DIR / "operator-digest.json"))
-
-    # Load scout report if recent (< 7 days old)
-    freshness.append(_source_freshness("scout_report", SCOUT_REPORT))
     scout_section = ""
-    if SCOUT_REPORT.exists():
+    stale_scout_terms: set[str] = set()
+    if scout_data is not None:
         try:
-            scout_data = json.loads(SCOUT_REPORT.read_text())
             scout_ts = scout_data.get("generated_at", "")
-            # Enforce the 7-day staleness check
-            try:
-                scout_dt = datetime.fromisoformat(scout_ts.replace("Z", "+00:00"))
-                scout_stale = (datetime.now(UTC) - scout_dt).days > 7
-            except (ValueError, TypeError):
-                scout_stale = True
-            if not scout_stale:
-                recs = scout_data.get("recommendations", [])
-                if not isinstance(recs, list):
-                    recs = []
-                actionable = [r for r in recs if r.get("tier") in ("adopt", "evaluate")]
+            recs = scout_data.get("recommendations", [])
+            if not isinstance(recs, list):
+                recs = []
+            stale_scout_terms = _scout_recommendation_terms(recs)
+            if _source_is_fresh(scout_freshness):
+                actionable = [
+                    r
+                    for r in recs
+                    if isinstance(r, dict) and r.get("tier") in ("adopt", "evaluate")
+                ]
                 if actionable:
                     items = []
                     for r in actionable:
@@ -477,14 +688,18 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
 ## Scout Report (horizon scan from {scout_ts})
 {chr(10).join(items)}
 """
+            elif scout_freshness.status == "stale":
+                scout_section = f"""
+## Scout Report (stale)
+Latest scout report is {_format_age(scout_freshness)}. Refresh scout before acting on its recommendations.
+"""
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
-    # Load digest report if recent (runs 15 min before briefing)
+    # Load digest report if fresh (runs before briefing)
     digest_section = ""
-    if DIGEST_REPORT.exists():
+    if digest_data is not None and _source_is_fresh(digest_freshness):
         try:
-            digest_data = json.loads(DIGEST_REPORT.read_text())
             headline = digest_data.get("headline", "")
             digest_stats = digest_data.get("stats", {})
             if not isinstance(digest_stats, dict):
@@ -513,7 +728,13 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
         ds_warnings.append("- Langfuse: unavailable (LLM usage data missing)")
     if not ds.health_history_found:
         ds_warnings.append("- Health history: not found")
-    if not ds.drift_report_found:
+    if drift_freshness.status == "stale":
+        ds_warnings.append(
+            f"- Drift report: stale ({_format_age(drift_freshness)}); treating as historical"
+        )
+    elif drift_freshness.status in ("missing", "inconclusive"):
+        ds_warnings.append(f"- Drift report: {drift_freshness.status}")
+    elif not ds.drift_report_found:
         ds_warnings.append("- Drift report: not found")
     data_source_section = ""
     if ds_warnings:
@@ -639,9 +860,14 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
 
     # Profile health
     profile_section = ""
-    profile_health = _collect_profile_health()
+    profile_health = _collect_profile_health() if _source_is_fresh(profile_freshness) else None
     if profile_health:
         profile_section = f"\n## Profile Health\n{profile_health}\n"
+    elif profile_freshness.status == "stale":
+        profile_section = (
+            f"\n## Profile Health (stale)\n"
+            f"Profile digest is {_format_age(profile_freshness)}; refresh before deriving new profile actions.\n"
+        )
 
     # Today's schedule from calendar
     calendar_section = ""
@@ -804,7 +1030,7 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
     # Synthesize via LLM
     prompt = f"""## Activity Report ({hours}h window)
 ```json
-{activity.model_dump_json(indent=2)}
+{activity_for_prompt.model_dump_json(indent=2)}
 ```
 
 ## Current Health Snapshot
@@ -813,10 +1039,12 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
 ```
 {scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{sdlc_section}{cost_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{deliberation_section}{gaps_section}{profile_section}
 ## Source Freshness
-{chr(10).join(f"- {sf.source}: {'STALE' if sf.stale else 'fresh'} ({sf.age_s:.0f}s)" for sf in freshness if sf.age_s is not None)}
-{chr(10).join(f"- {sf.source}: unavailable" for sf in freshness if sf.age_s is None)}
+{_source_freshness_lines(freshness)}
 
-Generate a briefing for this system state. Note any stale sources in your narrative. The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
+Generate a briefing for this system state. Fresh sources may drive headline wording and action items.
+Stale, missing, or inconclusive sources may only be labeled as stale/historical or used to request a refresh.
+Do not turn stale drift counts or stale scout recommendations into current facts or component-specific actions.
+The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
 The lookback window is {hours} hours."""
 
     try:
@@ -831,12 +1059,19 @@ The lookback window is {hours} hours."""
             body=str(e),
             action_items=[],
         )
-    span = trace.get_current_span()
-    span.set_attribute("briefing.action_item_count", len(briefing.action_items))
     briefing.generated_at = datetime.now(UTC).isoformat()[:19] + "Z"
     briefing.hours = hours
     briefing.stats = stats
+    _guard_headline_for_stale_drift(briefing, stats, drift_freshness)
+    briefing.action_items = _filter_actions_for_stale_sources(
+        briefing.action_items,
+        drift_freshness=drift_freshness,
+        scout_freshness=scout_freshness,
+        stale_scout_terms=stale_scout_terms,
+    )
     briefing.source_freshness = freshness
+    span = trace.get_current_span()
+    span.set_attribute("briefing.action_item_count", len(briefing.action_items))
 
     return briefing
 
