@@ -1,197 +1,226 @@
-"""Regression pin: the canonical config/audio-topology.yaml must always parse.
-
-If this test fails, someone edited config/audio-topology.yaml into an
-invalid state — CI should catch it before the descriptor lands and
-breaks the Phase 6 CI verify job. Run the actual YAML through the same
-TopologyDescriptor validators the live CLI uses.
-"""
+"""Regression pins for the canonical config/audio-topology.yaml descriptor."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from shared.audio_topology import TopologyDescriptor
 
-CANONICAL_YAML = Path(__file__).resolve().parents[2] / "config" / "audio-topology.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CANONICAL_YAML = REPO_ROOT / "config" / "audio-topology.yaml"
+L12_CAPTURE_CONF = REPO_ROOT / "config" / "pipewire" / "hapax-l12-evilpet-capture.conf"
+L12_SOURCE_NAME = (
+    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
+)
+L12_RETURN_NAME = (
+    "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
+)
+
+
+def _descriptor() -> TopologyDescriptor:
+    return TopologyDescriptor.from_yaml(CANONICAL_YAML)
 
 
 def test_canonical_descriptor_parses() -> None:
-    """config/audio-topology.yaml must always satisfy the schema."""
     assert CANONICAL_YAML.exists(), (
-        "config/audio-topology.yaml missing — canonical descriptor deleted?"
+        "config/audio-topology.yaml missing - canonical descriptor deleted?"
     )
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+    d = _descriptor()
     assert d.schema_version == 1
 
 
-def test_canonical_has_expected_node_ids() -> None:
-    """The livestream-critical node IDs must all be present.
-
-    If any of these disappear, the generator won't emit the confs
-    daimonion + TTS + OBS depend on — a silent livestream regression.
-    Pin them here so a rename has to be explicit in the test too.
-    """
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    ids = {n.id for n in d.nodes}
+def test_canonical_has_current_livestream_node_ids() -> None:
+    """Livestream-critical node IDs must pin the L-12-era graph."""
+    ids = {n.id for n in _descriptor().nodes}
     expected = {
-        "l6-capture",
+        "l12-capture",
+        "l12-usb-return",
         "livestream-tap",
-        "main-mix-tap",
+        "l12-evilpet-capture",
+        "broadcast-master-capture",
+        "broadcast-normalized-capture",
+        "obs-broadcast-remap-capture",
+        "role-assistant",
+        "role-broadcast",
+        "private-sink",
+        "notification-private-sink",
         "voice-fx",
-        "livestream-loopback",
-        "private-loopback",
-        "ryzen-analog-out",
+        "tts-loudnorm",
+        "tts-duck",
+        "tts-broadcast-capture",
+        "tts-broadcast-playback",
+        "pc-loudnorm",
+        "s4-loopback",
+        "m8-instrument-capture",
+        "m8-loudnorm",
     }
     assert expected.issubset(ids), f"missing expected node ids: {expected - ids}"
 
 
-def test_canonical_main_mix_tap_has_plus12db() -> None:
-    """The L6 Main Mix tap must carry +12 dB makeup gain to hit broadcast LUFS.
+def test_retired_l6_ryzen_nodes_are_not_canonical() -> None:
+    """The descriptor must not drift back to the retired L6/Ryzen graph."""
+    ids = {n.id for n in _descriptor().nodes}
+    retired = {
+        "l6-capture",
+        "main-mix-tap",
+        "ryzen-analog-out",
+        "private-loopback",
+        "livestream-duck",
+    }
+    assert ids.isdisjoint(retired), f"retired nodes still present: {ids & retired}"
 
-    History: the descriptor was tuned empirically against -18 dBFS
-    broadcast target (see config/pipewire/hapax-l6-evilpet-capture.conf).
-    If a future edit drops the gain back to unity, livestream audio
-    reads quiet in OBS.
+
+def test_l12_hardware_nodes_pin_live_names() -> None:
+    d = _descriptor()
+    l12_capture = d.node_by_id("l12-capture")
+    l12_return = d.node_by_id("l12-usb-return")
+
+    assert l12_capture.kind == "alsa_source"
+    assert l12_capture.pipewire_name == L12_SOURCE_NAME
+    assert l12_capture.channels.count == 14
+    assert l12_capture.channels.positions == [f"AUX{i}" for i in range(14)]
+
+    assert l12_return.kind == "alsa_sink"
+    assert l12_return.pipewire_name == L12_RETURN_NAME
+    assert l12_return.channels.count == 4
+    assert l12_return.channels.positions == ["FL", "FR", "RL", "RR"]
+
+
+def test_l12_evilpet_capture_preserves_inverse_safety_invariant() -> None:
+    """Descriptor pins the narrowed L-12 capture binding.
+
+    AUX8/9 (vinyl), AUX10/11 (PC return), and AUX12/13 (master bus) must
+    stay outside the broadcast capture node.
     """
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    mix_edges = [e for e in d.edges if e.source == "l6-capture" and e.target == "main-mix-tap"]
-    assert len(mix_edges) == 2  # AUX10 + AUX11
-    for e in mix_edges:
-        assert e.makeup_gain_db == 12.0, (
-            f"main-mix-tap gain regressed: {e.source_port} at {e.makeup_gain_db} dB"
+    d = _descriptor()
+    l12_capture = d.node_by_id("l12-capture")
+    capture = d.node_by_id("l12-evilpet-capture")
+
+    assert capture.target_object == L12_SOURCE_NAME
+    assert capture.params["capture_channels"] == 4
+    assert capture.params["capture_positions"] == "AUX1 AUX3 AUX4 AUX5"
+    assert capture.params["forbidden_capture_positions"] == "AUX8 AUX9 AUX10 AUX11 AUX12 AUX13"
+    assert capture.params["playback_target"] == "hapax-livestream-tap"
+    assert capture.params["playback_node_passive"] is False
+
+    assert any(edge.source == l12_capture.id and edge.target == capture.id for edge in d.edges), (
+        "missing L-12 capture source -> l12-evilpet-capture edge"
+    )
+
+
+def test_l12_evilpet_conf_matches_descriptor_narrowed_binding() -> None:
+    d = _descriptor()
+    capture = d.node_by_id("l12-evilpet-capture")
+    conf = L12_CAPTURE_CONF.read_text(encoding="utf-8")
+
+    assert "audio.channels = 4" in conf
+    assert "audio.position = [ AUX1 AUX3 AUX4 AUX5 ]" in conf
+    capture_match = re.search(r"capture\.props\s*=\s*\{(.*?)\}", conf, re.DOTALL)
+    assert capture_match, "could not locate L-12 capture.props block"
+    capture_props = capture_match.group(1)
+    for forbidden in str(capture.params["forbidden_capture_positions"]).split():
+        assert f" {forbidden} " not in capture_props, (
+            f"{forbidden} must not be bound in L-12 capture"
         )
 
 
-def test_canonical_voice_fx_targets_ryzen() -> None:
-    """TTS must route to Ryzen analog-stereo (→ L6 ch 5 hardware)."""
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+def test_broadcast_master_chain_is_canonical() -> None:
+    d = _descriptor()
+    master = d.node_by_id("broadcast-master-capture")
+    normalized = d.node_by_id("broadcast-normalized-capture")
+    obs = d.node_by_id("obs-broadcast-remap-capture")
+
+    assert master.target_object == "hapax-livestream-tap"
+    assert master.params["playback_source"] == "hapax-broadcast-master"
+    assert normalized.target_object == "hapax-broadcast-master"
+    assert normalized.params["playback_source"] == "hapax-broadcast-normalized"
+    assert obs.target_object == "hapax-broadcast-normalized"
+    assert any(
+        edge.source == "livestream-tap" and edge.target == "broadcast-master-capture"
+        for edge in d.edges
+    )
+
+
+def test_private_and_notification_sinks_are_fail_closed() -> None:
+    d = _descriptor()
+    private = d.node_by_id("private-sink")
+    notify = d.node_by_id("notification-private-sink")
+    role_assistant = d.node_by_id("role-assistant")
+    role_notification = d.node_by_id("role-notification")
+
+    assert private.kind == "tap"
+    assert private.target_object is None
+    assert private.params["fail_closed"] is True
+    assert role_assistant.target_object == "hapax-private"
+
+    assert notify.kind == "tap"
+    assert notify.target_object is None
+    assert notify.params["fail_closed"] is True
+    assert role_notification.target_object == "hapax-notification-private"
+
+
+def test_tts_broadcast_path_has_l12_return_and_livestream_forward_path() -> None:
+    d = _descriptor()
+    role_broadcast = d.node_by_id("role-broadcast")
     voice_fx = d.node_by_id("voice-fx")
-    assert voice_fx.target_object == "alsa_output.pci-0000_73_00.6.analog-stereo"
+    loudnorm = d.node_by_id("tts-loudnorm")
+    duck = d.node_by_id("tts-duck")
+    broadcast_capture = d.node_by_id("tts-broadcast-capture")
+    broadcast_playback = d.node_by_id("tts-broadcast-playback")
+
+    assert role_broadcast.target_object == "hapax-voice-fx-capture"
+    assert voice_fx.target_object == "hapax-loudnorm-capture"
+    assert loudnorm.target_object == "hapax-tts-duck"
+    assert duck.target_object == L12_RETURN_NAME
+    assert duck.params["playback_positions"] == "RL RR"
+    assert broadcast_capture.target_object == "hapax-tts-duck"
+    assert broadcast_playback.target_object == "hapax-livestream-tap"
+
+    edge_pairs = {(edge.source, edge.target) for edge in d.edges}
+    assert ("tts-duck", "tts-broadcast-capture") in edge_pairs
+    assert ("tts-broadcast-playback", "livestream-tap") in edge_pairs
 
 
-# ── Audio-normalization PR-2: livestream-duck node + edge rewrite ────
+def test_pc_loudnorm_lands_on_l12_return_but_notifications_do_not() -> None:
+    d = _descriptor()
+    pc = d.node_by_id("pc-loudnorm")
+    role_multimedia = d.node_by_id("role-multimedia")
+    role_notification = d.node_by_id("role-notification")
 
-
-def test_canonical_has_livestream_duck_node() -> None:
-    """The TTS-driven ducker node must be present with the spec'd shape.
-
-    Plan §lines 46-51: kind=filter_chain, target_object matches the
-    L6 USB playback target (Ryzen analog), params carry duck_signal_path
-    + duck_key for PR-3's TtsDuckController.
-    """
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    duck = d.node_by_id("livestream-duck")
-    assert duck is not None, "livestream-duck node missing — PR-2 unshipped"
-    assert duck.kind == "filter_chain"
-    assert duck.pipewire_name == "hapax-livestream-duck"
-    assert duck.target_object == "alsa_output.pci-0000_73_00.6.analog-stereo"
-
-
-def test_livestream_duck_carries_duck_params() -> None:
-    """params.duck_signal_path + params.duck_key — PR-3 reads these."""
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    duck = d.node_by_id("livestream-duck")
-    assert duck.params["duck_signal_path"] == "/dev/shm/hapax-compositor/voice-state.json"
-    assert duck.params["duck_key"] == "tts_active"
-    # Strategy doc §4.2 row 1: -10 dB ≈ gain 0.316
-    assert duck.params["duck_gain_db"] == -10.0
-    assert duck.params["default_gain"] == 1.0
-
-
-def test_livestream_loopback_targets_duck_not_ryzen() -> None:
-    """The interpose: hapax-livestream now wires through the duck node."""
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    loopback = d.node_by_id("livestream-loopback")
-    assert loopback.target_object == "hapax-livestream-duck", (
-        "livestream-loopback must target the duck node, not Ryzen directly — "
-        "PR-2 interpose unshipped"
-    )
-
-
-def test_canonical_livestream_duck_edge_chain() -> None:
-    """Edges describe livestream-loopback → livestream-duck → ryzen-analog-out."""
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    edges = d.edges
-    # Old direct edge MUST be gone
-    direct = [
-        e for e in edges if e.source == "livestream-loopback" and e.target == "ryzen-analog-out"
-    ]
-    assert direct == [], (
-        "livestream-loopback → ryzen-analog-out edge must be removed (PR-2 interpose)"
-    )
-    # New chain MUST be present
-    loop_to_duck = [
-        e for e in edges if e.source == "livestream-loopback" and e.target == "livestream-duck"
-    ]
-    duck_to_ryzen = [
-        e for e in edges if e.source == "livestream-duck" and e.target == "ryzen-analog-out"
-    ]
-    assert len(loop_to_duck) == 1, "missing livestream-loopback → livestream-duck edge"
-    assert len(duck_to_ryzen) == 1, "missing livestream-duck → ryzen-analog-out edge"
-
-
-def test_livestream_duck_conf_file_exists() -> None:
-    """config/pipewire/hapax-livestream-duck.conf is the actual PipeWire
-    config the operator deploys. Pin its existence + key shape."""
-    conf_path = (
-        Path(__file__).resolve().parents[2] / "config" / "pipewire" / "hapax-livestream-duck.conf"
-    )
-    assert conf_path.exists(), "PipeWire conf file for the duck node missing"
-    text = conf_path.read_text()
-    assert "hapax-livestream-duck" in text
-    assert "filter-chain" in text
-    assert "alsa_output.pci-0000_73_00.6.analog-stereo" in text
-
-
-# ── evilpet-s4-routing Phase 1: S-4 USB loopback descriptor ───────────
-
-
-def test_canonical_has_s4_loopback_node() -> None:
-    """The S-4 USB content loopback must be present (R3 routing).
-
-    Plan Phase 1 / spec §4 R3: stereo loopback ``hapax-s4-content``
-    routes S-4 USB output to ``hapax-livestream-tap`` as a parallel
-    content path (NOT serial after Evil Pet).
-    """
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    s4 = d.node_by_id("s4-loopback")
-    assert s4 is not None, "s4-loopback node missing — evilpet-s4 Phase 1 unshipped"
-    assert s4.kind == "loopback"
-    assert s4.pipewire_name == "hapax-s4-content"
+    assert role_multimedia.target_object == "hapax-pc-loudnorm"
+    assert pc.target_object == L12_RETURN_NAME
+    assert pc.params["playback_positions"] == "RL RR"
+    assert pc.params["notification_excluded"] is True
+    assert role_notification.target_object == "hapax-notification-private"
 
 
 def test_s4_loopback_targets_livestream_tap() -> None:
-    """S-4 must land on hapax-livestream-tap, not Evil Pet capture (R3 = parallel)."""
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+    d = _descriptor()
     s4 = d.node_by_id("s4-loopback")
+
+    assert s4.kind == "loopback"
+    assert s4.pipewire_name == "hapax-s4-content"
     assert s4.target_object == "hapax-livestream-tap"
-
-
-def test_s4_loopback_is_stereo() -> None:
-    """S-4 carries stereo content — FL+FR, count 2."""
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    s4 = d.node_by_id("s4-loopback")
-    assert s4.channels.count == 2
-    assert list(s4.channels.positions) == ["FL", "FR"]
-
-
-def test_s4_loopback_carries_format_params() -> None:
-    """S-4 USB stream specifies S32 / 48 kHz so PipeWire negotiates
-    the loopback at the device's native format without resampling."""
-    d = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    s4 = d.node_by_id("s4-loopback")
     assert s4.params["audio.format"] == "S32"
     assert s4.params["audio.rate"] == 48000
 
 
-def test_s4_loopback_conf_file_exists() -> None:
-    """config/pipewire/hapax-s4-loopback.conf is the deployable conf
-    the operator drops into ~/.config/pipewire/pipewire.conf.d/."""
-    conf_path = (
-        Path(__file__).resolve().parents[2] / "config" / "pipewire" / "hapax-s4-loopback.conf"
-    )
-    assert conf_path.exists(), "PipeWire conf file for s4-loopback missing"
-    text = conf_path.read_text()
-    assert "hapax-s4-content" in text
-    assert "hapax-livestream-tap" in text
-    assert "libpipewire-module-loopback" in text
+def test_m8_loudnorm_bypasses_l12_and_missing_hardware_is_classified() -> None:
+    d = _descriptor()
+    m8_source = d.node_by_id("m8-usb-source")
+    m8_capture = d.node_by_id("m8-instrument-capture")
+    m8_loudnorm = d.node_by_id("m8-loudnorm")
+
+    assert m8_source.params["audit_classification"] == "external-hardware-optional"
+    assert m8_capture.target_object == m8_source.pipewire_name
+    assert m8_loudnorm.target_object == "hapax-livestream-tap"
+    assert m8_loudnorm.params["bypasses_l12"] is True
+
+    forbidden_edges = [
+        edge
+        for edge in d.edges
+        if {edge.source, edge.target} & {"l12-capture", "l12-usb-return"}
+        and {edge.source, edge.target} & {"m8-instrument-capture", "m8-loudnorm"}
+    ]
+    assert forbidden_edges == [], "M8 descriptor path must not touch L-12 hardware"

@@ -190,6 +190,23 @@ class TestPwDumpToDescriptor:
         assert d.nodes[0].hw == "hw:L6,0"
         assert d.nodes[0].channels.count == 12
 
+    def test_pipewire_position_strings_strip_commas(self) -> None:
+        dump = [
+            _pw_node(
+                id=100,
+                node_name="alsa_input.usb-ZOOM-L12-00",
+                media_class="Audio/Source",
+                factory="api.alsa.pcm.source",
+                hw="hw:L12,0",
+                channels=4,
+            )
+        ]
+        dump[0]["info"]["props"]["audio.position"] = "[ FL, FR, RL, RR ]"
+
+        d = pw_dump_to_descriptor(dump)
+
+        assert d.nodes[0].channels.positions == ["FL", "FR", "RL", "RR"]
+
     def test_ignores_application_streams(self) -> None:
         """Stream/Output/Audio nodes (apps) don't land in the descriptor."""
         dump = [

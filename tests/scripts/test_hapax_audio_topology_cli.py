@@ -269,6 +269,183 @@ class TestVerify:
         assert "live extras" in result.stdout
         assert "hapax-extra" in result.stdout
 
+    def test_edge_compare_uses_pipewire_names_not_descriptor_ids(self, tmp_path: Path) -> None:
+        """Hand-authored descriptor IDs differ from live-derived IDs.
+
+        Verify must compare edges by PipeWire node.name or every stable
+        descriptor ID becomes false drift against pw-dump-derived IDs.
+        """
+        import json
+
+        descriptor = _write_yaml(
+            tmp_path / "d",
+            """
+            schema_version: 1
+            nodes:
+              - id: l12-capture
+                kind: alsa_source
+                pipewire_name: alsa_input.usb-ZOOM_Corporation_L-12-00.multichannel-input
+                hw: hw:L12,0
+              - id: l12-evilpet-capture
+                kind: filter_chain
+                pipewire_name: hapax-l12-evilpet-capture
+            edges:
+              - source: l12-capture
+                target: l12-evilpet-capture
+            """,
+        )
+        dump = tmp_path / "dump.json"
+        dump.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": 100,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": (
+                                    "alsa_input.usb-ZOOM_Corporation_L-12-00.multichannel-input"
+                                ),
+                                "media.class": "Audio/Source",
+                                "factory.name": "api.alsa.pcm.source",
+                                "api.alsa.path": "hw:L12,0",
+                            }
+                        },
+                    },
+                    {
+                        "id": 101,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-l12-evilpet-capture",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "filter-chain",
+                            }
+                        },
+                    },
+                    {
+                        "id": 200,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": 100, "input-node-id": 101},
+                    },
+                ]
+            )
+        )
+
+        result = _run(["verify", str(descriptor), "--dump-file", str(dump)])
+
+        assert result.returncode == 0
+        assert "no unclassified drift" in result.stdout
+
+    def test_external_hardware_extra_is_classified_not_drift(self, tmp_path: Path) -> None:
+        import json
+
+        descriptor = _write_yaml(
+            tmp_path / "d",
+            """
+            schema_version: 1
+            nodes: []
+            """,
+        )
+        dump = tmp_path / "dump.json"
+        dump.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": 100,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "alsa_output.pci-0000_01_00.1.hdmi-stereo",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "api.alsa.pcm.sink",
+                                "api.alsa.path": "hdmi:2",
+                            }
+                        },
+                    }
+                ]
+            )
+        )
+
+        result = _run(["verify", str(descriptor), "--dump-file", str(dump)])
+
+        assert result.returncode == 0
+        assert "classified external/runtime" in result.stdout
+        assert "external-hardware-endpoint" in result.stdout
+
+    def test_m8_missing_source_runtime_fallback_is_classified(self, tmp_path: Path) -> None:
+        import json
+
+        descriptor = _write_yaml(
+            tmp_path / "d",
+            """
+            schema_version: 1
+            nodes:
+              - id: l12-capture
+                kind: alsa_source
+                pipewire_name: alsa_input.usb-ZOOM_Corporation_L-12-00.multichannel-input
+                hw: hw:L12,0
+              - id: m8-usb-source
+                kind: alsa_source
+                pipewire_name: alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo
+                hw: hw:M8,0
+                params:
+                  audit_classification: external-hardware-optional
+              - id: m8-instrument-capture
+                kind: filter_chain
+                pipewire_name: hapax-m8-instrument-capture
+                target_object: alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo
+            edges:
+              - source: m8-usb-source
+                target: m8-instrument-capture
+            """,
+        )
+        dump = tmp_path / "dump.json"
+        dump.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": 100,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": (
+                                    "alsa_input.usb-ZOOM_Corporation_L-12-00.multichannel-input"
+                                ),
+                                "media.class": "Audio/Source",
+                                "factory.name": "api.alsa.pcm.source",
+                                "api.alsa.path": "hw:L12,0",
+                            }
+                        },
+                    },
+                    {
+                        "id": 101,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-m8-instrument-capture",
+                                "media.class": "Stream/Input/Audio",
+                                "target.object": (
+                                    "alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo"
+                                ),
+                            }
+                        },
+                    },
+                    {
+                        "id": 200,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": 100, "input-node-id": 101},
+                    },
+                ]
+            )
+        )
+
+        result = _run(["verify", str(descriptor), "--dump-file", str(dump)])
+
+        assert result.returncode == 0
+        assert "runtime-fallback-m8-source-absent" in result.stdout
+        assert "depends-on-external-hardware-optional" in result.stdout
+
 
 class TestAudit:
     def test_audit_prints_counts(self, tmp_path: Path) -> None:

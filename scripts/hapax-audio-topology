@@ -40,6 +40,7 @@ import sys
 from pathlib import Path
 
 from shared.audio_topology import (
+    Edge,
     Node,
     TopologyDescriptor,
 )
@@ -202,16 +203,43 @@ def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
     shared_names = a_by_name.keys() & b_by_name.keys()
 
     drift = False
-    if added_names:
+    classified_added = []
+    unclassified_added = []
+    for name in sorted(added_names):
+        node = b_by_name[name]
+        classification = _classify_live_extra_node(node)
+        if classification:
+            classified_added.append((node, classification))
+        else:
+            unclassified_added.append(node)
+    if classified_added:
+        print("~ nodes only in right (classified external/runtime):")
+        for node, classification in classified_added:
+            print(f"  ~ {_format_node(node).strip()} [{classification}]")
+    if unclassified_added:
         drift = True
         print("+ nodes only in right (live extras):")
-        for name in sorted(added_names):
-            print(f"  + {_format_node(b_by_name[name]).strip()}")
-    if removed_names:
+        for node in unclassified_added:
+            print(f"  + {_format_node(node).strip()}")
+
+    classified_removed = []
+    unclassified_removed = []
+    for name in sorted(removed_names):
+        node = a_by_name[name]
+        classification = _classify_declared_missing_node(node)
+        if classification:
+            classified_removed.append((node, classification))
+        else:
+            unclassified_removed.append(node)
+    if classified_removed:
+        print("~ nodes only in left (classified expected-missing):")
+        for node, classification in classified_removed:
+            print(f"  ~ {_format_node(node).strip()} [{classification}]")
+    if unclassified_removed:
         drift = True
         print("- nodes only in left (expected but missing):")
-        for name in sorted(removed_names):
-            print(f"  - {_format_node(a_by_name[name]).strip()}")
+        for node in unclassified_removed:
+            print(f"  - {_format_node(node).strip()}")
 
     kind_mismatches = []
     for name in sorted(shared_names):
@@ -225,23 +253,117 @@ def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
         for name, left_kind, right_kind in kind_mismatches:
             print(f"  ~ {name}: descriptor={left_kind.value} live={right_kind.value}")
 
-    a_edges = {(e.source, e.target) for e in a.edges}
-    b_edges = {(e.source, e.target) for e in b.edges}
+    a_edges = {_edge_name_key(a, e) for e in a.edges}
+    b_edges = {_edge_name_key(b, e) for e in b.edges}
     added_edges = b_edges - a_edges
     removed_edges = a_edges - b_edges
 
-    if added_edges:
+    classified_added_edges = []
+    unclassified_added_edges = []
+    for source_name, target_name in sorted(added_edges):
+        classification = _classify_live_extra_edge(source_name, target_name, a_by_name)
+        if classification:
+            classified_added_edges.append((source_name, target_name, classification))
+        else:
+            unclassified_added_edges.append((source_name, target_name))
+    if classified_added_edges:
+        print("~ edges only in right (classified external/runtime):")
+        for source_name, target_name, classification in classified_added_edges:
+            print(f"  ~ {source_name} → {target_name} [{classification}]")
+    if unclassified_added_edges:
         drift = True
         print("+ edges only in right:")
-        for s, t in sorted(added_edges):
+        for s, t in unclassified_added_edges:
             print(f"  + {s} → {t}")
-    if removed_edges:
+
+    classified_removed_edges = []
+    unclassified_removed_edges = []
+    for source_name, target_name in sorted(removed_edges):
+        classification = _classify_declared_missing_edge(source_name, target_name, a_by_name)
+        if classification:
+            classified_removed_edges.append((source_name, target_name, classification))
+        else:
+            unclassified_removed_edges.append((source_name, target_name))
+    if classified_removed_edges:
+        print("~ edges only in left (classified expected-missing):")
+        for source_name, target_name, classification in classified_removed_edges:
+            print(f"  ~ {source_name} → {target_name} [{classification}]")
+    if unclassified_removed_edges:
         drift = True
         print("- edges only in left (descriptor-declared but not live):")
-        for s, t in sorted(removed_edges):
+        for s, t in unclassified_removed_edges:
             print(f"  - {s} → {t}")
 
     return drift
+
+
+def _edge_name_key(descriptor: TopologyDescriptor, edge: Edge) -> tuple[str, str]:
+    """Return an edge key using stable PipeWire node names, not descriptor IDs."""
+    source = descriptor.node_by_id(edge.source).pipewire_name
+    target = descriptor.node_by_id(edge.target).pipewire_name
+    return (source, target)
+
+
+def _classify_live_extra_node(node: Node) -> str | None:
+    """Classify live nodes that are expected outside the canonical descriptor."""
+    explicit = node.params.get("audit_classification")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    name = node.pipewire_name
+    if name.startswith("alsa_") and not name.startswith(
+        (
+            "alsa_input.usb-ZOOM_Corporation_L-12",
+            "alsa_output.usb-ZOOM_Corporation_L-12",
+            "alsa_input.usb-Torso_Electronics_S-4",
+            "alsa_output.usb-Torso_Electronics_S-4",
+        )
+    ):
+        return "external-hardware-endpoint"
+    if name.startswith("input.loopback.sink.role."):
+        return "wireplumber-runtime-role-loopback"
+    if name == "hapax-livestream-duck":
+        return "legacy-retired-l6-runtime-node"
+    return None
+
+
+def _classify_declared_missing_node(node: Node) -> str | None:
+    """Classify descriptor nodes that are legitimately absent at runtime."""
+    explicit = node.params.get("audit_classification")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    return None
+
+
+def _classify_live_extra_edge(
+    source_name: str,
+    target_name: str,
+    declared_by_name: dict[str, Node],
+) -> str | None:
+    """Classify live edges that are known runtime fallback artifacts."""
+    if (
+        target_name == "hapax-m8-instrument-capture"
+        and source_name.startswith("alsa_input.usb-ZOOM_Corporation_L-12")
+        and target_name in declared_by_name
+    ):
+        return "runtime-fallback-m8-source-absent"
+    return None
+
+
+def _classify_declared_missing_edge(
+    source_name: str,
+    target_name: str,
+    declared_by_name: dict[str, Node],
+) -> str | None:
+    """Classify declared edges that cannot exist until optional hardware is present."""
+    source = declared_by_name.get(source_name)
+    target = declared_by_name.get(target_name)
+    for node in (source, target):
+        if node is None:
+            continue
+        classification = _classify_declared_missing_node(node)
+        if classification:
+            return f"depends-on-{classification}"
+    return None
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -293,7 +415,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     if not vinyl_ok:
         print("\nvinyl profile FAIL — see report above")
         return 2
-    print("live graph matches descriptor (no drift)")
+    print("live graph matches descriptor (no unclassified drift)")
     return 0
 
 
@@ -320,7 +442,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     print()
     drift = _diff_descriptors(declared, live)
     if not drift:
-        print("\naudit clean — descriptor and live graph agree.")
+        print("\naudit clean — no unclassified drift.")
     return 0
 
 

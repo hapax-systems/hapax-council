@@ -226,10 +226,10 @@ def _build_node(pw_node: dict[str, Any]) -> Node | None:
     positions_raw = props.get("audio.position")
     positions: list[str] = []
     if isinstance(positions_raw, list):
-        positions = [str(p) for p in positions_raw]
+        positions = [str(p).rstrip(",") for p in positions_raw]
     elif isinstance(positions_raw, str):
         # pw-dump sometimes returns "[ FL FR ]" as a single string.
-        positions = [p for p in positions_raw.strip("[]").split() if p]
+        positions = [p.rstrip(",") for p in positions_raw.strip("[]").split() if p]
     if positions and len(positions) != count:
         # Keep the count authoritative; drop the mismatched positions.
         positions = []

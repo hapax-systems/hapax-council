@@ -1,127 +1,302 @@
 schema_version: 1
 description: |
-  Canonical workstation audio topology — source of truth for the PipeWire
-  graph that drives the livestream.
+  Canonical workstation audio topology for the live L-12 broadcast graph.
 
-  Regenerate ``config/pipewire/*.conf`` via:
-      hapax-audio-topology generate config/audio-topology.yaml
-          --output-dir /tmp/regen
-  and compare against the committed conf files to detect drift. In CI,
-  `hapax-audio-topology verify` (Phase 4, not yet shipped) will diff
-  the descriptor against the live graph.
+  This descriptor models the committed PipeWire/WirePlumber graph that
+  drives the livestream after the L6/Ryzen-era retirement. It intentionally
+  keeps the inverse L-12 safety invariant explicit:
 
-  History and rationale for each node live in the matching
-  ``config/pipewire/<name>.conf`` file — this descriptor captures the
-  shape of the graph, not the operator narrative.
+      anything that enters the L-12 reaches broadcast; private audio leaves
+      the L-12 entirely.
+
+  The current schema has one target_object per logical node, while several
+  deployed PipeWire modules expose separate capture/playback sides. For those
+  nodes, params.* records the side that cannot be represented structurally yet
+  (for example playback_target, capture_positions, and fail_closed).
 
 nodes:
-  # ─── Capture side — L6 multitrack 12-channel ─────────────────────
-  - id: l6-capture
+  # L-12 hardware endpoints.
+  - id: l12-capture
     kind: alsa_source
-    pipewire_name: alsa_input.usb-ZOOM_Corporation_L6-00.multitrack
-    description: ZOOM L6 multitrack 12-channel capture (Altset 2)
-    hw: hw:L6,0
+    pipewire_name: alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input
+    description: ZOOM LiveTrak L-12 multichannel USB capture
+    hw: hw:11
     channels:
-      count: 12
-      positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11]
+      count: 14
+      positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11, AUX12, AUX13]
     params:
       api.alsa.use-acp: false
-      api.alsa.disable-batch: true
+      audit_role: l12-capture-source
 
-  # ─── Livestream tap (null-sink — OBS monitors this) ──────────────
+  - id: l12-usb-return
+    kind: alsa_sink
+    pipewire_name: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
+    description: ZOOM LiveTrak L-12 USB return, FL/FR/RL/RR
+    hw: surround40:11
+    channels:
+      count: 4
+      positions: [FL, FR, RL, RR]
+    params:
+      l12_return_pair: RL RR
+
+  # Stable fan-out and fail-closed sinks.
   - id: livestream-tap
     kind: tap
     pipewire_name: hapax-livestream-tap
-    description: Hapax Livestream (OBS monitor tap; null-sink keeps monitor live)
+    description: Hapax livestream producer tap, upstream of broadcast master
     channels:
       count: 2
       positions: [FL, FR]
 
-  # ─── L6 Main Mix (AUX10+11) → livestream tap, +12 dB makeup ──────
-  - id: main-mix-tap
-    kind: filter_chain
-    pipewire_name: hapax-l6-evilpet-capture
-    description: L6 Main Mix (AUX10+11) capture → livestream tap with +12 dB makeup gain
-    target_object: hapax-livestream-tap
-    channels:
-      count: 2
-      positions: [FL, FR]
-
-  # ─── Voice-FX chain: Kokoro TTS → biquad chain → Ryzen ───────────
-  - id: voice-fx
-    kind: filter_chain
-    pipewire_name: hapax-voice-fx-capture
-    description: Hapax TTS FX chain → Ryzen analog-stereo
-    target_object: alsa_output.pci-0000_73_00.6.analog-stereo
-    channels:
-      count: 2
-      positions: [FL, FR]
-
-  # ─── Virtual sinks forwarding to Ryzen (straight loopback) ───────
-  - id: livestream-loopback
-    kind: loopback
+  - id: livestream-legacy
+    kind: tap
     pipewire_name: hapax-livestream
-    description: Hapax Livestream → livestream-duck → Ryzen analog (→ L6 ch 5 via hardware)
-    target_object: hapax-livestream-duck
-    channels:
-      count: 2
-      positions: [FL, FR]
-
-  - id: private-loopback
-    kind: loopback
-    pipewire_name: hapax-private
-    description: Hapax Private → Ryzen analog (→ L6 ch 5 via hardware)
-    target_object: alsa_output.pci-0000_73_00.6.analog-stereo
-    channels:
-      count: 2
-      positions: [FL, FR]
-
-  # ─── Broadcast-bound TTS duck (audio-normalization PR-2) ──────────
-  # filter_chain interposed between hapax-livestream and the Ryzen
-  # analog sink. Default gain 1.0 (no-op pass-through); when
-  # tts_active=true is published to /dev/shm/hapax-compositor/voice-state.json
-  # the consumer (PR-3 TtsDuckController) drops gain to 0.316 (~ -10 dB)
-  # via PipeWire control-interface socket. Strategy doc §4.2 row 1.
-  - id: livestream-duck
-    kind: filter_chain
-    pipewire_name: hapax-livestream-duck
-    description: TTS-driven ducker on the broadcast path (hapax-livestream → Ryzen)
-    target_object: alsa_output.pci-0000_73_00.6.analog-stereo
+    description: Legacy application-facing livestream sink retained as a null sink
     channels:
       count: 2
       positions: [FL, FR]
     params:
-      duck_signal_path: /dev/shm/hapax-compositor/voice-state.json
-      duck_key: tts_active
-      duck_gain_db: -10.0
-      default_gain: 1.0
-      duck_gain: 0.316
+      retired_downstream_loopback: true
 
-  # ─── Vinyl-to-stream loopback (D-03 follow-up #217) ──────────────
-  # Virtual sink that accepts vinyl-source audio (Handytraxx, Korg,
-  # etc.) and forwards it to the livestream-tap so OBS + the
-  # compositor's monitor path both see it. Exists per
-  # config/pipewire/hapax-vinyl-to-stream.conf.
-  - id: vinyl-capture
+  - id: private-sink
+    kind: tap
+    pipewire_name: hapax-private
+    description: Private assistant sink, fail-closed with no L-12 playback bridge
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      fail_closed: true
+      forbidden_target_family: l12-broadcast
+
+  - id: notification-private-sink
+    kind: tap
+    pipewire_name: hapax-notification-private
+    description: Private notification sink, fail-closed with no L-12 playback bridge
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      fail_closed: true
+      forbidden_target_family: l12-broadcast
+
+  # L-12 capture into the livestream. Only AUX1/3/4/5 are bound; raw
+  # vinyl, PC return, and MASTER channels stay unbound.
+  - id: l12-evilpet-capture
+    kind: filter_chain
+    pipewire_name: hapax-l12-evilpet-capture
+    description: L-12 narrowed capture, contact/sampler/rode/Evil Pet return to livestream tap
+    target_object: alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      capture_channels: 4
+      capture_positions: AUX1 AUX3 AUX4 AUX5
+      forbidden_capture_positions: AUX8 AUX9 AUX10 AUX11 AUX12 AUX13
+      playback_target: hapax-livestream-tap
+      playback_node_passive: false
+
+  # Broadcast master / limiter / OBS source chain.
+  - id: broadcast-master-capture
+    kind: filter_chain
+    pipewire_name: hapax-broadcast-master-capture
+    description: Livestream tap to broadcast master virtual source
+    target_object: hapax-livestream-tap
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      playback_source: hapax-broadcast-master
+
+  - id: broadcast-normalized-capture
+    kind: filter_chain
+    pipewire_name: hapax-broadcast-normalized-capture
+    description: Broadcast master safety-net limiter capture side
+    target_object: hapax-broadcast-master
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      playback_source: hapax-broadcast-normalized
+      limiter: fast_lookahead_limiter_1913
+      limit_db: -1.0
+
+  - id: obs-broadcast-remap-capture
+    kind: filter_chain
+    pipewire_name: hapax-obs-broadcast-remap-capture
+    description: OBS-stable capture side for hapax-broadcast-normalized
+    target_object: hapax-broadcast-normalized
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      playback_source: hapax-obs-broadcast-remap
+
+  # WirePlumber role loopbacks. target_object records the preferred-target
+  # encoded in config/wireplumber/50-hapax-voice-duck.conf.
+  - id: role-multimedia
     kind: loopback
-    pipewire_name: hapax-vinyl-capture
-    description: Vinyl source → hapax-livestream-tap (loopback sink side)
+    pipewire_name: input.loopback.sink.role.multimedia
+    description: Default multimedia role, routed through PC loudnorm
+    target_object: hapax-pc-loudnorm
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  - id: role-notification
+    kind: loopback
+    pipewire_name: input.loopback.sink.role.notification
+    description: Notification role, routed to fail-closed private notification sink
+    target_object: hapax-notification-private
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  - id: role-assistant
+    kind: loopback
+    pipewire_name: input.loopback.sink.role.assistant
+    description: Assistant/private TTS role, routed to fail-closed private sink
+    target_object: hapax-private
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  - id: role-broadcast
+    kind: loopback
+    pipewire_name: input.loopback.sink.role.broadcast
+    description: Broadcast TTS role, routed to voice FX chain
+    target_object: hapax-voice-fx-capture
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  # Broadcast-bound TTS chain.
+  - id: voice-fx
+    kind: filter_chain
+    pipewire_name: hapax-voice-fx-capture
+    description: Hapax voice FX input, output routed to TTS loudnorm
+    target_object: hapax-loudnorm-capture
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  - id: tts-loudnorm
+    kind: filter_chain
+    pipewire_name: hapax-loudnorm-capture
+    description: TTS loudnorm capture side, output routed to TTS duck
+    target_object: hapax-tts-duck
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  - id: tts-duck
+    kind: filter_chain
+    pipewire_name: hapax-tts-duck
+    description: TTS sidechain duck, parallel output to L-12 return and broadcast tap
+    target_object: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      playback_target: l12-usb-return
+      playback_positions: RL RR
+      broadcast_forward_path: hapax-tts-broadcast-capture hapax-tts-broadcast-playback hapax-livestream-tap
+
+  - id: tts-broadcast-capture
+    kind: filter_chain
+    pipewire_name: hapax-tts-broadcast-capture
+    description: TTS broadcast loopback capture side
+    target_object: hapax-tts-duck
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  - id: tts-broadcast-playback
+    kind: loopback
+    pipewire_name: hapax-tts-broadcast-playback
+    description: TTS broadcast loopback playback side into livestream tap
     target_object: hapax-livestream-tap
     channels:
       count: 2
       positions: [FL, FR]
 
-  # ─── S-4 USB loopback (evilpet-s4-routing Phase 1, R3 path) ──────
-  # Stereo virtual sink that the Elektron Torso S-4 USB output (or
-  # any USB-direct content source) writes to. Forwards to the
-  # livestream-tap as a parallel path (NOT serial after Evil Pet) per
-  # spec §4 R3. Operator selects ``hapax-s4-content`` as the S-4
-  # USB sink target via wireplumber rule or pavucontrol. Conf:
-  # config/pipewire/hapax-s4-loopback.conf.
+  # PC, music, YouTube, S-4, and M8 content routes.
+  - id: pc-loudnorm
+    kind: filter_chain
+    pipewire_name: hapax-pc-loudnorm
+    description: PC-wide loudnorm sink routed to L-12 USB return
+    target_object: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      playback_positions: RL RR
+      notification_excluded: true
+
+  - id: music-loudnorm
+    kind: filter_chain
+    pipewire_name: hapax-music-loudnorm
+    description: Music loudnorm capture side routed to music duck
+    target_object: hapax-music-duck
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  - id: music-duck
+    kind: filter_chain
+    pipewire_name: hapax-music-duck
+    description: Music duck output routed to L-12 USB return
+    target_object: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      playback_positions: RL RR
+
+  - id: yt-loudnorm
+    kind: filter_chain
+    pipewire_name: hapax-yt-loudnorm
+    description: YouTube bed loudnorm routed to YouTube ducker
+    target_object: hapax-ytube-ducked
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  - id: ytube-ducked
+    kind: filter_chain
+    pipewire_name: hapax-ytube-ducked
+    description: YouTube bed ducker sink
+    channels:
+      count: 2
+      positions: [FL, FR]
+
+  - id: s4-source
+    kind: alsa_source
+    pipewire_name: alsa_input.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-input
+    description: Torso S-4 pro-audio multichannel input
+    hw: hw:1
+    channels:
+      count: 10
+      positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9]
+    params:
+      audit_role: external-s4-hardware-present
+
+  - id: s4-output
+    kind: alsa_sink
+    pipewire_name: alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output
+    description: Torso S-4 pro-audio multichannel output
+    hw: hw:1
+    channels:
+      count: 10
+      positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9]
+    params:
+      audit_role: external-s4-hardware-present
+
   - id: s4-loopback
     kind: loopback
     pipewire_name: hapax-s4-content
-    description: S-4 USB stereo content → hapax-livestream-tap (parallel to Evil Pet)
+    description: S-4 USB stereo content loopback to livestream tap
     target_object: hapax-livestream-tap
     channels:
       count: 2
@@ -129,44 +304,58 @@ nodes:
     params:
       audio.format: S32
       audio.rate: 48000
+      playback_node: hapax-s4-tap
 
-  # ─── Hardware endpoints ───────────────────────────────────────────
-  - id: ryzen-analog-out
-    kind: alsa_sink
-    pipewire_name: alsa_output.pci-0000_73_00.6.analog-stereo
-    description: Ryzen HD Audio rear line-out (→ L6 ch 5 physical input)
-    hw: hw:0,0
+  - id: m8-usb-source
+    kind: alsa_source
+    pipewire_name: alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo
+    description: Dirtywave M8 USB audio source, optional hardware endpoint
+    hw: hw:M8,0
     channels:
       count: 2
       positions: [FL, FR]
+    params:
+      audit_classification: external-hardware-optional
+
+  - id: m8-instrument-capture
+    kind: filter_chain
+    pipewire_name: hapax-m8-instrument-capture
+    description: M8 USB source capture side routed to M8 loudnorm
+    target_object: alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      fallback_to_l12_is_runtime_drift: true
+
+  - id: m8-loudnorm
+    kind: filter_chain
+    pipewire_name: hapax-m8-loudnorm
+    description: M8 instrument loudnorm routed directly to livestream tap, bypassing L-12
+    target_object: hapax-livestream-tap
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      bypasses_l12: true
+      playback_target: hapax-livestream-tap
 
 edges:
-  # L6 Main Mix AUX10+11 → main-mix-tap with +12 dB makeup (tuned
-  # empirically against -18 dBFS broadcast target — see
-  # config/pipewire/hapax-l6-evilpet-capture.conf for the knob).
-  - source: l6-capture
-    source_port: AUX10
-    target: main-mix-tap
-    target_port: FL
-    makeup_gain_db: 12.0
-  - source: l6-capture
-    source_port: AUX11
-    target: main-mix-tap
-    target_port: FR
-    makeup_gain_db: 12.0
+  # Live edges the inspector can observe directly.
+  - source: l12-capture
+    target: l12-evilpet-capture
 
-  # Virtual sinks → Ryzen (software mix at the hardware sink).
-  # Audio-normalization PR-2: livestream path now interposes the
-  # livestream-duck filter_chain between hapax-livestream and the
-  # Ryzen sink so PR-3's TtsDuckController can attenuate -10 dB
-  # while TTS is playing without touching private-loopback.
-  - source: livestream-loopback
-    target: livestream-duck
-  - source: livestream-duck
-    target: ryzen-analog-out
-  - source: private-loopback
-    target: ryzen-analog-out
+  - source: livestream-tap
+    target: broadcast-master-capture
 
-  # TTS → voice-fx → Ryzen.
-  - source: voice-fx
-    target: ryzen-analog-out
+  - source: tts-duck
+    target: tts-broadcast-capture
+
+  - source: tts-broadcast-playback
+    target: livestream-tap
+
+  # Expected only when the M8 hardware source is present. When absent,
+  # live PipeWire can expose an auto-link fallback; audit classifies that
+  # runtime artifact explicitly instead of encoding it as intended graph.
+  - source: m8-usb-source
+    target: m8-instrument-capture
