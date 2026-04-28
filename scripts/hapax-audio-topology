@@ -261,7 +261,7 @@ def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
     classified_added_edges = []
     unclassified_added_edges = []
     for source_name, target_name in sorted(added_edges):
-        classification = _classify_live_extra_edge(source_name, target_name, a_by_name)
+        classification = _classify_live_extra_edge(source_name, target_name, a_by_name, b_by_name)
         if classification:
             classified_added_edges.append((source_name, target_name, classification))
         else:
@@ -338,12 +338,15 @@ def _classify_live_extra_edge(
     source_name: str,
     target_name: str,
     declared_by_name: dict[str, Node],
+    live_by_name: dict[str, Node],
 ) -> str | None:
     """Classify live edges that are known runtime fallback artifacts."""
+    target = declared_by_name.get(target_name)
     if (
         target_name == "hapax-m8-instrument-capture"
         and source_name.startswith("alsa_input.usb-ZOOM_Corporation_L-12")
-        and target_name in declared_by_name
+        and target is not None
+        and target.target_object not in live_by_name
     ):
         return "runtime-fallback-m8-source-absent"
     return None

@@ -446,6 +446,96 @@ class TestVerify:
         assert "runtime-fallback-m8-source-absent" in result.stdout
         assert "depends-on-external-hardware-optional" in result.stdout
 
+    def test_m8_l12_extra_edge_is_drift_when_m8_source_is_live(self, tmp_path: Path) -> None:
+        import json
+
+        descriptor = _write_yaml(
+            tmp_path / "d",
+            """
+            schema_version: 1
+            nodes:
+              - id: l12-capture
+                kind: alsa_source
+                pipewire_name: alsa_input.usb-ZOOM_Corporation_L-12-00.multichannel-input
+                hw: hw:L12,0
+              - id: m8-usb-source
+                kind: alsa_source
+                pipewire_name: alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo
+                hw: hw:M8,0
+                params:
+                  audit_classification: external-hardware-optional
+              - id: m8-instrument-capture
+                kind: filter_chain
+                pipewire_name: hapax-m8-instrument-capture
+                target_object: alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo
+            edges:
+              - source: m8-usb-source
+                target: m8-instrument-capture
+            """,
+        )
+        dump = tmp_path / "dump.json"
+        dump.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": 100,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": (
+                                    "alsa_input.usb-ZOOM_Corporation_L-12-00.multichannel-input"
+                                ),
+                                "media.class": "Audio/Source",
+                                "factory.name": "api.alsa.pcm.source",
+                                "api.alsa.path": "hw:L12,0",
+                            }
+                        },
+                    },
+                    {
+                        "id": 101,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo",
+                                "media.class": "Audio/Source",
+                                "factory.name": "api.alsa.pcm.source",
+                                "api.alsa.path": "hw:M8,0",
+                            }
+                        },
+                    },
+                    {
+                        "id": 102,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-m8-instrument-capture",
+                                "media.class": "Stream/Input/Audio",
+                                "target.object": (
+                                    "alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo"
+                                ),
+                            }
+                        },
+                    },
+                    {
+                        "id": 200,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": 101, "input-node-id": 102},
+                    },
+                    {
+                        "id": 201,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": 100, "input-node-id": 102},
+                    },
+                ]
+            )
+        )
+
+        result = _run(["verify", str(descriptor), "--dump-file", str(dump)])
+
+        assert result.returncode == 2
+        assert "+ edges only in right:" in result.stdout
+        assert "runtime-fallback-m8-source-absent" not in result.stdout
+
 
 class TestAudit:
     def test_audit_prints_counts(self, tmp_path: Path) -> None:
