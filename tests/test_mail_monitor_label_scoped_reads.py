@@ -4,9 +4,10 @@ Per cc-task ``mail-monitor-refused-out-of-label-read`` (mail-monitoring
 research §Anti-patterns #6 — most load-bearing of the seven mail-
 monitor refusals).
 
-The OAuth scope ``gmail.modify`` does not natively scope-restrict to
-labels; the daemon's discipline is the sole guarantee that operator's
-non-Hapax mail (personal correspondence, etc.) stays unread.
+The OAuth scope pair ``gmail.modify`` plus ``gmail.settings.basic`` does
+not natively scope-restrict to labels; the daemon's discipline is the
+sole guarantee that operator's non-Hapax mail (personal correspondence,
+etc.) stays unread.
 
 This guard enforces scope-control mechanism #3 of 5: "Daemon code
 never calls ``messages.list`` without ``q:label:Hapax/*``."

@@ -1,7 +1,8 @@
 """One-shot CLI bootstrap: install Hapax labels + filters in Gmail.
 
 Run after ``agents.mail_monitor.oauth --first-consent`` succeeds and
-the operator has approved the ``gmail.modify`` scope.
+the operator has approved the minimal Gmail scope pair:
+``gmail.modify`` plus ``gmail.settings.basic``.
 
 ::
 

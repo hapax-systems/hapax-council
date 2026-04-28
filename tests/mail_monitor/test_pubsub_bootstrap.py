@@ -63,6 +63,14 @@ def test_pubsub_client_kwargs_raises_on_invalid_json() -> None:
         pubsub_bootstrap._pubsub_client_kwargs()
 
 
+def test_pubsub_client_kwargs_raises_on_malformed_service_account_json() -> None:
+    with (
+        mock.patch.object(pubsub_bootstrap, "_pass_show_text", return_value="{}"),
+        pytest.raises(PubsubBootstrapError, match="malformed service-account JSON"),
+    ):
+        pubsub_bootstrap._pubsub_client_kwargs()
+
+
 # ── path helpers ──────────────────────────────────────────────────────
 
 
@@ -196,6 +204,29 @@ def test_bootstrap_topic_raises_on_other_api_error() -> None:
             },
         ),
         pytest.raises(PubsubBootstrapError, match="create_topic"),
+    ):
+        bootstrap_topic("my-project")
+    assert _counter("topic", "error") - before == 1.0
+
+
+def test_bootstrap_topic_wraps_client_construction_error() -> None:
+    before = _counter("topic", "error")
+    fake_exceptions = mock.Mock()
+    fake_exceptions.AlreadyExists = type("AlreadyExists", (Exception,), {})
+    fake_exceptions.GoogleAPICallError = type("GoogleAPICallError", (Exception,), {})
+    fake_pubsub_v1 = mock.Mock(PublisherClient=mock.Mock(side_effect=RuntimeError("no adc")))
+
+    with (
+        mock.patch.dict(
+            "sys.modules",
+            {
+                "google.cloud": mock.Mock(pubsub_v1=fake_pubsub_v1),
+                "google.cloud.pubsub_v1": fake_pubsub_v1,
+                "google.api_core": mock.Mock(exceptions=fake_exceptions),
+                "google.api_core.exceptions": fake_exceptions,
+            },
+        ),
+        pytest.raises(PubsubBootstrapError, match="publisher client"),
     ):
         bootstrap_topic("my-project")
     assert _counter("topic", "error") - before == 1.0
@@ -377,6 +408,29 @@ def test_bootstrap_subscription_reuses_when_already_exists() -> None:
             sa_email="hapax@my-project.iam.gserviceaccount.com",
         )
     assert _counter("subscription", "exists") - before == 1.0
+
+
+def test_bootstrap_subscription_wraps_client_construction_error() -> None:
+    before = _counter("subscription", "error")
+    fake_exc = mock.Mock()
+    fake_exc.AlreadyExists = type("AlreadyExists", (Exception,), {})
+    fake_exc.GoogleAPICallError = type("GoogleAPICallError", (Exception,), {})
+
+    pub = _publisher_double()
+    sub = _subscriber_double()
+    with _patch_pubsub(pub, sub, fake_exc) as _:
+        from google.cloud import pubsub_v1
+
+        pubsub_v1.SubscriberClient.side_effect = RuntimeError("no adc")
+        with pytest.raises(PubsubBootstrapError, match="subscriber client"):
+            bootstrap_subscription(
+                "my-project",
+                topic_path="projects/my-project/topics/hapax-mail-monitor",
+                webhook_url="https://logos.example.ts.net:8051/webhook/gmail",
+                sa_email="hapax@my-project.iam.gserviceaccount.com",
+            )
+
+    assert _counter("subscription", "error") - before == 1.0
 
 
 # ── bootstrap_pubsub orchestrator ─────────────────────────────────────

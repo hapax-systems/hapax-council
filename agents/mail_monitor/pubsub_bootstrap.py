@@ -111,10 +111,15 @@ def _pubsub_client_kwargs() -> dict[str, Any]:
 
     from google.oauth2 import service_account
 
-    credentials = service_account.Credentials.from_service_account_info(
-        info,
-        scopes=[CLOUD_PLATFORM_SCOPE],
-    )
+    try:
+        credentials = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=[CLOUD_PLATFORM_SCOPE],
+        )
+    except Exception as exc:
+        raise PubsubBootstrapError(
+            f"pass {SERVICE_ACCOUNT_JSON_PASS_KEY} contains malformed service-account JSON: {exc}"
+        ) from exc
     return {"credentials": credentials}
 
 
@@ -134,6 +139,26 @@ def _validate_webhook_url(url: str) -> None:
         )
 
 
+def _publisher_client(resource: str):
+    from google.cloud import pubsub_v1
+
+    try:
+        return pubsub_v1.PublisherClient(**_pubsub_client_kwargs())
+    except Exception as exc:
+        PUBSUB_INSTALLS_COUNTER.labels(resource=resource, result="error").inc()
+        raise PubsubBootstrapError(f"create Pub/Sub publisher client failed: {exc}") from exc
+
+
+def _subscriber_client(resource: str):
+    from google.cloud import pubsub_v1
+
+    try:
+        return pubsub_v1.SubscriberClient(**_pubsub_client_kwargs())
+    except Exception as exc:
+        PUBSUB_INSTALLS_COUNTER.labels(resource=resource, result="error").inc()
+        raise PubsubBootstrapError(f"create Pub/Sub subscriber client failed: {exc}") from exc
+
+
 def bootstrap_topic(project_id: str) -> str:
     """Create the mail-monitor topic if missing; return its full path.
 
@@ -142,9 +167,8 @@ def bootstrap_topic(project_id: str) -> str:
     as success).
     """
     from google.api_core import exceptions as gax
-    from google.cloud import pubsub_v1
 
-    publisher = pubsub_v1.PublisherClient(**_pubsub_client_kwargs())
+    publisher = _publisher_client("topic")
     path = publisher.topic_path(project_id, TOPIC_NAME)
     try:
         publisher.create_topic(request={"name": path})
@@ -171,9 +195,8 @@ def ensure_gmail_publisher(topic_path: str) -> None:
     the topic and subscription both exist.
     """
     from google.api_core import exceptions as gax
-    from google.cloud import pubsub_v1
 
-    publisher = pubsub_v1.PublisherClient(**_pubsub_client_kwargs())
+    publisher = _publisher_client("topic_iam")
     try:
         policy = publisher.get_iam_policy(request={"resource": topic_path})
     except gax.GoogleAPICallError as exc:
@@ -218,7 +241,7 @@ def bootstrap_subscription(
     from google.api_core import exceptions as gax
     from google.cloud import pubsub_v1
 
-    subscriber = pubsub_v1.SubscriberClient(**_pubsub_client_kwargs())
+    subscriber = _subscriber_client("subscription")
     sub_path = subscriber.subscription_path(project_id, SUBSCRIPTION_NAME)
     push_config = pubsub_v1.types.PushConfig(
         push_endpoint=webhook_url,
