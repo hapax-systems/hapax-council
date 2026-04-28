@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from textwrap import dedent
 from typing import Any
 
-from shared.audio_topology import NodeKind
+from shared.audio_topology import Node, NodeKind, TopologyDescriptor
 from shared.audio_topology_inspector import (
     _classify_node_kind,
     _id_from_name,
+    check_l12_forward_invariant,
     check_tts_broadcast_path,
     pw_dump_to_descriptor,
 )
@@ -55,6 +57,118 @@ def _pw_link(*, id: int, out_node: int, in_node: int) -> dict[str, Any]:
             "input-port-id": 0,
         },
     }
+
+
+def _descriptor(body: str) -> TopologyDescriptor:
+    return TopologyDescriptor.from_yaml(dedent(body))
+
+
+def _replace_node(
+    descriptor: TopologyDescriptor,
+    node_id: str,
+    **updates: object,
+) -> TopologyDescriptor:
+    nodes: list[Node] = []
+    for node in descriptor.nodes:
+        nodes.append(node.model_copy(update=updates) if node.id == node_id else node)
+    return descriptor.model_copy(update={"nodes": nodes})
+
+
+def _l12_contract_fixture() -> TopologyDescriptor:
+    return _descriptor(
+        """
+        schema_version: 1
+        description: l12 invariant fixture
+        nodes:
+          - id: l12-capture
+            kind: alsa_source
+            pipewire_name: alsa_input.usb-ZOOM_Corporation_L-12-00.multichannel-input
+            hw: hw:L12,0
+            channels:
+              count: 14
+              positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11, AUX12, AUX13]
+          - id: l12-usb-return
+            kind: alsa_sink
+            pipewire_name: alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40
+            hw: surround40:L12
+            channels:
+              count: 4
+              positions: [FL, FR, RL, RR]
+          - id: livestream-tap
+            kind: tap
+            pipewire_name: hapax-livestream-tap
+          - id: l12-evilpet-capture
+            kind: filter_chain
+            pipewire_name: hapax-l12-evilpet-capture
+            target_object: alsa_input.usb-ZOOM_Corporation_L-12-00.multichannel-input
+            params:
+              capture_positions: AUX1 AUX3 AUX4 AUX5
+              forbidden_capture_positions: AUX8 AUX9 AUX10 AUX11 AUX12 AUX13
+              playback_target: hapax-livestream-tap
+          - id: private-sink
+            kind: tap
+            pipewire_name: hapax-private
+            params:
+              fail_closed: true
+          - id: notification-private-sink
+            kind: tap
+            pipewire_name: hapax-notification-private
+            params:
+              fail_closed: true
+          - id: role-multimedia
+            kind: loopback
+            pipewire_name: input.loopback.sink.role.multimedia
+            target_object: hapax-pc-loudnorm
+          - id: role-notification
+            kind: loopback
+            pipewire_name: input.loopback.sink.role.notification
+            target_object: hapax-notification-private
+          - id: role-assistant
+            kind: loopback
+            pipewire_name: input.loopback.sink.role.assistant
+            target_object: hapax-private
+          - id: role-broadcast
+            kind: loopback
+            pipewire_name: input.loopback.sink.role.broadcast
+            target_object: hapax-voice-fx-capture
+          - id: pc-loudnorm
+            kind: filter_chain
+            pipewire_name: hapax-pc-loudnorm
+            target_object: alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40
+            params:
+              notification_excluded: true
+          - id: voice-fx
+            kind: filter_chain
+            pipewire_name: hapax-voice-fx-capture
+            target_object: hapax-loudnorm-capture
+          - id: tts-loudnorm
+            kind: filter_chain
+            pipewire_name: hapax-loudnorm-capture
+            target_object: hapax-tts-duck
+          - id: tts-duck
+            kind: filter_chain
+            pipewire_name: hapax-tts-duck
+            target_object: alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40
+            params:
+              playback_target: l12-usb-return
+              broadcast_forward_path: hapax-tts-broadcast-capture hapax-tts-broadcast-playback hapax-livestream-tap
+          - id: tts-broadcast-capture
+            kind: filter_chain
+            pipewire_name: hapax-tts-broadcast-capture
+            target_object: hapax-tts-duck
+          - id: tts-broadcast-playback
+            kind: loopback
+            pipewire_name: hapax-tts-broadcast-playback
+            target_object: hapax-livestream-tap
+        edges:
+          - source: l12-capture
+            target: l12-evilpet-capture
+          - source: tts-duck
+            target: tts-broadcast-capture
+          - source: tts-broadcast-playback
+            target: livestream-tap
+        """
+    )
 
 
 class TestClassifyNodeKind:
@@ -448,3 +562,94 @@ class TestTtsBroadcastPathCheck:
         ]
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
         assert result.ok is True
+
+
+class TestL12ForwardInvariantCheck:
+    def test_accepts_current_directionality_contract(self) -> None:
+        result = check_l12_forward_invariant(_l12_contract_fixture())
+
+        assert result.ok is True
+        assert result.violations == ()
+
+    def test_fails_when_tts_l12_return_lacks_broadcast_forward_bridge(self) -> None:
+        descriptor = _l12_contract_fixture()
+        tts = descriptor.node_by_id("tts-duck")
+        descriptor = _replace_node(
+            descriptor,
+            "tts-duck",
+            params={k: v for k, v in tts.params.items() if k != "broadcast_forward_path"},
+        )
+
+        result = check_l12_forward_invariant(descriptor)
+
+        assert result.ok is False
+        codes = {violation.code for violation in result.violations}
+        assert "tts_broadcast_forward_path_not_declared" in codes
+        assert "tts_l12_missing_livestream_forward_path" in codes
+
+    def test_fails_when_assistant_reaches_broadcast_voice_fx_path(self) -> None:
+        descriptor = _replace_node(
+            _l12_contract_fixture(),
+            "role-assistant",
+            target_object="hapax-voice-fx-capture",
+        )
+
+        result = check_l12_forward_invariant(descriptor)
+
+        assert result.ok is False
+        assert any(
+            violation.code == "private_route_reaches_broadcast_path"
+            and "role-assistant" in violation.message
+            and "voice-fx" in violation.message
+            for violation in result.violations
+        )
+
+    def test_fails_when_notification_falls_back_to_pc_loudnorm(self) -> None:
+        descriptor = _replace_node(
+            _l12_contract_fixture(),
+            "role-notification",
+            target_object="hapax-pc-loudnorm",
+        )
+
+        result = check_l12_forward_invariant(descriptor)
+
+        assert result.ok is False
+        assert any(
+            violation.code == "private_route_reaches_broadcast_path"
+            and "role-notification" in violation.message
+            and "pc-loudnorm" in violation.message
+            for violation in result.violations
+        )
+
+    def test_fails_when_private_sink_gets_l12_downstream_bridge(self) -> None:
+        descriptor = _replace_node(
+            _l12_contract_fixture(),
+            "private-sink",
+            target_object="alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40",
+            params={"fail_closed": False},
+        )
+
+        result = check_l12_forward_invariant(descriptor)
+
+        codes = {violation.code for violation in result.violations}
+        assert "private_sink_not_fail_closed" in codes
+        assert "private_route_reaches_broadcast_path" in codes
+
+    def test_fails_when_unknown_source_targets_l12_return(self) -> None:
+        descriptor = _l12_contract_fixture()
+        extra = descriptor.node_by_id("pc-loudnorm").model_copy(
+            update={
+                "id": "unclassified-monitor-bridge",
+                "pipewire_name": "hapax-unclassified-monitor-bridge",
+                "params": {},
+            }
+        )
+        descriptor = descriptor.model_copy(update={"nodes": [*descriptor.nodes, extra]})
+
+        result = check_l12_forward_invariant(descriptor)
+
+        assert any(
+            violation.code == "unexpected_l12_return_producer"
+            and "unclassified-monitor-bridge" in violation.message
+            for violation in result.violations
+        )

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from shared.audio_topology import TopologyDescriptor
+from shared.audio_topology_inspector import check_l12_forward_invariant
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_YAML = REPO_ROOT / "config" / "audio-topology.yaml"
@@ -224,3 +225,10 @@ def test_m8_loudnorm_bypasses_l12_and_missing_hardware_is_classified() -> None:
         and {edge.source, edge.target} & {"m8-instrument-capture", "m8-loudnorm"}
     ]
     assert forbidden_edges == [], "M8 descriptor path must not touch L-12 hardware"
+
+
+def test_l12_forward_invariant_static_guard_passes() -> None:
+    """Canonical descriptor must satisfy the L-12 forward/private route guard."""
+    result = check_l12_forward_invariant(_descriptor())
+
+    assert result.ok, result.format()
