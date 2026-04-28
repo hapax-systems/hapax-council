@@ -538,6 +538,49 @@ def test_append_events_with_no_events_still_appends_heartbeat(tmp_path: Path) ->
 
 
 # ----------------------------------------------------------------------------
+# relay loader
+# ----------------------------------------------------------------------------
+
+
+def test_load_relay_payloads_skips_codex_sidecar_yamls(tmp_path: Path) -> None:
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(relay, "cx-blue", {"session": "cx-blue", "updated": _now().isoformat()})
+    _write_relay(
+        relay,
+        "cx-blue-wsjf-007-audit",
+        {"session": "cx-blue", "status": "completed"},
+    )
+    _write_relay(
+        relay,
+        "cx-green-coordination",
+        {"session": "cx-green", "status": "active-coordination"},
+    )
+
+    payloads = sweeper._load_relay_payloads(relay)
+
+    assert "cx-blue" in payloads
+    assert "cx-blue-wsjf-007-audit" not in payloads
+    assert "cx-green-coordination" not in payloads
+
+
+def test_load_relay_payloads_skips_retired_relays(tmp_path: Path) -> None:
+    sweeper = _load_sweeper_module()
+    relay = tmp_path / "relay"
+    _write_relay(relay, "alpha", {"session": "alpha", "role": "SUPERSEDED"})
+    _write_relay(relay, "beta", {"session": "beta", "session_status": "RETIRING soon"})
+    _write_relay(relay, "cx-amber", {"session": "cx-amber", "status": "RETIRED"})
+    _write_relay(relay, "cx-blue", {"session": "cx-blue", "updated": _now().isoformat()})
+
+    payloads = sweeper._load_relay_payloads(relay)
+
+    assert "alpha" not in payloads
+    assert "beta" not in payloads
+    assert "cx-amber" not in payloads
+    assert "cx-blue" in payloads
+
+
+# ----------------------------------------------------------------------------
 # end-to-end: run_sweep + killswitch
 # ----------------------------------------------------------------------------
 

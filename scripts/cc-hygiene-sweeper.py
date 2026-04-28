@@ -75,6 +75,20 @@ DEFAULT_REPO_ROOT = Path.home() / "projects" / "hapax-council"
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
 
 
+def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
+    """Return true for relays that explicitly mark a retired/superseded lane."""
+    values: list[str] = []
+    for key in ("status", "state", "relay_status", "session_state", "role", "session_status"):
+        raw = payload.get(key)
+        if raw:
+            values.append(str(raw))
+    for value in values:
+        normalized = value.strip().strip("\"'").upper()
+        if normalized.startswith(("RETIR", "SUPERSEDED", "CLOSED", "ANTIGRAVITY")):
+            return True
+    return False
+
+
 def _load_active_notes(vault_root: Path) -> list[TaskNote]:
     """Parse all `active/*.md` cc-task notes."""
     active = vault_root / "active"
@@ -111,11 +125,20 @@ def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
     for role in KNOWN_ROLES:
         payload = _read_relay_yaml(relay_root / f"{role}.yaml")
         if payload is not None:
+            if _relay_payload_is_retired(payload):
+                continue
             payloads[role] = payload
     for path in sorted(relay_root.glob("cx-*.yaml")):
         role = path.stem
         payload = _read_relay_yaml(path)
         if payload is not None:
+            # `cx-*.yaml` also includes read-only audit sidecars such as
+            # `cx-amber-wsjf-007-velocity-audit.yaml`. Only the canonical
+            # live relay file is named exactly after its `session`.
+            if payload.get("session") != role:
+                continue
+            if _relay_payload_is_retired(payload):
+                continue
             payloads[role] = payload
     return payloads
 

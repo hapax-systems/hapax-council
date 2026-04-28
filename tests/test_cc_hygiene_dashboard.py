@@ -21,7 +21,9 @@ from cc_hygiene.dashboard import (  # noqa: E402
     SENTINEL_END,
     SENTINEL_START,
     render_block,
+    render_unavailable_block,
     update_dashboard,
+    update_dashboard_unavailable,
 )
 from cc_hygiene.events import append_events  # noqa: E402
 from cc_hygiene.models import (  # noqa: E402
@@ -142,6 +144,28 @@ def test_render_block_event_tail_renders(tmp_path: Path) -> None:
     block = render_block(state, event_log_path=event_log, vault_active=active, now=_now())
     assert "duplicate_claim" in block
     assert "cc-task-DUPE" in block
+
+
+def test_live_session_severity_uses_current_sweep_not_event_tail(tmp_path: Path) -> None:
+    state = _build_state()
+    event_log = tmp_path / "cc-hygiene-events.md"
+    old_events = [
+        HygieneEvent(
+            timestamp=_now(),
+            check_id="relay_yaml_stale",
+            severity="warning",
+            session="alpha",
+            message="old stale relay event",
+        )
+    ]
+    _build_event_log(event_log, old_events)
+    active = tmp_path / "active"
+    active.mkdir()
+
+    block = render_block(state, event_log_path=event_log, vault_active=active, now=_now())
+
+    assert "| alpha | cc-alpha-task | - | - | green |" in block
+    assert "old stale relay event" in block
 
 
 def test_render_block_counters_uses_vault_active_dir(tmp_path: Path) -> None:
@@ -377,3 +401,42 @@ def test_update_dashboard_preserves_pre_existing_dataview(tmp_path: Path) -> Non
     out = dashboard.read_text(encoding="utf-8")
     # original Dataview block preserved verbatim (text-equality)
     assert '```dataview\nTABLE WITHOUT ID\n  file.link as "Task",\n  assigned_to as "Role"' in out
+
+
+def test_render_unavailable_block_makes_missing_state_visible() -> None:
+    block = render_unavailable_block(reason="missing state file", now=_now())
+    assert block.startswith(SENTINEL_START)
+    assert block.rstrip().endswith(SENTINEL_END)
+    assert "## Hygiene State Unavailable" in block
+    assert "missing state file" in block
+    assert "cc-hygiene-state.json" in block
+
+
+def test_update_dashboard_unavailable_replaces_generated_block(tmp_path: Path) -> None:
+    dashboard = tmp_path / "cc-active.md"
+    dashboard.write_text(_EXISTING_DASHBOARD, encoding="utf-8")
+    state = _build_state()
+    event_log = tmp_path / "cc-hygiene-events.md"
+    active = tmp_path / "active"
+    active.mkdir()
+    update_dashboard(
+        state,
+        dashboard_path=dashboard,
+        event_log_path=event_log,
+        vault_active=active,
+        now=_now(),
+    )
+
+    update_dashboard_unavailable(
+        dashboard_path=dashboard,
+        reason="missing or invalid state file",
+        now=_now(),
+    )
+
+    out = dashboard.read_text(encoding="utf-8")
+    assert "## Operator hand-edited section" in out
+    assert "## Hygiene State Unavailable" in out
+    assert "missing or invalid state file" in out
+    assert "## Live Sessions" not in out
+    assert out.count(SENTINEL_START) == 1
+    assert out.count(SENTINEL_END) == 1
