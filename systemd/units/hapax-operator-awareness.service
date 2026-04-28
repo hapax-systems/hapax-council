@@ -7,6 +7,9 @@ StartLimitBurst=5
 
 [Service]
 Type=notify
+# ExecStart intentionally goes through uv so the service uses the lock-managed
+# environment. READY/WATCHDOG are emitted by the Python child process, not uv.
+NotifyAccess=all
 WorkingDirectory=%h/projects/hapax-council
 EnvironmentFile=/run/user/1000/hapax-secrets.env
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
