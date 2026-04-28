@@ -1,8 +1,7 @@
 # Cold-contact candidate registry
 #
-# Per cc-task `cold-contact-candidate-registry`. This is the seed
-# scaffolding; Phase 2 (operator+Hapax review pass) populates the
-# 37 named candidates from drop 2 §3.
+# Per cc-task `cold-contact-candidate-registry`. Populated from
+# docs/research/2026-04-25-cold-contact-strategy.md (37 targets).
 #
 # Constitutional posture: every entry here is a citation-graph touch
 # target. There is NO direct-outreach affordance — the family-wide
@@ -17,5 +16,175 @@
 # Suppression: an entry can be moved to
 # `hapax-state/contact-suppression-list.yaml` at any time; suppression
 # takes precedence over registry membership.
+#
+# Entries without ORCID iDs (artists/makers without academic profiles)
+# are omitted — the citation-graph touch mechanism requires a valid
+# ORCID for the DataCite RelatedIdentifier edge.
 
-candidates: []
+candidates:
+  # --- 4E Cognition / Enactivism ---
+  - name: Evan Thompson
+    orcid: "0000-0001-6927-020X"
+    audience_vectors: [4e-cognition]
+    topic_relevance: [autopoiesis, reverie, enactivism]
+
+  - name: Ezequiel Di Paolo
+    orcid: "0000-0002-3296-5021"
+    audience_vectors: [4e-cognition]
+    topic_relevance: [autopoiesis, enactivism]
+
+  - name: Shaun Gallagher
+    orcid: "0000-0002-3147-9929"
+    audience_vectors: [4e-cognition]
+    topic_relevance: [embodied-cognition, hapax-constitution]
+
+  # --- Active Inference / FEP ---
+  - name: Karl Friston
+    orcid: "0000-0001-7984-8909"
+    audience_vectors: [active-inference]
+    topic_relevance: [fep, control-loop, predictive-processing]
+
+  - name: Andy Clark
+    orcid: "0000-0002-1233-8629"
+    audience_vectors: [active-inference, 4e-cognition]
+    topic_relevance: [predictive-processing, reverie, dmn]
+
+  - name: Anil Seth
+    orcid: "0000-0002-1421-6051"
+    audience_vectors: [active-inference, ai-consciousness]
+    topic_relevance: [predictive-processing, consciousness]
+
+  # --- Critical AI ---
+  - name: Emily M. Bender
+    orcid: "0000-0001-5384-6227"
+    audience_vectors: [critical-ai]
+    topic_relevance: [cohort-disparity, stochastic-parrots]
+
+  - name: Alex Hanna
+    orcid: "0000-0002-8957-0813"
+    audience_vectors: [critical-ai]
+    topic_relevance: [cohort-disparity, dair]
+
+  - name: Margaret Mitchell
+    orcid: "0000-0002-0303-6768"
+    audience_vectors: [critical-ai]
+    topic_relevance: [cohort-disparity, ai-ethics]
+
+  - name: Timnit Gebru
+    orcid: "0009-0007-4814-1944"
+    audience_vectors: [critical-ai]
+    topic_relevance: [cohort-disparity, dair]
+
+  - name: Kate Crawford
+    orcid: "0000-0001-9972-7194"
+    audience_vectors: [critical-ai]
+    topic_relevance: [refusal-brief, atlas-of-ai]
+
+  - name: Meredith Whittaker
+    orcid: "0009-0006-8618-0525"
+    audience_vectors: [critical-ai]
+    topic_relevance: [refusal-brief, ai-now]
+
+  - name: Lisa Nakamura
+    orcid: "0000-0002-6534-2808"
+    audience_vectors: [critical-ai]
+    topic_relevance: [cohort-disparity]
+
+  # --- Infrastructure Studies / STS ---
+  - name: Lucy Suchman
+    orcid: "0000-0001-9752-4684"
+    audience_vectors: [infrastructure-studies]
+    topic_relevance: [refusal-brief, sts, plans-situated-actions]
+
+  - name: Gabrielle Hecht
+    orcid: "0000-0003-1445-0785"
+    audience_vectors: [infrastructure-studies]
+    topic_relevance: [refusal-brief, anthropocene]
+
+  - name: Wendy Hui Kyong Chun
+    orcid: "0009-0004-2920-7272"
+    audience_vectors: [infrastructure-studies, critical-ai]
+    topic_relevance: [cohort-disparity, refusal-brief]
+
+  # --- Philosophy of Technology ---
+  - name: Yuk Hui
+    orcid: "0000-0002-3242-9819"
+    audience_vectors: [philosophy-of-tech]
+    topic_relevance: [hapax-constitution, technodiversity]
+
+  - name: Iris van Rooij
+    orcid: "0000-0001-6520-4635"
+    audience_vectors: [philosophy-of-tech, critical-ai]
+    topic_relevance: [hapax-constitution, reclaiming-ai]
+
+  - name: Olivia Guest
+    orcid: "0000-0002-1891-0972"
+    audience_vectors: [philosophy-of-tech, critical-ai]
+    topic_relevance: [hapax-constitution, reclaiming-ai]
+
+  # --- AI Consciousness ---
+  - name: David Chalmers
+    orcid: "0000-0003-4190-3161"
+    audience_vectors: [ai-consciousness]
+    topic_relevance: [reverie, consciousness]
+
+  - name: Susan Schneider
+    orcid: "0000-0002-8971-897X"
+    audience_vectors: [ai-consciousness]
+    topic_relevance: [ai-consciousness, future-mind]
+
+  - name: Joscha Bach
+    orcid: "0000-0002-8553-9974"
+    audience_vectors: [ai-consciousness, 4e-cognition]
+    topic_relevance: [manifesto, agentic-self]
+
+  # --- AI Personhood / Legal ---
+  - name: Ryan Calo
+    orcid: "0000-0001-5727-4481"
+    audience_vectors: [ai-personhood-law]
+    topic_relevance: [hapax-constitution, ai-policy]
+
+  - name: Frank Pasquale
+    orcid: "0000-0001-6104-0944"
+    audience_vectors: [ai-personhood-law]
+    topic_relevance: [hapax-constitution, rule-of-persons]
+
+  # --- Posthumanism / Xenofeminism ---
+  - name: Helen Hester
+    orcid: "0000-0002-8511-8846"
+    audience_vectors: [posthumanism]
+    topic_relevance: [refusal-brief, xenofeminism]
+
+  - name: Patricia Reed
+    orcid: "0000-0001-9942-904X"
+    audience_vectors: [posthumanism]
+    topic_relevance: [manifesto]
+
+  - name: Amy Ireland
+    orcid: "0009-0004-6528-0688"
+    audience_vectors: [posthumanism]
+    topic_relevance: [manifesto]
+
+  # --- Sound Art / Practice-as-Research ---
+  - name: Tega Brain
+    orcid: "0009-0004-7485-3011"
+    audience_vectors: [sound-art, practice-as-research]
+    topic_relevance: [cohort-disparity, pioneer-works]
+
+  # --- Permacomputing ---
+  - name: Kris De Decker
+    orcid: "0009-0008-6157-969X"
+    audience_vectors: [permacomputing]
+    topic_relevance: [hapax-council-infra, low-tech]
+
+  # Entries omitted (no ORCID iD found — artists/makers/venues):
+  #   - Holly Herndon (artist)
+  #   - Mat Dryhurst (artist)
+  #   - Jenna Sutela (artist)
+  #   - Sam Lavigne (artist/developer)
+  #   - Devine Lu Linvega (100R/XXIIVV — permacomputing)
+  #   - Joshua Minsoo Kim (Tone Glow editor — wrong ORCID match)
+  #   - Frank J Oteri (NewMusicBox editor — no ORCID)
+  #   - Derek Walmsley (The Wire editor — no ORCID)
+  #   - -empyre- listserv (venue, not person)
+  #   - Critical AI journal (venue, not person)
