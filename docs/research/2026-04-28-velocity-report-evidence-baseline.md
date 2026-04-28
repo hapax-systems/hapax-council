@@ -26,6 +26,12 @@ for the headline quantitative values. Current local git history partially
 reproduces the claim family, but not all headline values in one exact 18-hour
 window.
 
+Machine-readable reconstruction snapshot:
+
+- `docs/research/evidence/2026-04-28-velocity-report-evidence-snapshot.json`
+- mirrored runtime/state copy:
+  `~/hapax-state/publications/velocity-report-2026-04-25-evidence-snapshot.json`
+
 ## Identifier State
 
 Local state as of 2026-04-28:
@@ -40,6 +46,14 @@ Local state as of 2026-04-28:
 The public report was corrected on 2026-04-28 to state that DOI, SWHID, arXiv,
 and ORCID-update rails are pending follow-on artifacts, not already minted
 evidence.
+
+Follow-up rails decision, 2026-04-28: keep Zenodo DOI, Software Heritage SWHID,
+and arXiv explicitly pending. Do not mint from the old
+`scripts/build-velocity-findings-preprint.py` composer because it still reads
+the unreconciled `docs/research/2026-04-25-velocity-comparison.md` body. The
+current Zenodo publisher mints but does not persist DOI response payloads back
+into artifact state, and no canonical `~/hapax-state/attribution/swhids.yaml`
+file exists yet.
 
 ## Reconstruction Commands
 
@@ -73,6 +87,17 @@ Observed totals across the six local repos:
 |---|---:|---:|---:|---:|---:|
 | 2026-04-25 00:00-23:59 -0500 | current branches | 166 | 61,425 | 767 | 62,192 |
 | 2026-04-25 00:00-23:59 -0500 | all refs | 178 | 70,142 | 798 | 70,940 |
+
+The persisted snapshot also records per-repo commit SHAs and HEADs for each
+window, plus the corpus counts below:
+
+| Corpus | Current Reconstruction |
+|---|---:|
+| Dated research files through 2026-04-25 | 276 |
+| `status: refused` task files | 1 / 525 |
+| `automation_status: REFUSED` task files | 40 / 525 |
+| Broad refusal-like task files | 43 / 525 |
+| CI first-attempt pass rate | not reconstructed |
 
 Hourly 18-hour current-branch reconstruction:
 
