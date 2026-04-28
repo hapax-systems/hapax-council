@@ -1,8 +1,8 @@
-"""Regression pin for the CaptionsCairoSource layout registration.
+"""Regression pin for captions retirement from the production layout.
 
-Continuous-Loop Research Cadence §3.4 adds the captions source +
-captions_strip surface + assignment to the default layout. These tests
-keep future layout edits honest.
+GEM owns the lower-band geometry in ``default.json``. The captions
+source implementation remains importable for legacy rollback layouts,
+but the production layout must not declare or render it.
 """
 
 from __future__ import annotations
@@ -10,7 +10,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import cairo
 import pytest
+
+from shared.compositor_model import Layout
 
 LAYOUT_PATH = Path(__file__).resolve().parents[2] / "config" / "compositor-layouts" / "default.json"
 
@@ -22,51 +25,53 @@ def layout():
     return json.loads(LAYOUT_PATH.read_text(encoding="utf-8"))
 
 
-class TestCaptionsInDefaultLayout:
-    def test_captions_source_registered(self, layout):
+class TestCaptionsRetiredFromDefaultLayout:
+    def test_default_layout_still_parses(self, layout):
+        parsed = Layout.model_validate(layout)
+        assert parsed.name == "default"
+
+    def test_captions_source_absent(self, layout):
         source_ids = {s["id"] for s in layout["sources"]}
-        assert "captions" in source_ids
+        assert "captions" not in source_ids
 
-    def test_captions_source_points_at_cairo_class(self, layout):
-        captions = next(s for s in layout["sources"] if s["id"] == "captions")
-        assert captions["kind"] == "cairo"
-        assert captions["backend"] == "cairo"
-        assert captions["params"]["class_name"] == "CaptionsCairoSource"
-
-    def test_captions_strip_surface_defined(self, layout):
+    def test_captions_strip_surface_absent(self, layout):
         surface_ids = {s["id"] for s in layout["surfaces"]}
-        assert "captions_strip" in surface_ids
-
-    def test_captions_strip_is_bottom_horizontal(self, layout):
-        strip = next(s for s in layout["surfaces"] if s["id"] == "captions_strip")
-        geom = strip["geometry"]
-        assert geom["kind"] == "rect"
-        # Horizontal strip, not a PiP
-        assert geom["w"] > geom["h"]
-        # Bottom placement (y > half the 1080 canvas)
-        assert geom["y"] >= 900
-        # Full-ish width (>= 1800 of 1920)
-        assert geom["w"] >= 1800
-
-    def test_captions_strip_above_video_out(self, layout):
-        # z_order comparison: captions must sit above compositor content
-        # (PiP z_order 10) but below the video-out sinks (z_order 100+)
-        # so OBS/monitoring still captures the band.
-        strip = next(s for s in layout["surfaces"] if s["id"] == "captions_strip")
-        video_out = next(s for s in layout["surfaces"] if s["id"] == "video_out_v4l2_loopback")
-        assert 10 < strip["z_order"] < video_out["z_order"]
+        assert "captions_strip" not in surface_ids
 
     def test_captions_assignment_retired_for_gem(self, layout):
-        """At GEM cutover (2026-04-21), captions → captions_strip
-        assignment was removed from the default layout. The lower-band
-        geometry now belongs to the GEM ward (#191). captions source +
-        captions_strip surface remain in the schema as deprecated
-        references for backwards compatibility but are not rendered.
+        """At GEM cutover (2026-04-21), the lower-band geometry moved
+        fully to GEM. The retired captions source/surface must not be
+        reintroduced into the production assignment graph.
         See docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md
         §5."""
         pairs = {(a["source"], a["surface"]) for a in layout["assignments"]}
         assert ("captions", "captions_strip") not in pairs
         assert ("gem", "gem-mural-bottom") in pairs
+
+    def test_default_layout_render_path_smoke_without_captions(self, layout):
+        from agents.studio_compositor.fx_chain import pip_draw_from_layout
+        from agents.studio_compositor.layout_state import LayoutState
+        from agents.studio_compositor.source_registry import SourceRegistry
+
+        class _SurfaceBackend:
+            def __init__(self, surface: cairo.ImageSurface) -> None:
+                self._surface = surface
+
+            def get_current_surface(self) -> cairo.ImageSurface:
+                return self._surface
+
+        parsed = Layout.model_validate(layout)
+        registry = SourceRegistry()
+        source_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 4, 4)
+        source_cr = cairo.Context(source_surface)
+        source_cr.set_source_rgba(1.0, 1.0, 1.0, 1.0)
+        source_cr.paint()
+        for source_id in {a.source for a in parsed.assignments}:
+            registry.register(source_id, _SurfaceBackend(source_surface))
+
+        canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1920, 1080)
+        cr = cairo.Context(canvas)
+        pip_draw_from_layout(cr, LayoutState(parsed), registry, stage="pre_fx")
 
     def test_other_core_pips_untouched(self, layout):
         """Regression pin: CL §3.4 must not reposition pre-existing PiPs."""

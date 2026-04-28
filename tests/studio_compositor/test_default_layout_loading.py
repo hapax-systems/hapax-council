@@ -33,9 +33,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "stream_overlay",
         "sierpinski",
         "reverie",
-        # Continuous-Loop Research Cadence §3.4 — scientific-register
-        # caption strip along the bottom of the canvas.
-        "captions",
         # Volitional-director epic Phase 4 legibility surfaces
         # (PR #1017/§3.5 + follow-ups #1018).
         "activity_header",
@@ -50,6 +47,8 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "activity_variety_log",
         # Epic 2 Phase D — operator-always-here indicator.
         "whos_here",
+        "durf",
+        "m8-display",
         # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
         # Mural) is the 15th HOMAGE ward; lower-band geometry, retires
         # captions in same surface area. See
@@ -60,7 +59,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
     # LRR Phase 2 item 10: video_out surfaces declared for OutputRouter.from_layout()
     # enumeration. The 4 pip-* quadrants are the input surfaces; the 3 video_out_*
     # surfaces are the output sinks (v4l2 loopback, RTMP, HLS).
-    # Continuous-Loop §3.4 adds ``captions_strip`` as a horizontal band.
     # Volitional-director Phase 4 adds 4 legibility surfaces.
     surface_ids = {s.id for s in layout.surfaces}
     assert surface_ids == {
@@ -68,7 +66,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "pip-ur",
         "pip-ll",
         "pip-lr",
-        "captions_strip",
         "video_out_v4l2_loopback",
         "video_out_rtmp_mediamtx",
         "video_out_hls_playlist",
@@ -83,6 +80,8 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "activity-variety-log-mid",
         # Epic 2 Phase D — operator-always-here indicator.
         "whos-here-tr",
+        "durf-fullframe",
+        "m8-display-surface",
         # HOMAGE follow-on #191 — GEM mural surface (lower-band).
         "gem-mural-bottom",
     }
@@ -93,10 +92,8 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("reverie", "pip-ur"),
         ("album", "pip-ll"),
         ("stream_overlay", "pip-lr"),
-        # captions assignment removed at GEM cutover (2026-04-21);
-        # GEM ward (#191) takes the lower-band geometry. captions
-        # source + captions_strip surface remain in the schema for
-        # backwards compatibility but are not rendered.
+        # captions retired at GEM cutover (2026-04-21); GEM ward (#191)
+        # takes the lower-band geometry.
         # Volitional-director Phase 4 legibility assignments.
         ("activity_header", "activity-header-top"),
         ("stance_indicator", "stance-indicator-tr"),
@@ -109,6 +106,8 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("activity_variety_log", "activity-variety-log-mid"),
         # Epic 2 Phase D.
         ("whos_here", "whos-here-tr"),
+        ("durf", "durf-fullframe"),
+        ("m8-display", "m8-display-surface"),
         # HOMAGE follow-on #191 — GEM mural assignment.
         ("gem", "gem-mural-bottom"),
     }
@@ -127,7 +126,6 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "stream_overlay": "cairo",
         "sierpinski": "cairo",
         "reverie": "shm_rgba",
-        "captions": "cairo",
         # Volitional-director Phase 4 legibility sources.
         "activity_header": "cairo",
         "stance_indicator": "cairo",
@@ -140,6 +138,8 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "activity_variety_log": "cairo",
         # Epic 2 Phase D.
         "whos_here": "cairo",
+        "durf": "cairo",
+        "m8-display": "shm_rgba",
     }
 
 
@@ -240,7 +240,6 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "stream_overlay",
         "sierpinski",
         "reverie",
-        "captions",
         # Volitional-director Phase 4 legibility additions.
         "activity_header",
         "stance_indicator",
@@ -254,6 +253,8 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "activity_variety_log",
         # Epic 2 Phase D.
         "whos_here",
+        "durf",
+        "m8-display",
         # HOMAGE follow-on #191 — GEM mural ward (15th HOMAGE).
         "gem",
     }

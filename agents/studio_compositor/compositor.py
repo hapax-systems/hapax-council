@@ -107,17 +107,6 @@ _FALLBACK_LAYOUT = Layout(
                 "shm_path": "/dev/shm/hapax-sources/reverie.rgba",
             },
         ),
-        # Continuous-Loop Research Cadence §3.4 — caption strip.
-        SourceSchema(
-            id="captions",
-            kind="cairo",
-            backend="cairo",
-            params={
-                "class_name": "CaptionsCairoSource",
-                "natural_w": 1840,
-                "natural_h": 110,
-            },
-        ),
         # Volitional-director epic Phase 4 legibility sources (PR #1017/§3.5).
         SourceSchema(
             id="activity_header",
@@ -211,6 +200,26 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_h": 46,
             },
         ),
+        SourceSchema(
+            id="durf",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "DURFCairoSource",
+                "natural_w": 1920,
+                "natural_h": 1080,
+            },
+        ),
+        SourceSchema(
+            id="m8-display",
+            kind="external_rgba",
+            backend="shm_rgba",
+            params={
+                "natural_w": 320,
+                "natural_h": 240,
+                "shm_path": "/dev/shm/hapax-sources/m8-display.rgba",
+            },
+        ),
         # HARDM dot-matrix source retired 2026-04-23 (GEAL Phase 0).
         # Replaced by the Sierpinski-native expression layer defined in
         # ``docs/superpowers/specs/2026-04-23-geal-spec.md``.
@@ -256,12 +265,6 @@ _FALLBACK_LAYOUT = Layout(
             id="pip-lr",
             geometry=SurfaceGeometry(kind="rect", x=1500, y=860, w=400, h=200),
             z_order=10,
-        ),
-        # Continuous-Loop Research Cadence §3.4 — bottom caption strip.
-        SurfaceSchema(
-            id="captions_strip",
-            geometry=SurfaceGeometry(kind="rect", x=40, y=930, w=1840, h=110),
-            z_order=20,
         ),
         # LRR Phase 2 item 10 — video_out surfaces enumerated by
         # OutputRouter.from_layout() for the three current sinks.
@@ -357,6 +360,17 @@ _FALLBACK_LAYOUT = Layout(
             geometry=SurfaceGeometry(kind="rect", x=40, y=820, w=1840, h=240),
             z_order=30,
         ),
+        SurfaceSchema(
+            id="durf-fullframe",
+            geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
+            z_order=5,
+            update_cadence="rate",
+        ),
+        SurfaceSchema(
+            id="m8-display-surface",
+            geometry=SurfaceGeometry(kind="rect", x=600, y=80, w=1280, h=960),
+            z_order=25,
+        ),
     ],
     assignments=[
         Assignment(source="token_pole", surface="pip-ul"),
@@ -392,6 +406,8 @@ _FALLBACK_LAYOUT = Layout(
         # HARDM assignment retired 2026-04-23 (GEAL Phase 0).
         # HOMAGE #191 GEM mural assignment.
         Assignment(source="gem", surface="gem-mural-bottom", opacity=0.95),
+        Assignment(source="durf", surface="durf-fullframe", opacity=0.96),
+        Assignment(source="m8-display", surface="m8-display-surface", opacity=0.0),
     ],
 )
 
