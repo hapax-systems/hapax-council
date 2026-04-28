@@ -393,6 +393,7 @@ async def compositor_live():
     except (json.JSONDecodeError, OSError):
         pass
 
+    egress = _resolve_egress_state_json()
     return {
         "state": data.get("state", "unknown"),
         "cameras": data.get("cameras", {}),
@@ -405,8 +406,53 @@ async def compositor_live():
         "guest_present": data.get("guest_present", False),
         "consent_phase": data.get("consent_phase", "no_guest"),
         "audio_energy_rms": audio_rms,
+        "rtmp_attached": data.get("rtmp_attached", False),
+        "rtmp_rebuild_count": data.get("rtmp_rebuild_count", 0),
+        "egress_state": egress.get("state", "offline"),
+        "public_claim_allowed": egress.get("public_claim_allowed", False),
+        "livestream_egress": egress,
         "timestamp": data.get("timestamp", 0),
     }
+
+
+@router.get("/studio/egress/state")
+async def studio_egress_state():
+    """Constitutive livestream egress state.
+
+    Public live claims must use this resolver, not a single transport boolean.
+    """
+    return _resolve_egress_state_json()
+
+
+def _resolve_egress_state_json() -> dict[str, object]:
+    try:
+        from shared.livestream_egress_state import resolve_livestream_egress_state
+
+        return resolve_livestream_egress_state().model_dump(mode="json")
+    except Exception as exc:
+        return {
+            "state": "offline",
+            "confidence": 0.0,
+            "public_claim_allowed": False,
+            "public_ready": False,
+            "research_capture_ready": False,
+            "monetization_risk": "unknown",
+            "privacy_floor": "unknown",
+            "audio_floor": "unknown",
+            "evidence": [
+                {
+                    "source": "resolver",
+                    "status": "fail",
+                    "summary": f"egress resolver failed: {exc}",
+                    "observed": {},
+                    "age_s": None,
+                    "stale": True,
+                    "timestamp": None,
+                }
+            ],
+            "last_transition": None,
+            "operator_action": "inspect logos-api egress resolver failure",
+        }
 
 
 @router.post("/studio/recording/enable")

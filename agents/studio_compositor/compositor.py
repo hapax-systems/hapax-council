@@ -868,6 +868,11 @@ class StudioCompositor:
         hls_url = (
             str(Path(self.config.hls.output_dir) / "stream.m3u8") if self.config.hls.enabled else ""
         )
+        rtmp_bin = getattr(self, "_rtmp_bin", None)
+        rtmp_attached = bool(rtmp_bin.is_attached()) if rtmp_bin is not None else False
+        rtmp_rebuild_count = (
+            int(getattr(rtmp_bin, "rebuild_count", 0)) if rtmp_bin is not None else 0
+        )
         status = {
             "state": state,
             "pid": os.getpid(),
@@ -880,6 +885,8 @@ class StudioCompositor:
             "recording_cameras": recording_cameras,
             "hls_enabled": self.config.hls.enabled,
             "hls_url": hls_url,
+            "rtmp_attached": rtmp_attached,
+            "rtmp_rebuild_count": rtmp_rebuild_count,
             "camera_profile": self._active_profile_name,
             "consent_recording_allowed": self._consent_recording_allowed,
             "guest_present": guest_present,

@@ -25,6 +25,7 @@ import logging
 import os
 import time
 from collections import deque
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -266,17 +267,30 @@ def collect_stream_block(
     *,
     window_s: float = STREAM_EVENT_WINDOW_S,
     now: float | None = None,
+    egress_resolver: Callable[[], object] | None = None,
 ) -> StreamBlock:
     """Count chronicle events in the last ``window_s`` seconds.
 
-    Live indicator semantic: any chronicle event in the window means
-    the broadcast is live. Empty file or no events in window means
-    the stream is offline. Missing chronicle path → live=False with
-    zero events (chronicle daemon hasn't started, or stream is
-    genuinely offline).
+    ``chronicle_events_5min`` remains the activity counter, but the live
+    indicator is now constitutive: it comes from
+    ``shared.livestream_egress_state`` and is true only when public egress
+    evidence allows a live claim. Chronicle traffic alone must not make public
+    surfaces say "stream live."
     """
+    egress = None
+    try:
+        if egress_resolver is None:
+            from shared.livestream_egress_state import resolve_livestream_egress_state
+
+            egress = resolve_livestream_egress_state(now=now)
+        else:
+            egress = egress_resolver()
+    except Exception:
+        log.debug("livestream egress resolver failed", exc_info=True)
+        aggregator_source_failures_total.labels(source="stream").inc()
+
     if not chronicle_path.exists():
-        return StreamBlock()
+        return _stream_block_from_egress(egress, chronicle_events_5min=0)
     cutoff = (now if now is not None else time.time()) - window_s
     count = 0
     try:
@@ -295,8 +309,21 @@ def collect_stream_block(
     except OSError:
         log.debug("chronicle read failed at %s", chronicle_path)
         aggregator_source_failures_total.labels(source="stream").inc()
-        return StreamBlock()
-    return StreamBlock(live=count > 0, chronicle_events_5min=count)
+        return _stream_block_from_egress(egress, chronicle_events_5min=0)
+    return _stream_block_from_egress(egress, chronicle_events_5min=count)
+
+
+def _stream_block_from_egress(egress: object, *, chronicle_events_5min: int) -> StreamBlock:
+    return StreamBlock(
+        live=bool(getattr(egress, "public_claim_allowed", False)),
+        chronicle_events_5min=chronicle_events_5min,
+        rotation_state=str(getattr(getattr(egress, "state", ""), "value", "")),
+        egress_state=str(getattr(getattr(egress, "state", ""), "value", "unknown")),
+        public_claim_allowed=bool(getattr(egress, "public_claim_allowed", False)),
+        public_ready=bool(getattr(egress, "public_ready", False)),
+        research_capture_ready=bool(getattr(egress, "research_capture_ready", False)),
+        operator_action=str(getattr(egress, "operator_action", "")),
+    )
 
 
 def collect_daimonion_block(
@@ -565,6 +592,7 @@ class Aggregator:
         publish_dir: Path = DEFAULT_PUBLISH_DIR,
         publications_dir: Path = DEFAULT_PUBLICATIONS_DIR,
         l12_scene_flag_path: Path = DEFAULT_SCENE_FLAG_PATH,
+        egress_resolver: Callable[[], object] | None = None,
         clock=None,
     ) -> None:
         self._refusals_log_path = refusals_log_path
@@ -577,6 +605,7 @@ class Aggregator:
         self._publish_dir = publish_dir
         self._publications_dir = publications_dir
         self._l12_scene_flag_path = l12_scene_flag_path
+        self._egress_resolver = egress_resolver
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def collect(self) -> AwarenessState:
@@ -595,7 +624,10 @@ class Aggregator:
             timestamp=self._clock(),
             refusals_recent=collect_refusals_recent(self._refusals_log_path),
             health_system=collect_health_block(self._infra_snapshot_path),
-            stream=collect_stream_block(self._chronicle_events_path),
+            stream=collect_stream_block(
+                self._chronicle_events_path,
+                egress_resolver=self._egress_resolver,
+            ),
             monetization=collect_monetization_block(self._monetization_log_path),
             daimonion_voice=collect_daimonion_block(self._stimmung_state_path),
             time_sprint=collect_sprint_block(self._sprint_state_path),

@@ -348,7 +348,42 @@ export interface LiveCompositorStatus {
   guest_present: boolean;
   consent_phase: string;
   audio_energy_rms: number;
+  rtmp_attached: boolean;
+  rtmp_rebuild_count: number;
+  egress_state: string;
+  public_claim_allowed: boolean;
+  livestream_egress: LivestreamEgressState;
   timestamp: number;
+}
+
+export interface LivestreamEgressEvidence {
+  source: string;
+  status: "pass" | "warn" | "fail" | "unknown";
+  summary: string;
+  observed: Record<string, unknown>;
+  age_s: number | null;
+  stale: boolean;
+  timestamp: string | null;
+}
+
+export interface LivestreamEgressState {
+  state:
+    | "offline"
+    | "local_preview"
+    | "research_capture_ready"
+    | "public_blocked"
+    | "public_ready"
+    | "public_live";
+  confidence: number;
+  public_claim_allowed: boolean;
+  public_ready: boolean;
+  research_capture_ready: boolean;
+  monetization_risk: string;
+  privacy_floor: "satisfied" | "blocked" | "unknown";
+  audio_floor: "satisfied" | "blocked" | "unknown";
+  evidence: LivestreamEgressEvidence[];
+  last_transition: string | null;
+  operator_action: string;
 }
 
 export interface StudioDisk {
