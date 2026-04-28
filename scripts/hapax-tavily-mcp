@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# hapax-tavily-mcp — launch a Tavily MCP server without parent-shell key export.
+#
+# Usage:
+#   scripts/hapax-tavily-mcp -- <mcp-command> [args...]
+#
+# The launcher resolves TAVILY_API_KEY in this process from the environment first,
+# then `pass show api/tavily`, and injects it only into the exec'd child.
+set -euo pipefail
+
+usage() {
+    cat >&2 <<'EOF'
+usage: hapax-tavily-mcp -- <mcp-command> [args...]
+
+Example:
+  hapax-tavily-mcp -- npx -y tavily-mcp@latest
+
+Set HAPAX_TAVILY_MCP_DRY_RUN=1 to validate secret lookup without exec.
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ "${1:-}" == "--" ]]; then
+    shift
+fi
+
+if [[ $# -eq 0 ]]; then
+    usage
+    exit 2
+fi
+
+key="${TAVILY_API_KEY:-}"
+if [[ -z "$key" ]]; then
+    key="$(pass show api/tavily 2>/dev/null | sed -n '1p' || true)"
+fi
+
+if [[ -z "$key" ]]; then
+    echo "hapax-tavily-mcp: Tavily key not found in TAVILY_API_KEY or pass entry api/tavily" >&2
+    exit 1
+fi
+
+if [[ "${HAPAX_TAVILY_MCP_DRY_RUN:-0}" == "1" ]]; then
+    echo "hapax-tavily-mcp: ready to exec $1 with child-only Tavily key"
+    exit 0
+fi
+
+exec env TAVILY_API_KEY="$key" "$@"

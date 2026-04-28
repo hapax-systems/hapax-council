@@ -24,14 +24,10 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 
 import yaml
 from pydantic import BaseModel, Field
@@ -76,6 +72,8 @@ except ImportError:
 
 from opentelemetry import trace
 
+from shared.tavily_client import TavilyClient
+
 _tracer = trace.get_tracer(__name__)
 
 log = logging.getLogger("scout")
@@ -87,12 +85,6 @@ REPORT_JSON = PROFILES_DIR / "scout-report.json"
 REPORT_MD = PROFILES_DIR / "scout-report.md"
 DECISIONS_FILE = PROFILES_DIR / "scout-decisions.jsonl"
 DECISION_COOLDOWN_DAYS = 90
-
-TAVILY_API_KEY = os.environ.get(
-    "TAVILY_API_KEY",
-    "",
-)
-
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -200,45 +192,24 @@ def load_registry(filter_component: str | None = None) -> list[ComponentSpec]:
 # ── Web Search ───────────────────────────────────────────────────────────────
 
 
-def _tavily_search(query: str, max_results: int = 5) -> list[dict]:
-    """Search via Tavily REST API. Returns list of {title, url, content}."""
-    if not TAVILY_API_KEY:
-        log.warning("TAVILY_API_KEY not set — skipping web search")
-        return []
-
-    payload = json.dumps(
-        {
-            "query": query,
-            "max_results": max_results,
-            "search_depth": "basic",
-            "include_answer": False,
-        }
-    ).encode()
-
-    req = Request(
-        "https://api.tavily.com/search",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {TAVILY_API_KEY}",
-        },
-        method="POST",
+def _tavily_search(
+    query: str,
+    max_results: int = 5,
+    client: TavilyClient | None = None,
+) -> list[dict]:
+    """Search via the shared Tavily client. Returns {title, url, content} rows."""
+    client = client or TavilyClient.from_config()
+    result = client.search(
+        query,
+        caller="agents.scout",
+        max_results=max_results,
+        search_depth="basic",
+        include_answer=False,
     )
-
-    try:
-        with urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-            return [
-                {
-                    "title": r.get("title", ""),
-                    "url": r.get("url", ""),
-                    "content": r.get("content", ""),
-                }
-                for r in data.get("results", [])
-            ]
-    except (URLError, TimeoutError, json.JSONDecodeError) as e:
-        log.warning(f"Tavily search failed for '{query}': {e}")
+    if not result.ok:
+        log.warning("Tavily search skipped/failed for %r: %s", query, result.status)
         return []
+    return result.results
 
 
 def search_component(spec: ComponentSpec) -> str:
@@ -255,9 +226,6 @@ def search_component(spec: ComponentSpec) -> str:
                 if r["url"] not in seen_urls:
                     seen_urls.add(r["url"])
                     all_results.append(r)
-
-            # Rate limit: brief pause between searches
-            time.sleep(0.5)
 
         if not all_results:
             return "No search results found."
@@ -667,26 +635,6 @@ async def main() -> None:
     from agents._log_setup import configure_logging
 
     configure_logging(agent="scout")
-
-    # Load Tavily API key from pass if not in environment
-    global TAVILY_API_KEY
-    if not TAVILY_API_KEY:
-        try:
-            result = subprocess.run(
-                ["pass", "show", "api/tavily"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                TAVILY_API_KEY = result.stdout.strip()
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-    if not TAVILY_API_KEY and not args.dry_run:
-        print("Error: TAVILY_API_KEY not set and not found in pass store", file=sys.stderr)
-        print("Set TAVILY_API_KEY or run: pass insert api/tavily", file=sys.stderr)
-        sys.exit(1)
 
     report = await run_scout(
         filter_component=args.component,

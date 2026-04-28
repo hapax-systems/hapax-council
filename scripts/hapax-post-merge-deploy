@@ -13,6 +13,7 @@
 #   config/pipewire/*.conf         → cp + restart pipewire stack
 #   config/wireplumber/*.conf      → cp + restart wireplumber
 #   systemd/units/*.service|timer  → cp + daemon-reload + restart
+#   systemd/watchdogs/*            → install executable into ~/.local/bin
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
 #
 # Usage:
@@ -52,7 +53,9 @@ cd "$REPO"
 # Ensure the commit's objects are available locally even if main hasn't been
 # pulled yet; git-show against an unfetched SHA would fail and falsely signal
 # "file deleted" to the per-file branches below.
-git fetch --quiet origin main 2>/dev/null || true
+if [ "$COVERAGE_FROM_STDIN" != "1" ]; then
+    git fetch --quiet origin main 2>/dev/null || true
+fi
 
 if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
     FILES="$(cat)"
@@ -76,7 +79,7 @@ fi
 # catch the absence-class deploy bug where a new unit lands at a path
 # this script can't reach (P-4 of the absence-class-bug-prevention-and-
 # remediation epic).
-PW=(); WP=(); SYSTEMD=(); SCRIPTS=(); SCRIPT_PY=()
+PW=(); WP=(); SYSTEMD=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
 SYSTEMD_UNCLASSIFIED=()
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -84,6 +87,7 @@ while IFS= read -r f; do
         config/pipewire/*.conf)           PW+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
         systemd/units/*.service|systemd/units/*.timer) SYSTEMD+=("$f") ;;
+        systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
@@ -146,6 +150,32 @@ if [ "${#WP[@]}" -gt 0 ]; then
     if [ "${#PW[@]}" -eq 0 ]; then
         systemctl --user restart wireplumber
     fi
+    DID_ANYTHING=1
+fi
+
+# --- systemd watchdog helper scripts ---
+if [ "${#WATCHDOGS[@]}" -gt 0 ]; then
+    echo "systemd watchdog scripts changed (${#WATCHDOGS[@]}):"
+    mkdir -p "$LOCAL_BIN"
+    for f in "${WATCHDOGS[@]}"; do
+        base="$(basename "$f")"
+        dest="$LOCAL_BIN/$base"
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            git show "$SHA:$f" > "$dest"
+            chmod +x "$dest" 2>/dev/null || true
+            echo "  '$f' -> '$dest'"
+        else
+            rm -fv "$dest" || true
+        fi
+        matches="$(grep -l -F "$dest" "$REPO/systemd/units/"*.service 2>/dev/null || true)"
+        for unit_path in $matches; do
+            base_unit="$(basename "$unit_path")"
+            if systemctl --user is-active --quiet "$base_unit"; then
+                echo "  restarting $base_unit (uses $dest)"
+                systemctl --user restart "$base_unit"
+            fi
+        done
+    done
     DID_ANYTHING=1
 fi
 
