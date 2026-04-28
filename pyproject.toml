@@ -141,6 +141,7 @@ ci = [
     # [dependency-groups] dev for local IDE use + weekly
     # .github/workflows/pyright-safety-net.yml coverage.
     "pyrefly>=0.62",
+    "vulture>=2.16",
 ]
 studio = [
     "ultralytics>=8.3.0",
@@ -164,6 +165,7 @@ dev = [
     "pytest-cov>=6.0",
     "pytest-asyncio>=1.3.0",
     "ruff>=0.15.0",
+    "vulture>=2.16",
     "pytest-benchmark>=5.2.3",
     "schemathesis>=4.7",
     "prometheus-client>=0.24.1",
