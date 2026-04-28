@@ -43,3 +43,27 @@ def test_systemd_coverage_still_flags_unknown_systemd_paths() -> None:
 
     assert result.returncode == 1
     assert "systemd/uncovered/example.conf" in result.stderr
+
+
+def test_deploy_rejects_commit_ranges_before_touching_targets() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "HEAD..HEAD"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "expected a single commit SHA/ref" in result.stderr
+
+
+def test_coverage_rejects_commit_ranges_before_touching_targets() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--report-coverage", "HEAD..HEAD"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "expected a single commit SHA/ref" in result.stderr

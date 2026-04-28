@@ -59,6 +59,15 @@ cd "$REPO"
 # "file deleted" to the per-file branches below.
 if [ "$COVERAGE_FROM_STDIN" != "1" ]; then
     git fetch --quiet origin main 2>/dev/null || true
+    if [[ "$SHA" == *..* ]]; then
+        echo "hapax-post-merge-deploy: expected a single commit SHA/ref, got range '$SHA'" >&2
+        exit 2
+    fi
+    if ! SHA_RESOLVED="$(git rev-parse --verify --quiet "$SHA^{commit}")"; then
+        echo "hapax-post-merge-deploy: '$SHA' is not a valid commit" >&2
+        exit 2
+    fi
+    SHA="$SHA_RESOLVED"
 fi
 
 if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
