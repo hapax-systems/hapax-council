@@ -12,13 +12,19 @@ from agents.publish_orchestrator.orchestrator import Orchestrator
 from shared.preprint_artifact import PreprintArtifact
 
 
-def _drop_artifact(state_root: Path, *, slug: str, surfaces: list[str]) -> Path:
+def _drop_artifact(
+    state_root: Path,
+    *,
+    slug: str,
+    surfaces: list[str],
+    body_md: str = "Body.",
+) -> Path:
     """Write an approved PreprintArtifact JSON to inbox/."""
     artifact = PreprintArtifact(
         slug=slug,
         title=f"Test artifact {slug}",
         abstract="Brief.",
-        body_md="Body.",
+        body_md=body_md,
         surfaces_targeted=surfaces,
     )
     artifact.mark_approved(by_referent="Oudepode")
@@ -141,6 +147,28 @@ class TestSingleSurface:
         orch.run_once()
         assert not (tmp_path / "publish/inbox/z.json").exists()
         assert (tmp_path / "publish/published/z.json").exists()
+
+    def test_changed_artifact_republishes_same_slug(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        orch = _make_orchestrator(
+            tmp_path, surface_registry={"fake": "fake_publisher:publish_artifact"}
+        )
+
+        _drop_artifact(tmp_path, slug="repeat", surfaces=["fake"], body_md="first")
+        orch.run_once()
+        first_log = json.loads((tmp_path / "publish/log/repeat.fake.json").read_text())
+
+        _drop_artifact(tmp_path, slug="repeat", surfaces=["fake"], body_md="second")
+        orch.run_once()
+        second_log = json.loads((tmp_path / "publish/log/repeat.fake.json").read_text())
+        published = json.loads((tmp_path / "publish/published/repeat.json").read_text())
+
+        assert fake_module.publish_artifact.call_count == 2
+        assert first_log["artifact_fingerprint"] != second_log["artifact_fingerprint"]
+        assert published["body_md"] == "second"
 
 
 # ── Multi-surface fan-out ───────────────────────────────────────────

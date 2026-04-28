@@ -52,6 +52,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import ClassVar
 
@@ -143,17 +144,21 @@ class SurfaceResult:
     surface: str
     result: str
     timestamp: str
+    artifact_fingerprint: str | None = None
 
     def is_terminal(self) -> bool:
         return self.result in _TERMINAL_RESULTS
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        payload = {
             "slug": self.slug,
             "surface": self.surface,
             "result": self.result,
             "timestamp": self.timestamp,
         }
+        if self.artifact_fingerprint is not None:
+            payload["artifact_fingerprint"] = self.artifact_fingerprint
+        return payload
 
 
 # ── Orchestrator ────────────────────────────────────────────────────
@@ -253,6 +258,7 @@ class Orchestrator:
         if not artifact.surfaces_targeted:
             log.warning("artifact %s has no surfaces_targeted; skipping", artifact.slug)
             return
+        artifact_fingerprint = _artifact_fingerprint(artifact)
 
         # Existing log entries — preserve already-terminal results so
         # deferred re-runs only retry the deferred surfaces.
@@ -261,9 +267,11 @@ class Orchestrator:
             log_path = artifact.log_path(surface, state_root=self._state_root)
             if log_path.exists():
                 try:
-                    prior_results[surface] = json.loads(log_path.read_text()).get("result", "")
+                    record = json.loads(log_path.read_text())
                 except (OSError, json.JSONDecodeError):
-                    pass
+                    continue
+                if record.get("artifact_fingerprint") == artifact_fingerprint:
+                    prior_results[surface] = record.get("result", "")
 
         # Dispatch only surfaces that are not already terminal.
         futures = {}
@@ -279,7 +287,12 @@ class Orchestrator:
             except Exception:  # noqa: BLE001
                 log.exception("surface %s dispatch raised", surface)
                 result = "error"
-            self._record_result(artifact, surface, result)
+            self._record_result(
+                artifact,
+                surface,
+                result,
+                artifact_fingerprint=artifact_fingerprint,
+            )
 
         # Final state check: did all surfaces reach terminal? If yes,
         # move the artifact to published/ only if every surface succeeded.
@@ -291,10 +304,14 @@ class Orchestrator:
                 all_terminal = False
                 break
             try:
-                result = json.loads(log_path.read_text()).get("result", "")
+                record = json.loads(log_path.read_text())
             except (OSError, json.JSONDecodeError):
                 all_terminal = False
                 break
+            if record.get("artifact_fingerprint") != artifact_fingerprint:
+                all_terminal = False
+                break
+            result = record.get("result", "")
             final_results.append(result)
             if result not in _TERMINAL_RESULTS:
                 all_terminal = False
@@ -337,7 +354,14 @@ class Orchestrator:
         self._import_cache[surface] = entry
         return entry
 
-    def _record_result(self, artifact: PreprintArtifact, surface: str, result: str) -> None:
+    def _record_result(
+        self,
+        artifact: PreprintArtifact,
+        surface: str,
+        result: str,
+        *,
+        artifact_fingerprint: str,
+    ) -> None:
         log_path = artifact.log_path(surface, state_root=self._state_root)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         record = SurfaceResult(
@@ -345,6 +369,7 @@ class Orchestrator:
             surface=surface,
             result=result,
             timestamp=datetime.now(UTC).isoformat(),
+            artifact_fingerprint=artifact_fingerprint,
         )
         log_path.write_text(json.dumps(record.to_dict()))
         self.dispatches_total.labels(surface=surface, result=result).inc()
@@ -396,10 +421,40 @@ def _default_state_root() -> Path:
     return Path.home() / "hapax-state"
 
 
+def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
+    """Fingerprint fields that define a surface publication attempt.
+
+    The same slug can be intentionally republished after a correction.
+    Approval timestamps are excluded so a no-content-change requeue can
+    reuse terminal per-surface results, while title/body/metadata changes
+    force a fresh dispatch.
+    """
+
+    payload = artifact.model_dump(mode="json")
+    relevant = {
+        key: payload.get(key)
+        for key in (
+            "slug",
+            "title",
+            "abstract",
+            "body_md",
+            "body_html",
+            "doi",
+            "co_authors",
+            "surfaces_targeted",
+            "attribution_block",
+            "embed_image_url",
+        )
+    }
+    encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
+    return sha256(encoded).hexdigest()
+
+
 __all__ = [
     "DEFAULT_TICK_S",
     "METRICS_PORT_DEFAULT",
     "Orchestrator",
     "SURFACE_REGISTRY",
     "SurfaceResult",
+    "_artifact_fingerprint",
 ]
