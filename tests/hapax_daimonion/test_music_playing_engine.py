@@ -9,6 +9,7 @@ from agents.hapax_daimonion.music_playing_engine import (
     MUSIC_POSTERIOR_THRESHOLD,
     MusicPlayingEngine,
 )
+from shared.claim import InferenceBroker
 
 
 def _make_engine(
@@ -16,12 +17,14 @@ def _make_engine(
     capture_returns,  # type: ignore[no-untyped-def]
     classify_returns: float | None = None,
     music_threshold: float = MUSIC_POSTERIOR_THRESHOLD,
+    inference_broker: InferenceBroker | None = None,
 ) -> MusicPlayingEngine:
     """Build an engine with deterministic capture + classify behavior."""
     return MusicPlayingEngine(
         capture_fn=lambda: capture_returns,
         classify_fn=lambda _audio: classify_returns,
         music_threshold=music_threshold,
+        inference_broker=inference_broker,
     )
 
 
@@ -76,6 +79,38 @@ class TestMusicScore:
         engine.tick()
         # >=threshold → True → posterior lifts.
         assert engine.posterior > DEFAULT_PRIOR
+
+    def test_brokered_classifier_output_flows_to_posterior(self):
+        broker = InferenceBroker()
+        engine = _make_engine(
+            capture_returns=[0.0] * 96000,
+            classify_returns=0.85,
+            inference_broker=broker,
+        )
+
+        engine.tick()
+
+        assert engine.posterior > DEFAULT_PRIOR
+        stats = broker.stats
+        assert stats["completed"] == 1
+        assert stats["last_classifier"] == "music_playing.panns"
+
+    def test_brokered_classifier_failure_is_no_evidence(self):
+        broker = InferenceBroker()
+
+        def _raise(_audio):  # type: ignore[no-untyped-def]
+            raise RuntimeError("classifier down")
+
+        engine = MusicPlayingEngine(
+            capture_fn=lambda: [0.0] * 96000,
+            classify_fn=_raise,
+            inference_broker=broker,
+        )
+
+        engine.tick()
+
+        assert engine.posterior == pytest.approx(DEFAULT_PRIOR, abs=1e-9)
+        assert broker.stats["failed"] == 1
 
 
 # ── Asymmetric temporal profile ─────────────────────────────────────

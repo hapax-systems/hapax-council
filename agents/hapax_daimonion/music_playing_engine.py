@@ -90,7 +90,13 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from shared.claim import Claim, ClaimEngine, LRDerivation, TemporalProfile
+from shared.claim import (
+    Claim,
+    ClaimEngine,
+    InferenceBroker,
+    LRDerivation,
+    TemporalProfile,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -192,10 +198,12 @@ class MusicPlayingEngine:
         profile: TemporalProfile | None = None,
         signal_weights: dict[str, LRDerivation] | None = None,
         music_threshold: float = MUSIC_POSTERIOR_THRESHOLD,
+        inference_broker: InferenceBroker | None = None,
     ) -> None:
         self._capture_fn = capture_fn
         self._classify_fn = classify_fn
         self._music_threshold = music_threshold
+        self._inference_broker = inference_broker or InferenceBroker()
 
         self._engine: ClaimEngine[bool] = ClaimEngine[bool](
             name="music_playing",
@@ -287,8 +295,20 @@ class MusicPlayingEngine:
     def _classify_music_score(self, audio):  # type: ignore[no-untyped-def]
         """Run PANNs classification + return summed music-class posterior."""
         if self._classify_fn is not None:
-            return self._classify_fn(audio)
-        return _default_classify_music(audio)
+            classifier = self._classify_fn
+        else:
+            classifier = _default_classify_music
+
+        def classify():  # type: ignore[no-untyped-def]
+            return classifier(audio)
+
+        if self._inference_broker is None:
+            return classify()
+        return self._inference_broker.run(
+            "music_playing.panns",
+            classify,
+            estimated_vram_gb=0.0,
+        )
 
 
 # ── Default capture + classify (production paths, lazy imports) ─────────

@@ -18,12 +18,16 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Literal
+import threading
+import time
+from collections.abc import Callable
+from typing import Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
 # Fail-closed env name; "1" enables, anything else disables.
 _BYPASS_ENV = "HAPAX_BAYESIAN_BYPASS"
+_T = TypeVar("_T")
 
 
 def _bypass_active() -> bool:
@@ -331,12 +335,109 @@ class ClaimEngine[T]:
 class InferenceBroker:
     """5060 Ti co-residency broker for PaddleOCR + SigLIP2 (Phase 2b).
 
-    STUB — Phase 2b implementation. Queues classifier requests, enforces
-    VRAM budget, and serializes access to shared models.
+    Small synchronous broker used by live classifiers that feed
+    ``ClaimEngine`` posteriors. The full GPU model lifecycle is still
+    owned by classifier modules; this class provides the shared contract
+    that was missing from the Phase 0 stub:
+
+    - reject requests whose declared VRAM estimate exceeds the lane budget
+    - serialize classifier calls by default so shared model residency is stable
+    - expose minimal process-local stats for tests and smoke diagnostics
+
+    CPU-only classifiers can declare ``estimated_vram_gb=0.0`` and still
+    flow through the same broker path, which keeps the posterior plumbing
+    uniform while GPU-backed PaddleOCR/SigLIP2 work lands later.
     """
 
-    def __init__(self, vram_budget_gb: float = 12.0) -> None:
-        raise NotImplementedError("Phase 2b")
+    def __init__(
+        self,
+        vram_budget_gb: float = 12.0,
+        *,
+        max_concurrent_requests: int = 1,
+    ) -> None:
+        if vram_budget_gb <= 0:
+            raise ValueError(f"vram_budget_gb must be positive; got {vram_budget_gb}")
+        if max_concurrent_requests < 1:
+            raise ValueError(f"max_concurrent_requests must be >= 1; got {max_concurrent_requests}")
+        self._vram_budget_gb = float(vram_budget_gb)
+        self._max_concurrent_requests = max_concurrent_requests
+        self._semaphore = threading.BoundedSemaphore(max_concurrent_requests)
+        self._stats_lock = threading.Lock()
+        self._inflight = 0
+        self._completed = 0
+        self._failed = 0
+        self._last_classifier: str | None = None
+        self._last_latency_ms: float | None = None
+        self._last_error_class: str | None = None
+
+    def run(
+        self,
+        classifier_name: str,
+        fn: Callable[[], _T],
+        *,
+        estimated_vram_gb: float = 0.0,
+    ) -> _T:
+        """Run one classifier callable under the broker contract."""
+        name = classifier_name.strip()
+        if not name:
+            raise ValueError("classifier_name must be non-empty")
+        if estimated_vram_gb < 0:
+            raise ValueError(f"estimated_vram_gb must be non-negative; got {estimated_vram_gb}")
+        if estimated_vram_gb > self._vram_budget_gb:
+            raise ValueError(
+                f"{name} requests {estimated_vram_gb:.2f} GiB VRAM, "
+                f"budget is {self._vram_budget_gb:.2f} GiB"
+            )
+
+        self._semaphore.acquire()
+        start = time.monotonic()
+        self._mark_started(name)
+        try:
+            result = fn()
+        except Exception as exc:
+            self._mark_finished(name, start, error_class=exc.__class__.__name__)
+            raise
+        self._mark_finished(name, start, error_class=None)
+        return result
+
+    @property
+    def stats(self) -> dict[str, int | float | str | None]:
+        """Process-local broker stats for smoke diagnostics."""
+        with self._stats_lock:
+            return {
+                "vram_budget_gb": self._vram_budget_gb,
+                "max_concurrent_requests": self._max_concurrent_requests,
+                "inflight": self._inflight,
+                "completed": self._completed,
+                "failed": self._failed,
+                "last_classifier": self._last_classifier,
+                "last_latency_ms": self._last_latency_ms,
+                "last_error_class": self._last_error_class,
+            }
+
+    def _mark_started(self, classifier_name: str) -> None:
+        with self._stats_lock:
+            self._inflight += 1
+            self._last_classifier = classifier_name
+
+    def _mark_finished(
+        self,
+        classifier_name: str,
+        start: float,
+        *,
+        error_class: str | None,
+    ) -> None:
+        latency_ms = (time.monotonic() - start) * 1000.0
+        with self._stats_lock:
+            self._inflight = max(0, self._inflight - 1)
+            self._last_classifier = classifier_name
+            self._last_latency_ms = latency_ms
+            self._last_error_class = error_class
+            if error_class is None:
+                self._completed += 1
+            else:
+                self._failed += 1
+        self._semaphore.release()
 
 
 __all__ = [

@@ -7,9 +7,13 @@ prior-decay drift.
 
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
-from shared.claim import ClaimEngine, LRDerivation, TemporalProfile
+from shared.claim import ClaimEngine, InferenceBroker, LRDerivation, TemporalProfile
 
 
 def _signal(
@@ -215,3 +219,79 @@ class TestEngineLifecycle:
         eng.update("s2", True)
         double_post = eng.posterior
         assert double_post > single_post  # second signal adds confidence
+
+
+# ── InferenceBroker ─────────────────────────────────────────────────
+
+
+class TestInferenceBroker:
+    def test_run_returns_callable_result_and_records_success(self):
+        broker = InferenceBroker(vram_budget_gb=1.0)
+
+        out = broker.run("music_playing.panns", lambda: 0.85, estimated_vram_gb=0.0)
+
+        assert out == 0.85
+        stats = broker.stats
+        assert stats["completed"] == 1
+        assert stats["failed"] == 0
+        assert stats["last_classifier"] == "music_playing.panns"
+        assert stats["last_error_class"] is None
+
+    def test_rejects_requests_over_vram_budget_without_calling_classifier(self):
+        broker = InferenceBroker(vram_budget_gb=1.0)
+        called = False
+
+        def _classifier() -> float:
+            nonlocal called
+            called = True
+            return 1.0
+
+        with pytest.raises(ValueError, match="budget"):
+            broker.run("broadcast_ocr.paddle", _classifier, estimated_vram_gb=1.5)
+
+        assert called is False
+        assert broker.stats["completed"] == 0
+
+    def test_records_classifier_failure_and_reraises(self):
+        broker = InferenceBroker()
+
+        def _classifier() -> float:
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            broker.run("siglip_scene", _classifier)
+
+        stats = broker.stats
+        assert stats["completed"] == 0
+        assert stats["failed"] == 1
+        assert stats["last_error_class"] == "RuntimeError"
+
+    def test_serializes_classifier_calls_by_default(self):
+        broker = InferenceBroker()
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        order: list[str] = []
+
+        def _first() -> str:
+            order.append("first")
+            first_entered.set()
+            assert release_first.wait(timeout=1.0)
+            return "first"
+
+        def _second() -> str:
+            second_started.set()
+            order.append("second")
+            return "second"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(lambda: broker.run("first", _first))
+            assert first_entered.wait(timeout=1.0)
+            second = executor.submit(lambda: broker.run("second", _second))
+            time.sleep(0.05)
+            assert second_started.is_set() is False
+            release_first.set()
+            assert first.result(timeout=1.0) == "first"
+            assert second.result(timeout=1.0) == "second"
+
+        assert order == ["first", "second"]
