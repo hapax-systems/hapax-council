@@ -53,6 +53,31 @@ class TestVaultGoalsFiltering:
         result = collect_vault_goals(vault_base=tmp_path, vault_name="Test")
         assert result == []
 
+    def test_template_goal_notes_ignored_by_default(self, tmp_path: Path) -> None:
+        template_dir = tmp_path / "50-templates"
+        template_dir.mkdir()
+        _write_goal(
+            template_dir,
+            "tpl-goal",
+            title="<% tp.file.cursor(1) %>",
+            domain="<% tp.system.suggester(['research'], ['research']) %>",
+            priority="<% tp.system.suggester(['P0'], ['P0']) %>",
+        )
+        result = collect_vault_goals(vault_base=tmp_path, vault_name="Test")
+        assert result == []
+
+    def test_template_goal_notes_can_be_included_explicitly(self, tmp_path: Path) -> None:
+        template_dir = tmp_path / "50-templates"
+        template_dir.mkdir()
+        _write_goal(template_dir, "tpl-goal")
+        result = collect_vault_goals(
+            vault_base=tmp_path,
+            vault_name="Test",
+            include_templates=True,
+        )
+        assert len(result) == 1
+        assert result[0].id == "tpl-goal"
+
     def test_domain_filter(self, tmp_path: Path) -> None:
         _write_goal(tmp_path, "research-goal", domain="research")
         _write_goal(tmp_path, "studio-goal", domain="studio")

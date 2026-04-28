@@ -145,6 +145,10 @@ async def get_cost():
 
 @router.get("/goals")
 async def get_goals():
+    if cache.goals is None:
+        from logos.data.goals import empty_goal_snapshot
+
+        return _slow_response(_to_dict(empty_goal_snapshot()))
     return _slow_response(_to_dict(cache.goals))
 
 

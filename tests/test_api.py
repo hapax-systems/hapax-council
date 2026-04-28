@@ -140,13 +140,6 @@ class MockCost:
 
 
 @dataclass
-class MockGoal:
-    name: str = "Learn Rust"
-    status: str = "active"
-    description: str = "Systems programming"
-
-
-@dataclass
 class MockReadiness:
     level: str = "operational"
     score: float = 0.95
@@ -229,18 +222,49 @@ class TestCostEndpoint:
 
 class TestGoalsEndpoint:
     async def test_goals_returns_data(self, client):
-        cache.goals = [MockGoal()]
+        from logos.data.goals import GoalSnapshot, GoalStatus
+
+        cache.goals = GoalSnapshot(
+            goals=[
+                GoalStatus(
+                    id="learn-rust",
+                    name="Learn Rust",
+                    status="active",
+                    category="primary",
+                    last_activity_h=2.0,
+                    stale=False,
+                    progress_summary="",
+                    description="Systems programming",
+                    domain="research",
+                    priority="P1",
+                )
+            ],
+            active_count=1,
+            stale_count=0,
+            total_count=1,
+            source_path="/tmp/vault",
+        )
         resp = await client.get("/api/goals")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 1
-        assert data[0]["name"] == "Learn Rust"
+        assert data["active_count"] == 1
+        assert data["total_count"] == 1
+        assert data["source_model"] == "vault-native"
+        assert len(data["goals"]) == 1
+        assert data["goals"][0]["name"] == "Learn Rust"
+        assert data["goals"][0]["domain"] == "research"
 
-    async def test_goals_returns_null_when_empty(self, client):
+    async def test_goals_returns_structured_empty_when_cache_empty(self, client):
         cache.goals = None
         resp = await client.get("/api/goals")
         assert resp.status_code == 200
-        assert resp.json() is None
+        data = resp.json()
+        assert data["goals"] == []
+        assert data["active_count"] == 0
+        assert data["stale_count"] == 0
+        assert data["source"] == "vault"
+        assert data["source_model"] == "vault-native"
+        assert data["source_path"]
 
 
 class TestReadinessEndpoint:
