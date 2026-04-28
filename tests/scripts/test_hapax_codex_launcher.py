@@ -141,7 +141,7 @@ def test_valid_codex_session_execs_codex_with_no_ask_flags(tmp_path: Path) -> No
     assert "HAPAX_AGENT_SLOT=alpha" in launched_env
     assert "HAPAX_WORKTREE_ROLE=alpha" in launched_env
     assert "CODEX_THREAD_NAME=cx-red" in launched_env
-    assert "HAPAX_IDLE_UPDATE_SECONDS=180" in launched_env
+    assert "HAPAX_IDLE_UPDATE_SECONDS=270" in launched_env
 
 
 def test_launcher_scrubs_mcp_tokens_from_codex_session_env(tmp_path: Path) -> None:
@@ -215,7 +215,7 @@ def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_
     assert "parent_session: cx-red" in bootstrap
     assert "session: cx-green" in bootstrap
     assert "task_id: demo-task" in bootstrap
-    assert "idle_update_seconds: 180" in bootstrap
+    assert "idle_update_seconds: 270" in bootstrap
     assert f"{REPO_ROOT}/AGENTS.md" in bootstrap
     assert "relay/preflight note" in bootstrap
     assert "Codex version, MCP startup warnings" in bootstrap
@@ -225,6 +225,16 @@ def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_
     assert "off by default as baseline defects" in bootstrap
     assert "not watching" in bootstrap
     assert "baseline clean/regroup/stop" in bootstrap
+
+
+def test_idle_cadence_contract_defaults_to_relay_protocol_270() -> None:
+    launcher = LAUNCHER.read_text()
+    agents = (REPO_ROOT / "AGENTS.md").read_text()
+
+    assert 'HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"' in launcher
+    assert 'HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-180}"' not in launcher
+    assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 270)" in agents
+    assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 180)" not in agents
 
 
 def test_slot_relay_history_does_not_block_new_codex_session(tmp_path: Path) -> None:
