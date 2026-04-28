@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/livestream-content-substrate.schema.json",
+  "title": "Livestream ContentSubstrate",
+  "description": "Schema seed for a livestream carrier that can bear research content, public claims, director affordances, or archive evidence.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "substrate_id",
+    "display_name",
+    "substrate_type",
+    "producer",
+    "consumer",
+    "freshness_ttl_s",
+    "rights_class",
+    "provenance_token",
+    "privacy_class",
+    "public_private_modes",
+    "render_target",
+    "director_vocabulary",
+    "director_affordances",
+    "programme_bias_hooks",
+    "objective_links",
+    "public_claim_permissions",
+    "health_signal",
+    "fallback",
+    "kill_switch_behavior",
+    "integration_status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version for registry rows."
+    },
+    "substrate_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Stable snake_case identifier for the substrate row."
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable substrate label."
+    },
+    "substrate_type": {
+      "type": "string",
+      "enum": [
+        "archive",
+        "audio_archive",
+        "caption",
+        "cdn_asset",
+        "chat",
+        "cuepoint",
+        "future_source",
+        "hardware_source",
+        "lyrics_context",
+        "mobile_stream",
+        "music_control",
+        "narrative",
+        "overlay",
+        "platform_metadata",
+        "platform_player",
+        "provenance_manifest",
+        "public_fanout",
+        "quality_feedback",
+        "refusal_artifact",
+        "research_card",
+        "short_form",
+        "spectacle_lane",
+        "terminal_tile",
+        "visual_asset"
+      ],
+      "description": "Broad substrate family used for adapter routing and downstream contracts."
+    },
+    "producer": {
+      "$ref": "#/$defs/endpoint"
+    },
+    "consumer": {
+      "$ref": "#/$defs/endpoint"
+    },
+    "freshness_ttl_s": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Maximum age for producer evidence before claims degrade. Null means manual or unavailable evidence must be supplied before use."
+    },
+    "rights_class": {
+      "type": "string",
+      "enum": [
+        "operator_original",
+        "operator_controlled",
+        "third_party_attributed",
+        "third_party_uncleared",
+        "platform_embedded",
+        "unknown"
+      ],
+      "description": "Rights posture required before public or monetized claims."
+    },
+    "provenance_token": {
+      "type": ["string", "null"],
+      "description": "Pointer to a manifest, event id, citation, or artifact hash. Null is not public-claim safe."
+    },
+    "privacy_class": {
+      "type": "string",
+      "enum": [
+        "operator_private",
+        "consent_required",
+        "aggregate_only",
+        "public_safe",
+        "unknown"
+      ],
+      "description": "Privacy posture for the content carried by the substrate."
+    },
+    "public_private_modes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": ["private", "dry_run", "public_live", "archive", "disabled"]
+      },
+      "uniqueItems": true,
+      "description": "Modes this substrate may enter when the matching evidence exists."
+    },
+    "render_target": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Primary surface, transport, file, API, or platform lane."
+    },
+    "director_vocabulary": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Nouns or phrases the director may use when this substrate is mounted or dry-run visible."
+    },
+    "director_affordances": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Allowed control verbs or no-op explanations for the director."
+    },
+    "programme_bias_hooks": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Programme planner hooks that can increase, suppress, or annotate this substrate."
+    },
+    "objective_links": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Task ids, specs, plans, objective ids, or public-event types this row supports."
+    },
+    "public_claim_permissions": {
+      "type": "object",
+      "required": [
+        "claim_live",
+        "claim_archive",
+        "claim_monetizable",
+        "requires_egress_public_claim",
+        "requires_audio_safe",
+        "requires_provenance",
+        "requires_operator_action"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_live": {"type": "boolean"},
+        "claim_archive": {"type": "boolean"},
+        "claim_monetizable": {"type": "boolean"},
+        "requires_egress_public_claim": {"type": "boolean"},
+        "requires_audio_safe": {"type": "boolean"},
+        "requires_provenance": {"type": "boolean"},
+        "requires_operator_action": {"type": "boolean"}
+      },
+      "description": "Policy switches for public metadata, health, fanout, and director claims."
+    },
+    "health_signal": {
+      "type": "object",
+      "required": ["owner", "status_ref", "freshness_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "owner": {"type": "string", "minLength": 1},
+        "status_ref": {"type": "string", "minLength": 1},
+        "freshness_ref": {"type": ["string", "null"]}
+      },
+      "description": "Where livestream health and egress consumers read truth for this row."
+    },
+    "fallback": {
+      "type": "object",
+      "required": ["mode", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["hide", "hold_last_safe", "dry_run_badge", "private_only", "archive_only", "operator_prompt", "kill"]
+        },
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "description": "Fail-closed behavior when producer evidence, rights, privacy, or transport is missing."
+    },
+    "kill_switch_behavior": {
+      "type": "object",
+      "required": ["trigger", "action", "operator_recovery"],
+      "additionalProperties": false,
+      "properties": {
+        "trigger": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "minLength": 1},
+        "operator_recovery": {"type": "string", "minLength": 1}
+      },
+      "description": "Explicit behavior for blocking regressions and manual recovery."
+    },
+    "integration_status": {
+      "type": "string",
+      "enum": [
+        "unavailable",
+        "dormant",
+        "dry-run",
+        "private",
+        "public-live",
+        "archive-only",
+        "degraded",
+        "retired-only-if-obsolete"
+      ],
+      "description": "Lifecycle status. Retired status is allowed only when the substrate is genuinely obsolete, not merely unwired."
+    },
+    "existing_task_anchors": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Active or closed cc-task ids that own implementation scope."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Short implementation or dependency note."
+    }
+  },
+  "$defs": {
+    "endpoint": {
+      "type": "object",
+      "required": ["owner", "state", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "owner": {"type": "string", "minLength": 1},
+        "state": {"type": "string", "minLength": 1},
+        "evidence": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
