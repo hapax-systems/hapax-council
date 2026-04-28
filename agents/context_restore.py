@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.transcript_read_gate import TranscriptRedacted, read_transcript_gate
+
 log = logging.getLogger(__name__)
 
 CC_HISTORY = Path.home() / ".claude" / "history.jsonl"
@@ -385,9 +387,16 @@ def collect_voice_events_summary() -> dict:
         return result
 
     try:
+        gated_content = read_transcript_gate(events_file)
+        if isinstance(gated_content, TranscriptRedacted):
+            log.debug("Voice events summary redacted by transcript gate: %s", gated_content.path)
+            return result
+        if isinstance(gated_content, bytes):
+            gated_content = gated_content.decode("utf-8", errors="replace")
+
         transitions = 0
         last_presence = "likely_present"
-        for line in events_file.read_text().splitlines():
+        for line in gated_content.splitlines():
             try:
                 event = json.loads(line)
                 if event.get("type") == "presence_transition":
