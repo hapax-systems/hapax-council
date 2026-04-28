@@ -132,6 +132,9 @@ class TaskNote(BaseModel):
     status: str
     """offered / claimed / in_progress / pr_open / done / refused / superseded / withdrawn."""
 
+    automation_status: str | None = None
+    """FULL_AUTO / CONDITIONAL / REFUSED / REMOVED lifecycle state, when present."""
+
     assigned_to: str | None = None
     """Session role currently owning the task ("unassigned" sentinel allowed)."""
 

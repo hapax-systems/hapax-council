@@ -44,7 +44,7 @@ OFFERED_STALE_DAYS = 14
 """§2.7: offered task older than this with no claim is stale-on-arrival."""
 
 REFUSAL_DORMANCY_DAYS = 7
-"""§2.8: zero `status: refused` in this window is a dormancy signal."""
+"""§2.8: zero canonical refusal notes in this window is a dormancy signal."""
 
 KNOWN_ROLES: tuple[Role, ...] = ("alpha", "beta", "delta", "epsilon")
 """Permanent Claude worktree slots. Codex cx-* relay files are discovered dynamically."""
@@ -526,16 +526,21 @@ def check_offered_staleness(
 def check_refusal_pipeline_dormancy(
     closed_notes: Iterable[TaskNote], *, now: datetime | None = None
 ) -> list[HygieneEvent]:
-    """§2.8 — zero `status: refused` events in last 7 days.
+    """§2.8 — zero canonical refusal notes in last 7 days.
 
     Severity: info. Surfaces *absence* of an expected signal; not a
     violation per se. Reads from the closed/ archive plus active/ notes.
+
+    Canonical refusal representation is ``automation_status: REFUSED``.
+    Legacy ``status: refused`` notes still count so older vault exports do not
+    create a false dormancy signal.
     """
     now = now or _now()
     cutoff = now - timedelta(days=REFUSAL_DORMANCY_DAYS)
     refused_recent = 0
     for note in closed_notes:
-        if note.status != "refused":
+        is_refused = note.automation_status == "REFUSED" or note.status == "refused"
+        if not is_refused:
             continue
         ts = _ensure_aware(note.updated_at) or _ensure_aware(note.created_at)
         if ts and ts >= cutoff:
@@ -550,7 +555,7 @@ def check_refusal_pipeline_dormancy(
             task_id=None,
             session=None,
             message=(
-                f"zero `status: refused` notes in last {REFUSAL_DORMANCY_DAYS}d "
+                f"zero canonical refusal notes in last {REFUSAL_DORMANCY_DAYS}d "
                 f"(refusal pipeline may be unwired)"
             ),
             metadata={"window_days": str(REFUSAL_DORMANCY_DAYS)},
@@ -596,6 +601,9 @@ def parse_task_note(path: Path) -> TaskNote | None:
         path=str(path),
         task_id=str(task_id),
         status=str(status),
+        automation_status=(
+            str(fm["automation_status"]) if fm.get("automation_status") is not None else None
+        ),
         assigned_to=fm.get("assigned_to"),
         claimed_at=_parse_dt(fm.get("claimed_at")),
         branch=fm.get("branch"),
