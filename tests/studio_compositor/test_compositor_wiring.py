@@ -74,6 +74,7 @@ class TestStartLayoutOnly:
             "whos_here",
             "durf",
             "m8-display",
+            "egress_footer",
             "gem",
         }
         assert {s.id for s in layout.sources} == expected_ids
@@ -104,6 +105,7 @@ class TestStartLayoutOnly:
             "whos_here",
             "durf",
             "m8-display",
+            "egress_footer",
             "gem",
         }
 

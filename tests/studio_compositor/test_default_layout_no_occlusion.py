@@ -38,6 +38,7 @@ _OVERLAY_SURFACE_IDS = {
     "activity-variety-log-mid",
     "whos-here-tr",
     "gem-mural-bottom",
+    "egress-footer-bottom",
 }
 
 
