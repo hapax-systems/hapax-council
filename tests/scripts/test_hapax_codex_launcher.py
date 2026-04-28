@@ -47,6 +47,38 @@ printf 'TAVILY_API_KEY=%s\\n' "${{TAVILY_API_KEY:-}}" >> {env_file}
     return env, args_file, env_file
 
 
+def _write_active_task(
+    env: dict[str, str],
+    task_id: str,
+    *,
+    status: str = "offered",
+    assigned_to: str = "unassigned",
+) -> Path:
+    active_root = (
+        Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    )
+    active_root.mkdir(parents=True, exist_ok=True)
+    note = active_root / f"{task_id}.md"
+    note.write_text(
+        "\n".join(
+            [
+                "---",
+                f"task_id: {task_id}",
+                f"status: {status}",
+                f"assigned_to: {assigned_to}",
+                "claimed_at: null",
+                "updated_at: 2026-04-28T00:00:00Z",
+                "---",
+                "",
+                "## Session log",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return note
+
+
 def test_rejects_slot_name_as_visible_session(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
 
@@ -190,6 +222,7 @@ def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_
     assert "not actively producing" in bootstrap
     assert "timestamp-only changes" in bootstrap
     assert "Use scripts/hapax-codex for child Codex sessions" in bootstrap
+    assert "off by default as baseline defects" in bootstrap
     assert "not watching" in bootstrap
     assert "baseline clean/regroup/stop" in bootstrap
 
@@ -285,6 +318,7 @@ def test_current_session_relay_retirement_blocks_without_force(tmp_path: Path) -
 
 def test_terminal_tmux_starts_codex_runner_without_parent_claim(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
     tmux_args = tmp_path / "tmux-args.txt"
     fake_tmux = tmp_path / "bin" / "tmux"
     fake_tmux.write_text(
@@ -331,6 +365,45 @@ printf '%s\\n' "$@" > {tmux_args}
     assert "--force" in runner_text
     assert "--task demo-task" in runner_text
     assert "--no-claim" not in runner_text
+
+
+def test_terminal_launch_refuses_non_offered_task_before_opening_foot(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task", status="pr_open")
+    foot_args = tmp_path / "foot-args.txt"
+    fake_foot = tmp_path / "bin" / "foot"
+    fake_foot.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {foot_args}
+"""
+    )
+    fake_foot.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-blue",
+            "--slot",
+            "delta",
+            "--cd",
+            str(REPO_ROOT),
+            "--task",
+            "demo-task",
+            "--terminal",
+            "foot",
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 4
+    assert "current status is 'pr_open', not 'offered'" in result.stderr
+    assert not foot_args.exists()
+    assert not list((tmp_path / "cache" / "hapax" / "codex-spawns").glob("*cx-blue-demo-task.md"))
 
 
 def test_terminal_foot_prefers_direct_foot_when_available(tmp_path: Path) -> None:

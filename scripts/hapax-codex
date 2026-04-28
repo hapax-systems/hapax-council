@@ -221,6 +221,65 @@ load_header_from_claude_mcp() {
   return 1
 }
 
+preflight_claimable_task() {
+  local task_id="$1"
+  local vault_root="${HAPAX_CC_TASK_ROOT:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "hapax-codex: python3 missing; cannot verify claimable task" >&2
+    exit 3
+  fi
+
+  python3 - "$vault_root" "$task_id" <<'PYEOF'
+import re
+import sys
+from pathlib import Path
+
+vault_root, task_id = Path(sys.argv[1]), sys.argv[2]
+active_root = vault_root / "active"
+note_path = None
+
+for candidate in active_root.glob(f"{task_id}-*.md"):
+    if candidate.is_file():
+        note_path = candidate
+        break
+
+exact = active_root / f"{task_id}.md"
+if note_path is None and exact.is_file():
+    note_path = exact
+
+if note_path is None:
+    print(
+        f"hapax-codex: task '{task_id}' not found in {active_root}/",
+        file=sys.stderr,
+    )
+    print(f"browse offered tasks: {vault_root}/_dashboard/cc-offered.md", file=sys.stderr)
+    sys.exit(2)
+
+text = note_path.read_text(encoding="utf-8")
+status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
+status = status_match.group(1) if status_match else ""
+if status != "offered":
+    printable = status or "missing"
+    print(
+        f"hapax-codex: refusing to spawn task '{task_id}' - current status is "
+        f"'{printable}', not 'offered'",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+
+assigned_match = re.search(r"^assigned_to:\s*(\S+)$", text, flags=re.MULTILINE)
+assigned = assigned_match.group(1) if assigned_match else "unassigned"
+if assigned != "unassigned":
+    print(
+        f"hapax-codex: refusing to spawn task '{task_id}' - already assigned to "
+        f"'{assigned}'",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+PYEOF
+}
+
 SESSION=""
 SLOT=""
 WORKDIR=""
@@ -471,6 +530,8 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   fi
   if [ "$TERMINAL" = "none" ]; then
     "$CLAIM_SCRIPT" "$TASK_ID"
+  else
+    preflight_claimable_task "$TASK_ID"
   fi
 fi
 
@@ -524,6 +585,7 @@ Coordination rules:
 - Use pass and child MCP wrappers for credentials; do not print secret values.
 - Use scripts/hapax-codex for child Codex sessions; do not introduce a parallel Claude launcher.
 - Maintain Obsidian cc-task and relay discipline.
+- Treat implemented features that remain dormant, unshipped, or off by default as baseline defects unless a concrete external blocker is documented; prefer fixing the blocker and shipping.
 - Do not claim a persistent watch timer unless you are actively running a loop; after a final response, the session is idle, not watching.
 - When the parent says baseline clean/regroup/stop, mark relay status regrouping/no-new-work or RETIRED, stop claiming tasks, and wait for explicit direction.
 EOF
