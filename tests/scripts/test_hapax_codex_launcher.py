@@ -26,6 +26,9 @@ printf 'HAPAX_AGENT_SLOT=%s\\n' "$HAPAX_AGENT_SLOT" >> {env_file}
 printf 'HAPAX_WORKTREE_ROLE=%s\\n' "$HAPAX_WORKTREE_ROLE" >> {env_file}
 printf 'CODEX_THREAD_NAME=%s\\n' "$CODEX_THREAD_NAME" >> {env_file}
 printf 'HAPAX_IDLE_UPDATE_SECONDS=%s\\n' "$HAPAX_IDLE_UPDATE_SECONDS" >> {env_file}
+printf 'GITHUB_PERSONAL_ACCESS_TOKEN=%s\\n' "${{GITHUB_PERSONAL_ACCESS_TOKEN:-}}" >> {env_file}
+printf 'CODEX_GITHUB_PERSONAL_ACCESS_TOKEN=%s\\n' "${{CODEX_GITHUB_PERSONAL_ACCESS_TOKEN:-}}" >> {env_file}
+printf 'TAVILY_API_KEY=%s\\n' "${{TAVILY_API_KEY:-}}" >> {env_file}
 """
     )
     fake_codex.chmod(0o755)
@@ -106,6 +109,41 @@ def test_valid_codex_session_execs_codex_with_no_ask_flags(tmp_path: Path) -> No
     assert "HAPAX_WORKTREE_ROLE=alpha" in launched_env
     assert "CODEX_THREAD_NAME=cx-red" in launched_env
     assert "HAPAX_IDLE_UPDATE_SECONDS=180" in launched_env
+
+
+def test_launcher_scrubs_mcp_tokens_from_codex_session_env(tmp_path: Path) -> None:
+    env, _args_file, env_file = _env_with_fake_codex(tmp_path)
+    env["GITHUB_PERSONAL_ACCESS_TOKEN"] = "github-parent-token"
+    env["CODEX_GITHUB_PERSONAL_ACCESS_TOKEN"] = "codex-github-parent-token"
+    env["TAVILY_API_KEY"] = "tavily-parent-token"
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    launched_env = env_file.read_text()
+    assert "GITHUB_PERSONAL_ACCESS_TOKEN=\n" in launched_env
+    assert "CODEX_GITHUB_PERSONAL_ACCESS_TOKEN=\n" in launched_env
+    assert "TAVILY_API_KEY=\n" in launched_env
+    assert "github-parent-token" not in launched_env
+    assert "codex-github-parent-token" not in launched_env
+    assert "tavily-parent-token" not in launched_env
 
 
 def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_path: Path) -> None:
