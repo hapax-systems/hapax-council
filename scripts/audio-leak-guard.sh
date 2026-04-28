@@ -26,19 +26,22 @@ set -u
 
 FAIL=0
 WP_CONF_DIR="${HAPAX_WIREPLUMBER_CONF_DIR:-${HOME}/.config/wireplumber/wireplumber.conf.d}"
+PW_CONF_DIR="${HAPAX_PIPEWIRE_CONF_DIR:-${HOME}/.config/pipewire/pipewire.conf.d}"
+FORBIDDEN_PRIVATE_TARGET_RE='alsa_output\.usb-ZOOM_Corporation_L-12|hapax-livestream|hapax-livestream-tap|hapax-voice-fx-capture|hapax-pc-loudnorm|input\.loopback\.sink\.role\.multimedia'
+
+active_conf() {
+    sed '/^[[:space:]]*#/d' "$1" 2>/dev/null || true
+}
 
 if [ "${HAPAX_AUDIO_LEAK_GUARD_STATIC_ONLY:-0}" = "1" ]; then
     ROUTE=""
     echo "SKIP runtime route check (HAPAX_AUDIO_LEAK_GUARD_STATIC_ONLY=1)"
 else
     # Check 1: role.assistant output routes to hapax-private.
-    ROUTE=$(timeout 1 pw-cat --playback --raw --format s16 --rate 24000 \
-        --channels 1 --media-role Assistant /dev/zero >/dev/null 2>&1 &
-        sleep 0.3
-        pw-link -l 2>/dev/null | awk '
-            /^output\.loopback\.sink\.role\.assistant:output_FL/ {f=1; next}
-            f && /\|->/ {print; exit}
-        ')
+    ROUTE=$(pw-link -l 2>/dev/null | awk '
+        /^output\.loopback\.sink\.role\.assistant:output_FL/ {f=1; next}
+        f && /\|->/ {print; exit}
+    ')
 fi
 
 if echo "$ROUTE" | grep -q "hapax-private"; then
@@ -50,6 +53,55 @@ elif [ -z "$ROUTE" ]; then
     echo "WARN role.assistant route unknown — no active stream during check"
 else
     echo "WARN role.assistant routes to unexpected target: $ROUTE"
+fi
+
+# Check 1b: hapax-private itself must not have a downstream playback
+# bridge into L-12 or another broadcast path. The safest posture when no
+# private monitor hardware is present is no downstream playback bridge.
+PRIVATE_RUNTIME_ROUTE=""
+NOTIFICATION_ROUTE=""
+NOTIFICATION_RUNTIME_ROUTE=""
+if [ "${HAPAX_AUDIO_LEAK_GUARD_STATIC_ONLY:-0}" != "1" ]; then
+    PRIVATE_RUNTIME_ROUTE=$(pw-link -l 2>/dev/null | awk '
+        /^hapax-private-playback:output_/ {f=1; next}
+        f && /\|->/ {print; f=0}
+    ')
+    NOTIFICATION_ROUTE=$(pw-link -l 2>/dev/null | awk '
+        /^output\.loopback\.sink\.role\.notification:output/ {f=1; next}
+        f && /\|->/ {print; exit}
+    ')
+    NOTIFICATION_RUNTIME_ROUTE=$(pw-link -l 2>/dev/null | awk '
+        /^hapax-notification-private-playback:output_/ {f=1; next}
+        f && /\|->/ {print; f=0}
+    ')
+fi
+
+if printf '%s\n' "$PRIVATE_RUNTIME_ROUTE" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
+    echo "FAIL hapax-private downstream route reaches broadcast/default path: $PRIVATE_RUNTIME_ROUTE"
+    FAIL=1
+elif [ -z "$PRIVATE_RUNTIME_ROUTE" ]; then
+    echo "OK  hapax-private has no downstream playback bridge (fail-closed)"
+else
+    echo "OK  hapax-private downstream route stays off broadcast: $PRIVATE_RUNTIME_ROUTE"
+fi
+
+if [ -n "$NOTIFICATION_ROUTE" ]; then
+    if printf '%s\n' "$NOTIFICATION_ROUTE" | grep -q "hapax-notification-private"; then
+        echo "OK  role.notification routes to hapax-notification-private"
+    else
+        echo "WARN role.notification routes to unexpected target: $NOTIFICATION_ROUTE"
+    fi
+elif [ "${HAPAX_AUDIO_LEAK_GUARD_STATIC_ONLY:-0}" != "1" ]; then
+    echo "WARN role.notification route unknown — no active stream during check"
+fi
+
+if printf '%s\n' "$NOTIFICATION_RUNTIME_ROUTE" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
+    echo "FAIL hapax-notification-private downstream route reaches broadcast/default path: $NOTIFICATION_RUNTIME_ROUTE"
+    FAIL=1
+elif [ -z "$NOTIFICATION_RUNTIME_ROUTE" ]; then
+    echo "OK  hapax-notification-private has no downstream playback bridge (fail-closed)"
+else
+    echo "OK  hapax-notification-private downstream route stays off broadcast: $NOTIFICATION_RUNTIME_ROUTE"
 fi
 
 # Check 2: 55-retarget.conf is disabled.
@@ -94,6 +146,42 @@ if printf '%s\n' "$BROADCAST_TARGET_LINE" \
 else
     echo "FAIL role.broadcast preferred-target missing hapax-voice-fx-capture in $DUCK_CONF"
     FAIL=1
+fi
+
+# Check 5: deployed PipeWire private sink configs must not encode a
+# forbidden downstream target. This catches the class where the
+# role-based WirePlumber target is correct but the target sink itself
+# forwards into L-12/default broadcast.
+STREAM_SPLIT_CONF="$PW_CONF_DIR/hapax-stream-split.conf"
+STREAM_SPLIT_ACTIVE=$(active_conf "$STREAM_SPLIT_CONF")
+if printf '%s\n' "$STREAM_SPLIT_ACTIVE" | grep -q 'node.name[[:space:]]*=[[:space:]]*"hapax-private-playback"'; then
+    PRIVATE_STATIC_TARGET=$(printf '%s\n' "$STREAM_SPLIT_ACTIVE" \
+        | awk '
+            /node.name[[:space:]]*=[[:space:]]*"hapax-private-playback"/ {f=1}
+            f && /(target\.object|node\.target)/ {print; exit}
+            f && /^[[:space:]]*}/ {exit}
+        ')
+    if printf '%s\n' "$PRIVATE_STATIC_TARGET" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
+        echo "FAIL hapax-private-playback static target is broadcast/default path: $PRIVATE_STATIC_TARGET"
+        FAIL=1
+    else
+        echo "OK  hapax-private-playback static target stays off broadcast"
+    fi
+else
+    echo "OK  hapax-private is fail-closed in PipeWire config (no playback target)"
+fi
+
+NOTIFY_CONF="$PW_CONF_DIR/hapax-notification-private.conf"
+NOTIFY_ACTIVE=$(active_conf "$NOTIFY_CONF")
+NOTIFY_STATIC_TARGET=$(printf '%s\n' "$NOTIFY_ACTIVE" \
+    | awk '/(target\.object|node\.target)/ {print; exit}')
+if printf '%s\n' "$NOTIFY_STATIC_TARGET" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
+    echo "FAIL hapax-notification-private static target is broadcast/default path: $NOTIFY_STATIC_TARGET"
+    FAIL=1
+elif [ -z "$NOTIFY_STATIC_TARGET" ]; then
+    echo "OK  hapax-notification-private is fail-closed in PipeWire config (no playback target)"
+else
+    echo "OK  hapax-notification-private static target stays off broadcast"
 fi
 
 if [ "$FAIL" -ne 0 ]; then
