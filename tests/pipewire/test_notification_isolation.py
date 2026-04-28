@@ -2,9 +2,8 @@
 
 Pins the governance contract that system / chat / desktop notifications
 never reach the livestream broadcast. Surface-level verification: the
-conf file exists, declares a dedicated sink, targets the L-12 MASTER
-monitor output (not Ryzen, not any capture target, and explicitly not
-``hapax-l12-evilpet-capture``).
+conf file exists, declares a dedicated sink, and fails closed instead of
+targeting any hardware that can fall back to L-12 when absent.
 
 Runtime verification (live graph check) is handled by the Phase B /
 Phase C integration tests; this file is the static schema pin.
@@ -33,13 +32,13 @@ def test_conf_exists(conf_text: str) -> None:
 
 
 def test_declares_dedicated_sink_name(conf_text: str) -> None:
-    assert 'node.name       = "hapax-notification-private"' in conf_text, (
+    assert 'node.name          = "hapax-notification-private"' in conf_text, (
         "notification-private sink must declare the exact node.name"
     )
 
 
-def test_uses_loopback_module(conf_text: str) -> None:
-    assert "libpipewire-module-loopback" in conf_text
+def test_uses_null_sink_adapter(conf_text: str) -> None:
+    assert "support.null-audio-sink" in conf_text
 
 
 def test_targets_off_l12_broadcast_paths(conf_text: str) -> None:
@@ -69,17 +68,13 @@ def test_targets_off_l12_broadcast_paths(conf_text: str) -> None:
     assert "hapax-livestream" not in active, (
         "Notification sink must not target any livestream sink/source."
     )
-    # Required: a target.object directive that lands somewhere
-    # off-broadcast (operator monitor). The specific device is
-    # operator-config — could be Yeti, iLoud, or future swap — so
-    # only pin that target.object exists and isn't a broadcast path.
-    assert "target.object" in active, (
-        "Notification sink must declare an explicit target.object (off-broadcast operator monitor)."
+    assert "target.object" not in active, (
+        "Notification-private must fail closed without a direct hardware target; "
+        "absent hardware target.object values fall through to the default L-12 sink."
     )
 
 
 def test_declares_stereo(conf_text: str) -> None:
-    assert "audio.channels  = 2" in conf_text or "audio.channels = 2" in conf_text
     assert "[ FL FR ]" in conf_text
 
 
