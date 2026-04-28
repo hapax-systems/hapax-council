@@ -9,8 +9,12 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 log = logging.getLogger(__name__)
+
+ProbeStatus = Literal["met", "failed", "inconclusive", "stale"]
+ProbeCheckResult = tuple[bool, str] | tuple[bool, str, ProbeStatus]
 
 
 @dataclass
@@ -20,7 +24,7 @@ class SufficiencyProbe:
     implication_id: str
     level: str  # "component" | "subsystem" | "system"
     question: str
-    check: Callable[[], tuple[bool, str]]  # (met, evidence)
+    check: Callable[[], ProbeCheckResult]  # (met, evidence[, status])
 
 
 @dataclass
@@ -29,6 +33,11 @@ class ProbeResult:
     met: bool
     evidence: str
     timestamp: str
+    status: ProbeStatus | None = None
+
+    def __post_init__(self) -> None:
+        if self.status is None:
+            self.status = "met" if self.met else "failed"
 
 
 # ── Scope coverage probe (depends only on base types) ───────────────────────
@@ -118,10 +127,16 @@ def run_probes(*, axiom_id: str = "", level: str = "") -> list[ProbeResult]:
 
     for probe in probes:
         try:
-            met, evidence = probe.check()
+            raw_result = probe.check()
+            if len(raw_result) == 2:
+                met, evidence = raw_result
+                status: ProbeStatus = "met" if met else "failed"
+            else:
+                met, evidence, status = raw_result
         except Exception as e:
             met = False
             evidence = f"probe error: {e}"
+            status = "failed"
             log.warning("Probe %s failed: %s", probe.id, e)
 
         results.append(
@@ -130,6 +145,7 @@ def run_probes(*, axiom_id: str = "", level: str = "") -> list[ProbeResult]:
                 met=met,
                 evidence=evidence,
                 timestamp=now,
+                status=status,
             )
         )
 

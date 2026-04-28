@@ -85,6 +85,8 @@ class InfrastructureManifest(BaseModel):
     litellm_routes: list[LiteLLMRoute] = Field(default_factory=list)
     disk: list[DiskInfo] = Field(default_factory=list)
     listening_ports: list[str] = Field(default_factory=list)
+    listening_ports_status: str = "observed"
+    listening_ports_error: str = ""
     pass_entries: list[str] = Field(default_factory=list)
     compose_file: str = ""
     profile_files: list[str] = Field(default_factory=list)

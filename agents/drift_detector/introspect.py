@@ -93,7 +93,7 @@ async def _generate_manifest_inner() -> InfrastructureManifest:
         collect_disk,
         collect_docker,
         collect_gpu,
-        collect_listening_ports,
+        collect_listening_ports_observation,
         collect_litellm_routes,
         collect_ollama,
         collect_pass_entries,
@@ -110,7 +110,7 @@ async def _generate_manifest_inner() -> InfrastructureManifest:
         gpu,
         routes,
         disks,
-        ports,
+        (ports, ports_status, ports_error),
     ) = await asyncio.gather(
         collect_docker(),
         collect_systemd(),
@@ -119,7 +119,7 @@ async def _generate_manifest_inner() -> InfrastructureManifest:
         collect_gpu(),
         collect_litellm_routes(),
         collect_disk(),
-        collect_listening_ports(),
+        collect_listening_ports_observation(),
     )
 
     rc, os_info, _ = await run_cmd(["uname", "-sr"])
@@ -147,6 +147,8 @@ async def _generate_manifest_inner() -> InfrastructureManifest:
         litellm_routes=routes,
         disk=disks,
         listening_ports=ports,
+        listening_ports_status=ports_status,
+        listening_ports_error=ports_error,
         pass_entries=collect_pass_entries(),
         compose_file=str(COMPOSE_FILE) if COMPOSE_FILE.is_file() else "",
         profile_files=collect_profile_files(),

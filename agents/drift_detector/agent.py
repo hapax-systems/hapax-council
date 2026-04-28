@@ -53,6 +53,10 @@ GUIDELINES:
 - Sufficiency mode: check infrastructure ACTIVELY SUPPORTS the requirement.
   Category: "axiom-sufficiency-gap". T0=high, T1=medium, T2=low.
 - System-level implications: examine emergent properties across services.
+- Port drift must be based on the current manifest's `listening_ports` and
+  `listening_ports_status`. If port observation is `inconclusive`, report low
+  severity inconclusive evidence instead of a confident current outage. Treat
+  older generated drift reports as historical unless live evidence confirms them.
 
 Call lookup_constraints() for additional operator constraints.
 """

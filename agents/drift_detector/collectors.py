@@ -14,6 +14,9 @@ from urllib.request import Request, urlopen
 from .collectors_infra import COMPOSE_FILE as COMPOSE_FILE  # noqa: F401
 from .collectors_infra import collect_docker as collect_docker  # noqa: F401
 from .collectors_infra import collect_listening_ports as collect_listening_ports  # noqa: F401
+from .collectors_infra import (  # noqa: F401
+    collect_listening_ports_observation as collect_listening_ports_observation,
+)
 from .collectors_infra import collect_systemd as collect_systemd  # noqa: F401
 from .config import LITELLM_BASE, OLLAMA_URL, PASSWORD_STORE_DIR, PROFILES_DIR
 from .introspect import http_get, run_cmd
