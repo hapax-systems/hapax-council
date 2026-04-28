@@ -10,7 +10,14 @@ from pathlib import Path
 
 import yaml
 
-from shared.tavily_client import TavilyClient
+from shared.tavily_client import (
+    TavilyBudgetExceeded,
+    TavilyClient,
+    TavilyConfigError,
+    TavilyPolicyViolation,
+    TavilyRequestError,
+    TavilySearchRequest,
+)
 
 log = logging.getLogger(__name__)
 
@@ -287,24 +294,31 @@ def _gather_web_research(scope: str, audience: str) -> str:
     """Search the web for industry context relevant to the demo scope."""
     try:
         query = f"{scope} autonomous agent system architecture trends"
-        result = TavilyClient.from_config().search(
-            query,
-            caller="agents.demo_pipeline.research",
-            max_results=5,
-            search_depth="basic",
+        response = TavilyClient().search(
+            TavilySearchRequest(
+                query=query,
+                max_results=5,
+                search_depth="basic",
+                include_answer=False,
+                lane="demo_external",
+            )
         )
-        if not result.ok:
-            log.debug("Tavily web research skipped/failed: %s", result.status)
-            return ""
-        results = result.results
+        results = response.results
         if not results:
             return ""
         lines = []
         for r in results:
-            title = r.get("title", "")
-            content = r.get("content", "")[:200]
-            lines.append(f"- **{title}**: {content}")
+            title = r.title
+            content = r.content[:200]
+            source = f" ({r.url})" if r.url else ""
+            lines.append(f"- **{title}**{source}: {content}")
         return "\n".join(lines)
+    except TavilyConfigError:
+        log.debug("No Tavily API key found, skipping web research")
+        return ""
+    except (TavilyBudgetExceeded, TavilyPolicyViolation, TavilyRequestError):
+        log.exception("Failed to gather web research")
+        return ""
     except Exception:
         log.exception("Failed to gather web research")
         return ""

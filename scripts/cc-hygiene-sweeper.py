@@ -102,7 +102,7 @@ def _load_closed_notes(vault_root: Path) -> list[TaskNote]:
 
 
 def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
-    """Load `{role}.yaml` for each known role; tolerate missing files."""
+    """Load known role relay yaml plus Codex `cx-*.yaml` files."""
     from cc_hygiene.checks import _read_relay_yaml  # local helper
 
     payloads: dict[str, dict[str, Any]] = {}
@@ -110,6 +110,11 @@ def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
         return payloads
     for role in KNOWN_ROLES:
         payload = _read_relay_yaml(relay_root / f"{role}.yaml")
+        if payload is not None:
+            payloads[role] = payload
+    for path in sorted(relay_root.glob("cx-*.yaml")):
+        role = path.stem
+        payload = _read_relay_yaml(path)
         if payload is not None:
             payloads[role] = payload
     return payloads
@@ -126,7 +131,15 @@ def _build_session_states(
     for note in notes:
         if note.status == "in_progress" and note.assigned_to and note.assigned_to != "unassigned":
             in_progress_by_session[note.assigned_to] += 1
-    for role in KNOWN_ROLES:
+    roles = list(KNOWN_ROLES)
+    for role in sorted(relay_payloads):
+        if role not in roles:
+            roles.append(role)
+    for role in sorted(in_progress_by_session):
+        if role not in roles:
+            roles.append(role)
+
+    for role in roles:
         payload = relay_payloads.get(role, {})
         task_id, _ = _extract_current_claim(payload) if payload else (None, None)
         updated = _extract_relay_updated(payload) if payload else None

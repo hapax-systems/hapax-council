@@ -7,6 +7,7 @@ from agents.publication_bus.surface_registry import (
     AutomationStatus,
     SurfaceSpec,
     auto_surfaces,
+    dispatch_registry,
     is_engageable,
     refused_surfaces,
 )
@@ -53,6 +54,8 @@ class TestSurfaceSpecDataclass:
         spec = SurfaceSpec(automation_status=AutomationStatus.FULL_AUTO)
         assert spec.automation_status == AutomationStatus.FULL_AUTO
         assert spec.api is None
+        assert spec.dispatch_entry is None
+        assert spec.activation_path is None
         assert spec.refusal_link is None
         assert spec.scope_note is None
 
@@ -60,11 +63,23 @@ class TestSurfaceSpecDataclass:
         spec = SurfaceSpec(
             automation_status=AutomationStatus.REFUSED,
             api="REST",
+            activation_path="some-daemon",
             refusal_link="docs/refusal-briefs/x.md",
             scope_note="some scope",
         )
         assert spec.api == "REST"
+        assert spec.activation_path == "some-daemon"
         assert spec.refusal_link == "docs/refusal-briefs/x.md"
+
+
+class TestDispatchRegistry:
+    def test_dispatch_registry_comes_from_surface_registry(self) -> None:
+        dispatch = dispatch_registry()
+        assert dispatch["bluesky-post"] == "agents.cross_surface.bluesky_post:publish_artifact"
+        assert dispatch["zenodo-doi"] == "agents.zenodo_publisher:publish_artifact"
+
+    def test_refused_surfaces_are_not_dispatchable(self) -> None:
+        assert "alphaxiv-comments" not in dispatch_registry()
 
 
 class TestIsEngageable:
@@ -74,6 +89,7 @@ class TestIsEngageable:
 
     def test_conditional_engage_is_engageable(self) -> None:
         assert is_engageable("philarchive-deposit")
+        assert is_engageable("crossref-doi-deposit")
 
     def test_refused_is_not_engageable(self) -> None:
         assert not is_engageable("bandcamp-upload")
@@ -113,3 +129,10 @@ class TestAutoSurfaces:
         surfaces = auto_surfaces()
         assert "bandcamp-upload" not in surfaces
         assert "philarchive-deposit" not in surfaces
+
+    def test_every_full_auto_surface_has_dispatch_or_activation_path(self) -> None:
+        for name in auto_surfaces():
+            spec = SURFACE_REGISTRY[name]
+            assert spec.dispatch_entry or spec.activation_path, (
+                f"{name} must declare dispatch_entry or activation_path"
+            )

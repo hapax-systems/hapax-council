@@ -48,14 +48,19 @@ exceptions:
     axiom_id: corporate_boundary
     implication_id: cb-network-001
     reason: >
-      Scout and demo research use Tavily API for web search to scan
-      technology landscape and gather public industry context. This is
-      an intentional external API dependency for horizon scanning capability.
+      Shared Tavily web-intelligence client supports horizon scanning,
+      demo research, capability discovery, publication/citation research,
+      and operator-directed coding research. This is an intentional external
+      API dependency for current open-web facts, extraction, crawl/map, and
+      research tasks.
     compensating_controls:
-      - API key resolved inside the child process from env or pass entry api/tavily
-      - Scheduled scout uses shared Tavily client cache, budget, guard, and ledger
-      - Payload guard denies obvious local paths, secrets, vault paths, and work-context strings
-      - Results cached locally; cache hits avoid network calls
+      - API key loaded from TAVILY_API_KEY or pass; no committed credential values
+      - Requests go through shared guardrails rejecting private mail, transcripts, corporate content, and token-like strings
+      - Usage ledger records request hashes and URL hosts, not raw private query text
+      - Per-lane monthly/daily credit budgets and local cache are enforced
+      - Codex MCP access uses the repo-owned hapax_tavily_mcp_server proxy by default, not direct upstream Tavily MCP bypasses
+      - Scheduled Scout resolves Tavily credentials inside the shared client and does not export TAVILY_API_KEY from the watchdog
+      - Existing consent/monetization gates remain on broadcast-facing web affordances
     approved_by: operator
     approved_at: "2026-03-13"
     review_interval: quarterly
@@ -81,14 +86,13 @@ exceptions:
     next_review: "2026-07-03"
 
   - id: exception-duckduckgo-instant
-    component: agents/hapax_daimonion/discovery_affordance.py
+    component: agents/reverie/content_injector.py
     axiom_id: corporate_boundary
     implication_id: cb-network-001
     reason: >
-      Content injector and capability discovery use DuckDuckGo Instant
-      Answers API for web search results rendered on the visual surface
-      or surfaced via the discovery meta-affordance. No authentication
-      required. Query is the imagination narrative intent.
+      Content injector uses DuckDuckGo Instant Answers API for web search
+      results rendered on the visual surface. Capability discovery now uses
+      the shared Tavily client under exception-tavily-scout.
     compensating_controls:
       - No API key or account required
       - Query is imagination narrative (no personal data)

@@ -10,7 +10,8 @@ corresponding publisher in parallel.
 
 ``~/hapax-state/publish/draft/{slug}.json``    — awaiting approval
 ``~/hapax-state/publish/inbox/{slug}.json``    — approved, dispatchable
-``~/hapax-state/publish/published/{slug}.json`` — terminal state per surface
+``~/hapax-state/publish/published/{slug}.json`` — every targeted surface returned ``ok``
+``~/hapax-state/publish/failed/{slug}.json`` — at least one targeted surface failed/refused
 ``~/hapax-state/publish/log/{slug}.{surface}.json`` — per-surface outcome
 
 The orchestrator only globs ``inbox/`` so unapproved drafts can sit in
@@ -50,6 +51,7 @@ from shared.co_author_model import ALL_CO_AUTHORS, CoAuthor
 DRAFT_DIR_NAME = "publish/draft"
 INBOX_DIR_NAME = "publish/inbox"
 PUBLISHED_DIR_NAME = "publish/published"
+FAILED_DIR_NAME = "publish/failed"
 LOG_DIR_NAME = "publish/log"
 
 
@@ -61,6 +63,7 @@ class ApprovalState(StrEnum):
     APPROVED = "approved"
     WITHHELD = "withheld"
     PUBLISHED = "published"
+    FAILED = "failed"
 
 
 class PreprintArtifact(BaseModel):
@@ -129,9 +132,12 @@ class PreprintArtifact(BaseModel):
         return state_root / DRAFT_DIR_NAME / f"{self.slug}.json"
 
     def published_path(self, *, state_root: Path) -> Path:
-        """Where this artifact moves once every surface reaches a
-        terminal state (``ok | denied | dropped``, never ``deferred``)."""
+        """Where this artifact moves once every targeted surface returns ``ok``."""
         return state_root / PUBLISHED_DIR_NAME / f"{self.slug}.json"
+
+    def failed_path(self, *, state_root: Path) -> Path:
+        """Where this artifact moves when any surface reaches a failed terminal state."""
+        return state_root / FAILED_DIR_NAME / f"{self.slug}.json"
 
     def log_path(self, surface: str, *, state_root: Path) -> Path:
         """Per-surface outcome log path."""
@@ -147,11 +153,15 @@ class PreprintArtifact(BaseModel):
         self.approved_by_referent = by_referent
 
     def mark_published(self) -> None:
-        """Move artifact to PUBLISHED — orchestrator does this once
-        every surface in ``surfaces_targeted`` reaches a terminal
-        state. ``approved_at`` and ``approved_by_referent`` are
-        preserved for the audit trail."""
+        """Move artifact to PUBLISHED after every targeted surface returns ``ok``.
+
+        ``approved_at`` and ``approved_by_referent`` are preserved for the audit trail.
+        """
         self.approval = ApprovalState.PUBLISHED
+
+    def mark_failed(self) -> None:
+        """Move artifact to FAILED after one or more non-retryable surface failures."""
+        self.approval = ApprovalState.FAILED
 
 
 # ── Construction helpers ────────────────────────────────────────────
@@ -183,7 +193,13 @@ def from_omg_weblog_draft(
         abstract=abstract,
         body_md=body_md,
         surfaces_targeted=surfaces_targeted
-        or ["omg-lol-weblog", "bluesky-post", "mastodon-post", "arena-post", "webmention-sender"],
+        or [
+            "omg-weblog",
+            "bluesky-post",
+            "mastodon-post",
+            "arena-post",
+            "bridgy-webmention-publish",
+        ],
         co_authors=co_authors or list(ALL_CO_AUTHORS),
     )
 
@@ -191,6 +207,7 @@ def from_omg_weblog_draft(
 __all__ = [
     "ApprovalState",
     "DRAFT_DIR_NAME",
+    "FAILED_DIR_NAME",
     "INBOX_DIR_NAME",
     "LOG_DIR_NAME",
     "PUBLISHED_DIR_NAME",

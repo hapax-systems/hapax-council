@@ -63,6 +63,8 @@ class TestSingleSurface:
         assert log_path.exists()
         record = json.loads(log_path.read_text())
         assert record["result"] == "surface_unwired"
+        assert not (tmp_path / "publish/published/x.json").exists()
+        assert (tmp_path / "publish/failed/x.json").exists()
 
     def test_ok_dispatch(self, tmp_path, monkeypatch):
         # Create a fake module with a publish_artifact entry-point
@@ -98,6 +100,26 @@ class TestSingleSurface:
 
         log_path = tmp_path / "publish/log/y.fake.json"
         assert json.loads(log_path.read_text())["result"] == "error"
+        assert not (tmp_path / "publish/published/y.json").exists()
+        assert (tmp_path / "publish/failed/y.json").exists()
+
+    def test_no_credentials_moves_to_failed_not_published(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="no_credentials")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(tmp_path, slug="creds", surfaces=["fake"])
+        orch = _make_orchestrator(
+            tmp_path, surface_registry={"fake": "fake_publisher:publish_artifact"}
+        )
+        orch.run_once()
+
+        assert json.loads((tmp_path / "publish/log/creds.fake.json").read_text())["result"] == (
+            "no_credentials"
+        )
+        assert not (tmp_path / "publish/published/creds.json").exists()
+        assert not (tmp_path / "publish/inbox/creds.json").exists()
+        assert (tmp_path / "publish/failed/creds.json").exists()
 
     def test_deferred_re_runs(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
@@ -168,6 +190,35 @@ class TestMultiSurface:
         # bsky is terminal, masto is deferred — artifact stays in inbox
         assert (tmp_path / "publish/inbox/held.json").exists()
         assert not (tmp_path / "publish/published/held.json").exists()
+        assert not (tmp_path / "publish/failed/held.json").exists()
+
+    def test_partial_success_moves_to_failed_not_published(self, tmp_path, monkeypatch):
+        bsky = mock.Mock()
+        bsky.publish_artifact = mock.Mock(return_value="ok")
+        masto = mock.Mock()
+        masto.publish_artifact = mock.Mock(return_value="auth_error")
+        monkeypatch.setitem(__import__("sys").modules, "fake_bsky", bsky)
+        monkeypatch.setitem(__import__("sys").modules, "fake_masto", masto)
+
+        _drop_artifact(tmp_path, slug="partial", surfaces=["bsky", "masto"])
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={
+                "bsky": "fake_bsky:publish_artifact",
+                "masto": "fake_masto:publish_artifact",
+            },
+        )
+        orch.run_once()
+
+        assert json.loads((tmp_path / "publish/log/partial.bsky.json").read_text())["result"] == (
+            "ok"
+        )
+        assert (
+            json.loads((tmp_path / "publish/log/partial.masto.json").read_text())["result"]
+            == "auth_error"
+        )
+        assert not (tmp_path / "publish/published/partial.json").exists()
+        assert (tmp_path / "publish/failed/partial.json").exists()
 
 
 # ── Counter labels ──────────────────────────────────────────────────
@@ -313,20 +364,7 @@ class TestSurfaceRegistry:
         fn = getattr(mod, attr)
         assert callable(fn)
 
-    def test_alphaxiv_comments_wired(self):
+    def test_alphaxiv_comments_not_runtime_wired(self):
         from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
 
-        assert "alphaxiv-comments" in SURFACE_REGISTRY
-        assert SURFACE_REGISTRY["alphaxiv-comments"] == (
-            "agents.cross_surface.alphaxiv_post:publish_artifact"
-        )
-
-    def test_alphaxiv_comments_entry_resolves(self):
-        import importlib
-
-        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
-
-        module_path, attr = SURFACE_REGISTRY["alphaxiv-comments"].split(":")
-        mod = importlib.import_module(module_path)
-        fn = getattr(mod, attr)
-        assert callable(fn)
+        assert "alphaxiv-comments" not in SURFACE_REGISTRY

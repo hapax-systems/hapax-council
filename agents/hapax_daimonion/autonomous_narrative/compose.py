@@ -13,10 +13,12 @@ retreat path and emit 4-word fragments like "Hapax is observing".
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any
 
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
+from shared.operator_referent import REFERENTS
 
 log = logging.getLogger(__name__)
 
@@ -43,10 +45,31 @@ _TROUBLE_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(r"\bchess[\s-]?boxing\b", re.IGNORECASE),
     re.compile(r"\bring[\s-]?2\s+gate\b", re.IGNORECASE),
     re.compile(r"\bintensity\s+router\b", re.IGNORECASE),
+    re.compile(r"\b(feels?|wants?|dreams?|hopes?|desires?|longs?)\b", re.IGNORECASE),
 )
 
 
-def _sanitize_register(text: str) -> str:
+def _violates_operator_referent_policy(text: str, operator_referent: str | None) -> bool:
+    """Fail closed on legal-name leaks or mixed non-formal referents."""
+    legal_name = os.environ.get("HAPAX_OPERATOR_NAME", "").strip()
+    if legal_name and re.search(re.escape(legal_name), text, flags=re.IGNORECASE):
+        log.warning("autonomous_narrative: legal-name leak detected; dropping output")
+        return True
+
+    if not operator_referent:
+        return False
+
+    scrubbed = re.sub(re.escape(operator_referent), "", text, flags=re.IGNORECASE)
+    for referent in sorted(REFERENTS, key=len, reverse=True):
+        if referent == operator_referent:
+            continue
+        if re.search(re.escape(referent), scrubbed, flags=re.IGNORECASE):
+            log.warning("autonomous_narrative: mixed operator referents detected; dropping output")
+            return True
+    return False
+
+
+def _sanitize_register(text: str, *, operator_referent: str | None = None) -> str:
     """Drop sentences containing trouble patterns; keep the rest.
 
     Soft sanitize per 2026-04-27 "no fences" directive: if a sentence
@@ -54,6 +77,8 @@ def _sanitize_register(text: str) -> str:
     vinyl/CBIP confabulation), drop that sentence — but emit the
     surviving prose instead of dropping the whole utterance.
     """
+    if _violates_operator_referent_policy(text, operator_referent):
+        return ""
     sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     keep: list[str] = []
     for sentence in sentences:
@@ -70,6 +95,7 @@ def _sanitize_register(text: str) -> str:
 def compose_narrative(
     context: Any,
     *,
+    operator_referent: str | None = None,
     llm_call: Any | None = None,
 ) -> str | None:
     """Compose 1-3 sentences of narrative grounded in ``context``.
@@ -79,7 +105,7 @@ def compose_narrative(
     can compose from programme/stimmung/activity alone.
     """
     seed = _build_seed(context)
-    prompt = _build_prompt(context, seed)
+    prompt = _build_prompt(context, seed, operator_referent=operator_referent)
 
     if llm_call is None:
         llm_call = _call_llm_grounded
@@ -93,7 +119,7 @@ def compose_narrative(
     if not polished or not isinstance(polished, str):
         return None
 
-    cleaned = _sanitize_register(polished.strip())
+    cleaned = _sanitize_register(polished.strip(), operator_referent=operator_referent)
     if not cleaned:
         return None
     if cleaned[-1] not in ".!?":
@@ -193,9 +219,17 @@ def _summarize_events(events: tuple[dict, ...]) -> str:
     return "\n" + "\n".join(bullets)
 
 
-def _build_prompt(context: Any, seed: str) -> str:
+def _build_prompt(context: Any, seed: str, *, operator_referent: str | None = None) -> str:
     """The full LLM prompt for the local grounded tier."""
     envelope = render_envelope([], floor=SURFACE_FLOORS["autonomous_narrative"])
+    referent_clause = ""
+    if operator_referent:
+        referents = ", ".join(f"'{r}'" for r in REFERENTS)
+        referent_clause = (
+            "- If you refer to the operator, use exactly "
+            f"'{operator_referent}'. Do not use the legal name. Do not mix any other "
+            f"operator referent from this set: {referents}.\n"
+        )
     return (
         f"{envelope}\n\n"
         "Compose one short autonomous narration for the Hapax "
@@ -210,6 +244,7 @@ def _build_prompt(context: Any, seed: str) -> str:
         "- Use neutral, factual, present-tense scientific register.\n"
         "- Refer to the system as 'Hapax' (never 'the AI', 'this AI', "
         "'our AI', 'artificial intelligence').\n\n"
+        f"{referent_clause}"
         "AVOID:\n"
         "- Personifying verbs (feels, wants, dreams, inspired).\n"
         "- Commercial tells (subscribe, like and follow, comment below, "

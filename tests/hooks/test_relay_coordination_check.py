@@ -69,6 +69,7 @@ def _run_hook(
     relay_dir: Path,
     file_path: str,
     self_session: str = "beta",
+    role_env: str = "CLAUDE_ROLE",
     incident_bypass: bool = False,
     full_bypass: bool = False,
     cwd: Path | None = None,
@@ -82,7 +83,13 @@ def _run_hook(
     # Point HOME to a directory whose .cache/hapax/relay = relay_dir.
     fake_home = relay_dir.parent.parent.parent  # tmp_path
     env["HOME"] = str(fake_home)
-    env["CLAUDE_ROLE"] = self_session
+    env.pop("HAPAX_AGENT_NAME", None)
+    env.pop("HAPAX_AGENT_ROLE", None)
+    env.pop("HAPAX_WORKTREE_ROLE", None)
+    env.pop("CODEX_THREAD_NAME", None)
+    env.pop("CODEX_ROLE", None)
+    env.pop("CLAUDE_ROLE", None)
+    env[role_env] = self_session
     if incident_bypass:
         env["HAPAX_INCIDENT"] = "1"
     if full_bypass:
@@ -256,6 +263,28 @@ def test_self_claim_does_not_block_self(relay_dir: Path) -> None:
         relay_dir=relay_dir,
         file_path="agents/studio_compositor/durf_source.py",
         self_session="beta",
+    )
+    assert result.returncode == 0
+
+
+def test_codex_role_self_claim_does_not_block_self(relay_dir: Path) -> None:
+    """Codex cx-* thread names participate in the same identity contract."""
+    _write_peer_yaml(
+        relay_dir,
+        "cx-red",
+        claims=[
+            {
+                "path": "agents/studio_compositor/durf_source.py",
+                "until": _iso_utc(60),
+                "reason": "cx-red's own work",
+            }
+        ],
+    )
+    result = _run_hook(
+        relay_dir=relay_dir,
+        file_path="agents/studio_compositor/durf_source.py",
+        self_session="cx-red",
+        role_env="CODEX_THREAD_NAME",
     )
     assert result.returncode == 0
 

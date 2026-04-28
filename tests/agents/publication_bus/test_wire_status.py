@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agents.publication_bus.surface_registry import SURFACE_REGISTRY
 from agents.publication_bus.wire_status import (
     PUBLISHER_WIRE_REGISTRY,
     WireEntry,
@@ -84,9 +85,17 @@ def test_each_entry_has_surface_slug():
     for module, entry in PUBLISHER_WIRE_REGISTRY.items():
         assert entry.surface_slug, f"{module} missing surface_slug"
         assert isinstance(entry, WireEntry)
+        assert entry.surface_slug in SURFACE_REGISTRY, (
+            f"{module} references unknown surface_slug {entry.surface_slug!r}"
+        )
 
 
 def test_each_cred_blocked_entry_has_rationale():
     for module, entry in PUBLISHER_WIRE_REGISTRY.items():
         if entry.status == "CRED_BLOCKED":
             assert entry.rationale, f"{module} CRED_BLOCKED but no rationale"
+
+
+def test_graph_publisher_slug_matches_surface_registry():
+    entry = PUBLISHER_WIRE_REGISTRY["agents.publication_bus.graph_publisher"]
+    assert entry.surface_slug == "datacite-graphql-mirror"

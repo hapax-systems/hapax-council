@@ -91,7 +91,7 @@ type: cc-task
 task_id: 231
 title: HOMAGE-SCRIM epic plan
 status: offered      # offered | claimed | in_progress | pr_open | blocked | done | superseded | withdrawn
-assigned_to: unassigned   # unassigned | alpha | beta | delta | epsilon
+assigned_to: unassigned   # unassigned | alpha | beta | delta | epsilon | cx-<color>
 priority: high       # critical | high | normal | low
 wsjf: 11.0           # optional; alpha's WSJF score for ranking
 depends_on: [229, 230]

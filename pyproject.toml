@@ -53,6 +53,7 @@ dependencies = [
     "google-cloud-monitoring>=2.30.0",
     "atproto>=0.0.65",
     "mastodon-py>=2.2.1",
+    "mcp>=1.26",
 ]
 
 [project.optional-dependencies]

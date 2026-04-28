@@ -44,12 +44,19 @@ class EnforcementResult:
     audit_only: bool = False  # True only when caller passes block_enabled=False
 
 
+import os
+
+
 # ── Enforcement mode ─────────────────────────────────────────────────────────
 # Default ON per directive feedback_features_on_by_default 2026-04-25T20:55Z.
 # Operator opts out via AXIOM_ENFORCE_BLOCK=0 (emergency kill-switch).
-import os
+def _block_enabled_from_env() -> bool:
+    """Return current blocking mode.
 
-_BLOCK_ENABLED = os.environ.get("AXIOM_ENFORCE_BLOCK", "1") != "0"
+    Read at enforcement time so long-lived processes and tests observe
+    OFF→ON transitions without needing a module reload.
+    """
+    return os.environ.get("AXIOM_ENFORCE_BLOCK", "1") != "0"
 
 
 def _load_exceptions() -> dict[str, dict]:
@@ -160,7 +167,7 @@ def enforce_output(
     Returns:
         EnforcementResult with allowed=True if output should proceed.
     """
-    should_block = block_enabled if block_enabled is not None else _BLOCK_ENABLED
+    should_block = block_enabled if block_enabled is not None else _block_enabled_from_env()
 
     # Check for exceptions
     if _is_excepted(agent_id, output_path):

@@ -14,6 +14,12 @@ from pathlib import Path
 
 from agents._affordance import CapabilityRecord, OperationalProperties
 from agents._impingement import Impingement
+from shared.exploration import (
+    ExplorationSignal,
+    compute_boredom_index,
+    compute_curiosity_index,
+)
+from shared.exploration_writer import publish_exploration_signal
 
 log = logging.getLogger(__name__)
 
@@ -249,6 +255,7 @@ class VisualChainCapability:
         if path is None:
             path = SHM_PATH
         path = Path(path)
+        publish_exploration = path == SHM_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         levels = {k: v for k, v in self._levels.items() if v > 0.0}
         params = self.compute_param_deltas()
@@ -256,3 +263,48 @@ class VisualChainCapability:
         tmp_path = path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(state))
         tmp_path.rename(path)
+        if publish_exploration:
+            self._publish_exploration_signal(levels)
+
+    def _publish_exploration_signal(self, levels: dict[str, float]) -> None:
+        """Publish visual-chain liveness for the health monitor."""
+        active_levels = levels or self._levels
+        if active_levels:
+            max_edge, max_score = max(active_levels.items(), key=lambda item: item[1])
+        else:
+            max_edge, max_score = None, 0.0
+        mean_level = sum(self._levels.values()) / max(len(self._levels), 1)
+        mean_habituation = max(0.0, 1.0 - mean_level)
+        mean_interest = max(0.2, mean_level)
+        local_coherence = 0.5
+        boredom = compute_boredom_index(
+            mean_habituation=mean_habituation,
+            mean_trace_interest=mean_interest,
+            stagnation_duration=0.0,
+            dwell_time_in_coherence=0.0,
+        )
+        curiosity = compute_curiosity_index(
+            chronic_error=0.0,
+            error_improvement_rate=0.0,
+            max_novelty_score=max_score,
+            local_coherence=local_coherence,
+        )
+        signal = ExplorationSignal(
+            component="visual_chain",
+            timestamp=time_mod.time(),
+            mean_habituation=mean_habituation,
+            max_novelty_edge=max_edge,
+            max_novelty_score=max_score,
+            error_improvement_rate=0.0,
+            chronic_error=0.0,
+            mean_trace_interest=mean_interest,
+            stagnation_duration=0.0,
+            local_coherence=local_coherence,
+            dwell_time_in_coherence=0.0,
+            boredom_index=boredom,
+            curiosity_index=curiosity,
+        )
+        try:
+            publish_exploration_signal(signal)
+        except OSError:
+            log.warning("Failed to publish visual_chain exploration signal", exc_info=True)

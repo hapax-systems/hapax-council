@@ -36,6 +36,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.affordance import ContentRisk
+from shared.music_sources import is_decommissioned_broadcast_selection
 
 __all__ = [
     "DEFAULT_REPO_PATH",
@@ -121,14 +122,14 @@ class LocalMusicTrack(BaseModel):
     # Provenance fields for the broadcast-safety gate. Default to safe
     # so old JSONL records load with a conservative posture (treated as
     # operator-owned, broadcast-OK). Explicit re-tagging for tracks that
-    # came from external safe sources (Epidemic, Streambeats, etc.) lands
-    # in Phase 3 alongside their respective adapters.
+    # came from external safe sources lands alongside their respective
+    # adapters.
     content_risk: ContentRisk = Field(
         default="tier_0_owned",
         description=(
             "Provenance/ContentID risk tier. tier_0_owned = operator-owned/"
-            "generated; tier_1_platform_cleared = Epidemic / Storyblocks / "
-            "Streambeats / YT AL; tier_2_provenance_known = verified CC0 / "
+            "generated; tier_1_platform_cleared = Storyblocks / Streambeats / "
+            "YT AL; tier_2_provenance_known = verified CC0 / "
             "Internet Archive raw PD; tier_3_uncertain = Bandcamp direct, "
             "CC-BY; tier_4_risky = vinyl, commercial, raw type-beats."
         ),
@@ -145,7 +146,7 @@ class LocalMusicTrack(BaseModel):
         default="local",
         description=(
             "Provenance label for routing + attribution. Free-form but "
-            "consumers expect: 'operator-owned', 'epidemic', 'streambeats', "
+            "consumers expect: 'operator-owned', 'streambeats', "
             "'youtube-audio-library', 'freesound-cc0', 'bandcamp-direct', "
             "'soundcloud-oudepode', 'sample-source', 'local'."
         ),
@@ -154,8 +155,8 @@ class LocalMusicTrack(BaseModel):
         default=None,
         description=(
             "Platform-side anchor for ContentID whitelist resolution — "
-            "Epidemic recording UUID, Streambeats track id, distributor "
-            "track id for oudepode releases, etc. Carried so the egress "
+            "Streambeats track id, distributor track id for oudepode "
+            "releases, etc. Carried so the egress "
             "audit + future provenance manifest (Phase 7) can prove "
             "broadcast safety per-asset."
         ),
@@ -360,22 +361,6 @@ class LocalMusicRepo:
             log.debug("Validation failed for %s", full, exc_info=True)
             return None
 
-        # Phase 3: merge per-track YAML sidecar if present. Sidecar carries
-        # broadcast-safety provenance fields (content_risk, source,
-        # whitelist_source) for tracks ingested from Epidemic / Streambeats /
-        # other safe-music sources. Lazy import keeps the music_repo module
-        # importable without yaml installed (sidecar is opt-in).
-        try:
-            from agents.epidemic_adapter.sidecar import (
-                load_sidecar,
-                merge_sidecar_into_track,
-            )
-
-            sidecar = load_sidecar(full)
-            if sidecar is not None:
-                track = merge_sidecar_into_track(track, sidecar)
-        except ImportError:
-            log.debug("epidemic_adapter sidecar reader unavailable; skipping merge")
         return track
 
     # ── selection / bookkeeping ──────────────────────────────────────
@@ -425,6 +410,8 @@ class LocalMusicRepo:
         scored: list[tuple[float, LocalMusicTrack]] = []
         for t in self._by_path.values():
             if not t.broadcast_safe:
+                continue
+            if is_decommissioned_broadcast_selection(t.path, t.source):
                 continue
             if _CONTENT_RISK_RANK[t.content_risk] > max_rank:
                 continue

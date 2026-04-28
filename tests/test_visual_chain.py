@@ -220,6 +220,24 @@ def test_write_state_atomic(tmp_path: Path):
     assert json.loads(out_path.read_text())
 
 
+def test_write_state_default_publishes_exploration_signal(monkeypatch, tmp_path: Path):
+    import agents.visual_chain as mod
+
+    signals = []
+    monkeypatch.setattr(mod, "SHM_PATH", tmp_path / "visual-chain-state.json")
+    monkeypatch.setattr(mod, "publish_exploration_signal", signals.append)
+
+    cap = VisualChainCapability()
+    imp = _make_impingement()
+    cap.activate_dimension("visual_chain.intensity", imp, 0.7)
+    cap.write_state()
+
+    assert signals
+    assert signals[0].component == "visual_chain"
+    assert signals[0].max_novelty_edge == "visual_chain.intensity"
+    assert signals[0].max_novelty_score == 0.7
+
+
 # ---------------------------------------------------------------------------
 # Task 7: Integration test
 # ---------------------------------------------------------------------------

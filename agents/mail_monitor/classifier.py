@@ -122,6 +122,10 @@ def classify(message: dict[str, Any]) -> tuple[Category, str]:
         ).inc()
         return Category.C_SUPPRESS, "rule_label"
 
+    if message.get("auto_accept_candidate") or message.get("outbound_correlation_hit"):
+        CLASSIFICATIONS_COUNTER.labels(category=Category.A_ACCEPT.value, source="rule_sender").inc()
+        return Category.A_ACCEPT, "rule_sender"
+
     for label_name, category in LABEL_TO_CATEGORY.items():
         if label_name in labels:
             CLASSIFICATIONS_COUNTER.labels(category=category.value, source="rule_label").inc()

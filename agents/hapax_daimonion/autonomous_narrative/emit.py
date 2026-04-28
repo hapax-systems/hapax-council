@@ -24,6 +24,7 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from shared.chronicle import ChronicleEvent, current_otel_ids
@@ -33,6 +34,30 @@ log = logging.getLogger(__name__)
 
 
 _IMPINGEMENT_PATH = Path("/dev/shm/hapax-dmn/impingements.jsonl")
+
+
+@dataclass(frozen=True)
+class EmitResult:
+    """Outcome for the three autonomous-narration emission sinks."""
+
+    impingement_written: bool
+    jsonl_chronicle_written: bool
+    chronicle_recorded: bool
+
+    @property
+    def success(self) -> bool:
+        """Narration succeeds when the impingement bus write lands."""
+        return self.impingement_written
+
+    @property
+    def partial_success(self) -> bool:
+        return self.impingement_written and not (
+            self.jsonl_chronicle_written and self.chronicle_recorded
+        )
+
+    def __bool__(self) -> bool:
+        return self.success
+
 
 try:
     from prometheus_client import Counter
@@ -59,13 +84,12 @@ def emit_narrative(
     operator_referent: str | None = None,
     impingement_path: Path | None = None,
     now: float | None = None,
-) -> bool:
+) -> EmitResult:
     """Append the impingement + chronicle event for one narration.
 
-    Returns True on success (both writes landed). False on any I/O
-    failure — the loop will increment ``llm_silent`` (or appropriate
-    failure label) at the call site rather than counting a failed
-    write as an emission.
+    Returns an :class:`EmitResult`. Narration success is keyed to the
+    impingement write because that is the speech path; chronicle sinks
+    are diagnostic and can fail partially without suppressing speech.
     """
     path = impingement_path or _IMPINGEMENT_PATH
     ts = now if now is not None else time.time()
@@ -97,12 +121,21 @@ def emit_narrative(
         },
     }
 
+    impingement_written = False
+    jsonl_chronicle_written = False
+    chronicle_recorded = False
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(impingement, default=str) + "\n")
+            impingement_written = True
             fh.write(json.dumps(chronicle_event, default=str) + "\n")
+            jsonl_chronicle_written = True
+    except Exception as exc:
+        log.warning("autonomous_narrative impingement/jsonl write failed: %s", exc)
 
+    try:
         trace_id, span_id = current_otel_ids()
         ev = ChronicleEvent(
             ts=ts,
@@ -119,7 +152,12 @@ def emit_narrative(
             },
         )
         chronicle_record(ev)
+        chronicle_recorded = True
     except Exception as exc:
-        log.warning("autonomous_narrative emit write failed: %s", exc)
-        return False
-    return True
+        log.warning("autonomous_narrative chronicle record failed: %s", exc)
+
+    return EmitResult(
+        impingement_written=impingement_written,
+        jsonl_chronicle_written=jsonl_chronicle_written,
+        chronicle_recorded=chronicle_recorded,
+    )

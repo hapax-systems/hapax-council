@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -44,20 +45,24 @@ class TestLoadRecentConceptDois:
 
 
 class TestMain:
-    @patch.dict("os.environ", {"HAPAX_OPERATOR_ORCID": ""})
-    def test_no_orcid_env_returns_0(self) -> None:
+    @patch("agents.publication_bus.orcid_verifier.operator_orcid", return_value=None)
+    def test_no_orcid_returns_0(self, _mock_operator_orcid: MagicMock) -> None:
         # No ORCID configured → daemon-friendly no-op
         assert main() == 0
 
     @pytest.fixture
-    def with_orcid_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HAPAX_OPERATOR_ORCID", "0000-0001-2345-6789")
+    def with_orcid(self) -> Iterator[None]:
+        with patch(
+            "agents.publication_bus.orcid_verifier.operator_orcid",
+            return_value="0000-0001-2345-6789",
+        ):
+            yield
 
     @patch("agents.publication_bus.orcid_verifier.fetch_orcid_works")
     def test_fetch_failure_returns_0(
         self,
         mock_fetch: MagicMock,
-        with_orcid_env: None,
+        with_orcid: None,
     ) -> None:
         mock_fetch.return_value = None
         # Even on fetch failure, daemon exits cleanly for systemd
@@ -67,7 +72,7 @@ class TestMain:
     def test_success_path_returns_0(
         self,
         mock_fetch: MagicMock,
-        with_orcid_env: None,
+        with_orcid: None,
     ) -> None:
         mock_fetch.return_value = _OK_RESPONSE
         assert main() == 0

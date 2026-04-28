@@ -101,6 +101,19 @@ class TestAwarenessEndpoint:
         assert resp.status_code == 503
         assert resp.headers["X-Awareness-State-Stale"] == "true"
 
+    def test_503_when_state_disappears_during_read(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        path = tmp_path / "state.json"
+        path.write_text("{}")
+        _patch_state_path(monkeypatch, path)
+
+        monkeypatch.setattr("logos.api.routes.awareness._read_text_and_mtime", lambda _p: None)
+
+        resp = client.get("/api/awareness")
+        assert resp.status_code == 503
+        assert resp.headers["X-Awareness-State-Stale"] == "true"
+
     def test_public_filter_applied(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):

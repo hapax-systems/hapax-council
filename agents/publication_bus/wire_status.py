@@ -143,12 +143,13 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
     ),
     "agents.publication_bus.graph_publisher": WireEntry(
         module="agents.publication_bus.graph_publisher",
-        surface_slug="datacite-graph-mint",
+        surface_slug="datacite-graphql-mirror",
         status="WIRED",
         pass_key_required=None,
         rationale=(
-            "Wired via agents/datacite_adapter into "
-            "publish_orchestrator.SURFACE_REGISTRY entry `datacite-graph-mint`."
+            "Wired via agents.publication_bus.self_citation_graph_doi commit path "
+            "using GraphPublisher. Mirrors SURFACE_REGISTRY entry "
+            "`datacite-graphql-mirror`."
         ),
     ),
 }

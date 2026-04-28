@@ -2,9 +2,13 @@
 # session-name-enforcement.sh — PreToolUse hook (Bash commands)
 #
 # Blocks Bash commands that reference a non-approved session name.
-# The governance-approved session-name set is:
+# The governance-approved Claude session-name set is:
 #
 #   alpha beta gamma delta epsilon
+#
+# Codex thread names use `cx-<color-word>` (for example `cx-red`) to
+# avoid Greek-string ambiguity while staying visually distinct from
+# Claude roles.
 #
 # Any other greek-letter-shaped token (zeta, eta, theta, iota, kappa,
 # lambda, mu, nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi,

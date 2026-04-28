@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 from typing import TYPE_CHECKING
 from unittest import mock
 
@@ -129,12 +130,17 @@ def test_renew_once_handles_watch_http_error(
 
 
 def test_main_returns_zero_on_success() -> None:
-    with mock.patch.object(watch_renewal, "renew_once", return_value=True):
+    with mock.patch.object(watch_renewal, "renew_once_result", return_value="success"):
         assert watch_renewal.main([]) == 0
 
 
-def test_main_returns_one_on_failure() -> None:
-    with mock.patch.object(watch_renewal, "renew_once", return_value=False):
+def test_main_returns_zero_on_missing_credentials_skip() -> None:
+    with mock.patch.object(watch_renewal, "renew_once_result", return_value="no_credentials"):
+        assert watch_renewal.main([]) == 0
+
+
+def test_main_returns_one_on_retryable_failure() -> None:
+    with mock.patch.object(watch_renewal, "renew_once_result", return_value="api_error"):
         assert watch_renewal.main([]) == 1
 
 
@@ -146,9 +152,25 @@ def test_module_pre_registers_all_outcome_labels() -> None:
         "label_bootstrap_error",
         "api_error",
         "watch_error",
+        "locked",
     ):
         val = REGISTRY.get_sample_value(
             "hapax_mail_monitor_watch_renewal_total",
             {"result": outcome},
         )
         assert val is not None, outcome
+
+
+def test_renew_once_returns_false_when_lock_is_held(tmp_path: Path) -> None:
+    before = _counter("locked")
+    lock_path = tmp_path / "watch-renewal.lock"
+    lock_path.touch()
+
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            assert watch_renewal.renew_once(lock_path=lock_path) is False
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    assert _counter("locked") - before == 1.0

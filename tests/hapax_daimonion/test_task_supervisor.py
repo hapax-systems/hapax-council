@@ -107,6 +107,9 @@ class TestRecreatePolicy:
             t.cancel()
         await asyncio.gather(*relaunches, return_exceptions=True)
 
+    def test_narrative_drive_loop_is_recreated_by_default(self):
+        assert "narrative_drive_loop" in run_inner.RECREATE_TASKS
+
     @pytest.mark.asyncio
     async def test_retry_budget_exhaustion_raises_systemexit(self, monkeypatch):
         daemon = _make_stub_daemon()

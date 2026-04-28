@@ -1,0 +1,47 @@
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[projects."__HAPAX_PROJECTS__"]
+trust_level = "trusted"
+
+[mcp_servers.hapax]
+command = "__HAPAX_HOME__/.local/bin/uv"
+args = ["--directory", "__HAPAX_MCP_DIR__", "run", "hapax-mcp"]
+
+[mcp_servers.hapax.env]
+LOGOS_BASE_URL = "http://localhost:8051/api"
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+bearer_token_env_var = "CONTEXT7_API_KEY"
+
+[mcp_servers.playwright]
+command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-playwright-mcp"
+
+[mcp_servers.github]
+command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-github-mcp"
+
+[mcp_servers.gemini-cli]
+command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-gemini-mcp"
+
+[mcp_servers.tavily]
+command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-tavily-mcp"
+
+[hooks]
+SessionStart = [
+  { command = "__HAPAX_COUNCIL_DIR__/hooks/scripts/codex-hook-adapter.sh", timeout = 20, statusMessage = "Loading Hapax context" },
+]
+PreToolUse = [
+  { command = "__HAPAX_COUNCIL_DIR__/hooks/scripts/codex-hook-adapter.sh", timeout = 20, include_apply_patch_tool = true, statusMessage = "Hapax guardrails" },
+]
+PostToolUse = [
+  { command = "__HAPAX_COUNCIL_DIR__/hooks/scripts/codex-hook-adapter.sh", timeout = 20, include_apply_patch_tool = true, statusMessage = "Hapax audit" },
+]
+Stop = [
+  { command = "__HAPAX_COUNCIL_DIR__/hooks/scripts/codex-hook-adapter.sh", timeout = 20, statusMessage = "Writing Hapax session summary" },
+]
+
+[tui.model_availability_nux]
+"gpt-5.5" = 1

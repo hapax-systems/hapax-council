@@ -8,10 +8,10 @@
 #            git worktree add WITH -b/-B (attaching an existing branch
 #            to a new worktree is not new work and is always allowed).
 #    When: ANY local or remote feature branches have unmerged commits vs main.
-#    Also: enforces session worktree limit (max 4: alpha + beta + delta
-#          + one spontaneous). Infrastructure worktrees under ~/.cache/
-#          (e.g. rebuild-scratch managed by rebuild-logos.sh from FU-6)
-#          are NOT counted — they exist independently of session work.
+#    Also: enforces visible session worktree limit (max 8 during the
+#          Claude+Codex transition). Infrastructure worktrees under ~/.cache/,
+#          .claude/worktrees/, and .codex/worktrees/ are NOT counted — they
+#          exist independently of operator-visible session work.
 #
 # 2. DESTRUCTIVE COMMAND GATE
 #    Blocks: git reset --hard, git checkout ., git branch -f, git worktree remove
@@ -140,21 +140,24 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   exit 0
 fi
 
-# Session worktree limit: alpha (primary) + beta (permanent) + delta
-# (permanent) + epsilon (permanent, 2026-04-24 formalization) + 1
-# spontaneous = max 5 session worktrees.
+# Session worktree limit during Codex bootstrap: legacy Claude permanent
+# worktrees can coexist with Codex-native hapax-council--cx-* worktrees.
+# Cap: 8 visible session worktrees. Re-tighten after legacy Claude/Antigravity
+# worktrees are retired.
 #
 # Infrastructure worktrees under ~/.cache/ (e.g. rebuild-scratch at
 # $HOME/.cache/hapax/rebuild/worktree, managed by rebuild-logos.sh via
-# flock from FU-6 / PR #703) are NOT counted — they are not session
+# flock from FU-6 / PR #703), .claude/worktrees/, and .codex/worktrees/
+# scratch worktrees are NOT counted — they are not operator-visible session
 # worktrees and exist independently of session work.
 if echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s'; then
-    session_wt_count=$(git worktree list 2>/dev/null | grep -v '/\.cache/' | wc -l)
-    if [ "$session_wt_count" -ge 5 ]; then
-        echo "BLOCKED: Max 5 session worktrees (alpha + beta + delta + epsilon + 1 spontaneous). Clean up before adding another." >&2
-        echo "  Current session worktrees (infrastructure under ~/.cache/ excluded):" >&2
-        git worktree list 2>/dev/null | grep -v '/\.cache/' | sed 's/^/    /' >&2
-        git worktree list 2>/dev/null | grep '/\.cache/' | sed 's/^/    [infra, not counted] /' >&2 || true
+    session_wt_cap=8
+    session_wt_count=$(git worktree list 2>/dev/null | grep -Evc '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' || true)
+    if [ "$session_wt_count" -ge "$session_wt_cap" ]; then
+        echo "BLOCKED: Max ${session_wt_cap} visible session worktrees during Claude+Codex transition. Clean up before adding another." >&2
+        echo "  Current visible session worktrees (infrastructure under ~/.cache/, .claude/worktrees/, and .codex/worktrees/ excluded):" >&2
+        git worktree list 2>/dev/null | grep -Ev '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' | sed 's/^/    /' >&2
+        git worktree list 2>/dev/null | grep -E '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' | sed 's/^/    [infra, not counted] /' >&2 || true
         exit 2
     fi
 fi
@@ -234,7 +237,7 @@ done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ 2>/de
 
 if [ -n "$stale_branches" ]; then
     echo "BLOCKED: Cannot create new branch — unmerged branches exist:" >&2
-    printf "$stale_branches" >&2
+    printf '%b' "$stale_branches" >&2
     echo "" >&2
     echo "Merge or delete these branches before starting new work." >&2
     exit 2

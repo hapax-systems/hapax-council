@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,6 +36,15 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from agents._operator import get_system_prompt_fragment
+from shared.tavily_client import (
+    TavilyBudgetExceeded,
+    TavilyClient,
+    TavilyConfigError,
+    TavilyPolicyViolation,
+    TavilyRequestError,
+    TavilySearchRequest,
+    load_tavily_api_key,
+)
 
 # ── Vendored from shared/config.py ──────────────────────────────────────────
 _LITELLM_BASE: str = os.environ.get(
@@ -71,8 +82,6 @@ except ImportError:
     pass
 
 from opentelemetry import trace
-
-from shared.tavily_client import TavilyClient
 
 _tracer = trace.get_tracer(__name__)
 
@@ -195,21 +204,39 @@ def load_registry(filter_component: str | None = None) -> list[ComponentSpec]:
 def _tavily_search(
     query: str,
     max_results: int = 5,
+    *,
     client: TavilyClient | None = None,
 ) -> list[dict]:
-    """Search via the shared Tavily client. Returns {title, url, content} rows."""
-    client = client or TavilyClient.from_config()
-    result = client.search(
-        query,
-        caller="agents.scout",
-        max_results=max_results,
-        search_depth="basic",
-        include_answer=False,
-    )
-    if not result.ok:
-        log.warning("Tavily search skipped/failed for %r: %s", query, result.status)
+    """Search via Tavily REST API. Returns list of {title, url, content}."""
+    try:
+        response = (client or TavilyClient()).search(
+            TavilySearchRequest(
+                query=query,
+                max_results=max_results,
+                search_depth="basic",
+                include_answer=False,
+                lane="scout_horizon",
+            )
+        )
+    except TavilyConfigError:
+        log.warning("TAVILY_API_KEY not set and no pass entry found — skipping web search")
         return []
-    return result.results
+    except (TavilyBudgetExceeded, TavilyPolicyViolation, TavilyRequestError) as e:
+        query_hash = hashlib.sha256(query.encode()).hexdigest()
+        log.warning(
+            "Tavily search failed for query_hash=%s: %s",
+            query_hash,
+            e,
+        )
+        return []
+    return [
+        {
+            "title": r.title,
+            "url": r.url,
+            "content": r.content,
+        }
+        for r in response.results
+    ]
 
 
 def search_component(spec: ComponentSpec) -> str:
@@ -226,6 +253,9 @@ def search_component(spec: ComponentSpec) -> str:
                 if r["url"] not in seen_urls:
                     seen_urls.add(r["url"])
                     all_results.append(r)
+
+            # Rate limit: brief pause between searches
+            time.sleep(0.5)
 
         if not all_results:
             return "No search results found."
@@ -635,6 +665,11 @@ async def main() -> None:
     from agents._log_setup import configure_logging
 
     configure_logging(agent="scout")
+
+    if not load_tavily_api_key() and not args.dry_run:
+        print("Error: TAVILY_API_KEY not set and not found in pass store", file=sys.stderr)
+        print("Set TAVILY_API_KEY or run: pass insert tavily/api-key", file=sys.stderr)
+        sys.exit(1)
 
     report = await run_scout(
         filter_component=args.component,

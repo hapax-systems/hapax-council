@@ -15,8 +15,9 @@ absent, the block is appended once.
 Three sections are emitted, all native markdown (no Dataview-only
 constructs — must render on Obsidian iOS):
 
-* ``## Live Sessions`` — 4-row table, alpha/beta/delta/epsilon, with
-  current_claim, branch, PR, severity dot, last-pulse timestamp.
+* ``## Live Sessions`` — alpha/beta/delta/epsilon plus any active Codex
+  ``cx-*`` sessions, with current_claim, branch, PR, severity dot,
+  last-pulse timestamp.
 * ``## Recent Hygiene Events (last 20)`` — tail of the markdown event log.
 * ``## Counters`` — quick metrics (offered/claimed/in_progress/pr_open
   counts, ghost-claim count, WIP per session).
@@ -193,7 +194,11 @@ def _render_live_sessions(state: HygieneState, recent_events: list[dict[str, Any
         "|------|---------------|--------|----|----------|------------|",
     ]
     by_role: dict[str, SessionState] = {s.role: s for s in state.sessions}
-    for role in KNOWN_ROLES:
+    roles = list(KNOWN_ROLES)
+    for role in sorted(by_role):
+        if role not in roles:
+            roles.append(role)
+    for role in roles:
         s = by_role.get(role)
         current = s.current_claim if s and s.current_claim else "-"
         # branch + PR live in the cc-task note, not relay yaml; keep blank
@@ -257,7 +262,11 @@ def _render_counters(state: HygieneState, status_counts: Counter[str]) -> str:
         "|------|-------------|",
     ]
     by_role = {s.role: s.in_progress_count for s in state.sessions}
-    for role in KNOWN_ROLES:
+    roles = list(KNOWN_ROLES)
+    for role in sorted(by_role):
+        if role not in roles:
+            roles.append(role)
+    for role in roles:
         counters_md.append(f"| {role} | {by_role.get(role, 0)} |")
     return "\n".join(counters_md) + "\n"
 

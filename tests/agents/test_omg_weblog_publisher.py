@@ -272,6 +272,29 @@ class TestPublishArtifact:
         assert "Abstract." in content
         assert "Body." in content
 
+    def test_compose_suppresses_auto_abstract_that_duplicates_body_lead(self) -> None:
+        from agents.omg_weblog_publisher.publisher import _compose_artifact_content
+
+        title = "Hapax Velocity Report — 2026-04-25"
+        lead = (
+            "30 PRs, 137 commits, ~33,500 LOC churn in a single 18-hour window "
+            "on 2026-04-25. Single-operator system, four concurrent Claude Code "
+            "sessions, all on max-effort routing."
+        )
+        artifact = _FakeArtifact(
+            slug="velocity-report-2026-04-25",
+            title=title,
+            attribution_block="Hapax + Claude Code.",
+            abstract=lead[:96],
+            body_md=f"# {title}\n\n## §1 Observation\n\n{lead}\n\n## §2 Comparison\n\nBody.",
+        )
+
+        content = _compose_artifact_content(artifact)
+
+        assert content.count(lead[:96]) == 1
+        assert "## §1 Observation" in content
+        assert "Hapax + Claude Code." in content
+
     def test_set_entry_returns_none_yields_error(self) -> None:
         from unittest.mock import patch
 

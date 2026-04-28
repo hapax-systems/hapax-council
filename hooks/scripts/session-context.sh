@@ -3,7 +3,26 @@
 # Injects system state summary into Claude Code context.
 # Injects system state summary into Claude Code context at session start.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/agent-role.sh" ]; then
+  # shellcheck source=agent-role.sh
+  . "$SCRIPT_DIR/agent-role.sh"
+fi
+
 echo '## System Context'
+
+if declare -F hapax_agent_interface >/dev/null 2>&1; then
+  AGENT_INTERFACE="$(hapax_agent_interface 2>/dev/null || echo unknown)"
+  AGENT_NAME="$(hapax_agent_identity 2>/dev/null || true)"
+  AGENT_SLOT="$(hapax_agent_worktree_role 2>/dev/null || true)"
+  if [ -n "$AGENT_NAME" ] && [ -n "$AGENT_SLOT" ] && [ "$AGENT_NAME" != "$AGENT_SLOT" ]; then
+    echo "Agent: $AGENT_INTERFACE/$AGENT_NAME (slot $AGENT_SLOT)"
+  elif [ -n "$AGENT_NAME" ]; then
+    echo "Agent: $AGENT_INTERFACE/$AGENT_NAME"
+  else
+    echo "Agent: $AGENT_INTERFACE"
+  fi
+fi
 
 # Axiom status
 AXIOM_COUNT="4"
@@ -78,14 +97,15 @@ if [ -n "$MY_WORKTREE" ]; then
   fi
 fi
 
-# Concurrent Claude sessions in same repo
+# Concurrent coding sessions in same repo
 if [ -n "$GIT_COMMON_ABS" ]; then
   CONCURRENT=""
   CONCURRENT_COUNT=0
-  MY_CLAUDE_PID="$PPID"
+  MY_AGENT_PID="$PPID"
+  AGENT_PROCESS_RE='claude-code/bin/claude|/\.local/bin/claude|/\.npm-global/bin/codex|(^|/)codex( |$)'
 
   while IFS= read -r pid; do
-    [ "$pid" = "$MY_CLAUDE_PID" ] && continue
+    [ "$pid" = "$MY_AGENT_PID" ] && continue
     cwd="$(readlink /proc/"$pid"/cwd 2>/dev/null)" || continue
     their_common="$(cd "$cwd" && git rev-parse --git-common-dir 2>/dev/null)" || continue
     their_common="$(realpath "$their_common" 2>/dev/null)"
@@ -94,7 +114,7 @@ if [ -n "$GIT_COMMON_ABS" ]; then
       CONCURRENT="${CONCURRENT}  PID $pid: $cwd [$their_branch]\n"
       CONCURRENT_COUNT=$((CONCURRENT_COUNT + 1))
     fi
-  done < <(pgrep -af 'claude-code/bin/claude|/\.local/bin/claude' 2>/dev/null | awk '{print $1}')
+  done < <(pgrep -af "$AGENT_PROCESS_RE" 2>/dev/null | awk '{print $1}')
 
   if [ "$CONCURRENT_COUNT" -gt 0 ]; then
     echo "CONCURRENT SESSIONS ($CONCURRENT_COUNT other):"
@@ -103,7 +123,7 @@ if [ -n "$GIT_COMMON_ABS" ]; then
     # Same-branch conflict warning
     SAME_BRANCH=0
     while IFS= read -r pid; do
-      [ "$pid" = "$MY_CLAUDE_PID" ] && continue
+      [ "$pid" = "$MY_AGENT_PID" ] && continue
       cwd="$(readlink /proc/"$pid"/cwd 2>/dev/null)" || continue
       their_common="$(cd "$cwd" && git rev-parse --git-common-dir 2>/dev/null)" || continue
       their_common="$(realpath "$their_common" 2>/dev/null)"
@@ -111,7 +131,7 @@ if [ -n "$GIT_COMMON_ABS" ]; then
         their_branch="$(cd "$cwd" && git branch --show-current 2>/dev/null)"
         [ "$their_branch" = "$BRANCH" ] && SAME_BRANCH=$((SAME_BRANCH + 1))
       fi
-    done < <(pgrep -af 'claude-code/bin/claude|/\.local/bin/claude' 2>/dev/null | awk '{print $1}')
+    done < <(pgrep -af "$AGENT_PROCESS_RE" 2>/dev/null | awk '{print $1}')
     if [ "$SAME_BRANCH" -gt 0 ]; then
       echo "WARNING: $SAME_BRANCH other session(s) on branch '$BRANCH' — high conflict risk"
     fi
@@ -408,8 +428,11 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
   # to the foot terminal and reads Hyprland's window title. Fall back to
   # cwd mapping (covers delta / epsilon). The previous mtime-staleness
   # heuristic mis-picked alpha for a beta worktree after reboot.
-  ROLE=""
-  if command -v hapax-whoami >/dev/null 2>&1; then
+  ROLE="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-${HAPAX_AGENT_ROLE:-${CLAUDE_ROLE:-}}}}}}}"
+  if [ -z "$ROLE" ] && declare -F hapax_agent_identity >/dev/null 2>&1; then
+    ROLE="$(hapax_agent_identity 2>/dev/null || true)"
+  fi
+  if [ -z "$ROLE" ] && command -v hapax-whoami >/dev/null 2>&1; then
     ROLE="$(hapax-whoami 2>/dev/null | tr -d '[:space:]')"
   fi
   if [ -z "$ROLE" ]; then
@@ -424,7 +447,13 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
 
   echo ""
   echo "RELAY PROTOCOL ACTIVE — you are **$ROLE**"
-  echo "Read $RELAY_DIR/onboarding-${ROLE}.md and onboard immediately."
+  if [ -f "$RELAY_DIR/onboarding-${ROLE}.md" ]; then
+    echo "Read $RELAY_DIR/onboarding-${ROLE}.md and onboard immediately."
+  elif [ -n "${AGENT_SLOT:-}" ] && [ -f "$RELAY_DIR/onboarding-${AGENT_SLOT}.md" ]; then
+    echo "Read $RELAY_DIR/onboarding-${AGENT_SLOT}.md as slot baseline, then maintain $RELAY_DIR/${ROLE}.yaml for this Codex thread."
+  else
+    echo "No per-thread onboarding file found; maintain $RELAY_DIR/${ROLE}.yaml if this thread joins relay coordination."
+  fi
   echo "Then read $RELAY_DIR/PROTOCOL.md for the full spec."
   # 4-session quad protocol (2026-04-24 epsilon formalization): each role
   # has 3 peers. Show all peer statuses so sessions stay aware.
@@ -433,7 +462,19 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     beta)    PEERS="alpha delta epsilon" ;;
     delta)   PEERS="alpha beta epsilon" ;;
     epsilon) PEERS="alpha beta delta" ;;
-    *)       PEERS="" ;;
+    *)
+      PEERS="$(
+        for yaml in "$RELAY_DIR"/*.yaml; do
+          [ -f "$yaml" ] || continue
+          peer="$(basename "$yaml" .yaml)"
+          [ "$peer" = "$ROLE" ] && continue
+          case "$peer" in
+            onboarding-*|PROTOCOL|glossary|working-mode|alpha-status|beta-status) continue ;;
+          esac
+          printf '%s\n' "$peer"
+        done | head -8
+      )"
+      ;;
   esac
   for PEER in $PEERS; do
     if [ -f "$RELAY_DIR/${PEER}.yaml" ]; then
@@ -478,6 +519,9 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     if [ -f "$CC_CLAIM_FILE" ]; then
       CLAIMED_ID=$(head -n1 "$CC_CLAIM_FILE" | tr -d '[:space:]')
       CLAIMED_NOTE=$(ls "$CC_TASKS_VAULT/active/${CLAIMED_ID}-"*.md 2>/dev/null | head -1)
+      if [ -z "$CLAIMED_NOTE" ] && [ -f "$CC_TASKS_VAULT/active/${CLAIMED_ID}.md" ]; then
+        CLAIMED_NOTE="$CC_TASKS_VAULT/active/${CLAIMED_ID}.md"
+      fi
       if [ -n "$CLAIMED_NOTE" ]; then
         CLAIMED_TITLE=$(grep '^title:' "$CLAIMED_NOTE" | head -1 | sed 's/^title: *//; s/^"//; s/"$//')
         CLAIMED_STATUS=$(grep '^status:' "$CLAIMED_NOTE" | head -1 | sed 's/^status: *//')

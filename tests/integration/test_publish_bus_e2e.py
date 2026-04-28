@@ -76,8 +76,8 @@ class TestPhase1PublishBusEndToEnd:
 
     def test_e2e_no_credentials_path(self, tmp_path, monkeypatch):
         """Without env credentials, every Phase 1 surface returns
-        ``no_credentials``. Artifact still moves to ``published/`` because
-        ``no_credentials`` is a terminal result.
+        ``no_credentials``. Artifact moves to ``failed/`` because
+        ``no_credentials`` is terminal but not a publication.
         """
         for env_var in (
             "HAPAX_BLUESKY_HANDLE",
@@ -105,13 +105,13 @@ class TestPhase1PublishBusEndToEnd:
         handled = orch.run_once()
         assert handled == 1
 
-        # All 4 surfaces report no_credentials (terminal).
+        # All 4 surfaces report no_credentials (terminal failure).
         for surface in ("bluesky-post", "mastodon-post", "arena-post", "discord-webhook"):
             record = _read_log(tmp_path, "e2e-no-creds", surface)
             assert record["result"] == "no_credentials", f"surface={surface} got {record['result']}"
 
-        # Artifact moves to published/ because no_credentials is terminal.
-        assert (tmp_path / "publish" / "published" / "e2e-no-creds.json").exists()
+        assert not (tmp_path / "publish" / "published" / "e2e-no-creds.json").exists()
+        assert (tmp_path / "publish" / "failed" / "e2e-no-creds.json").exists()
         assert not (tmp_path / "publish" / "inbox" / "e2e-no-creds.json").exists()
 
     def test_e2e_bsky_ok_with_mocked_transport(self, tmp_path, monkeypatch):
@@ -193,8 +193,8 @@ class TestPhase1PublishBusEndToEnd:
 
     def test_e2e_multi_surface_partial_credentials(self, tmp_path, monkeypatch):
         """One surface has creds (bsky), three don't. Each reports
-        independently; artifact moves to published/ because all 4 reach
-        a terminal state (ok / no_credentials)."""
+        independently; artifact moves to failed/ because only all-ok
+        artifacts count as published."""
         monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "test.bsky.social")
         monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-efgh-ijkl-mnop")
         for env_var in (
@@ -231,7 +231,8 @@ class TestPhase1PublishBusEndToEnd:
         assert _read_log(tmp_path, "e2e-partial", "mastodon-post")["result"] == "no_credentials"
         assert _read_log(tmp_path, "e2e-partial", "arena-post")["result"] == "no_credentials"
         assert _read_log(tmp_path, "e2e-partial", "discord-webhook")["result"] == "no_credentials"
-        assert (tmp_path / "publish" / "published" / "e2e-partial.json").exists()
+        assert not (tmp_path / "publish" / "published" / "e2e-partial.json").exists()
+        assert (tmp_path / "publish" / "failed" / "e2e-partial.json").exists()
 
     def test_e2e_unwired_surface_logs_surface_unwired(self, tmp_path):
         """A typo in surfaces_targeted (not in SURFACE_REGISTRY) lands as
@@ -248,4 +249,5 @@ class TestPhase1PublishBusEndToEnd:
         assert handled == 1
         record = _read_log(tmp_path, "e2e-typo", "bluesky-pst")
         assert record["result"] == "surface_unwired"
-        assert (tmp_path / "publish" / "published" / "e2e-typo.json").exists()
+        assert not (tmp_path / "publish" / "published" / "e2e-typo.json").exists()
+        assert (tmp_path / "publish" / "failed" / "e2e-typo.json").exists()

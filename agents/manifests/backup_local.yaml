@@ -45,5 +45,5 @@ narrative: |
   The Local Backup agent runs the Tier 1 daily backup pipeline. It first
   dumps PostgreSQL databases and takes Qdrant collection snapshots, then
   runs restic to back up the entire configured path set to the local
-  repository at /data/backups/restic. This is the first line of defense
+  repository at /store/hapax-backups/restic. This is the first line of defense
   against data loss.

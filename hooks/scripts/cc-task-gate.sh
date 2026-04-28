@@ -13,7 +13,7 @@
 # (one line: the vault task_id, e.g. "ef7b-020")
 #
 # This hook is OFF BY DEFAULT until D-30 Phase 7 validation completes.
-# Activate by uncommenting the matching entry in council settings.json.
+# Activate in Codex by launching `hapax-codex --task-gate`.
 #
 # Bypass: HAPAX_CC_TASK_GATE_OFF=1 disables the hook (incident response).
 #
@@ -23,6 +23,12 @@
 # failures — if the hook breaks, sessions keep working without the gate.
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/agent-role.sh" ]]; then
+  # shellcheck source=agent-role.sh
+  . "$SCRIPT_DIR/agent-role.sh"
+fi
 
 # --- 1. Read tool invocation from stdin ---
 input="$(cat)"
@@ -52,7 +58,10 @@ if [[ "${HAPAX_CC_TASK_GATE_OFF:-0}" == "1" ]]; then
 fi
 
 # --- 4. Determine session role ---
-role="${CLAUDE_ROLE:-}"
+role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
+if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
+  role="$(hapax_agent_role 2>/dev/null || true)"
+fi
 if [[ -z "$role" ]]; then
   # Infer from relay file presence: if exactly one of alpha/beta/delta/epsilon
   # has a recently-modified yaml file (within last 1h), use that role.
@@ -73,7 +82,7 @@ fi
 if [[ -z "$role" ]]; then
   # Cannot determine role — fail-OPEN with stderr hint. Better to
   # let work proceed than to brick the session on a config gap.
-  echo "cc-task-gate: cannot determine session role (set CLAUDE_ROLE env or run from a single-relay-file session); allowing" >&2
+  echo "cc-task-gate: cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE); allowing" >&2
   exit 0
 fi
 
@@ -107,12 +116,15 @@ for candidate in "$vault_root/active/$task_id-"*.md; do
     break
   fi
 done
+if [[ -z "$note_path" && -f "$vault_root/active/$task_id.md" ]]; then
+  note_path="$vault_root/active/$task_id.md"
+fi
 if [[ -z "$note_path" ]]; then
   cat >&2 <<EOF
 cc-task-gate: BLOCKED — claimed task '$task_id' not found in vault.
 
   Claim file:    $claim_file (says '$task_id')
-  Vault search:  $vault_root/active/$task_id-*.md
+  Vault search:  $vault_root/active/$task_id-*.md or $vault_root/active/$task_id.md
 
   Either the task was moved to closed/ (no longer claimable) or the
   claim file is stale. Re-claim a fresh task:

@@ -15,7 +15,7 @@ verdict.
 | Hook | Tool gate | Behaviour |
 |------|-----------|-----------|
 | `work-resolution-gate.sh` | Edit / Write | BLOCK when a feature branch has commits but no PR, or when on main with open PRs whose branches are local |
-| `no-stale-branches.sh` | Bash | BLOCK branch creation if any unmerged branch exists; BLOCK destructive git on feature branches; enforce 4-worktree session cap (alpha + beta + delta + 1 spontaneous) |
+| `no-stale-branches.sh` | Bash | BLOCK branch creation if any unmerged branch exists; BLOCK destructive git on feature branches; enforce visible worktree cap during Claude+Codex transition |
 | `push-gate.sh` | Bash | BLOCK `git push` without passing tests |
 | `pii-guard.sh` | Edit / Write | BLOCK edits whose file content matches PII patterns |
 | `axiom-commit-scan.sh` | Bash | BLOCK commits whose messages violate axiom patterns |
@@ -41,8 +41,10 @@ verdict.
 ## Session-naming invariant
 
 Approved session names are `alpha`, `beta`, `gamma`, `delta`, and
-`epsilon`. These are operational slots — not rhetorical choices —
-and the tooling assumes them:
+`epsilon`. Codex thread names use `cx-<color-word>` (for example
+`cx-red`) and map onto these worktree slots separately. These are
+operational identities — not rhetorical choices — and the tooling
+assumes them:
 
 - `hapax-whoami` (identity resolver) grep-matches this set.
 - `scripts/hapax-whoami-audit.sh` fails non-zero on any other name.
@@ -51,8 +53,9 @@ and the tooling assumes them:
   used as a session identifier (`session=<name>`,
   `hapax-council--<name>/` worktree slot, `session-context.sh
   <name>` argument, etc.).
-- The worktree cap (`no-stale-branches.sh`) is sized to this slot
-  set: alpha + beta + delta + 1 spontaneous = 4 worktrees.
+- The worktree cap (`no-stale-branches.sh`) is currently sized for the
+  Claude+Codex transition: legacy Claude lanes plus Codex `cx-*`
+  lanes, with `cx-*` worktrees named directly.
 
 Adding a new session name requires amending both this file and the
 approved list in `scripts/hapax-whoami-audit.sh`, then re-running
@@ -61,19 +64,20 @@ cap.
 
 ## Branch & worktree discipline
 
-The workspace policy is three permanent session slots plus one
-spontaneous slot:
+The workspace policy is now interface-qualified:
 
-- `hapax-council/` — alpha (primary)
-- `hapax-council--beta/` — beta (permanent)
+- `hapax-council/` — primary/integrator
+- `hapax-council--beta/` — legacy Claude beta lane
 - `hapax-council--<slug>/` — spontaneous (one at a time; must be
   cleaned up before new spontaneous work)
-- `hapax-council--delta/` or equivalent — delta session (permanent,
-  first-class from 2026-04-12)
+- `hapax-council--delta/` or equivalent — legacy Claude delta lane
+- `hapax-council--epsilon/` or equivalent — legacy Claude epsilon lane
+- `hapax-council--cx-<color>/` — first-class Codex lane
 
-`no-stale-branches.sh` enforces the 4-worktree ceiling.
+`no-stale-branches.sh` enforces the transition ceiling.
 Infrastructure worktrees under `~/.cache/` (e.g. rebuild-scratch
-managed by `rebuild-logos.sh`) are NOT counted. See
+managed by `rebuild-logos.sh`), `.claude/worktrees/`, and
+`.codex/worktrees/` are NOT counted. See
 `docs/runbooks/worktree-cap-policy.md` for the full policy +
 cleanup procedure.
 

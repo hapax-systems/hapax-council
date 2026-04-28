@@ -36,6 +36,8 @@ profiles/.quarantine/*
 .playwright-mcp/
 .claude/settings.local.json
 .claude/hookify*.local.md
+.claude/worktrees/
+--Frag*
 
 # Demo outputs (generated)
 output/demos/

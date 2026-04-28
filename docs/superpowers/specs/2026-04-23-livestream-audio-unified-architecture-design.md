@@ -158,7 +158,7 @@ sources:
       - operator_voice
       - tts
     broadcast: true                   # appears in master mix
-    notes: "Lo-fi/boom-bap pool, oudepode + epidemic"
+    notes: "Lo-fi/boom-bap pool, oudepode + platform-cleared local sources"
 
   - name: tts
     producer: hapax-daimonion.service

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Launch Gemini CLI MCP without npm prompts or update noise.
+
+set -euo pipefail
+
+LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/gemini-mcp.log"
+
+if ! command -v npx >/dev/null 2>&1; then
+  echo "hapax-gemini-mcp: npx is not installed" >&2
+  exit 2
+fi
+
+export CI=1
+export NO_UPDATE_NOTIFIER=1
+export NPM_CONFIG_AUDIT=false
+export NPM_CONFIG_FUND=false
+export NPM_CONFIG_UPDATE_NOTIFIER=false
+export NPM_CONFIG_YES=true
+export npm_config_audit=false
+export npm_config_fund=false
+export npm_config_update_notifier=false
+export npm_config_yes=true
+
+PACKAGE="${HAPAX_GEMINI_MCP_PACKAGE:-@choplin/mcp-gemini-cli@latest}"
+
+exec npx -y "$PACKAGE" 2>>"$LOG_FILE"

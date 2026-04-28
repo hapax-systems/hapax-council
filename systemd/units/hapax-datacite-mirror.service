@@ -9,7 +9,6 @@ WorkingDirectory=%h/projects/hapax-council
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/projects/hapax-council
 EnvironmentFile=-%h/.cache/hapax/secrets.env
-EnvironmentFile=-%h/.config/hapax/datacite-mirror.env
 
 [Install]
 WantedBy=default.target

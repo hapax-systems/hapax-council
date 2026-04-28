@@ -20,6 +20,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from shared.config import (
     AI_AGENTS_DIR,
@@ -31,6 +32,8 @@ from shared.config import (
 )
 
 log = logging.getLogger(__name__)
+
+RUNTIME_RESTIC_REPO = Path("/store/hapax-backups/restic")
 
 
 @dataclass
@@ -923,9 +926,8 @@ def _check_health_timer_fired() -> tuple[bool, str]:
 def _check_backup_fresh() -> tuple[bool, str]:
     """probe-runtime-002: Last backup is <36h old."""
     import time as _time
-    from pathlib import Path
 
-    repo = Path("/data/backups/restic")
+    repo = RUNTIME_RESTIC_REPO
     candidates = [repo / "locks", repo / "snapshots", repo / "index"]
     latest: float | None = None
     for p in candidates:

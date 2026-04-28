@@ -10,9 +10,18 @@ Acquisition (installing/configuring) requires operator consent.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from shared.impingement import Impingement
+from shared.tavily_client import (
+    TavilyBudgetExceeded,
+    TavilyClient,
+    TavilyConfigError,
+    TavilyPolicyViolation,
+    TavilyRequestError,
+    TavilySearchRequest,
+)
 
 log = logging.getLogger("capability.discovery")
 
@@ -36,45 +45,36 @@ class CapabilityDiscoveryHandler:
         return f"unresolved intent from {impingement.source}"
 
     def search(self, intent: str) -> list[dict]:
-        """Search for capabilities matching the intent via DuckDuckGo Instant Answers.
+        """Search for capabilities matching the intent via Tavily.
 
         Returns a list of {name, description, source} dicts for propose().
-        Uses the DuckDuckGo API (exception-duckduckgo-instant in enforcement-exceptions.yaml).
+        Discovery remains read-only; acquisition is still gated by operator consent.
         """
         try:
-            import httpx
-
-            resp = httpx.get(
-                "https://api.duckduckgo.com/",
-                params={"q": intent, "format": "json", "no_html": "1"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-            results: list[dict] = []
-            abstract = data.get("AbstractText", "")
-            if abstract:
-                results.append(
-                    {
-                        "name": data.get("AbstractSource", "web"),
-                        "description": abstract[:200],
-                        "source": "duckduckgo",
-                    }
+            response = TavilyClient().search(
+                TavilySearchRequest(
+                    query=f"{intent} software tool service capability",
+                    lane="discovery_affordance",
+                    max_results=4,
+                    search_depth="basic",
+                    include_answer=False,
                 )
-            for topic in data.get("RelatedTopics", [])[:3]:
-                if isinstance(topic, dict) and topic.get("Text"):
-                    results.append(
-                        {
-                            "name": (topic.get("FirstURL", "") or "related")[-40:],
-                            "description": topic["Text"][:150],
-                            "source": "duckduckgo",
-                        }
-                    )
-            return results
-        except Exception:
-            log.debug("Discovery search failed for: %s", intent[:80], exc_info=True)
+            )
+        except TavilyConfigError:
+            log.debug("No Tavily API key found; discovery search skipped")
             return []
+        except (TavilyBudgetExceeded, TavilyPolicyViolation, TavilyRequestError):
+            intent_hash = hashlib.sha256(intent.encode()).hexdigest()
+            log.debug("Discovery search failed for intent_hash=%s", intent_hash, exc_info=True)
+            return []
+        return [
+            {
+                "name": result.title or result.url or "web",
+                "description": result.content[:200],
+                "source": result.url or "tavily",
+            }
+            for result in response.results
+        ]
 
     def propose(self, capabilities: list[dict]) -> None:
         for cap in capabilities:

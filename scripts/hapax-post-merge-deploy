@@ -13,6 +13,9 @@
 #   config/pipewire/*.conf         → cp + restart pipewire stack
 #   config/wireplumber/*.conf      → cp + restart wireplumber
 #   systemd/units/*.service|timer  → cp + daemon-reload + restart
+#   systemd/units/*.service.d/*.conf → cp drop-in + daemon-reload + restart active unit
+#   systemd/user-preset.d/*.preset → cp user preset
+#   systemd/overrides/**           → source/rationale docs only; no direct deploy
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
 #
@@ -47,6 +50,7 @@ REPO="${REPO:-${GITHUB_WORKSPACE:-$HOME/projects/hapax-council}}"
 PW_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
 WP_CONF_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+SYSTEMD_USER_PRESET_DIR="$HOME/.config/systemd/user-preset"
 LOCAL_BIN="$HOME/.local/bin"
 
 cd "$REPO"
@@ -79,7 +83,7 @@ fi
 # catch the absence-class deploy bug where a new unit lands at a path
 # this script can't reach (P-4 of the absence-class-bug-prevention-and-
 # remediation epic).
-PW=(); WP=(); SYSTEMD=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
+PW=(); WP=(); SYSTEMD=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
 SYSTEMD_UNCLASSIFIED=()
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -87,11 +91,14 @@ while IFS= read -r f; do
         config/pipewire/*.conf)           PW+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
         systemd/units/*.service|systemd/units/*.timer) SYSTEMD+=("$f") ;;
+        systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
+        systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
         systemd/README.md)                ;; # docs
+        systemd/overrides/*)              ;; # source/rationale docs; deployable copies live under systemd/units
         systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;
     esac
 done <<< "$FILES"
@@ -179,6 +186,40 @@ if [ "${#WATCHDOGS[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+# --- systemd unit drop-ins ---
+if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
+    echo "systemd drop-ins changed (${#SYSTEMD_DROPINS[@]}):"
+    mkdir -p "$SYSTEMD_USER_DIR"
+    DROPIN_UNITS_TO_RESTART=()
+    for f in "${SYSTEMD_DROPINS[@]}"; do
+        rel="${f#systemd/units/}"
+        dropin_dir="$(dirname "$rel")"
+        conf_name="$(basename "$f")"
+        unit_name="${dropin_dir%.d}"
+        dest_dir="$SYSTEMD_USER_DIR/$dropin_dir"
+        dest="$dest_dir/$conf_name"
+        mkdir -p "$dest_dir"
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            git show "$SHA:$f" > "$dest"
+            echo "  '$f' -> '$dest'"
+            DROPIN_UNITS_TO_RESTART+=("$unit_name")
+        else
+            rm -fv "$dest" || true
+        fi
+    done
+    systemctl --user daemon-reload
+    for u in "${DROPIN_UNITS_TO_RESTART[@]}"; do
+        if systemctl --user is-active --quiet "$u"; then
+            echo "restarting $u"
+            systemctl --user restart "$u"
+        elif [[ "$u" == *.timer ]]; then
+            echo "try-restarting $u"
+            systemctl --user try-restart "$u" || true
+        fi
+    done
+    DID_ANYTHING=1
+fi
+
 # --- systemd units ---
 if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     echo "systemd units changed (${#SYSTEMD[@]}):"
@@ -206,6 +247,24 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
             systemctl --user enable --now "$u"
         fi
     done
+    DID_ANYTHING=1
+fi
+
+# --- systemd user presets ---
+if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
+    echo "systemd user presets changed (${#USER_PRESETS[@]}):"
+    mkdir -p "$SYSTEMD_USER_PRESET_DIR"
+    for f in "${USER_PRESETS[@]}"; do
+        base="$(basename "$f")"
+        dest="$SYSTEMD_USER_PRESET_DIR/$base"
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            git show "$SHA:$f" > "$dest"
+            echo "  '$f' -> '$dest'"
+        else
+            rm -fv "$dest" || true
+        fi
+    done
+    systemctl --user daemon-reload
     DID_ANYTHING=1
 fi
 

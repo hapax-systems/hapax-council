@@ -37,7 +37,11 @@ from typing import Final
 
 from prometheus_client import Counter
 
-from agents.cold_contact.candidate_registry import CandidateEntry
+from agents.cold_contact.candidate_registry import (
+    DEFAULT_REGISTRY_PATH,
+    CandidateEntry,
+    load_eligible_candidate_registry,
+)
 from agents.publication_bus.related_identifier import (
     IdentifierType,
     RelatedIdentifier,
@@ -126,6 +130,41 @@ def select_candidates_for_deposit(
 
     eligible.sort(key=lambda pair: (-pair[0], pair[1].name))
     return [candidate for _, candidate in eligible[:max_candidates]]
+
+
+def plan_candidates_for_deposit(
+    *,
+    deposit_topics: list[str],
+    deposit_audience_vectors: list[str],
+    registry_path: Path = DEFAULT_REGISTRY_PATH,
+    suppression_path: Path | None = None,
+    log_path: Path = DEFAULT_TOUCHES_LOG_PATH,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES_PER_DEPOSIT,
+    max_touches_per_year: int = DEFAULT_MAX_TOUCHES_PER_YEAR,
+) -> list[CandidateEntry]:
+    """Load, suppress-filter, score, and cadence-filter graph-touch candidates.
+
+    This is the runtime entrypoint future deposit builders should call.
+    It centralizes suppression-list precedence so the mail-monitor
+    SUPPRESS path cannot be bypassed by loading the raw registry and
+    scoring it directly.
+    """
+    registry = load_eligible_candidate_registry(
+        path=registry_path,
+        suppression_path=suppression_path,
+    )
+    selected = select_candidates_for_deposit(
+        deposit_topics=deposit_topics,
+        deposit_audience_vectors=deposit_audience_vectors,
+        registry=registry,
+        suppressions=set(),
+        max_candidates=max_candidates,
+    )
+    return apply_cadence_rule(
+        selected,
+        log_path=log_path,
+        max_touches_per_year=max_touches_per_year,
+    )
 
 
 def apply_cadence_rule(
@@ -226,6 +265,7 @@ __all__ = [
     "apply_cadence_rule",
     "build_touch_related_identifiers",
     "log_touch",
+    "plan_candidates_for_deposit",
     "score_candidate_for_deposit",
     "select_candidates_for_deposit",
     "zenodo_touches_total",

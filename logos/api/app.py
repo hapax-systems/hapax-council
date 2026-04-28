@@ -656,6 +656,7 @@ from logos.api.routes.flow import router as flow_router
 from logos.api.routes.fortress import router as fortress_router
 from logos.api.routes.governance import router as governance_router
 from logos.api.routes.logos import router as logos_router
+from logos.api.routes.mail_monitor import router as mail_monitor_router
 from logos.api.routes.nudges import router as nudges_router
 from logos.api.routes.orientation import router as orientation_router
 from logos.api.routes.pi import router as pi_router
@@ -691,6 +692,7 @@ app.include_router(studio_effects_router)
 app.include_router(studio_compositor_router)
 app.include_router(cbip_router)
 app.include_router(logos_router)
+app.include_router(mail_monitor_router)
 app.include_router(flow_router)
 app.include_router(fortress_router)
 app.include_router(pi_router)

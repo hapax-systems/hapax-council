@@ -13,6 +13,12 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/agent-role.sh" ]; then
+  # shellcheck source=agent-role.sh
+  . "$SCRIPT_DIR/agent-role.sh"
+fi
+
 [ "${HAPAX_RELAY_CHECK_HOOK:-1}" = "0" ] && exit 0
 
 INPUT="$(cat)"
@@ -60,9 +66,12 @@ case "$PARENT" in
     ;;
 esac
 
-# Detect the current session. CLAUDE_ROLE env var wins if set (used by
-# the cc-claim CLI + tests); otherwise infer from worktree basename.
-SELF="${CLAUDE_ROLE:-}"
+# Detect the current session. Explicit role env vars win (used by
+# Codex/Claude launchers + tests); otherwise infer from worktree basename.
+SELF="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
+if [ -z "$SELF" ] && declare -F hapax_agent_role >/dev/null 2>&1; then
+  SELF="$(hapax_agent_role 2>/dev/null || true)"
+fi
 if [ -z "$SELF" ]; then
   THIS_WT_BASENAME="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo)")"
   case "$THIS_WT_BASENAME" in

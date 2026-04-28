@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Launch the official local GitHub MCP server without storing tokens in config.
+
+set -euo pipefail
+
+pass_first_line() {
+  local name="$1"
+  command -v pass >/dev/null 2>&1 || return 1
+  pass show "$name" 2>/dev/null | sed -n '1p'
+}
+
+load_first_available_pass_secret() {
+  local env_name="$1"
+  shift
+  [ -n "${!env_name:-}" ] && return 0
+  local entry value
+  for entry in "$@"; do
+    value="$(pass_first_line "$entry" || true)"
+    if [ -n "$value" ]; then
+      export "$env_name=$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+load_bearer_from_claude_mcp() {
+  local env_name="$1"
+  local server="$2"
+  [ -n "${!env_name:-}" ] && return 0
+  [ -r "$HOME/.claude.json" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  local header token
+  header="$(jq -r --arg server "$server" '.mcpServers[$server].headers.Authorization // empty' "$HOME/.claude.json" 2>/dev/null || true)"
+  case "$header" in
+    "Bearer "*)
+      token="${header#Bearer }"
+      ;;
+    *)
+      token="$header"
+      ;;
+  esac
+  if [ -n "$token" ]; then
+    export "$env_name=$token"
+    return 0
+  fi
+  return 1
+}
+
+load_github_token_from_gh() {
+  local env_name="$1"
+  [ -n "${!env_name:-}" ] && return 0
+  command -v gh >/dev/null 2>&1 || return 1
+  local value
+  value="$(gh auth token 2>/dev/null || true)"
+  if [ -n "$value" ]; then
+    export "$env_name=$value"
+    return 0
+  fi
+  return 1
+}
+
+if [ -n "${CODEX_GITHUB_PERSONAL_ACCESS_TOKEN:-}" ] && [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
+  export GITHUB_PERSONAL_ACCESS_TOKEN="$CODEX_GITHUB_PERSONAL_ACCESS_TOKEN"
+fi
+
+load_first_available_pass_secret GITHUB_PERSONAL_ACCESS_TOKEN \
+  github/codex-personal-access-token \
+  github/personal-access-token \
+  github/pat \
+  github/token \
+  github/copilot-mcp-token \
+  github/copilot-token \
+  || load_github_token_from_gh GITHUB_PERSONAL_ACCESS_TOKEN \
+  || load_bearer_from_claude_mcp GITHUB_PERSONAL_ACCESS_TOKEN github \
+  || true
+
+if [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
+  echo "hapax-github-mcp: no GitHub token found in pass, gh auth, CODEX_GITHUB_PERSONAL_ACCESS_TOKEN, or Claude MCP config" >&2
+  exit 2
+fi
+
+LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/github-mcp.log"
+CONTAINER_NAME="hapax-github-mcp-$USER-$$"
+TOOLS="${HAPAX_GITHUB_MCP_TOOLS:-search_pull_requests,pull_request_read,merge_pull_request,add_issue_comment,create_pull_request}"
+FILTER_ARGS=()
+if [ -n "${HAPAX_GITHUB_MCP_TOOLSETS:-}" ]; then
+  FILTER_ARGS=(--toolsets="$HAPAX_GITHUB_MCP_TOOLSETS")
+elif [ -n "$TOOLS" ]; then
+  FILTER_ARGS=(--tools="$TOOLS")
+else
+  FILTER_ARGS=("--toolsets=pull_requests,issues")
+fi
+
+cleanup() {
+  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM HUP
+
+docker run -i --rm \
+  --name "$CONTAINER_NAME" \
+  --log-driver none \
+  --stop-timeout 1 \
+  -e GITHUB_PERSONAL_ACCESS_TOKEN \
+  ghcr.io/github/github-mcp-server \
+  stdio \
+  --log-file /tmp/github-mcp.log \
+  "${FILTER_ARGS[@]}" \
+  2>>"$LOG_FILE"

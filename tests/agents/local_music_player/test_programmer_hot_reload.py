@@ -2,7 +2,7 @@
 
 Without this, ingesting new tracks into the JSONL repo only takes effect
 after a full daemon restart — which interrupts current playback. The
-2026-04-23 ingest of 84 Epidemic tracks hit exactly this surface.
+2026-04-23 live ingest hit exactly this surface.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from agents.local_music_player.programmer import (
     DEFAULT_WEIGHTS,
-    SOURCE_EPIDEMIC,
+    SOURCE_FOUND_SOUND,
     SOURCE_OUDEPODE,
     MusicProgrammer,
     ProgrammerConfig,
@@ -60,13 +60,13 @@ def test_pool_picks_up_newly_appended_tracks(tmp_path: Path) -> None:
 
     # Operator-equivalent: append new tracks to disk while the daemon runs.
     expanded = initial + [
-        _track(f"/epi-{i}.mp3", source=SOURCE_EPIDEMIC, artist=f"Artist {i}") for i in range(5)
+        _track(f"/found-{i}.mp3", source=SOURCE_FOUND_SOUND, artist=f"Artist {i}") for i in range(5)
     ]
     _write_jsonl(repo_path, expanded)
     _bump_mtime(repo_path, repo)
 
     pool_paths = {t.path for t in prog._pool()}
-    assert pool_paths == {"/a.mp3"} | {f"/epi-{i}.mp3" for i in range(5)}
+    assert pool_paths == {"/a.mp3"} | {f"/found-{i}.mp3" for i in range(5)}
 
 
 def test_pool_does_not_reload_on_unchanged_repo(tmp_path: Path) -> None:
@@ -95,29 +95,27 @@ def test_select_next_uses_freshly_ingested_track(tmp_path: Path) -> None:
     repo.load()
     cfg = ProgrammerConfig(
         history_path=tmp_path / "history.jsonl",
-        weights={SOURCE_EPIDEMIC: 100.0},  # only epidemic weighted
+        weights={SOURCE_FOUND_SOUND: 100.0},  # only found-sound weighted
     )
     prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
 
-    # Before ingest: only oudepode track in pool, not in weighted sources →
-    # tier-1/tier-2 fallback returns the oudepode track.
+    # Before ingest: only oudepode exists, but this config admits found-sound only.
     chosen_before = prog.select_next()
-    assert chosen_before is not None
-    assert chosen_before.path == "/oude.mp3"
+    assert chosen_before is None
 
-    # Ingest an epidemic track
+    # Ingest a found-sound track.
     _write_jsonl(
         repo_path,
         [
             _track("/oude.mp3", source=SOURCE_OUDEPODE, artist="Oudepode"),
-            _track("/epi.mp3", source=SOURCE_EPIDEMIC, artist="Epidemic Artist"),
+            _track("/found.mp3", source=SOURCE_FOUND_SOUND, artist="Found sound Artist"),
         ],
     )
     _bump_mtime(repo_path, repo)
 
-    # Next selection MUST see the epidemic track (it's the only weighted one).
+    # Next selection MUST see the found-sound track (it's the only weighted one).
     # Burn enough cooldown ticks so /oude.mp3 is no longer favored, and pin
-    # via weights — epidemic should win on the very next call regardless.
+    # via weights — found-sound should win on the very next call regardless.
     chosen_after = prog.select_next(now=10000.0)
     assert chosen_after is not None
-    assert chosen_after.path == "/epi.mp3"
+    assert chosen_after.path == "/found.mp3"

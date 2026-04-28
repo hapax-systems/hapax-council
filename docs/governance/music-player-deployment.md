@@ -1,7 +1,7 @@
 # Local Music Player — Deployment & Operator Workflow
 
 **Date:** 2026-04-23
-**Status:** Phase 4a shipped, deployment operator-confirmed
+**Status:** continuous playback shipped, Epidemic decommissioned
 **Related:**
 - `agents/local_music_player/` — daemon
 - `scripts/hapax-music-play` — operator CLI
@@ -11,7 +11,7 @@
 
 ## What this ships
 
-Operator-approved tracks (written to `/dev/shm/hapax-compositor/music-selection.json`) play through PipeWire. Daemon watches the selection file; on change, kills any in-flight playback and starts the new track via `pw-cat` (local files) or `yt-dlp | pw-cat` (URLs — SoundCloud / YouTube). Splattribution flows to `/dev/shm/hapax-compositor/music-attribution.txt` for the existing `album_overlay` ward to render.
+Operator-approved tracks (written to `/dev/shm/hapax-compositor/music-selection.json`) play through PipeWire. Daemon watches the selection file; on change, kills any in-flight playback and starts the new track via `pw-cat` (local files) or `yt-dlp | pw-cat` (URLs — SoundCloud / YouTube). Continuous auto-recruitment uses the active livestream sources: `soundcloud-oudepode` for music and `found-sound` for interstitial texture. Splattribution flows to `/dev/shm/hapax-compositor/music-attribution.txt` for the existing `album_overlay` ward to render.
 
 ## Operator workflow
 
@@ -32,20 +32,20 @@ $ hapax-music-play --path https://soundcloud.com/oudepode/unknowntron-1/s-token 
 # 3. Daemon picks up selection within ~1s and plays through default sink.
 ```
 
-## Routing path to broadcast (operator-side, not enforced by daemon)
+## Routing path to broadcast
 
-The daemon writes to PipeWire's default sink (or `HAPAX_MUSIC_PLAYER_SINK` env override). On the operator's box, default = `alsa_output.pci-0000_73_00.6.analog-stereo` = Ryzen line-out. From there:
+The daemon writes to `hapax-music-loudnorm` by default (or `HAPAX_MUSIC_PLAYER_SINK` env override). On the operator's box this is the broadcast music normalization path; downstream PipeWire routing carries the normalized music into the L-12 return and broadcast graph.
 
 ```
-Ryzen analog stereo → physical RCA → L-12 CH11/12 (AUX10/11)
-                                    → AUX-B fader (operator opens for broadcast)
-                                    → Evil Pet hardware input
-                                    → Evil Pet output → L-12 CH1/CH6 (AUX5)
-                                    → gain_evilpet → broadcast capture sum
-                                    → /dev/video42 + RTMP
+local_music_player → hapax-music-loudnorm
+                   → hapax-music-duck
+                   → L-12 return path
+                   → hapax-livestream-tap
+                   → hapax-broadcast-master / OBS-facing remap
+                   → RTMP
 ```
 
-**Operator must open CH11/12 AUX-B sends on the L-12 for music to reach broadcast.** Per the Evil Pet broadcast source policy: only TIER 0 / TIER 1 sources may feed Evil Pet during a live stream. Local pool + Epidemic + oudepode SC tracks are tier_0 / tier_1 by default — safe.
+Per the Evil Pet broadcast source policy: only TIER 0 / TIER 1 sources may feed the broadcast path during a live stream. The active music rotation is `soundcloud-oudepode` plus operator-curated `found-sound`; decommissioned `epidemic` selections are blocked before playback.
 
 ## Sink override
 
@@ -99,10 +99,8 @@ $ journalctl --user -u hapax-music-player.service --since=10s | tail -10
 
 ## What's NOT in Phase 4a
 
-- **Sidechat `play N` parser**: operator runs `hapax-music-play <n>` directly. Wiring "play N" recognition into the daimonion sidechat consumer is Phase 4b.
-- **Oudepode rate-limit gate (1-in-30)**: not yet — Phase 4b.
 - **Chat-request volitional impingement**: not yet — Phase 4b.
-- **Programme-driven auto-recruitment**: deferred to Phase 5+ when programmes layer is wired.
+- **Additional cleared catalogs**: Streambeats / YouTube Audio Library remain inactive until explicitly re-enabled and populated.
 
 ## Rollback
 

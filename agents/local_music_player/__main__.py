@@ -23,5 +23,11 @@ if __name__ == "__main__":
     local_repo.load()
     sc_repo = LocalMusicRepo(path=cfg.sc_repo_path)
     sc_repo.load()
-    programmer = MusicProgrammer(local_repo=local_repo, sc_repo=sc_repo)
+    interstitial_repo = LocalMusicRepo(path=cfg.interstitial_repo_path)
+    interstitial_repo.load()
+    programmer = MusicProgrammer(
+        local_repo=local_repo,
+        sc_repo=sc_repo,
+        interstitial_repo=interstitial_repo,
+    )
     sys.exit(LocalMusicPlayer(cfg, programmer=programmer).run())

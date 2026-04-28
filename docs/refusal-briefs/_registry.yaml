@@ -1,0 +1,28 @@
+# Canonical refusal brief correspondence for publication-bus REFUSED surfaces.
+
+refusals:
+  alphaxiv-comments:
+    brief: docs/refusal-briefs/cold-contact-alphaxiv-comments.md
+    cc_task: cold-contact-alphaxiv-comments
+    publisher_class: agents.publication_bus.publisher_kit.refused.AlphaXivCommentsRefusedPublisher
+    lifecycle_probe: alphaxiv-community-guidelines
+  bandcamp-upload:
+    brief: docs/refusal-briefs/bandcamp-no-upload-api.md
+    cc_task: bandcamp-upload
+    publisher_class: agents.publication_bus.publisher_kit.refused.BandcampRefusedPublisher
+    lifecycle_probe: bandcamp-upload-api
+  discogs-submission:
+    brief: docs/refusal-briefs/discogs-tos-forbids.md
+    cc_task: discogs-submission
+    publisher_class: agents.publication_bus.publisher_kit.refused.DiscogsRefusedPublisher
+    lifecycle_probe: discogs-automation-terms
+  rym-submission:
+    brief: docs/refusal-briefs/rym-no-api.md
+    cc_task: rym-submission
+    publisher_class: agents.publication_bus.publisher_kit.refused.RymRefusedPublisher
+    lifecycle_probe: rym-public-api
+  crossref-event-data:
+    brief: docs/refusal-briefs/crossref-event-data-sunset.md
+    cc_task: crossref-event-data
+    publisher_class: agents.publication_bus.publisher_kit.refused.CrossrefEventDataRefusedPublisher
+    lifecycle_probe: crossref-event-data-restored

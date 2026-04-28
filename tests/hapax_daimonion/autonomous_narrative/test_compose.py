@@ -110,15 +110,28 @@ def test_prompt_carries_voice_constraints() -> None:
     assert "the AI" in prompt  # diegetic-consistency clause
 
 
+def test_prompt_includes_operator_referent_guard() -> None:
+    seen = []
+
+    def stub(*, prompt: str, seed: str) -> str:
+        seen.append(prompt)
+        return "The Operator remains outside the frame."
+
+    ctx = _FakeContext(
+        chronicle_events=_events(
+            {"ts": 1.0, "source": "x", "intent_family": "y", "content": {"narrative": "z"}}
+        )
+    )
+    compose.compose_narrative(ctx, operator_referent="The Operator", llm_call=stub)
+    prompt = seen[0]
+    assert "use exactly 'The Operator'" in prompt
+    assert "Do not use the legal name" in prompt
+
+
 # ── register enforcement ──────────────────────────────────────────────────
 
 
-def test_personification_sentences_pass_when_not_in_trouble_patterns() -> None:
-    """Post-2026-04-27: personification verbs (feels, wants, dreams) are
-    warned against in the prompt but NOT in _TROUBLE_PATTERNS. Only
-    commercial tells, 'the AI', vinyl/CBIP confabulation, and emoji
-    are hard-blocked. Personification relies on prompt instruction."""
-
+def test_personification_sentences_drop_to_silence() -> None:
     def stub(*, prompt: str, seed: str) -> str:
         return "Hapax feels the rhythm shifting."
 
@@ -128,10 +141,33 @@ def test_personification_sentences_pass_when_not_in_trouble_patterns() -> None:
         )
     )
     out = compose.compose_narrative(ctx, llm_call=stub)
-    # "feels" is NOT hard-blocked — it passes through the sanitizer.
-    # The prompt warns against it but doesn't enforce via regex.
-    assert out is not None
-    assert "feels" in out
+    assert out is None
+
+
+def test_mixed_operator_referents_drop_to_silence() -> None:
+    def stub(*, prompt: str, seed: str) -> str:
+        return "The Operator adjusts focus while OTO remains off camera."
+
+    ctx = _FakeContext(
+        chronicle_events=_events(
+            {"ts": 1.0, "source": "x", "intent_family": "y", "content": {"narrative": "z"}}
+        )
+    )
+    assert compose.compose_narrative(ctx, operator_referent="The Operator", llm_call=stub) is None
+
+
+def test_legal_name_env_drops_to_silence(monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Fixture Real Person")
+
+    def stub(*, prompt: str, seed: str) -> str:
+        return "Fixture Real Person adjusts the workstation lighting."
+
+    ctx = _FakeContext(
+        chronicle_events=_events(
+            {"ts": 1.0, "source": "x", "intent_family": "y", "content": {"narrative": "z"}}
+        )
+    )
+    assert compose.compose_narrative(ctx, operator_referent="The Operator", llm_call=stub) is None
 
 
 def test_commercial_tell_drops_to_silence() -> None:

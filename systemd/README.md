@@ -7,6 +7,7 @@ All production services run as systemd user units under `user@1000.service` with
 ```
 systemd/
 ├── units/              Service and timer unit files (source of truth)
+├── user-preset.d/      Presets for repo-owned user timers
 ├── overrides/          Drop-in .conf files for dependency ordering and resource limits
 │   ├── dev/            Timer frequency overrides for dev cycle mode
 │   └── *.service.d/    Per-service drop-ins
@@ -136,6 +137,8 @@ systemctl --user daemon-reload
 
 **Newly installed timers are auto-enabled.** As of the audit-followups-e1 PR, `install-units.sh` runs `systemctl --user enable --now <name>.timer` for every timer file it sees for the first time. Existing timers are left alone (re-running is idempotent). To suppress this for a one-off install, set `SKIP_TIMER_ENABLE=1` before running the script (intentionally not a flag — disabling auto-enable is the rare case).
 
+`systemd/user-preset.d/hapax.preset` mirrors the timers that must be enabled by default when preset tooling is used. Timer units still belong in `systemd/units/`; root-level `systemd/*.timer` files are not install-visible and should be moved into `systemd/units/`.
+
 ## Development
 
 For development, stop systemd services and use process-compose:
@@ -220,7 +223,7 @@ Runs `scripts/monthly-claude-md-audit.sh` on a monthly cadence. Sweeps every wor
 
 | Tier | Timer | Destination | Tool |
 |------|-------|-------------|------|
-| Local | `hapax-backup-local.timer` daily 03:00 | `/data/backups/restic` | restic |
+| Local | `hapax-backup-local.timer` daily 03:00 | `/store/hapax-backups/restic` | restic |
 | Remote | `hapax-backup-remote.timer` Wed 04:00 | `rclone:b2:hapax-backups/restic` | restic + rclone → Backblaze B2 |
 
 Both tiers back up: PostgreSQL dumps, Qdrant snapshots, n8n workflows, Docker volume metadata, git bundles, systemd configs, user configs, LLM stack, system files.

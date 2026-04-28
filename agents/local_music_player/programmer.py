@@ -9,10 +9,11 @@ deliberately silences for spoken programming. Hapax can also USE music
 FOR programming by cueing a specific track (which counts toward
 rotation budgets).
 
-Selection policy (per Gemini research synthesis 2026-04-23):
-- Weighted random across sources (50/15/15/10/10 default).
-- Oudepode cap: max 1-in-8 (operator directive 2026-04-23, tightened
-  from prior 1-in-30).
+Selection policy (per Gemini research synthesis 2026-04-23, revised after
+Epidemic decommission):
+- Weighted random across active livestream sources (soundcloud + found-sound).
+- Oudepode hard cap is disabled by default while SoundCloud is the primary
+  music pool; source streak and track cooldown still prevent tight repetition.
 - Track cooldown: 4 hours.
 - Artist streak: max 2 consecutive same-artist plays.
 - Source streak: max 3 consecutive same-source plays.
@@ -41,33 +42,32 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from shared.music_repo import LocalMusicRepo, LocalMusicTrack
+from shared.music_sources import (
+    SOURCE_FOUND_SOUND,
+    SOURCE_LOCAL,
+    SOURCE_OUDEPODE,
+    SOURCE_PRETZEL,
+    SOURCE_STREAMBEATS,
+    SOURCE_YT_AUDIO_LIBRARY,
+    is_decommissioned_broadcast_selection,
+)
 
 log = logging.getLogger("local_music_player.programmer")
 
 # ── Source taxonomy ─────────────────────────────────────────────────────────
 
-SOURCE_OUDEPODE = "soundcloud-oudepode"
-SOURCE_EPIDEMIC = "epidemic"
-SOURCE_STREAMBEATS = "streambeats"
-SOURCE_PRETZEL = "pretzel"
-SOURCE_YT_AUDIO_LIBRARY = "youtube-audio-library"
-SOURCE_LOCAL = "local"  # legacy fallback
-
-# Default source weights — sum to 100. Per Gemini research synthesis
-# 2026-04-23 §1: Epidemic anchor, oudepode at 10% (under operator's
-# 12.5% / 1-in-8 cap), Streambeats + Pretzel as safe filler, YT-AL as
-# wildcard for occasional weirdness.
+# Default source weights — sum to 100. SoundCloud is the only full-track
+# music source after Epidemic decommission; found sounds act as occasional
+# texture/interstitial material.
 DEFAULT_WEIGHTS: dict[str, float] = {
-    SOURCE_EPIDEMIC: 50.0,
-    SOURCE_STREAMBEATS: 15.0,
-    SOURCE_PRETZEL: 15.0,
-    SOURCE_YT_AUDIO_LIBRARY: 10.0,
-    SOURCE_OUDEPODE: 10.0,
+    SOURCE_OUDEPODE: 85.0,
+    SOURCE_FOUND_SOUND: 15.0,
 }
 
-# Operator hard cap (2026-04-23): max one oudepode play per N tracks.
-# 1-in-8 = 12.5% ceiling.
-OUDEPODE_WINDOW_SIZE = 8
+# 0 disables the historical one-in-N oudepode cap. That cap made sense
+# when a large platform-cleared music catalog was the anchor; with SoundCloud
+# now the main pool, source streak + cooldown are the right constraints.
+OUDEPODE_WINDOW_SIZE = 0
 
 # Prevent same-artist or same-source streaks (Gemini §2 + lo-fi-stream
 # audience-retention research).
@@ -83,6 +83,29 @@ TRACK_COOLDOWN_S = 4 * 3600.0
 HISTORY_WINDOW = 64
 
 DEFAULT_HISTORY_PATH = Path.home() / "hapax-state" / "music-repo" / "play-history.jsonl"
+
+__all__ = [
+    "DEFAULT_HISTORY_PATH",
+    "DEFAULT_WEIGHTS",
+    "MAX_ARTIST_STREAK",
+    "MAX_SOURCE_STREAK",
+    "OUDEPODE_WINDOW_SIZE",
+    "SOURCE_FOUND_SOUND",
+    "SOURCE_LOCAL",
+    "SOURCE_OUDEPODE",
+    "SOURCE_PRETZEL",
+    "SOURCE_STREAMBEATS",
+    "SOURCE_YT_AUDIO_LIBRARY",
+    "MusicProgrammer",
+    "PlayEvent",
+    "ProgrammerConfig",
+    "adjust_weights",
+    "artist_streak_count",
+    "oudepode_in_window",
+    "source_streak_count",
+    "track_recently_played",
+    "weighted_choice",
+]
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -149,7 +172,7 @@ class ProgrammerConfig:
         if hp := os.environ.get("HAPAX_MUSIC_PROGRAMMER_HISTORY_PATH"):
             cfg.history_path = Path(hp)
         if cap := os.environ.get("HAPAX_MUSIC_PROGRAMMER_OUDEPODE_WINDOW"):
-            cfg.oudepode_window = max(1, int(cap))
+            cfg.oudepode_window = max(0, int(cap))
         return cfg
 
 
@@ -160,6 +183,8 @@ def oudepode_in_window(window: Iterable[PlayEvent], cap_size: int) -> bool:
     """True when an oudepode play exists in the most recent ``cap_size``
     events. Drives the hard 1-in-8 cap.
     """
+    if cap_size <= 0:
+        return False
     recent = list(window)[-cap_size:]
     return any(e.source == SOURCE_OUDEPODE for e in recent)
 
@@ -250,11 +275,13 @@ class MusicProgrammer:
         *,
         local_repo: LocalMusicRepo | None = None,
         sc_repo: LocalMusicRepo | None = None,
+        interstitial_repo: LocalMusicRepo | None = None,
         rng: random.Random | None = None,
     ) -> None:
         self.config = config or ProgrammerConfig.from_env()
         self._local_repo = local_repo
         self._sc_repo = sc_repo
+        self._interstitial_repo = interstitial_repo
         self._rng = rng or random.Random()
         self._history: deque[PlayEvent] = deque(maxlen=self.config.history_window)
         self._load_history()
@@ -321,10 +348,15 @@ class MusicProgrammer:
             repos.append(self._local_repo)
         if self._sc_repo is not None:
             repos.append(self._sc_repo)
+        if self._interstitial_repo is not None:
+            repos.append(self._interstitial_repo)
         if not repos:
             log.debug("MusicProgrammer has no repos; pool empty")
             return []
         tracks: list[LocalMusicTrack] = []
+        configured_sources = {
+            source for source, weight in self.config.weights.items() if weight > 0
+        }
         for repo in repos:
             if repo.maybe_reload():
                 log.info(
@@ -334,6 +366,10 @@ class MusicProgrammer:
                 )
             for track in repo.all_tracks():
                 if not track.broadcast_safe:
+                    continue
+                if is_decommissioned_broadcast_selection(track.path, track.source):
+                    continue
+                if configured_sources and track.source not in configured_sources:
                     continue
                 tracks.append(track)
         return tracks
@@ -381,8 +417,21 @@ class MusicProgrammer:
         # forever and the stream goes silent. Comfort > silence: pick
         # ANY safe non-recently-played track.
         log.debug("all sources + artist streak yielded no candidate; dropping artist-streak")
-        return self._pick_candidate(
+        candidate = self._pick_candidate(
             pool, ts=ts, ignore_source_streak=True, ignore_artist_streak=True
+        )
+        if candidate is not None:
+            return candidate
+        # Last resort, tier 3: when the active pool is tiny and every track
+        # is inside cooldown, choose the least-recently played safe track
+        # instead of silencing the stream indefinitely.
+        log.debug("active music pool exhausted by cooldown; choosing least-recent safe track")
+        return self._pick_candidate(
+            pool,
+            ts=ts,
+            ignore_source_streak=True,
+            ignore_artist_streak=True,
+            ignore_cooldown=True,
         )
 
     def _pick_candidate(
@@ -392,6 +441,7 @@ class MusicProgrammer:
         ts: float,
         ignore_source_streak: bool = False,
         ignore_artist_streak: bool = False,
+        ignore_cooldown: bool = False,
     ) -> LocalMusicTrack | None:
         """Filter candidates by recency + artist streak; pick uniformly.
 
@@ -409,11 +459,8 @@ class MusicProgrammer:
         del ignore_source_streak  # informational at this layer
         admissible: list[LocalMusicTrack] = []
         for track in candidates:
-            if track_recently_played(
-                self._history,
-                track.path,
-                now=ts,
-                cooldown_s=self.config.track_cooldown_s,
+            if not ignore_cooldown and track_recently_played(
+                self._history, track.path, now=ts, cooldown_s=self.config.track_cooldown_s
             ):
                 continue
             if (
@@ -425,4 +472,7 @@ class MusicProgrammer:
             admissible.append(track)
         if not admissible:
             return None
+        if ignore_cooldown:
+            last_seen = {event.path: event.ts for event in self._history}
+            return min(admissible, key=lambda track: last_seen.get(track.path, float("-inf")))
         return self._rng.choice(admissible)

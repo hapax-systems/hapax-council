@@ -46,7 +46,7 @@ def test_tier_0_owned_always_permitted() -> None:
 
 
 def test_tier_1_platform_cleared_always_permitted() -> None:
-    cand = _Candidate("epidemic-bed-music", payload={"content_risk": "tier_1_platform_cleared"})
+    cand = _Candidate("found-sound-bed-music", payload={"content_risk": "tier_1_platform_cleared"})
     assert GATE.assess(cand).allowed is True
 
 

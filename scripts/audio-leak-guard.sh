@@ -11,6 +11,9 @@
 #     force role.assistant output back to hapax-voice-fx-capture).
 #  3. The wireplumber preferred-target for role.assistant is set to
 #     hapax-private in the active config.
+#  4. The separate role.broadcast loopback exists and targets
+#     hapax-voice-fx-capture. That broadcast target is allowed; it must
+#     not make the assistant leak check fail.
 #
 # Exit codes:
 #  0  — clean, no leak risk
@@ -22,16 +25,21 @@
 set -u
 
 FAIL=0
-WP_CONF_DIR="${HOME}/.config/wireplumber/wireplumber.conf.d"
+WP_CONF_DIR="${HAPAX_WIREPLUMBER_CONF_DIR:-${HOME}/.config/wireplumber/wireplumber.conf.d}"
 
-# Check 1: role.assistant output routes to hapax-private.
-ROUTE=$(timeout 1 pw-cat --playback --raw --format s16 --rate 24000 \
-    --channels 1 --media-role Assistant /dev/zero >/dev/null 2>&1 &
-    sleep 0.3
-    pw-link -l 2>/dev/null | awk '
-        /^output\.loopback\.sink\.role\.assistant:output_FL/ {f=1; next}
-        f && /\|->/ {print; exit}
-    ')
+if [ "${HAPAX_AUDIO_LEAK_GUARD_STATIC_ONLY:-0}" = "1" ]; then
+    ROUTE=""
+    echo "SKIP runtime route check (HAPAX_AUDIO_LEAK_GUARD_STATIC_ONLY=1)"
+else
+    # Check 1: role.assistant output routes to hapax-private.
+    ROUTE=$(timeout 1 pw-cat --playback --raw --format s16 --rate 24000 \
+        --channels 1 --media-role Assistant /dev/zero >/dev/null 2>&1 &
+        sleep 0.3
+        pw-link -l 2>/dev/null | awk '
+            /^output\.loopback\.sink\.role\.assistant:output_FL/ {f=1; next}
+            f && /\|->/ {print; exit}
+        ')
+fi
 
 if echo "$ROUTE" | grep -q "hapax-private"; then
     echo "OK  role.assistant routes to hapax-private (monitor, not broadcast)"
@@ -53,18 +61,38 @@ else
     echo "OK  55-hapax-voice-role-retarget.conf is disabled"
 fi
 
-# Check 3: preferred-target in 50-hapax-voice-duck.conf is hapax-private.
+# Check 3: preferred-target in role.assistant is hapax-private.
 DUCK_CONF="$WP_CONF_DIR/50-hapax-voice-duck.conf"
-if grep -A2 "node.name = \"loopback.sink.role.assistant\"" "$DUCK_CONF" 2>/dev/null \
-    | grep -q "preferred-target = \"hapax-private\""; then
-    : # Hit means assistant block has the right target nearby.
-fi
+ASSISTANT_BLOCK=$(awk '
+    /node.name = "loopback.sink.role.assistant"/ { f=1 }
+    f { print }
+    f && /provides = loopback.sink.role.assistant/ { exit }
+' "$DUCK_CONF" 2>/dev/null || true)
+ASSISTANT_TARGET_LINE=$(printf '%s\n' "$ASSISTANT_BLOCK" \
+    | awk '/policy\.role-based\.preferred-target/ && $1 !~ /^#/ { print; exit }')
 
-if grep -q 'policy.role-based.preferred-target = "hapax-private"' "$DUCK_CONF" 2>/dev/null \
-    && ! grep -q 'policy.role-based.preferred-target = "hapax-voice-fx-capture"' "$DUCK_CONF" 2>/dev/null; then
+if printf '%s\n' "$ASSISTANT_TARGET_LINE" \
+    | grep -q 'policy.role-based.preferred-target = "hapax-private"'; then
     echo "OK  preferred-target = hapax-private (no broadcast pinning)"
 else
-    echo "FAIL preferred-target NOT pinned to hapax-private in $DUCK_CONF"
+    echo "FAIL role.assistant preferred-target NOT pinned to hapax-private in $DUCK_CONF"
+    FAIL=1
+fi
+
+# Check 4: role.broadcast is the only voice-fx-capture role route.
+BROADCAST_BLOCK=$(awk '
+    /node.name = "loopback.sink.role.broadcast"/ { f=1 }
+    f { print }
+    f && /provides = loopback.sink.role.broadcast/ { exit }
+' "$DUCK_CONF" 2>/dev/null || true)
+BROADCAST_TARGET_LINE=$(printf '%s\n' "$BROADCAST_BLOCK" \
+    | awk '/policy\.role-based\.preferred-target/ && $1 !~ /^#/ { print; exit }')
+
+if printf '%s\n' "$BROADCAST_TARGET_LINE" \
+    | grep -q 'policy.role-based.preferred-target = "hapax-voice-fx-capture"'; then
+    echo "OK  role.broadcast routes to hapax-voice-fx-capture"
+else
+    echo "FAIL role.broadcast preferred-target missing hapax-voice-fx-capture in $DUCK_CONF"
     FAIL=1
 fi
 

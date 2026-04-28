@@ -20,9 +20,8 @@ The Evil Pet hardware loop is the **only path** by which non-microphone audio re
 
 **Specifically PERMITTED at the Evil Pet input during a live stream:**
 - Operator's own oudepode catalog (TIER 0).
-- Epidemic Sound recordings, stems, and EditRecording loop edits (TIER 1, channel-whitelisted).
-- Streambeats by Harris Heller (TIER 1).
-- YouTube Audio Library content (TIER 1).
+- Operator-curated found sounds and interstitials tagged `found-sound` (TIER 1).
+- Streambeats / YouTube Audio Library content only when explicitly re-enabled and tagged as active broadcast sources (TIER 1).
 - Operator's own contact-mic / sample-pad performance audio (TIER 0).
 
 ## Mechanism

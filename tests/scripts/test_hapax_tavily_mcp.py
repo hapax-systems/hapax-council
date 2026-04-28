@@ -1,126 +1,160 @@
-"""Tests for scripts/hapax-tavily-mcp."""
+"""Tests for the Tavily MCP launcher wrapper."""
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
 import subprocess
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts/hapax-tavily-mcp"
-WATCHDOG = Path(__file__).resolve().parents[2] / "systemd/watchdogs/scout-watchdog"
-POST_MERGE_DEPLOY = Path(__file__).resolve().parents[2] / "scripts/hapax-post-merge-deploy"
+from shared.tavily_client import TavilySearchResponse, TavilySearchResult
+
+REPO_ROOT = Path(__file__).parent.parent.parent
+WRAPPER = REPO_ROOT / "scripts" / "hapax-tavily-mcp"
+SERVER = REPO_ROOT / "scripts" / "hapax_tavily_mcp_server.py"
+WATCHDOG = REPO_ROOT / "systemd" / "watchdogs" / "scout-watchdog"
 
 
-def _write_executable(path: Path, body: str) -> None:
-    path.write_text(body, encoding="utf-8")
-    path.chmod(0o755)
+def test_tavily_mcp_script_is_valid_bash() -> None:
+    result = subprocess.run(
+        ["bash", "-n", str(WRAPPER)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
-def test_launcher_injects_pass_key_only_into_child(tmp_path, monkeypatch):
-    out_path = tmp_path / "child-env.txt"
+def test_tavily_mcp_server_search_uses_guarded_client(monkeypatch) -> None:
+    spec = importlib.util.spec_from_file_location("hapax_tavily_mcp_server", SERVER)
+    assert spec and spec.loader
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+    calls = []
+
+    class FakeClient:
+        def search(self, request):
+            calls.append(request)
+            return TavilySearchResponse(
+                query=request.query,
+                results=[
+                    TavilySearchResult(
+                        title="Docs",
+                        url="https://docs.tavily.com",
+                        content="Tavily docs",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(server, "TavilyClient", lambda: FakeClient())
+
+    payload = json.loads(server.tavily_search("tavily docs", lane="interactive_coding"))
+
+    assert payload["ok"] is True
+    assert payload["results"][0]["url"] == "https://docs.tavily.com"
+    assert calls[0].lane == "interactive_coding"
+
+
+def test_tavily_mcp_default_proxy_execs_repo_server_without_exported_token(
+    tmp_path: Path,
+) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _write_executable(
-        bin_dir / "pass",
-        "#!/usr/bin/env bash\n"
-        'test "$1" = show\n'
-        'test "$2" = api/tavily\n'
-        "printf '%s\\n' child-secret\n",
+    out_file = tmp_path / "uv-args.txt"
+    token_seen = tmp_path / "token-seen"
+
+    fake_uv = bin_dir / "uv"
+    fake_uv.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" > {out_file}
+if [ -n "${{TAVILY_API_KEY:-}}" ]; then
+  printf 'present\\n' > {token_seen}
+fi
+"""
     )
-    _write_executable(
-        bin_dir / "capture-child",
-        f"#!/usr/bin/env bash\nprintf '%s' \"$TAVILY_API_KEY\" > {out_path}\n",
-    )
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    env = {
-        **os.environ,
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
-    }
+    fake_uv.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HOME"] = str(tmp_path)
+    env["UV_BIN"] = str(fake_uv)
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env.pop("TAVILY_API_KEY", None)
 
     result = subprocess.run(
-        [str(SCRIPT), "--", "capture-child"],
+        [str(WRAPPER)],
         capture_output=True,
         text=True,
         env=env,
-        timeout=10,
+        timeout=5,
     )
 
-    assert result.returncode == 0
-    assert out_path.read_text() == "child-secret"
-    assert "child-secret" not in result.stdout
-    assert "child-secret" not in result.stderr
-    assert "TAVILY_API_KEY" not in os.environ
+    assert result.returncode == 0, result.stderr
+    args = out_file.read_text()
+    assert "--directory" in args
+    assert str(REPO_ROOT) in args
+    assert str(SERVER) in args
+    assert not token_seen.exists()
 
 
-def test_launcher_failure_does_not_print_secret(tmp_path, monkeypatch):
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    _write_executable(
-        bin_dir / "pass",
-        "#!/usr/bin/env bash\nprintf '%s\\n' hidden-secret >&2\nexit 1\n",
-    )
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    env = {
-        **os.environ,
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
-    }
+def test_tavily_mcp_rejects_direct_upstream_without_explicit_override(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env["HAPAX_TAVILY_MCP_MODE"] = "local"
+    env.pop("HAPAX_TAVILY_ALLOW_UPSTREAM_MCP", None)
 
     result = subprocess.run(
-        [str(SCRIPT), "--", "does-not-run"],
+        [str(WRAPPER)],
         capture_output=True,
         text=True,
         env=env,
-        timeout=10,
+        timeout=5,
     )
 
-    assert result.returncode == 1
-    assert "hidden-secret" not in result.stdout
-    assert "hidden-secret" not in result.stderr
-    assert "api/tavily" in result.stderr
+    assert result.returncode == 2
+    assert "bypasses Hapax budget/cache/ledger guardrails" in result.stderr
 
 
-def test_launcher_dry_run_omits_secret(tmp_path, monkeypatch):
+def test_tavily_mcp_upstream_remote_mode_is_disabled_even_with_override(
+    tmp_path: Path,
+) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _write_executable(
-        bin_dir / "pass",
-        "#!/usr/bin/env bash\nprintf '%s\\n' dry-secret\n",
+    npx_called = tmp_path / "npx-called"
+
+    fake_npx = bin_dir / "npx"
+    fake_npx.write_text(
+        f"""#!/usr/bin/env bash
+printf 'called\\n' > {npx_called}
+"""
     )
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    env = {
-        **os.environ,
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        "HAPAX_TAVILY_MCP_DRY_RUN": "1",
-    }
+    fake_npx.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HOME"] = str(tmp_path)
+    env["HAPAX_TAVILY_MCP_MODE"] = "upstream-remote"
+    env["HAPAX_TAVILY_ALLOW_UPSTREAM_MCP"] = "1"
+    env.pop("TAVILY_API_KEY", None)
 
     result = subprocess.run(
-        [str(SCRIPT), "--", "mcp-command"],
+        [str(WRAPPER)],
         capture_output=True,
         text=True,
         env=env,
-        timeout=10,
+        timeout=5,
     )
 
-    assert result.returncode == 0
-    assert "dry-secret" not in result.stdout
-    assert "child-only Tavily key" in result.stdout
+    assert result.returncode == 2
+    assert "remote upstream mode is disabled" in result.stderr
+    assert "remote-token" not in result.stderr
+    assert not npx_called.exists()
 
 
-def test_scout_watchdog_does_not_export_tavily_key():
-    body = WATCHDOG.read_text(encoding="utf-8")
+def test_scout_watchdog_does_not_export_tavily_api_key() -> None:
+    text = WATCHDOG.read_text()
 
-    assert "export TAVILY_API_KEY" not in body
-    assert "shared.tavily_client" in body
-
-
-def test_post_merge_deploy_coverage_classifies_watchdog_path():
-    result = subprocess.run(
-        [str(POST_MERGE_DEPLOY), "--report-coverage-stdin"],
-        input="systemd/watchdogs/scout-watchdog\n",
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-
-    assert result.returncode == 0
-    assert "covered by case-globs" in result.stdout
+    assert "export TAVILY_API_KEY" not in text
+    assert "shared.tavily_client" in text

@@ -27,6 +27,7 @@ def _track(
     content_risk: str = "tier_0_owned",
     energy: float = 0.5,
     tags: list[str] | None = None,
+    source: str = "local",
 ) -> LocalMusicTrack:
     return LocalMusicTrack(
         path=path,
@@ -37,6 +38,7 @@ def _track(
         tags=tags or [],
         broadcast_safe=broadcast_safe,
         content_risk=content_risk,
+        source=source,
     )
 
 
@@ -68,19 +70,35 @@ def test_broadcast_unsafe_excluded_even_with_perfect_match(tmp_path: Path) -> No
     assert out == []
 
 
+def test_decommissioned_broadcast_source_never_selected(tmp_path: Path) -> None:
+    repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
+    repo.upsert(_track("/old/source.mp3", source="epidemic"))
+    repo.upsert(_track("/safe/source.mp3", source="found-sound"))
+    out = repo.select_candidates(k=10)
+    assert {t.path for t in out} == {"/safe/source.mp3"}
+
+
+def test_path_only_decommissioned_broadcast_source_never_selected(tmp_path: Path) -> None:
+    repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
+    repo.upsert(_track("/home/hapax/Music/epidemic/old.mp3", source="local"))
+    repo.upsert(_track("/safe/source.mp3", source="found-sound"))
+    out = repo.select_candidates(k=10)
+    assert {t.path for t in out} == {"/safe/source.mp3"}
+
+
 # ── content_risk tier filter ────────────────────────────────────────────────
 
 
 def test_default_max_tier_admits_tier_0_and_tier_1(tmp_path: Path) -> None:
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
     repo.upsert(_track("/op/a.mp3", content_risk="tier_0_owned"))
-    repo.upsert(_track("/epi/b.mp3", content_risk="tier_1_platform_cleared"))
+    repo.upsert(_track("/found/b.mp3", content_risk="tier_1_platform_cleared"))
     repo.upsert(_track("/cc0/c.mp3", content_risk="tier_2_provenance_known"))
     repo.upsert(_track("/bc/d.mp3", content_risk="tier_3_uncertain"))
     repo.upsert(_track("/vinyl/e.mp3", content_risk="tier_4_risky"))
     out = repo.select_candidates(k=10)
     paths = sorted(t.path for t in out)
-    assert paths == ["/epi/b.mp3", "/op/a.mp3"]
+    assert paths == ["/found/b.mp3", "/op/a.mp3"]
 
 
 def test_max_tier_2_admits_through_tier_2(tmp_path: Path) -> None:
@@ -194,15 +212,15 @@ def test_track_round_trips_with_new_fields(tmp_path: Path) -> None:
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
     repo.upsert(
         LocalMusicTrack(
-            path="/epi/loop.wav",
+            path="/found/loop.wav",
             title="Direct Drive",
             artist="Dusty Decks",
             duration_s=151.123,
             energy=0.6,
             content_risk="tier_1_platform_cleared",
             broadcast_safe=True,
-            source="epidemic",
-            whitelist_source="146b162e-fad2-4da3-871e-e894cd81db9b",
+            source="found-sound",
+            whitelist_source="found-sound-direct-drive",
         )
     )
     repo.save()
@@ -211,5 +229,5 @@ def test_track_round_trips_with_new_fields(tmp_path: Path) -> None:
     track = fresh.all_tracks()[0]
     assert track.content_risk == "tier_1_platform_cleared"
     assert track.broadcast_safe is True
-    assert track.source == "epidemic"
-    assert track.whitelist_source == "146b162e-fad2-4da3-871e-e894cd81db9b"
+    assert track.source == "found-sound"
+    assert track.whitelist_source == "found-sound-direct-drive"

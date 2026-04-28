@@ -267,6 +267,7 @@ class TestPublisher:
         state = json.loads(state_file.read_text())
         assert "last_content_sha256" in state
         assert len(state["last_content_sha256"]) == 64
+        assert not list(tmp_path.glob("state.json.tmp*"))
 
 
 class TestEnd2End:

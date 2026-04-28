@@ -1,6 +1,6 @@
 """Pin: hot-reload makes newly-ingested tracks eligible without daemon restart.
 
-Regression context: 2026-04-23 — operator ingested 84 Epidemic tracks via an
+Regression context: 2026-04-23 — operator ingested 84 local tracks via an
 ad-hoc script while the player was running on the prior 5-track pool. Pool
 expansion only took effect after a `systemctl restart hapax-music-player`,
 which cuts whatever was playing. `LocalMusicRepo.maybe_reload()` plus a

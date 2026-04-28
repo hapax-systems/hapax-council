@@ -30,8 +30,8 @@ CheckId = Literal[
 Severity = Literal["info", "warning", "violation"]
 """Event severity tier. ntfy alerts (PR5) gate on `violation`."""
 
-Role = Literal["alpha", "beta", "delta", "epsilon"]
-"""Known peer-relay roles."""
+type Role = str
+"""Peer-relay identity. Claude uses alpha/beta/delta/epsilon; Codex uses cx-<color>."""
 
 
 class HygieneEvent(BaseModel):
@@ -54,7 +54,7 @@ class HygieneEvent(BaseModel):
     """Vault `task_id` of the affected note, when applicable."""
 
     session: str | None = None
-    """Peer-relay role implicated (alpha/beta/delta/epsilon), when applicable."""
+    """Peer-relay identity implicated, when applicable."""
 
     message: str
     """Operator-facing one-line description."""
@@ -67,7 +67,7 @@ class SessionState(BaseModel):
     """Per-session current-claim summary, derived from relay yaml + vault."""
 
     role: str
-    """Peer-relay role (alpha/beta/delta/epsilon)."""
+    """Peer-relay identity."""
 
     current_claim: str | None = None
     """`task_id` currently claimed by this session, if any."""

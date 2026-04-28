@@ -10,6 +10,7 @@
 #   gamma    — reserved (experimental / future)
 #   delta    — permanent tertiary, first-class from 2026-04-12
 #   epsilon  — permanent quaternary (LRR epic rotation)
+#   cx-<color> — Codex thread identity (for example cx-red)
 #
 # Any other name (zeta, eta, sigma, "claude", etc.) exits non-zero so
 # callers — CI jobs, audit hooks, `session-context.sh` — surface the
@@ -43,8 +44,8 @@ if [ -z "${WHOAMI_BIN}" ] || [ ! -x "${WHOAMI_BIN}" ]; then
     exit 1
 fi
 
-# Approved session-name set. Update this list only via a governance
-# amendment (docs/runbooks/ or docs/governance/ — do NOT widen silently).
+# Approved Claude session-name set. Codex thread names are approved by
+# regex below so each color lane does not need a governance amendment.
 APPROVED_NAMES="alpha beta gamma delta epsilon"
 
 quiet=false
@@ -71,17 +72,24 @@ fi
 
 # Approved-set membership check.
 matched=false
-for name in $APPROVED_NAMES; do
-    if [ "$identity" = "$name" ]; then
+case "$identity" in
+    cx-[a-z]*)
         matched=true
-        break
-    fi
-done
+        ;;
+    *)
+        for name in $APPROVED_NAMES; do
+            if [ "$identity" = "$name" ]; then
+                matched=true
+                break
+            fi
+        done
+        ;;
+esac
 
 if [ "$matched" != true ]; then
     if [ "$quiet" != true ]; then
         echo "INVALID: $identity"
-        echo "hapax-whoami-audit: '$identity' is not in approved set: $APPROVED_NAMES" >&2
+        echo "hapax-whoami-audit: '$identity' is not in approved set: $APPROVED_NAMES or cx-<color>" >&2
     fi
     exit 2
 fi
