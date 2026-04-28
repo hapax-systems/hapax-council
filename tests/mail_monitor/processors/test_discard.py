@@ -23,7 +23,7 @@ def _counter(result: str) -> float:
     return val or 0.0
 
 
-def test_process_discard_removes_inbox_and_adds_label(
+def test_process_discard_removes_inbox_and_adds_label_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from agents.mail_monitor import audit
@@ -34,15 +34,54 @@ def test_process_discard_removes_inbox_and_adds_label(
     fake_service = mock.Mock()
     fake_service.users.return_value.messages.return_value.modify.return_value.execute.return_value = {}
 
-    ok = discard.process_discard(fake_service, "M-1")
+    ok = discard.process_discard(fake_service, "M-1", label_id="L_discard")
 
     assert ok is True
     modify_call = fake_service.users.return_value.messages.return_value.modify
     modify_call.assert_called_once()
     body = modify_call.call_args.kwargs["body"]
-    assert body["addLabelIds"] == ["Hapax/Discard"]
+    assert body["addLabelIds"] == ["L_discard"]
     assert body["removeLabelIds"] == ["INBOX"]
     assert _counter("ok") - before == 1.0
+
+
+def test_process_discard_never_sends_human_label_name_as_label_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agents.mail_monitor import audit
+
+    monkeypatch.setattr(audit, "AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+
+    fake_service = mock.Mock()
+    fake_service.users.return_value.messages.return_value.modify.return_value.execute.return_value = {}
+
+    ok = discard.process_discard(fake_service, "M-1")
+
+    assert ok is True
+    body = fake_service.users.return_value.messages.return_value.modify.call_args.kwargs["body"]
+    assert "addLabelIds" not in body
+    assert body["removeLabelIds"] == ["INBOX"]
+
+
+def test_process_discard_uses_label_id_from_enriched_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agents.mail_monitor import audit
+
+    monkeypatch.setattr(audit, "AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+
+    fake_service = mock.Mock()
+    fake_service.users.return_value.messages.return_value.modify.return_value.execute.return_value = {}
+
+    ok = discard.process_discard(
+        fake_service,
+        {"id": "M-1", "label_ids_by_name": {"Hapax/Discard": "L_discard"}},
+    )
+
+    assert ok is True
+    body = fake_service.users.return_value.messages.return_value.modify.call_args.kwargs["body"]
+    assert body["addLabelIds"] == ["L_discard"]
+    assert body["removeLabelIds"] == ["INBOX"]
 
 
 def test_process_discard_handles_http_error(

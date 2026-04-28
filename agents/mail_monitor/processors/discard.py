@@ -29,7 +29,13 @@ for _result in ("ok", "api_error"):
     DISCARD_PROCESSED_COUNTER.labels(result=_result)
 
 
-def process_discard(service: Any, message_id: str, *, label: str = "Hapax/Discard") -> bool:
+def process_discard(
+    service: Any,
+    message: str | dict[str, Any],
+    *,
+    label: str = "Hapax/Discard",
+    label_id: str | None = None,
+) -> bool:
     """Mark the message ``Hapax/Discard``-labelled and INBOX-removed.
 
     Filter D installed by ``mail-monitor-004`` already does this on
@@ -39,14 +45,21 @@ def process_discard(service: Any, message_id: str, *, label: str = "Hapax/Discar
     """
     from googleapiclient.errors import HttpError
 
+    if isinstance(message, dict):
+        message_id = str(message.get("id") or message.get("messageId") or "")
+        label_id = label_id or (message.get("label_ids_by_name") or {}).get(label)
+    else:
+        message_id = message
+
+    body = {"removeLabelIds": ["INBOX"]}
+    if label_id:
+        body["addLabelIds"] = [label_id]
+
     try:
         service.users().messages().modify(
             userId="me",
             id=message_id,
-            body={
-                "addLabelIds": [label],
-                "removeLabelIds": ["INBOX"],
-            },
+            body=body,
         ).execute()
     except HttpError as exc:
         DISCARD_PROCESSED_COUNTER.labels(result="api_error").inc()
