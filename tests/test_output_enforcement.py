@@ -338,3 +338,24 @@ class TestRealPatterns:
         text = "I suggest you tell Alex that his communication needs work."
         violations = check_output(text, tier_filter="T0")
         assert len(violations) > 0, "Expected T0 violation for coaching language"
+
+    def test_all_constitutional_axioms_have_output_coverage(self):
+        covered = {p.axiom_id for p in load_patterns() if p.tier in {"T0", "T1"}}
+        expected = {
+            "single_user",
+            "executive_function",
+            "corporate_boundary",
+            "interpersonal_transparency",
+            "management_governance",
+        }
+        assert expected <= covered
+
+    def test_corporate_boundary_pattern_catches_employer_bridge(self):
+        text = "Mirror employer email into Hapax so the briefing can index it."
+        violations = check_output(text, tier_filter="T0")
+        assert any(v.axiom_id == "corporate_boundary" for v in violations)
+
+    def test_interpersonal_transparency_pattern_catches_non_operator_state(self):
+        text = "Track visitor faces and remember guest presence patterns."
+        violations = check_output(text, tier_filter="T0")
+        assert any(v.axiom_id == "interpersonal_transparency" for v in violations)

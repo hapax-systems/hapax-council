@@ -81,24 +81,47 @@ def test_dispatch_routes_refusal_feedback_to_emit(
     assert len(log_lines) == 1
 
 
-def test_dispatch_marks_deferred_categories(
+def test_dispatch_routes_operational_label_to_processor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Categories A and D still land in 010/011 — those still record
-    `deferred` outcome and do no IO until their processors merge."""
+    """Spec §3.D path: Hapax/Operational label invokes the operational processor."""
     from agents.mail_monitor import audit
 
     monkeypatch.setattr(audit, "AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
-    before = _counter("D_OPERATIONAL", "deferred")
+    before = _counter("D_OPERATIONAL", "processed")
     fake_service = mock.Mock()
 
-    cat = runner.dispatch_message(
-        fake_service,
-        {"id": "M-op", "label_names": ["Hapax/Operational"]},
-    )
+    with mock.patch("agents.mail_monitor.runner.process_operational", return_value=True) as process:
+        cat = runner.dispatch_message(
+            fake_service,
+            {"id": "M-op", "label_names": ["Hapax/Operational"]},
+        )
 
     assert cat is Category.D_OPERATIONAL
-    assert _counter("D_OPERATIONAL", "deferred") - before == 1.0
+    assert _counter("D_OPERATIONAL", "processed") - before == 1.0
+    process.assert_called_once()
+    fake_service.users.return_value.messages.return_value.modify.assert_not_called()
+
+
+def test_dispatch_routes_accept_label_to_auto_clicker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §3.A path: Category A invokes the auto-click processor."""
+    from agents.mail_monitor import audit
+
+    monkeypatch.setattr(audit, "AUDIT_LOG_PATH", tmp_path / "audit.jsonl")
+    before = _counter("A_ACCEPT", "processed")
+    fake_service = mock.Mock()
+
+    with mock.patch("agents.mail_monitor.runner.process_auto_accept", return_value=True) as process:
+        cat = runner.dispatch_message(
+            fake_service,
+            {"id": "M-accept", "auto_accept_candidate": True},
+        )
+
+    assert cat is Category.A_ACCEPT
+    assert _counter("A_ACCEPT", "processed") - before == 1.0
+    process.assert_called_once()
     fake_service.users.return_value.messages.return_value.modify.assert_not_called()
 
 

@@ -122,7 +122,7 @@ Rights holders can **allowlist** specific channels so that future uploads from t
 | Mixcloud Live | DJs streaming audio | Yes — Mixcloud holds platform-wide deals with majors, indies, PROs | **Yes — primary legally-cleared option for selector mode** |
 | Twitch Soundtrack | Twitch streamers | Twitch only, audio-isolated from VOD | No (operator is on YouTube) |
 | YouTube Audio Library | YouTube creators | Yes for tracks in the library | Useful only for bed/segue music, not for the operator's vinyl |
-| Royalty-free libraries (Epidemic Sound, Pretzel, etc.) | Creators | Per-license | Useful for bed/segue music, not vinyl crate |
+| Royalty-free libraries (Pretzel, Streambeats, etc.) | Creators | Per-license | Useful for bed/segue music, not vinyl crate |
 
 Sources: [YouTube Help: MLC](https://support.google.com/youtube/answer/10192537); [SoundExchange Service Provider](https://www.soundexchange.com/service-provider/); [Mixcloud Live FAQ](https://help.mixcloud.com/hc/en-us/articles/360013505520-FAQ-Mixcloud-Live); [Mixcloud blog: How to Live Stream Without Copyright Issues](https://www.mixcloud.com/blog/2025/01/01/how-to-live-stream-music-without-copyright-takedown-issues/); [Twitch: Music-Related Copyright Claims](https://blog.twitch.tv/en/2020/11/11/music-related-copyright-claims-and-twitch/); [Twitch Help: Music Options for Streamers](https://help.twitch.tv/s/article/music-options-for-streamers?language=en_US); [YouTube Help: Audio Library](https://support.google.com/youtube/answer/3376882).
 
@@ -281,7 +281,7 @@ This is a strong "good-faith" signal in the Lenz sense — a documented posture 
 4. **VST chain integrity**: confirm pitch-time stage active and ≥6% offset applied. Confirm spectral analyzer shows transformed branch dominant.
 5. **Now-playing overlay test**: confirm overlay plumbing (assumed via OBS browser source or `cairooverlay`) reads from a controllable source the operator can update mid-stream.
 6. **MIDI Dispatch macro test**: confirm MODE A → MODE C single-press transition (the "panic mute") works.
-7. **Bed-music safe stems loaded**: at least 30 minutes of YouTube Audio Library / Pretzel / Epidemic Sound bed loaded and ready on L6 ch5/6.
+7. **Bed-music safe stems loaded**: at least 30 minutes of YouTube Audio Library / Pretzel / Streambeats bed loaded and ready on L6 ch5/6.
 
 ### §8.2 During-stream — Content ID warning fires
 

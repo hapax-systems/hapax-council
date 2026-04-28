@@ -13,9 +13,11 @@ from agents.cold_contact.graph_touch_policy import (
     apply_cadence_rule,
     build_touch_related_identifiers,
     log_touch,
+    plan_candidates_for_deposit,
     score_candidate_for_deposit,
     select_candidates_for_deposit,
 )
+from shared.contact_suppression import append_entry
 
 
 def _entry(
@@ -77,13 +79,13 @@ class TestScoreCandidateForDeposit:
 
 class TestSelectCandidatesForDeposit:
     def test_returns_top_n_by_score(self) -> None:
-        a = _entry("a", "0000-0001-aaaa-aaaa", audience_vectors=["critical-ai"])
+        a = _entry("a", "0000-0001-6927-020X", audience_vectors=["critical-ai"])
         b = _entry(
             "b",
-            "0000-0001-bbbb-bbbb",
+            "0000-0002-3296-5021",
             audience_vectors=["critical-ai", "infrastructure-studies"],
         )
-        c = _entry("c", "0000-0001-cccc-cccc", audience_vectors=["sound-art"])
+        c = _entry("c", "0000-0002-3147-9929", audience_vectors=["sound-art"])
         registry = [a, b, c]
         result = select_candidates_for_deposit(
             deposit_topics=[],
@@ -94,22 +96,22 @@ class TestSelectCandidatesForDeposit:
         )
         # b has higher overlap than a; c has zero
         assert len(result) == 2
-        assert result[0].orcid == "0000-0001-bbbb-bbbb"
+        assert result[0].orcid == "0000-0002-3296-5021"
 
     def test_skips_suppressed_orcids(self) -> None:
-        a = _entry("a", "0000-0001-aaaa-aaaa", audience_vectors=["critical-ai"])
-        b = _entry("b", "0000-0001-bbbb-bbbb", audience_vectors=["critical-ai"])
+        a = _entry("a", "0000-0001-6927-020X", audience_vectors=["critical-ai"])
+        b = _entry("b", "0000-0002-3296-5021", audience_vectors=["critical-ai"])
         result = select_candidates_for_deposit(
             deposit_topics=[],
             deposit_audience_vectors=["critical-ai"],
             registry=[a, b],
-            suppressions={"0000-0001-aaaa-aaaa"},
+            suppressions={"0000-0001-6927-020X"},
             max_candidates=5,
         )
-        assert all(c.orcid != "0000-0001-aaaa-aaaa" for c in result)
+        assert all(c.orcid != "0000-0001-6927-020X" for c in result)
 
     def test_skips_zero_score_candidates(self) -> None:
-        a = _entry("a", "0000-0001-aaaa-aaaa", audience_vectors=["sound-art"])
+        a = _entry("a", "0000-0001-6927-020X", audience_vectors=["sound-art"])
         result = select_candidates_for_deposit(
             deposit_topics=[],
             deposit_audience_vectors=["critical-ai"],
@@ -123,6 +125,57 @@ class TestSelectCandidatesForDeposit:
         assert DEFAULT_MAX_CANDIDATES_PER_DEPOSIT == 5
 
 
+class TestPlanCandidatesForDeposit:
+    def test_runtime_plan_applies_suppression_and_cadence(self, tmp_path: Path) -> None:
+        registry_path = tmp_path / "candidates.yaml"
+        registry_path.write_text(
+            "candidates:\n"
+            '  - name: "A"\n'
+            '    orcid: "0000-0001-6927-020X"\n'
+            '    audience_vectors: ["critical-ai"]\n'
+            '    topic_relevance: ["governance"]\n'
+            '  - name: "B"\n'
+            '    orcid: "0000-0002-3296-5021"\n'
+            '    audience_vectors: ["critical-ai"]\n'
+            '    topic_relevance: ["governance"]\n'
+            '  - name: "C"\n'
+            '    orcid: "0000-0002-3147-9929"\n'
+            '    audience_vectors: ["critical-ai"]\n'
+            '    topic_relevance: ["governance"]\n'
+        )
+        suppression_path = tmp_path / "suppression.yaml"
+        append_entry(
+            orcid="0000-0001-6927-020X",
+            reason="target opt-out",
+            initiator="target_optout",
+            path=suppression_path,
+        )
+        touches_path = tmp_path / "touches.jsonl"
+        now = datetime.now(UTC)
+        with touches_path.open("w", encoding="utf-8") as fh:
+            for _ in range(3):
+                fh.write(
+                    json.dumps(
+                        {
+                            "orcid": "0000-0002-3296-5021",
+                            "timestamp": now.isoformat(),
+                        }
+                    )
+                    + "\n"
+                )
+
+        planned = plan_candidates_for_deposit(
+            deposit_topics=["governance"],
+            deposit_audience_vectors=["critical-ai"],
+            registry_path=registry_path,
+            suppression_path=suppression_path,
+            log_path=touches_path,
+            max_touches_per_year=3,
+        )
+
+        assert [candidate.orcid for candidate in planned] == ["0000-0002-3147-9929"]
+
+
 class TestApplyCadenceRule:
     def test_filters_candidates_with_too_many_touches(self, tmp_path: Path) -> None:
         # Build a touches log: candidate A has 3 touches in last 365d
@@ -133,15 +186,15 @@ class TestApplyCadenceRule:
                 fh.write(
                     json.dumps(
                         {
-                            "orcid": "0000-0001-aaaa-aaaa",
+                            "orcid": "0000-0001-6927-020X",
                             "timestamp": now.isoformat(),
                         }
                     )
                     + "\n"
                 )
 
-        a = _entry("a", "0000-0001-aaaa-aaaa", audience_vectors=["critical-ai"])
-        b = _entry("b", "0000-0001-bbbb-bbbb", audience_vectors=["critical-ai"])
+        a = _entry("a", "0000-0001-6927-020X", audience_vectors=["critical-ai"])
+        b = _entry("b", "0000-0002-3296-5021", audience_vectors=["critical-ai"])
         result = apply_cadence_rule(
             [a, b],
             log_path=log_path,
@@ -159,20 +212,20 @@ class TestApplyCadenceRule:
                 fh.write(
                     json.dumps(
                         {
-                            "orcid": "0000-0001-aaaa-aaaa",
+                            "orcid": "0000-0001-6927-020X",
                             "timestamp": old.isoformat(),
                         }
                     )
                     + "\n"
                 )
 
-        a = _entry("a", "0000-0001-aaaa-aaaa", audience_vectors=["critical-ai"])
+        a = _entry("a", "0000-0001-6927-020X", audience_vectors=["critical-ai"])
         result = apply_cadence_rule([a], log_path=log_path, max_touches_per_year=3)
         # Old touches don't count → A is eligible
         assert a in result
 
     def test_missing_log_treats_all_as_eligible(self, tmp_path: Path) -> None:
-        a = _entry("a", "0000-0001-aaaa-aaaa", audience_vectors=["critical-ai"])
+        a = _entry("a", "0000-0001-6927-020X", audience_vectors=["critical-ai"])
         result = apply_cadence_rule(
             [a], log_path=tmp_path / "missing.jsonl", max_touches_per_year=3
         )
@@ -186,26 +239,26 @@ class TestLogTouch:
     def test_appends_jsonl_entry(self, tmp_path: Path) -> None:
         log_path = tmp_path / "touches.jsonl"
         log_touch(
-            orcid="0000-0001-aaaa-aaaa",
+            orcid="0000-0001-6927-020X",
             deposit_doi="10.5281/zenodo.123",
             log_path=log_path,
         )
         lines = log_path.read_text().splitlines()
         assert len(lines) == 1
         entry = json.loads(lines[0])
-        assert entry["orcid"] == "0000-0001-aaaa-aaaa"
+        assert entry["orcid"] == "0000-0001-6927-020X"
         assert entry["deposit_doi"] == "10.5281/zenodo.123"
         assert "timestamp" in entry
 
     def test_multiple_touches_accumulate(self, tmp_path: Path) -> None:
         log_path = tmp_path / "touches.jsonl"
         log_touch(
-            orcid="0000-0001-aaaa-aaaa",
+            orcid="0000-0001-6927-020X",
             deposit_doi="10.5281/zenodo.123",
             log_path=log_path,
         )
         log_touch(
-            orcid="0000-0001-bbbb-bbbb",
+            orcid="0000-0002-3296-5021",
             deposit_doi="10.5281/zenodo.124",
             log_path=log_path,
         )
@@ -214,8 +267,8 @@ class TestLogTouch:
 
 class TestBuildTouchRelatedIdentifiers:
     def test_returns_one_per_candidate(self) -> None:
-        a = _entry("a", "0000-0001-aaaa-aaaa", audience_vectors=["critical-ai"])
-        b = _entry("b", "0000-0001-bbbb-bbbb", audience_vectors=["critical-ai"])
+        a = _entry("a", "0000-0001-6927-020X", audience_vectors=["critical-ai"])
+        b = _entry("b", "0000-0002-3296-5021", audience_vectors=["critical-ai"])
         result = build_touch_related_identifiers([a, b])
         assert len(result) == 2
         # All should be IsCitedBy ORCID identifier
@@ -224,7 +277,7 @@ class TestBuildTouchRelatedIdentifiers:
             assert ri.identifier_type.value == "ORCID"
 
     def test_returns_orcid_url_form(self) -> None:
-        a = _entry("a", "0000-0001-aaaa-aaaa", audience_vectors=["critical-ai"])
+        a = _entry("a", "0000-0001-6927-020X", audience_vectors=["critical-ai"])
         result = build_touch_related_identifiers([a])
         # Identifier is the ORCID URL form
-        assert result[0].identifier == "https://orcid.org/0000-0001-aaaa-aaaa"
+        assert result[0].identifier == "https://orcid.org/0000-0001-6927-020X"

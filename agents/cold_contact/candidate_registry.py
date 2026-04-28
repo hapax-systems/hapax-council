@@ -26,13 +26,18 @@ Constitutional fit:
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Final
 
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from shared.contact_suppression import load as load_suppression_list
+
 log = logging.getLogger(__name__)
+
+ORCID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")
 
 DEFAULT_REGISTRY_PATH: Final[Path] = (
     Path(__file__).resolve().parents[2] / "config" / "cold-contact-candidates.yaml"
@@ -81,17 +86,25 @@ class CandidateEntry(BaseModel):
 
     @field_validator("orcid", mode="before")
     @classmethod
-    def _strip_orcid_url_prefix(cls, value: str) -> str:
-        """Normalise ORCID iD to the bare 16-digit form.
+    def _normalize_and_validate_orcid(cls, value: str) -> str:
+        """Normalise and validate ORCID iD to the bare 16-character form.
 
         Operator may write either ``0000-0001-2345-6789`` or the full
         ``https://orcid.org/0000-0001-2345-6789`` URL. Both normalise
         to the bare form so downstream consumers (DataCite GraphQL,
         Zenodo RelatedIdentifier graph) can treat them uniformly.
         """
-        if isinstance(value, str) and value.startswith("https://orcid.org/"):
-            return value.removeprefix("https://orcid.org/")
-        return value
+        if not isinstance(value, str):
+            raise ValueError("ORCID iD must be a string")
+        normalized = value.strip()
+        if normalized.startswith("https://orcid.org/"):
+            normalized = normalized.removeprefix("https://orcid.org/")
+        normalized = normalized.upper()
+        if not ORCID_PATTERN.fullmatch(normalized):
+            raise ValueError("ORCID iD must match 0000-0000-0000-0000 with optional X check digit")
+        if not _orcid_checksum_valid(normalized):
+            raise ValueError("ORCID iD checksum is invalid")
+        return normalized
 
     @field_validator("audience_vectors")
     @classmethod
@@ -103,6 +116,17 @@ class CandidateEntry(BaseModel):
                     f"expansion requires constitutional discussion"
                 )
         return value
+
+
+def _orcid_checksum_valid(orcid: str) -> bool:
+    """Return whether ``orcid`` satisfies ISO 7064 MOD 11-2."""
+    compact = orcid.replace("-", "")
+    total = 0
+    for char in compact[:-1]:
+        total = (total + int(char)) * 2
+    result = (12 - (total % 11)) % 11
+    expected = "X" if result == 10 else str(result)
+    return compact[-1] == expected
 
 
 def load_candidate_registry(*, path: Path = DEFAULT_REGISTRY_PATH) -> list[CandidateEntry]:
@@ -125,9 +149,42 @@ def load_candidate_registry(*, path: Path = DEFAULT_REGISTRY_PATH) -> list[Candi
     return [CandidateEntry.model_validate(entry) for entry in candidates_raw]
 
 
+def filter_suppressed_candidates(
+    candidates: list[CandidateEntry],
+    *,
+    suppression_path: Path | None = None,
+) -> list[CandidateEntry]:
+    """Remove candidates whose ORCID appears in the suppression list.
+
+    The raw registry loader preserves on-disk facts. Runtime callers
+    should use this helper, or :func:`load_eligible_candidate_registry`,
+    so the contact suppression primitive stays ahead of every
+    graph-touch decision.
+    """
+    suppressions = load_suppression_list(path=suppression_path)
+    suppressed_orcids = {entry.orcid for entry in suppressions.entries if entry.orcid}
+    if not suppressed_orcids:
+        return list(candidates)
+    return [candidate for candidate in candidates if candidate.orcid not in suppressed_orcids]
+
+
+def load_eligible_candidate_registry(
+    *,
+    path: Path = DEFAULT_REGISTRY_PATH,
+    suppression_path: Path | None = None,
+) -> list[CandidateEntry]:
+    """Load candidates eligible for runtime graph-touch consideration."""
+    return filter_suppressed_candidates(
+        load_candidate_registry(path=path),
+        suppression_path=suppression_path,
+    )
+
+
 __all__ = [
     "AUDIENCE_VECTORS",
     "DEFAULT_REGISTRY_PATH",
     "CandidateEntry",
+    "filter_suppressed_candidates",
     "load_candidate_registry",
+    "load_eligible_candidate_registry",
 ]

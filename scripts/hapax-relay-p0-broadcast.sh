@@ -24,6 +24,13 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
+if [[ -f "$ROLE_HELPER" ]]; then
+    # shellcheck source=../hooks/scripts/agent-role.sh
+    . "$ROLE_HELPER"
+fi
+
 if [[ $# -lt 2 ]]; then
     echo "usage: hapax-relay-p0-broadcast.sh <severity> <inflection-file>" >&2
     echo "  severity: P0 | P1" >&2
@@ -46,7 +53,11 @@ fi
 
 RELAY_DIR="$HOME/.cache/hapax/relay"
 INFLECTIONS_DIR="$RELAY_DIR/inflections"
-SOURCE_SESSION="${CLAUDE_ROLE:-unknown}"
+SOURCE_SESSION="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-${HAPAX_AGENT_ROLE:-${CLAUDE_ROLE:-}}}}}}}"
+if [[ -z "$SOURCE_SESSION" ]] && declare -F hapax_agent_identity >/dev/null 2>&1; then
+    SOURCE_SESSION="$(hapax_agent_identity 2>/dev/null || true)"
+fi
+SOURCE_SESSION="${SOURCE_SESSION:-unknown}"
 TS=$(date -u +"%Y%m%dT%H%M%SZ")
 
 mkdir -p "$INFLECTIONS_DIR"
@@ -67,7 +78,17 @@ INFLECTION_PATH="$INFLECTIONS_DIR/${TS}-${SOURCE_SESSION}-${SEVERITY}-broadcast.
 #    set wakeup_reason: P0_BROADCAST. Use yq if available; otherwise
 #    fall back to a sentinel-line append (peer's session-context.sh
 #    parser tolerates either).
-PEERS=(alpha beta delta epsilon gamma)
+PEERS=()
+for peer_yaml in "$RELAY_DIR"/*.yaml; do
+    [[ -f "$peer_yaml" ]] || continue
+    peer="$(basename "$peer_yaml" .yaml)"
+    case "$peer" in
+        alpha|beta|delta|epsilon|cx-*) ;;
+        *) continue ;;
+    esac
+    PEERS+=("$peer")
+done
+APPENDED_COUNT=0
 for peer in "${PEERS[@]}"; do
     [[ "$peer" == "$SOURCE_SESSION" ]] && continue  # don't write to own yaml
     peer_yaml="$RELAY_DIR/$peer.yaml"
@@ -84,6 +105,7 @@ for peer in "${PEERS[@]}"; do
         fi
     } > "$tmp"
     mv -f "$tmp" "$peer_yaml"  # atomic rename
+    APPENDED_COUNT=$((APPENDED_COUNT + 1))
 done
 
-echo "${SEVERITY} broadcast: wrote $INFLECTION_PATH + appended to $((${#PEERS[@]} - 1)) peer yamls"
+echo "${SEVERITY} broadcast: wrote $INFLECTION_PATH + appended to ${APPENDED_COUNT} peer yamls"

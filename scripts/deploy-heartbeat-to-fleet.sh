@@ -24,16 +24,24 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="${REPO_ROOT}/pi-edge"
 
 # Default fleet (mDNS names — DHCP-stable per delta 55bab4111).
-declare -A FLEET=(
-  [hapax-pi4.local]="sentinel|hapax-ir-edge"
-  [hapax-pi5.local]="rag-edge|"
+declare -A DEFAULT_FLEET=(
+  [hapax-pi4.local]="sentinel|hapax-sentinel,hapax-watch-backup"
+  [hapax-pi5.local]="rag-edge|hapax-rag-edge,hapax-gdrive-pull.timer"
   [hapax-ai.local]="hapax-ai|"
 )
+declare -A FLEET=()
+for host in "${!DEFAULT_FLEET[@]}"; do
+  FLEET[$host]="${DEFAULT_FLEET[$host]}"
+done
 
 if [ "$#" -gt 0 ]; then
   declare -A FLEET=()
   for h in "$@"; do
-    FLEET[$h]="${h%.local}|"
+    if [ -n "${DEFAULT_FLEET[$h]:-}" ]; then
+      FLEET[$h]="${DEFAULT_FLEET[$h]}"
+    else
+      FLEET[$h]="${h%.local}|"
+    fi
   done
 fi
 
@@ -51,7 +59,7 @@ for host in "${!FLEET[@]}"; do
       "${SRC_DIR}/hapax-heartbeat.timer" \
       "hapax@${host}:hapax-edge/" 2>&1 | tail -5; then
     echo "❌ rsync failed for $host" >&2
-    ((failures++))
+    failures=$((failures + 1))
     continue
   fi
 
@@ -67,7 +75,7 @@ for host in "${!FLEET[@]}"; do
     sudo systemctl start hapax-heartbeat.service
   " 2>&1 | tail -5; then
     echo "❌ install/enable failed for $host" >&2
-    ((failures++))
+    failures=$((failures + 1))
     continue
   fi
 
@@ -79,7 +87,7 @@ for host in "${!FLEET[@]}"; do
     echo "✅ $host heartbeat timer active"
   else
     echo "❌ $host heartbeat timer not active" >&2
-    ((failures++))
+    failures=$((failures + 1))
   fi
 done
 

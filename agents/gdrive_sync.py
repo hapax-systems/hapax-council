@@ -135,6 +135,10 @@ class SyncState(BaseModel):
     stats: dict[str, int] = Field(default_factory=dict)
 
 
+class InvalidChangeTokenError(RuntimeError):
+    """Raised when Google rejects the stored Drive changes token."""
+
+
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 
@@ -148,8 +152,9 @@ def _get_drive_service():
 # ── State Management ─────────────────────────────────────────────────────────
 
 
-def _load_state(path: Path = STATE_FILE) -> SyncState:
+def _load_state(path: Path | None = None) -> SyncState:
     """Load sync state from disk."""
+    path = STATE_FILE if path is None else path
     if path.exists():
         try:
             return SyncState.model_validate_json(path.read_text())
@@ -158,8 +163,9 @@ def _load_state(path: Path = STATE_FILE) -> SyncState:
     return SyncState()
 
 
-def _save_state(state: SyncState, path: Path = STATE_FILE) -> None:
+def _save_state(state: SyncState, path: Path | None = None) -> None:
     """Persist sync state to disk."""
+    path = STATE_FILE if path is None else path
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(state.model_dump_json(indent=2))
@@ -185,6 +191,23 @@ def _log_deletion(f: DriveFile) -> None:
     with open(DELETIONS_LOG, "a", encoding="utf-8") as fh:
         fh.write(entry + "\n")
     log.info("Logged deletion: %s (%s)", f.name, f.folder_path)
+
+
+def _is_invalid_change_token_error(exc: BaseException) -> bool:
+    """Return True for Google Drive's invalid changes-page-token response."""
+    resp = getattr(exc, "resp", None)
+    status = getattr(resp, "status", None)
+    if status != 400:
+        return False
+
+    content = getattr(exc, "content", b"")
+    if isinstance(content, bytes):
+        text = content.decode("utf-8", errors="replace")
+    else:
+        text = str(content)
+    uri = str(getattr(exc, "uri", ""))
+    combined = f"{text} {uri}"
+    return "Invalid Value" in combined and "pageToken" in combined
 
 
 # ── Folder Resolution ────────────────────────────────────────────────────────
@@ -437,16 +460,24 @@ def _incremental_sync(service, state: SyncState) -> list[str]:
     page_token = state.start_page_token
 
     while True:
-        resp = (
-            service.changes()
-            .list(
-                pageToken=page_token,
-                fields="nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, modifiedTime, parents, webViewLink, md5Checksum))",
-                pageSize=1000,
-                includeRemoved=True,
+        try:
+            resp = (
+                service.changes()
+                .list(
+                    pageToken=page_token,
+                    fields="nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, modifiedTime, parents, webViewLink, md5Checksum))",
+                    pageSize=1000,
+                    includeRemoved=True,
+                )
+                .execute()
             )
-            .execute()
-        )
+        except Exception as exc:
+            if _is_invalid_change_token_error(exc):
+                bad_token = state.start_page_token
+                state.start_page_token = ""
+                log.warning("Invalid Drive changes token %r; full scan required", bad_token)
+                raise InvalidChangeTokenError("invalid Drive changes token") from exc
+            raise
 
         for change in resp.get("changes", []):
             file_id = change["fileId"]
@@ -869,7 +900,12 @@ def run_auto() -> None:
         run_full_scan()
         return
 
-    changed_ids = _incremental_sync(service, state)
+    try:
+        changed_ids = _incremental_sync(service, state)
+    except InvalidChangeTokenError:
+        _save_state(state)
+        run_full_scan()
+        return
 
     synced = 0
     errors = 0

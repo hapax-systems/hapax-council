@@ -29,6 +29,8 @@ from typing import Any
 
 from prometheus_client import Counter
 
+from shared.orcid import operator_orcid
+
 try:
     import requests
 except ImportError:  # pragma: no cover
@@ -157,18 +159,16 @@ def load_recent_concept_dois(*, path: Path = DEFAULT_RECENT_CONCEPT_DOIS_PATH) -
 def main() -> int:
     """Single-pass verification entry for systemd timer.
 
-    Reads ``HAPAX_OPERATOR_ORCID`` env var; fetches the operator's
-    ORCID works; loads expected concept-DOIs from
+    Reads the operator's ORCID iD from ``pass show orcid/orcid`` via
+    ``shared.orcid.operator_orcid``; fetches the operator's ORCID works; loads expected concept-DOIs from
     ``~/hapax-state/publications/recent-concept-dois.txt``; logs any
     missing DOIs (ntfy escalation on >72h-old gaps belongs in Phase 3
     once the recent-DOIs file carries timestamps).
     """
-    import os
-
     logging.basicConfig(level=logging.INFO)
-    orcid = os.environ.get("HAPAX_OPERATOR_ORCID")
+    orcid = operator_orcid()
     if not orcid:
-        log.info("HAPAX_OPERATOR_ORCID not set; orcid verifier skipping this tick")
+        log.info("operator ORCID unavailable; orcid verifier skipping this tick")
         orcid_works_total.labels(orcid="unset", outcome="no-orcid-configured").inc()
         return 0
 

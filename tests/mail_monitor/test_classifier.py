@@ -48,12 +48,19 @@ def test_suppress_label_wins_over_other_signals() -> None:
     """
     message = {
         "label_names": ["Hapax/Suppress", "Hapax/Discard"],
+        "auto_accept_candidate": True,
         "replies_to_hapax_thread": True,
         "body_text": "this could read as feedback or marketing",
     }
     cat, source = classify(message)
     assert cat is Category.C_SUPPRESS
     assert source == "rule_label"
+
+
+def test_auto_accept_candidate_routes_to_category_a() -> None:
+    cat, source = classify({"auto_accept_candidate": True})
+    assert cat is Category.A_ACCEPT
+    assert source == "rule_sender"
 
 
 # ── reply-driven cases ────────────────────────────────────────────────

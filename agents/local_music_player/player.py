@@ -9,7 +9,7 @@ chat-handler / director path):
                   | "https://soundcloud.com/...",  # URL — yt-dlp pipes through
     "title": "Direct Drive",                       # optional, for splattribution
     "artist": "Dusty Decks",                       # optional
-    "source": "operator-owned" | "epidemic" | "soundcloud-oudepode" | "local"
+    "source": "operator-owned" | "found-sound" | "soundcloud-oudepode" | "local"
   }
 
 Daemon behaviour:
@@ -45,6 +45,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shared.music_repo import DEFAULT_REPO_PATH, LocalMusicRepo
+from shared.music_sources import (
+    SOURCE_FOUND_SOUND,
+    SOURCE_WWII_NEWSCLIP,
+    is_decommissioned_broadcast_selection,
+    normalize_source,
+)
 
 log = logging.getLogger("local_music_player")
 
@@ -79,6 +85,9 @@ class PlayerConfig:
     attribution_path: Path = DEFAULT_ATTRIBUTION_PATH
     repo_path: Path = DEFAULT_REPO_PATH
     sc_repo_path: Path = Path.home() / "hapax-state" / "music-repo" / "soundcloud.jsonl"
+    interstitial_repo_path: Path = (
+        Path.home() / "hapax-state" / "music-repo" / "interstitials.jsonl"
+    )
     poll_s: float = DEFAULT_POLL_S
     sink: str = DEFAULT_SINK
 
@@ -90,6 +99,19 @@ class PlayerConfig:
             ),
             attribution_path=Path(
                 os.environ.get("HAPAX_MUSIC_PLAYER_ATTRIBUTION_PATH", str(DEFAULT_ATTRIBUTION_PATH))
+            ),
+            repo_path=Path(os.environ.get("HAPAX_MUSIC_PLAYER_REPO_PATH", str(DEFAULT_REPO_PATH))),
+            sc_repo_path=Path(
+                os.environ.get(
+                    "HAPAX_MUSIC_PLAYER_SC_REPO_PATH",
+                    str(Path.home() / "hapax-state" / "music-repo" / "soundcloud.jsonl"),
+                )
+            ),
+            interstitial_repo_path=Path(
+                os.environ.get(
+                    "HAPAX_MUSIC_PLAYER_INTERSTITIAL_REPO_PATH",
+                    str(Path.home() / "hapax-state" / "music-repo" / "interstitials.jsonl"),
+                )
             ),
             poll_s=float(os.environ.get("HAPAX_MUSIC_PLAYER_POLL_S", DEFAULT_POLL_S)),
             sink=os.environ.get("HAPAX_MUSIC_PLAYER_SINK") or DEFAULT_SINK,
@@ -264,6 +286,15 @@ class LocalMusicPlayer:
             return
         title = selection.get("title")
         artist = selection.get("artist")
+        source = selection.get("source")
+
+        if is_decommissioned_broadcast_selection(track_path, source):
+            log.warning("blocked decommissioned livestream music source: %s", track_path)
+            try:
+                write_attribution(self.config.attribution_path, "")
+            except OSError:
+                log.debug("attribution clear failed", exc_info=True)
+            return
 
         # Splattribution write happens FIRST so the overlay updates even
         # if pw-cat fails to start. Empty string is a valid (no-op) value.
@@ -313,13 +344,19 @@ class LocalMusicPlayer:
 
         # Mark-played in the repo (best-effort; doesn't block playback).
         try:
-            self._mark_played(track_path)
+            self._mark_played(track_path, source=source)
         except Exception:
             log.debug("mark_played failed for %s", track_path, exc_info=True)
 
-    def _mark_played(self, track_path: str) -> None:
+    def _mark_played(self, track_path: str, *, source: str | None = None) -> None:
         # Local repo for filesystem paths, SC repo for URLs.
-        repo_path = self.config.sc_repo_path if is_url(track_path) else self.config.repo_path
+        source_norm = normalize_source(source)
+        if is_url(track_path):
+            repo_path = self.config.sc_repo_path
+        elif source_norm in {SOURCE_FOUND_SOUND, SOURCE_WWII_NEWSCLIP}:
+            repo_path = self.config.interstitial_repo_path
+        else:
+            repo_path = self.config.repo_path
         repo = LocalMusicRepo(path=repo_path)
         repo.load()
         repo.mark_played(track_path)
@@ -435,6 +472,17 @@ class LocalMusicPlayer:
             return
         # Non-stop selection — leave silence (if any).
         self._silenced = False
+        if is_decommissioned_broadcast_selection(
+            str(selection.get("path") or ""), str(selection.get("source") or "")
+        ):
+            log.warning("selection uses decommissioned livestream music source; entering silence")
+            self._silenced = True
+            self._kill_current()
+            try:
+                write_attribution(self.config.attribution_path, "")
+            except OSError:
+                log.debug("attribution clear failed", exc_info=True)
+            return
         # Distinguish programmer-authored writes from external overrides.
         # When auto-recruit just wrote, this mtime equals _auto_written_mtime
         # and we record by="programmer". Otherwise (chat / Hapax cue /

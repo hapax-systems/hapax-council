@@ -24,8 +24,12 @@ visible in Grafana before the watch actually expires.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import logging
 import sys
+from collections.abc import Iterator
+from pathlib import Path
 
 from prometheus_client import Counter, Gauge
 
@@ -51,6 +55,10 @@ from agents.mail_monitor.watch import (
 
 log = logging.getLogger(__name__)
 
+LOCK_PATH = Path("~/.cache/mail-monitor/watch-renewal.lock").expanduser()
+SUCCESS_RESULT = "success"
+NON_RETRYABLE_SKIP_RESULTS = frozenset({"no_credentials", "no_project", "locked"})
+
 WATCH_RENEWAL_COUNTER = Counter(
     "hapax_mail_monitor_watch_renewal_total",
     "Gmail watch() renewal attempts by outcome.",
@@ -63,6 +71,7 @@ for _result in (
     "label_bootstrap_error",
     "api_error",
     "watch_error",
+    "locked",
 ):
     WATCH_RENEWAL_COUNTER.labels(result=_result)
 
@@ -72,13 +81,47 @@ WATCH_AGE_GAUGE = Gauge(
 )
 
 
-def renew_once() -> bool:
-    """Single renewal attempt; return ``True`` on success.
+@contextlib.contextmanager
+def _renewal_lock(path: Path = LOCK_PATH) -> Iterator[bool]:
+    """Acquire the cross-process renewal lock without blocking."""
 
-    Each failure mode increments a labelled counter; the caller (the
-    ``main`` CLI / systemd unit) maps success → exit 0, failure →
-    exit 1.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def renew_once(*, lock_path: Path = LOCK_PATH) -> bool:
+    """Single renewal attempt; return ``True`` on success."""
+    return renew_once_result(lock_path=lock_path) == SUCCESS_RESULT
+
+
+def renew_once_result(*, lock_path: Path = LOCK_PATH) -> str:
+    """Single renewal attempt; return the labelled outcome.
+
+    Each non-success mode increments a labelled counter. The CLI maps
+    operator-actionable configuration skips (missing credentials/project
+    and lock contention) to exit 0 so systemd does not crash-loop before
+    bootstrap is complete; API/runtime failures still exit non-zero.
     """
+    with _renewal_lock(lock_path) as acquired:
+        if not acquired:
+            WATCH_RENEWAL_COUNTER.labels(result="locked").inc()
+            log.info("watch renewal skipped: another renewal process holds %s", lock_path)
+            return "locked"
+        return _renew_once_unlocked()
+
+
+def _renew_once_unlocked() -> str:
+    """Renew the Gmail watch while the cross-process lock is held."""
+
     creds = load_credentials()
     if creds is None:
         WATCH_RENEWAL_COUNTER.labels(result="no_credentials").inc()
@@ -86,13 +129,13 @@ def renew_once() -> bool:
             "watch renewal aborted: load_credentials returned None. "
             "Run python -m agents.mail_monitor.oauth --first-consent."
         )
-        return False
+        return "no_credentials"
 
     service = build_gmail_service(creds=creds)
     if service is None:
         WATCH_RENEWAL_COUNTER.labels(result="no_credentials").inc()
         log.warning("watch renewal aborted: build_gmail_service returned None.")
-        return False
+        return "no_credentials"
 
     project_id = _pass_show(PROJECT_ID_PASS_KEY)
     if not project_id:
@@ -102,14 +145,14 @@ def renew_once() -> bool:
             "Run pass insert mail-monitor/google-project-id.",
             PROJECT_ID_PASS_KEY,
         )
-        return False
+        return "no_project"
 
     try:
         label_ids_map = bootstrap_labels(service)
     except LabelBootstrapError as exc:
         WATCH_RENEWAL_COUNTER.labels(result="label_bootstrap_error").inc()
         log.warning("watch renewal aborted: label bootstrap failed: %s", exc)
-        return False
+        return "label_bootstrap_error"
 
     label_ids = [label_ids_map[name] for name in HAPAX_LABEL_NAMES]
 
@@ -125,11 +168,11 @@ def renew_once() -> bool:
         except HttpError as exc:
             WATCH_RENEWAL_COUNTER.labels(result="api_error").inc()
             log.warning("watch renewal failed: HTTP %s", exc)
-            return False
+            return "api_error"
     except WatchError as exc:
         WATCH_RENEWAL_COUNTER.labels(result="watch_error").inc()
         log.warning("watch renewal aborted: %s", exc)
-        return False
+        return "watch_error"
 
     age = watch_age_s()
     if age is not None:
@@ -137,14 +180,15 @@ def renew_once() -> bool:
 
     WATCH_RENEWAL_COUNTER.labels(result="success").inc()
     log.info("watch renewal succeeded for project=%s", project_id)
-    return True
+    return SUCCESS_RESULT
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI: ``python -m agents.mail_monitor.watch_renewal``.
 
-    One renewal attempt; exit 0 on success, 1 on any failure. systemd
-    schedules it via timer; ``Restart=on-failure`` retries on transient
+    One renewal attempt. Missing bootstrap credentials/project are a
+    clean skip so systemd does not crash-loop while setup is incomplete.
+    Runtime/API errors exit 1 so ``Restart=on-failure`` retries transient
     issues with a 5-minute delay.
     """
     parser = argparse.ArgumentParser(
@@ -157,7 +201,8 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    return 0 if renew_once() else 1
+    result = renew_once_result()
+    return 0 if result == SUCCESS_RESULT or result in NON_RETRYABLE_SKIP_RESULTS else 1
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entrypoint

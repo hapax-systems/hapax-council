@@ -31,6 +31,7 @@ from agents.local_music_player.player import (
     write_attribution,
     write_selection,
 )
+from shared.music_repo import LocalMusicRepo, LocalMusicTrack
 
 # ── pure helpers ────────────────────────────────────────────────────────────
 
@@ -87,14 +88,14 @@ def test_write_selection_round_trip(tmp_path: Path) -> None:
         "/abs/track.flac",
         title="Direct Drive",
         artist="Dusty Decks",
-        source="epidemic",
+        source="found-sound",
         when=1714082345.0,
     )
     payload = json.loads(target.read_text(encoding="utf-8"))
     assert payload["path"] == "/abs/track.flac"
     assert payload["title"] == "Direct Drive"
     assert payload["artist"] == "Dusty Decks"
-    assert payload["source"] == "epidemic"
+    assert payload["source"] == "found-sound"
     assert payload["ts"] == 1714082345.0
 
 
@@ -172,6 +173,49 @@ def test_config_from_env_empty_sink_falls_back_to_default(
     assert cfg.sink == "hapax-music-loudnorm"
 
 
+def _repo_track(path: str, *, source: str) -> LocalMusicTrack:
+    return LocalMusicTrack(
+        path=path,
+        title=Path(path).stem,
+        artist="A",
+        duration_s=10.0,
+        broadcast_safe=True,
+        source=source,
+    )
+
+
+def test_mark_played_routes_found_sound_to_interstitial_repo(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    interstitial_repo = LocalMusicRepo(path=cfg.interstitial_repo_path)
+    track_path = "/found/static.mp3"
+    interstitial_repo.upsert(_repo_track(track_path, source="found-sound"))
+    interstitial_repo.save()
+
+    LocalMusicPlayer(cfg)._mark_played(track_path, source="found-sound")
+
+    fresh = LocalMusicRepo(path=cfg.interstitial_repo_path)
+    fresh.load()
+    track = next((item for item in fresh.all_tracks() if item.path == track_path), None)
+    assert track is not None
+    assert track.play_count == 1
+
+
+def test_mark_played_routes_soundcloud_url_to_soundcloud_repo(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    sc_repo = LocalMusicRepo(path=cfg.sc_repo_path)
+    track_url = "https://soundcloud.com/oudepode/unknowntron-1"
+    sc_repo.upsert(_repo_track(track_url, source="soundcloud-oudepode"))
+    sc_repo.save()
+
+    LocalMusicPlayer(cfg)._mark_played(track_url, source="soundcloud-oudepode")
+
+    fresh = LocalMusicRepo(path=cfg.sc_repo_path)
+    fresh.load()
+    track = next((item for item in fresh.all_tracks() if item.path == track_url), None)
+    assert track is not None
+    assert track.play_count == 1
+
+
 # ── tick: watch-loop core ───────────────────────────────────────────────────
 
 
@@ -181,6 +225,7 @@ def _make_config(tmp_path: Path) -> PlayerConfig:
         attribution_path=tmp_path / "attrib.txt",
         repo_path=tmp_path / "tracks.jsonl",
         sc_repo_path=tmp_path / "soundcloud.jsonl",
+        interstitial_repo_path=tmp_path / "interstitials.jsonl",
         poll_s=0.01,
         sink="hapax-music-loudnorm",
     )
@@ -220,6 +265,22 @@ def test_tick_local_file_invokes_pwcat(tmp_path: Path) -> None:
     cmd = popen.call_args_list[0][0][0]
     assert cmd[0] == "pw-cat"
     assert "/abs/track.flac" in cmd
+
+
+def test_tick_blocks_decommissioned_livestream_source(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    player = LocalMusicPlayer(cfg)
+    write_selection(
+        cfg.selection_path,
+        "/home/hapax/Music/epidemic/old-track.mp3",
+        title="Old Track",
+        artist="Legacy",
+        source="epidemic",
+    )
+    with patch("subprocess.Popen") as popen:
+        player.tick()
+        popen.assert_not_called()
+    assert cfg.attribution_path.read_text(encoding="utf-8") == ""
 
 
 def test_tick_url_invokes_three_stage_pipeline(tmp_path: Path) -> None:

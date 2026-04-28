@@ -21,9 +21,9 @@ from agents.local_music_player.programmer import (
     MAX_ARTIST_STREAK,
     MAX_SOURCE_STREAK,
     OUDEPODE_WINDOW_SIZE,
-    SOURCE_EPIDEMIC,
+    SOURCE_FOUND_SOUND,
+    SOURCE_LOCAL,
     SOURCE_OUDEPODE,
-    SOURCE_STREAMBEATS,
     MusicProgrammer,
     PlayEvent,
     ProgrammerConfig,
@@ -48,7 +48,7 @@ def test_play_event_round_trip() -> None:
         path="/x.flac",
         title="Direct Drive",
         artist="Dusty Decks",
-        source=SOURCE_EPIDEMIC,
+        source=SOURCE_FOUND_SOUND,
         by="programmer",
     )
     line = event.to_json()
@@ -70,13 +70,13 @@ def _evt(source: str, *, artist: str = "x", path: str = "/p", ts: float = 0.0) -
 
 
 def test_oudepode_in_window_detects_within_cap() -> None:
-    win = deque([_evt(SOURCE_EPIDEMIC), _evt(SOURCE_OUDEPODE), _evt(SOURCE_EPIDEMIC)])
+    win = deque([_evt(SOURCE_FOUND_SOUND), _evt(SOURCE_OUDEPODE), _evt(SOURCE_FOUND_SOUND)])
     assert oudepode_in_window(win, cap_size=8) is True
 
 
 def test_oudepode_in_window_misses_outside_cap() -> None:
     """An oudepode play outside the trailing N events should not block."""
-    win = deque([_evt(SOURCE_OUDEPODE)] + [_evt(SOURCE_EPIDEMIC) for _ in range(8)])
+    win = deque([_evt(SOURCE_OUDEPODE)] + [_evt(SOURCE_FOUND_SOUND) for _ in range(8)])
     assert oudepode_in_window(win, cap_size=8) is False
 
 
@@ -84,39 +84,44 @@ def test_oudepode_in_window_empty() -> None:
     assert oudepode_in_window(deque(), cap_size=8) is False
 
 
+def test_oudepode_in_window_disabled_cap() -> None:
+    win = deque([_evt(SOURCE_OUDEPODE)])
+    assert oudepode_in_window(win, cap_size=0) is False
+
+
 def test_source_streak_counts_trailing_only() -> None:
     win = deque(
         [
-            _evt(SOURCE_EPIDEMIC),
+            _evt(SOURCE_FOUND_SOUND),
             _evt(SOURCE_OUDEPODE),
-            _evt(SOURCE_EPIDEMIC),
-            _evt(SOURCE_EPIDEMIC),
-            _evt(SOURCE_EPIDEMIC),
+            _evt(SOURCE_FOUND_SOUND),
+            _evt(SOURCE_FOUND_SOUND),
+            _evt(SOURCE_FOUND_SOUND),
         ]
     )
-    assert source_streak_count(win, SOURCE_EPIDEMIC) == 3
+    assert source_streak_count(win, SOURCE_FOUND_SOUND) == 3
     assert source_streak_count(win, SOURCE_OUDEPODE) == 0
 
 
 def test_artist_streak_counts_case_insensitive() -> None:
     win = deque(
         [
-            _evt(SOURCE_EPIDEMIC, artist="Other"),
-            _evt(SOURCE_EPIDEMIC, artist="Dusty Decks"),
-            _evt(SOURCE_EPIDEMIC, artist="dusty decks"),
+            _evt(SOURCE_FOUND_SOUND, artist="Other"),
+            _evt(SOURCE_FOUND_SOUND, artist="Dusty Decks"),
+            _evt(SOURCE_FOUND_SOUND, artist="dusty decks"),
         ]
     )
     assert artist_streak_count(win, "Dusty Decks") == 2
 
 
 def test_artist_streak_handles_none() -> None:
-    win = deque([_evt(SOURCE_EPIDEMIC, artist="x")])
+    win = deque([_evt(SOURCE_FOUND_SOUND, artist="x")])
     assert artist_streak_count(win, None) == 0
     assert artist_streak_count(win, "") == 0
 
 
 def test_track_recently_played_within_cooldown() -> None:
-    win = deque([_evt(SOURCE_EPIDEMIC, path="/x.flac", ts=100.0)])
+    win = deque([_evt(SOURCE_FOUND_SOUND, path="/x.flac", ts=100.0)])
     assert track_recently_played(win, "/x.flac", now=200.0, cooldown_s=300.0) is True
     assert track_recently_played(win, "/x.flac", now=500.0, cooldown_s=300.0) is False
     assert track_recently_played(win, "/y.flac", now=200.0, cooldown_s=300.0) is False
@@ -126,18 +131,29 @@ def test_track_recently_played_within_cooldown() -> None:
 
 
 def test_adjust_weights_zeros_oudepode_within_cap() -> None:
-    # 2 trailing epidemic events stays under max_source_streak=3.
-    win = deque([_evt(SOURCE_OUDEPODE)] + [_evt(SOURCE_EPIDEMIC) for _ in range(2)])
+    # 2 trailing found-sound events stays under max_source_streak=3.
+    win = deque([_evt(SOURCE_OUDEPODE)] + [_evt(SOURCE_FOUND_SOUND) for _ in range(2)])
     out = adjust_weights(DEFAULT_WEIGHTS, window=win, oudepode_window_size=8, max_source_streak=3)
     assert out[SOURCE_OUDEPODE] == 0.0
-    assert out[SOURCE_EPIDEMIC] == DEFAULT_WEIGHTS[SOURCE_EPIDEMIC]
+    assert out[SOURCE_FOUND_SOUND] == DEFAULT_WEIGHTS[SOURCE_FOUND_SOUND]
 
 
 def test_adjust_weights_zeros_streaked_source() -> None:
-    win = deque([_evt(SOURCE_STREAMBEATS) for _ in range(3)])
+    win = deque([_evt(SOURCE_FOUND_SOUND) for _ in range(3)])
     out = adjust_weights(DEFAULT_WEIGHTS, window=win, oudepode_window_size=8, max_source_streak=3)
-    assert out[SOURCE_STREAMBEATS] == 0.0
-    assert out[SOURCE_EPIDEMIC] == DEFAULT_WEIGHTS[SOURCE_EPIDEMIC]
+    assert out[SOURCE_FOUND_SOUND] == 0.0
+    assert out[SOURCE_OUDEPODE] == DEFAULT_WEIGHTS[SOURCE_OUDEPODE]
+
+
+def test_adjust_weights_default_oudepode_cap_disabled() -> None:
+    win = deque([_evt(SOURCE_OUDEPODE), _evt(SOURCE_FOUND_SOUND)])
+    out = adjust_weights(
+        DEFAULT_WEIGHTS,
+        window=win,
+        oudepode_window_size=OUDEPODE_WINDOW_SIZE,
+        max_source_streak=3,
+    )
+    assert out[SOURCE_OUDEPODE] == DEFAULT_WEIGHTS[SOURCE_OUDEPODE]
 
 
 def test_adjust_weights_does_not_mutate_base() -> None:
@@ -181,7 +197,7 @@ def test_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HAPAX_MUSIC_PROGRAMMER_HISTORY_PATH", raising=False)
     monkeypatch.delenv("HAPAX_MUSIC_PROGRAMMER_OUDEPODE_WINDOW", raising=False)
     cfg = ProgrammerConfig.from_env()
-    assert cfg.oudepode_window == OUDEPODE_WINDOW_SIZE  # 8 = 1-in-8 cap
+    assert cfg.oudepode_window == OUDEPODE_WINDOW_SIZE
     assert cfg.max_artist_streak == MAX_ARTIST_STREAK
     assert cfg.max_source_streak == MAX_SOURCE_STREAK
     assert cfg.history_path == DEFAULT_HISTORY_PATH
@@ -202,7 +218,7 @@ def _track(
     path: str,
     *,
     artist: str = "x",
-    source: str = SOURCE_EPIDEMIC,
+    source: str = SOURCE_FOUND_SOUND,
     broadcast_safe: bool = True,
 ) -> LocalMusicTrack:
     return LocalMusicTrack(
@@ -235,12 +251,12 @@ def _populate(repo: LocalMusicRepo, tracks: list[LocalMusicTrack]) -> None:
 def test_record_play_persists_to_history_jsonl(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     prog = MusicProgrammer(cfg)
-    prog.record_play(path="/x.flac", title="t", artist="a", source=SOURCE_EPIDEMIC, when=100.0)
+    prog.record_play(path="/x.flac", title="t", artist="a", source=SOURCE_FOUND_SOUND, when=100.0)
     lines = (tmp_path / "history.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     payload = json.loads(lines[0])
     assert payload["path"] == "/x.flac"
-    assert payload["source"] == SOURCE_EPIDEMIC
+    assert payload["source"] == SOURCE_FOUND_SOUND
 
 
 def test_history_loads_on_init(tmp_path: Path) -> None:
@@ -253,7 +269,7 @@ def test_history_loads_on_init(tmp_path: Path) -> None:
                     path="/a.flac",
                     title="t",
                     artist="a",
-                    source=SOURCE_EPIDEMIC,
+                    source=SOURCE_FOUND_SOUND,
                     by="programmer",
                 ).to_json(),
                 PlayEvent(
@@ -288,14 +304,14 @@ def test_select_next_picks_from_pool(tmp_path: Path) -> None:
     _populate(
         repo,
         [
-            _track("/epi/a.flac", source=SOURCE_EPIDEMIC, artist="A"),
-            _track("/epi/b.flac", source=SOURCE_EPIDEMIC, artist="B"),
+            _track("/found/a.flac", source=SOURCE_FOUND_SOUND, artist="A"),
+            _track("/found/b.flac", source=SOURCE_FOUND_SOUND, artist="B"),
         ],
     )
     prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
     chosen = prog.select_next(now=0.0)
     assert chosen is not None
-    assert chosen.path.startswith("/epi/")
+    assert chosen.path.startswith("/found/")
 
 
 def test_select_next_skips_unsafe_tracks(tmp_path: Path) -> None:
@@ -304,8 +320,8 @@ def test_select_next_skips_unsafe_tracks(tmp_path: Path) -> None:
     _populate(
         repo,
         [
-            _track("/unsafe.flac", source=SOURCE_EPIDEMIC, broadcast_safe=False),
-            _track("/safe.flac", source=SOURCE_EPIDEMIC, broadcast_safe=True),
+            _track("/unsafe.flac", source=SOURCE_FOUND_SOUND, broadcast_safe=False),
+            _track("/safe.flac", source=SOURCE_FOUND_SOUND, broadcast_safe=True),
         ],
     )
     prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
@@ -313,6 +329,51 @@ def test_select_next_skips_unsafe_tracks(tmp_path: Path) -> None:
         chosen = prog.select_next(now=0.0)
         assert chosen is not None
         assert chosen.path == "/safe.flac"
+
+
+def test_pool_includes_interstitial_repo(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    local_repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
+    interstitial_repo = LocalMusicRepo(path=tmp_path / "interstitials.jsonl")
+    _populate(
+        interstitial_repo,
+        [_track("/found/interstitial.mp3", source=SOURCE_FOUND_SOUND, artist="(found sound)")],
+    )
+    prog = MusicProgrammer(
+        cfg,
+        local_repo=local_repo,
+        interstitial_repo=interstitial_repo,
+        rng=random.Random(0),
+    )
+    assert {track.path for track in prog._pool()} == {"/found/interstitial.mp3"}
+
+
+def test_pool_excludes_decommissioned_sources(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
+    _populate(
+        repo,
+        [
+            _track("/home/hapax/Music/epidemic/old.mp3", source="epidemic"),
+            _track("/found/safe.mp3", source=SOURCE_FOUND_SOUND),
+        ],
+    )
+    prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
+    assert {track.path for track in prog._pool()} == {"/found/safe.mp3"}
+
+
+def test_pool_excludes_path_only_decommissioned_sources(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
+    _populate(
+        repo,
+        [
+            _track("/home/hapax/Music/epidemic/old.mp3", source=SOURCE_LOCAL),
+            _track("/found/safe.mp3", source=SOURCE_FOUND_SOUND),
+        ],
+    )
+    prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
+    assert {track.path for track in prog._pool()} == {"/found/safe.mp3"}
 
 
 def test_select_next_respects_oudepode_cap(tmp_path: Path) -> None:
@@ -323,8 +384,8 @@ def test_select_next_respects_oudepode_cap(tmp_path: Path) -> None:
         repo,
         [
             _track("/oude/a.flac", source=SOURCE_OUDEPODE, artist="op"),
-            _track("/epi/b.flac", source=SOURCE_EPIDEMIC, artist="A"),
-            _track("/epi/c.flac", source=SOURCE_EPIDEMIC, artist="B"),
+            _track("/found/b.flac", source=SOURCE_FOUND_SOUND, artist="A"),
+            _track("/found/c.flac", source=SOURCE_FOUND_SOUND, artist="B"),
         ],
     )
     prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
@@ -342,16 +403,18 @@ def test_select_next_skips_track_within_cooldown(tmp_path: Path) -> None:
     _populate(
         repo,
         [
-            _track("/epi/a.flac", source=SOURCE_EPIDEMIC, artist="A"),
-            _track("/epi/b.flac", source=SOURCE_EPIDEMIC, artist="B"),
+            _track("/found/a.flac", source=SOURCE_FOUND_SOUND, artist="A"),
+            _track("/found/b.flac", source=SOURCE_FOUND_SOUND, artist="B"),
         ],
     )
     prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
-    prog.record_play(path="/epi/a.flac", title="x", artist="A", source=SOURCE_EPIDEMIC, when=100.0)
+    prog.record_play(
+        path="/found/a.flac", title="x", artist="A", source=SOURCE_FOUND_SOUND, when=100.0
+    )
     for _ in range(20):
         chosen = prog.select_next(now=200.0)  # within 3600s cooldown
         assert chosen is not None
-        assert chosen.path == "/epi/b.flac"
+        assert chosen.path == "/found/b.flac"
 
 
 def test_select_next_skips_artist_streak(tmp_path: Path) -> None:
@@ -360,17 +423,17 @@ def test_select_next_skips_artist_streak(tmp_path: Path) -> None:
     _populate(
         repo,
         [
-            _track("/epi/a1.flac", source=SOURCE_EPIDEMIC, artist="Dusty Decks"),
-            _track("/epi/a2.flac", source=SOURCE_EPIDEMIC, artist="Dusty Decks"),
-            _track("/epi/b.flac", source=SOURCE_EPIDEMIC, artist="Other"),
+            _track("/found/a1.flac", source=SOURCE_FOUND_SOUND, artist="Dusty Decks"),
+            _track("/found/a2.flac", source=SOURCE_FOUND_SOUND, artist="Dusty Decks"),
+            _track("/found/b.flac", source=SOURCE_FOUND_SOUND, artist="Other"),
         ],
     )
     prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
     prog.record_play(
-        path="/epi/a1.flac", title="t", artist="Dusty Decks", source=SOURCE_EPIDEMIC, when=0.0
+        path="/found/a1.flac", title="t", artist="Dusty Decks", source=SOURCE_FOUND_SOUND, when=0.0
     )
     prog.record_play(
-        path="/epi/a2.flac", title="t", artist="Dusty Decks", source=SOURCE_EPIDEMIC, when=10.0
+        path="/found/a2.flac", title="t", artist="Dusty Decks", source=SOURCE_FOUND_SOUND, when=10.0
     )
     # 2 in a row → next must be different artist
     chosen = prog.select_next(now=20.0)
@@ -386,7 +449,7 @@ def test_external_play_observed_via_record_play(tmp_path: Path) -> None:
         repo,
         [
             _track("/oude/a.flac", source=SOURCE_OUDEPODE, artist="op"),
-            _track("/epi/x.flac", source=SOURCE_EPIDEMIC, artist="x"),
+            _track("/found/x.flac", source=SOURCE_FOUND_SOUND, artist="x"),
         ],
     )
     prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
@@ -414,20 +477,26 @@ def test_select_next_falls_back_when_all_sources_drained(tmp_path: Path) -> None
     _populate(
         repo,
         [
-            _track("/epi/a.flac", source=SOURCE_EPIDEMIC, artist="A"),
-            _track("/epi/b.flac", source=SOURCE_EPIDEMIC, artist="B"),
-            _track("/epi/c.flac", source=SOURCE_EPIDEMIC, artist="C"),
-            _track("/epi/d.flac", source=SOURCE_EPIDEMIC, artist="D"),
+            _track("/found/a.flac", source=SOURCE_FOUND_SOUND, artist="A"),
+            _track("/found/b.flac", source=SOURCE_FOUND_SOUND, artist="B"),
+            _track("/found/c.flac", source=SOURCE_FOUND_SOUND, artist="C"),
+            _track("/found/d.flac", source=SOURCE_FOUND_SOUND, artist="D"),
         ],
     )
     prog = MusicProgrammer(cfg, local_repo=repo, rng=random.Random(0))
-    # Force a 3-in-a-row epidemic streak so source-streak gate trips
-    prog.record_play(path="/epi/a.flac", title="t", artist="A", source=SOURCE_EPIDEMIC, when=0.0)
-    prog.record_play(path="/epi/b.flac", title="t", artist="B", source=SOURCE_EPIDEMIC, when=10.0)
-    prog.record_play(path="/epi/c.flac", title="t", artist="C", source=SOURCE_EPIDEMIC, when=20.0)
-    # Pool only has Epidemic tracks; fallback path must still pick one
+    # Force a 3-in-a-row found-sound streak so source-streak gate trips
+    prog.record_play(
+        path="/found/a.flac", title="t", artist="A", source=SOURCE_FOUND_SOUND, when=0.0
+    )
+    prog.record_play(
+        path="/found/b.flac", title="t", artist="B", source=SOURCE_FOUND_SOUND, when=10.0
+    )
+    prog.record_play(
+        path="/found/c.flac", title="t", artist="C", source=SOURCE_FOUND_SOUND, when=20.0
+    )
+    # Pool only has Found sound tracks; fallback path must still pick one
     chosen = prog.select_next(now=30.0)
     assert chosen is not None
-    assert chosen.source == SOURCE_EPIDEMIC
+    assert chosen.source == SOURCE_FOUND_SOUND
     # Cooldown should still keep us off the recently-played 3
-    assert chosen.path == "/epi/d.flac"
+    assert chosen.path == "/found/d.flac"

@@ -1,39 +1,70 @@
-base_url: "https://api.tavily.com"
-timeout_s: 15
-cache_ttl_s: 86400
-global_daily_cap_units: 100
-max_concurrent_requests: 1
-default_max_results: 5
+monthly_credits: 150000
+monthly_reserve_credits: 30000
+daily_nominal_credits: 4000
+daily_p0_credits: 10000
+base_url: https://api.tavily.com
+timeout_s: 30
+max_retries: 2
+retry_base_delay_s: 2
+retry_max_delay_s: 10
+max_concurrent_requests: 4
+reservation_ttl_s: 900
 
 state:
-  cache_path: "~/.cache/hapax/tavily/cache.json"
-  budget_path: "~/.cache/hapax/tavily/budget.json"
-  ledger_path: "~/.cache/hapax/tavily/ledger.jsonl"
-  lock_path: "~/.cache/hapax/tavily/state.lock"
+  cache_dir: ~/.cache/hapax/tavily/cache
+  ledger_path: ~/.cache/hapax/tavily/usage.jsonl
+  lock_dir: ~/.cache/hapax/tavily/locks
 
-operations:
-  search:
-    enabled: true
-    daily_budget_units: 80
-    estimated_cost_units: 1
-  extract:
-    enabled: false
-    daily_budget_units: 0
-    estimated_cost_units: 1
-  crawl:
-    enabled: false
-    daily_budget_units: 0
-    estimated_cost_units: 1
-  map:
-    enabled: false
-    daily_budget_units: 0
-    estimated_cost_units: 1
-  research:
-    enabled: false
-    daily_budget_units: 0
-    estimated_cost_units: 2
+lanes:
+  interactive_coding: 25000
+  research_reports: 30000
+  publication_citation: 30000
+  refused_lifecycle: 3000
+  demo_external: 5000
+  scout_horizon: 8000
+  knowledge_ingest: 10000
+  narrative_grounding: 2000
+  discovery_affordance: 5000
 
-caller_daily_budgets:
-  agents.scout: 60
-  agents.demo_pipeline.research: 10
-  default: 20
+defaults:
+  search_depth: basic
+  max_results: 5
+  extract_depth: basic
+  cache_ttl_s:
+    search: 86400
+    extract: 604800
+    map: 604800
+    crawl: 604800
+    research: 2592000
+
+lane_cache_ttl_s:
+  publication_citation:
+    search: 604800
+    extract: 1209600
+    map: 2592000
+    crawl: 2592000
+  scout_horizon:
+    search: 604800
+    extract: 1209600
+  research_reports:
+    research: 2592000
+  demo_external:
+    search: 604800
+  discovery_affordance:
+    search: 2592000
+  knowledge_ingest:
+    search: 604800
+    extract: 2592000
+    map: 7776000
+    crawl: 7776000
+
+research:
+  default_model: mini
+  pro_requires_p0: true
+
+guardrails:
+  reject_private_mail: true
+  reject_raw_transcripts: true
+  reject_corporate_content: true
+  reject_person_identified_queries: true
+  allow_public_bibliographic_people: true

@@ -2,8 +2,8 @@
 programmer needs.
 
 Regression context: 2026-04-23 — the music programmer's weighted picker
-treats records by their ``source`` field (epidemic / streambeats /
-soundcloud-oudepode / etc) and the broadcast safety gate keys off
+treats records by their ``source`` field (found-sound /
+soundcloud-oudepode / etc.) and the broadcast safety gate keys off
 ``broadcast_safe`` + ``content_risk``. Earlier revisions of this
 adapter wrote records WITHOUT these fields, so model_validate filled
 in defaults (``source="local"`` from SOURCE_LOCAL fallback, no

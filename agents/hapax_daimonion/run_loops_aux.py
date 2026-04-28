@@ -328,7 +328,9 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
         from agents.hapax_daimonion.autonomous_narrative.state_readers import assemble_context
 
         context = assemble_context(daemon)
-        narrative = compose.compose_narrative(context)
+        programme_id = _programme_id_from_context(context)
+        referent = _pick_referent_for_narration(programme_id)
+        narrative = compose.compose_narrative(context, operator_referent=referent)
         if narrative is None:
             emit.record_metric("llm_silent")
             daemon._affordance_pipeline.record_outcome(
@@ -339,17 +341,15 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
             return
 
         now = time.time()
-        programme_id = _programme_id_from_context(context)
-        referent = _pick_referent_for_narration(programme_id)
-
-        ok = emit.emit_narrative(
+        emit_result = emit.emit_narrative(
             narrative,
             programme_id=programme_id,
             operator_referent=referent,
             now=now,
         )
-        if ok:
-            emit.record_metric("allow")
+        if emit_result:
+            partial_success = bool(getattr(emit_result, "partial_success", False))
+            emit.record_metric("partial_success" if partial_success else "allow")
             daemon._affordance_pipeline.record_outcome(
                 candidate.capability_name,
                 success=True,

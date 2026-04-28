@@ -81,7 +81,7 @@ DAILY_BUDGET_USD = 5.0
 
 VOICE_VRAM_LOCK = Path.home() / ".cache" / "hapax-daimonion" / "vram.lock"
 
-RESTIC_REPO = Path("/data/backups/restic")
+RESTIC_REPO = Path("/store/hapax-backups/restic")
 BACKUP_STALE_H = 36
 BACKUP_FAILED_H = 72
 

@@ -925,7 +925,7 @@ def _check_backup_fresh() -> tuple[bool, str]:
     import time as _time
     from pathlib import Path
 
-    repo = Path("/data/backups/restic")
+    repo = Path("/store/hapax-backups/restic")
     candidates = [repo / "locks", repo / "snapshots", repo / "index"]
     latest: float | None = None
     for p in candidates:

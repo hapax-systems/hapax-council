@@ -116,6 +116,7 @@ class TestPublisher:
         )
         outcome = publisher.publish_current_week()
         assert outcome == "published"
+        assert not list(tmp_path.glob("state.json.tmp*"))
         client.set_paste.assert_called_once()
         call = client.set_paste.call_args
         assert call.kwargs["title"].startswith("chronicle-2026-w")

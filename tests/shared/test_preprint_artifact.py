@@ -72,6 +72,15 @@ class TestApprovalLifecycle:
         assert artifact.approved_at == approved_at
         assert artifact.approved_by_referent == "OTO"
 
+    def test_mark_failed_preserves_audit_trail(self):
+        artifact = PreprintArtifact(slug="x", title="X")
+        artifact.mark_approved(by_referent="OTO")
+        approved_at = artifact.approved_at
+        artifact.mark_failed()
+        assert artifact.approval == ApprovalState.FAILED
+        assert artifact.approved_at == approved_at
+        assert artifact.approved_by_referent == "OTO"
+
 
 # ── Inbox layout ────────────────────────────────────────────────────
 
@@ -90,6 +99,12 @@ class TestInboxLayout:
         assert (
             artifact.published_path(state_root=tmp_path)
             == tmp_path / "publish/published/my-paper.json"
+        )
+
+    def test_failed_path(self, tmp_path):
+        artifact = PreprintArtifact(slug="my-paper", title="X")
+        assert (
+            artifact.failed_path(state_root=tmp_path) == tmp_path / "publish/failed/my-paper.json"
         )
 
     def test_log_path_per_surface(self, tmp_path):
@@ -151,9 +166,23 @@ class TestFromOmgWeblogDraft:
             body_md="Body.",
         )
         assert artifact.slug == "post-1"
-        assert "omg-lol-weblog" in artifact.surfaces_targeted
+        assert "omg-weblog" in artifact.surfaces_targeted
         assert "bluesky-post" in artifact.surfaces_targeted
-        assert "webmention-sender" in artifact.surfaces_targeted
+        assert "bridgy-webmention-publish" in artifact.surfaces_targeted
+
+    def test_default_surfaces_resolve_through_publication_registry(self):
+        from agents.publication_bus.surface_registry import SURFACE_REGISTRY, is_engageable
+
+        artifact = from_omg_weblog_draft(
+            slug="post-1",
+            title="A post",
+            abstract="Brief.",
+            body_md="Body.",
+        )
+
+        for surface in artifact.surfaces_targeted:
+            assert surface in SURFACE_REGISTRY
+            assert is_engageable(surface)
 
     def test_override_surfaces(self):
         artifact = from_omg_weblog_draft(

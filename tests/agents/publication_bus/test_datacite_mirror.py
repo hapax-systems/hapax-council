@@ -11,6 +11,7 @@ from agents.publication_bus.datacite_mirror import (
     DATACITE_GRAPHQL_ENDPOINT,
     compute_diff,
     fetch_orcid_works,
+    main,
     mirror_works,
 )
 
@@ -214,3 +215,49 @@ class TestComputeDiff:
         }
         diff = compute_diff(prev, curr)
         assert diff["citation_count_delta"]["10.x/1"] == 4
+
+
+class TestMain:
+    @patch("agents.publication_bus.datacite_mirror.operator_orcid", return_value=None)
+    def test_no_orcid_returns_0(self, _mock_operator_orcid: MagicMock) -> None:
+        assert main() == 0
+
+    @patch("agents.publication_bus.datacite_mirror.mirror_works", return_value=None)
+    @patch(
+        "agents.publication_bus.datacite_mirror.operator_orcid",
+        return_value="0000-0001-2345-6789",
+    )
+    def test_fetch_failure_returns_0(
+        self,
+        mock_operator_orcid: MagicMock,
+        mock_mirror_works: MagicMock,
+    ) -> None:
+        assert main() == 0
+        mock_operator_orcid.assert_called_once_with()
+        mock_mirror_works.assert_called_once_with(orcid_id="0000-0001-2345-6789")
+
+    @patch("agents.publication_bus.datacite_mirror.mirror_works")
+    @patch(
+        "agents.publication_bus.datacite_mirror.operator_orcid",
+        return_value="0000-0001-2345-6789",
+    )
+    def test_success_path_returns_0(
+        self,
+        _mock_operator_orcid: MagicMock,
+        mock_mirror_works: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        mock_mirror_works.return_value = tmp_path / "datacite-mirror-2026-04-26.json"
+        assert main() == 0
+
+
+def test_v5_orcid_modules_use_shared_orcid_not_env() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    modules = [
+        repo_root / "agents" / "publication_bus" / "orcid_verifier.py",
+        repo_root / "agents" / "publication_bus" / "datacite_mirror.py",
+    ]
+    for module in modules:
+        body = module.read_text(encoding="utf-8")
+        assert "from shared.orcid import operator_orcid" in body
+        assert 'os.environ.get("HAPAX_OPERATOR_ORCID")' not in body

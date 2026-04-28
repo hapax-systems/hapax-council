@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 from agents.local_music_player.player import LocalMusicPlayer, PlayerConfig, write_selection
 from agents.local_music_player.programmer import (
     DEFAULT_WEIGHTS,
-    SOURCE_EPIDEMIC,
+    SOURCE_FOUND_SOUND,
     SOURCE_OUDEPODE,
     MusicProgrammer,
     ProgrammerConfig,
@@ -47,7 +47,7 @@ def _prog_cfg(tmp_path: Path) -> ProgrammerConfig:
     )
 
 
-def _track(path: str, *, source: str = SOURCE_EPIDEMIC, artist: str = "x") -> LocalMusicTrack:
+def _track(path: str, *, source: str = SOURCE_FOUND_SOUND, artist: str = "x") -> LocalMusicTrack:
     return LocalMusicTrack(
         path=path,
         title=Path(path).stem,
@@ -75,7 +75,7 @@ def test_player_without_programmer_does_not_auto_recruit(tmp_path: Path) -> None
 def test_player_auto_recruits_when_no_track_playing(tmp_path: Path) -> None:
     cfg = _player_cfg(tmp_path)
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
-    repo.upsert(_track("/epi/a.flac", source=SOURCE_EPIDEMIC, artist="A"))
+    repo.upsert(_track("/found/a.flac", source=SOURCE_FOUND_SOUND, artist="A"))
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
 
@@ -87,13 +87,13 @@ def test_player_auto_recruits_when_no_track_playing(tmp_path: Path) -> None:
     assert popen.called
     cmd = popen.call_args_list[0][0][0]
     assert cmd[0] == "pw-cat"
-    assert "/epi/a.flac" in cmd
+    assert "/found/a.flac" in cmd
 
 
 def test_player_does_not_auto_recruit_while_playing(tmp_path: Path) -> None:
     cfg = _player_cfg(tmp_path)
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
-    repo.upsert(_track("/epi/a.flac", source=SOURCE_EPIDEMIC))
+    repo.upsert(_track("/found/a.flac", source=SOURCE_FOUND_SOUND))
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
 
@@ -117,8 +117,8 @@ def test_player_does_not_auto_recruit_while_playing(tmp_path: Path) -> None:
 def test_player_recruits_again_when_track_ends(tmp_path: Path) -> None:
     cfg = _player_cfg(tmp_path)
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
-    repo.upsert(_track("/epi/a.flac", source=SOURCE_EPIDEMIC, artist="A"))
-    repo.upsert(_track("/epi/b.flac", source=SOURCE_EPIDEMIC, artist="B"))
+    repo.upsert(_track("/found/a.flac", source=SOURCE_FOUND_SOUND, artist="A"))
+    repo.upsert(_track("/found/b.flac", source=SOURCE_FOUND_SOUND, artist="B"))
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
 
@@ -147,7 +147,7 @@ def test_player_recruits_again_when_track_ends(tmp_path: Path) -> None:
 def test_stop_signal_silences_player(tmp_path: Path) -> None:
     cfg = _player_cfg(tmp_path)
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
-    repo.upsert(_track("/epi/a.flac", source=SOURCE_EPIDEMIC))
+    repo.upsert(_track("/found/a.flac", source=SOURCE_FOUND_SOUND))
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
 
@@ -181,7 +181,7 @@ def test_stop_signal_silences_player(tmp_path: Path) -> None:
 def test_stop_signal_blocks_auto_recruit(tmp_path: Path) -> None:
     cfg = _player_cfg(tmp_path)
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
-    repo.upsert(_track("/epi/a.flac", source=SOURCE_EPIDEMIC))
+    repo.upsert(_track("/found/a.flac", source=SOURCE_FOUND_SOUND))
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
     player._silenced = True  # simulate post-stop state
@@ -195,13 +195,13 @@ def test_stop_signal_blocks_auto_recruit(tmp_path: Path) -> None:
 def test_non_stop_selection_clears_silence(tmp_path: Path) -> None:
     cfg = _player_cfg(tmp_path)
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
-    repo.upsert(_track("/epi/a.flac", source=SOURCE_EPIDEMIC))
+    repo.upsert(_track("/found/a.flac", source=SOURCE_FOUND_SOUND))
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
     player._silenced = True  # in silence
 
     write_selection(
-        cfg.selection_path, "/epi/a.flac", title="X", artist="A", source=SOURCE_EPIDEMIC
+        cfg.selection_path, "/found/a.flac", title="X", artist="A", source=SOURCE_FOUND_SOUND
     )
     proc = MagicMock()
     proc.poll.return_value = None
@@ -220,7 +220,7 @@ def test_external_oudepode_cue_advances_cap_window(tmp_path: Path) -> None:
     cfg = _player_cfg(tmp_path)
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
     repo.upsert(_track("/oude/a.flac", source=SOURCE_OUDEPODE, artist="op"))
-    repo.upsert(_track("/epi/b.flac", source=SOURCE_EPIDEMIC, artist="B"))
+    repo.upsert(_track("/found/b.flac", source=SOURCE_FOUND_SOUND, artist="B"))
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
 
@@ -251,7 +251,7 @@ def test_external_oudepode_cue_advances_cap_window(tmp_path: Path) -> None:
 def test_programmer_authored_play_recorded_as_programmer(tmp_path: Path) -> None:
     cfg = _player_cfg(tmp_path)
     repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
-    repo.upsert(_track("/epi/a.flac", source=SOURCE_EPIDEMIC, artist="A"))
+    repo.upsert(_track("/found/a.flac", source=SOURCE_FOUND_SOUND, artist="A"))
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
 

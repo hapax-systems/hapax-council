@@ -81,10 +81,6 @@ broadcast-safe per the research.
   ├── README.md
   ├── index.json                    # cached
   ├── operator-owned/                # TIER 0 — oudepode catalog
-  ├── epidemic/                       # TIER 1 — Epidemic downloads
-  │   ├── recordings/                  # full tracks
-  │   ├── stems/                        # downloaded stems
-  │   └── edits/                        # EditRecording loopable beds
   ├── streambeats/                   # TIER 1 — Streambeats fallback
   ├── youtube-audio-library/         # TIER 1 — YT AL
   ├── freesound-cc0/                 # TIER 2 — manual CC0 textures
@@ -99,13 +95,13 @@ broadcast-safe per the research.
   attribution:
     artist: "Dusty Decks"
     title: "Direct Drive"
-    epidemic_id: "146b162e-fad2-4da3-871e-e894cd81db9b"
-    cover_art_url: "https://cdn.epidemicsound.com/..."
+    platform_id: "streambeats-direct-drive"
+    cover_art_url: null
   license:
-    spdx: "epidemic-sound-personal"
+    spdx: "streambeats"
     attribution_required: false
   content_risk: TIER_1_PLATFORM_CLEARED
-  source: epidemic
+  source: streambeats
   broadcast_safe: true
   bpm: 92
   musical_key: "f-minor"
@@ -113,8 +109,8 @@ broadcast-safe per the research.
   mood_tags: [dreamy, laid back]
   taxonomy_tags: [boom-bap, "old school hip hop"]
   vocals: false
-  stems_available: [DRUMS, MELODY, BASS, INSTRUMENTS]
-  waveform_url: "https://audiocdn.epidemicsound.com/waveform/..."
+  stems_available: []
+  waveform_url: null
   ```
 - [ ] Migrate `shared/music_repo.py::LocalMusicRepository.select_next()`
   to enforce `broadcast_safe == true` AND
@@ -130,33 +126,17 @@ broadcast-safe per the research.
   excluded with log warning.
 - [ ] PR + admin-merge.
 
-## Phase 3 — Epidemic Sound adapter (search + download + edit)
+## Phase 3 — Additional platform-cleared adapter slot
 
-**Branch:** `feat/epidemic-adapter`
+**Branch:** deferred
 **Depends on:** Phase 2.
 
-- [ ] New `agents/epidemic_adapter/` module structured like
-  `agents/soundcloud_adapter/`. Three responsibilities:
-  1. **Search proxy** — wraps the Epidemic MCP `SearchRecordings` /
-     `SearchSoundEffects` / `SearchSimilarToRecording` /
-     `SearchExternalReferences` tools so council services can query
-     the catalog without the MCP being a hard dependency.
-  2. **Ingestion** — `epidemic-ingest <recording_id>` CLI: pulls
-     metadata + downloads MP3/WAV + writes per-track YAML to
-     `~/music/hapax-pool/epidemic/recordings/`.
-  3. **Bed-music edit pipeline** — `epidemic-bed <recording_id>
-     --duration-ms 240000 --loopable` invokes `EditRecording` with
-     `loopable: true`, polls until COMPLETED, downloads result,
-     writes to `~/music/hapax-pool/epidemic/edits/`.
-- [ ] Stem download: `epidemic-stems <recording_id>` pulls all 4-6
-  stems for a recording into a flat layout
-  `~/music/hapax-pool/epidemic/stems/<recording_id>/{drums,bass,melody,instruments,clean_vocals,vocals}.wav`.
-  Each gets a YAML sidecar tagging `parent_recording_id` and `stem_type`.
-- [ ] Auth: reuses the user-scope MCP server (no separate API key
-  surface). Direct GraphQL calls fall back to `pass:epidemic/mcp-key`
-  via `Authorization: Bearer` header for non-MCP contexts.
-- [ ] Tests: mock the GraphQL responses; test the YAML-write
-  integrity, not the live API.
+- [ ] Keep the adapter seam available for a future platform-cleared
+  catalog only when it has a concrete livestream use case.
+- [ ] No paid-library MCP or bearer-token dependency is part of the
+  livestream baseline.
+- [ ] Tests must pin local repository ingest and broadcast filtering
+  without requiring a remote catalog.
 - [ ] PR + admin-merge.
 
 ## Phase 4 — Oudepode rate-limit gate + chat-request impingement path
@@ -190,16 +170,15 @@ broadcast-safe per the research.
 
 **Branch:** `feat/cbip-signal-density`
 **Depends on:** Phase 2 (so cover-art-url + waveform-url metadata is
-available); Phase 3 (so live tracks have it).
+available when a source provides it).
 
 - [ ] Replace `agents/studio_compositor/album_overlay.py` (or
   rewrite alongside) with a multi-layer Cairo + numpy renderer that
   composes:
   1. Cover-art texture base — k-means quantize to HOMAGE palette,
      low-opacity tile background.
-  2. Waveform layer — render Epidemic-provided waveform JSON or
-     locally-computed waveform for oudepode tracks; live position
-     marker.
+  2. Waveform layer — render locally-computed waveform data; live
+     position marker.
   3. Stem-activity layer — four lanes (drums/bass/melody/instruments),
      each pulsing at the stem's amplitude envelope (read from the
      mixer's per-stem-channel level meter).
@@ -219,7 +198,7 @@ available); Phase 3 (so live tracks have it).
   item `cbip-album-cover-dead`.
 - [ ] Tests:
   `tests/studio_compositor/test_cbip_signal_density.py` — render
-  golden frames per known-track input (oudepode + Epidemic).
+  golden frames per known-track input.
 - [ ] PR + admin-merge.
 
 ## Phase 6 — Sierpinski YouTube-frame retirement → local visual pool
@@ -235,8 +214,7 @@ available); Phase 3 (so live tracks have it).
   ├── internet-archive/         # TIER 2 — Prelinger raw PD uploads
   └── sample-source/             # NEVER broadcast — DAW input
   ```
-- [ ] `agents/visual_pool/` ingestion CLI similar to
-  `epidemic_adapter`. Per-clip YAML sidecar:
+- [ ] `agents/visual_pool/` ingestion CLI. Per-clip YAML sidecar:
   `content_risk`, `source`, `broadcast_safe`, `aesthetic_tags`,
   `motion_density`, `color_palette`, `duration_seconds`.
 - [ ] Refactor `agents/studio_compositor/sierpinski_loader.py` to
@@ -255,12 +233,12 @@ available); Phase 3 (so live tracks have it).
 ## Phase 7 — Provenance-token manifest + Ring 3 egress kill-switch
 
 **Branch:** `feat/provenance-manifest-egress-gate`
-**Depends on:** Phases 1-3.
+**Depends on:** Phases 1-2.
 
 - [ ] Every asset loaded into the audio mixer or visual compositor
-  must carry a `provenance_token` (Epidemic recording UUID, oudepode
-  SC track ID, sha256 of T0 shader source, etc.). Add the field to
-  the audio pipeline's track-load path and the compositor's source-
+  must carry a `provenance_token` (oudepode SC track ID, sha256 of
+  T0 shader source, platform-cleared catalog ID, etc.). Add the field
+  to the audio pipeline's track-load path and the compositor's source-
   load path.
 - [ ] Per-tick **broadcast manifest** assembled by the compositor +
   audio mixer. Written to `/dev/shm/hapax-broadcast-manifest.json`
@@ -269,8 +247,8 @@ available); Phase 3 (so live tracks have it).
 - [ ] `EgressManifestGate` reads the manifest each tick. If any asset
   has tier > current programme `max_content_risk` OR is missing a
   provenance token → trigger safe failure:
-  - **Audio:** duck compromised mix to -inf dB, fade in pre-cached
-    TIER 1 Epidemic emergency bed (`~/music/hapax-pool/epidemic/edits/emergency-bed.mp3`).
+  - **Audio:** duck compromised mix to -inf dB, fade in a pre-cached
+    TIER 0 operator-owned emergency bed.
   - **Visual:** crossfade compositor output to a full-screen TIER 0
     wgpu fallback shader.
   - Emit `egress.kill_switch_fired` impingement so the affordance
@@ -321,9 +299,9 @@ embedding cleared YouTube videos.
 ## ~~Phase 8 — Voiceover integration~~ — CANCELLED 2026-04-23
 
 Operator decision: no voice but Hapax. All speech on broadcast comes
-from daimonion via Kokoro. Epidemic voiceover capability stays latent
-in the MCP surface but is NOT wired into any production path. This is
-a constitutional principle, not just a phase deferral.
+from daimonion via Kokoro. Third-party voiceover is NOT wired into any
+production path. This is a constitutional principle, not just a phase
+deferral.
 
 ## Sequencing summary
 
@@ -332,7 +310,7 @@ a constitutional principle, not just a phase deferral.
 | 0 | `fix/vinyl-off-l12` | YES — before next stream | 1 |
 | 1 | `feat/content-risk-taxonomy` | unblocks 2-7 | 1 |
 | 2 | `feat/safe-music-repository` | unblocks 3-5 | 1 |
-| 3 | `feat/epidemic-adapter` | unblocks 5 | 1 |
+| 3 | deferred platform-cleared adapter | no | 0 |
 | 4 | `feat/oudepode-rate-gate` | independent of 5-7 | 1 |
 | 5 | `feat/cbip-signal-density` | independent of 6-7 | 1 |
 | 6 | `feat/local-visual-pool` | independent of 5, 7 | 1 |

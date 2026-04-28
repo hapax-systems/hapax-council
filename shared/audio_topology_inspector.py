@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,24 @@ from shared.audio_topology import (
 
 _PIPEWIRE_NODE = "PipeWire:Interface:Node"
 _PIPEWIRE_LINK = "PipeWire:Interface:Link"
+
+
+@dataclass(frozen=True)
+class TtsBroadcastPathCheck:
+    """Result of the TTS-to-livestream forward-path health check."""
+
+    ok: bool
+    missing_nodes: tuple[str, ...]
+    missing_edges: tuple[str, ...]
+
+    def format(self) -> str:
+        """Operator-readable single report block."""
+        lines = ["TTS broadcast path: " + ("OK" if self.ok else "FAIL")]
+        for node in self.missing_nodes:
+            lines.append(f"missing node: {node}")
+        for edge in self.missing_edges:
+            lines.append(f"missing edge: {edge}")
+        return "\n".join(lines)
 
 
 def run_pw_dump() -> str:
@@ -142,9 +161,13 @@ def _classify_node_kind(props: dict[str, Any]) -> NodeKind | None:
         if props.get("api.alsa.path"):
             return NodeKind.ALSA_SINK
     # Factory-less hapax-* virtual nodes — name-pattern heuristic.
-    # Skip -playback suffix always (filter-chain / loopback internal
-    # pair; descriptor declares the -capture side or bare sink as
-    # primary).
+    # Most -playback suffix nodes are the internal pair of a filter-chain
+    # or loopback, so the descriptor declares the -capture side or bare sink
+    # as primary. Broadcast bridges are an exception: the playback side is
+    # the only modeled endpoint that proves the bridge reaches the target
+    # livestream tap.
+    if name.startswith("hapax-") and "-broadcast-" in name and name.endswith("-playback"):
+        return NodeKind.LOOPBACK
     if name.endswith("-playback"):
         return None
     # Skip Stream/Output (playback stream) but NOT Stream/Input —
@@ -296,3 +319,47 @@ def descriptor_from_live() -> TopologyDescriptor:
 def descriptor_from_dump_file(path: str | Path) -> TopologyDescriptor:
     """Shortcut: load a captured pw-dump JSON file and parse."""
     return pw_dump_to_descriptor(Path(path).read_text())
+
+
+def check_tts_broadcast_path(
+    descriptor: TopologyDescriptor,
+    *,
+    source_name: str = "hapax-tts-duck",
+    bridge_prefix: str = "hapax-tts-broadcast-",
+    target_name: str = "hapax-livestream-tap",
+) -> TtsBroadcastPathCheck:
+    """Verify TTS reaches the livestream tap in a parsed PipeWire graph.
+
+    The static config can declare the loopback while the live graph is still
+    missing one side after deployment/restart. This checks the live shape:
+    ``hapax-tts-duck -> hapax-tts-broadcast-* -> hapax-livestream-tap``.
+    """
+    by_name = {node.pipewire_name: node for node in descriptor.nodes}
+    bridge_nodes = [
+        node for node in descriptor.nodes if node.pipewire_name.startswith(bridge_prefix)
+    ]
+
+    missing_nodes: list[str] = []
+    source = by_name.get(source_name)
+    if source is None:
+        missing_nodes.append(source_name)
+    target = by_name.get(target_name)
+    if target is None:
+        missing_nodes.append(target_name)
+    if not bridge_nodes:
+        missing_nodes.append(f"{bridge_prefix}*")
+
+    edge_pairs = {(edge.source, edge.target) for edge in descriptor.edges}
+    missing_edges: list[str] = []
+    if source is not None and bridge_nodes:
+        if not any((source.id, bridge.id) in edge_pairs for bridge in bridge_nodes):
+            missing_edges.append(f"{source_name} -> {bridge_prefix}*")
+    if target is not None and bridge_nodes:
+        if not any((bridge.id, target.id) in edge_pairs for bridge in bridge_nodes):
+            missing_edges.append(f"{bridge_prefix}* -> {target_name}")
+
+    return TtsBroadcastPathCheck(
+        ok=not missing_nodes and not missing_edges,
+        missing_nodes=tuple(missing_nodes),
+        missing_edges=tuple(missing_edges),
+    )

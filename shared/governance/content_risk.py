@@ -8,7 +8,7 @@ playing it on YouTube can trigger Content ID claims.
 Five tiers (`shared.affordance.ContentRisk`):
 
   tier_0_owned             — operator-owned, generated, hardware-captured
-  tier_1_platform_cleared  — Epidemic, Storyblocks, Streambeats, YT Audio Library
+  tier_1_platform_cleared  — Storyblocks, Streambeats, YT Audio Library
   tier_2_provenance_known  — verified CC0, Internet Archive raw PD uploads
   tier_3_uncertain         — Bandcamp direct license per release, CC-BY
   tier_4_risky             — vinyl, commercial, raw type-beats, stream-ripped

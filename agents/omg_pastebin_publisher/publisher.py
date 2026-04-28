@@ -19,6 +19,7 @@ import logging
 import re
 import sys
 import unicodedata
+import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -455,7 +456,7 @@ class PastebinArtifactPublisher:
 
     def _write_state(self, state: dict) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
+        tmp = self.state_file.with_name(f"{self.state_file.name}.tmp.{uuid.uuid4().hex}")
         tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
         tmp.replace(self.state_file)
 

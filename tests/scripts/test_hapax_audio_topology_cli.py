@@ -294,6 +294,75 @@ class TestAudit:
         assert "live nodes:     0" in result.stdout
 
 
+class TestTtsBroadcastCheck:
+    def test_tts_broadcast_check_ok(self, tmp_path: Path) -> None:
+        import json
+
+        dump = tmp_path / "dump.json"
+        dump.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": 100,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-tts-duck",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "filter-chain",
+                            }
+                        },
+                    },
+                    {
+                        "id": 101,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-tts-broadcast-playback",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "loopback",
+                            }
+                        },
+                    },
+                    {
+                        "id": 102,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-livestream-tap",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "support.null-audio-sink",
+                            }
+                        },
+                    },
+                    {
+                        "id": 200,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": 100, "input-node-id": 101},
+                    },
+                    {
+                        "id": 201,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": 101, "input-node-id": 102},
+                    },
+                ]
+            )
+        )
+        result = _run(["tts-broadcast-check", "--dump-file", str(dump)])
+        assert result.returncode == 0
+        assert "TTS broadcast path: OK" in result.stdout
+
+    def test_tts_broadcast_check_fails_when_bridge_missing(self, tmp_path: Path) -> None:
+        import json
+
+        dump = tmp_path / "dump.json"
+        dump.write_text(json.dumps([]))
+        result = _run(["tts-broadcast-check", "--dump-file", str(dump)])
+        assert result.returncode == 2
+        assert "TTS broadcast path: FAIL" in result.stdout
+        assert "hapax-tts-broadcast-*" in result.stdout
+
+
 class TestWatchdog:
     def test_dry_run_prints_commands(self) -> None:
         """Dry-run must emit both pactl commands and not exec."""

@@ -9,6 +9,7 @@ from shared.audio_topology import NodeKind
 from shared.audio_topology_inspector import (
     _classify_node_kind,
     _id_from_name,
+    check_tts_broadcast_path,
     pw_dump_to_descriptor,
 )
 
@@ -119,6 +120,31 @@ class TestClassifyNodeKind:
         assert (
             _classify_node_kind(
                 {"media.class": "Stream/Output/Audio", "factory.name": "client-node"}
+            )
+            is None
+        )
+
+    def test_broadcast_playback_stream_is_modeled(self) -> None:
+        """Broadcast loopback playback proves the bridge reaches its target."""
+        assert (
+            _classify_node_kind(
+                {
+                    "node.name": "hapax-tts-broadcast-playback",
+                    "media.class": "Stream/Output/Audio",
+                    "target.object": "hapax-livestream-tap",
+                }
+            )
+            == NodeKind.LOOPBACK
+        )
+
+    def test_non_broadcast_playback_stream_is_skipped(self) -> None:
+        assert (
+            _classify_node_kind(
+                {
+                    "node.name": "hapax-tts-duck-playback",
+                    "media.class": "Stream/Output/Audio",
+                    "target.object": "hapax-livestream-tap",
+                }
             )
             is None
         )
@@ -298,3 +324,110 @@ class TestPwDumpToDescriptor:
         assert NodeKind.TAP in kinds
         assert NodeKind.FILTER_CHAIN in kinds
         assert len(d.edges) == 2
+
+
+class TestTtsBroadcastPathCheck:
+    def test_ok_when_tts_duck_bridges_to_livestream_tap(self) -> None:
+        dump = [
+            _pw_node(
+                id=100,
+                node_name="hapax-tts-duck",
+                media_class="Audio/Sink",
+                factory="filter-chain",
+            ),
+            _pw_node(
+                id=101,
+                node_name="hapax-tts-broadcast-playback",
+                media_class="Audio/Sink",
+                factory="loopback",
+            ),
+            _pw_node(
+                id=102,
+                node_name="hapax-livestream-tap",
+                media_class="Audio/Sink",
+                factory="support.null-audio-sink",
+            ),
+            _pw_link(id=200, out_node=100, in_node=101),
+            _pw_link(id=201, out_node=101, in_node=102),
+        ]
+        result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
+        assert result.ok is True
+        assert result.missing_nodes == ()
+        assert result.missing_edges == ()
+
+    def test_reports_missing_bridge_node(self) -> None:
+        dump = [
+            _pw_node(
+                id=100,
+                node_name="hapax-tts-duck",
+                media_class="Audio/Sink",
+                factory="filter-chain",
+            ),
+            _pw_node(
+                id=102,
+                node_name="hapax-livestream-tap",
+                media_class="Audio/Sink",
+                factory="support.null-audio-sink",
+            ),
+        ]
+        result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
+        assert result.ok is False
+        assert "hapax-tts-broadcast-*" in result.missing_nodes
+
+    def test_reports_missing_forward_edge(self) -> None:
+        dump = [
+            _pw_node(
+                id=100,
+                node_name="hapax-tts-duck",
+                media_class="Audio/Sink",
+                factory="filter-chain",
+            ),
+            _pw_node(
+                id=101,
+                node_name="hapax-tts-broadcast-playback",
+                media_class="Audio/Sink",
+                factory="loopback",
+            ),
+            _pw_node(
+                id=102,
+                node_name="hapax-livestream-tap",
+                media_class="Audio/Sink",
+                factory="support.null-audio-sink",
+            ),
+            _pw_link(id=200, out_node=100, in_node=101),
+        ]
+        result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
+        assert result.ok is False
+        assert "hapax-tts-broadcast-* -> hapax-livestream-tap" in result.missing_edges
+
+    def test_accepts_live_loopback_split_capture_and_playback_nodes(self) -> None:
+        dump = [
+            _pw_node(
+                id=100,
+                node_name="hapax-tts-duck",
+                media_class="Audio/Sink",
+                factory="filter-chain",
+            ),
+            _pw_node(
+                id=101,
+                node_name="hapax-tts-broadcast-capture",
+                media_class="Stream/Input/Audio",
+                target="hapax-tts-duck",
+            ),
+            _pw_node(
+                id=102,
+                node_name="hapax-tts-broadcast-playback",
+                media_class="Stream/Output/Audio",
+                target="hapax-livestream-tap",
+            ),
+            _pw_node(
+                id=103,
+                node_name="hapax-livestream-tap",
+                media_class="Audio/Sink",
+                factory="support.null-audio-sink",
+            ),
+            _pw_link(id=200, out_node=100, in_node=101),
+            _pw_link(id=201, out_node=102, in_node=103),
+        ]
+        result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
+        assert result.ok is True

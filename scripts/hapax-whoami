@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # hapax-whoami — print the calling Claude Code session's identity by walking
 # the process tree up to the foot terminal window and reading its Hyprland
-# window title (alpha / beta / delta / epsilon / gamma / zeta).
+# window title (alpha / beta / delta / epsilon / gamma or Codex cx-<color>).
 #
-# Operator convention: each foot window running a Claude Code session is
-# manually titled with the session name (e.g. "alpha"). Claude Code prepends
-# an activity spinner glyph (⠐, ✳, etc.) to the title, which this script
-# strips before emitting the bare identity.
+# Operator convention: each foot window running a Claude Code or Codex
+# session is manually titled with the session name (e.g. "alpha" or
+# "cx-red"). Claude Code prepends an activity spinner glyph, which this
+# script strips before emitting the bare identity.
 #
 # Exit codes:
 #   0 — identity printed to stdout
@@ -71,7 +71,7 @@ fi
 
 # Match a known session name. Case-insensitive, last match wins so activity
 # glyphs + prefixes don't interfere.
-identity=$(echo "$title" | grep -oiE '\b(alpha|beta|gamma|delta|epsilon|zeta|eta)\b' | tail -1 | tr '[:upper:]' '[:lower:]')
+identity=$(echo "$title" | grep -oiE '\b(cx-[a-z][a-z-]*|alpha|beta|gamma|delta|epsilon|zeta|eta)\b' | tail -1 | tr '[:upper:]' '[:lower:]')
 
 if [ -z "$identity" ]; then
   echo "hapax-whoami: window title did not match a known session name: $title" >&2

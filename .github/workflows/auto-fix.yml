@@ -57,9 +57,11 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "No open PR for branch $BRANCH — skipping"
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-            echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+            {
+              echo "skip=false"
+              echo "number=$PR_NUMBER"
+              echo "branch=$BRANCH"
+            } >> "$GITHUB_OUTPUT"
             echo "Resolved PR #$PR_NUMBER on branch $BRANCH"
           fi
 
@@ -219,9 +221,10 @@ jobs:
               --body "Auto-fix could not resolve CI failures (${{ steps.classify.outputs.categories }}). Human attention needed." || true
           else
             git add -A
+            ATTEMPT=$(( ${{ steps.guard.outputs.count || '0' }} + 1 ))
             git commit -m "[auto-fix] ${{ steps.classify.outputs.categories }}
 
-            Automated fix by Claude Code (attempt ${{ steps.guard.outputs.count && fromJSON(steps.guard.outputs.count) + 1 || 1 }}/3).
+            Automated fix by Claude Code (attempt ${ATTEMPT}/3).
 
             Co-Authored-By: Claude Sonnet <noreply@anthropic.com>"
             git push

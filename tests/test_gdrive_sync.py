@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from agents.gdrive_sync import (
     EXPORT_MIMES,
     SIZE_THRESHOLD,
@@ -60,6 +62,62 @@ def test_save_load_roundtrip(tmp_path):
     loaded = _load_state(state_file)
     assert loaded.start_page_token == "tok123"
     assert "abc" in loaded.files
+
+
+class _DriveInvalidTokenError(Exception):
+    class Resp:
+        status = 400
+
+    resp = Resp()
+    content = b'{"error":{"message":"Invalid Value","errors":[{"location":"pageToken"}]}}'
+    uri = "https://www.googleapis.com/drive/v3/changes?pageToken=def"
+
+
+def test_incremental_sync_clears_invalid_page_token():
+    from agents.gdrive_sync import InvalidChangeTokenError, _incremental_sync
+
+    class _Changes:
+        def list(self, **_kwargs):
+            return self
+
+        def execute(self):
+            raise _DriveInvalidTokenError()
+
+    class _Service:
+        def changes(self):
+            return _Changes()
+
+    state = SyncState(start_page_token="def")
+
+    with pytest.raises(InvalidChangeTokenError):
+        _incremental_sync(_Service(), state)
+
+    assert state.start_page_token == ""
+
+
+def test_run_auto_persists_invalid_token_repair_and_full_scans(monkeypatch):
+    import agents.gdrive_sync as mod
+
+    state = SyncState(start_page_token="def")
+    saved_tokens: list[str] = []
+    full_scans: list[bool] = []
+
+    def fail_incremental(_service, sync_state):
+        sync_state.start_page_token = ""
+        raise mod.InvalidChangeTokenError("invalid Drive changes token")
+
+    monkeypatch.setattr(mod, "_get_drive_service", lambda: object())
+    monkeypatch.setattr(mod, "_load_state", lambda: state)
+    monkeypatch.setattr(mod, "_incremental_sync", fail_incremental)
+    monkeypatch.setattr(
+        mod, "_save_state", lambda sync_state: saved_tokens.append(sync_state.start_page_token)
+    )
+    monkeypatch.setattr(mod, "run_full_scan", lambda: full_scans.append(True))
+
+    mod.run_auto()
+
+    assert saved_tokens == [""]
+    assert full_scans == [True]
 
 
 def test_resolve_folder_path():

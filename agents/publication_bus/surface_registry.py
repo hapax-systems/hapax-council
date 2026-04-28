@@ -47,6 +47,8 @@ class SurfaceSpec:
 
     automation_status: AutomationStatus
     api: str | None = None
+    dispatch_entry: str | None = None
+    activation_path: str | None = None
     refusal_link: str | None = None
     scope_note: str | None = None
 
@@ -58,55 +60,122 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
     "bluesky-atproto-multi-identity": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="ATProto",
+        dispatch_entry="agents.bluesky_atproto_adapter:publish_artifact",
+    ),
+    "bluesky-post": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="ATProto",
+        dispatch_entry="agents.cross_surface.bluesky_post:publish_artifact",
+        scope_note="legacy cross-surface post adapter",
     ),
     "bridgy-webmention-publish": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="webmention",
+        dispatch_entry="agents.bridgy_adapter:publish_artifact",
     ),
     "datacite-graphql-mirror": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="GraphQL",
+        activation_path=(
+            "systemd/units/hapax-datacite-mirror.timer + "
+            "agents.publication_bus.self_citation_graph_doi --commit"
+        ),
+    ),
+    "discord-webhook": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="agents.cross_surface.discord_webhook:publish_artifact",
     ),
     "internet-archive-ias3": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="S3",
+        dispatch_entry="agents.internet_archive_ias3_adapter:publish_artifact",
     ),
     "marketing-refusal-annex": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="local-file",
+        activation_path="agents.marketing.refusal_annex_publisher.RefusalAnnexPublisher",
         scope_note="renders refusal annex markdown to ~/hapax-state/publications/",
+    ),
+    "arena-post": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        dispatch_entry="agents.cross_surface.arena_post:publish_artifact",
+        scope_note="legacy cross-surface Are.na adapter",
+    ),
+    "mastodon-post": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        dispatch_entry="agents.cross_surface.mastodon_post:publish_artifact",
+        scope_note="legacy cross-surface Mastodon adapter",
+    ),
+    "omg-weblog": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        dispatch_entry="agents.omg_weblog_publisher:publish_artifact",
+        scope_note="operator-owned hapax omg.lol weblog identity",
     ),
     "omg-lol-weblog-bearer-fanout": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
+        activation_path="systemd/units/hapax-omg-lol-fanout.timer",
     ),
     "orcid-auto-update": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="OAuth+REST",
+        activation_path="systemd/units/hapax-orcid-verifier.timer",
         scope_note="concept-DOI granularity only",
     ),
     "osf-prereg": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
+        dispatch_entry="agents.osf_prereg_adapter:publish_artifact",
         scope_note="OSF preregistrations with named-related-work cross-references",
+    ),
+    "osf-preprint": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        dispatch_entry="agents.osf_preprint_publisher:publish_artifact",
+    ),
+    "oudepode-omg-weblog": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        dispatch_entry="agents.omg_weblog_publisher:publish_artifact_oudepode",
+        scope_note="music-side omg.lol weblog identity",
     ),
     "zenodo-deposit": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
+        activation_path="canonical Zenodo surface; runtime dispatch uses zenodo-doi",
+    ),
+    "zenodo-doi": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        dispatch_entry="agents.zenodo_publisher:publish_artifact",
+        scope_note="legacy preprint DOI minter surface slug",
     ),
     "zenodo-refusal-deposit": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
+        dispatch_entry="agents.refusal_brief_zenodo_adapter:publish_artifact",
         scope_note="Refusal Brief deposits with refusal-shaped RelatedIdentifier edges",
     ),
     "zenodo-related-identifier-graph": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
+        activation_path="agents.publication_bus.related_identifier via agents.zenodo_publisher",
+    ),
+    "crossref-doi-deposit": SurfaceSpec(
+        automation_status=AutomationStatus.CONDITIONAL_ENGAGE,
+        api="REST/XML",
+        activation_path="agents.attribution.crossref_depositor after credential bootstrap",
+        scope_note="credential-blocked until Crossref membership depositor credentials exist",
     ),
     # ── CONDITIONAL_ENGAGE ─────────────────────────────────────────
     "philarchive-deposit": SurfaceSpec(
         automation_status=AutomationStatus.CONDITIONAL_ENGAGE,
         api="Playwright",
+        dispatch_entry="agents.philarchive_adapter:publish_artifact",
         scope_note="bootstrap login via Playwright session daemon (one-time)",
     ),
     "alphaxiv-deposit": SurfaceSpec(
@@ -180,11 +249,21 @@ def auto_surfaces() -> list[str]:
     )
 
 
+def dispatch_registry() -> dict[str, str]:
+    """Return runtime-dispatchable surfaces from the canonical registry."""
+    return {
+        name: spec.dispatch_entry
+        for name, spec in SURFACE_REGISTRY.items()
+        if spec.dispatch_entry and is_engageable(name)
+    }
+
+
 __all__ = [
     "SURFACE_REGISTRY",
     "AutomationStatus",
     "SurfaceSpec",
     "auto_surfaces",
+    "dispatch_registry",
     "is_engageable",
     "refused_surfaces",
 ]

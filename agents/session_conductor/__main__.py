@@ -1,7 +1,7 @@
 """Session conductor CLI entry point.
 
 Usage:
-    uv run python -m agents.session_conductor start [--role alpha|beta]
+    uv run python -m agents.session_conductor start [--role alpha|beta|cx-red]
     uv run python -m agents.session_conductor stop
     uv run python -m agents.session_conductor status
 """
@@ -219,8 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--role",
         default="alpha",
-        choices=["alpha", "beta"],
-        help="Session role (default: alpha)",
+        help="Session identity (default: alpha; Codex uses cx-<color>)",
     )
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")

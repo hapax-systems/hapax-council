@@ -62,7 +62,7 @@ class TestDispatchAutonomousNarration:
             patch(
                 "agents.hapax_daimonion.autonomous_narrative.compose.compose_narrative",
                 return_value="Hapax observes shifting patterns in the recruitment pipeline.",
-            ),
+            ) as compose_mock,
             patch(
                 "agents.hapax_daimonion.autonomous_narrative.emit.emit_narrative",
                 return_value=True,
@@ -84,6 +84,7 @@ class TestDispatchAutonomousNarration:
             _dispatch_autonomous_narration(daemon, imp, candidate)
 
             # Thompson outcome recorded as success
+            assert "operator_referent" in compose_mock.call_args.kwargs
             daemon._affordance_pipeline.record_outcome.assert_called_once()
             call_args = daemon._affordance_pipeline.record_outcome.call_args
             assert call_args[0][0] == "narration.autonomous_first_system"
@@ -96,6 +97,45 @@ class TestDispatchAutonomousNarration:
 
             # Metric recorded as "allow"
             mock_metric.assert_called_with("allow")
+
+    def test_partial_emit_records_success_with_partial_metric(self):
+        from agents.hapax_daimonion.autonomous_narrative.emit import EmitResult
+        from agents.hapax_daimonion.run_loops_aux import _dispatch_autonomous_narration
+
+        daemon = _fake_daemon()
+
+        with (
+            patch(
+                "agents.hapax_daimonion.autonomous_narrative.compose.compose_narrative",
+                return_value="Signal density changes in the recent window.",
+            ),
+            patch(
+                "agents.hapax_daimonion.autonomous_narrative.emit.emit_narrative",
+                return_value=EmitResult(
+                    impingement_written=True,
+                    jsonl_chronicle_written=True,
+                    chronicle_recorded=False,
+                ),
+            ),
+            patch(
+                "agents.hapax_daimonion.autonomous_narrative.emit.record_metric",
+            ) as mock_metric,
+            patch(
+                "agents.hapax_daimonion.autonomous_narrative.state_readers.assemble_context",
+                return_value=SimpleNamespace(
+                    programme=None,
+                    stimmung_tone="ambient",
+                    director_activity="observe",
+                    chronicle_events=(),
+                    vault_context=SimpleNamespace(is_empty=lambda: True),
+                ),
+            ),
+        ):
+            _dispatch_autonomous_narration(daemon, _fake_imp(), _fake_candidate())
+
+        daemon._affordance_pipeline.record_outcome.assert_called_once()
+        assert daemon._affordance_pipeline.record_outcome.call_args.kwargs["success"] is True
+        mock_metric.assert_called_with("partial_success")
 
     def test_compose_returns_none_records_failure(self):
         """When compose returns None (LLM silent), record_outcome(success=False)."""

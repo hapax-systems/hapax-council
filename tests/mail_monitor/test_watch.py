@@ -77,7 +77,7 @@ def test_call_watch_persists_response_atomically(
     payload = json.loads(state_path.read_text())
     assert payload == {"historyId": "abc", "expiration": "1234567890000"}
     # Tmp file should be cleaned up after rename.
-    assert not (tmp_path / "watch.tmp").exists()
+    assert not list(tmp_path.glob("watch.tmp*"))
 
 
 def test_call_watch_creates_parent_dir_if_missing(

@@ -7,8 +7,11 @@ from pathlib import Path
 from agents.cold_contact.candidate_registry import (
     AUDIENCE_VECTORS,
     CandidateEntry,
+    filter_suppressed_candidates,
     load_candidate_registry,
+    load_eligible_candidate_registry,
 )
+from shared.contact_suppression import append_entry
 
 _SAMPLE_YAML = """\
 candidates:
@@ -17,7 +20,7 @@ candidates:
     audience_vectors: ["critical-ai", "infrastructure-studies"]
     topic_relevance: ["governance", "anti-anthropomorphization"]
   - name: "Yuk Hui"
-    orcid: "0000-0002-3456-7890"
+    orcid: "0000-0002-3296-5021"
     audience_vectors: ["philosophy-of-tech"]
     topic_relevance: ["constitutional-design"]
 """
@@ -41,6 +44,34 @@ class TestCandidateEntry:
             topic_relevance=[],
         )
         assert entry.orcid == "0000-0001-2345-6789"
+
+    def test_invalid_orcid_syntax_rejected(self) -> None:
+        import pydantic  # noqa: TC002 — runtime fixture marker
+
+        try:
+            CandidateEntry(
+                name="x",
+                orcid="0000-0001-aaaa-aaaa",
+                audience_vectors=[],
+                topic_relevance=[],
+            )
+        except pydantic.ValidationError:
+            return
+        raise AssertionError("Expected validation error on invalid ORCID syntax")
+
+    def test_invalid_orcid_checksum_rejected(self) -> None:
+        import pydantic  # noqa: TC002 — runtime fixture marker
+
+        try:
+            CandidateEntry(
+                name="x",
+                orcid="0000-0002-3456-7890",
+                audience_vectors=[],
+                topic_relevance=[],
+            )
+        except pydantic.ValidationError:
+            return
+        raise AssertionError("Expected validation error on invalid ORCID checksum")
 
     def test_invalid_audience_vector_rejected(self) -> None:
         import pydantic  # noqa: TC002 — runtime fixture marker
@@ -75,6 +106,9 @@ class TestLoadCandidateRegistry:
         names = {c.name for c in candidates}
         assert names == {"Wendy Chun", "Yuk Hui"}
 
+    def test_committed_registry_loads_with_valid_orcids(self) -> None:
+        assert load_candidate_registry()
+
     def test_missing_file_returns_empty_list(self, tmp_path: Path) -> None:
         candidates = load_candidate_registry(path=tmp_path / "missing.yaml")
         assert candidates == []
@@ -90,6 +124,37 @@ class TestLoadCandidateRegistry:
         path.write_text("other_key: value\n")
         candidates = load_candidate_registry(path=path)
         assert candidates == []
+
+    def test_load_eligible_filters_suppressed_orcids(self, tmp_path: Path) -> None:
+        registry_path = tmp_path / "candidates.yaml"
+        registry_path.write_text(_SAMPLE_YAML)
+        suppression_path = tmp_path / "suppression.yaml"
+        append_entry(
+            orcid="0000-0001-2345-6789",
+            reason="target opt-out",
+            initiator="target_optout",
+            path=suppression_path,
+        )
+
+        raw = load_candidate_registry(path=registry_path)
+        eligible = load_eligible_candidate_registry(
+            path=registry_path,
+            suppression_path=suppression_path,
+        )
+
+        assert {candidate.name for candidate in raw} == {"Wendy Chun", "Yuk Hui"}
+        assert [candidate.name for candidate in eligible] == ["Yuk Hui"]
+
+    def test_filter_suppressed_candidates_returns_copy_when_no_suppression(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        candidates = load_candidate_registry(path=tmp_path / "missing.yaml")
+        filtered = filter_suppressed_candidates(
+            candidates,
+            suppression_path=tmp_path / "suppression.yaml",
+        )
+        assert filtered == []
 
 
 class TestAudienceVectorsConstant:

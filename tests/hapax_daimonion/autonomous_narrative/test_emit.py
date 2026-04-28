@@ -16,14 +16,15 @@ def _read_records(path: Path) -> list[dict]:
 
 def test_emit_writes_impingement_and_chronicle(tmp_path: Path) -> None:
     p = tmp_path / "impingements.jsonl"
-    ok = emit.emit_narrative(
+    result = emit.emit_narrative(
         "Vinyl side B started.",
         programme_id="prog-1",
         operator_referent="Oudepode",
         impingement_path=p,
         now=1234.0,
     )
-    assert ok is True
+    assert result.success is True
+    assert result.partial_success is False
     records = _read_records(p)
     assert len(records) == 2
     impingement, chronicle = records
@@ -55,8 +56,8 @@ def test_emit_appends_not_overwrites(tmp_path: Path) -> None:
 def test_emit_creates_parent_directory(tmp_path: Path) -> None:
     p = tmp_path / "subdir" / "impingements.jsonl"
     assert not p.parent.exists()
-    ok = emit.emit_narrative("test", impingement_path=p)
-    assert ok is True
+    result = emit.emit_narrative("test", impingement_path=p)
+    assert result.success is True
     assert p.exists()
 
 
@@ -77,10 +78,26 @@ def test_emit_chronicle_event_filtered_by_state_readers(tmp_path: Path) -> None:
 def test_emit_handles_missing_optional_args(tmp_path: Path) -> None:
     """programme_id and operator_referent are optional; emit still works."""
     p = tmp_path / "impingements.jsonl"
-    ok = emit.emit_narrative("minimal", impingement_path=p)
-    assert ok is True
+    result = emit.emit_narrative("minimal", impingement_path=p)
+    assert result.success is True
     records = _read_records(p)
     impingement = records[0]
     assert impingement["content"]["narrative"] == "minimal"
     assert impingement["content"]["programme_id"] is None
     assert impingement["content"]["operator_referent"] is None
+
+
+def test_emit_partial_success_when_chronicle_record_fails(tmp_path: Path, monkeypatch) -> None:
+    p = tmp_path / "impingements.jsonl"
+
+    def fail_record(_event):
+        raise RuntimeError("chronicle unavailable")
+
+    monkeypatch.setattr(emit, "chronicle_record", fail_record)
+    result = emit.emit_narrative("partial", impingement_path=p, now=123.0)
+    assert result.success is True
+    assert result.impingement_written is True
+    assert result.jsonl_chronicle_written is True
+    assert result.chronicle_recorded is False
+    assert result.partial_success is True
+    assert len(_read_records(p)) == 2

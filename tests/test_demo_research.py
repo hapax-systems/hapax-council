@@ -28,7 +28,7 @@ from agents.demo_pipeline.research import (
     _gather_web_research,
     gather_research,
 )
-from shared.tavily_client import TavilyResult
+from shared.tavily_client import TavilyPolicyViolation, TavilySearchResponse, TavilySearchResult
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -187,6 +187,10 @@ async def test_gather_research_leadership():
             side_effect=lambda: called_sources.append("langfuse_metrics") or "metrics",
         ),
         patch(
+            "agents.demo_pipeline.research._gather_drift_summary",
+            side_effect=lambda: called_sources.append("drift_summary") or "drift",
+        ),
+        patch(
             "agents.demo_pipeline.research._gather_system_docs",
             side_effect=lambda summary=False: called_sources.append("system_docs") or "docs",
         ),
@@ -228,6 +232,7 @@ async def test_gather_research_leadership():
         await gather_research(scope="agent architecture", audience="leadership")
 
     assert "langfuse_metrics" in called_sources
+    assert "drift_summary" in called_sources
     assert "web_research" in called_sources
     assert "introspect" in called_sources
     assert "system_docs" in called_sources
@@ -808,33 +813,30 @@ def test_backward_compat_audience_sources():
 
 def test_gather_web_research_uses_shared_tavily_client():
     mock_client = MagicMock()
-    mock_client.search.return_value = TavilyResult(
-        operation="search",
-        status="ok",
+    mock_client.search.return_value = TavilySearchResponse(
+        query="hapax autonomous agent system architecture trends",
         results=[
-            {
-                "title": "Agent systems",
-                "url": "https://example.com",
-                "content": "Architecture context for autonomous systems",
-            }
+            TavilySearchResult(
+                title="Agent systems",
+                url="https://example.com",
+                content="Architecture context for autonomous systems",
+            )
         ],
     )
-    with patch("agents.demo_pipeline.research.TavilyClient.from_config", return_value=mock_client):
+    with patch("agents.demo_pipeline.research.TavilyClient", return_value=mock_client):
         output = _gather_web_research("hapax", "technical-peer")
 
     assert "Agent systems" in output
     mock_client.search.assert_called_once()
-    assert mock_client.search.call_args.kwargs["caller"] == "agents.demo_pipeline.research"
+    request = mock_client.search.call_args.args[0]
+    assert request.lane == "demo_external"
+    assert request.max_results == 5
 
 
 def test_gather_web_research_returns_empty_when_tavily_denies():
     mock_client = MagicMock()
-    mock_client.search.return_value = TavilyResult(
-        operation="search",
-        status="guard_denied",
-        error_class="local_path_payload",
-    )
-    with patch("agents.demo_pipeline.research.TavilyClient.from_config", return_value=mock_client):
+    mock_client.search.side_effect = TavilyPolicyViolation("local_path_payload")
+    with patch("agents.demo_pipeline.research.TavilyClient", return_value=mock_client):
         assert _gather_web_research("hapax", "technical-peer") == ""
 
 

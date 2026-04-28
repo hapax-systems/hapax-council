@@ -48,6 +48,7 @@ RECREATE_TASKS: frozenset[str] = frozenset(
         "actuation_loop",
         "gem_producer_loop",
         "programme_manager_loop",
+        "narrative_drive_loop",
         "salience_publish_loop",
     }
 )

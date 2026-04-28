@@ -22,6 +22,13 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/agent-role.sh" ]]; then
+  # shellcheck source=agent-role.sh
+  # shellcheck disable=SC1091
+  . "$SCRIPT_DIR/agent-role.sh"
+fi
+
 # --- 1. Killswitch (shared with PR1 sweeper) ---
 if [[ "${HAPAX_CC_HYGIENE_OFF:-0}" == "1" ]]; then
   exit 0
@@ -73,7 +80,27 @@ if [[ -z "$pr_number" ]]; then
 fi
 
 # --- 6. Determine session role ---
-role="${CLAUDE_ROLE:-}"
+role=""
+for candidate in "${CLAUDE_ROLE:-}" "${HAPAX_AGENT_SLOT:-}" "${HAPAX_WORKTREE_ROLE:-}" "${HAPAX_AGENT_ROLE:-}" "${CODEX_ROLE:-}"; do
+  case "$candidate" in
+    alpha|beta|gamma|delta|epsilon)
+      role="$candidate"
+      break
+      ;;
+  esac
+done
+if [[ -n "$role" && ! -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
+  claim_candidates=()
+  for r in alpha beta gamma delta epsilon; do
+    f="$HOME/.cache/hapax/cc-active-task-$r"
+    if [[ -f "$f" ]]; then
+      claim_candidates+=("$r")
+    fi
+  done
+  if [[ ${#claim_candidates[@]} -eq 1 ]]; then
+    role="${claim_candidates[0]}"
+  fi
+fi
 if [[ -z "$role" ]]; then
   # Same fallback as cc-task-gate: if exactly one relay yaml exists, use it.
   relay_dir="$HOME/.cache/hapax/relay"
@@ -89,6 +116,12 @@ if [[ -z "$role" ]]; then
       role="${candidates[0]}"
     fi
   fi
+fi
+if [[ -z "$role" ]] && declare -F hapax_agent_worktree_role >/dev/null 2>&1; then
+  role="$(hapax_agent_worktree_role 2>/dev/null || true)"
+fi
+if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
+  role="$(hapax_agent_role 2>/dev/null || true)"
 fi
 if [[ -z "$role" ]]; then
   echo "cc-task-pr-link: cannot determine role; skipping" >&2

@@ -8,14 +8,16 @@ parallel.
 Per-artifact-per-surface result lands at
 ``~/hapax-state/publish/log/{slug}.{surface}.json`` with one of:
 ``ok | denied | auth_error | no_credentials | rate_limited | deferred |
-error | surface_unwired``. Once ALL surfaces reach a non-``deferred``
-non-``rate_limited`` terminal state, the artifact moves to
-``~/hapax-state/publish/published/{slug}.json``. ``deferred`` and
-``rate_limited`` results re-queue the next tick.
+error | surface_unwired``. Once every surface reaches a terminal state,
+the artifact moves to ``published/`` only when every surface returned
+``ok``. Non-retryable failures (``denied``, ``auth_error``,
+``no_credentials``, ``error``, ``dropped``, ``surface_unwired``) move
+the artifact to ``failed/``; ``deferred`` and ``rate_limited`` stay in
+``inbox/`` for retry.
 
-``no_credentials`` is terminal: missing env vars are configuration
-state the publisher can't recover from itself; re-dispatching every
-tick would loop forever. Operator sets the env var and re-drops a
+``no_credentials`` is terminal but not published: missing env vars are
+configuration state the publisher can't recover from itself; re-dispatching
+every tick would loop forever. Operator sets the env var and re-drops a
 fresh artifact if they want it published.
 
 ## Surface registry
@@ -55,6 +57,7 @@ from typing import ClassVar
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter
 
+from agents.publication_bus.surface_registry import dispatch_registry
 from shared.preprint_artifact import (
     INBOX_DIR_NAME,
     PreprintArtifact,
@@ -65,7 +68,9 @@ log = logging.getLogger(__name__)
 DEFAULT_TICK_S = 30.0
 METRICS_PORT_DEFAULT = 9510
 
-# Terminal states (artifact moves to published/ once all surfaces reach one).
+_SUCCESS_RESULTS = frozenset({"ok"})
+"""Only these results count as a real publication."""
+
 _TERMINAL_RESULTS = frozenset(
     {
         "ok",
@@ -77,9 +82,11 @@ _TERMINAL_RESULTS = frozenset(
         "surface_unwired",
     }
 )
-"""``deferred`` and ``rate_limited`` are NOT terminal — those re-queue.
-``no_credentials`` IS terminal — missing env vars are configuration state
-the publisher can't recover from; re-dispatching loops forever."""
+"""Terminal states stop retry for a surface.
+
+``deferred`` and ``rate_limited`` are NOT terminal. Terminal failure
+states move the artifact to ``failed/``, never ``published/``.
+"""
 
 
 # ── Surface registry ────────────────────────────────────────────────
@@ -110,45 +117,12 @@ the publisher can't recover from; re-dispatching loops forever."""
 # refresh on major-policy-event triggers). The audit dataset lives
 # at ~/.cache/hapax/relay/inflections/20260425T17{0000,1500}Z-*.md.
 
-SURFACE_REGISTRY: dict[str, str] = {
-    # Phase 1 cross-surface posters (PUB-P1-A/B/C/D foundations).
-    "bluesky-post": "agents.cross_surface.bluesky_post:publish_artifact",
-    "mastodon-post": "agents.cross_surface.mastodon_post:publish_artifact",
-    "arena-post": "agents.cross_surface.arena_post:publish_artifact",
-    "discord-webhook": "agents.cross_surface.discord_webhook:publish_artifact",
-    # Phase 2 (FULL_AUTO confirmed per 2026-04-25 audit)
-    "osf-preprint": "agents.osf_preprint_publisher:publish_artifact",
-    "zenodo-doi": "agents.zenodo_publisher:publish_artifact",  # primary DOI minter
-    "internet-archive-ias3": "agents.internet_archive_ias3_adapter:publish_artifact",  # V5 InternetArchiveS3Publisher
-    "osf-prereg": "agents.osf_prereg_adapter:publish_artifact",  # V5 OSFPreregPublisher
-    "philarchive-deposit": "agents.philarchive_adapter:publish_artifact",  # V5 PhilArchivePublisher
-    "bluesky-atproto-multi-identity": "agents.bluesky_atproto_adapter:publish_artifact",  # V5 BlueskyPublisher (#1676 zenodo wire-pattern)
-    "zenodo-refusal-deposit": "agents.refusal_brief_zenodo_adapter:publish_artifact",  # V5 RefusalBrief publisher (#1650 wire-status WIRED)
-    "omg-weblog": "agents.omg_weblog_publisher:publish_artifact",  # operator-owned (hapax address)
-    "oudepode-omg-weblog": "agents.omg_weblog_publisher:publish_artifact_oudepode",  # music-side identity
-    "bridgy-webmention-publish": "agents.bridgy_adapter:publish_artifact",  # V5 BridgyPublisher POSSE fan-out
-    # "hf-papers":      "agents.hf_papers_publisher:publish_artifact",  # arXiv-downstream Mon-Fri
-    # "ghost-blog":     "agents.ghost_publisher:publish_artifact",  # self-hosted, richest API
-    # "smtp-newsletter":"agents.smtp_newsletter_publisher:publish_artifact",  # operator-sovereign
-    # "tumblr":         "agents.tumblr_publisher:publish_artifact",
-    # "dev-to":         "agents.dev_to_publisher:publish_artifact",
-    # "hashnode":       "agents.hashnode_publisher:publish_artifact",
-    # "beehiiv":        "agents.beehiiv_publisher:publish_artifact",
-    # "scene-org":      "agents.scene_org_publisher:publish_artifact",  # anonymous FTP
-    # "manifold":       "agents.manifold_publisher:publish_artifact",
-    # "lesswrong":      "agents.lesswrong_publisher:publish_artifact",
-    # Phase 3 cross-surface posters (PUB-P3 foundations — arXiv-downstream comment loop).
-    "alphaxiv-comments": "agents.cross_surface.alphaxiv_post:publish_artifact",
-    # Phase 3 (Playwright daemon-mediated; queued — CONDITIONAL_ENGAGE per audit)
-    # "philarchive":    "agents.philarchive_publisher:publish_artifact",
-    # "substack":       "agents.substack_publisher:publish_artifact",
-    # "pouet-net":      "agents.pouet_net_publisher:publish_artifact",
-    # "scene-org":      "agents.scene_org_publisher:publish_artifact",
-    # "bandcamp":       "agents.bandcamp_publisher:publish_artifact",
-    # "16colo-rs":      "agents.colorlib_rs_publisher:publish_artifact",
-}
-"""Surface slug → ``"module.path:entry_point"`` import string. Empty by
-default; per-surface PRs (PUB-P1/P2/P3 tickets) populate.
+SURFACE_REGISTRY: dict[str, str] = dispatch_registry()
+"""Surface slug → ``"module.path:entry_point"`` import string.
+
+The canonical authority is ``agents.publication_bus.surface_registry``.
+REFUSED surfaces such as ``alphaxiv-comments`` have no dispatch entry
+and therefore cannot be reached from the runtime orchestrator.
 
 Each entry-point must be a callable
 ``(artifact: PreprintArtifact) -> str`` returning one of the result
@@ -308,8 +282,9 @@ class Orchestrator:
             self._record_result(artifact, surface, result)
 
         # Final state check: did all surfaces reach terminal? If yes,
-        # move artifact to published/.
+        # move the artifact to published/ only if every surface succeeded.
         all_terminal = True
+        final_results: list[str] = []
         for surface in artifact.surfaces_targeted:
             log_path = artifact.log_path(surface, state_root=self._state_root)
             if not log_path.exists():
@@ -320,12 +295,16 @@ class Orchestrator:
             except (OSError, json.JSONDecodeError):
                 all_terminal = False
                 break
+            final_results.append(result)
             if result not in _TERMINAL_RESULTS:
                 all_terminal = False
                 break
 
         if all_terminal:
-            self._move_to_published(artifact)
+            if all(result in _SUCCESS_RESULTS for result in final_results):
+                self._move_to_published(artifact)
+            else:
+                self._move_to_failed(artifact, final_results)
 
     def _dispatch_one(self, artifact: PreprintArtifact, surface: str) -> str:
         """Resolve + invoke the publisher entry-point for ``surface``."""
@@ -387,6 +366,22 @@ class Orchestrator:
             "published %s; %d surfaces all-terminal",
             artifact.slug,
             len(artifact.surfaces_targeted),
+        )
+
+    def _move_to_failed(self, artifact: PreprintArtifact, results: list[str]) -> None:
+        artifact.mark_failed()
+        failed = artifact.failed_path(state_root=self._state_root)
+        inbox = artifact.inbox_path(state_root=self._state_root)
+        failed.parent.mkdir(parents=True, exist_ok=True)
+        failed.write_text(artifact.model_dump_json(indent=2))
+        try:
+            inbox.unlink()
+        except FileNotFoundError:
+            pass
+        log.warning(
+            "failed %s; terminal surface results=%s",
+            artifact.slug,
+            ",".join(results),
         )
 
 

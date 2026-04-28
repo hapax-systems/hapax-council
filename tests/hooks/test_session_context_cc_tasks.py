@@ -51,10 +51,18 @@ def _scaffold_minimal_relay(home: Path, role: str = "alpha") -> Path:
     return relay
 
 
-def _run(home: Path, role: str = "alpha") -> subprocess.CompletedProcess:
+def _run(home: Path, role: str = "cx-red") -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = str(home)
-    env["CLAUDE_ROLE"] = role
+    env.pop("HAPAX_AGENT_NAME", None)
+    env.pop("HAPAX_AGENT_ROLE", None)
+    env.pop("HAPAX_WORKTREE_ROLE", None)
+    env.pop("CODEX_THREAD_NAME", None)
+    env.pop("CODEX_ROLE", None)
+    env.pop("CLAUDE_ROLE", None)
+    env["CODEX_THREAD_NAME"] = role
+    env["HAPAX_WORKTREE_ROLE"] = "alpha"
+    env["HAPAX_AGENT_INTERFACE"] = "codex"
     # Stop hapax-whoami from being found so role inference falls to PWD.
     env["PATH"] = "/usr/bin:/bin"
     return subprocess.run(
@@ -82,6 +90,10 @@ class TestCCTaskBlockSurfaces:
         result = _run(home)
         assert "CC-TASK SSOT" in result.stdout, f"stderr={result.stderr}"
 
+    def test_codex_agent_identity_appears(self, home: Path) -> None:
+        result = _run(home)
+        assert "Agent: codex/cx-red (slot alpha)" in result.stdout
+
     def test_dashboard_reminder_always_shown(self, home: Path) -> None:
         result = _run(home)
         assert "Dashboard: open Obsidian" in result.stdout
@@ -98,11 +110,25 @@ class TestClaimedTaskSurfaces:
         _make_vault_task(vault, task_id="alph-001", status="in_progress", title="Active alpha task")
         cache = home / ".cache" / "hapax"
         cache.mkdir(parents=True, exist_ok=True)
-        (cache / "cc-active-task-alpha").write_text("alph-001\n")
+        (cache / "cc-active-task-cx-red").write_text("alph-001\n")
         result = _run(home)
         assert "Claimed: alph-001" in result.stdout
         assert "Active alpha task" in result.stdout
         assert "[in_progress]" in result.stdout
+
+    def test_descriptorless_claimed_task_title_shown(self, home: Path) -> None:
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _make_vault_task(vault, task_id="alph-001", status="in_progress", title="Active alpha task")
+        active = vault / "active"
+        (active / "alph-001-test.md").rename(active / "alph-001.md")
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / "cc-active-task-cx-red").write_text("alph-001\n")
+
+        result = _run(home)
+
+        assert "Claimed: alph-001" in result.stdout
+        assert "Active alpha task" in result.stdout
 
 
 class TestTopOfferedSorting:

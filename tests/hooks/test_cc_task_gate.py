@@ -69,6 +69,7 @@ def _run_hook(
     tool_input: dict,
     *,
     role: str = "alpha",
+    role_env: str = "CLAUDE_ROLE",
     home: Path | None = None,
     extra_env: dict | None = None,
 ) -> subprocess.CompletedProcess:
@@ -76,7 +77,13 @@ def _run_hook(
     env = os.environ.copy()
     if home is not None:
         env["HOME"] = str(home)
-    env["CLAUDE_ROLE"] = role
+    env.pop("HAPAX_AGENT_NAME", None)
+    env.pop("HAPAX_AGENT_ROLE", None)
+    env.pop("HAPAX_WORKTREE_ROLE", None)
+    env.pop("CODEX_THREAD_NAME", None)
+    env.pop("CODEX_ROLE", None)
+    env.pop("CLAUDE_ROLE", None)
+    env[role_env] = role
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -154,6 +161,43 @@ class TestStatusGating:
             {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
             home=tmp_path,
         )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_hapax_agent_role_allows_codex_claim(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="delta")
+        _write_claim(tmp_path, "delta", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            role="delta",
+            role_env="HAPAX_AGENT_ROLE",
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_codex_role_allows_codex_claim(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="cx-red")
+        _write_claim(tmp_path, "cx-red", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            role="cx-red",
+            role_env="CODEX_ROLE",
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_descriptorless_note_allows(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        active = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+        described = active / "test-001-test-task.md"
+        descriptorless = active / "test-001.md"
+        described.rename(descriptorless)
+        _write_claim(tmp_path, "alpha", "test-001")
+
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+
         assert result.returncode == 0, f"stderr={result.stderr}"
 
     def test_offered_rejects(self, tmp_path: Path) -> None:

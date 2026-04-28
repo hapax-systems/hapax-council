@@ -351,7 +351,7 @@ def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
         parts.append(leading_title)
     if attribution:
         parts.append(attribution)
-    if abstract:
+    if abstract and not _abstract_duplicates_body(abstract, body_after_title):
         parts.append(abstract)
     if body_after_title:
         parts.append(body_after_title)
@@ -376,6 +376,37 @@ def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
     # "Date: 2022-12-11 5:46 PM EDT\n\n# Test post\n\nThis is a test."
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M %Z")
     return f"Date: {timestamp}\n\n{body}"
+
+
+def _abstract_duplicates_body(abstract: str, body_md: str) -> bool:
+    """Return true when an abstract is only the leading body paragraph.
+
+    ``scripts/publish_vault_artifact.py`` derives a default abstract from
+    the first non-heading paragraph. Long-form weblog entries already carry
+    that paragraph in the body, so rendering the abstract before the body
+    produces a duplicated lead and can truncate mid-sentence.
+    """
+
+    needle = _normalize_for_duplicate_check(abstract)
+    if not needle:
+        return False
+
+    haystack = _normalize_for_duplicate_check(body_md)
+    if haystack.startswith(needle):
+        return True
+
+    for para in body_md.split("\n\n"):
+        stripped = para.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        normalized = _normalize_for_duplicate_check(stripped)
+        if normalized.startswith(needle) or needle.startswith(normalized):
+            return True
+    return False
+
+
+def _normalize_for_duplicate_check(text: str) -> str:
+    return " ".join(text.split()).strip()
 
 
 def main(argv: list[str] | None = None) -> int:

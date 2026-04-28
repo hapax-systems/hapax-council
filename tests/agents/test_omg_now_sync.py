@@ -291,3 +291,4 @@ class TestSyncPublisher:
         persisted = json.loads(state_file.read_text())
         assert "last_content_sha256" in persisted
         assert len(persisted["last_content_sha256"]) == 64
+        assert not list(tmp_path.glob("state.json.tmp*"))

@@ -1,51 +1,67 @@
 #!/usr/bin/env bash
-# hapax-tavily-mcp — launch a Tavily MCP server without parent-shell key export.
-#
-# Usage:
-#   scripts/hapax-tavily-mcp -- <mcp-command> [args...]
-#
-# The launcher resolves TAVILY_API_KEY in this process from the environment first,
-# then `pass show api/tavily`, and injects it only into the exec'd child.
+# Launch the Hapax-governed Tavily MCP surface.
+
 set -euo pipefail
 
-usage() {
-    cat >&2 <<'EOF'
-usage: hapax-tavily-mcp -- <mcp-command> [args...]
-
-Example:
-  hapax-tavily-mcp -- npx -y tavily-mcp@latest
-
-Set HAPAX_TAVILY_MCP_DRY_RUN=1 to validate secret lookup without exec.
-EOF
+pass_first_line() {
+  local name="$1"
+  command -v pass >/dev/null 2>&1 || return 1
+  pass show "$name" 2>/dev/null | sed -n '1p'
 }
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-    usage
-    exit 0
-fi
+load_first_available_pass_secret() {
+  local env_name="$1"
+  shift
+  [ -n "${!env_name:-}" ] && return 0
+  local entry value
+  for entry in "$@"; do
+    value="$(pass_first_line "$entry" || true)"
+    if [ -n "$value" ]; then
+      export "$env_name=$value"
+      return 0
+    fi
+  done
+  return 1
+}
 
-if [[ "${1:-}" == "--" ]]; then
-    shift
-fi
+LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/tavily-mcp.log"
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-/home/hapax/projects/hapax-council}"
+UV_BIN="${UV_BIN:-/home/hapax/.local/bin/uv}"
 
-if [[ $# -eq 0 ]]; then
-    usage
+load_tavily_token_for_upstream() {
+  load_first_available_pass_secret TAVILY_API_KEY tavily/api-key api/tavily || true
+  if [ -z "${TAVILY_API_KEY:-}" ]; then
+    echo "hapax-tavily-mcp: no token found in TAVILY_API_KEY, pass:tavily/api-key, or pass:api/tavily" >&2
     exit 2
-fi
+  fi
+}
 
-key="${TAVILY_API_KEY:-}"
-if [[ -z "$key" ]]; then
-    key="$(pass show api/tavily 2>/dev/null | sed -n '1p' || true)"
-fi
+require_upstream_override() {
+  if [ "${HAPAX_TAVILY_ALLOW_UPSTREAM_MCP:-0}" != "1" ]; then
+    echo "hapax-tavily-mcp: direct upstream mode bypasses Hapax budget/cache/ledger guardrails; use proxy mode or set HAPAX_TAVILY_ALLOW_UPSTREAM_MCP=1 explicitly" >&2
+    exit 2
+  fi
+}
 
-if [[ -z "$key" ]]; then
-    echo "hapax-tavily-mcp: Tavily key not found in TAVILY_API_KEY or pass entry api/tavily" >&2
-    exit 1
-fi
-
-if [[ "${HAPAX_TAVILY_MCP_DRY_RUN:-0}" == "1" ]]; then
-    echo "hapax-tavily-mcp: ready to exec $1 with child-only Tavily key"
-    exit 0
-fi
-
-exec env TAVILY_API_KEY="$key" "$@"
+case "${HAPAX_TAVILY_MCP_MODE:-proxy}" in
+  proxy)
+    exec "$UV_BIN" --directory "$COUNCIL_DIR" run \
+      python "$COUNCIL_DIR/scripts/hapax_tavily_mcp_server.py" \
+      2>>"$LOG_FILE"
+    ;;
+  upstream-local|local)
+    require_upstream_override
+    load_tavily_token_for_upstream
+    exec npx -y tavily-mcp@latest 2>>"$LOG_FILE"
+    ;;
+  upstream-remote|remote)
+    echo "hapax-tavily-mcp: remote upstream mode is disabled because mcp-remote requires Tavily bearer material in process arguments; use proxy mode" >&2
+    exit 2
+    ;;
+  *)
+    echo "hapax-tavily-mcp: unsupported HAPAX_TAVILY_MCP_MODE=${HAPAX_TAVILY_MCP_MODE}" >&2
+    exit 2
+    ;;
+esac

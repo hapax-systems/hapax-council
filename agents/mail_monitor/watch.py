@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -74,9 +75,9 @@ def call_watch(
 def _persist(response: dict[str, Any]) -> None:
     """Atomic tmp+rename write to :data:`WATCH_STATE_PATH`."""
     WATCH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = WATCH_STATE_PATH.with_suffix(".tmp")
+    tmp = WATCH_STATE_PATH.with_suffix(f".tmp.{os.getpid()}")
     tmp.write_text(json.dumps(response, indent=2))
-    tmp.rename(WATCH_STATE_PATH)
+    tmp.replace(WATCH_STATE_PATH)
 
 
 def load_watch_state() -> dict[str, Any] | None:

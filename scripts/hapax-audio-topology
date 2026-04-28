@@ -45,6 +45,7 @@ from shared.audio_topology import (
 )
 from shared.audio_topology_generator import generate_confs
 from shared.audio_topology_inspector import (
+    check_tts_broadcast_path,
     descriptor_from_dump_file,
     descriptor_from_live,
 )
@@ -323,6 +324,28 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tts_broadcast_check(args: argparse.Namespace) -> int:
+    """Verify the live TTS loopback reaches the livestream tap."""
+    try:
+        if args.dump_file:
+            live = descriptor_from_dump_file(args.dump_file)
+        else:
+            live = descriptor_from_live()
+    except FileNotFoundError:
+        print(
+            f"error: pw-dump file not found: {args.dump_file}",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as exc:
+        print(f"error: failed to load live graph: {exc}", file=sys.stderr)
+        return 1
+
+    result = check_tts_broadcast_path(live)
+    print(result.format())
+    return 0 if result.ok else 2
+
+
 _DEFAULT_PIN_GLITCH_STATE_FILE = Path("/run/user/1000/hapax-pin-glitch-state.json")
 
 
@@ -529,6 +552,16 @@ def main() -> int:
         help="Saved pw-dump JSON path instead of invoking pw-dump live.",
     )
     p_audit.set_defaults(func=cmd_audit)
+
+    p_tts_broadcast = sub.add_parser(
+        "tts-broadcast-check",
+        help="Verify hapax-tts-duck forwards through hapax-tts-broadcast-* to livestream tap.",
+    )
+    p_tts_broadcast.add_argument(
+        "--dump-file",
+        help="Saved pw-dump JSON path instead of invoking pw-dump live.",
+    )
+    p_tts_broadcast.set_defaults(func=cmd_tts_broadcast_check)
 
     p_watchdog = sub.add_parser(
         "watchdog",

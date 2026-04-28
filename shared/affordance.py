@@ -21,8 +21,8 @@ MonetizationRisk = Literal["none", "low", "medium", "high"]
 #
 #   tier_0_owned             — operator-owned, generated, hardware-captured
 #                              (oudepode catalog, wgpu shaders, studio cameras)
-#   tier_1_platform_cleared  — Epidemic, Storyblocks, Streambeats, YT Audio
-#                              Library — channel-whitelisted at the platform
+#   tier_1_platform_cleared  — Storyblocks, Streambeats, YT Audio Library —
+#                              channel-whitelisted at the platform
 #   tier_2_provenance_known  — verified CC0 (Freesound hand-checked),
 #                              Internet Archive raw PD uploads
 #   tier_3_uncertain         — direct Bandcamp permission per release,
@@ -33,8 +33,8 @@ MonetizationRisk = Literal["none", "low", "medium", "high"]
 #
 # Default is `tier_0_owned` — most existing capabilities (cameras, generated
 # visuals, daimonion voice) qualify. Only capabilities that pull EXTERNAL
-# content into broadcast (SC adapter, Epidemic adapter, future YouTube
-# embed ward) need explicit re-tagging at higher tiers.
+# content into broadcast (SC adapter, future YouTube embed ward) need
+# explicit re-tagging at higher tiers.
 #
 # Gate semantics in `shared/governance/content_risk.py`:
 #   tier_4 → unconditional block

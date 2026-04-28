@@ -47,6 +47,7 @@ REFUSAL_DORMANCY_DAYS = 7
 """§2.8: zero `status: refused` in this window is a dormancy signal."""
 
 KNOWN_ROLES: tuple[Role, ...] = ("alpha", "beta", "delta", "epsilon")
+"""Permanent Claude worktree slots. Codex cx-* relay files are discovered dynamically."""
 
 
 # ----- helpers -----

@@ -2,17 +2,17 @@
 # conductor-post.sh — PostToolUse hook: pipe event to conductor UDS
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/agent-role.sh" ]; then
+    # shellcheck source=agent-role.sh
+    . "$SCRIPT_DIR/agent-role.sh"
+fi
+
 INPUT="$(cat)"
 SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 [ -z "$SESSION_ID" ] && exit 0
 
-# Detect role from worktree (robust: compare git toplevel, not CWD substring)
-ROLE="alpha"
-TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-BETA_WORKTREE="$HOME/projects/hapax-council--beta"
-if [ "$TOPLEVEL" = "$BETA_WORKTREE" ]; then
-    ROLE="beta"
-fi
+ROLE="$(hapax_agent_role_or_default alpha)"
 
 SOCK="/run/user/$(id -u)/conductor-${ROLE}.sock"
 [ -S "$SOCK" ] || exit 0

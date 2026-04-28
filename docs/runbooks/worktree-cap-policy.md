@@ -8,35 +8,42 @@
 
 ---
 
-## 1. Policy — the cap is four
+## 1. Policy — the transition cap is eight
 
-The workspace runs a **maximum of four session worktrees**. The
-four slots are:
+The workspace runs a Claude+Codex transition cap of **eight visible
+session worktrees**. This is deliberately higher than the old
+Claude-centric cap so Codex can become first-class without being forced
+through legacy Greek worktree paths.
 
-| Slot | Path convention | Permanence | Role |
+| Interface / slot | Path convention | Permanence | Role |
 |------|-----------------|------------|------|
-| alpha | `hapax-council/` (top-level) | permanent | primary workstation-resident session |
-| beta | `hapax-council--beta/` | permanent | secondary, livestream perf support |
-| delta | `hapax-council--delta/` or `hapax-council--delta-*/` | permanent | tertiary, first-class since 2026-04-12 |
-| spontaneous | `hapax-council--<slug>/` | temporary | ONE short-lived worktree for a specific task |
+| primary | `hapax-council/` (top-level) | permanent | integrator / primary workstation-resident session |
+| Claude legacy | `hapax-council--beta/`, `--delta*`, `--epsilon*`, `--main-red` | transition-permanent | existing Claude Code lanes |
+| Codex | `hapax-council--cx-<color>/` | session-owned | first-class Codex lanes |
+| spontaneous | `hapax-council--<slug>/` | temporary | ONE short-lived non-session worktree for a specific task |
 
 **Hard rules:**
 
-- At most one spontaneous worktree exists at any time.
+- At most one spontaneous non-session worktree exists at any time.
+- Codex sessions must not default into Claude legacy paths. Greek slot
+  names are coordination lanes; Codex worktree names are `cx-*`.
 - The spontaneous slot must be cleaned up (merged / PR'd / removed)
   before a second spontaneous worktree can be created.
 - Infrastructure worktrees under `~/.cache/` (e.g.
   `~/.cache/hapax/rebuild/worktree` managed by
   `scripts/rebuild-logos.sh` via `flock`) are NOT counted against
   the cap. They are disposable and recreated on demand.
-- Gamma and epsilon are reserved session names (see
-  `scripts/hapax-whoami-audit.sh`) but do not currently claim
-  permanent worktree slots. An epic that activates either name
-  must amend this table and adjust the cap.
+- Agent scratch worktrees under `.claude/worktrees/` and
+  `.codex/worktrees/` are also NOT
+  counted against the cap. They are tool-owned scratch infrastructure,
+  not operator-visible Hapax session slots.
+- Gamma is a reserved session name (see `scripts/hapax-whoami-audit.sh`)
+  but does not currently claim a permanent worktree slot. An epic that
+  activates it must amend this table and adjust the cap.
 
 **The cap exists because:**
 
-- More than four concurrent worktrees produces cross-session stomp
+- More than five concurrent worktrees produces cross-session stomp
   (one agent'''s rebase breaks another'''s dev server).
 - The rebuild-logos.sh auto-detach pattern (feedback
   `feedback_rebuild_logos_worktree_detach`) requires knowing which
@@ -57,8 +64,8 @@ Three surfaces enforce the cap:
    unknown worktree is present.
 2. **`hooks/scripts/no-stale-branches.sh`** — PreToolUse hook on
    Bash. Blocks `git worktree add` when the session worktree count
-   is already at the cap. Uses the same `/.cache/` filter as the
-   audit tool so the numbers match.
+   is already at the cap. Uses the same infrastructure filters as
+   the audit tool so the numbers match.
 3. **Operator discretion** — the operator reviews
    `worktree-cap-audit.sh` output before approving a spontaneous
    worktree request.
@@ -73,9 +80,13 @@ MUST agree on the count.
 Given a worktree path, classify via:
 
     path starts with ~/.cache/         -> INFRASTRUCTURE (not counted)
+    path contains .claude/worktrees/   -> INFRASTRUCTURE (not counted)
+    path contains .codex/worktrees/    -> INFRASTRUCTURE (not counted)
     path == .../hapax-council          -> PRIMARY (alpha)
     path == .../hapax-council--beta*   -> SECONDARY permanent (beta)
     path == .../hapax-council--delta*  -> SECONDARY permanent (delta)
+    path == .../hapax-council--epsilon* -> SECONDARY permanent (epsilon)
+    path == .../hapax-council--cx-*    -> CODEX first-class
     path matches .../hapax-council--*  -> SPONTANEOUS
     anything else                      -> UNKNOWN (likely leak; investigate)
 
@@ -147,9 +158,9 @@ with the regular branch-delete flag (only for MERGED branches).
 
 A "leaked" worktree is any entry in the worktree list that:
 
-- Is not one of alpha / beta / delta / the current spontaneous
-  slot.
-- Is not under `~/.cache/`.
+- Is not one of the primary, legacy Claude, Codex `cx-*`, or current
+  spontaneous slots.
+- Is not under `~/.cache/`, `.claude/worktrees/`, or `.codex/worktrees/`.
 - Has a path that no longer exists on disk (git'''s internal
   registry is stale).
 

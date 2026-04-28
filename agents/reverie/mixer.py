@@ -146,6 +146,7 @@ class ReverieMixer:
                     result.denied_by,
                     result.axiom_ids,
                 )
+            self._visual_chain.write_state()
             write_uniforms(
                 None,
                 ctx.stimmung_raw,

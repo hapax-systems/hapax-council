@@ -2,19 +2,19 @@
 # conductor-stop.sh — Stop hook: shutdown conductor sidecar
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/agent-role.sh" ]; then
+    # shellcheck source=agent-role.sh
+    . "$SCRIPT_DIR/agent-role.sh"
+fi
+
 INPUT="$(cat)"
 SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 [ -z "$SESSION_ID" ] && exit 0
 
 COUNCIL_DIR="$HOME/projects/hapax-council"
 
-# Detect role from worktree (robust: compare git toplevel, not CWD substring)
-ROLE="alpha"
-TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-BETA_WORKTREE="$HOME/projects/hapax-council--beta"
-if [ "$TOPLEVEL" = "$BETA_WORKTREE" ]; then
-    ROLE="beta"
-fi
+ROLE="$(hapax_agent_role_or_default alpha)"
 
 cd "$COUNCIL_DIR" && uv run python -m agents.session_conductor --role "$ROLE" stop \
     2>/dev/null || true

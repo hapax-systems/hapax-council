@@ -2,8 +2,8 @@
 # cc-claim <task_id>
 #
 # Claim a vault cc-task for the current session. Atomic: rewrites the
-# task note frontmatter (status: offered → claimed; assigned_to:
-# unassigned → $CLAUDE_ROLE; claimed_at: now), then writes the
+# task note frontmatter (status: offered -> claimed; assigned_to:
+# unassigned -> $HAPAX_AGENT_ROLE/$CODEX_ROLE/$CLAUDE_ROLE; claimed_at: now), then writes the
 # session's claim file at ~/.cache/hapax/cc-active-task-{role}.
 #
 # After this, the next file-mutating tool call passes through the
@@ -17,15 +17,25 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
+if [[ -f "$ROLE_HELPER" ]]; then
+  # shellcheck source=../hooks/scripts/agent-role.sh
+  . "$ROLE_HELPER"
+fi
+
 if [[ $# -lt 1 ]]; then
   echo "usage: cc-claim <task_id>" >&2
   exit 1
 fi
 
 task_id="$1"
-role="${CLAUDE_ROLE:-}"
+role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
+if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
+  role="$(hapax_agent_role 2>/dev/null || true)"
+fi
 if [[ -z "$role" ]]; then
-  echo "cc-claim: CLAUDE_ROLE env var not set" >&2
+  echo "cc-claim: cannot determine role; set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE" >&2
   exit 1
 fi
 

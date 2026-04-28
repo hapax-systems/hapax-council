@@ -5,7 +5,7 @@ All I/O mocked: Langfuse, Tavily HTTP, filesystem, LLM calls.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 
@@ -22,7 +22,13 @@ from agents.scout import (
     search_component,
     send_notification,
 )
-from shared.tavily_client import TavilyResult
+from shared.tavily_client import (
+    TavilyConfigError,
+    TavilyPolicyViolation,
+    TavilyRequestError,
+    TavilySearchResponse,
+    TavilySearchResult,
+)
 
 # ── Registry tests ──────────────────────────────────────────────────────────
 
@@ -122,62 +128,76 @@ def test_load_registry_handles_missing_fields(mock_file):
 # ── Tavily search tests ─────────────────────────────────────────────────────
 
 
-class _FakeTavilyClient:
-    def __init__(self, result: TavilyResult):
-        self.result = result
-        self.calls: list[dict] = []
-
-    def search(self, query: str, **kwargs):
-        self.calls.append({"query": query, **kwargs})
-        return self.result
-
-
-def test_tavily_search_returns_results():
-    client = _FakeTavilyClient(
-        TavilyResult(
-            operation="search",
-            status="ok",
-            results=[
-                {
-                    "title": "Qdrant vs Milvus",
-                    "url": "https://example.com",
-                    "content": "Comparison...",
-                },
-                {
-                    "title": "Vector DB Benchmark",
-                    "url": "https://bench.io",
-                    "content": "Results...",
-                },
-            ],
-        )
+@patch("agents.scout.TavilyClient")
+def test_tavily_search_returns_results(mock_client_cls):
+    mock_client = MagicMock()
+    mock_client.search.return_value = TavilySearchResponse(
+        query="qdrant alternatives",
+        results=[
+            TavilySearchResult(
+                title="Qdrant vs Milvus",
+                url="https://example.com",
+                content="Comparison...",
+            ),
+            TavilySearchResult(
+                title="Vector DB Benchmark",
+                url="https://bench.io",
+                content="Results...",
+            ),
+        ],
     )
+    mock_client_cls.return_value = mock_client
 
-    results = _tavily_search("qdrant alternatives", max_results=5, client=client)
-
+    results = _tavily_search("qdrant alternatives", max_results=5)
     assert len(results) == 2
     assert results[0]["title"] == "Qdrant vs Milvus"
     assert results[0]["url"] == "https://example.com"
-    assert client.calls[0]["caller"] == "agents.scout"
+    request = mock_client.search.call_args.args[0]
+    assert request.lane == "scout_horizon"
+    assert request.max_results == 5
 
 
-def test_tavily_search_no_api_key():
-    """Should return empty list when shared client reports no key."""
-    client = _FakeTavilyClient(TavilyResult(operation="search", status="no_key"))
-    results = _tavily_search("query", client=client)
+@patch("agents.scout.TavilyClient")
+def test_tavily_search_no_api_key(mock_client_cls):
+    """Should return empty list when no API key set."""
+    mock_client = MagicMock()
+    mock_client.search.side_effect = TavilyConfigError("missing key")
+    mock_client_cls.return_value = mock_client
+
+    results = _tavily_search("query")
     assert results == []
 
 
-def test_tavily_search_handles_error():
-    client = _FakeTavilyClient(TavilyResult(operation="search", status="error"))
-    results = _tavily_search("query", client=client)
+@patch("agents.scout.TavilyClient")
+def test_tavily_search_handles_error(mock_client_cls):
+    mock_client = MagicMock()
+    mock_client.search.side_effect = TavilyRequestError("Connection refused")
+    mock_client_cls.return_value = mock_client
+
+    results = _tavily_search("query")
     assert results == []
+
+
+@patch("agents.scout.TavilyClient")
+def test_tavily_search_error_log_redacts_query(mock_client_cls, caplog):
+    raw_query = "from: private@example.com internal only"
+    mock_client = MagicMock()
+    mock_client.search.side_effect = TavilyPolicyViolation("query rejected")
+    mock_client_cls.return_value = mock_client
+
+    results = _tavily_search(raw_query)
+
+    assert results == []
+    assert raw_query not in caplog.text
+    assert "query_hash=" in caplog.text
 
 
 # ── search_component tests ──────────────────────────────────────────────────
 
 
+@patch("agents.scout.time.sleep")  # Don't actually sleep
 @patch("agents.scout._tavily_search")
-def test_search_component_aggregates_results(mock_search):
+def test_search_component_aggregates_results(mock_search, mock_sleep):
     spec = ComponentSpec(
         key="test",
         role="test",
@@ -198,8 +218,9 @@ def test_search_component_aggregates_results(mock_search):
     assert mock_search.call_count == 2
 
 
+@patch("agents.scout.time.sleep")
 @patch("agents.scout._tavily_search")
-def test_search_component_deduplicates_by_url(mock_search):
+def test_search_component_deduplicates_by_url(mock_search, mock_sleep):
     spec = ComponentSpec(
         key="test",
         role="test",
@@ -218,8 +239,9 @@ def test_search_component_deduplicates_by_url(mock_search):
     assert text.count("### Same") == 1
 
 
+@patch("agents.scout.time.sleep")
 @patch("agents.scout._tavily_search")
-def test_search_component_no_results(mock_search):
+def test_search_component_no_results(mock_search, mock_sleep):
     spec = ComponentSpec(
         key="test",
         role="test",

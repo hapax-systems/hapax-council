@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -98,6 +99,17 @@ def _record(endpoint: str, status: int) -> None:
         pass
 
 
+def _read_text_and_mtime(path: Path) -> tuple[str, float] | None:
+    """Read file content and mtime from the same open file descriptor."""
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            raw = fh.read()
+            mtime = os.fstat(fh.fileno()).st_mtime
+    except OSError:
+        return None
+    return raw, mtime
+
+
 def _read_state(path: Path | None = None) -> tuple[AwarenessState | None, bool]:
     """Return ``(state, stale)``.
 
@@ -113,15 +125,16 @@ def _read_state(path: Path | None = None) -> tuple[AwarenessState | None, bool]:
     can treat both as "dim").
     """
     p = path if path is not None else DEFAULT_STATE_PATH
-    if not p.exists():
+    snapshot = _read_text_and_mtime(p)
+    if snapshot is None:
         return None, True
+    raw, mtime = snapshot
     try:
-        raw = p.read_text(encoding="utf-8")
         state = AwarenessState.model_validate_json(raw)
     except Exception:
         log.warning("awareness state unreadable at %s", p, exc_info=True)
         return None, True
-    age_s = time.time() - p.stat().st_mtime
+    age_s = time.time() - mtime
     return state, age_s > state.ttl_seconds
 
 
@@ -299,15 +312,16 @@ async def _awareness_sse_generator(
         iters += 1
         now = time.time()
 
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
+        snapshot = _read_text_and_mtime(path)
+        if snapshot is None:
             mtime = None
+            raw = ""
+        else:
+            raw, mtime = snapshot
 
         if mtime is not None and mtime != last_mtime:
             last_mtime = mtime
             try:
-                raw = path.read_text(encoding="utf-8")
                 state = AwarenessState.model_validate_json(raw)
             except Exception:
                 log.warning("awareness SSE: state unreadable", exc_info=True)

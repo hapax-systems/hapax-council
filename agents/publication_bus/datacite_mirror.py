@@ -31,6 +31,8 @@ from typing import Any
 
 from prometheus_client import Counter
 
+from shared.orcid import operator_orcid
+
 try:
     import requests
 except ImportError:  # pragma: no cover
@@ -191,16 +193,14 @@ def _citation_count(work: dict[str, Any]) -> int:
 def main() -> int:
     """Entry for ``python -m agents.publication_bus.datacite_mirror``.
 
-    Reads the operator's ORCID iD from the ``HAPAX_OPERATOR_ORCID`` env
-    var; emits a refusal-brief event if not configured (operator-action
-    queue still pending) and exits 0 (daemon-friendly no-op).
+    Reads the operator's ORCID iD from ``pass show orcid/orcid`` via
+    ``shared.orcid.operator_orcid`` and exits 0 when unavailable
+    (daemon-friendly no-op).
     """
-    import os
-
     logging.basicConfig(level=logging.INFO)
-    orcid = os.environ.get("HAPAX_OPERATOR_ORCID")
+    orcid = operator_orcid()
     if not orcid:
-        log.info("HAPAX_OPERATOR_ORCID not set; datacite mirror skipping this tick")
+        log.info("operator ORCID unavailable; datacite mirror skipping this tick")
         datacite_mirror_works_total.labels(orcid="unset", outcome="no-orcid-configured").inc()
         return 0
     path = mirror_works(orcid_id=orcid)

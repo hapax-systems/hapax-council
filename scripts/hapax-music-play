@@ -5,6 +5,7 @@ Usage:
   hapax-music-play <n>                 # play candidate N from music-candidates.json
   hapax-music-play --path <track>      # play a specific track path / URL
   hapax-music-play --path X --title T --artist A --source S
+  hapax-music-play --stop              # stop continuous music until another selection
 
 Writes ``/dev/shm/hapax-compositor/music-selection.json`` which the
 ``hapax-music-player`` daemon watches.
@@ -64,6 +65,7 @@ def main() -> int:
     )
     p.add_argument("n", nargs="?", type=int, help="Candidate number from music-candidates.json")
     p.add_argument("--path", help="Track path or URL (overrides candidate lookup)")
+    p.add_argument("--stop", action="store_true", help="Stop playback and latch silence")
     p.add_argument("--title", default=None)
     p.add_argument("--artist", default=None)
     p.add_argument("--source", default=None)
@@ -80,6 +82,14 @@ def main() -> int:
         help="Override selection JSON path (tests only).",
     )
     args = p.parse_args()
+
+    if args.stop:
+        args.selection.parent.mkdir(parents=True, exist_ok=True)
+        tmp = args.selection.with_suffix(args.selection.suffix + ".tmp")
+        tmp.write_text(json.dumps({"stop": True}), encoding="utf-8")
+        tmp.replace(args.selection)
+        print(f"stop selection written -> {args.selection}")
+        return 0
 
     if args.path:
         track_path = args.path

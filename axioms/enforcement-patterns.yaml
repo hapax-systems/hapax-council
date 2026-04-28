@@ -71,6 +71,47 @@ patterns:
       Previous pattern matched "multi-user" in axiom descriptions. Now
       requires an action verb prefix (add/implement/enable/support).
 
+  # ── corporate_boundary: employer data must not enter Hapax surfaces ─
+  - id: out-cb-employer-data-001
+    axiom_id: corporate_boundary
+    implication_id: cb-officium-data-boundary
+    tier: T0
+    regex: '\b(?:ingest|mirror|sync|import|scrape|export|index)\s+(?:employer|work|corporate|company)\s+(?:email|calendar|slack|teams|jira|github|drive|docs?|data)\b'
+    description: Employer/corporate data movement into Hapax surfaces
+    false_positive_notes: >
+      Architecture documents may mention this as a forbidden pattern. Runtime
+      agent outputs should not recommend moving employer data into Hapax.
+
+  - id: out-cb-officium-bridge-001
+    axiom_id: corporate_boundary
+    implication_id: cb-officium-data-boundary
+    tier: T0
+    regex: '\b(?:bridge|pipe|copy|forward|replicate)\s+(?:officium|employer|corporate|work)\s+(?:data|messages?|documents?|events?)\s+(?:into|to)\s+(?:hapax|personal|home)\b'
+    description: Cross-boundary bridge from employer systems into Hapax
+    false_positive_notes: >
+      May match refusal briefs documenting why this must not be built.
+
+  # ── interpersonal_transparency: no persistent state about non-operators ─
+  - id: out-it-nonoperator-state-001
+    axiom_id: interpersonal_transparency
+    implication_id: it-consent-state-001
+    tier: T0
+    regex: '\b(?:track|profile|identify|remember|store)\s+(?:non[- ]operator|third[- ]party|household member|visitor|guest|roommate|coworker)\s+(?:faces?|voices?|names?|patterns?|behavior|presence|identity)\b'
+    description: Persistent state about non-operator persons without consent
+    false_positive_notes: >
+      Safe if the text is explicitly an incident/refusal description, not an
+      instruction or recommendation to create the state.
+
+  - id: out-it-public-pii-001
+    axiom_id: interpersonal_transparency
+    implication_id: it-irreversible-broadcast
+    tier: T0
+    regex: '\b(?:publish|broadcast|stream|post)\s+(?:raw\s+)?(?:chat|email|transcript|camera|microphone|face|voice)\s+(?:names?|messages?|bodies|content|frames?|audio)\b'
+    description: Public surfacing of non-operator-identifying raw content
+    false_positive_notes: >
+      May match postmortems or refusal briefs; generated operational outputs
+      should instead point at anonymised summaries.
+
   # ── executive_function: prose quality (T1 review) ──────────────────
   - id: out-ex-prose-001
     axiom_id: executive_function
