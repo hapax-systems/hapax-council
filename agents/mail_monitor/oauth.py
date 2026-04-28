@@ -13,8 +13,9 @@ Implements cc-task ``mail-monitor-002-oauth-bootstrap``.
        pass insert mail-monitor/google-client-secret
 
 3. Operator runs ``python -m agents.mail_monitor.oauth --first-consent``
-   once. A browser window opens at the Google consent screen. The
-   operator approves the ``gmail.modify`` scope. The refresh token that
+   once. The CLI prints a Google consent URL. The operator opens that
+   URL, approves the requested Gmail scopes, and Google redirects back
+   to the CLI's temporary localhost callback. The refresh token that
    Google returns is persisted to ``pass mail-monitor/google-refresh-token``.
 
 After bootstrap, every daemon process loads the refresh token from
@@ -48,12 +49,20 @@ bootstrapped yet" and "operator revoked".
 
 ## Scope discipline
 
-The OAuth scope requested is *exactly*
-``https://www.googleapis.com/auth/gmail.modify``. We deliberately do
-not include ``gmail.readonly`` (insufficient — filters require
-modify) or ``https://mail.google.com/`` (over-broad — full mail
-access is not needed). See spec §1, §5 for the layered privacy
-mechanism that compensates for ``gmail.modify`` being mailbox-wide.
+The OAuth scopes requested are the minimum observed Gmail API surface
+for the shipped daemon:
+
+- ``https://www.googleapis.com/auth/gmail.modify`` — label creation,
+  ``users.watch()``, history reads, and message label modifications.
+- ``https://www.googleapis.com/auth/gmail.settings.basic`` —
+  server-side filter creation. Live bootstrap with ``gmail.modify``
+  alone receives Gmail API ``403 insufficientPermissions`` from
+  ``users.settings.filters.create``.
+
+We deliberately do not include ``gmail.readonly`` (insufficient) or
+``https://mail.google.com/`` (over-broad — full mail access is not
+needed). See spec §1, §5 for the layered privacy mechanism that
+compensates for Gmail scopes being mailbox-wide.
 """
 
 from __future__ import annotations
@@ -73,7 +82,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
-SCOPES: list[str] = [GMAIL_MODIFY_SCOPE]
+GMAIL_SETTINGS_BASIC_SCOPE = "https://www.googleapis.com/auth/gmail.settings.basic"
+SCOPES: list[str] = [GMAIL_MODIFY_SCOPE, GMAIL_SETTINGS_BASIC_SCOPE]
 
 CLIENT_ID_PASS_KEY = "mail-monitor/google-client-id"
 CLIENT_SECRET_PASS_KEY = "mail-monitor/google-client-secret"
@@ -174,10 +184,16 @@ def _client_config() -> dict[str, dict[str, Any]] | None:
     }
 
 
-def run_first_consent(*, port: int = 0) -> bool:
+def run_first_consent(*, port: int = 0, open_browser: bool = False) -> bool:
     """Run the InstalledAppFlow consent screen and persist the refresh token.
 
-    Opens the operator's default browser at the Google consent URL.
+    Prints the Google consent URL by default instead of invoking the
+    desktop browser through Python's ``webbrowser`` module. On this
+    workstation, ``BROWSER=google-chrome-stable`` maps to a blocking
+    GenericBrowser launcher, so manual URL opening is the robust path.
+    Pass ``open_browser=True`` only when the local browser command is
+    known to return immediately.
+
     On approval, the access token + refresh token are returned by
     ``run_local_server``; the refresh token is the only durable
     artifact we persist. Access tokens are minted fresh per
@@ -210,7 +226,11 @@ def run_first_consent(*, port: int = 0) -> bool:
     # ``prompt="consent"`` forces a fresh consent screen so Google
     # always returns a refresh token, even when the operator has
     # consented to this client before.
-    creds = flow.run_local_server(port=port, prompt="consent")
+    creds = flow.run_local_server(
+        port=port,
+        prompt="consent",
+        open_browser=open_browser,
+    )
 
     refresh_token = getattr(creds, "refresh_token", None)
     if not refresh_token:
@@ -359,6 +379,15 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="Local consent-callback port (0 = pick free).",
     )
+    parser.add_argument(
+        "--open-browser",
+        action="store_true",
+        help=(
+            "Ask google-auth-oauthlib to open the consent URL. Default "
+            "prints the URL only to avoid blocking on this workstation's "
+            "browser launcher."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -367,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.first_consent:
-        return 0 if run_first_consent(port=args.port) else 1
+        return 0 if run_first_consent(port=args.port, open_browser=args.open_browser) else 1
 
     creds = load_credentials()
     if creds is None:

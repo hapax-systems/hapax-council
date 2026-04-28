@@ -146,7 +146,31 @@ def test_run_first_consent_writes_refresh_token_to_pass() -> None:
     insert_mock.assert_called_once_with(oauth.REFRESH_TOKEN_PASS_KEY, "r-token-XYZ")
     fake_module.InstalledAppFlow.from_client_config.assert_called_once()
     _, scopes_arg = fake_module.InstalledAppFlow.from_client_config.call_args[0]
-    assert scopes_arg == [oauth.GMAIL_MODIFY_SCOPE]
+    assert scopes_arg == [oauth.GMAIL_MODIFY_SCOPE, oauth.GMAIL_SETTINGS_BASIC_SCOPE]
+    flow.run_local_server.assert_called_once_with(
+        port=0,
+        prompt="consent",
+        open_browser=False,
+    )
+
+
+def test_run_first_consent_can_open_browser_when_requested() -> None:
+    flow = _flow_double(refresh_token="r-token-XYZ")
+    fake_module = mock.Mock()
+    fake_module.InstalledAppFlow.from_client_config = mock.Mock(return_value=flow)
+
+    with (
+        mock.patch.object(oauth, "_client_config", return_value={"installed": {}}),
+        mock.patch.dict("sys.modules", {"google_auth_oauthlib.flow": fake_module}),
+        mock.patch.object(oauth, "_pass_insert", return_value=True),
+    ):
+        assert oauth.run_first_consent(port=8765, open_browser=True) is True
+
+    flow.run_local_server.assert_called_once_with(
+        port=8765,
+        prompt="consent",
+        open_browser=True,
+    )
 
 
 def test_run_first_consent_aborts_when_client_creds_missing() -> None:
@@ -272,8 +296,11 @@ def test_load_credentials_transport_error_marks_transport() -> None:
 # ── scope discipline ─────────────────────────────────────────────────
 
 
-def test_scope_is_exactly_gmail_modify() -> None:
-    assert oauth.SCOPES == ["https://www.googleapis.com/auth/gmail.modify"]
+def test_scope_is_minimal_gmail_pair() -> None:
+    assert oauth.SCOPES == [
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.settings.basic",
+    ]
 
 
 def test_pass_keys_match_cc_task_spec() -> None:
@@ -289,7 +316,14 @@ def test_main_first_consent_returns_zero_on_success() -> None:
     with mock.patch.object(oauth, "run_first_consent", return_value=True) as run_mock:
         rc = oauth.main(["--first-consent"])
     assert rc == 0
-    run_mock.assert_called_once_with(port=0)
+    run_mock.assert_called_once_with(port=0, open_browser=False)
+
+
+def test_main_first_consent_can_request_browser_open() -> None:
+    with mock.patch.object(oauth, "run_first_consent", return_value=True) as run_mock:
+        rc = oauth.main(["--first-consent", "--open-browser", "--port", "8765"])
+    assert rc == 0
+    run_mock.assert_called_once_with(port=8765, open_browser=True)
 
 
 def test_main_first_consent_returns_one_on_failure() -> None:

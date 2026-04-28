@@ -27,12 +27,12 @@
 
 ### Privacy substrate (most load-bearing refusal)
 
-The OAuth scope `gmail.modify` does not natively scope-restrict to
-labels. The Gmail API permits the daemon to read **any** message in
-the operator's mailbox via the granted token. The constitutional
-discipline is the **sole** guarantee that operator's non-Hapax mail
-(personal correspondence, family, medical, financial, etc.) stays
-unread.
+The OAuth scopes `gmail.modify` and `gmail.settings.basic` do not
+natively scope-restrict to labels. The Gmail API permits the daemon to
+read **any** message in the operator's mailbox via the granted token.
+The constitutional discipline is the **sole** guarantee that operator's
+non-Hapax mail (personal correspondence, family, medical, financial,
+etc.) stays unread.
 
 Per `interpersonal_transparency` axiom (weight 88): no persistent
 state about non-operator persons without active consent contract.
