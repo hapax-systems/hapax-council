@@ -26,6 +26,8 @@ jobs:
       !contains(github.event.head_commit.message || '', '[auto-fix]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      REVIEW_APP_CONFIGURED: ${{ secrets.REVIEW_APP_ID != '' && secrets.REVIEW_APP_KEY != '' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -59,7 +61,7 @@ jobs:
             Use APPROVE if there are no HIGH findings. Use REQUEST_CHANGES only for HIGH findings.
 
       - name: Generate app token
-        if: always() && steps.claude.outcome == 'success' && secrets.REVIEW_APP_ID != ''
+        if: always() && steps.claude.outcome == 'success' && env.REVIEW_APP_CONFIGURED == 'true'
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
@@ -67,7 +69,7 @@ jobs:
           private-key: ${{ secrets.REVIEW_APP_KEY }}
 
       - name: Submit review verdict
-        if: always() && steps.claude.outcome == 'success' && secrets.REVIEW_APP_ID != ''
+        if: always() && steps.claude.outcome == 'success' && env.REVIEW_APP_CONFIGURED == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |

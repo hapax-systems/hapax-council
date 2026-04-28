@@ -71,7 +71,9 @@ def test_playwright_mcp_uses_noninteractive_wrapper(tmp_path: Path) -> None:
     wrapper = PLAYWRIGHT_WRAPPER.read_text()
 
     assert config["mcp_servers"]["playwright"] == {"command": str(PLAYWRIGHT_WRAPPER)}
-    assert 'mcp_servers.playwright.command=\\"$COUNCIL_DIR/scripts/hapax-playwright-mcp\\"' in launcher
+    assert (
+        'mcp_servers.playwright.command=\\"$COUNCIL_DIR/scripts/hapax-playwright-mcp\\"' in launcher
+    )
     assert "NPM_CONFIG_YES=true" in wrapper
     assert 'npx -y "$PACKAGE"' in wrapper
 
