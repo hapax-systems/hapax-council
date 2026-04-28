@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/research-vehicle-public-event.schema.json",
+  "title": "ResearchVehiclePublicEvent",
+  "description": "Schema seed for a policy-aware event consumed by livestream public apertures.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "occurred_at",
+    "broadcast_id",
+    "programme_id",
+    "condition_id",
+    "source",
+    "salience",
+    "state_kind",
+    "rights_class",
+    "privacy_class",
+    "provenance",
+    "public_url",
+    "frame_ref",
+    "chapter_ref",
+    "attribution_refs",
+    "surface_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version for public events."
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$",
+      "description": "Stable idempotency key for the public event."
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "broadcast.boundary",
+        "programme.boundary",
+        "condition.changed",
+        "chronicle.high_salience",
+        "aesthetic.frame_capture",
+        "caption.segment",
+        "cuepoint.candidate",
+        "chapter.marker",
+        "shorts.candidate",
+        "shorts.upload",
+        "metadata.update",
+        "channel_section.candidate",
+        "arena_block.candidate",
+        "omg.statuslog",
+        "omg.weblog",
+        "publication.artifact",
+        "archive.segment",
+        "monetization.review",
+        "fanout.decision"
+      ],
+      "description": "Typed class consumed by public aperture adapters."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp for the source event, not publication time."
+    },
+    "broadcast_id": {
+      "type": ["string", "null"],
+      "description": "Broadcast, video, stream, or session id when available."
+    },
+    "programme_id": {
+      "type": ["string", "null"],
+      "description": "Programme arc id when applicable."
+    },
+    "condition_id": {
+      "type": ["string", "null"],
+      "description": "Research condition or objective id when applicable."
+    },
+    "source": {
+      "type": "object",
+      "required": ["producer", "substrate_id", "task_anchor", "evidence_ref", "freshness_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "producer": {"type": "string", "minLength": 1},
+        "substrate_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "ContentSubstrate row that produced or owns the event."
+        },
+        "task_anchor": {"type": ["string", "null"]},
+        "evidence_ref": {"type": "string", "minLength": 1},
+        "freshness_ref": {"type": ["string", "null"]}
+      },
+      "description": "Grounding producer and freshness reference."
+    },
+    "salience": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Normalized event salience used by public aperture filters."
+    },
+    "state_kind": {
+      "type": "string",
+      "enum": [
+        "live_state",
+        "programme_state",
+        "research_observation",
+        "aesthetic_frame",
+        "caption_text",
+        "cuepoint",
+        "chapter",
+        "short_form",
+        "public_post",
+        "archive_artifact",
+        "attribution",
+        "monetization_state",
+        "health_state"
+      ],
+      "description": "Stable semantic class for rates, policies, replay, and publication contracts."
+    },
+    "rights_class": {
+      "type": "string",
+      "enum": [
+        "operator_original",
+        "operator_controlled",
+        "third_party_attributed",
+        "third_party_uncleared",
+        "platform_embedded",
+        "unknown"
+      ],
+      "description": "Rights posture required before public or monetized claims."
+    },
+    "privacy_class": {
+      "type": "string",
+      "enum": [
+        "operator_private",
+        "consent_required",
+        "aggregate_only",
+        "public_safe",
+        "unknown"
+      ],
+      "description": "Privacy posture for event content."
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["token", "generated_at", "producer", "evidence_refs", "rights_basis", "citation_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "token": {"type": ["string", "null"]},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "producer": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "rights_basis": {"type": "string", "minLength": 1},
+        "citation_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "description": "Provenance, evidence, and citation data for public claims."
+    },
+    "public_url": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "description": "Canonical public URL after publication, if any."
+    },
+    "frame_ref": {
+      "type": ["object", "null"],
+      "required": ["kind", "uri", "captured_at", "source_event_id"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"type": "string", "enum": ["frame", "clip", "thumbnail", "image"]},
+        "uri": {"type": "string", "minLength": 1},
+        "captured_at": {"type": "string", "format": "date-time"},
+        "source_event_id": {"type": "string", "minLength": 1}
+      },
+      "description": "Frame, clip, or image reference for visual apertures."
+    },
+    "chapter_ref": {
+      "type": ["object", "null"],
+      "required": ["kind", "label", "timecode", "source_event_id"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"type": "string", "enum": ["programme_boundary", "chapter", "cuepoint"]},
+        "label": {"type": "string", "minLength": 1},
+        "timecode": {
+          "type": "string",
+          "pattern": "^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$"
+        },
+        "source_event_id": {"type": "string", "minLength": 1}
+      },
+      "description": "Chapter or cuepoint reference for replay navigation."
+    },
+    "attribution_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Attribution ids, licenses, asset refs, or citation refs required by the event."
+    },
+    "surface_policy": {
+      "type": "object",
+      "required": [
+        "allowed_surfaces",
+        "denied_surfaces",
+        "claim_live",
+        "claim_archive",
+        "claim_monetizable",
+        "requires_egress_public_claim",
+        "requires_audio_safe",
+        "requires_provenance",
+        "requires_human_review",
+        "rate_limit_key",
+        "redaction_policy",
+        "fallback_action",
+        "dry_run_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "allowed_surfaces": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/surface"},
+          "uniqueItems": true
+        },
+        "denied_surfaces": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/surface"},
+          "uniqueItems": true
+        },
+        "claim_live": {"type": "boolean"},
+        "claim_archive": {"type": "boolean"},
+        "claim_monetizable": {"type": "boolean"},
+        "requires_egress_public_claim": {"type": "boolean"},
+        "requires_audio_safe": {"type": "boolean"},
+        "requires_provenance": {"type": "boolean"},
+        "requires_human_review": {"type": "boolean"},
+        "rate_limit_key": {"type": ["string", "null"]},
+        "redaction_policy": {
+          "type": "string",
+          "enum": ["none", "operator_referent", "aggregate_only", "redact_private", "human_review"]
+        },
+        "fallback_action": {
+          "type": "string",
+          "enum": [
+            "hold",
+            "dry_run",
+            "private_only",
+            "archive_only",
+            "chapter_only",
+            "redact",
+            "operator_review",
+            "deny"
+          ]
+        },
+        "dry_run_reason": {"type": ["string", "null"]}
+      },
+      "description": "Target surface policy and derived claim permissions."
+    }
+  },
+  "$defs": {
+    "surface": {
+      "type": "string",
+      "enum": [
+        "youtube_description",
+        "youtube_cuepoints",
+        "youtube_chapters",
+        "youtube_captions",
+        "youtube_shorts",
+        "youtube_channel_sections",
+        "arena",
+        "omg_statuslog",
+        "omg_weblog",
+        "omg_now",
+        "mastodon",
+        "bluesky",
+        "discord",
+        "archive",
+        "replay",
+        "captions",
+        "cuepoints",
+        "health",
+        "monetization"
+      ]
+    }
+  }
+}
