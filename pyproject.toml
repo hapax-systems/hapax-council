@@ -138,8 +138,8 @@ ci = [
     # faster than pyright on Django/numpy benchmarks; council's
     # pyrightconfig.json already disables 12 reports so the 90% vs 99%
     # typing-spec conformance gap is mostly moot. pyright kept in
-    # [dependency-groups] dev for local IDE use + low-frequency cron
-    # safety net.
+    # [dependency-groups] dev for local IDE use + weekly
+    # .github/workflows/pyright-safety-net.yml coverage.
     "pyrefly>=0.62",
 ]
 studio = [

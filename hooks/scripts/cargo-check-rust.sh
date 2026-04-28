@@ -16,7 +16,8 @@
 #   - Silent on success.
 #   - On failure: prints first 20 error/warning lines to stderr +
 #     a pointer at the full diagnostic command.
-#   - Always exit 0 (advisory mode — CI is the real gate).
+#   - Always exit 0 (advisory mode — the path-gated CI rust-check job
+#     runs the matching crate checks on PR/push).
 #
 # Disable via env var: HAPAX_CARGO_CHECK_HOOK=0
 
@@ -93,7 +94,7 @@ ADVISORY: cargo check failed for crate '$CRATE' after edit to '$EDIT_PATH'.
 $ERR_LINES
 
 Run \`cd hapax-logos && cargo check -p $CRATE\` for the full diagnostic.
-This is a post-edit advisory — CI will run the same check on push.
+This is a post-edit advisory — CI rust-check runs matching crate checks on PR/push.
 EOF
 
 exit 0

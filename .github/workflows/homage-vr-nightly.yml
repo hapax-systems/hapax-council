@@ -1,0 +1,66 @@
+name: HOMAGE visual regression nightly
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homage-vr-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  homage-visual-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install system deps (cairo, gobject, fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libcairo2-dev libgirepository-2.0-dev gobject-introspection \
+            gir1.2-pango-1.0 fonts-dejavu-core
+      - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency)
+        run: |
+          sudo mkdir -p /usr/share/fonts/TTF
+          sudo cp assets/aesthetic-library/fonts/Px437_IBM_VGA_8x16.ttf /usr/share/fonts/TTF/
+          sudo fc-cache -fv /usr/share/fonts
+          fc-cache -fv
+          fc-list | grep -i 'Px437.*IBM VGA 8x16' \
+            || (echo "font install failed (fc-list)" >&2; exit 1)
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Sync uv ci extras
+        run: uv sync --extra ci
+      - name: Run HOMAGE visual-regression suite
+        id: vr
+        continue-on-error: true
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: |
+          uv run pytest tests/studio_compositor/test_visual_regression_homage.py \
+            -q --tb=short
+      - name: Upload diff PNGs on failure
+        if: steps.vr.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: homage-visual-regression-nightly-diffs
+          path: /tmp/homage-visual-regression-diffs/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Report visual-regression outcome
+        env:
+          VR_OUTCOME: ${{ steps.vr.outcome }}
+        run: |
+          echo "visual-regression outcome: $VR_OUTCOME"
+          echo "Nightly cadence is informational because CI font/AA/hinting differs from dev goldens."

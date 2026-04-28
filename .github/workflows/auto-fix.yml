@@ -115,7 +115,7 @@ jobs:
           LOG="/tmp/ci-failure.log"
           CATS=""
           grep -qE '(ruff check|ruff format)'              "$LOG" 2>/dev/null && CATS="${CATS}lint,"
-          grep -qE 'pyright'                                "$LOG" 2>/dev/null && CATS="${CATS}typecheck,"
+          grep -qE '(pyrefly|pyright)'                       "$LOG" 2>/dev/null && CATS="${CATS}typecheck,"
           grep -qE '(FAILED tests/|pytest.*failed|assert)'  "$LOG" 2>/dev/null && CATS="${CATS}test,"
           grep -qE '(pnpm build|tsc.*error|TS[0-9])'       "$LOG" 2>/dev/null && CATS="${CATS}web-build,"
           grep -qE '(yamllint|yaml.*error)'                 "$LOG" 2>/dev/null && CATS="${CATS}yaml-lint,"
@@ -193,7 +193,8 @@ jobs:
             ## Step 4: Verify
             Re-run the same checks that failed to confirm the fix:
             - If lint failed: `uv run ruff check . && uv run ruff format --check .`
-            - If typecheck failed: `uv run pyright`
+            - If PR typecheck failed: `uv run pyrefly check`
+            - If pyright safety-net failed: `uv run pyright`
             - If tests failed: `uv run pytest tests/ -x -q`
             - If web-build failed: find the frontend dir and run its build command
 
