@@ -1,6 +1,6 @@
 """Sierpinski triangle Cairo renderer for the GStreamer pre-FX cairooverlay.
 
-Draws a 2-level Sierpinski triangle with YouTube videos masked into the 3
+Draws a 2-level Sierpinski triangle with local visual-pool frames masked into the 3
 corner regions and a waveform in the center void. Renders BEFORE the GL
 shader chain so glfeedback effects apply to the triangle.
 
@@ -24,44 +24,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import cairo
-
-# Drop #42 SIERP-2: hoist `gi.require_version` + `GdkPixbuf` + `Gdk`
-# imports to module top. Previously these lived inside `_load_frame`,
-# costing ~1 ms/tick via the gi machinery's module-lookup + version
-# check path when YT frames were hot. `gi.require_version` is cheap
-# once the version is bound for the interpreter's lifetime, so the
-# module-level import is effectively free on subsequent calls.
-#
-# Guarded against CI environments that lack the GdkPixbuf/Gdk typelibs.
-# The test runner only exercises the geometry + render-callback paths,
-# never touches `_load_frame` — so missing typelibs in CI are harmless
-# at runtime, but an unguarded `gi.require_version` raises at module
-# import time and blocks the whole test collection. The try/except
-# below keeps `GdkPixbuf = None` in that environment and `_load_frame`
-# short-circuits via `_HAS_GDK` before touching any gi namespace.
-try:
-    import gi
-
-    gi.require_version("GdkPixbuf", "2.0")
-    gi.require_version("Gdk", "4.0")
-    from gi.repository import Gdk, GdkPixbuf  # noqa: E402
-
-    _HAS_GDK = True
-except (ImportError, ValueError):
-    Gdk = None  # type: ignore[assignment]
-    GdkPixbuf = None  # type: ignore[assignment]
-    _HAS_GDK = False
+from agents.visual_pool.repository import LocalVisualPoolSelector
 
 from .cairo_source import CairoSourceRunner
 from .homage.transitional_source import HomageTransitionalSource
+from .image_loader import get_image_loader
 
 if TYPE_CHECKING:
+    import cairo
+
     from agents.studio_compositor.budget import BudgetTracker
 
 log = logging.getLogger(__name__)
 
-YT_FRAME_DIR = Path("/dev/shm/hapax-compositor")
 RENDER_FPS = 10
 
 # Phase 2 of yt-content-reverie-sierpinski-separation (2026-04-21).
@@ -189,6 +164,7 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         self._cached_all_triangles: list[list[tuple[float, float]]] | None = None
         self._cached_corner_rects: list[tuple[float, float, float, float]] | None = None
         self._cached_center_rect: tuple[float, float, float, float] | None = None
+        self._visual_pool_selector = LocalVisualPoolSelector()
 
     def set_active_slot(self, slot_id: int) -> None:
         self._active_slot = slot_id
@@ -553,27 +529,25 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         right_sliver: Polygon = [base_right, rect_tr, rect_br]
         return [apex_sliver, left_sliver, right_sliver]
 
+    def _resolve_frame_path(self, slot_id: int) -> Path | None:
+        """Return the selected local visual-pool frame for ``slot_id``."""
+        asset = self._visual_pool_selector.select(slot_id)
+        if asset is None:
+            return None
+        return asset.path
+
     def _load_frame(self, slot_id: int) -> cairo.ImageSurface | None:
-        """Load a YouTube frame JPEG as a Cairo surface, with mtime caching."""
-        if not _HAS_GDK:
-            # CI path — GdkPixbuf typelib unavailable. Return whatever's
-            # been cached (usually None); the renderer handles None
-            # surfaces by skipping the video draw.
-            return self._frame_surfaces.get(slot_id)
-        path = YT_FRAME_DIR / f"yt-frame-{slot_id}.jpg"
-        if not path.exists():
+        """Load a local visual-pool frame as a Cairo surface, with mtime caching."""
+        path = self._resolve_frame_path(slot_id)
+        if path is None or not path.exists():
             return self._frame_surfaces.get(slot_id)
         try:
             mtime = path.stat().st_mtime
             if mtime == self._frame_mtimes.get(slot_id, 0):
                 return self._frame_surfaces.get(slot_id)
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(path))
-            # Convert to Cairo-compatible ARGB surface
-            w, h = pixbuf.get_width(), pixbuf.get_height()
-            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
-            cr = cairo.Context(surface)
-            Gdk.cairo_set_source_pixbuf(cr, pixbuf, 0, 0)
-            cr.paint()
+            surface = get_image_loader().load(path)
+            if surface is None:
+                return self._frame_surfaces.get(slot_id)
             self._frame_surfaces[slot_id] = surface
             self._frame_mtimes[slot_id] = mtime
             return surface
