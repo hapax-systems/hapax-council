@@ -240,11 +240,39 @@ class UnifiedReactivityBus:
     * Publish is atomic (tmp+rename) so partial writes never reach consumers.
     """
 
-    def __init__(self, *, shm_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        shm_path: Path | None = None,
+        ledger_path: Path | None = None,
+        ledger_durable_dir: Path | None = None,
+        ledger_enabled: bool | None = None,
+        ledger_min_period_s: float | None = None,
+    ) -> None:
         self._sources: dict[str, AudioReactivitySource] = {}
         self._lock = threading.Lock()
         self._shm_path = shm_path or SHM_PATH
         self._last_snapshot: BusSnapshot | None = None
+        if ledger_enabled is None:
+            ledger_enabled = shm_path is None or ledger_path is not None
+        self._ledger_publisher = None
+        if ledger_enabled:
+            from shared.audio_source_evidence import (
+                DEFAULT_DURABLE_DIR,
+                DEFAULT_LEDGER_PATH,
+                DEFAULT_LEDGER_PUBLISH_MIN_PERIOD_S,
+                AudioSourceLedgerPublisher,
+            )
+
+            self._ledger_publisher = AudioSourceLedgerPublisher(
+                ledger_path=ledger_path or DEFAULT_LEDGER_PATH,
+                durable_dir=ledger_durable_dir or DEFAULT_DURABLE_DIR,
+                min_period_s=(
+                    DEFAULT_LEDGER_PUBLISH_MIN_PERIOD_S
+                    if ledger_min_period_s is None
+                    else ledger_min_period_s
+                ),
+            )
 
     # ── registration ────────────────────────────────────────────────────
 
@@ -359,6 +387,10 @@ class UnifiedReactivityBus:
                 raise
         except Exception:
             log.debug("unified-reactivity: publish failed", exc_info=True)
+            return
+
+        if self._ledger_publisher is not None:
+            self._ledger_publisher.maybe_publish(snapshot)
 
     # ── consumer read path ─────────────────────────────────────────────
 
