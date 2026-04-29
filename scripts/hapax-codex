@@ -693,6 +693,28 @@ Coordination rules:
 - Do not claim a persistent watch timer unless you are actively running a loop; after a final response, the session is idle, not watching.
 - When the parent says baseline clean/regroup/stop, mark relay status regrouping/no-new-work or RETIRED, stop claiming tasks, and wait for explicit direction.
 EOF
+
+  DOSSIER_HELPER="$COUNCIL_DIR/scripts/codex-operator-dossier-context.py"
+  {
+    printf '\n'
+    if [ -x "$DOSSIER_HELPER" ]; then
+      "$DOSSIER_HELPER" || {
+        printf '%s\n' '## Codex-Visible Operator Dossier'
+        printf '\n'
+        printf '%s\n' '- status: unavailable'
+        printf '%s\n' "- source: $DOSSIER_HELPER"
+        printf '%s\n' '- reason: dossier renderer failed'
+        printf '%s\n' '- fallback: Use the explicit user message, CLAUDE.md, AGENTS.md, cc-task note, and relay state only.'
+      }
+    else
+      printf '%s\n' '## Codex-Visible Operator Dossier'
+      printf '\n'
+      printf '%s\n' '- status: unavailable'
+      printf '%s\n' "- source: $DOSSIER_HELPER"
+      printf '%s\n' '- reason: dossier renderer missing or not executable'
+      printf '%s\n' '- fallback: Use the explicit user message, CLAUDE.md, AGENTS.md, cc-task note, and relay state only.'
+    fi
+  } >>"$BOOTSTRAP_FILE"
 fi
 
 # Keep the long-lived Codex session from becoming a credential sink. MCP
