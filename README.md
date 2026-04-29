@@ -50,7 +50,8 @@ git clone git@github.com:ryanklee/hapax-council.git && cd hapax-council
 uv sync
 uv run pytest tests/ -q          # 470+ test files
 uv run ruff check .               # lint
-uv run pyright                    # type check
+uv run --no-project --with pyrefly==0.62.0 pyrefly check  # CI typecheck
+uv run pyright                    # weekly typecheck safety net
 ```
 
 For production use (agents, logos API, voice daemon), see [Architecture](#architecture).

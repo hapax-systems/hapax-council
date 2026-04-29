@@ -34,8 +34,25 @@ def test_auto_fix_typecheck_guidance_matches_pyrefly_and_pyright_split() -> None
     workflow_text = _read(".github/workflows/auto-fix.yml")
 
     assert "(pyrefly|pyright)" in workflow_text
-    assert "If PR typecheck failed: `uv run pyrefly check`" in workflow_text
+    assert (
+        "If PR typecheck failed: `uv run --no-project --with pyrefly==0.62.0 pyrefly check`"
+    ) in workflow_text
     assert "If pyright safety-net failed: `uv run pyright`" in workflow_text
+
+
+def test_readme_typecheck_commands_match_ci_and_safety_net() -> None:
+    readme_text = _read("README.md")
+
+    assert "uv run --no-project --with pyrefly==0.62.0 pyrefly check" in readme_text
+    assert "CI typecheck" in readme_text
+    assert "uv run pyright" in readme_text
+    assert "weekly typecheck safety net" in readme_text
+
+
+def test_pyrefly_config_keeps_optional_dependency_override_noise_suppressed() -> None:
+    config_text = _read("pyrefly.toml")
+
+    assert "bad-override = false" in config_text
 
 
 def test_ci_typecheck_uses_minimal_pyrefly_fast_path() -> None:
