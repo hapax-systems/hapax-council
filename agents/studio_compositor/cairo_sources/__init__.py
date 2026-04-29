@@ -183,6 +183,19 @@ def _register_builtins() -> None:
     from agents.studio_compositor.egress_footer_source import EgressFooterCairoSource
 
     register("EgressFooterCairoSource", EgressFooterCairoSource)
+    from agents.studio_compositor.mobile_cairo_sources import (
+        MobileActivityHeaderCairoSource,
+        MobileCaptionsCairoSource,
+        MobileImpingementCascadeCairoSource,
+        MobileStanceIndicatorCairoSource,
+        MobileTokenPoleCairoSource,
+    )
+
+    register("MobileActivityHeaderCairoSource", MobileActivityHeaderCairoSource)
+    register("MobileStanceIndicatorCairoSource", MobileStanceIndicatorCairoSource)
+    register("MobileImpingementCascadeCairoSource", MobileImpingementCascadeCairoSource)
+    register("MobileTokenPoleCairoSource", MobileTokenPoleCairoSource)
+    register("MobileCaptionsCairoSource", MobileCaptionsCairoSource)
 
 
 _register_builtins()

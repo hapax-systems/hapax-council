@@ -73,6 +73,17 @@ Single centralized service (`hapax-secrets.service`) loads all credentials once 
 
 Written to `/run/user/1000/hapax-secrets.env` (tmpfs, 0600). All services declare `Requires=hapax-secrets.service` and read via `EnvironmentFile=/run/user/1000/hapax-secrets.env`.
 
+### Studio Mobile RTMP
+
+`studio-compositor` supports a parallel 9:16 mobile RTMP egress. Runtime
+mode defaults to `dual`; set `HAPAX_BROADCAST_MODE=desktop|mobile|dual` or
+write `/dev/shm/hapax-compositor/broadcast-mode.json` through
+`PATCH /api/studio/broadcast-mode`.
+
+- `HAPAX_MOBILE_RTMP_URL` defaults to `rtmp://127.0.0.1:1935/mobile`.
+- `HAPAX_MOBILE_RTMP_KEY` is optional and must come from `hapax-secrets` or
+  another runtime-only secret source, never from repo config.
+
 ## Resource Isolation
 
 **Per-service caps** (MemoryMax / OOMScoreAdjust):

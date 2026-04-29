@@ -112,6 +112,10 @@ RTMP_CONNECTED: Any = None
 RTMP_ENCODER_ERRORS_TOTAL: Any = None
 RTMP_BIN_REBUILDS_TOTAL: Any = None
 RTMP_BITRATE_BPS: Any = None
+HAPAX_MOBILE_SUBSTREAM_FRAMES_TOTAL: Any = None
+HAPAX_MOBILE_SUBSTREAM_BITRATE_KBPS: Any = None
+HAPAX_BROADCAST_MODE: Any = None
+HAPAX_MOBILE_CAIRO_RENDER_DURATION_MS: Any = None
 REVERIE_POOL_BUCKET_COUNT: Any = None
 REVERIE_POOL_TOTAL_TEXTURES: Any = None
 REVERIE_POOL_TOTAL_ACQUIRES: Any = None
@@ -236,6 +240,10 @@ def _init_metrics() -> None:
     global RTMP_ENCODER_ERRORS_TOTAL
     global RTMP_BIN_REBUILDS_TOTAL
     global RTMP_BITRATE_BPS
+    global HAPAX_MOBILE_SUBSTREAM_FRAMES_TOTAL
+    global HAPAX_MOBILE_SUBSTREAM_BITRATE_KBPS
+    global HAPAX_BROADCAST_MODE
+    global HAPAX_MOBILE_CAIRO_RENDER_DURATION_MS
     global REVERIE_POOL_BUCKET_COUNT
     global REVERIE_POOL_TOTAL_TEXTURES
     global REVERIE_POOL_TOTAL_ACQUIRES
@@ -684,6 +692,28 @@ def _init_metrics() -> None:
         ["endpoint"],
         registry=REGISTRY,
     )
+    HAPAX_MOBILE_SUBSTREAM_FRAMES_TOTAL = Counter(
+        "hapax_mobile_substream_frames_total",
+        "Frames observed on the mobile 9:16 RTMP egress path",
+        registry=REGISTRY,
+    )
+    HAPAX_MOBILE_SUBSTREAM_BITRATE_KBPS = Gauge(
+        "hapax_mobile_substream_bitrate_kbps",
+        "Configured mobile 9:16 RTMP encoder bitrate in kilobits per second",
+        registry=REGISTRY,
+    )
+    HAPAX_BROADCAST_MODE = Gauge(
+        "hapax_broadcast_mode",
+        "Current compositor broadcast mode: 0=desktop, 1=mobile, 2=dual",
+        registry=REGISTRY,
+    )
+    HAPAX_BROADCAST_MODE.set(2)
+    HAPAX_MOBILE_CAIRO_RENDER_DURATION_MS = Histogram(
+        "hapax_mobile_cairo_render_duration_ms",
+        "Mobile overlay Cairo render duration in milliseconds",
+        buckets=(1.0, 2.5, 5.0, 10.0, 16.0, 25.0, 33.0, 50.0, 100.0, 250.0),
+        registry=REGISTRY,
+    )
 
     # Delta retirement handoff item #3 / AC-13: surface
     # ``DynamicPipeline::pool_metrics()`` from the Rust imagination
@@ -883,6 +913,15 @@ def start_metrics_server(port: int = 9482, addr: str = "0.0.0.0") -> bool:
 
     log.info("metrics server started on %s:%d", addr, port)
     return True
+
+
+def set_broadcast_mode(mode: str) -> None:
+    """Publish the broadcast-mode enum gauge."""
+
+    if HAPAX_BROADCAST_MODE is None:
+        return
+    value = {"desktop": 0, "mobile": 1, "dual": 2}.get(mode, 2)
+    HAPAX_BROADCAST_MODE.set(value)
 
 
 def register_camera(role: str, model: str) -> None:

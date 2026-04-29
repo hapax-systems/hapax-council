@@ -149,6 +149,7 @@ def start_compositor(compositor: Any) -> None:
 
     compositor._running = True
     compositor._audio_capture.start()
+    compositor._sync_mobile_support_threads()
 
     # CVS #145 — instantiate + start the bidirectional 24c audio ducking
     # controller. Even with ``HAPAX_AUDIO_DUCKING_ACTIVE`` off, the FSM
@@ -228,6 +229,7 @@ def start_compositor(compositor: Any) -> None:
 
     interval_ms = int(compositor.config.status_interval_s * 1000)
     compositor._status_timer_id = GLib.timeout_add(interval_ms, compositor._status_tick)
+    compositor._broadcast_mode_timer_id = GLib.timeout_add(1000, compositor._broadcast_mode_tick)
 
     GLib.timeout_add(33, lambda: fx_tick_callback(compositor))  # 30fps uniform updates
 
@@ -433,6 +435,14 @@ def stop_compositor(compositor: Any) -> None:
     if compositor._status_timer_id is not None and GLib is not None:
         GLib.source_remove(compositor._status_timer_id)
         compositor._status_timer_id = None
+    if getattr(compositor, "_broadcast_mode_timer_id", None) is not None and GLib is not None:
+        GLib.source_remove(compositor._broadcast_mode_timer_id)
+        compositor._broadcast_mode_timer_id = None
+
+    try:
+        compositor._stop_mobile_support_threads()
+    except Exception:
+        log.exception("mobile support thread shutdown failed")
 
     if compositor.pipeline and Gst is not None:
         compositor.pipeline.set_state(Gst.State.NULL)

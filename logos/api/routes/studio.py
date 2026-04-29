@@ -10,7 +10,7 @@ import asyncio
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import APIRouter
 
@@ -369,6 +369,11 @@ async def select_effect(req: EffectSelectRequest):
 
 
 COMPOSITOR_STATUS_PATH = Path.home() / ".cache" / "hapax-compositor" / "status.json"
+BROADCAST_MODE_PATH = Path("/dev/shm/hapax-compositor/broadcast-mode.json")
+
+
+class BroadcastModeRequest(BaseModel):
+    mode: Literal["desktop", "mobile", "dual"]
 
 
 @router.get("/studio/compositor/live")
@@ -409,6 +414,9 @@ async def compositor_live():
         "audio_energy_rms": audio_rms,
         "rtmp_attached": data.get("rtmp_attached", False),
         "rtmp_rebuild_count": data.get("rtmp_rebuild_count", 0),
+        "mobile_rtmp_attached": data.get("mobile_rtmp_attached", False),
+        "mobile_rtmp_rebuild_count": data.get("mobile_rtmp_rebuild_count", 0),
+        "broadcast_mode": data.get("broadcast_mode", "dual"),
         "egress_state": egress.get("state", "offline"),
         "public_claim_allowed": egress.get("public_claim_allowed", False),
         "livestream_egress": egress,
@@ -430,6 +438,22 @@ async def studio_egress_state():
 async def studio_audio_safe_for_broadcast():
     """Canonical broadcast audio safety state."""
     return _resolve_audio_safe_for_broadcast_json()
+
+
+@router.patch("/studio/broadcast-mode")
+async def set_broadcast_mode(req: BroadcastModeRequest):
+    """Set desktop, mobile, or dual RTMP egress mode for the compositor."""
+    import json
+    import time
+
+    try:
+        BROADCAST_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = BROADCAST_MODE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"mode": req.mode, "ts": time.time()}))
+        tmp.rename(BROADCAST_MODE_PATH)
+    except OSError:
+        return JSONResponse({"error": "broadcast mode write failed"}, status_code=503)
+    return {"mode": req.mode}
 
 
 def _resolve_egress_state_json() -> dict[str, object]:

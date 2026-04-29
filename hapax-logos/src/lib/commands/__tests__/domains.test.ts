@@ -17,7 +17,7 @@ describe("studio domain commands", () => {
 
   beforeEach(() => {
     registry = new CommandRegistry();
-    state = { smoothMode: false, activePreset: "clean", recording: false };
+    state = { smoothMode: false, activePreset: "clean", recording: false, broadcastMode: "dual" };
     actions = {
       setSmoothMode: (v) => { state.smoothMode = v; },
       setActivePreset: (name) => { state.activePreset = name; },
@@ -26,6 +26,7 @@ describe("studio domain commands", () => {
         state.activePreset = dir === "next" ? "next-preset" : "prev-preset";
       },
       setRecording: (v) => { state.recording = v; },
+      setBroadcastMode: (v) => { state.broadcastMode = v; },
     };
     registerStudioCommands(registry, () => state, actions);
   });
@@ -101,6 +102,22 @@ describe("studio domain commands", () => {
   it("studio.recording query returns current recording state", () => {
     state.recording = true;
     expect(registry.query("studio.recording")).toBe(true);
+  });
+
+  it("studio.broadcast.mode sets broadcast mode", async () => {
+    const result = await registry.execute("studio.broadcast.mode", { mode: "mobile" });
+    expect(result.ok).toBe(true);
+    expect(state.broadcastMode).toBe("mobile");
+  });
+
+  it("studio.broadcast.mode rejects invalid mode", async () => {
+    const result = await registry.execute("studio.broadcast.mode", { mode: "sideways" });
+    expect(result.ok).toBe(false);
+  });
+
+  it("studio.broadcastMode query returns current mode", () => {
+    state.broadcastMode = "desktop";
+    expect(registry.query("studio.broadcastMode")).toBe("desktop");
   });
 });
 

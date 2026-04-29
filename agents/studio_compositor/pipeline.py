@@ -283,7 +283,7 @@ def build_pipeline(compositor: Any) -> Any:
     # Phase 5: instantiate the RTMP output bin (detached by default).
     # It is attached on toggle_livestream affordance activation; consent gate
     # lives in the affordance pipeline, not here.
-    from .rtmp_output import RtmpOutputBin
+    from .rtmp_output import MobileRtmpOutputBin, RtmpOutputBin
 
     compositor._output_tee = output_tee
     compositor._rtmp_bin = RtmpOutputBin(
@@ -308,7 +308,16 @@ def build_pipeline(compositor: Any) -> Any:
         # need is served by tune=ll in rtmp_output.py, not by more I-frames.
         gop_size=fps * 2,
     )
-    log.info("rtmp output bin constructed (detached until toggle_livestream)")
+    compositor._mobile_rtmp_bin = MobileRtmpOutputBin(
+        gst=Gst,
+        glib=compositor._GLib,
+        video_tee=output_tee,
+        source_width=compositor.config.output_width,
+        source_height=compositor.config.output_height,
+        bitrate_kbps=3500,
+        gop_size=fps * 2,
+    )
+    log.info("rtmp output bins constructed (detached until toggle_livestream)")
 
     return pipeline
 

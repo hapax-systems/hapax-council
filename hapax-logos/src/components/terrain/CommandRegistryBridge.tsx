@@ -38,6 +38,7 @@ export function CommandRegistryBridge() {
     smoothMode,
     activePreset: "",
     recording: false,
+    broadcastMode: "dual",
   })).current;
 
   const detectionMirror = useRef(createMirror<DetectionState>({
@@ -46,7 +47,12 @@ export function CommandRegistryBridge() {
   })).current;
 
   // Sync mirrors on every render
-  studioMirror.sync({ smoothMode, activePreset: activePreset ?? "", recording: false });
+  studioMirror.sync({
+    ...studioMirror.get(),
+    smoothMode,
+    activePreset: activePreset ?? "",
+    recording: false,
+  });
   detectionMirror.sync({ tier: detectionTier as 1 | 2 | 3, visible: detectionLayerVisible });
 
   const depthsRef = useRef(regionDepths);
@@ -87,6 +93,9 @@ export function CommandRegistryBridge() {
         setRecording: () => {
           recordingToggle.mutate(true);
         },
+        setBroadcastMode: (mode: "desktop" | "mobile" | "dual") => {
+          studioMirror.set({ broadcastMode: mode });
+        },
       },
     );
 
@@ -113,10 +122,16 @@ export function CommandRegistryBridge() {
         "studio.preset.activate",
         "studio.preset.cycle",
         "studio.recording.toggle",
+        "studio.broadcast.mode",
       ]) {
         registry.unregister(p);
       }
-      for (const p of ["studio.smoothMode", "studio.activePreset", "studio.recording"]) {
+      for (const p of [
+        "studio.smoothMode",
+        "studio.activePreset",
+        "studio.recording",
+        "studio.broadcastMode",
+      ]) {
         registry.unregisterQuery(p);
       }
       for (const p of [
