@@ -677,6 +677,7 @@ Coordination rules:
 - Single operator only.
 - Use pass and child MCP wrappers for credentials; do not print secret values.
 - Use scripts/hapax-codex for child Codex sessions; do not introduce a parallel Claude launcher.
+- Use scripts/hapax-codex-send for parent-to-child visible-session instructions; it focuses the target and submits after paste so Enter is not lost.
 - Maintain Obsidian cc-task and relay discipline.
 - Treat implemented features that remain dormant, unshipped, or off by default as baseline defects unless a concrete external blocker is documented; prefer fixing the blocker and shipping.
 - Do not claim a persistent watch timer unless you are actively running a loop; after a final response, the session is idle, not watching.
