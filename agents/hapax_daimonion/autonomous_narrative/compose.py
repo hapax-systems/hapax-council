@@ -18,6 +18,7 @@ import re
 from typing import Any
 
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
+from shared.narration_triad import render_triad_prompt_context
 from shared.operator_referent import REFERENTS
 
 log = logging.getLogger(__name__)
@@ -152,6 +153,9 @@ def _build_seed(context: Any) -> str:
     vault_summary = _summarize_vault_context(getattr(context, "vault_context", None))
     if vault_summary:
         parts.append(vault_summary)
+    triad_summary = render_triad_prompt_context(getattr(context, "triad_continuity", None))
+    if triad_summary:
+        parts.append("Narration continuity ledger:\n" + triad_summary)
     return "\n".join(parts)
 
 

@@ -111,6 +111,7 @@ def record_composed_autonomous_narrative(
     candidate: object,
     emit_status: str,
     impulse_id: str | None = None,
+    triad_ids: tuple[str, ...] = (),
     path: Path = WITNESS_PATH,
     now: float | None = None,
 ) -> VoiceOutputWitness:
@@ -123,6 +124,7 @@ def record_composed_autonomous_narrative(
         "capability_name": getattr(candidate, "capability_name", ""),
         "score": _float_or_none(getattr(candidate, "combined", None)),
         "emit_status": emit_status,
+        "triad_ids": list(triad_ids),
     }
     updates: dict[str, Any] = {}
     impulse_update = _impulse_update_for_state(

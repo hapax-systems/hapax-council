@@ -15,7 +15,7 @@ import pytest
 
 
 def _fake_imp(source: str = "test.impingement") -> SimpleNamespace:
-    return SimpleNamespace(
+    imp = SimpleNamespace(
         id="test-imp-001",
         source=source,
         content={"narrative": "test signal", "metric": "test"},
@@ -23,6 +23,15 @@ def _fake_imp(source: str = "test.impingement") -> SimpleNamespace:
         interrupt_token=None,
         strength=0.6,
     )
+    if source == "endogenous.narrative_drive":
+        imp.content.update(
+            {
+                "wcs_snapshot_ref": "wcs:audio.broadcast_voice:voice-output-witness",
+                "route_evidence_ref": "route:audio.broadcast_voice:health_witness_required",
+                "public_claim_evidence_ref": "claim_posture:bounded_nonassertive_narration",
+            }
+        )
+    return imp
 
 
 def _fake_candidate(score: float = 0.5) -> SimpleNamespace:
@@ -46,12 +55,19 @@ def _fake_daemon() -> MagicMock:
     return daemon
 
 
+@pytest.fixture(autouse=True)
+def _triad_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from shared import narration_triad
+
+    monkeypatch.setattr(narration_triad, "TRIAD_LEDGER_PATH", tmp_path / "triads.jsonl")
+    monkeypatch.setattr(narration_triad, "TRIAD_STATE_PATH", tmp_path / "triad-state.json")
+
+
 class TestDispatchAutonomousNarration:
     """Test _dispatch_autonomous_narration from run_loops_aux."""
 
     def test_successful_narration_records_success_and_inhibition(self, tmp_path: Path):
-        """When compose returns text and emit succeeds, record_outcome(success=True)
-        and add_inhibition should both be called."""
+        """Speech emission opens semantic debt before learning succeeds."""
         from agents.hapax_daimonion.run_loops_aux import _dispatch_autonomous_narration
 
         daemon = _fake_daemon()
@@ -83,12 +99,13 @@ class TestDispatchAutonomousNarration:
         ):
             _dispatch_autonomous_narration(daemon, imp, candidate)
 
-            # Thompson outcome recorded as success
             assert "operator_referent" in compose_mock.call_args.kwargs
             daemon._affordance_pipeline.record_outcome.assert_called_once()
             call_args = daemon._affordance_pipeline.record_outcome.call_args
             assert call_args[0][0] == "narration.autonomous_first_system"
-            assert call_args[1]["success"] is True  # kwarg
+            assert call_args[1]["success"] is False  # semantic outcome still open
+            assert call_args[1]["context"]["learning_update_allowed"] is False
+            assert call_args[1]["context"]["semantic_status"] == "open"
 
             # Refractory inhibition set
             daemon._affordance_pipeline.add_inhibition.assert_called_once()
@@ -134,7 +151,13 @@ class TestDispatchAutonomousNarration:
             _dispatch_autonomous_narration(daemon, _fake_imp(), _fake_candidate())
 
         daemon._affordance_pipeline.record_outcome.assert_called_once()
-        assert daemon._affordance_pipeline.record_outcome.call_args.kwargs["success"] is True
+        assert daemon._affordance_pipeline.record_outcome.call_args.kwargs["success"] is False
+        assert (
+            daemon._affordance_pipeline.record_outcome.call_args.kwargs["context"][
+                "learning_update_allowed"
+            ]
+            is False
+        )
         mock_metric.assert_called_with("partial_success")
 
     def test_compose_returns_none_records_failure(self):

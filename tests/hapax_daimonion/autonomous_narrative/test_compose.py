@@ -33,6 +33,7 @@ class _FakeContext:
     stimmung_tone: str = "ambient"
     director_activity: str = "observe"
     chronicle_events: tuple = field(default_factory=tuple)
+    triad_continuity: dict[str, Any] = field(default_factory=dict)
 
 
 def _events(*items: dict) -> tuple[dict, ...]:
@@ -88,6 +89,38 @@ def test_prompt_includes_seed_state() -> None:
     assert "focused" in seed
     assert "create" in seed
     assert "side B started" in seed
+
+
+def test_prompt_includes_open_triad_continuity() -> None:
+    seen = []
+
+    def stub(*, prompt: str, seed: str) -> str:
+        seen.append(seed)
+        return "Signal continuity remains open pending witness."
+
+    ctx = _FakeContext(
+        triad_continuity={
+            "open_triads": [
+                {
+                    "triad_id": "triad-1",
+                    "status": "open",
+                    "obligations": [
+                        {
+                            "kind": "monitor",
+                            "status": "open",
+                            "text": "Resolve monitor obligation",
+                        }
+                    ],
+                }
+            ],
+            "recently_resolved_triads": [],
+            "metrics": {"orphan_rate": 1.0},
+        }
+    )
+    compose.compose_narrative(ctx, llm_call=stub)
+
+    assert "Narration continuity ledger" in seen[0]
+    assert "Resolve monitor obligation" in seen[0]
 
 
 def test_prompt_carries_voice_constraints() -> None:

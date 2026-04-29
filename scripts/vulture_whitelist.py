@@ -51,6 +51,7 @@ from shared.grounding_provider_router import (
     validate_eval_suite,
     validate_provider_registry,
 )
+from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
 from shared.support_surface_registry import (
     AggregateReceiptPolicy,
     NoPerkSupportDoctrine,
@@ -249,3 +250,8 @@ CapabilityOutcomeEnvelope.allows_claim_posterior_update
 CapabilityOutcomeFixtureSet._validate_contract_coverage
 CapabilityOutcomeFixtureSet.require_outcome
 CapabilityOutcomeFixtureSet.rows_for_fixture_case
+
+# Narration triad validators are invoked dynamically by Pydantic while the
+# autonomous narration ledger validates open/closed semantic-outcome policy.
+IntendedOutcomeItem._open_or_closed_has_policy
+NarrationTriadEnvelope._validate_grounding_policy

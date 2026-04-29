@@ -345,11 +345,36 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
 
         now = time.time()
         impulse_id = _narration_impulse_id_for_dispatch(imp, candidate)
+        from shared.narration_triad import (
+            NarrationTriadLedger,
+            build_autonomous_narration_triad,
+            speech_event_id_for_utterance,
+        )
+
+        speech_event_id = speech_event_id_for_utterance(
+            impulse_id=impulse_id,
+            text=narrative,
+            now=now,
+        )
+        triad = build_autonomous_narration_triad(
+            text=narrative,
+            context=context,
+            impulse_id=impulse_id,
+            speech_event_id=speech_event_id,
+            candidate_name=getattr(
+                candidate, "capability_name", "narration.autonomous_first_system"
+            ),
+            now=now,
+        )
+        triad_ledger = NarrationTriadLedger()
+        triad_ledger.append(triad)
         emit_result = emit.emit_narrative(
             narrative,
             programme_id=programme_id,
             operator_referent=referent,
             impulse_id=impulse_id,
+            speech_event_id=speech_event_id,
+            triad_ids=(triad.triad_id,),
             now=now,
         )
         try:
@@ -363,6 +388,7 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
                 candidate=candidate,
                 emit_status="emitted" if emit_result else "emit_failed",
                 impulse_id=impulse_id,
+                triad_ids=(triad.triad_id,),
                 now=now,
             )
         except Exception:
@@ -372,11 +398,14 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
             emit.record_metric("partial_success" if partial_success else "allow")
             daemon._affordance_pipeline.record_outcome(
                 candidate.capability_name,
-                success=True,
+                success=triad.learning_update_allowed,
                 context={
                     "source": imp.source,
                     "programme_id": programme_id or "",
                     "stimmung": getattr(context, "stimmung_tone", ""),
+                    "triad_id": triad.triad_id,
+                    "semantic_status": triad.status,
+                    "learning_update_allowed": triad.learning_update_allowed,
                 },
             )
             # Refractory inhibition — pipeline-native replacement for the
@@ -398,11 +427,23 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
                 imp.source[:40],
             )
         else:
+            triad_ledger.append_status_update(
+                triad,
+                status="failed",
+                closure_refs=[f"speech_event:{speech_event_id}:write_failed"],
+                blocked_reasons=["autonomous_narrative_emit_write_failed"],
+                now=now,
+            )
             emit.record_metric("write_failed")
             daemon._affordance_pipeline.record_outcome(
                 candidate.capability_name,
                 success=False,
-                context={"source": imp.source, "reason": "write_failed"},
+                context={
+                    "source": imp.source,
+                    "reason": "write_failed",
+                    "triad_id": triad.triad_id,
+                    "semantic_status": "failed",
+                },
             )
     except Exception:
         log.warning("Autonomous narration dispatch failed", exc_info=True)
