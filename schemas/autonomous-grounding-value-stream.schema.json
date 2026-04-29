@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/autonomous-grounding-value-stream.schema.json",
+  "title": "AutonomousGroundingValueStreamRegistry",
+  "description": "Canonical registry of Hapax value streams for the single-operator autonomous grounding lab.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "registry_id",
+    "declared_at",
+    "producer",
+    "global_policy",
+    "streams"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "registry_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$"
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "global_policy": {
+      "type": "object",
+      "required": [
+        "single_operator_only",
+        "recurring_operator_labor_allowed",
+        "allowed_operator_actions",
+        "supporter_perks_allowed",
+        "supporter_identity_persistence_allowed",
+        "public_claims_require_evidence_owner",
+        "unknown_rights_blocks_public_claim",
+        "forbidden_revenue_shapes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "single_operator_only": {"type": "boolean", "const": true},
+        "recurring_operator_labor_allowed": {"type": "boolean", "const": false},
+        "allowed_operator_actions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/operator_action"},
+          "uniqueItems": true
+        },
+        "supporter_perks_allowed": {"type": "boolean", "const": false},
+        "supporter_identity_persistence_allowed": {"type": "boolean", "const": false},
+        "public_claims_require_evidence_owner": {"type": "boolean", "const": true},
+        "unknown_rights_blocks_public_claim": {"type": "boolean", "const": true},
+        "forbidden_revenue_shapes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/forbidden_revenue_shape"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "streams": {
+      "type": "array",
+      "minItems": 12,
+      "items": {"$ref": "#/$defs/value_stream"},
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "stream_id": {
+      "type": "string",
+      "enum": [
+        "livestream_public_aperture",
+        "vod_archive_replay_shorts_chapters",
+        "cross_surface_publication_bus",
+        "direct_no_perk_support_rails",
+        "commercial_license_agent_payment_rail",
+        "product_tool_ip_artifact_packs",
+        "research_artifacts_datasets_papers_identifiers",
+        "grants_fellowships_credits_institutional_patronage",
+        "aesthetic_media_condition_editions",
+        "studio_operator_adjacent_value",
+        "consulting_by_artifact",
+        "refusal_conversions"
+      ]
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "live_aperture",
+        "archive_replay",
+        "publication_bus",
+        "support_rail",
+        "commercial_license",
+        "artifact_product",
+        "research_artifact",
+        "institutional_grant",
+        "aesthetic_edition",
+        "studio_adjacent",
+        "refusal_conversion"
+      ]
+    },
+    "automation_class": {
+      "type": "string",
+      "enum": ["AUTO", "BOOTSTRAP", "LEGAL_ATTEST", "GUARDED", "REFUSAL_ARTIFACT"]
+    },
+    "stream_status": {
+      "type": "string",
+      "enum": ["offered", "blocked", "guarded", "refusal_artifact"]
+    },
+    "operator_action": {
+      "type": "string",
+      "enum": ["bootstrap", "legal_attestation"]
+    },
+    "prerequisite_state": {
+      "type": "string",
+      "enum": ["complete", "required", "blocked", "guarded", "dry_run"]
+    },
+    "packet_state": {
+      "type": "string",
+      "enum": ["active", "offered", "blocked", "closed", "refusal_artifact"]
+    },
+    "evidence_owner": {
+      "type": "object",
+      "required": ["owner_id", "evidence_refs", "proof_required"],
+      "additionalProperties": false,
+      "properties": {
+        "owner_id": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "proof_required": {"type": "string", "minLength": 1}
+      }
+    },
+    "revenue_path": {
+      "type": "object",
+      "required": ["money_forms", "route_policy"],
+      "additionalProperties": false,
+      "properties": {
+        "money_forms": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "route_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "prerequisite": {
+      "type": "object",
+      "required": ["prerequisite_id", "state", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "prerequisite_id": {"type": "string", "minLength": 1},
+        "state": {"$ref": "#/$defs/prerequisite_state"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "public_claim_policy": {
+      "type": "object",
+      "required": [
+        "allowed_claims",
+        "forbidden_claims",
+        "claim_gate_refs",
+        "missing_evidence_behavior"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "allowed_claims": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "forbidden_claims": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "claim_gate_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "missing_evidence_behavior": {
+          "type": "string",
+          "enum": [
+            "block_public_claim",
+            "downgrade_to_dry_run",
+            "emit_refusal_artifact",
+            "private_only"
+          ]
+        }
+      }
+    },
+    "privacy_rights_posture": {
+      "type": "object",
+      "required": ["privacy_floor", "rights_floor", "consent_posture", "fail_closed_reasons"],
+      "additionalProperties": false,
+      "properties": {
+        "privacy_floor": {"type": "string", "minLength": 1},
+        "rights_floor": {"type": "string", "minLength": 1},
+        "consent_posture": {"type": "string", "minLength": 1},
+        "fail_closed_reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "operator_boundary": {
+      "type": "object",
+      "required": [
+        "recurring_operator_labor_allowed",
+        "allowed_operator_actions",
+        "bootstrap_required",
+        "legal_attestation_required",
+        "boundary_note"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "recurring_operator_labor_allowed": {"type": "boolean", "const": false},
+        "allowed_operator_actions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/operator_action"},
+          "uniqueItems": true
+        },
+        "bootstrap_required": {"type": "boolean"},
+        "legal_attestation_required": {"type": "boolean"},
+        "boundary_note": {"type": "string", "minLength": 1}
+      }
+    },
+    "next_packet": {
+      "type": "object",
+      "required": ["task_id", "task_note", "state", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "task_note": {"type": "string", "minLength": 1},
+        "state": {"$ref": "#/$defs/packet_state"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "train_position": {
+      "type": "object",
+      "required": ["wsjf", "priority", "blocks"],
+      "additionalProperties": false,
+      "properties": {
+        "wsjf": {"type": "number", "minimum": 0},
+        "priority": {"type": "string", "pattern": "^p[0-9]+$"},
+        "blocks": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "refusal_conversion": {
+      "type": "object",
+      "required": ["generic_form", "decision", "buildable_conversion"],
+      "additionalProperties": false,
+      "properties": {
+        "generic_form": {"type": "string", "minLength": 1},
+        "decision": {"type": "string", "enum": ["refused", "guarded", "converted"]},
+        "buildable_conversion": {"type": "string", "minLength": 1}
+      }
+    },
+    "value_stream": {
+      "type": "object",
+      "required": [
+        "stream_id",
+        "category",
+        "automation_class",
+        "n1_value_claim",
+        "evidence_owner",
+        "revenue_path",
+        "prerequisites",
+        "public_claim_policy",
+        "privacy_rights_posture",
+        "operator_boundary",
+        "status",
+        "next_packet",
+        "guardrails",
+        "train_position",
+        "refusal_conversions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "stream_id": {"$ref": "#/$defs/stream_id"},
+        "category": {"$ref": "#/$defs/category"},
+        "automation_class": {"$ref": "#/$defs/automation_class"},
+        "n1_value_claim": {"type": "string", "minLength": 1},
+        "evidence_owner": {"$ref": "#/$defs/evidence_owner"},
+        "revenue_path": {"$ref": "#/$defs/revenue_path"},
+        "prerequisites": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/prerequisite"}
+        },
+        "public_claim_policy": {"$ref": "#/$defs/public_claim_policy"},
+        "privacy_rights_posture": {"$ref": "#/$defs/privacy_rights_posture"},
+        "operator_boundary": {"$ref": "#/$defs/operator_boundary"},
+        "status": {"$ref": "#/$defs/stream_status"},
+        "next_packet": {"$ref": "#/$defs/next_packet"},
+        "guardrails": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "train_position": {"$ref": "#/$defs/train_position"},
+        "refusal_conversions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/refusal_conversion"}
+        }
+      }
+    },
+    "forbidden_revenue_shape": {
+      "type": "string",
+      "enum": [
+        "patreon_perk_ladder",
+        "github_sponsors_funding_file",
+        "stripe_payment_links",
+        "discord_community_business",
+        "consulting_as_service",
+        "paid_subscriber_access_model",
+        "supporter_request_queue",
+        "sponsor_ad_read_obligation"
+      ]
+    }
+  }
+}
