@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/programme-boundary-event-surface.schema.json",
+  "title": "ProgrammeBoundaryEvent",
+  "description": "Internal programme boundary event consumed by run stores, public events, archive/replay, cuepoint/chapter adapters, and conversion systems.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "boundary_id",
+    "emitted_at",
+    "programme_id",
+    "run_id",
+    "format_id",
+    "sequence",
+    "boundary_type",
+    "public_private_mode",
+    "grounding_question",
+    "summary",
+    "evidence_refs",
+    "no_expert_system_gate",
+    "claim_shape",
+    "public_event_mapping",
+    "cuepoint_chapter_policy",
+    "dry_run_unavailable_reasons",
+    "duplicate_key"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "boundary_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$"
+    },
+    "emitted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "programme_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "format_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "boundary_type": {
+      "$ref": "#/$defs/boundary_type"
+    },
+    "public_private_mode": {
+      "$ref": "#/$defs/public_private_mode"
+    },
+    "grounding_question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "no_expert_system_gate": {
+      "type": "object",
+      "required": [
+        "gate_ref",
+        "gate_state",
+        "claim_allowed",
+        "public_claim_allowed",
+        "infractions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "gate_ref": {"type": ["string", "null"]},
+        "gate_state": {
+          "type": "string",
+          "enum": ["pass", "fail", "dry_run", "private_only", "refusal", "correction_required"]
+        },
+        "claim_allowed": {"type": "boolean"},
+        "public_claim_allowed": {"type": "boolean"},
+        "infractions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "claim_shape": {
+      "type": "object",
+      "required": [
+        "claim_kind",
+        "authority_ceiling",
+        "confidence_label",
+        "uncertainty",
+        "scope_limit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_kind": {
+          "type": "string",
+          "enum": [
+            "observation",
+            "classification",
+            "ranking",
+            "comparison",
+            "explanation",
+            "refusal",
+            "correction",
+            "metadata"
+          ]
+        },
+        "authority_ceiling": {
+          "type": "string",
+          "enum": ["evidence_bound", "speculative", "internal_only"]
+        },
+        "confidence_label": {
+          "type": "string",
+          "enum": ["none", "low", "medium", "medium_high", "high"]
+        },
+        "uncertainty": {"type": "string", "minLength": 1},
+        "scope_limit": {"type": "string", "minLength": 1}
+      }
+    },
+    "public_event_mapping": {
+      "type": "object",
+      "required": [
+        "internal_only",
+        "research_vehicle_event_type",
+        "state_kind",
+        "source_substrate_id",
+        "allowed_surfaces",
+        "denied_surfaces",
+        "fallback_action",
+        "unavailable_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "internal_only": {"type": "boolean"},
+        "research_vehicle_event_type": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "programme.boundary",
+            "metadata.update",
+            "chapter.marker",
+            "cuepoint.candidate",
+            "chronicle.high_salience",
+            "publication.artifact",
+            "shorts.candidate",
+            "archive.segment"
+          ]
+        },
+        "state_kind": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "programme_state",
+            "research_observation",
+            "cuepoint",
+            "chapter",
+            "short_form",
+            "archive_artifact"
+          ]
+        },
+        "source_substrate_id": {"type": ["string", "null"]},
+        "allowed_surfaces": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/surface"},
+          "uniqueItems": true
+        },
+        "denied_surfaces": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/surface"},
+          "uniqueItems": true
+        },
+        "fallback_action": {
+          "type": "string",
+          "enum": ["hold", "dry_run", "private_only", "archive_only", "chapter_only", "operator_review", "deny"]
+        },
+        "unavailable_reasons": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "cuepoint_chapter_policy": {
+      "type": "object",
+      "required": [
+        "live_ad_cuepoint_allowed",
+        "vod_chapter_allowed",
+        "live_cuepoint_distinct_from_vod_chapter",
+        "chapter_label",
+        "timecode",
+        "cuepoint_unavailable_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "live_ad_cuepoint_allowed": {"type": "boolean"},
+        "vod_chapter_allowed": {"type": "boolean"},
+        "live_cuepoint_distinct_from_vod_chapter": {"type": "boolean", "const": true},
+        "chapter_label": {"type": ["string", "null"]},
+        "timecode": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$"
+        },
+        "cuepoint_unavailable_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "private_mode",
+            "dry_run_mode",
+            "missing_grounding_gate",
+            "grounding_gate_failed",
+            "egress_blocked",
+            "archive_missing",
+            "video_id_missing",
+            "cuepoint_smoke_missing",
+            "cuepoint_api_rejected",
+            "rate_limited"
+          ]
+        }
+      }
+    },
+    "dry_run_unavailable_reasons": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/unavailable_reason"},
+      "uniqueItems": true
+    },
+    "duplicate_key": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "boundary_type": {
+      "type": "string",
+      "enum": [
+        "programme.started",
+        "criterion.declared",
+        "evidence.observed",
+        "claim.made",
+        "rank.assigned",
+        "comparison.resolved",
+        "uncertainty.marked",
+        "refusal.issued",
+        "correction.made",
+        "clip.candidate",
+        "live_cuepoint.candidate",
+        "chapter.boundary",
+        "artifact.candidate",
+        "programme.ended"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "surface": {
+      "type": "string",
+      "enum": [
+        "youtube_cuepoints",
+        "youtube_chapters",
+        "youtube_description",
+        "youtube_shorts",
+        "youtube_captions",
+        "archive",
+        "arena",
+        "omg_statuslog",
+        "omg_weblog",
+        "mastodon",
+        "bluesky",
+        "discord",
+        "monetization"
+      ]
+    },
+    "unavailable_reason": {
+      "type": "string",
+      "enum": [
+        "private_mode",
+        "dry_run_mode",
+        "missing_grounding_gate",
+        "grounding_gate_failed",
+        "unsupported_claim",
+        "source_stale",
+        "rights_blocked",
+        "privacy_blocked",
+        "egress_blocked",
+        "audio_blocked",
+        "archive_missing",
+        "video_id_missing",
+        "cuepoint_smoke_missing",
+        "cuepoint_api_rejected",
+        "rate_limited",
+        "monetization_blocked",
+        "operator_review_required",
+        "live_provider_smoke_missing"
+      ]
+    }
+  }
+}
