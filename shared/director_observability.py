@@ -70,6 +70,20 @@ def canonicalize_grounding_signal(signal: str) -> str:
     return "unrecognized"
 
 
+def _synthetic_marker_family(marker: str) -> str:
+    cleaned = marker.strip().lower()
+    normalized = cleaned.replace("_", "-")
+    if cleaned.startswith("inferred."):
+        return "inferred"
+    if cleaned.startswith("fallback."):
+        return "fallback"
+    if normalized.startswith("parser-error"):
+        return "parser-error"
+    if normalized.startswith("silence-hold"):
+        return "silence-hold"
+    return "other"
+
+
 _METRICS_AVAILABLE = False
 
 try:
@@ -349,8 +363,8 @@ try:
 
     # FINDING-X Phase 1 (2026-04-21): post-parse synthesis hook records each
     # impingement whose empty grounding_provenance was replaced by a synthetic
-    # "inferred.<stance>.<family>" marker so the constitutional invariant
-    # (every impingement carries non-empty provenance) holds by construction.
+    # "inferred.<stance>.<family>" marker so missing LLM provenance stays
+    # visible without being stored as real evidence.
     # Separate from _ungrounded_total: that counter keeps measuring raw LLM
     # compliance pre-synthesis; this counter surfaces how often we had to
     # synthesize. A rising synth rate signals LLM-compliance drift.
@@ -364,6 +378,15 @@ try:
         ),
         ("intent_family",),
     )
+    _synthetic_grounding_placeholder_total = Counter(
+        "hapax_director_synthetic_grounding_placeholder_total",
+        (
+            "Director grounding placeholders recorded outside real "
+            "grounding_provenance, labelled by scope and marker family."
+        ),
+        ("scope", "marker_family"),
+        **_metric_kwargs,
+    )
 
     _METRICS_AVAILABLE = True
 except Exception:  # pragma: no cover — prometheus_client missing at install time
@@ -371,7 +394,7 @@ except Exception:  # pragma: no cover — prometheus_client missing at install t
 
 
 def emit_director_intent(intent: DirectorIntent, condition_id: str) -> None:
-    """Record one narrative-director intent + its grounding_provenance + impingements."""
+    """Record one narrative-director intent + real/synthetic grounding diagnostics."""
     if not _METRICS_AVAILABLE:
         return
     try:
@@ -385,45 +408,60 @@ def emit_director_intent(intent: DirectorIntent, condition_id: str) -> None:
                 condition_id=condition_id,
                 signal_name=canonicalize_grounding_signal(signal),
             ).inc()
+        for marker in intent.synthetic_grounding_markers:
+            _synthetic_grounding_placeholder_total.labels(
+                scope="intent",
+                marker_family=_synthetic_marker_family(marker),
+            ).inc()
         for imp in intent.compositional_impingements:
             _compositional_impingement_total.labels(
                 condition_id=condition_id, intent_family=imp.intent_family
             ).inc()
+            for marker in imp.synthetic_grounding_markers:
+                _synthetic_grounding_placeholder_total.labels(
+                    scope="impingement",
+                    marker_family=_synthetic_marker_family(marker),
+                ).inc()
     except Exception:
         log.warning("emit_director_intent failed", exc_info=True)
 
 
 def emit_ungrounded_audit(intent: DirectorIntent, condition_id: str) -> None:
-    """Audit + count empty-grounding emissions per FINDING-X.
+    """Audit + count missing-real-grounding emissions per FINDING-X.
 
     Walks the top-level intent and every compositional_impingement; for
-    each empty ``grounding_provenance`` field it (a) increments the
-    Prometheus counter labeled by scope, and (b) emits a single warn-
-    level log line so research-mode journals show the violation.
+    each empty real ``grounding_provenance`` field it increments the
+    Prometheus counter labeled by scope and emits a warn-level log line.
+    If synthetic markers are present, the warning says synthetic-only:
+    that is visible diagnostic state, not audit success.
 
     Fail-open: any exception inside the audit is logged at debug and
     swallowed. The audit must never block emit.
     """
     try:
         if not intent.grounding_provenance:
+            synthetic = list(intent.synthetic_grounding_markers)
             log.warning(
                 "UNGROUNDED intent (condition=%s, activity=%s, stance=%s): "
-                "top-level grounding_provenance empty",
+                "top-level grounding_provenance empty%s",
                 condition_id,
                 intent.activity,
                 intent.stance,
+                f"; synthetic_only={synthetic}" if synthetic else "",
             )
             if _METRICS_AVAILABLE:
                 _ungrounded_total.labels(condition_id=condition_id, scope="intent").inc()
 
         for imp in intent.compositional_impingements:
             if not imp.grounding_provenance:
+                synthetic = list(imp.synthetic_grounding_markers)
                 log.warning(
                     "UNGROUNDED impingement (condition=%s, family=%s, "
-                    "salience=%.2f): per-impingement grounding_provenance empty",
+                    "salience=%.2f): per-impingement grounding_provenance empty%s",
                     condition_id,
                     imp.intent_family,
                     imp.salience,
+                    f"; synthetic_only={synthetic}" if synthetic else "",
                 )
                 if _METRICS_AVAILABLE:
                     _ungrounded_total.labels(condition_id=condition_id, scope="impingement").inc()
@@ -435,8 +473,8 @@ def emit_ungrounded_synth(intent_family: str) -> None:
     """Record one synthesized grounding-provenance entry per FINDING-X Phase 1.
 
     Called from the post-parse synthesis hook whenever an LLM-emitted
-    CompositionalImpingement with empty grounding_provenance gets replaced
-    with a synthetic "inferred.<stance>.<family>" marker. Fail-open: any
+    CompositionalImpingement with empty grounding_provenance gets a
+    synthetic "inferred.<stance>.<family>" marker. Fail-open: any
     exception is logged at debug and swallowed.
     """
     if not _METRICS_AVAILABLE:

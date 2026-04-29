@@ -42,12 +42,10 @@ def _silence_hold_impingement(reason: str = "silence_hold") -> CompositionalImpi
     to recruit for the full narrative cadence. Populating a silence-hold
     micromove here keeps the invariant deterministically satisfied.
 
-    ``grounding_provenance=["fallback.<reason>"]`` declares this is a
-    deterministic-code fallback path, not an LLM emission with missing
-    grounding. Per the ``feedback_grounding_exhaustive`` architectural
-    axiom: the ground IS the fallback type. The UNGROUNDED audit fires
-    only on truly empty grounding (LLM bugs), not on system-state
-    fallbacks.
+    ``synthetic_grounding_markers=["fallback.<reason>"]`` declares this
+    deterministic-code fallback path without laundering it into real
+    provenance. Public/WCS/recruitment gates must see no evidence here
+    and fail closed or degrade; observability still counts the marker.
     """
     return CompositionalImpingement(
         narrative=(
@@ -57,7 +55,7 @@ def _silence_hold_impingement(reason: str = "silence_hold") -> CompositionalImpi
         intent_family="overlay.emphasis",
         material="void",
         salience=0.2,
-        grounding_provenance=[f"fallback.{reason}"],
+        synthetic_grounding_markers=[f"fallback.{reason}"],
         diagnostic=True,
     )
 
@@ -155,7 +153,7 @@ def _silence_hold_fallback_intent(
         activity=activity,  # type: ignore[arg-type]
         stance=Stance.NOMINAL,
         narrative_text=narrative_text,
-        grounding_provenance=[f"fallback.{reason}"],
+        synthetic_grounding_markers=[f"fallback.{reason}"],
         compositional_impingements=[_silence_hold_impingement(reason=reason)],
         structural_intent=structural,
     )
@@ -213,22 +211,25 @@ def _ensure_impingement_grounded(
 ) -> CompositionalImpingement:
     """Constitutional-invariant guard (FINDING-X Phase 1).
 
-    Every ``CompositionalImpingement`` downstream of the LLM parser must
-    carry non-empty ``grounding_provenance``. LLM emissions sometimes omit
-    the field despite the prompt's mandate (empirically ~54% of live
-    impingements as of 2026-04-21). This hook synthesizes a deterministic
-    ``"inferred.<stance>.<family>"`` marker so the invariant holds by
-    construction, and increments
+    Every ``CompositionalImpingement`` downstream of the LLM parser should
+    carry real ``grounding_provenance``. LLM emissions sometimes omit the
+    field despite the prompt's mandate (empirically ~54% of live
+    impingements as of 2026-04-21). This hook records a deterministic
+    ``"inferred.<stance>.<family>"`` marker in ``synthetic_grounding_markers``
+    so the compliance failure stays visible without making downstream
+    gates believe real evidence exists. It increments
     ``hapax_director_ungrounded_synth_total{intent_family}`` so the
     LLM-compliance rate stays operator-visible separately from the raw
     empty-rate counter (``hapax_director_ungrounded_total``).
 
     Fallback-path emitters (``_silence_hold_impingement``,
     ``_micromove_impingement``, parser_* fallbacks) already populate
-    ``grounding_provenance`` eagerly, so this hook is a no-op on their
-    output. Only LLM emissions trigger the synthesis branch.
+    ``synthetic_grounding_markers`` eagerly, so this hook is a no-op on
+    their output. Only LLM emissions trigger the synthesis branch.
     """
     if imp.grounding_provenance:
+        return imp
+    if imp.synthetic_grounding_markers:
         return imp
     try:
         from shared.director_observability import emit_ungrounded_synth
@@ -238,13 +239,13 @@ def _ensure_impingement_grounded(
         log.debug("emit_ungrounded_synth failed", exc_info=True)
     stance_str = stance.value if hasattr(stance, "value") else str(stance)
     synthetic = f"inferred.{stance_str.lower()}.{imp.intent_family}"
-    return imp.model_copy(update={"grounding_provenance": [synthetic]})
+    return imp.model_copy(update={"synthetic_grounding_markers": [synthetic]})
 
 
 def _ensure_intent_grounded(intent: DirectorIntent) -> DirectorIntent:
     """Apply ``_ensure_impingement_grounded`` to every impingement.
 
-    Intent itself may also have empty ``grounding_provenance``; that case
+    Intent itself may also have empty real ``grounding_provenance``; that case
     is the scope="intent" branch of ``emit_ungrounded_audit`` and is NOT
     synthesized here. Reason: top-level intent provenance describes what
     the director-as-whole grounds in; synthesizing a marker there would
@@ -533,6 +534,15 @@ def _emit_compositional_impingements(intent: DirectorIntent, condition_id: str) 
                     "director_activity": intent.activity,
                     "director_stance": str(intent.stance),
                     "condition_id": condition_id,
+                    "grounding_provenance": list(imp.grounding_provenance),
+                    "synthetic_grounding_markers": list(imp.synthetic_grounding_markers),
+                    "grounding_status": (
+                        "real"
+                        if imp.grounding_provenance
+                        else "synthetic_only"
+                        if imp.synthetic_grounding_markers
+                        else "missing"
+                    ),
                 },
             )
             lines.append(dmn_imp.model_dump_json())
@@ -1988,11 +1998,10 @@ class DirectorLoop:
                     material=material,  # type: ignore[arg-type]
                     salience=0.35,
                     dimensions={},
-                    # Deterministic-code fallback path; ground IS the reason
-                    # (matches the silence-hold pattern in
-                    # _silence_hold_impingement above). UNGROUNDED audit
-                    # then fires only on truly empty grounding (LLM bugs).
-                    grounding_provenance=[f"fallback.micromove.{reason}"],
+                    # Deterministic-code fallback path. Keep the marker
+                    # diagnostic-only so downstream gates do not treat it
+                    # as perceptual evidence.
+                    synthetic_grounding_markers=[f"fallback.micromove.{reason}"],
                 )
             except Exception:
                 log.debug("micromove impingement construct failed", exc_info=True)
@@ -2019,7 +2028,7 @@ class DirectorLoop:
                     activity="observe",
                     stance=_Stance.NOMINAL,
                     narrative_text=f"[micromove:{reason}] {narrative}",
-                    grounding_provenance=[f"fallback.micromove.{reason}"],
+                    synthetic_grounding_markers=[f"fallback.micromove.{reason}"],
                     compositional_impingements=[impingement],
                     structural_intent=structural,
                 )
@@ -2919,10 +2928,11 @@ class DirectorLoop:
             'react choice, "chat.recent_keywords" for a chat-driven '
             "ward emphasis. An impingement without grounding is a guess; "
             "the pipeline accepts it but the audit will mark it ungrounded. "
-            "When grounding_provenance is left empty, the parser inserts a "
-            'synthetic "inferred.<stance>.<family>" marker to preserve the '
-            "constitutional invariant; that marker is strictly less specific "
-            "than a real perceptual-field key, so prefer naming the key."
+            "When grounding_provenance is left empty, the parser records a "
+            'synthetic "inferred.<stance>.<family>" diagnostic marker in '
+            "synthetic_grounding_markers. That marker is not evidence and "
+            "cannot satisfy public, WCS, or recruitment grounding gates, so "
+            "prefer naming the real key."
         )
         parts.append("Complete your sentences. Say as much or as little as the moment requires.")
         parts.append("</reactor_context>")

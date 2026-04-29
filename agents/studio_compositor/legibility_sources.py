@@ -695,31 +695,29 @@ class GroundingProvenanceTickerCairoSource(HomageTransitionalSource):
         state: dict[str, Any],
     ) -> None:
         intent = _read_latest_intent()
+        from shared.director_intent import split_grounding_provenance
+
         prov = intent.get("grounding_provenance") or []
-        # ``fallback.<reason>`` entries are director-loop internal debug
-        # tags (see ``director_loop.py::_silence_hold_fallback_intent``).
-        # They are **meta-state leakage** (feedback_show_dont_tell_director)
-        # and must never render verbatim on broadcast — the operator saw
-        # ``fallback.parser_legacy_shape`` on the livestream 2026-04-22.
-        # Treat a provenance list that contains ONLY fallback tags as
-        # ungrounded (render the (ungrounded) breathing label). Mixed
-        # lists drop the fallback tags but keep operator-meaningful ones.
+        # Synthetic entries (fallback.*, inferred.*, parser-error,
+        # silence-hold) are director-loop diagnostics, not evidence.
+        # They are meta-state leakage on broadcast and cannot make this
+        # ticker look grounded. Mixed lists keep only real refs.
         prov_clean = []
         for s in prov:
             s_str = str(s).strip()
-            if s_str.startswith("fallback."):
-                continue
             if s_str.startswith("."):
                 continue
 
             # If the LLM dumped a comma-separated list into one string, split it
             if " , " in s_str or "," in s_str:
                 parts = [x.strip() for x in s_str.split(",")]
-                for p in parts:
-                    if p and not p.startswith("."):
-                        prov_clean.append(p)
+                real, _synthetic = split_grounding_provenance(
+                    [p for p in parts if p and not p.startswith(".")]
+                )
+                prov_clean.extend(real)
             else:
-                prov_clean.append(s_str)
+                real, _synthetic = split_grounding_provenance([s_str])
+                prov_clean.extend(real)
 
         prov_list = prov_clean[:6]
 

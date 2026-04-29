@@ -124,17 +124,25 @@ def _coerce_float(value: object) -> float | None:
 
 
 def _is_grounded(event: ChronicleEvent) -> bool | None:
-    """Return True if the event carries non-null grounding_provenance.
+    """Return True if the event carries real, non-synthetic grounding_provenance.
 
     Returns None (not False) when the field is absent — events that
     don't even claim to be groundable shouldn't drag the coverage
     fraction down.
     """
+    from shared.director_intent import split_grounding_provenance
+
     prov = _payload_field(event, "grounding_provenance")
     if prov is None:
         return None
-    if isinstance(prov, (list, tuple, dict, str)):
+    if isinstance(prov, dict):
         return bool(prov)
+    if isinstance(prov, str):
+        real, _synthetic = split_grounding_provenance([prov])
+        return bool(real)
+    if isinstance(prov, (list, tuple)):
+        real, _synthetic = split_grounding_provenance([str(entry) for entry in prov])
+        return bool(real)
     return None
 
 

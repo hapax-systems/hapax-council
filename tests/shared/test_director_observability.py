@@ -36,6 +36,35 @@ def test_emit_director_intent_does_not_raise(intent):
     obs.emit_director_intent(intent, condition_id="cond-x")
 
 
+def test_emit_director_intent_counts_synthetic_placeholders():
+    from shared import director_observability as obs
+
+    before = obs._synthetic_grounding_placeholder_total.labels(
+        scope="impingement", marker_family="fallback"
+    )._value.get()
+    intent = DirectorIntent(
+        grounding_provenance=[],
+        synthetic_grounding_markers=["fallback.parser_non_dict"],
+        activity="silence",
+        stance=Stance.NOMINAL,
+        narrative_text="",
+        compositional_impingements=[
+            CompositionalImpingement(
+                narrative="fallback",
+                intent_family="overlay.emphasis",
+                synthetic_grounding_markers=["fallback.parser_non_dict"],
+            )
+        ],
+    )
+
+    obs.emit_director_intent(intent, condition_id="cond-x")
+
+    after = obs._synthetic_grounding_placeholder_total.labels(
+        scope="impingement", marker_family="fallback"
+    )._value.get()
+    assert after - before == 1.0
+
+
 def test_emit_twitch_move_does_not_raise():
     from shared import director_observability as obs
 
@@ -116,6 +145,40 @@ def test_emit_ungrounded_audit_warns_when_intent_empty(caplog):
 
     matched = [r for r in caplog.records if "UNGROUNDED intent" in r.message]
     assert matched, "expected an UNGROUNDED intent warning"
+
+
+def test_emit_ungrounded_audit_warns_when_intent_synthetic_only(caplog):
+    """Synthetic markers are diagnostics, not real grounding success."""
+    import logging as _logging
+
+    from shared import director_observability as obs
+
+    intent = DirectorIntent(
+        grounding_provenance=["fallback.parser_json_decode"],
+        activity="silence",
+        stance=Stance.NOMINAL,
+        narrative_text="",
+        compositional_impingements=[
+            CompositionalImpingement(
+                narrative="fallback",
+                intent_family="overlay.emphasis",
+                grounding_provenance=["fallback.parser_json_decode"],
+            ),
+        ],
+    )
+
+    with caplog.at_level(_logging.WARNING, logger="shared.director_observability"):
+        obs.emit_ungrounded_audit(intent, condition_id="cond-x")
+
+    assert intent.grounding_provenance == []
+    assert intent.synthetic_grounding_markers == ["fallback.parser_json_decode"]
+    assert any(
+        "UNGROUNDED intent" in r.message and "synthetic_only" in r.message for r in caplog.records
+    )
+    assert any(
+        "UNGROUNDED impingement" in r.message and "synthetic_only" in r.message
+        for r in caplog.records
+    )
 
 
 def test_emit_ungrounded_audit_warns_per_empty_impingement(caplog):
@@ -211,6 +274,7 @@ def test_all_director_metrics_register_with_compositor_registry():
         obs._random_mode_pick_total._name,
         obs._random_mode_transition_total._name,
         obs._director_tick_skipped_in_flight_total._name,
+        obs._synthetic_grounding_placeholder_total._name,
         # A HOMAGE sample to confirm the existing path still works.
         obs._homage_package_active._name,
     }

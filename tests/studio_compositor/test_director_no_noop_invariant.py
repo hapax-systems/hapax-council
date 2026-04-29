@@ -73,23 +73,19 @@ def test_silence_hold_fallback_intent_is_valid() -> None:
     assert intent.activity == "silence"
 
 
-def test_silence_hold_impingement_carries_fallback_provenance() -> None:
-    """Deterministic-code fallback paths must declare their ground via
-    a ``fallback.<reason>`` provenance entry. The UNGROUNDED audit then
-    fires only on truly empty grounding (real LLM bugs), not on
-    expected fallback paths. Live regression: pre-fix saw 100+
-    UNGROUNDED warnings per 30 min from this single helper."""
+def test_silence_hold_impingement_carries_synthetic_fallback_marker() -> None:
+    """Deterministic-code fallback paths must not masquerade as evidence."""
     imp = _silence_hold_impingement()
-    assert imp.grounding_provenance == ["fallback.silence_hold"]
+    assert imp.grounding_provenance == []
+    assert imp.synthetic_grounding_markers == ["fallback.silence_hold"]
 
     imp_named = _silence_hold_impingement(reason="parser_legacy_shape")
-    assert imp_named.grounding_provenance == ["fallback.parser_legacy_shape"]
+    assert imp_named.grounding_provenance == []
+    assert imp_named.synthetic_grounding_markers == ["fallback.parser_legacy_shape"]
 
 
-def test_silence_hold_fallback_intent_carries_fallback_provenance() -> None:
-    """Top-level intent + nested impingement both carry the fallback
-    ground keyed on the same reason. UNGROUNDED audit silenced for
-    these deterministic paths; only real LLM bugs trip it."""
+def test_silence_hold_fallback_intent_carries_synthetic_fallback_marker() -> None:
+    """Top-level intent + nested impingement keep fallback out of real provenance."""
     intent = _silence_hold_fallback_intent(
         activity="silence",
         narrative_text="",
@@ -97,8 +93,10 @@ def test_silence_hold_fallback_intent_carries_fallback_provenance() -> None:
         tier="test",
         condition_id="test-condition",
     )
-    assert intent.grounding_provenance == ["fallback.parser_json_decode"]
-    assert intent.compositional_impingements[0].grounding_provenance == [
+    assert intent.grounding_provenance == []
+    assert intent.synthetic_grounding_markers == ["fallback.parser_json_decode"]
+    assert intent.compositional_impingements[0].grounding_provenance == []
+    assert intent.compositional_impingements[0].synthetic_grounding_markers == [
         "fallback.parser_json_decode"
     ]
 
