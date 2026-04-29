@@ -343,7 +343,17 @@ def _classify_live_extra_edge(
     live_by_name: dict[str, Node],
 ) -> str | None:
     """Classify live edges that are known runtime fallback artifacts."""
+    source = declared_by_name.get(source_name)
     target = declared_by_name.get(target_name)
+    if (
+        source is not None
+        and target is not None
+        and source.params.get("private_monitor_bridge") is True
+        and target.params.get("private_monitor_endpoint") is True
+        and source.target_object == target_name
+    ):
+        return "private-monitor-runtime-output-binding"
+
     if (
         target_name == "hapax-m8-instrument-capture"
         and source_name.startswith("alsa_input.usb-ZOOM_Corporation_L-12")
