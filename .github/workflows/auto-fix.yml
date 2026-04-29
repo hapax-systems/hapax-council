@@ -193,7 +193,7 @@ jobs:
             ## Step 4: Verify
             Re-run the same checks that failed to confirm the fix:
             - If lint failed: `uv run ruff check . && uv run ruff format --check .`
-            - If PR typecheck failed: `uv run pyrefly check`
+            - If PR typecheck failed: `uv run --no-project --with pyrefly==0.62.0 pyrefly check`
             - If pyright safety-net failed: `uv run pyright`
             - If tests failed: `uv run pytest tests/ -x -q`
             - If web-build failed: find the frontend dir and run its build command

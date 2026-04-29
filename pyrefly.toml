@@ -88,6 +88,10 @@ bad-return = false
 # of the swap. Per task constraint: do not modify source to suit pyrefly —
 # adjust pyrefly.toml instead.
 bad-index = false
+# Pyrefly 0.62 reports a false positive for optional-dependency abstract async
+# generator overrides when pipecat-ai is visible in the interpreter. Runtime
+# inspection of pipecat-ai 0.0.104 shows the base and override signatures match.
+bad-override = false
 bad-override-param-name = false
 bad-typed-dict-key = false
 bad-unpacking = false
