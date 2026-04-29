@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/trend-current-event-constraint-gate.schema.json",
+  "title": "TrendCurrentEventConstraintGatePolicy",
+  "description": "Machine-readable policy for trend and current-event content opportunity constraints.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "gate_id",
+    "declared_at",
+    "producer",
+    "global_policy",
+    "freshness_policy",
+    "corroboration_policy",
+    "event_age_policy",
+    "sensitivity_policy",
+    "uncertainty_policy",
+    "scoring_features",
+    "infractions",
+    "actions",
+    "downstream_contract"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "gate_id": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "global_policy": {
+      "type": "object",
+      "required": [
+        "trend_as_truth_allowed",
+        "official_or_primary_source_required",
+        "timestamped_freshness_required",
+        "uncertainty_language_required",
+        "under_24h_definitive_ranking_allowed",
+        "sensitive_event_monetization_allowed",
+        "missing_source_bias_blocks_public_claim",
+        "missing_trend_decay_blocks_public_claim"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "trend_as_truth_allowed": {"type": "boolean", "const": false},
+        "official_or_primary_source_required": {"type": "boolean", "const": true},
+        "timestamped_freshness_required": {"type": "boolean", "const": true},
+        "uncertainty_language_required": {"type": "boolean", "const": true},
+        "under_24h_definitive_ranking_allowed": {"type": "boolean", "const": false},
+        "sensitive_event_monetization_allowed": {"type": "boolean", "const": false},
+        "missing_source_bias_blocks_public_claim": {"type": "boolean", "const": true},
+        "missing_trend_decay_blocks_public_claim": {"type": "boolean", "const": true}
+      }
+    },
+    "freshness_policy": {
+      "type": "object",
+      "required": [
+        "timestamped_retrieval_required",
+        "published_at_required_when_available",
+        "recency_label_required",
+        "default_public_source_ttl_s",
+        "trend_source_public_ttl_s",
+        "current_event_public_ttl_s",
+        "missing_or_stale_behavior"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "timestamped_retrieval_required": {"type": "boolean", "const": true},
+        "published_at_required_when_available": {"type": "boolean"},
+        "recency_label_required": {"type": "boolean", "const": true},
+        "default_public_source_ttl_s": {"type": "integer", "minimum": 1},
+        "trend_source_public_ttl_s": {"type": "integer", "minimum": 1},
+        "current_event_public_ttl_s": {"type": "integer", "minimum": 1},
+        "missing_or_stale_behavior": {"$ref": "#/$defs/action"}
+      }
+    },
+    "corroboration_policy": {
+      "type": "object",
+      "required": [
+        "primary_or_official_source_min_count",
+        "corroborating_source_min_count",
+        "official_source_classes",
+        "secondary_sources_allowed_as_context_only"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "primary_or_official_source_min_count": {"type": "integer", "minimum": 1},
+        "corroborating_source_min_count": {"type": "integer", "minimum": 2},
+        "official_source_classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "secondary_sources_allowed_as_context_only": {"type": "boolean", "const": true}
+      }
+    },
+    "event_age_policy": {
+      "type": "object",
+      "required": [
+        "under_24h_threshold_s",
+        "under_24h_default_action",
+        "allowed_under_24h_format_families",
+        "blocked_under_24h_format_families"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "under_24h_threshold_s": {"type": "integer", "const": 86400},
+        "under_24h_default_action": {"type": "string", "const": "downgrade_to_watch"},
+        "allowed_under_24h_format_families": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "contains": {"const": "watching"},
+          "uniqueItems": true
+        },
+        "blocked_under_24h_format_families": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "contains": {"const": "ranking"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "sensitivity_policy": {
+      "type": "object",
+      "required": [
+        "sensitivity_gate_required",
+        "sensitive_categories",
+        "allowed_sensitive_format_families",
+        "edsa_context_required",
+        "monetization_allowed",
+        "default_sensitive_action"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sensitivity_gate_required": {"type": "boolean", "const": true},
+        "sensitive_categories": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "allowed_sensitive_format_families": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "contains": {"const": "refusal"},
+          "uniqueItems": true
+        },
+        "edsa_context_required": {"type": "boolean", "const": true},
+        "monetization_allowed": {"type": "boolean", "const": false},
+        "default_sensitive_action": {"type": "string", "const": "force_refusal_format"}
+      }
+    },
+    "uncertainty_policy": {
+      "type": "object",
+      "required": [
+        "title_uncertainty_required",
+        "description_uncertainty_required",
+        "required_copy_fields",
+        "allowed_uncertainty_markers",
+        "missing_uncertainty_behavior"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "title_uncertainty_required": {"type": "boolean", "const": true},
+        "description_uncertainty_required": {"type": "boolean", "const": true},
+        "required_copy_fields": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "contains": {"const": "uncertainty_language"},
+          "uniqueItems": true
+        },
+        "allowed_uncertainty_markers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "missing_uncertainty_behavior": {"type": "string", "const": "downgrade_to_watch"}
+      }
+    },
+    "scoring_features": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"$ref": "#/$defs/scoring_feature"}
+    },
+    "infractions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/infraction"},
+      "uniqueItems": true
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 4,
+      "items": {"$ref": "#/$defs/action_record"}
+    },
+    "downstream_contract": {
+      "type": "object",
+      "required": ["blocks", "feeds", "must_preserve_fields"],
+      "additionalProperties": false,
+      "properties": {
+        "blocks": {
+          "type": "array",
+          "contains": {"const": "content-candidate-discovery-daemon"},
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "feeds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "must_preserve_fields": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "contains": {"const": "trend_decay_score"},
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "allow_public_claim",
+        "downgrade_to_watch",
+        "force_refusal_format",
+        "block_public_claim"
+      ]
+    },
+    "infraction": {
+      "type": "string",
+      "enum": [
+        "missing_freshness",
+        "stale_source",
+        "missing_primary_or_official_source",
+        "under_24h_definitive_format",
+        "sensitive_event_exploitation",
+        "missing_uncertainty_language",
+        "trend_as_truth",
+        "source_bias_untracked"
+      ]
+    },
+    "scoring_feature": {
+      "type": "object",
+      "required": ["feature_name", "meaning", "truth_warrant", "required_for_public_claim", "downstream_prior"],
+      "additionalProperties": false,
+      "properties": {
+        "feature_name": {"type": "string", "enum": ["trend_decay_score", "source_bias_score"]},
+        "meaning": {"type": "string", "minLength": 1},
+        "truth_warrant": {"type": "boolean", "const": false},
+        "required_for_public_claim": {"type": "boolean"},
+        "downstream_prior": {"type": "string", "minLength": 1}
+      }
+    },
+    "action_record": {
+      "type": "object",
+      "required": ["action", "public_claim_allowed", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {"$ref": "#/$defs/action"},
+        "public_claim_allowed": {"type": "boolean"},
+        "description": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "gate_id": "trend_current_event_constraint_gate_v1",
+  "declared_at": "2026-04-29T04:17:00Z",
+  "producer": "cx-red",
+  "global_policy": {
+    "trend_as_truth_allowed": false,
+    "official_or_primary_source_required": true,
+    "timestamped_freshness_required": true,
+    "uncertainty_language_required": true,
+    "under_24h_definitive_ranking_allowed": false,
+    "sensitive_event_monetization_allowed": false,
+    "missing_source_bias_blocks_public_claim": true,
+    "missing_trend_decay_blocks_public_claim": true
+  },
+  "freshness_policy": {
+    "timestamped_retrieval_required": true,
+    "published_at_required_when_available": true,
+    "recency_label_required": true,
+    "default_public_source_ttl_s": 86400,
+    "trend_source_public_ttl_s": 1800,
+    "current_event_public_ttl_s": 3600,
+    "missing_or_stale_behavior": "block_public_claim"
+  },
+  "corroboration_policy": {
+    "primary_or_official_source_min_count": 1,
+    "corroborating_source_min_count": 2,
+    "official_source_classes": ["official_release", "primary_source", "platform_api", "public_record"],
+    "secondary_sources_allowed_as_context_only": true
+  },
+  "event_age_policy": {
+    "under_24h_threshold_s": 86400,
+    "under_24h_default_action": "downgrade_to_watch",
+    "allowed_under_24h_format_families": ["watching", "audit", "refusal", "correction", "claim_audit"],
+    "blocked_under_24h_format_families": ["ranking", "tier_list", "definitive_review", "prediction", "best_of"]
+  },
+  "sensitivity_policy": {
+    "sensitivity_gate_required": true,
+    "sensitive_categories": [
+      "politics",
+      "elections",
+      "allegations",
+      "health",
+      "finance",
+      "violence",
+      "tragedy",
+      "identifiable_persons",
+      "legal",
+      "public_safety"
+    ],
+    "allowed_sensitive_format_families": ["refusal", "audit", "claim_audit", "correction"],
+    "edsa_context_required": true,
+    "monetization_allowed": false,
+    "default_sensitive_action": "force_refusal_format"
+  },
+  "uncertainty_policy": {
+    "title_uncertainty_required": true,
+    "description_uncertainty_required": true,
+    "required_copy_fields": ["recency_label", "freshness_checked_at", "uncertainty_language"],
+    "allowed_uncertainty_markers": ["current evidence", "early signal", "unverified", "watching", "needs corroboration", "as of"],
+    "missing_uncertainty_behavior": "downgrade_to_watch"
+  },
+  "scoring_features": [
+    {
+      "feature_name": "trend_decay_score",
+      "meaning": "Expected decay of public relevance for the trend/current-event candidate.",
+      "truth_warrant": false,
+      "required_for_public_claim": true,
+      "downstream_prior": "trend_decay"
+    },
+    {
+      "feature_name": "source_bias_score",
+      "meaning": "Risk score for source skew, interested-party framing, or narrow sample bias.",
+      "truth_warrant": false,
+      "required_for_public_claim": true,
+      "downstream_prior": "source_prior"
+    }
+  ],
+  "infractions": [
+    "missing_freshness",
+    "stale_source",
+    "missing_primary_or_official_source",
+    "under_24h_definitive_format",
+    "sensitive_event_exploitation",
+    "missing_uncertainty_language",
+    "trend_as_truth",
+    "source_bias_untracked"
+  ],
+  "actions": [
+    {
+      "action": "allow_public_claim",
+      "public_claim_allowed": true,
+      "description": "All freshness, corroboration, sensitivity, uncertainty, trend-decay, and source-bias constraints pass."
+    },
+    {
+      "action": "downgrade_to_watch",
+      "public_claim_allowed": false,
+      "description": "Candidate may remain private or become a watching/audit/refusal format, but cannot make a public definitive claim."
+    },
+    {
+      "action": "force_refusal_format",
+      "public_claim_allowed": false,
+      "description": "Candidate must become a refusal, audit, correction, or claim-audit artifact before any public treatment."
+    },
+    {
+      "action": "block_public_claim",
+      "public_claim_allowed": false,
+      "description": "Candidate lacks required evidence or commits a grounding infraction; no public claim may be emitted."
+    }
+  ],
+  "downstream_contract": {
+    "blocks": ["content-candidate-discovery-daemon"],
+    "feeds": [
+      "content-opportunity-model",
+      "format-grounding-evaluator",
+      "grounding-commitment-gate",
+      "research-vehicle-public-event-contract"
+    ],
+    "must_preserve_fields": [
+      "gate_id",
+      "candidate_id",
+      "action",
+      "infractions",
+      "blockers",
+      "required_copy_fields",
+      "trend_decay_score",
+      "source_bias_score",
+      "freshness_checked_at",
+      "recency_label",
+      "primary_or_official_source_refs"
+    ]
+  }
+}

@@ -17,6 +17,7 @@ from shared.grounding_provider_router import (
     validate_eval_suite,
     validate_provider_registry,
 )
+from shared.trend_current_event_gate import evaluate_candidate, validate_policy
 
 # FastAPI registers this route by decorator; vulture does not follow APIRouter.
 studio_egress_state
@@ -45,3 +46,9 @@ validate_provider_registry
 validate_eval_suite
 build_eval_artifact
 build_privacy_egress_preflight
+
+# Trend/current-event gate helpers are the deterministic public API for the
+# content-candidate-discovery daemon and public adapters. This contract lands
+# before those consumers so vulture cannot see the dynamic call path yet.
+evaluate_candidate
+validate_policy
