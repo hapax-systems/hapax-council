@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
+
+import jsonschema
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SPEC = (
@@ -21,8 +26,21 @@ def _body() -> str:
     return SPEC.read_text(encoding="utf-8")
 
 
-def _schema() -> dict[str, object]:
+def _schema() -> dict[str, Any]:
     return json.loads(SCHEMA.read_text(encoding="utf-8"))
+
+
+def _validator() -> jsonschema.Draft202012Validator:
+    schema = _schema()
+    jsonschema.Draft202012Validator.check_schema(schema)
+    return jsonschema.Draft202012Validator(schema)
+
+
+def _example_gate_result() -> dict[str, Any]:
+    body = _body()
+    match = re.search(r"```json\n(?P<payload>.*?)\n```", body, re.DOTALL)
+    assert match, "example GroundingCommitmentGateResult JSON block missing"
+    return json.loads(match.group("payload"))
 
 
 def test_spec_covers_required_contract_sections() -> None:
@@ -83,6 +101,17 @@ def test_schema_has_required_gate_and_claim_fields() -> None:
         assert field in claim_required
 
 
+def test_schema_requires_non_empty_claim_evidence_and_source_refs() -> None:
+    schema = _schema()
+    claim = schema["properties"]["claim"]["properties"]
+    provenance = claim["provenance"]["properties"]
+
+    assert claim["evidence_refs"]["minItems"] == 1
+    assert claim["evidence_refs"]["items"]["minLength"] == 1
+    assert provenance["source_refs"]["minItems"] == 1
+    assert provenance["source_refs"]["items"]["minLength"] == 1
+
+
 def test_schema_names_all_forbidden_grounding_infractions() -> None:
     schema = _schema()
     infractions = set(schema["$defs"]["grounding_infraction"]["enum"])
@@ -128,12 +157,10 @@ def test_no_expert_system_policy_is_machine_readable_and_strict() -> None:
 
 
 def test_example_gate_result_is_parseable_and_conservative() -> None:
-    body = _body()
     schema = _schema()
-    match = re.search(r"```json\n(?P<payload>.*?)\n```", body, re.DOTALL)
-    assert match, "example GroundingCommitmentGateResult JSON block missing"
+    gate = _example_gate_result()
 
-    gate = json.loads(match.group("payload"))
+    _validator().validate(gate)
 
     assert gate["schema_version"] == 1
     assert re.match(schema["properties"]["gate_id"]["pattern"], gate["gate_id"])
@@ -145,6 +172,73 @@ def test_example_gate_result_is_parseable_and_conservative() -> None:
     assert gate["no_expert_system_policy"]["authoritative_verdict_allowed"] is False
     assert gate["no_expert_system_policy"]["latest_intelligence_default"] is True
     assert "dry_run_until_provider_smoke" in gate["gate_result"]["blockers"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "decision"),
+    (
+        ("dry_run", "may_emit_claim"),
+        ("public_live", "may_publish_live"),
+        ("public_archive", "may_publish_archive"),
+        ("public_monetizable", "may_monetize"),
+    ),
+)
+def test_claim_bearing_gate_success_rejects_empty_refs(mode: str, decision: str) -> None:
+    validator = _validator()
+
+    missing_evidence = deepcopy(_example_gate_result())
+    missing_evidence["public_private_mode"] = mode
+    missing_evidence["claim"]["public_private_mode"] = mode
+    missing_evidence["gate_result"][decision] = True
+    missing_evidence["claim"]["evidence_refs"] = []
+
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(missing_evidence)
+
+    missing_source = deepcopy(_example_gate_result())
+    missing_source["public_private_mode"] = mode
+    missing_source["claim"]["public_private_mode"] = mode
+    missing_source["gate_result"][decision] = True
+    missing_source["claim"]["provenance"]["source_refs"] = []
+
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(missing_source)
+
+
+def test_unsupported_claim_refusal_fixture_still_needs_blocker_refs() -> None:
+    validator = _validator()
+    refusal = deepcopy(_example_gate_result())
+    refusal["public_private_mode"] = "private"
+    refusal["claim"]["public_private_mode"] = "private"
+    refusal["claim"]["claim_text"] = "Unsupported public claim held as a private refusal."
+    refusal["claim"]["evidence_refs"] = ["infraction:unsupported_claim"]
+    refusal["claim"]["provenance"]["source_refs"] = ["schema:grounding-commitment-gate"]
+    refusal["claim"]["confidence"] = {"kind": "none", "value": None, "label": "none"}
+    refusal["claim"]["freshness"] = {
+        "status": "not_applicable",
+        "checked_at": None,
+        "age_s": None,
+        "ttl_s": None,
+    }
+    refusal["claim"]["refusal_correction_path"]["refusal_reason"] = "unsupported_claim"
+    refusal["infractions"] = ["unsupported_claim"]
+    refusal["gate_state"] = "refusal"
+    refusal["gate_result"]["may_emit_claim"] = False
+    refusal["gate_result"]["may_publish_live"] = False
+    refusal["gate_result"]["may_publish_archive"] = False
+    refusal["gate_result"]["may_monetize"] = False
+    refusal["gate_result"]["must_emit_refusal_artifact"] = True
+    refusal["gate_result"]["blockers"] = ["unsupported_claim"]
+    refusal["gate_result"]["unavailable_reasons"] = ["claim_evidence_refs_missing"]
+
+    validator.validate(refusal)
+
+    unsupported_empty_refs = deepcopy(refusal)
+    unsupported_empty_refs["claim"]["evidence_refs"] = []
+    unsupported_empty_refs["claim"]["provenance"]["source_refs"] = []
+
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(unsupported_empty_refs)
 
 
 def test_programme_formats_runs_refusals_and_downstream_surfaces_are_pinned() -> None:
