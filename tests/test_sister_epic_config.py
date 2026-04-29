@@ -27,80 +27,68 @@ class TestDiscordChannels:
         d = _load("discord-channels.yaml")
         assert d["version"] == 1
         assert d["schema_owner"] == "operator"
-        assert d["operator_action_required"] is True
+        assert d["operator_action_required"] is False
+        assert d["status"] == "superseded_refusal"
+        assert d["activation_allowed"] is False
+        assert d["superseded_by"] == "config/support-surface-registry.json"
         assert "server" in d
         assert "categories" in d
         assert "moderation" in d
 
-    def test_categories_are_lists(self) -> None:
+    def test_community_channels_are_superseded(self) -> None:
         d = _load("discord-channels.yaml")
         assert isinstance(d["categories"], list)
-        assert len(d["categories"]) >= 3  # announcements + discussion + tentpole minimum
-        for cat in d["categories"]:
-            assert "id" in cat
-            assert "channels" in cat
-            assert isinstance(cat["channels"], list)
+        assert d["categories"] == []
+        assert d["server"]["activation_allowed"] is False
+        assert d["server"]["allowed_use"] == "none_for_support"
 
-    def test_every_channel_has_id_and_kind(self) -> None:
-        d = _load("discord-channels.yaml")
-        for cat in d["categories"]:
-            for ch in cat["channels"]:
-                assert "id" in ch, f"channel missing id in category {cat['id']}"
-                assert "kind" in ch, f"channel {ch['id']} missing kind"
-                assert ch["kind"] in ("text", "voice")
-
-    def test_moderation_gate_on_by_default(self) -> None:
+    def test_moderation_surface_is_refused(self) -> None:
         d = _load("discord-channels.yaml")
         mod = d["moderation"]
-        assert mod["onboarding_gate"]["enabled"] is True
-        assert mod["onboarding_gate"]["manifesto_acknowledgment_required"] is True
+        assert mod["enabled"] is False
+        assert mod["operator_action_required"] is False
+        assert "multi-user support surface" in mod["reason"]
 
-    def test_phase_9_integration_point_present(self) -> None:
-        """Attack log path hooks into Phase 9 chat_attack_log.py output."""
+    def test_publication_bus_boundary_is_not_support_surface(self) -> None:
         d = _load("discord-channels.yaml")
-        assert d["moderation"]["attack_log_path"] == "/dev/shm/hapax-chat-attack-log.jsonl"
+        boundary = d["publication_bus_boundary"]
+        assert boundary["support_surface_allowed"] is False
+        assert boundary["one_way_publication_bus_may_be_evaluated_elsewhere"] is True
+        assert boundary["required_contract"].endswith("cross-surface-event-contract-design.md")
 
 
 class TestPatreonTiers:
     def test_file_exists(self) -> None:
         assert (SISTER_EPIC_DIR / "patreon-tiers.yaml").is_file()
 
-    def test_five_tiers_present(self) -> None:
+    def test_tiers_are_superseded_refusal(self) -> None:
         d = _load("patreon-tiers.yaml")
-        tier_ids = [t["id"] for t in d["tiers"]]
-        # Bundle 7 §8.3 taxonomy
-        assert tier_ids == ["companion", "listener", "studio", "lab", "patron"]
+        assert d["operator_action_required"] is False
+        assert d["status"] == "superseded_refusal"
+        assert d["activation_allowed"] is False
+        assert d["superseded_by"] == "config/support-surface-registry.json"
+        assert d["tiers"] == []
 
-    def test_each_tier_has_required_fields(self) -> None:
+    def test_replacement_surfaces_are_no_perk_support_rails(self) -> None:
         d = _load("patreon-tiers.yaml")
-        for tier in d["tiers"]:
-            assert "id" in tier
-            assert "display_name" in tier
-            assert "price_usd_monthly" in tier  # may be null (operator fills)
-            assert "description" in tier
-            assert "perks" in tier
-            assert isinstance(tier["perks"], list)
-            assert len(tier["perks"]) >= 1
-            assert "discord_role" in tier
+        assert d["replacement_surface_ids"] == [
+            "liberapay_recurring",
+            "lightning_invoice_receive",
+            "nostr_zaps",
+        ]
 
-    def test_constraint_flags_enforce_ethics(self) -> None:
-        """Token pole 7 + interpersonal_transparency compliance is schema-enforced."""
+    def test_constraint_flags_refuse_perk_ladder(self) -> None:
         d = _load("patreon-tiers.yaml")
         constraints = d["constraints"]
-        assert constraints["no_parasocial_perks"] is True
-        assert constraints["no_sentiment_reward"] is True
-        assert constraints["no_loss_framing"] is True
-        assert constraints["token_pole_7_compliant"] is True
-        assert constraints["interpersonal_transparency_compliant"] is True
-
-    def test_discord_role_ids_match_channels_yaml(self) -> None:
-        """Tier Discord roles should align with channel gate roles."""
-        tiers_doc = _load("patreon-tiers.yaml")
-        # Just assert the tier roles exist and are non-empty strings.
-        for tier in tiers_doc["tiers"]:
-            role = tier["discord_role"]
-            assert isinstance(role, str)
-            assert role.startswith("patron-")
+        assert constraints["no_patreon_account"] is True
+        assert constraints["no_tiers"] is True
+        assert constraints["no_perks"] is True
+        assert constraints["no_role_sync"] is True
+        assert constraints["no_private_posts"] is True
+        assert constraints["no_name_acknowledgments"] is True
+        assert constraints["no_leaderboards"] is True
+        assert constraints["no_supporter_identity_public_state"] is True
+        assert constraints["work_continues_regardless"] is True
 
 
 class TestVisualSignature:

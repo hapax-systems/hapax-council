@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/support-surface-registry.schema.json",
+  "title": "SupportSurfaceRegistry",
+  "description": "Canonical no-perk support surface registry for direct support, platform-native fan funding, patronage refusals, and support copy.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "registry_id",
+    "declared_at",
+    "producer",
+    "source_refs",
+    "no_perk_support_doctrine",
+    "aggregate_receipt_policy",
+    "surfaces"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "registry_id": {"type": "string", "const": "support_surface_registry"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string"},
+    "source_refs": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "no_perk_support_doctrine": {"$ref": "#/$defs/no_perk_support_doctrine"},
+    "aggregate_receipt_policy": {"$ref": "#/$defs/aggregate_receipt_policy"},
+    "surfaces": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/support_surface"},
+      "minItems": 10
+    }
+  },
+  "x-required_surface_ids": [
+    "youtube_ads",
+    "youtube_supers",
+    "youtube_super_thanks",
+    "youtube_memberships_no_perk",
+    "liberapay_recurring",
+    "lightning_invoice_receive",
+    "nostr_zaps",
+    "kofi_tips_guarded",
+    "github_sponsors",
+    "patreon",
+    "substack_paid_subscription",
+    "discord_community_subscriptions",
+    "stripe_payment_links",
+    "consulting_as_service",
+    "sponsor_support_copy"
+  ],
+  "x-required_refusal_conversion_surface_ids": [
+    "github_sponsors",
+    "patreon",
+    "substack_paid_subscription",
+    "discord_community_subscriptions",
+    "stripe_payment_links",
+    "consulting_as_service"
+  ],
+  "$defs": {
+    "surface_decision": {
+      "type": "string",
+      "enum": ["allowed", "guarded", "refusal_conversion"]
+    },
+    "surface_family": {
+      "type": "string",
+      "enum": [
+        "platform_native",
+        "direct_support",
+        "patronage",
+        "community",
+        "commercial",
+        "copy"
+      ]
+    },
+    "automation_class": {
+      "type": "string",
+      "enum": ["AUTO", "BOOTSTRAP", "GUARDED", "REFUSAL_ARTIFACT"]
+    },
+    "no_perk_support_doctrine": {
+      "type": "object",
+      "required": [
+        "doctrine_id",
+        "support_buys_access",
+        "support_buys_requests",
+        "support_buys_private_advice",
+        "support_buys_priority",
+        "support_buys_shoutouts",
+        "support_buys_guarantees",
+        "support_buys_client_service",
+        "support_buys_deliverables",
+        "support_buys_control",
+        "work_continues_regardless",
+        "allowed_copy_clauses",
+        "forbidden_copy_shapes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "doctrine_id": {"type": "string", "const": "no_perk_instrument_support"},
+        "support_buys_access": {"type": "boolean", "const": false},
+        "support_buys_requests": {"type": "boolean", "const": false},
+        "support_buys_private_advice": {"type": "boolean", "const": false},
+        "support_buys_priority": {"type": "boolean", "const": false},
+        "support_buys_shoutouts": {"type": "boolean", "const": false},
+        "support_buys_guarantees": {"type": "boolean", "const": false},
+        "support_buys_client_service": {"type": "boolean", "const": false},
+        "support_buys_deliverables": {"type": "boolean", "const": false},
+        "support_buys_control": {"type": "boolean", "const": false},
+        "work_continues_regardless": {"type": "boolean", "const": true},
+        "allowed_copy_clauses": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 3
+        },
+        "forbidden_copy_shapes": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 6,
+          "uniqueItems": true
+        }
+      }
+    },
+    "aggregate_receipt_policy": {
+      "type": "object",
+      "required": [
+        "policy_id",
+        "public_state_aggregate_only",
+        "per_receipt_public_state_allowed",
+        "identity_retention_allowed",
+        "comment_text_retention_allowed",
+        "public_fields",
+        "forbidden_public_fields",
+        "private_storage_policy"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {"type": "string", "const": "aggregate_only_support_receipts"},
+        "public_state_aggregate_only": {"type": "boolean", "const": true},
+        "per_receipt_public_state_allowed": {"type": "boolean", "const": false},
+        "identity_retention_allowed": {"type": "boolean", "const": false},
+        "comment_text_retention_allowed": {"type": "boolean", "const": false},
+        "public_fields": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 4,
+          "uniqueItems": true
+        },
+        "forbidden_public_fields": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 6,
+          "uniqueItems": true
+        },
+        "private_storage_policy": {"type": "string"}
+      }
+    },
+    "support_surface": {
+      "type": "object",
+      "required": [
+        "surface_id",
+        "display_name",
+        "surface_family",
+        "money_form",
+        "decision",
+        "automation_class",
+        "no_perk_required",
+        "aggregate_only_receipts",
+        "readiness_gates",
+        "allowed_public_copy",
+        "refusal_brief_refs",
+        "buildable_conversion",
+        "notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "surface_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+        "display_name": {"type": "string"},
+        "surface_family": {"$ref": "#/$defs/surface_family"},
+        "money_form": {"type": "string"},
+        "decision": {"$ref": "#/$defs/surface_decision"},
+        "automation_class": {"$ref": "#/$defs/automation_class"},
+        "no_perk_required": {"type": "boolean", "const": true},
+        "aggregate_only_receipts": {"type": "boolean", "const": true},
+        "readiness_gates": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "allowed_public_copy": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "refusal_brief_refs": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "buildable_conversion": {"type": ["string", "null"]},
+        "notes": {"type": "string"}
+      }
+    }
+  }
+}
