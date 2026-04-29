@@ -59,6 +59,12 @@ from shared.tier_ranking_bracket_engine import (
     emit_deterministic_boundaries,
 )
 from shared.trend_current_event_gate import evaluate_candidate, validate_policy
+from shared.world_capability_surface import (
+    EvidenceEnvelopeRequirements,
+    WitnessRequirement,
+    WorldCapabilityRecord,
+    WorldCapabilityRegistry,
+)
 
 # FastAPI registers this route by decorator; vulture does not follow APIRouter.
 studio_egress_state
@@ -145,3 +151,16 @@ load_support_surface_registry
 surfaces_by_decision
 public_prompt_allowed
 build_aggregate_receipt_projection
+
+# World Capability Surface seed loader helpers are the public contract for
+# downstream witness probes, director snapshots, scheduler, runner, and scrim
+# posture tasks. Pydantic invokes validators dynamically; downstream tasks
+# consume the read helpers after this registry lands.
+EvidenceEnvelopeRequirements._requires_core_fields
+WitnessRequirement._inferred_context_is_not_a_witness
+WorldCapabilityRecord._fail_closed_static_seed
+WorldCapabilityRegistry._validate_registry
+WorldCapabilityRegistry.require
+WorldCapabilityRegistry.records_for_domain
+WorldCapabilityRegistry.records_for_surface_ref
+WorldCapabilityRegistry.blocked_reason_codes
