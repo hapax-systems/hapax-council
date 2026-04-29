@@ -1,0 +1,326 @@
+{
+  "schema_version": 1,
+  "registry_id": "grounding_provider_router_20260429",
+  "declared_at": "2026-04-29T02:35:00Z",
+  "producer": "cx-red",
+  "routing_policy": {
+    "open_world_claims_require_grounding": true,
+    "latest_cloud_model_default": true,
+    "older_model_exception_required": true,
+    "command_r_source_supplied_only": true,
+    "privacy_egress_preflight_required_for_cloud": true,
+    "director_model_swap_requires_eval_pass": true,
+    "grounding_required_claim_types": [
+      "open_world_factual_claim",
+      "current_event_claim",
+      "model_vendor_comparison",
+      "rights_provenance_claim",
+      "public_content_programming_assertion"
+    ],
+    "anthropic_required_aliases": {
+      "claude-sonnet": "claude-sonnet-4-6",
+      "claude-opus": "claude-opus-4-7"
+    },
+    "gemini_required_route_family": "gemini-3"
+  },
+  "providers": [
+    {
+      "provider_id": "local_supplied_evidence_command_r",
+      "adapter_id": "local_supplied_evidence_command_r",
+      "provider_family": "cohere_command_r_local_tabbyapi",
+      "provider_kind": "source_conditioned",
+      "model_id": "command-r-08-2024-exl3-5.0bpw",
+      "tool_id": "supplied_evidence_citation_envelope",
+      "cloud_route": false,
+      "latest_model_default": false,
+      "requires_supplied_evidence": true,
+      "can_satisfy_open_world_claims": false,
+      "egress_preflight_required": false,
+      "director_default_allowed": true,
+      "capabilities": [
+        "local_private_generation",
+        "supplied_evidence_citation",
+        "director_grounding_substrate",
+        "source_conditioned_claim_drafting"
+      ],
+      "evidence_contract": {
+        "required_fields": [
+          "provider_id",
+          "model_id",
+          "tool_id",
+          "input_claim_request",
+          "retrieval_events",
+          "source_items",
+          "claim_items",
+          "citations",
+          "confidence_or_posterior",
+          "source_quality",
+          "freshness",
+          "refusal_or_uncertainty",
+          "tool_errors",
+          "raw_source_hashes",
+          "retrieved_at"
+        ],
+        "citation_binding_required": true,
+        "raw_source_hash_required": true,
+        "freshness_required": true,
+        "tool_error_surface_required": true
+      },
+      "exception_record": {
+        "route_scope": "local director and supplied-evidence private grounding drafts",
+        "reason": "local_director_grounding_evidence",
+        "evidence_ref": "local-config:llm-stack/litellm-config.yaml",
+        "owner": "single_operator",
+        "expires_at": null
+      },
+      "source_docs": [
+        "https://docs.cohere.com/docs/command-r",
+        "https://docs.cohere.com/docs/retrieval-augmented-generation-rag"
+      ]
+    },
+    {
+      "provider_id": "openai_web_search",
+      "adapter_id": "openai_web_search",
+      "provider_family": "openai_responses",
+      "provider_kind": "source_acquiring",
+      "model_id": "gpt-5.5",
+      "tool_id": "web_search",
+      "cloud_route": true,
+      "latest_model_default": true,
+      "requires_supplied_evidence": false,
+      "can_satisfy_open_world_claims": true,
+      "egress_preflight_required": true,
+      "director_default_allowed": false,
+      "capabilities": [
+        "live_web_search",
+        "domain_filtering",
+        "url_citations",
+        "search_action_trace",
+        "page_opening_on_reasoning_models"
+      ],
+      "evidence_contract": {
+        "required_fields": [
+          "provider_id",
+          "model_id",
+          "tool_id",
+          "input_claim_request",
+          "retrieval_events",
+          "source_items",
+          "claim_items",
+          "citations",
+          "confidence_or_posterior",
+          "source_quality",
+          "freshness",
+          "refusal_or_uncertainty",
+          "tool_errors",
+          "raw_source_hashes",
+          "retrieved_at"
+        ],
+        "citation_binding_required": true,
+        "raw_source_hash_required": true,
+        "freshness_required": true,
+        "tool_error_surface_required": true
+      },
+      "exception_record": null,
+      "source_docs": [
+        "https://developers.openai.com/api/docs/guides/tools-web-search",
+        "https://openai.com/index/introducing-gpt-5-5/"
+      ]
+    },
+    {
+      "provider_id": "anthropic_web_search",
+      "adapter_id": "anthropic_web_search",
+      "provider_family": "anthropic_claude",
+      "provider_kind": "source_acquiring",
+      "model_id": "claude-sonnet-4-6",
+      "tool_id": "web_search",
+      "cloud_route": true,
+      "latest_model_default": true,
+      "requires_supplied_evidence": false,
+      "can_satisfy_open_world_claims": true,
+      "egress_preflight_required": true,
+      "director_default_allowed": false,
+      "capabilities": [
+        "real_time_web_content",
+        "cited_sources",
+        "allowed_domain_filtering",
+        "blocked_domain_filtering",
+        "search_result_control"
+      ],
+      "evidence_contract": {
+        "required_fields": [
+          "provider_id",
+          "model_id",
+          "tool_id",
+          "input_claim_request",
+          "retrieval_events",
+          "source_items",
+          "claim_items",
+          "citations",
+          "confidence_or_posterior",
+          "source_quality",
+          "freshness",
+          "refusal_or_uncertainty",
+          "tool_errors",
+          "raw_source_hashes",
+          "retrieved_at"
+        ],
+        "citation_binding_required": true,
+        "raw_source_hash_required": true,
+        "freshness_required": true,
+        "tool_error_surface_required": true
+      },
+      "exception_record": null,
+      "source_docs": [
+        "https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool",
+        "https://platform.claude.com/docs/en/release-notes/overview"
+      ]
+    },
+    {
+      "provider_id": "gemini_google_search",
+      "adapter_id": "gemini_google_search",
+      "provider_family": "google_gemini",
+      "provider_kind": "source_acquiring",
+      "model_id": "gemini-3.1-pro-preview",
+      "tool_id": "google_search",
+      "cloud_route": true,
+      "latest_model_default": true,
+      "requires_supplied_evidence": false,
+      "can_satisfy_open_world_claims": true,
+      "egress_preflight_required": true,
+      "director_default_allowed": false,
+      "capabilities": [
+        "google_search_grounding",
+        "web_search_queries",
+        "grounding_chunks",
+        "grounding_supports",
+        "url_context_combination"
+      ],
+      "evidence_contract": {
+        "required_fields": [
+          "provider_id",
+          "model_id",
+          "tool_id",
+          "input_claim_request",
+          "retrieval_events",
+          "source_items",
+          "claim_items",
+          "citations",
+          "confidence_or_posterior",
+          "source_quality",
+          "freshness",
+          "refusal_or_uncertainty",
+          "tool_errors",
+          "raw_source_hashes",
+          "retrieved_at"
+        ],
+        "citation_binding_required": true,
+        "raw_source_hash_required": true,
+        "freshness_required": true,
+        "tool_error_surface_required": true
+      },
+      "exception_record": null,
+      "source_docs": [
+        "https://ai.google.dev/gemini-api/docs/google-search"
+      ]
+    },
+    {
+      "provider_id": "gemini_deep_research",
+      "adapter_id": "gemini_deep_research",
+      "provider_family": "google_gemini",
+      "provider_kind": "source_acquiring",
+      "model_id": "deep-research-preview-04-2026",
+      "tool_id": "interactions_deep_research",
+      "cloud_route": true,
+      "latest_model_default": true,
+      "requires_supplied_evidence": false,
+      "can_satisfy_open_world_claims": true,
+      "egress_preflight_required": true,
+      "director_default_allowed": false,
+      "capabilities": [
+        "background_research",
+        "interaction_polling",
+        "stream_resume",
+        "google_search",
+        "url_context",
+        "file_search_candidate"
+      ],
+      "evidence_contract": {
+        "required_fields": [
+          "provider_id",
+          "model_id",
+          "tool_id",
+          "input_claim_request",
+          "retrieval_events",
+          "source_items",
+          "claim_items",
+          "citations",
+          "confidence_or_posterior",
+          "source_quality",
+          "freshness",
+          "refusal_or_uncertainty",
+          "tool_errors",
+          "raw_source_hashes",
+          "retrieved_at"
+        ],
+        "citation_binding_required": true,
+        "raw_source_hash_required": true,
+        "freshness_required": true,
+        "tool_error_surface_required": true
+      },
+      "exception_record": null,
+      "source_docs": [
+        "https://ai.google.dev/gemini-api/docs/deep-research"
+      ]
+    },
+    {
+      "provider_id": "perplexity_search_or_sonar",
+      "adapter_id": "perplexity_search_or_sonar",
+      "provider_family": "perplexity",
+      "provider_kind": "source_acquiring",
+      "model_id": "sonar",
+      "tool_id": "sonar_api",
+      "cloud_route": true,
+      "latest_model_default": true,
+      "requires_supplied_evidence": false,
+      "can_satisfy_open_world_claims": true,
+      "egress_preflight_required": true,
+      "director_default_allowed": false,
+      "capabilities": [
+        "web_grounded_responses",
+        "openai_compatible_client",
+        "streaming",
+        "search_options",
+        "fast_current_web_scouting"
+      ],
+      "evidence_contract": {
+        "required_fields": [
+          "provider_id",
+          "model_id",
+          "tool_id",
+          "input_claim_request",
+          "retrieval_events",
+          "source_items",
+          "claim_items",
+          "citations",
+          "confidence_or_posterior",
+          "source_quality",
+          "freshness",
+          "refusal_or_uncertainty",
+          "tool_errors",
+          "raw_source_hashes",
+          "retrieved_at"
+        ],
+        "citation_binding_required": true,
+        "raw_source_hash_required": true,
+        "freshness_required": true,
+        "tool_error_surface_required": true
+      },
+      "exception_record": null,
+      "source_docs": [
+        "https://docs.perplexity.ai/docs/sonar/quickstart",
+        "https://docs.perplexity.ai/guides/search-guide"
+      ]
+    }
+  ]
+}

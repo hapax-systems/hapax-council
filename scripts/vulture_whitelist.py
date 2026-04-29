@@ -10,6 +10,13 @@ from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egre
 from shared.audio_topology_inspector import check_l12_forward_invariant
 from shared.director_control_audit import DirectorControlMoveAuditRecord
 from shared.director_vocabulary import DirectorVocabulary, SpectacleLaneState
+from shared.grounding_provider_router import (
+    build_eval_artifact,
+    build_privacy_egress_preflight,
+    route_candidates_for_claim,
+    validate_eval_suite,
+    validate_provider_registry,
+)
 
 # FastAPI registers this route by decorator; vulture does not follow APIRouter.
 studio_egress_state
@@ -29,3 +36,12 @@ DirectorVocabulary.for_content_runner
 
 # Pydantic invokes model validators dynamically during model validation.
 DirectorControlMoveAuditRecord._validate_boundary_and_evidence
+
+# Grounding-provider router helpers are a public contract for the content
+# runner/evaluator train. The first PR publishes the schema and static helpers;
+# downstream runner tasks call these entrypoints after merging this contract.
+route_candidates_for_claim
+validate_provider_registry
+validate_eval_suite
+build_eval_artifact
+build_privacy_egress_preflight
