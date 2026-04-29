@@ -1,0 +1,615 @@
+schema_version: 1
+ledger_id: research_corpus_export_ledger:2026-04-29
+declared_at: "2026-04-29T02:30:57Z"
+producer: cx-cyan
+global_policy:
+  single_operator_only: true
+  default_export_status: private
+  no_recurring_operator_review: true
+  operator_review_boundary: bootstrap_legal_attestation_only
+  fail_closed_on_uncertain_status: true
+  public_release_requires_ledger_record: true
+  machine_consumers:
+    - dataset_cards
+    - grant_packets
+    - replay_kits
+    - artifact_bundles
+    - msr_dataset_paper
+    - hf_dataset_card
+    - openai_safety_fellowship_packet
+  forbidden_exports:
+    - credential_values
+    - employer_material
+    - third_party_pii
+    - non_operator_person_identifiable_state
+    - private_vault_body
+    - raw_biometric_stream
+    - raw_chat_or_comment_body
+    - consent_required_media_without_contract
+    - third_party_uncleared_media
+    - platform_private_token_or_cookie
+export_status_definitions:
+  - status: public
+    meaning: Safe for public release as-is after provenance and license checks.
+  - status: anonymized
+    meaning: Release only after names, contact data, paths, and private ids are transformed.
+  - status: hash_only
+    meaning: Release a stable salted digest or opaque id, never the source value.
+  - status: aggregate_only
+    meaning: Release only counts, rates, distributions, or windowed summaries.
+  - status: private
+    meaning: Keep local; may support internal derivation but not external artifacts.
+  - status: forbidden
+    meaning: Block export and fail the release gate if present.
+redaction_filter_catalog:
+  - filter_id: legal_name_to_operator_referent
+    detects: formal operator legal-name strings in non-formal export contexts
+    action: redact
+    test_pattern_ref: scripts/check-legal-name-leaks.sh
+  - filter_id: email_address_redaction
+    detects: RFC-like email addresses and mailto links
+    action: redact
+    test_pattern_ref: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+"
+  - filter_id: secret_value_block
+    detects: tokens, cookies, passwords, access keys, and credential values
+    action: block
+    test_pattern_ref: key names plus high-entropy value detection
+  - filter_id: employer_material_path_block
+    detects: corporate/employer paths, domains, project names, and work-system references
+    action: block
+    test_pattern_ref: corporate_boundary implication patterns
+  - filter_id: non_operator_person_state_block
+    detects: persistent identifiable facts about non-operator persons
+    action: block
+    test_pattern_ref: interpersonal_transparency implication patterns
+  - filter_id: private_vault_body_drop
+    detects: private Obsidian note body text outside explicitly exported cc-task metadata
+    action: drop
+    test_pattern_ref: vault-root path and frontmatter/body splitter
+  - filter_id: third_party_media_rights_block
+    detects: uncleared third-party images, audio, video, archive frames, or covers
+    action: block
+    test_pattern_ref: rights_class in event, sidecar, and aesthetic-library provenance
+  - filter_id: local_path_root_redaction
+    detects: home-directory, cache, dev-shm, and worktree absolute paths
+    action: redact
+    test_pattern_ref: path-prefix replacement to stable corpus refs
+  - filter_id: public_url_token_strip
+    detects: query strings or URL fragments that may carry tokens or private ids
+    action: redact
+    test_pattern_ref: URL parser strips query and fragment unless allowlisted
+  - filter_id: private_identifier_hash
+    detects: private ids that need stable joins across exported records
+    action: hash
+    test_pattern_ref: salted deterministic digest with salt kept out of exports
+corpora:
+  - corpus_id: cc_tasks
+    display_name: CC/Codex task vault notes
+    source_refs:
+      - "~/Documents/Personal/20-projects/hapax-cc-tasks/"
+    consumer_modes:
+      - dataset_cards
+      - grant_packets
+      - msr_dataset_paper
+      - hf_dataset_card
+    default_export_status: anonymized
+    field_statuses:
+      - field: frontmatter.task_id
+        status: public
+        transform: none
+        rationale: Stable work item id without private body content.
+      - field: frontmatter.status_priority_wsjf_dependencies
+        status: public
+        transform: none
+        rationale: Workflow metadata needed for dataset and grant evidence.
+      - field: frontmatter.assigned_to_branch_pr
+        status: anonymized
+        transform: agent_session_alias
+        rationale: Session labels are safe, but branch names may contain topic details.
+      - field: note.body
+        status: private
+        transform: metadata_only_export
+        rationale: Body text can contain operator context and private planning.
+      - field: vault_absolute_path
+        status: anonymized
+        transform: local_path_root_redaction
+        rationale: Export stable corpus refs, not workstation paths.
+    rights_posture:
+      rights_class: operator_controlled
+      license_basis: Operator-authored work-state metadata; released snapshots carry explicit dataset license.
+      public_license: CC-BY-NC-ND-4.0
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Raw vault notes remain private; exported task metadata is a derived corpus.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - local_path_root_redaction
+      - private_identifier_hash
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: block_release
+  - corpus_id: refusal_briefs
+    display_name: Refusal briefs and refusal-as-data records
+    source_refs:
+      - "docs/refusal-briefs/"
+      - "agents/publication_bus/refusal_brief_publisher.py"
+    consumer_modes:
+      - dataset_cards
+      - grant_packets
+      - artifact_bundles
+      - msr_dataset_paper
+    default_export_status: public
+    field_statuses:
+      - field: published_brief.slug_title_status
+        status: public
+        transform: none
+        rationale: Refusal artifacts are intentionally public after publication.
+      - field: published_brief.body
+        status: anonymized
+        transform: baseline_redaction_filters
+        rationale: Published text must still avoid private persons, secrets, and employer data.
+      - field: draft_brief.body
+        status: private
+        transform: exclude_unpublished_drafts
+        rationale: Drafts are not release artifacts.
+      - field: citation_graph_edges
+        status: public
+        transform: none
+        rationale: Public DOI/DataCite graph edges are publication metadata.
+    rights_posture:
+      rights_class: operator_controlled
+      license_basis: Constitution publication posture and explicit refusal artifact citation metadata.
+      public_license: CC-BY-NC-ND-4.0
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Refusals that mention third parties remain private until generalized.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - local_path_root_redaction
+      - public_url_token_strip
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: block_release
+  - corpus_id: relay_yaml
+    display_name: Relay coordination YAML and session handoff state
+    source_refs:
+      - "~/.cache/hapax/relay/*.yaml"
+    consumer_modes:
+      - dataset_cards
+      - grant_packets
+      - replay_kits
+      - msr_dataset_paper
+    default_export_status: aggregate_only
+    field_statuses:
+      - field: session_status_current_claim_path_claims
+        status: anonymized
+        transform: agent_session_alias_and_task_topic_scrub
+        rationale: Coordination structure is useful; topic text can reveal private work.
+      - field: worktree.branch_head_dirty_count
+        status: public
+        transform: none
+        rationale: Git coordination state is needed for reproducibility.
+      - field: notes
+        status: private
+        transform: summary_only
+        rationale: Freeform notes can include command output, private paths, or transient context.
+      - field: session_counts_status_distribution_path_claim_counts
+        status: aggregate_only
+        transform: counts_without_freeform_notes
+        rationale: Coordination metrics can be public without exposing per-session note text.
+      - field: command_outputs
+        status: forbidden
+        transform: block_raw_outputs
+        rationale: Command output may contain credentials, cookies, or private local state.
+    rights_posture:
+      rights_class: operator_controlled
+      license_basis: Operator-authored machine coordination state.
+      public_license: CC-BY-NC-ND-4.0
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Export only normalized coordination rows, not raw relay text.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - local_path_root_redaction
+      - private_identifier_hash
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: aggregate_only
+  - corpus_id: research_drops
+    display_name: Research drops and application architecture notes
+    source_refs:
+      - "docs/research/"
+      - "docs/applications/"
+      - "~/Documents/Personal/20-projects/hapax-research/"
+    consumer_modes:
+      - dataset_cards
+      - grant_packets
+      - artifact_bundles
+      - msr_dataset_paper
+      - openai_safety_fellowship_packet
+    default_export_status: anonymized
+    field_statuses:
+      - field: repo_docs.frontmatter
+        status: public
+        transform: none
+        rationale: Repo-tracked research metadata is intended to be citeable.
+      - field: repo_docs.body
+        status: public
+        transform: baseline_redaction_filters
+        rationale: Public docs still pass privacy, employer, and secret filters.
+      - field: vault_research.frontmatter
+        status: anonymized
+        transform: metadata_only_export
+        rationale: Vault metadata can support counts and themes after path redaction.
+      - field: vault_research.body
+        status: private
+        transform: exclude_private_vault_body
+        rationale: Personal research notes are not exported by default.
+    rights_posture:
+      rights_class: mixed
+      license_basis: Repo docs follow repository license; vault notes are operator-private.
+      public_license: CC-BY-NC-ND-4.0
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Third-party citations remain citations; copied third-party content is forbidden.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - local_path_root_redaction
+      - public_url_token_strip
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: block_release
+  - corpus_id: publication_bus_events
+    display_name: Publication-bus events and publisher artifact state
+    source_refs:
+      - "agents/publication_bus/"
+      - "~/hapax-state/publish/"
+    consumer_modes:
+      - dataset_cards
+      - grant_packets
+      - artifact_bundles
+      - hf_dataset_card
+    default_export_status: anonymized
+    field_statuses:
+      - field: artifact_id_surfaces_targeted_status
+        status: public
+        transform: none
+        rationale: Publication state is needed for dataset-card and grant packet assembly.
+      - field: api_response_payload
+        status: private
+        transform: response_summary_only
+        rationale: Platform responses can contain private ids and quota details.
+      - field: tokens_cookies_headers
+        status: forbidden
+        transform: block_secret_values
+        rationale: Credential values must never enter artifacts.
+      - field: failure_refusal_events
+        status: anonymized
+        transform: refusal_summary_without_secret_context
+        rationale: Refusal-as-data is useful only after secret and path stripping.
+    rights_posture:
+      rights_class: operator_controlled
+      license_basis: Operator-authored publication metadata; platform payload terms may restrict raw responses.
+      public_license: CC-BY-NC-ND-4.0
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Preserve public URLs and DOI ids, not credentialed API payloads.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - local_path_root_redaction
+      - public_url_token_strip
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: block_release
+  - corpus_id: public_event_records
+    display_name: ResearchVehiclePublicEvent and public-aperture records
+    source_refs:
+      - "schemas/research-vehicle-public-event.schema.json"
+      - "/dev/shm/hapax-broadcast/events.jsonl"
+      - "~/hapax-state/public-events/"
+    consumer_modes:
+      - replay_kits
+      - artifact_bundles
+      - grant_packets
+      - hf_dataset_card
+    default_export_status: anonymized
+    field_statuses:
+      - field: event_id_event_type_occurred_at_state_kind
+        status: public
+        transform: none
+        rationale: Event skeleton is the public replay and artifact index.
+      - field: provenance_attribution_refs
+        status: public
+        transform: none
+        rationale: Required to substantiate public claims.
+      - field: source.evidence_ref_freshness_ref
+        status: anonymized
+        transform: local_path_root_redaction
+        rationale: Evidence ids are useful; local paths are not.
+      - field: frame_ref_media_payload
+        status: hash_only
+        transform: media_digest_without_pixels
+        rationale: Visual media requires separate rights and consent gates.
+      - field: privacy_class_consent_required_payload
+        status: forbidden
+        transform: block_without_active_consent_contract
+        rationale: Consent-required content cannot ship from the research corpus.
+    rights_posture:
+      rights_class: mixed
+      license_basis: Event rights_class and attribution_refs are authoritative per record.
+      public_license: null
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Third-party AV defaults private unless the event proves clearance.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - third_party_media_rights_block
+      - local_path_root_redaction
+      - public_url_token_strip
+      - private_identifier_hash
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: private_only
+  - corpus_id: velocity_evidence
+    display_name: Velocity evidence snapshots and reconstruction outputs
+    source_refs:
+      - "docs/research/evidence/"
+      - "scripts/velocity_report_evidence_snapshot.py"
+      - "~/hapax-state/publications/"
+    consumer_modes:
+      - dataset_cards
+      - grant_packets
+      - msr_dataset_paper
+      - openai_safety_fellowship_packet
+    default_export_status: public
+    field_statuses:
+      - field: aggregate_counts_windows_repo_heads
+        status: public
+        transform: none
+        rationale: Reproducibility requires exact windows and commit ids.
+      - field: raw_command_transcripts
+        status: anonymized
+        transform: strip_local_paths_and_private_refs
+        rationale: Transcript snippets are useful only after private local state is removed.
+      - field: ci_result_sets
+        status: anonymized
+        transform: public_pr_metadata_only
+        rationale: CI data is safe when limited to public repository metadata.
+      - field: unpublished_state_payloads
+        status: private
+        transform: exclude_unpublished_state
+        rationale: Local state copies are evidence inputs, not public payloads.
+    rights_posture:
+      rights_class: repo_license
+      license_basis: Git metadata and repo-tracked docs follow each repository license matrix.
+      public_license: CC-BY-NC-ND-4.0
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Counts are public; raw terminal capture remains gated.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - local_path_root_redaction
+      - public_url_token_strip
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: block_release
+  - corpus_id: archive_sidecars
+    display_name: Archive sidecars for replay, frames, captions, and clips
+    source_refs:
+      - "~/hapax-state/archive/"
+      - "~/hapax-state/publications/"
+    consumer_modes:
+      - replay_kits
+      - artifact_bundles
+      - grant_packets
+    default_export_status: aggregate_only
+    field_statuses:
+      - field: sidecar.segment_id_timecode_duration
+        status: public
+        transform: none
+        rationale: Replay navigation metadata is useful without raw media.
+      - field: frame_hash_clip_hash
+        status: hash_only
+        transform: media_digest_without_pixels
+        rationale: Hashes allow joins and integrity checks without redistributing media.
+      - field: captions
+        status: anonymized
+        transform: caption_privacy_redaction
+        rationale: Captions can contain names or private utterances.
+      - field: raw_audio_video_image
+        status: forbidden
+        transform: block_media_without_rights_and_consent
+        rationale: Raw media has the highest rights and consent exposure.
+    rights_posture:
+      rights_class: mixed
+      license_basis: Sidecar metadata may be operator-controlled; media rights are per asset/event.
+      public_license: null
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Artifact bundles consume sidecars first and request media only through separate rights gates.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - third_party_media_rights_block
+      - local_path_root_redaction
+      - private_identifier_hash
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: aggregate_only
+  - corpus_id: identifier_graph
+    display_name: DOI, SWHID, ORCID, repository, and citation identifier graph
+    source_refs:
+      - "CITATION.cff"
+      - "codemeta.json"
+      - "agents/attribution/"
+      - "~/hapax-state/attribution/"
+    consumer_modes:
+      - dataset_cards
+      - grant_packets
+      - artifact_bundles
+      - msr_dataset_paper
+      - hf_dataset_card
+    default_export_status: public
+    field_statuses:
+      - field: doi_swhid_repo_url_citation_key
+        status: public
+        transform: none
+        rationale: Persistent identifiers exist to be cited.
+      - field: formal_author_identifier
+        status: public
+        transform: formal_context_only
+        rationale: ORCID/formal author metadata is allowed only in formal citation fields.
+      - field: api_tokens_session_cookies
+        status: forbidden
+        transform: block_secret_values
+        rationale: Identifier minting credentials are not metadata.
+      - field: local_state_path
+        status: anonymized
+        transform: local_path_root_redaction
+        rationale: Stable state refs are enough for reproducibility.
+    rights_posture:
+      rights_class: operator_controlled
+      license_basis: Identifier graph points at externally minted public records and repo metadata.
+      public_license: CC-BY-NC-ND-4.0
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Formal legal-name context is allowed only where the platform requires attribution.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - local_path_root_redaction
+      - public_url_token_strip
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: block_release
+  - corpus_id: git_history_pr_metadata
+    display_name: Git commit history and pull-request metadata
+    source_refs:
+      - "git log across pushable Hapax repos"
+      - "GitHub pull request metadata"
+      - "docs/repo-pres/repo-registry.yaml"
+    consumer_modes:
+      - dataset_cards
+      - grant_packets
+      - msr_dataset_paper
+      - hf_dataset_card
+    default_export_status: public
+    field_statuses:
+      - field: commit_sha_subject_timestamp_repo
+        status: public
+        transform: none
+        rationale: Public git metadata is the core MSR corpus.
+      - field: diff_patch
+        status: public
+        transform: per_repo_license_matrix
+        rationale: Public code diffs inherit the repository license matrix.
+      - field: pr_comments_reviews
+        status: anonymized
+        transform: public_github_metadata_plus_baseline_redaction
+        rationale: Review text can contain private coordination or third-party mentions.
+      - field: local_worktree_paths
+        status: anonymized
+        transform: local_path_root_redaction
+        rationale: Workstation layout is not part of the dataset.
+    rights_posture:
+      rights_class: repo_license
+      license_basis: Each repository keeps its declared license; dataset cards must expose the matrix.
+      public_license: null
+      attribution_required: true
+      monetization_allowed: false
+      public_release_allowed: true
+      notes: Do not collapse per-repo licenses into a false blanket code license.
+    automated_test_refs:
+      - legal_name_to_operator_referent
+      - email_address_redaction
+      - secret_value_block
+      - employer_material_path_block
+      - non_operator_person_state_block
+      - private_vault_body_drop
+      - local_path_root_redaction
+      - public_url_token_strip
+    release_gate:
+      recurring_operator_review_required: false
+      bootstrap_attestation_required: true
+      bootstrap_attestation_ref: legal/export-attestation:research-corpus
+      blocks_on_uncertain_fields: true
+    failure_mode: block_release

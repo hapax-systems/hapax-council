@@ -33,6 +33,15 @@ Daemon-side action: none directly. The page auto-creates from the arXiv submissi
 
 Daemon-side action: full composition + upload via HF API. New helper: `agents/marketing/hf_dataset_card_publisher.py`.
 
+The dataset-card composer must read `config/research-corpus-export-ledger.yaml`
+before selecting files. Its contract schema is
+`schemas/research-corpus-export-ledger.schema.json`, and the local gate is
+`uv run python scripts/verify-research-corpus-export-ledger.py`. The HF card
+may cite rows whose `consumer_modes` include `hf_dataset_card`; fields marked
+`private` or `forbidden` are unavailable, and fields marked `hash_only` or
+`aggregate_only` must stay in that reduced form. This keeps `hf_dataset_card`
+generation daemon-tractable without creating a recurring operator review loop.
+
 ## HF API auth
 
 HuggingFace API requires a write token for both surfaces. Bootstrap path:
