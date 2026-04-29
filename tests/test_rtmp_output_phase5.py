@@ -43,6 +43,14 @@ class TestRtmpOutputBinConstruction:
         assert 'sink.set_property("async-connect", False)' in desktop_source
         assert 'sink.set_property("async-connect", False)' in mobile_source
 
+    def test_desktop_nvenc_avoids_bframe_only_weighted_prediction(self) -> None:
+        from agents.studio_compositor.rtmp_output import RtmpOutputBin
+
+        desktop_source = inspect.getsource(RtmpOutputBin.build_and_attach)
+
+        assert 'encoder.set_property("bframes", 0)' in desktop_source
+        assert "weighted-pred" not in desktop_source
+
     def test_build_with_real_elements_if_available(self, gst) -> None:
         from agents.studio_compositor.rtmp_output import RtmpOutputBin
 

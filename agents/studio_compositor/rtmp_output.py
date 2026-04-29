@@ -190,15 +190,10 @@ class RtmpOutputBin:
             #     frame. Pulls bits toward visually demanding areas
             #     (edges, faces) and away from flat zones.
             #   temporal-aq — same idea over time; benefits motion regions.
-            #   weighted-pred — only meaningful when bframes>0 (we set 0
-            #     above), so this property typically no-ops on our pipe.
-            #     Kept for forward compatibility if the b-frames decision
-            #     reverses on a future tune.
             for prop, value in (
                 ("rc-lookahead", 32),
                 ("spatial-aq", True),
                 ("temporal-aq", True),
-                ("weighted-pred", True),
             ):
                 try:
                     encoder.set_property(prop, value)
