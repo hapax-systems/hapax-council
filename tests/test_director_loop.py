@@ -405,7 +405,7 @@ def test_load_playlist_returns_empty_when_ytdlp_not_installed(tmp_path, monkeypa
 
 
 # ---------------------------------------------------------------------------
-# FINDING-G real fix: Kokoro throughput safety cap on react texts
+# FINDING-G follow-up: no-truncation speech contract for react texts
 # ---------------------------------------------------------------------------
 
 
@@ -418,42 +418,25 @@ def test_synthesize_passes_short_text_through() -> None:
     director._tts_client.synthesize.assert_called_once_with("hello world", "conversation")
 
 
-def test_synthesize_truncates_long_text_at_word_boundary() -> None:
-    """Texts over _MAX_REACT_TEXT_CHARS must be truncated at the last
-    whitespace before the cap and suffixed with an ellipsis. Beta
-    PR #756 queue-024 Phase 1 measured Kokoro CPU at ~6.6 chars/sec;
-    a 600-char input would need ~90 s synth which blocks the speak-
-    react thread. The cap keeps each synth under ~60 s.
-    """
+def test_synthesize_passes_long_text_through_without_ellipsis() -> None:
+    """Long react text is a planning concern, not a transport truncation point."""
     director = _director([])
     director._tts_client = MagicMock()
     director._tts_client.synthesize.return_value = b"\x00\x01" * 100
 
-    # Build a 600-char string made of distinct words so we can see
-    # the word-boundary truncation clearly.
     long_text = " ".join(f"word{i:04d}" for i in range(100))
-    assert len(long_text) > director._MAX_REACT_TEXT_CHARS
 
     director._synthesize(long_text)
 
     assert director._tts_client.synthesize.call_count == 1
     sent_text = director._tts_client.synthesize.call_args[0][0]
-    assert sent_text.endswith("…"), "truncated output must end with an ellipsis"
-    assert len(sent_text) <= director._MAX_REACT_TEXT_CHARS + 1  # +1 for the ellipsis
-    # Word-boundary invariant: the truncated output (minus the ellipsis)
-    # must end at a word boundary from the original text.
-    stem = sent_text[:-1]
-    assert long_text.startswith(stem)
-    assert not stem.endswith("word") or stem[-4:].isdigit() or stem[-1].isalnum(), (
-        "truncation should not slice a word in half"
-    )
+    assert sent_text == long_text
+    assert "..." not in sent_text
+    assert "…" not in sent_text
 
 
-def test_synthesize_truncation_invokes_tts_client_once() -> None:
-    """The truncation path must not retry synthesis — a single call
-    with the capped text is enough. Prevents an accidental loop
-    that would defeat the throughput guard.
-    """
+def test_synthesize_long_text_invokes_tts_client_once() -> None:
+    """Long speech still makes a single TTS request with the complete text."""
     director = _director([])
     director._tts_client = MagicMock()
     director._tts_client.synthesize.return_value = b""
@@ -461,20 +444,12 @@ def test_synthesize_truncation_invokes_tts_client_once() -> None:
     assert director._tts_client.synthesize.call_count == 1
 
 
-def test_max_react_text_chars_is_tuned_to_kokoro_throughput() -> None:
-    """The cap must correspond to a synth time under the client
-    timeout. Beta's measured ~6.6 chars/sec Kokoro throughput means
-    400 chars → ~60 s, which is within the 90 s client timeout from
-    PR #757 follow-up.
-    """
-    from agents.studio_compositor.tts_client import _DEFAULT_TIMEOUT_S
+def test_react_text_timeout_budget_scales_to_kokoro_throughput() -> None:
+    """Long react speech is guarded by dynamic timeout, not audible truncation."""
+    from agents.studio_compositor.tts_client import _DEFAULT_TIMEOUT_S, synthesis_timeout_s
 
-    assert DirectorLoop._MAX_REACT_TEXT_CHARS == 400
-    # Measured throughput ~6.6 chars/sec; 400 chars ≈ 60 s worst-case
-    measured_throughput_chars_per_sec = 6.6
-    worst_case_synth_s = DirectorLoop._MAX_REACT_TEXT_CHARS / measured_throughput_chars_per_sec
-    assert worst_case_synth_s < _DEFAULT_TIMEOUT_S, (
-        f"character cap ({DirectorLoop._MAX_REACT_TEXT_CHARS}) worst-case "
-        f"synth ({worst_case_synth_s:.1f}s) must be under the client "
-        f"timeout ({_DEFAULT_TIMEOUT_S}s)"
-    )
+    long_text = " ".join(f"word{i:04d}" for i in range(100))
+    timeout_s = synthesis_timeout_s(long_text, minimum_s=_DEFAULT_TIMEOUT_S)
+
+    assert timeout_s > _DEFAULT_TIMEOUT_S
+    assert timeout_s > len(long_text) / 6.6
