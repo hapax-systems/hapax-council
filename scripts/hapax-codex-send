@@ -25,6 +25,8 @@ CLEAR_INPUT=1
 REQUIRE_ACK=0
 ACK_INSTRUCTION=1
 ACK_TIMEOUT="${HAPAX_CODEX_SEND_ACK_TIMEOUT:-60}"
+ACK_NUDGE_SECONDS="${HAPAX_CODEX_SEND_ACK_NUDGE_SECONDS:-5}"
+ACK_NUDGE_LIMIT="${HAPAX_CODEX_SEND_ACK_NUDGE_LIMIT:-3}"
 ACK_FILE=""
 ACK_TOKEN=""
 ALLOW_LEGACY_ACK=0
@@ -167,6 +169,20 @@ case "$ACK_TIMEOUT" in
     ;;
 esac
 
+case "$ACK_NUDGE_SECONDS" in
+  ''|*[!0-9.]*)
+    echo "hapax-codex-send: invalid HAPAX_CODEX_SEND_ACK_NUDGE_SECONDS '$ACK_NUDGE_SECONDS'" >&2
+    exit 2
+    ;;
+esac
+
+case "$ACK_NUDGE_LIMIT" in
+  ''|*[!0-9]*)
+    echo "hapax-codex-send: invalid HAPAX_CODEX_SEND_ACK_NUDGE_LIMIT '$ACK_NUDGE_LIMIT'" >&2
+    exit 2
+    ;;
+esac
+
 json_string() {
   python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
 }
@@ -193,14 +209,22 @@ mkdir -p '$(dirname "$ACK_FILE")' && printf '%s\n' '$ACK_TOKEN' > '$ACK_FILE'"
 
 wait_for_ack() {
   [ "$REQUIRE_ACK" -eq 1 ] || return 0
-  local start now elapsed
+  local start now elapsed nudge_after nudges
   start="$(date +%s)"
+  nudges=0
   while true; do
     if [ -f "$ACK_FILE" ] && grep -Fxq "$ACK_TOKEN" "$ACK_FILE" 2>/dev/null; then
       return 0
     fi
     now="$(date +%s)"
     elapsed=$((now - start))
+    if [ "$USED_TRANSPORT" = "tmux" ] && [ "$SUBMIT" -eq 1 ] && [ "$nudges" -lt "$ACK_NUDGE_LIMIT" ]; then
+      nudge_after="$(awk -v n="$nudges" -v s="$ACK_NUDGE_SECONDS" 'BEGIN { print (n + 1) * s }')"
+      if awk -v elapsed="$elapsed" -v nudge_after="$nudge_after" 'BEGIN { exit !(elapsed >= nudge_after) }'; then
+        tmux send-keys -t "hapax-codex-$SESSION" C-m 2>/dev/null || true
+        nudges=$((nudges + 1))
+      fi
+    fi
     if awk "BEGIN { exit !($elapsed >= $ACK_TIMEOUT) }"; then
       echo "hapax-codex-send: ack timeout for $SESSION after ${ACK_TIMEOUT}s ($ACK_FILE)" >&2
       return 12
@@ -260,6 +284,14 @@ foot_window_center() {
 send_tmux() {
   local target="hapax-codex-$SESSION"
   local tmp buffer
+  if [ "$REQUIRE_ACK" -eq 1 ] && [ "${HAPAX_CODEX_SEND_ALLOW_BUSY:-0}" != "1" ]; then
+    if tmux capture-pane -pt "$target" -S -30 2>/dev/null \
+      | grep -Eq 'Working \(|Messages to be submitted after next tool call'; then
+      echo "hapax-codex-send: $SESSION appears busy; refusing to queue ACK-gated message" >&2
+      exit 14
+    fi
+  fi
+
   tmp="$(mktemp)"
   buffer="hapax-codex-send-$SESSION-$$-$RANDOM"
   TMP_FILES+=("$tmp")
@@ -273,8 +305,8 @@ send_tmux() {
   tmux paste-buffer -b "$buffer" -t "$target"
   tmux delete-buffer -b "$buffer" 2>/dev/null || true
   if [ "$SUBMIT" -eq 1 ]; then
-    sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.35}"
-    tmux send-keys -t "$target" Enter
+    sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-1.10}"
+    tmux send-keys -t "$target" C-m
   fi
 }
 
