@@ -9,9 +9,9 @@ usage: hapax-codex-send --session cx-color [--transport auto|foot|tmux]
                          [--no-submit] [--stdin] [--] MESSAGE...
 
 Sends MESSAGE to a visible Hapax Codex session. The default transport prefers a
-visible foot window named hapax-codex-cx-color and falls back to the tmux session
-hapax-codex-cx-color. The submit path waits after paste before pressing Return;
-this avoids the common failure mode where text lands but Enter is swallowed.
+tmux session named hapax-codex-cx-color and falls back to a visible foot window
+named hapax-codex-cx-color. Tmux-backed foot windows keep operator visibility
+while avoiding Wayland paste/Return races.
 EOF
 }
 
@@ -140,6 +140,16 @@ send_tmux() {
   fi
 }
 
+send_foot_return() {
+  local address="$1"
+  wait_for_focus "$address" || {
+    echo "hapax-codex-send: focus moved before submit for $SESSION" >&2
+    exit 11
+  }
+  wtype -P Return -s "${HAPAX_CODEX_SEND_RETURN_HOLD_MS:-80}" -p Return
+  sleep "${HAPAX_CODEX_SEND_AFTER_SUBMIT_DELAY:-0.35}"
+}
+
 wait_for_focus() {
   local address="$1"
   local active=""
@@ -198,23 +208,19 @@ send_foot() {
     wl-copy --type text/plain <"$msg"
     sleep "${HAPAX_CODEX_SEND_PASTE_DELAY:-0.25}"
     wtype -M ctrl -M shift -k v -m shift -m ctrl
-    sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.75}"
+    sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-1.10}"
     if [ "$SUBMIT" -eq 1 ]; then
-      wait_for_focus "$address" || {
-        echo "hapax-codex-send: focus moved before submit for $SESSION" >&2
-        exit 11
-      }
-      wtype -k Return
+      send_foot_return "$address"
     fi
-    sleep "${HAPAX_CODEX_SEND_RESTORE_DELAY:-0.15}"
+    sleep "${HAPAX_CODEX_SEND_RESTORE_DELAY:-0.35}"
     if [ "$restore_clipboard" -eq 1 ]; then
       wl-copy --type text/plain <"$old" || true
     fi
   else
     wtype "$MESSAGE"
-    sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.75}"
+    sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-1.10}"
     if [ "$SUBMIT" -eq 1 ]; then
-      wtype -k Return
+      send_foot_return "$address"
     fi
   fi
 
@@ -235,10 +241,10 @@ case "$TRANSPORT" in
     send_tmux
     ;;
   auto)
-    if foot_target_exists; then
-      send_foot
-    elif tmux_target_exists; then
+    if tmux_target_exists; then
       send_tmux
+    elif foot_target_exists; then
+      send_foot
     else
       echo "hapax-codex-send: no live target for $SESSION" >&2
       exit 11

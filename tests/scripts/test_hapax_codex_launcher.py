@@ -80,6 +80,21 @@ def _write_active_task(
     return note
 
 
+def _write_fake_tmux(bin_dir: Path, log_path: Path, *, has_session_exit: int = 1) -> Path:
+    fake_tmux = bin_dir / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {log_path}
+if [ "$1" = "has-session" ]; then
+  exit {has_session_exit}
+fi
+exit 0
+"""
+    )
+    fake_tmux.chmod(0o755)
+    return fake_tmux
+
+
 def test_rejects_slot_name_as_visible_session(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
 
@@ -381,6 +396,7 @@ printf '%s\\n' "$@" > {tmux_args}
 def test_terminal_launch_refuses_non_offered_task_before_opening_foot(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     _write_active_task(env, "demo-task", status="pr_open")
+    _write_fake_tmux(tmp_path / "bin", tmp_path / "tmux.log")
     foot_args = tmp_path / "foot-args.txt"
     fake_foot = tmp_path / "bin" / "foot"
     fake_foot.write_text(
@@ -417,10 +433,12 @@ printf '%s\\n' "$@" > {foot_args}
     assert not list((tmp_path / "cache" / "hapax" / "codex-spawns").glob("*cx-blue-demo-task.md"))
 
 
-def test_terminal_foot_prefers_direct_foot_when_available(tmp_path: Path) -> None:
+def test_terminal_foot_starts_visible_tmux_backed_session(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     foot_args = tmp_path / "foot-args.txt"
     hyprctl_args = tmp_path / "hyprctl-args.txt"
+    tmux_log = tmp_path / "tmux.log"
+    _write_fake_tmux(tmp_path / "bin", tmux_log)
     fake_foot = tmp_path / "bin" / "foot"
     fake_foot.write_text(
         f"""#!/usr/bin/env bash
@@ -511,6 +529,10 @@ esac
     assert "--app-id\nhapax-codex-cx-violet" in args
     assert "--title\ncx-violet" in args
     assert "--working-directory" in args
+    assert "tmux\nattach-session\n-t\nhapax-codex-cx-violet" in args
+    tmux_text = tmux_log.read_text()
+    assert "has-session -t hapax-codex-cx-violet" in tmux_text
+    assert "new-session -d -s hapax-codex-cx-violet" in tmux_text
     assert "dispatch movetoworkspacesilent name:1,address:0xabc" in hyprctl_args.read_text()
 
 
@@ -521,6 +543,7 @@ def test_protected_live_session_refuses_duplicate_visible_launch(tmp_path: Path)
     protection.write_text("- `cx-violet` is protected.\n", encoding="utf-8")
 
     foot_args = tmp_path / "foot-args.txt"
+    _write_fake_tmux(tmp_path / "bin", tmp_path / "tmux.log")
     fake_foot = tmp_path / "bin" / "foot"
     fake_foot.write_text(
         f"""#!/usr/bin/env bash
@@ -579,6 +602,8 @@ def test_codex_send_foot_pastes_then_submits_after_focus(tmp_path: Path) -> None
     env["HAPAX_CODEX_SEND_PASTE_DELAY"] = "0"
     env["HAPAX_CODEX_SEND_SUBMIT_DELAY"] = "0"
     env["HAPAX_CODEX_SEND_RESTORE_DELAY"] = "0"
+    env["HAPAX_CODEX_SEND_RETURN_HOLD_MS"] = "0"
+    env["HAPAX_CODEX_SEND_AFTER_SUBMIT_DELAY"] = "0"
 
     hyprctl_log = tmp_path / "hyprctl.log"
     fake_hyprctl = tmp_path / "bin" / "hyprctl"
@@ -655,7 +680,7 @@ printf '%s\\n' "$*" >> {wtype_log}
     assert "OLD CLIP" in copy_text
     wtype_lines = wtype_log.read_text().splitlines()
     assert "-M ctrl -M shift -k v -m shift -m ctrl" in wtype_lines
-    assert "-k Return" in wtype_lines
+    assert "-P Return -s 0 -p Return" in wtype_lines
 
 
 def test_codex_send_tmux_pastes_buffer_then_enter(tmp_path: Path) -> None:
@@ -703,3 +728,59 @@ esac
     assert "has-session -t hapax-codex-cx-amber" in tmux_text
     assert "paste-buffer -b hapax-codex-send -t hapax-codex-cx-amber" in tmux_text
     assert "send-keys -t hapax-codex-cx-amber Enter" in tmux_text
+
+
+def test_codex_send_auto_prefers_tmux_over_visible_foot(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    env["HAPAX_CODEX_SEND_SUBMIT_DELAY"] = "0"
+
+    tmux_log = tmp_path / "tmux.log"
+    tmux_message = tmp_path / "tmux-message.txt"
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+case "$1" in
+  has-session)
+    exit 0
+    ;;
+  load-buffer)
+    file="${{@: -1}}"
+    cat "$file" > {tmux_message}
+    ;;
+esac
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+    foot_log = tmp_path / "foot-path.log"
+    fake_hyprctl = tmp_path / "bin" / "hyprctl"
+    fake_hyprctl.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {foot_log}
+case "$1" in
+  clients)
+    printf '%s\\n' '[{{"class":"hapax-codex-cx-blue","address":"0xabc"}}]'
+    ;;
+esac
+"""
+    )
+    fake_hyprctl.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(SENDER),
+            "--session",
+            "cx-blue",
+            "--",
+            "Use the tmux route when it exists.",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert tmux_message.read_text() == "Use the tmux route when it exists."
+    assert not foot_log.exists()
