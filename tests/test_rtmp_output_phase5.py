@@ -10,6 +10,7 @@ See docs/superpowers/specs/2026-04-12-native-rtmp-delivery-design.md
 
 from __future__ import annotations
 
+import inspect
 from unittest import mock
 
 import pytest
@@ -32,6 +33,15 @@ class TestRtmpOutputBinConstruction:
 
         assert "format=S16LE" in _aac_input_caps_string("voaacenc")
         assert "format=F32LE" in _aac_input_caps_string("avenc_aac")
+
+    def test_rtmp_sinks_connect_on_first_buffer(self) -> None:
+        from agents.studio_compositor.rtmp_output import MobileRtmpOutputBin, RtmpOutputBin
+
+        desktop_source = inspect.getsource(RtmpOutputBin.build_and_attach)
+        mobile_source = inspect.getsource(MobileRtmpOutputBin.build_and_attach)
+
+        assert 'sink.set_property("async-connect", False)' in desktop_source
+        assert 'sink.set_property("async-connect", False)' in mobile_source
 
     def test_build_with_real_elements_if_available(self, gst) -> None:
         from agents.studio_compositor.rtmp_output import RtmpOutputBin

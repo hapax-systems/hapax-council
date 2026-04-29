@@ -292,7 +292,7 @@ class RtmpOutputBin:
                 log.error("rtmp bin: no RTMP sink available")
                 return False
             sink.set_property("location", self._rtmp_location)
-            sink.set_property("async-connect", True)
+            sink.set_property("async-connect", False)
 
             # --- Add elements + link ---
             elements = [
@@ -706,7 +706,7 @@ class MobileRtmpOutputBin:
             mux.set_property("streamable", True)
             mux.set_property("latency", 100_000_000)
             sink.set_property("location", self._rtmp_location)
-            sink.set_property("async-connect", True)
+            sink.set_property("async-connect", False)
 
             elements = [
                 video_queue,
