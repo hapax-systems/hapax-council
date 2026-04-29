@@ -123,7 +123,12 @@ _REQUIRED_L12_DIRECTIONALITY_NODES = {
     "livestream-tap",
     "l12-evilpet-capture",
     "private-sink",
+    "private-monitor-capture",
+    "private-monitor-output",
     "notification-private-sink",
+    "notification-private-monitor-capture",
+    "notification-private-monitor-output",
+    "yeti-headphone-output",
     "role-multimedia",
     "role-notification",
     "role-assistant",
@@ -140,7 +145,11 @@ _PRIVATE_ONLY_ROOTS = {
     "role-assistant",
     "role-notification",
     "private-sink",
+    "private-monitor-capture",
+    "private-monitor-output",
     "notification-private-sink",
+    "notification-private-monitor-capture",
+    "notification-private-monitor-output",
 }
 _PRIVATE_FORBIDDEN_REACHABILITY = {
     "l12-capture",
@@ -158,6 +167,30 @@ _PRIVATE_FORBIDDEN_REACHABILITY = {
     "tts-duck",
     "tts-broadcast-capture",
     "tts-broadcast-playback",
+}
+_PRIVATE_MONITOR_BRIDGES = {
+    "private-monitor-output": (
+        "private-monitor-capture",
+        "private-sink",
+        "yeti-headphone-output",
+    ),
+    "notification-private-monitor-output": (
+        "notification-private-monitor-capture",
+        "notification-private-sink",
+        "yeti-headphone-output",
+    ),
+}
+_PRIVATE_MONITOR_CAPTURE_NODES = {
+    "private-monitor-capture": "private-sink",
+    "notification-private-monitor-capture": "notification-private-sink",
+}
+_PRIVATE_MONITOR_FAIL_CLOSED_PARAMS = {
+    "node.dont-fallback": True,
+    "node.dont-reconnect": True,
+    "node.dont-move": True,
+    "node.linger": True,
+    "state.restore": False,
+    "fail_closed_on_target_absent": True,
 }
 
 
@@ -233,7 +266,18 @@ def _classify_node_kind(props: dict[str, Any]) -> NodeKind | None:
     # as primary. Broadcast bridges are an exception: the playback side is
     # the only modeled endpoint that proves the bridge reaches the target
     # livestream tap.
-    if name.startswith("hapax-") and "-broadcast-" in name and name.endswith("-playback"):
+    if (
+        name.startswith("hapax-")
+        and (
+            "-broadcast-" in name
+            or name
+            in {
+                "hapax-private-playback",
+                "hapax-notification-private-playback",
+            }
+        )
+        and name.endswith("-playback")
+    ):
         return NodeKind.LOOPBACK
     if name.endswith("-playback"):
         return None
@@ -443,6 +487,8 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
     violations: list[L12ForwardInvariantViolation] = []
     by_id = {node.id: node for node in descriptor.nodes}
     graph = _static_directionality_graph(descriptor)
+    ref_to_id = _reference_to_node_id(descriptor)
+    edge_pairs = {(edge.source, edge.target) for edge in descriptor.edges}
 
     for node_id in sorted(_REQUIRED_L12_DIRECTIONALITY_NODES - by_id.keys()):
         violations.append(
@@ -485,6 +531,74 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                 L12ForwardInvariantViolation(
                     code="private_sink_not_fail_closed",
                     message=(f"{node_id} must be a fail-closed sink with no downstream target"),
+                )
+            )
+
+    for capture_id, source_id in _PRIVATE_MONITOR_CAPTURE_NODES.items():
+        capture = node(capture_id)
+        source = node(source_id)
+        if capture is None or source is None:
+            continue
+        if ref_to_id.get(capture.target_object or "") != source_id:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="private_monitor_capture_target_not_private_sink",
+                    message=(
+                        f"{capture_id} targets {capture.target_object!r}; "
+                        f"expected {source.pipewire_name!r}"
+                    ),
+                )
+            )
+        if capture.params.get("stream.capture.sink") is not True:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="private_monitor_capture_not_sink_monitor",
+                    message=f"{capture_id} must set stream.capture.sink=true",
+                )
+            )
+        if (source_id, capture_id) not in edge_pairs:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="private_monitor_capture_edge_missing",
+                    message=f"{source_id} must feed {capture_id}",
+                )
+            )
+
+    for bridge_id, (capture_id, source_id, endpoint_id) in _PRIVATE_MONITOR_BRIDGES.items():
+        bridge = node(bridge_id)
+        endpoint = node(endpoint_id)
+        if bridge is None or endpoint is None:
+            continue
+        if ref_to_id.get(bridge.target_object or "") != endpoint_id:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="private_monitor_bridge_target_not_allowed_endpoint",
+                    message=(
+                        f"{bridge_id} targets {bridge.target_object!r}; "
+                        f"expected {endpoint.pipewire_name!r}"
+                    ),
+                )
+            )
+        for key, expected in _PRIVATE_MONITOR_FAIL_CLOSED_PARAMS.items():
+            if bridge.params.get(key) != expected:
+                violations.append(
+                    L12ForwardInvariantViolation(
+                        code="private_monitor_bridge_not_fail_closed",
+                        message=f"{bridge_id} must set {key}={expected!r}",
+                    )
+                )
+        if bridge.params.get("private_monitor_bridge") is not True:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="private_monitor_bridge_not_declared",
+                    message=f"{bridge_id} must declare private_monitor_bridge=true",
+                )
+            )
+        if (capture_id, bridge_id) not in edge_pairs:
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="private_monitor_bridge_edge_missing",
+                    message=f"{source_id} monitor bridge must connect {capture_id} to {bridge_id}",
                 )
             )
 

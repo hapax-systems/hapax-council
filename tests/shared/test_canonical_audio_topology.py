@@ -37,6 +37,7 @@ def test_canonical_has_current_livestream_node_ids() -> None:
     expected = {
         "l12-capture",
         "l12-usb-return",
+        "yeti-headphone-output",
         "livestream-tap",
         "l12-evilpet-capture",
         "broadcast-master-capture",
@@ -45,7 +46,11 @@ def test_canonical_has_current_livestream_node_ids() -> None:
         "role-assistant",
         "role-broadcast",
         "private-sink",
+        "private-monitor-capture",
+        "private-monitor-output",
         "notification-private-sink",
+        "notification-private-monitor-capture",
+        "notification-private-monitor-output",
         "voice-fx",
         "tts-loudnorm",
         "tts-duck",
@@ -147,6 +152,11 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     d = _descriptor()
     private = d.node_by_id("private-sink")
     notify = d.node_by_id("notification-private-sink")
+    private_capture = d.node_by_id("private-monitor-capture")
+    private_output = d.node_by_id("private-monitor-output")
+    notify_capture = d.node_by_id("notification-private-monitor-capture")
+    notify_output = d.node_by_id("notification-private-monitor-output")
+    yeti = d.node_by_id("yeti-headphone-output")
     role_assistant = d.node_by_id("role-assistant")
     role_notification = d.node_by_id("role-notification")
 
@@ -159,6 +169,30 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     assert notify.target_object is None
     assert notify.params["fail_closed"] is True
     assert role_notification.target_object == "hapax-notification-private"
+
+    assert yeti.params["private_monitor_endpoint"] is True
+    assert private_capture.target_object == "hapax-private"
+    assert private_capture.params["stream.capture.sink"] is True
+    assert private_output.target_object == yeti.pipewire_name
+    assert notify_capture.target_object == "hapax-notification-private"
+    assert notify_capture.params["stream.capture.sink"] is True
+    assert notify_output.target_object == yeti.pipewire_name
+
+    for bridge in (private_output, notify_output):
+        assert bridge.params["node.dont-fallback"] is True
+        assert bridge.params["node.dont-reconnect"] is True
+        assert bridge.params["node.dont-move"] is True
+        assert bridge.params["state.restore"] is False
+        assert bridge.params["fail_closed_on_target_absent"] is True
+
+    edge_pairs = {(edge.source, edge.target) for edge in d.edges}
+    assert ("private-sink", "private-monitor-capture") in edge_pairs
+    assert ("private-monitor-capture", "private-monitor-output") in edge_pairs
+    assert ("notification-private-sink", "notification-private-monitor-capture") in edge_pairs
+    assert (
+        "notification-private-monitor-capture",
+        "notification-private-monitor-output",
+    ) in edge_pairs
 
 
 def test_tts_broadcast_path_has_l12_return_and_livestream_forward_path() -> None:

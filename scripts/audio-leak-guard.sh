@@ -28,9 +28,31 @@ FAIL=0
 WP_CONF_DIR="${HAPAX_WIREPLUMBER_CONF_DIR:-${HOME}/.config/wireplumber/wireplumber.conf.d}"
 PW_CONF_DIR="${HAPAX_PIPEWIRE_CONF_DIR:-${HOME}/.config/pipewire/pipewire.conf.d}"
 FORBIDDEN_PRIVATE_TARGET_RE='alsa_output\.usb-ZOOM_Corporation_L-12|hapax-livestream|hapax-livestream-tap|hapax-voice-fx-capture|hapax-pc-loudnorm|input\.loopback\.sink\.role\.multimedia'
+PRIVATE_MONITOR_TARGET_RE='alsa_output\.usb-Blue_Microphones_Yeti_.*\.analog-stereo'
 
 active_conf() {
     sed '/^[[:space:]]*#/d' "$1" 2>/dev/null || true
+}
+
+node_block_from_active() {
+    local active="$1"
+    local node_name="$2"
+    printf '%s\n' "$active" | awk -v node="$node_name" '
+        index($0, "node.name = \"" node "\"") { f=1 }
+        f { print }
+        f && /^[[:space:]]*}/ { exit }
+    '
+}
+
+require_bridge_prop() {
+    local block="$1"
+    local node_name="$2"
+    local prop="$3"
+    if printf '%s\n' "$block" | grep -Fq "$prop"; then
+        return 0
+    fi
+    echo "FAIL $node_name missing fail-closed property: $prop"
+    FAIL=1
 }
 
 if [ "${HAPAX_AUDIO_LEAK_GUARD_STATIC_ONLY:-0}" = "1" ]; then
@@ -182,6 +204,62 @@ elif [ -z "$NOTIFY_STATIC_TARGET" ]; then
     echo "OK  hapax-notification-private is fail-closed in PipeWire config (no playback target)"
 else
     echo "OK  hapax-notification-private static target stays off broadcast"
+fi
+
+# Check 6: an optional explicit private monitor bridge may make private
+# audio audible, but it must target only the Blue Yeti headphone endpoint
+# and fail closed when that endpoint is absent. The null sinks above stay
+# target-free; this separate file owns the guarded hardware edge.
+PRIVATE_BRIDGE_CONF="$PW_CONF_DIR/hapax-private-monitor-bridge.conf"
+PRIVATE_BRIDGE_ACTIVE=$(active_conf "$PRIVATE_BRIDGE_CONF")
+if [ -z "$PRIVATE_BRIDGE_ACTIVE" ]; then
+    echo "OK  no explicit private monitor bridge configured (silent fail-closed posture)"
+else
+    for pair in \
+        "hapax-private-monitor-capture|hapax-private" \
+        "hapax-notification-private-monitor-capture|hapax-notification-private"; do
+        capture_node=${pair%%|*}
+        capture_target=${pair#*|}
+        capture_block=$(node_block_from_active "$PRIVATE_BRIDGE_ACTIVE" "$capture_node")
+        if [ -z "$capture_block" ]; then
+            echo "FAIL missing private monitor capture node: $capture_node"
+            FAIL=1
+            continue
+        fi
+        if printf '%s\n' "$capture_block" | grep -Fq 'stream.capture.sink = true' \
+            && printf '%s\n' "$capture_block" \
+                | grep -Fq "target.object = \"$capture_target\""; then
+            echo "OK  $capture_node captures $capture_target monitor"
+        else
+            echo "FAIL $capture_node does not capture $capture_target as a sink monitor"
+            FAIL=1
+        fi
+    done
+
+    for playback_node in hapax-private-playback hapax-notification-private-playback; do
+        playback_block=$(node_block_from_active "$PRIVATE_BRIDGE_ACTIVE" "$playback_node")
+        if [ -z "$playback_block" ]; then
+            echo "FAIL missing private monitor playback node: $playback_node"
+            FAIL=1
+            continue
+        fi
+        playback_target=$(printf '%s\n' "$playback_block" \
+            | awk '/(target\.object|node\.target)/ {print; exit}')
+        if printf '%s\n' "$playback_target" | grep -Eq "$FORBIDDEN_PRIVATE_TARGET_RE"; then
+            echo "FAIL $playback_node static target is broadcast/default path: $playback_target"
+            FAIL=1
+        elif printf '%s\n' "$playback_target" | grep -Eq "$PRIVATE_MONITOR_TARGET_RE"; then
+            echo "OK  $playback_node static target is Blue Yeti headphone"
+        else
+            echo "FAIL $playback_node static target is not the approved private monitor: $playback_target"
+            FAIL=1
+        fi
+        require_bridge_prop "$playback_block" "$playback_node" "node.dont-fallback = true"
+        require_bridge_prop "$playback_block" "$playback_node" "node.dont-reconnect = true"
+        require_bridge_prop "$playback_block" "$playback_node" "node.dont-move = true"
+        require_bridge_prop "$playback_block" "$playback_node" "node.linger = true"
+        require_bridge_prop "$playback_block" "$playback_node" "state.restore = false"
+    done
 fi
 
 if [ "$FAIL" -ne 0 ]; then

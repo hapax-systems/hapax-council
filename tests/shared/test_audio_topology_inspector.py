@@ -115,6 +115,48 @@ def _l12_contract_fixture() -> TopologyDescriptor:
             pipewire_name: hapax-notification-private
             params:
               fail_closed: true
+          - id: yeti-headphone-output
+            kind: alsa_sink
+            pipewire_name: alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo
+            hw: front:Yeti
+            params:
+              private_monitor_endpoint: true
+          - id: private-monitor-capture
+            kind: filter_chain
+            pipewire_name: hapax-private-monitor-capture
+            target_object: hapax-private
+            params:
+              stream.capture.sink: true
+          - id: private-monitor-output
+            kind: loopback
+            pipewire_name: hapax-private-playback
+            target_object: alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo
+            params:
+              node.dont-fallback: true
+              node.dont-reconnect: true
+              node.dont-move: true
+              node.linger: true
+              state.restore: false
+              fail_closed_on_target_absent: true
+              private_monitor_bridge: true
+          - id: notification-private-monitor-capture
+            kind: filter_chain
+            pipewire_name: hapax-notification-private-monitor-capture
+            target_object: hapax-notification-private
+            params:
+              stream.capture.sink: true
+          - id: notification-private-monitor-output
+            kind: loopback
+            pipewire_name: hapax-notification-private-playback
+            target_object: alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo
+            params:
+              node.dont-fallback: true
+              node.dont-reconnect: true
+              node.dont-move: true
+              node.linger: true
+              state.restore: false
+              fail_closed_on_target_absent: true
+              private_monitor_bridge: true
           - id: role-multimedia
             kind: loopback
             pipewire_name: input.loopback.sink.role.multimedia
@@ -167,6 +209,14 @@ def _l12_contract_fixture() -> TopologyDescriptor:
             target: tts-broadcast-capture
           - source: tts-broadcast-playback
             target: livestream-tap
+          - source: private-sink
+            target: private-monitor-capture
+          - source: private-monitor-capture
+            target: private-monitor-output
+          - source: notification-private-sink
+            target: notification-private-monitor-capture
+          - source: notification-private-monitor-capture
+            target: notification-private-monitor-output
         """
     )
 
@@ -246,6 +296,18 @@ class TestClassifyNodeKind:
                     "node.name": "hapax-tts-broadcast-playback",
                     "media.class": "Stream/Output/Audio",
                     "target.object": "hapax-livestream-tap",
+                }
+            )
+            == NodeKind.LOOPBACK
+        )
+
+    def test_private_monitor_playback_stream_is_modeled(self) -> None:
+        assert (
+            _classify_node_kind(
+                {
+                    "node.name": "hapax-private-playback",
+                    "media.class": "Stream/Output/Audio",
+                    "target.object": ("alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo"),
                 }
             )
             == NodeKind.LOOPBACK
@@ -634,6 +696,37 @@ class TestL12ForwardInvariantCheck:
         codes = {violation.code for violation in result.violations}
         assert "private_sink_not_fail_closed" in codes
         assert "private_route_reaches_broadcast_path" in codes
+
+    def test_fails_when_private_monitor_bridge_targets_l12(self) -> None:
+        descriptor = _replace_node(
+            _l12_contract_fixture(),
+            "private-monitor-output",
+            target_object="alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40",
+        )
+
+        result = check_l12_forward_invariant(descriptor)
+
+        codes = {violation.code for violation in result.violations}
+        assert "private_monitor_bridge_target_not_allowed_endpoint" in codes
+        assert "private_route_reaches_broadcast_path" in codes
+
+    def test_fails_when_private_monitor_bridge_can_fallback(self) -> None:
+        descriptor = _l12_contract_fixture()
+        bridge = descriptor.node_by_id("notification-private-monitor-output")
+        params = {**bridge.params, "node.dont-fallback": False}
+        descriptor = _replace_node(
+            descriptor,
+            "notification-private-monitor-output",
+            params=params,
+        )
+
+        result = check_l12_forward_invariant(descriptor)
+
+        assert any(
+            violation.code == "private_monitor_bridge_not_fail_closed"
+            and "node.dont-fallback=True" in violation.message
+            for violation in result.violations
+        )
 
     def test_fails_when_unknown_source_targets_l12_return(self) -> None:
         descriptor = _l12_contract_fixture()
