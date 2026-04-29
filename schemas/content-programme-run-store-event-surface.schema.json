@@ -1,0 +1,697 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/content-programme-run-store-event-surface.schema.json",
+  "title": "ContentProgrammeRunEnvelope",
+  "description": "Canonical projection and append-only event contract for autonomous content programme runs.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "programme_id",
+    "opportunity_decision_id",
+    "format_id",
+    "condition_id",
+    "selected_at",
+    "selected_by",
+    "grounding_question",
+    "requested_public_private_mode",
+    "public_private_mode",
+    "rights_privacy_public_mode",
+    "selected_opportunity",
+    "selected_format",
+    "broadcast_refs",
+    "archive_refs",
+    "selected_input_refs",
+    "substrate_refs",
+    "semantic_capability_refs",
+    "director_plan",
+    "gate_refs",
+    "wcs",
+    "events",
+    "boundary_event_refs",
+    "claims",
+    "uncertainties",
+    "refusals",
+    "corrections",
+    "scores",
+    "conversion_candidates",
+    "command_execution",
+    "witnessed_outcomes",
+    "adapter_exposure",
+    "separation_policy",
+    "operator_labor_policy",
+    "final_status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "programme_id": {"type": "string", "minLength": 1},
+    "opportunity_decision_id": {"type": "string", "minLength": 1},
+    "format_id": {"type": "string", "minLength": 1},
+    "condition_id": {"type": ["string", "null"]},
+    "selected_at": {"type": "string", "format": "date-time"},
+    "selected_by": {"type": "string", "minLength": 1},
+    "grounding_question": {"type": "string", "minLength": 1},
+    "requested_public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+    "public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+    "rights_privacy_public_mode": {"$ref": "#/$defs/rights_privacy_public_mode"},
+    "selected_opportunity": {"$ref": "#/$defs/selected_opportunity_ref"},
+    "selected_format": {"$ref": "#/$defs/selected_format_ref"},
+    "broadcast_refs": {"$ref": "#/$defs/ref_list"},
+    "archive_refs": {"$ref": "#/$defs/ref_list"},
+    "selected_input_refs": {"$ref": "#/$defs/ref_list"},
+    "substrate_refs": {"$ref": "#/$defs/ref_list"},
+    "semantic_capability_refs": {"$ref": "#/$defs/ref_list"},
+    "director_plan": {"$ref": "#/$defs/director_plan_ref"},
+    "gate_refs": {"$ref": "#/$defs/gate_refs"},
+    "wcs": {"$ref": "#/$defs/wcs_binding"},
+    "events": {
+      "description": "Projection refs only. Full event payloads live in the append-only ContentProgrammeRunStoreEvent stream.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/run_store_event_ref"}
+    },
+    "boundary_event_refs": {
+      "description": "ProgrammeBoundaryEvent refs only; boundary semantics stay in the boundary event stream.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/programme_boundary_event_ref"}
+    },
+    "claims": {"type": "array", "items": {"$ref": "#/$defs/claim_ref"}},
+    "uncertainties": {"type": "array", "items": {"$ref": "#/$defs/state_ref"}},
+    "refusals": {"type": "array", "items": {"$ref": "#/$defs/state_ref"}},
+    "corrections": {"type": "array", "items": {"$ref": "#/$defs/state_ref"}},
+    "scores": {"type": "array", "items": {"$ref": "#/$defs/score_ref"}},
+    "conversion_candidates": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/conversion_candidate"}
+    },
+    "command_execution": {"$ref": "#/$defs/command_execution_trace"},
+    "witnessed_outcomes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/witnessed_outcome_record"}
+    },
+    "adapter_exposure": {"$ref": "#/$defs/adapter_exposure"},
+    "separation_policy": {"$ref": "#/$defs/separation_policy"},
+    "operator_labor_policy": {"$ref": "#/$defs/operator_labor_policy"},
+    "final_status": {"$ref": "#/$defs/run_final_status"}
+  },
+  "x-fixture_cases": [
+    "private_run",
+    "dry_run",
+    "public_archive_run",
+    "public_live_blocked_run",
+    "monetization_blocked_run",
+    "refusal_run",
+    "correction_run",
+    "conversion_held_run",
+    "dry_run_tier_list",
+    "public_safe_evidence_audit",
+    "rights_blocked_react_commentary",
+    "world_surface_blocked_run"
+  ],
+  "x-public_conversion_path": [
+    "ContentProgrammeRunEnvelope",
+    "ProgrammeBoundaryEvent",
+    "ResearchVehiclePublicEvent",
+    "surface_adapter"
+  ],
+  "$defs": {
+    "ref_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": [
+        "private",
+        "dry_run",
+        "public_live",
+        "public_archive",
+        "public_monetizable"
+      ]
+    },
+    "run_final_status": {
+      "type": "string",
+      "enum": [
+        "selected",
+        "running",
+        "blocked",
+        "refused",
+        "corrected",
+        "conversion_held",
+        "completed",
+        "aborted"
+      ]
+    },
+    "run_store_event_type": {
+      "type": "string",
+      "enum": [
+        "selected",
+        "started",
+        "transitioned",
+        "blocked",
+        "evidence_attached",
+        "gate_evaluated",
+        "boundary_emitted",
+        "claim_recorded",
+        "outcome_recorded",
+        "refusal_issued",
+        "correction_made",
+        "artifact_candidate",
+        "conversion_held",
+        "public_event_linked",
+        "completed",
+        "aborted"
+      ]
+    },
+    "unavailable_reason": {
+      "type": "string",
+      "enum": [
+        "private_mode",
+        "dry_run_mode",
+        "missing_evidence_ref",
+        "missing_grounding_gate",
+        "grounding_gate_failed",
+        "unsupported_claim",
+        "source_stale",
+        "rights_blocked",
+        "privacy_blocked",
+        "egress_blocked",
+        "audio_blocked",
+        "archive_missing",
+        "video_id_missing",
+        "cuepoint_smoke_missing",
+        "cuepoint_api_rejected",
+        "rate_limited",
+        "monetization_blocked",
+        "monetization_readiness_missing",
+        "operator_review_required",
+        "live_provider_smoke_missing",
+        "third_party_media_blocked",
+        "owned_cleared_av_missing",
+        "research_vehicle_public_event_missing",
+        "world_surface_blocked",
+        "witness_missing"
+      ]
+    },
+    "rights_privacy_public_mode": {
+      "type": "object",
+      "required": [
+        "requested_mode",
+        "effective_mode",
+        "rights_state",
+        "privacy_state",
+        "public_event_policy_state",
+        "monetization_state",
+        "unavailable_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requested_mode": {"$ref": "#/$defs/public_private_mode"},
+        "effective_mode": {"$ref": "#/$defs/public_private_mode"},
+        "rights_state": {
+          "type": "string",
+          "enum": ["operator_original", "cleared", "platform_embed_only", "blocked", "unknown"]
+        },
+        "privacy_state": {
+          "type": "string",
+          "enum": ["operator_private", "public_safe", "aggregate_only", "blocked", "unknown"]
+        },
+        "public_event_policy_state": {
+          "type": "string",
+          "enum": ["required", "linked", "held", "blocked", "not_public"]
+        },
+        "monetization_state": {
+          "type": "string",
+          "enum": ["not_requested", "ready", "blocked", "unknown"]
+        },
+        "unavailable_reasons": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "selected_opportunity_ref": {
+      "type": "object",
+      "required": [
+        "decision_id",
+        "decision_ref",
+        "opportunity_id",
+        "content_opportunity_tuple_ref",
+        "posterior_sample_refs",
+        "reward_vector_ref",
+        "rescore_hidden_copy_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "decision_id": {"type": "string", "minLength": 1},
+        "decision_ref": {"type": "string", "minLength": 1},
+        "opportunity_id": {"type": "string", "minLength": 1},
+        "content_opportunity_tuple_ref": {"type": "string", "minLength": 1},
+        "posterior_sample_refs": {"$ref": "#/$defs/ref_list"},
+        "reward_vector_ref": {"type": "string", "minLength": 1},
+        "rescore_hidden_copy_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "selected_format_ref": {
+      "type": "object",
+      "required": [
+        "format_id",
+        "registry_ref",
+        "row_ref",
+        "grounding_question",
+        "grounding_attempt_types"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "format_id": {"type": "string", "minLength": 1},
+        "registry_ref": {"type": "string", "minLength": 1},
+        "row_ref": {"type": "string", "minLength": 1},
+        "grounding_question": {"type": "string", "minLength": 1},
+        "grounding_attempt_types": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "director_plan_ref": {
+      "type": "object",
+      "required": [
+        "director_snapshot_ref",
+        "director_plan_ref",
+        "director_move_refs",
+        "condition_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "director_snapshot_ref": {"type": "string", "minLength": 1},
+        "director_plan_ref": {"type": "string", "minLength": 1},
+        "director_move_refs": {"$ref": "#/$defs/ref_list"},
+        "condition_id": {"type": ["string", "null"]}
+      }
+    },
+    "gate_refs": {
+      "type": "object",
+      "required": [
+        "grounding_gate_refs",
+        "rights_gate_refs",
+        "privacy_gate_refs",
+        "monetization_gate_refs",
+        "public_event_gate_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "grounding_gate_refs": {"$ref": "#/$defs/ref_list"},
+        "rights_gate_refs": {"$ref": "#/$defs/ref_list"},
+        "privacy_gate_refs": {"$ref": "#/$defs/ref_list"},
+        "monetization_gate_refs": {"$ref": "#/$defs/ref_list"},
+        "public_event_gate_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "witness_requirement": {
+      "type": "object",
+      "required": [
+        "requirement_id",
+        "substrate_ref",
+        "required_witness_refs",
+        "missing_witness_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requirement_id": {"type": "string", "minLength": 1},
+        "substrate_ref": {"type": "string", "minLength": 1},
+        "required_witness_refs": {"$ref": "#/$defs/ref_list"},
+        "missing_witness_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "wcs_binding": {
+      "type": "object",
+      "required": [
+        "semantic_substrate_refs",
+        "grounding_contract_refs",
+        "evidence_envelope_refs",
+        "witness_requirements",
+        "capability_outcome_refs",
+        "health_state",
+        "unavailable_reasons",
+        "public_private_posture"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "semantic_substrate_refs": {"$ref": "#/$defs/ref_list"},
+        "grounding_contract_refs": {"$ref": "#/$defs/ref_list"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/ref_list"},
+        "witness_requirements": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/witness_requirement"}
+        },
+        "capability_outcome_refs": {"$ref": "#/$defs/ref_list"},
+        "health_state": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "degraded",
+            "blocked",
+            "unsafe",
+            "stale",
+            "missing",
+            "unknown",
+            "private_only",
+            "dry_run",
+            "candidate"
+          ]
+        },
+        "unavailable_reasons": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        },
+        "public_private_posture": {"$ref": "#/$defs/rights_privacy_public_mode"}
+      }
+    },
+    "run_store_event_ref": {
+      "type": "object",
+      "required": ["event_id", "sequence", "event_type"],
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 0},
+        "event_type": {"$ref": "#/$defs/run_store_event_type"}
+      }
+    },
+    "programme_boundary_event_ref": {
+      "type": "object",
+      "description": "Ref-only boundary pointer. It preserves ordering and adapter keys without duplicating boundary claims, summaries, or evidence payloads.",
+      "required": [
+        "boundary_id",
+        "sequence",
+        "boundary_type",
+        "duplicate_key",
+        "cuepoint_chapter_distinction",
+        "public_event_mapping_ref",
+        "mapping_state",
+        "unavailable_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "boundary_id": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 0},
+        "boundary_type": {"type": "string", "minLength": 1},
+        "duplicate_key": {"type": "string", "minLength": 1},
+        "cuepoint_chapter_distinction": {
+          "type": "string",
+          "enum": ["none", "live_cuepoint_candidate", "vod_chapter_boundary", "both_distinct"]
+        },
+        "public_event_mapping_ref": {"type": ["string", "null"]},
+        "mapping_state": {
+          "type": "string",
+          "enum": [
+            "internal_only",
+            "research_vehicle_required",
+            "research_vehicle_linked",
+            "held",
+            "unavailable"
+          ]
+        },
+        "unavailable_reasons": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "claim_ref": {
+      "type": "object",
+      "required": [
+        "claim_id",
+        "evidence_refs",
+        "evidence_envelope_refs",
+        "uncertainty_ref",
+        "posterior_state_ref"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/ref_list"},
+        "uncertainty_ref": {"type": ["string", "null"]},
+        "posterior_state_ref": {"type": ["string", "null"]}
+      }
+    },
+    "state_ref": {
+      "type": "object",
+      "required": ["state_id", "reason", "evidence_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "state_id": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "score_ref": {
+      "type": "object",
+      "required": [
+        "evaluation_id",
+        "dimension",
+        "score_ref",
+        "evidence_refs",
+        "verdict_authority_allowed",
+        "engagement_metric_source_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "evaluation_id": {"type": "string", "minLength": 1},
+        "dimension": {"type": "string", "minLength": 1},
+        "score_ref": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "verdict_authority_allowed": {"type": "boolean", "const": false},
+        "engagement_metric_source_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "command_execution_record": {
+      "type": "object",
+      "required": [
+        "record_id",
+        "state",
+        "occurred_at",
+        "refs",
+        "posterior_update_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {"type": "string", "minLength": 1},
+        "state": {
+          "type": "string",
+          "enum": [
+            "candidate_scored",
+            "selected",
+            "commanded",
+            "accepted",
+            "applied",
+            "queued",
+            "dry_run",
+            "blocked_by_policy",
+            "tool_error",
+            "unknown"
+          ]
+        },
+        "occurred_at": {"type": "string", "format": "date-time"},
+        "refs": {"$ref": "#/$defs/ref_list"},
+        "posterior_update_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "witnessed_outcome_record": {
+      "type": "object",
+      "required": [
+        "outcome_id",
+        "witness_state",
+        "evidence_envelope_refs",
+        "capability_outcome_ref",
+        "posterior_update_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "outcome_id": {"type": "string", "minLength": 1},
+        "witness_state": {
+          "type": "string",
+          "enum": [
+            "not_required",
+            "not_observed",
+            "observed_without_witness",
+            "witness_verified",
+            "witness_failed",
+            "witness_stale",
+            "witness_unavailable",
+            "inferred_only"
+          ]
+        },
+        "evidence_envelope_refs": {"$ref": "#/$defs/ref_list"},
+        "capability_outcome_ref": {"type": "string", "minLength": 1},
+        "posterior_update_allowed": {"type": "boolean"}
+      }
+    },
+    "command_execution_trace": {
+      "type": "object",
+      "required": [
+        "selected",
+        "commanded_states",
+        "executed_states",
+        "witnessed_outcomes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "selected": {"$ref": "#/$defs/command_execution_record"},
+        "commanded_states": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/command_execution_record"}
+        },
+        "executed_states": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/command_execution_record"}
+        },
+        "witnessed_outcomes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/witnessed_outcome_record"}
+        }
+      }
+    },
+    "conversion_candidate": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "conversion_type",
+        "state",
+        "requires_research_vehicle_public_event",
+        "research_vehicle_public_event_ref",
+        "owned_cleared_av_ref",
+        "monetization_readiness_ref",
+        "unavailable_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {"type": "string", "minLength": 1},
+        "conversion_type": {
+          "type": "string",
+          "enum": [
+            "archive_replay",
+            "chapter",
+            "live_cuepoint",
+            "shorts",
+            "metadata",
+            "refusal_artifact",
+            "correction_artifact",
+            "support_prompt",
+            "grant_packet",
+            "monetization"
+          ]
+        },
+        "state": {"type": "string", "enum": ["candidate", "held", "blocked", "linked", "emitted"]},
+        "requires_research_vehicle_public_event": {"type": "boolean"},
+        "research_vehicle_public_event_ref": {"type": ["string", "null"]},
+        "owned_cleared_av_ref": {"type": ["string", "null"]},
+        "monetization_readiness_ref": {"type": ["string", "null"]},
+        "unavailable_reasons": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "adapter_exposure": {
+      "type": "object",
+      "required": ["adapters", "ref", "stale_or_missing_state_blocks_public"],
+      "additionalProperties": false,
+      "properties": {
+        "adapters": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["public_event", "scheduler", "feedback", "archive", "youtube", "metrics"]
+          },
+          "uniqueItems": true
+        },
+        "ref": {"type": "string", "minLength": 1},
+        "stale_or_missing_state_blocks_public": {"type": "boolean", "const": true}
+      }
+    },
+    "separation_policy": {
+      "type": "object",
+      "required": [
+        "selected_commanded_executed_are_not_witnessed",
+        "witnessed_outcomes_only_update_posteriors",
+        "evaluator_outputs_are_evidence_outcomes",
+        "engagement_can_override_grounding",
+        "revenue_can_override_grounding",
+        "engagement_metrics_stored_separately",
+        "support_data_public_state_aggregate_only",
+        "public_payer_identity_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "selected_commanded_executed_are_not_witnessed": {"type": "boolean", "const": true},
+        "witnessed_outcomes_only_update_posteriors": {"type": "boolean", "const": true},
+        "evaluator_outputs_are_evidence_outcomes": {"type": "boolean", "const": true},
+        "engagement_can_override_grounding": {"type": "boolean", "const": false},
+        "revenue_can_override_grounding": {"type": "boolean", "const": false},
+        "engagement_metrics_stored_separately": {"type": "boolean", "const": true},
+        "support_data_public_state_aggregate_only": {"type": "boolean", "const": true},
+        "public_payer_identity_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "operator_labor_policy": {
+      "type": "object",
+      "required": [
+        "single_operator_only",
+        "request_queue_allowed",
+        "manual_content_calendar_allowed",
+        "supporter_controlled_programming_allowed",
+        "personalized_supporter_treatment_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "single_operator_only": {"type": "boolean", "const": true},
+        "request_queue_allowed": {"type": "boolean", "const": false},
+        "manual_content_calendar_allowed": {"type": "boolean", "const": false},
+        "supporter_controlled_programming_allowed": {"type": "boolean", "const": false},
+        "personalized_supporter_treatment_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "content_programme_run_store_event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "event_id",
+        "run_id",
+        "sequence",
+        "event_type",
+        "occurred_at",
+        "idempotency_key",
+        "producer",
+        "payload_refs",
+        "evidence_refs",
+        "boundary_event_refs",
+        "public_event_refs",
+        "capability_outcome_refs",
+        "append_only",
+        "mutation_policy"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "event_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 0},
+        "event_type": {"$ref": "#/$defs/run_store_event_type"},
+        "occurred_at": {"type": "string", "format": "date-time"},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "producer": {"type": "string", "minLength": 1},
+        "payload_refs": {"$ref": "#/$defs/ref_list"},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "boundary_event_refs": {"$ref": "#/$defs/ref_list"},
+        "public_event_refs": {"$ref": "#/$defs/ref_list"},
+        "capability_outcome_refs": {"$ref": "#/$defs/ref_list"},
+        "append_only": {"type": "boolean", "const": true},
+        "mutation_policy": {"type": "string", "const": "append_new_event_never_update_existing"}
+      }
+    }
+  }
+}
