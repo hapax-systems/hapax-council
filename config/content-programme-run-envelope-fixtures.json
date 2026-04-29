@@ -1,0 +1,874 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "content-programme-run-envelope-fixtures-2026-04-29",
+  "schema_ref": "schemas/content-programme-run-envelope.schema.json",
+  "generated_from": [
+    "research-spec:2026-04-29-programme-world-surface-integration-plan",
+    "research-plan:2026-04-29-autonomous-content-programming-grounding-train"
+  ],
+  "declared_at": "2026-04-29T21:12:00Z",
+  "producer": "cc-task:content-programme-run-envelope-schema-fixtures",
+  "required_fixture_cases": [
+    "private_run",
+    "dry_run",
+    "public_archive_run",
+    "public_live_run",
+    "monetization_blocked_run",
+    "refusal_run",
+    "correction_run",
+    "conversion_held_run"
+  ],
+  "public_live_negative_fixture_cases": ["public_live_negative_missing_public_event"],
+  "run_envelope_required_fields": [
+    "schema_version",
+    "run_id",
+    "programme_id",
+    "format_id",
+    "opportunity",
+    "selected_at",
+    "requested_mode",
+    "effective_mode",
+    "final_status",
+    "grounding_question",
+    "subject",
+    "wcs_snapshot",
+    "evidence_obligations",
+    "claim_shape",
+    "director",
+    "blockers",
+    "outcomes",
+    "conversion_posture",
+    "operator_labor_policy",
+    "fixture_case"
+  ],
+  "fail_closed_policy": {
+    "public_live_without_grounding_question_allowed": false,
+    "public_live_without_witnesses_allowed": false,
+    "public_live_without_rights_allowed": false,
+    "public_live_without_public_event_readiness_allowed": false,
+    "public_archive_without_evidence_allowed": false,
+    "monetization_without_monetization_evidence_allowed": false,
+    "revenue_can_override_grounding": false
+  },
+  "runs": [
+    {
+      "schema_version": 1,
+      "run_id": "cpre:private.tier-list.001",
+      "programme_id": "programme:content-programming-grounding-train",
+      "format_id": "tier_list",
+      "opportunity": {
+        "opportunity_id": "content-opportunity:private-tier-list-001",
+        "decision_ref": "content-opportunity-decision:private-tier-list-001",
+        "reward_vector_ref": "reward-vector:private-grounding-value",
+        "posterior_refs": ["posterior:format-tier-list", "posterior:source-owned-notes"],
+        "selected_by": "bayesian_model"
+      },
+      "selected_at": "2026-04-29T21:12:00Z",
+      "requested_mode": "private",
+      "effective_mode": "private",
+      "final_status": "completed",
+      "grounding_question": {
+        "state": "present",
+        "text": "Can the current task queue be ranked by evidence-backed unblock value?",
+        "source_ref": "format-registry:tier_list#grounding_question"
+      },
+      "subject": {
+        "label": "Active content programming blockers",
+        "input_source_refs": ["vault-task-index:content-programming-active"],
+        "time_window": {"starts_at": null, "ends_at": null}
+      },
+      "wcs_snapshot": {
+        "snapshot_ref": "director-world-surface-snapshot:private-tier-list-001",
+        "health_state": "private_only",
+        "required_surface_refs": ["wcs:source_bundle", "wcs:criteria", "wcs:comparison_trace"],
+        "available_surface_refs": ["wcs:source_bundle", "wcs:criteria", "wcs:comparison_trace"],
+        "missing_surface_refs": [],
+        "public_event_ready": false,
+        "rights_state": "operator_original",
+        "privacy_state": "operator_private",
+        "monetization_grounding_state": "not_requested"
+      },
+      "evidence_obligations": {
+        "required_evidence_classes": ["source_ref", "criteria", "comparison_trace"],
+        "required_witness_classes": ["wcs_snapshot", "source_observation"],
+        "source_refs": ["vault-task-index:content-programming-active"],
+        "evidence_envelope_refs": ["evidence-envelope:private-tier-list-criteria"],
+        "witness_refs": ["witness:wcs-snapshot:private-tier-list-001"],
+        "rights_refs": [],
+        "public_event_readiness_refs": [],
+        "grounding_gate_refs": [],
+        "monetization_evidence_refs": [],
+        "missing_obligations": []
+      },
+      "claim_shape": {
+        "claim_kind": "ranking",
+        "authority_ceiling": "internal_only",
+        "allowed_claim_verbs": ["orders", "compares"],
+        "forbidden_claim_verbs": ["proves"],
+        "confidence_policy": "qualitative_required",
+        "uncertainty_language": "Private ranking only; no public claim is emitted.",
+        "scope_limit": "Current local task queue only.",
+        "public_claim_allowed": false
+      },
+      "director": {
+        "director_snapshot_ref": "director-world-surface-snapshot:private-tier-list-001",
+        "director_move_refs": ["director-move:foreground-criteria"]
+      },
+      "blockers": ["private_mode"],
+      "outcomes": {
+        "outcome_envelope_refs": ["capability-outcome:private-tier-list-completed"],
+        "boundary_event_refs": ["programme-boundary:private-tier-list-started"],
+        "public_event_refs": [],
+        "archive_refs": [],
+        "refusal_or_correction_refs": [],
+        "final_outcome_summary": "Private tier list run completed without public conversion.",
+        "learning_update_allowed": true
+      },
+      "conversion_posture": {
+        "conversion_state": "not_requested",
+        "allowed_routes": [],
+        "held_routes": [],
+        "blocked_routes": [],
+        "monetization_state": "not_requested",
+        "monetization_evidence_refs": [],
+        "support_or_grant_refs": [],
+        "revenue_can_override_grounding": false
+      },
+      "operator_labor_policy": {
+        "single_operator_only": true,
+        "recurring_operator_nomination_required": false,
+        "manual_calendar_required": false,
+        "supporter_request_queue_allowed": false
+      },
+      "fixture_case": "private_run"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "cpre:dry-run.react.001",
+      "programme_id": "programme:content-programming-grounding-train",
+      "format_id": "react_commentary",
+      "opportunity": {
+        "opportunity_id": "content-opportunity:dry-run-react-001",
+        "decision_ref": "content-opportunity-decision:dry-run-react-001",
+        "reward_vector_ref": "reward-vector:dry-run-rights-learning",
+        "posterior_refs": ["posterior:format-react-commentary"],
+        "selected_by": "bayesian_model"
+      },
+      "selected_at": "2026-04-29T21:12:10Z",
+      "requested_mode": "dry_run",
+      "effective_mode": "dry_run",
+      "final_status": "completed",
+      "grounding_question": {
+        "state": "present",
+        "text": "Can the source be discussed without rebroadcasting third-party media?",
+        "source_ref": "format-registry:react_commentary#grounding_question"
+      },
+      "subject": {
+        "label": "Rights posture rehearsal",
+        "input_source_refs": ["source-registry:metadata-only-example"],
+        "time_window": {"starts_at": null, "ends_at": null}
+      },
+      "wcs_snapshot": {
+        "snapshot_ref": "director-world-surface-snapshot:dry-run-react-001",
+        "health_state": "dry_run",
+        "required_surface_refs": ["wcs:source_metadata", "wcs:rights_gate", "wcs:commentary_route"],
+        "available_surface_refs": ["wcs:source_metadata", "wcs:commentary_route"],
+        "missing_surface_refs": ["wcs:rights_gate"],
+        "public_event_ready": false,
+        "rights_state": "unknown",
+        "privacy_state": "unknown",
+        "monetization_grounding_state": "not_requested"
+      },
+      "evidence_obligations": {
+        "required_evidence_classes": ["source_ref", "rights_provenance", "grounding_gate"],
+        "required_witness_classes": ["wcs_snapshot", "rights_gate"],
+        "source_refs": ["source-registry:metadata-only-example"],
+        "evidence_envelope_refs": [],
+        "witness_refs": [],
+        "rights_refs": [],
+        "public_event_readiness_refs": [],
+        "grounding_gate_refs": [],
+        "monetization_evidence_refs": [],
+        "missing_obligations": ["evidence_envelope", "witness", "rights", "public_event_readiness"]
+      },
+      "claim_shape": {
+        "claim_kind": "observation",
+        "authority_ceiling": "internal_only",
+        "allowed_claim_verbs": ["rehearses"],
+        "forbidden_claim_verbs": ["publishes", "monetizes"],
+        "confidence_policy": "qualitative_required",
+        "uncertainty_language": "Dry-run rehearsal only; missing rights and witness refs.",
+        "scope_limit": "No public commentary or claims.",
+        "public_claim_allowed": false
+      },
+      "director": {
+        "director_snapshot_ref": "director-world-surface-snapshot:dry-run-react-001",
+        "director_move_refs": ["director-move:suppress-unsafe-media"]
+      },
+      "blockers": ["dry_run_mode", "rights_blocked", "witness_missing"],
+      "outcomes": {
+        "outcome_envelope_refs": ["capability-outcome:dry-run-react-rehearsed"],
+        "boundary_event_refs": ["programme-boundary:dry-run-react-started"],
+        "public_event_refs": [],
+        "archive_refs": [],
+        "refusal_or_correction_refs": [],
+        "final_outcome_summary": "Dry-run captured rights and witness blockers without public output.",
+        "learning_update_allowed": true
+      },
+      "conversion_posture": {
+        "conversion_state": "blocked",
+        "allowed_routes": [],
+        "held_routes": [],
+        "blocked_routes": ["archive_replay", "metadata"],
+        "monetization_state": "not_requested",
+        "monetization_evidence_refs": [],
+        "support_or_grant_refs": [],
+        "revenue_can_override_grounding": false
+      },
+      "operator_labor_policy": {
+        "single_operator_only": true,
+        "recurring_operator_nomination_required": false,
+        "manual_calendar_required": false,
+        "supporter_request_queue_allowed": false
+      },
+      "fixture_case": "dry_run"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "cpre:public-archive.evidence-audit.001",
+      "programme_id": "programme:content-programming-grounding-train",
+      "format_id": "evidence_audit",
+      "opportunity": {
+        "opportunity_id": "content-opportunity:public-archive-audit-001",
+        "decision_ref": "content-opportunity-decision:public-archive-audit-001",
+        "reward_vector_ref": "reward-vector:archive-artifact",
+        "posterior_refs": ["posterior:format-evidence-audit", "posterior:archive-conversion"],
+        "selected_by": "bayesian_model"
+      },
+      "selected_at": "2026-04-29T21:12:20Z",
+      "requested_mode": "public_archive",
+      "effective_mode": "public_archive",
+      "final_status": "completed",
+      "grounding_question": {
+        "state": "present",
+        "text": "Which claims in this run are backed by source and gate evidence?",
+        "source_ref": "format-registry:evidence_audit#grounding_question"
+      },
+      "subject": {
+        "label": "Programme evidence audit",
+        "input_source_refs": ["archive-sidecar:programme-evidence-audit-001"],
+        "time_window": {"starts_at": "2026-04-29T21:00:00Z", "ends_at": "2026-04-29T21:10:00Z"}
+      },
+      "wcs_snapshot": {
+        "snapshot_ref": "director-world-surface-snapshot:public-archive-audit-001",
+        "health_state": "healthy",
+        "required_surface_refs": ["wcs:archive_sidecar", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "available_surface_refs": ["wcs:archive_sidecar", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "missing_surface_refs": [],
+        "public_event_ready": true,
+        "rights_state": "operator_original",
+        "privacy_state": "public_safe",
+        "monetization_grounding_state": "not_requested"
+      },
+      "evidence_obligations": {
+        "required_evidence_classes": ["source_ref", "grounding_gate", "archive_sidecar", "public_event_readiness"],
+        "required_witness_classes": ["wcs_snapshot", "claim_gate", "public_event_gate", "archive_witness"],
+        "source_refs": ["archive-sidecar:programme-evidence-audit-001"],
+        "evidence_envelope_refs": ["evidence-envelope:programme-evidence-audit-001"],
+        "witness_refs": ["witness:archive-sidecar-hash:programme-evidence-audit-001"],
+        "rights_refs": ["rights:operator-original:programme-evidence-audit-001"],
+        "public_event_readiness_refs": ["research-vehicle-public-event-readiness:archive-audit-001"],
+        "grounding_gate_refs": ["grounding-gate:programme-evidence-audit-001"],
+        "monetization_evidence_refs": [],
+        "missing_obligations": []
+      },
+      "claim_shape": {
+        "claim_kind": "correction",
+        "authority_ceiling": "evidence_bound",
+        "allowed_claim_verbs": ["audits", "identifies"],
+        "forbidden_claim_verbs": ["certifies"],
+        "confidence_policy": "posterior_required",
+        "uncertainty_language": "Only evidence-backed claim statuses are public.",
+        "scope_limit": "This archived programme segment only.",
+        "public_claim_allowed": true
+      },
+      "director": {
+        "director_snapshot_ref": "director-world-surface-snapshot:public-archive-audit-001",
+        "director_move_refs": ["director-move:foreground-evidence", "director-move:mark-boundary"]
+      },
+      "blockers": [],
+      "outcomes": {
+        "outcome_envelope_refs": ["capability-outcome:public-archive-audit-completed"],
+        "boundary_event_refs": ["programme-boundary:public-archive-audit-ended"],
+        "public_event_refs": ["ResearchVehiclePublicEvent:archive-audit-001"],
+        "archive_refs": ["archive-sidecar:programme-evidence-audit-001"],
+        "refusal_or_correction_refs": [],
+        "final_outcome_summary": "Public archive audit emitted evidence-backed archive event.",
+        "learning_update_allowed": true
+      },
+      "conversion_posture": {
+        "conversion_state": "linked",
+        "allowed_routes": ["archive_replay", "metadata"],
+        "held_routes": [],
+        "blocked_routes": [],
+        "monetization_state": "not_requested",
+        "monetization_evidence_refs": [],
+        "support_or_grant_refs": ["grant-evidence:programme-audit-demo"],
+        "revenue_can_override_grounding": false
+      },
+      "operator_labor_policy": {
+        "single_operator_only": true,
+        "recurring_operator_nomination_required": false,
+        "manual_calendar_required": false,
+        "supporter_request_queue_allowed": false
+      },
+      "fixture_case": "public_archive_run"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "cpre:public-live.rundown.001",
+      "programme_id": "programme:content-programming-grounding-train",
+      "format_id": "rundown",
+      "opportunity": {
+        "opportunity_id": "content-opportunity:public-live-rundown-001",
+        "decision_ref": "content-opportunity-decision:public-live-rundown-001",
+        "reward_vector_ref": "reward-vector:live-grounding",
+        "posterior_refs": ["posterior:format-rundown", "posterior:public-live-readiness"],
+        "selected_by": "bayesian_model"
+      },
+      "selected_at": "2026-04-29T21:12:30Z",
+      "requested_mode": "public_live",
+      "effective_mode": "public_live",
+      "final_status": "completed",
+      "grounding_question": {
+        "state": "present",
+        "text": "Which current programme signals can be stated live with fresh evidence?",
+        "source_ref": "format-registry:rundown#grounding_question"
+      },
+      "subject": {
+        "label": "Evidence-backed live programme rundown",
+        "input_source_refs": ["source-registry:operator-owned-live-state"],
+        "time_window": {"starts_at": "2026-04-29T21:08:00Z", "ends_at": "2026-04-29T21:12:00Z"}
+      },
+      "wcs_snapshot": {
+        "snapshot_ref": "director-world-surface-snapshot:public-live-rundown-001",
+        "health_state": "healthy",
+        "required_surface_refs": ["wcs:live_egress", "wcs:audio_safety", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "available_surface_refs": ["wcs:live_egress", "wcs:audio_safety", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "missing_surface_refs": [],
+        "public_event_ready": true,
+        "rights_state": "operator_original",
+        "privacy_state": "public_safe",
+        "monetization_grounding_state": "not_requested"
+      },
+      "evidence_obligations": {
+        "required_evidence_classes": ["source_ref", "grounding_gate", "rights_provenance", "privacy_review", "public_event_readiness"],
+        "required_witness_classes": ["wcs_snapshot", "source_observation", "claim_gate", "rights_gate", "public_event_gate"],
+        "source_refs": ["source-registry:operator-owned-live-state"],
+        "evidence_envelope_refs": ["evidence-envelope:public-live-rundown-001"],
+        "witness_refs": ["witness:live-egress:healthy", "witness:audio-safety:public-route"],
+        "rights_refs": ["rights:operator-original:live-state"],
+        "public_event_readiness_refs": ["research-vehicle-public-event-readiness:live-rundown-001"],
+        "grounding_gate_refs": ["grounding-gate:public-live-rundown-001"],
+        "monetization_evidence_refs": [],
+        "missing_obligations": []
+      },
+      "claim_shape": {
+        "claim_kind": "observation",
+        "authority_ceiling": "evidence_bound",
+        "allowed_claim_verbs": ["observes", "states"],
+        "forbidden_claim_verbs": ["guarantees"],
+        "confidence_policy": "posterior_required",
+        "uncertainty_language": "Live statements remain source-bound and provisional.",
+        "scope_limit": "Current operator-owned live state only.",
+        "public_claim_allowed": true
+      },
+      "director": {
+        "director_snapshot_ref": "director-world-surface-snapshot:public-live-rundown-001",
+        "director_move_refs": ["director-move:foreground-current-signal", "director-move:mark-live-boundary"]
+      },
+      "blockers": [],
+      "outcomes": {
+        "outcome_envelope_refs": ["capability-outcome:public-live-rundown-completed"],
+        "boundary_event_refs": ["programme-boundary:public-live-rundown-ended"],
+        "public_event_refs": ["ResearchVehiclePublicEvent:live-rundown-001"],
+        "archive_refs": ["archive-sidecar:live-rundown-001"],
+        "refusal_or_correction_refs": [],
+        "final_outcome_summary": "Public live rundown emitted only evidence-backed live observations.",
+        "learning_update_allowed": true
+      },
+      "conversion_posture": {
+        "conversion_state": "candidate",
+        "allowed_routes": ["archive_replay", "chapter", "metadata"],
+        "held_routes": [],
+        "blocked_routes": [],
+        "monetization_state": "not_requested",
+        "monetization_evidence_refs": [],
+        "support_or_grant_refs": [],
+        "revenue_can_override_grounding": false
+      },
+      "operator_labor_policy": {
+        "single_operator_only": true,
+        "recurring_operator_nomination_required": false,
+        "manual_calendar_required": false,
+        "supporter_request_queue_allowed": false
+      },
+      "fixture_case": "public_live_run"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "cpre:public-live.negative-missing-public-event.001",
+      "programme_id": "programme:content-programming-grounding-train",
+      "format_id": "explainer",
+      "opportunity": {
+        "opportunity_id": "content-opportunity:public-live-negative-001",
+        "decision_ref": "content-opportunity-decision:public-live-negative-001",
+        "reward_vector_ref": "reward-vector:live-pressure",
+        "posterior_refs": ["posterior:format-explainer"],
+        "selected_by": "bayesian_model"
+      },
+      "selected_at": "2026-04-29T21:12:40Z",
+      "requested_mode": "public_live",
+      "effective_mode": "dry_run",
+      "final_status": "refused",
+      "grounding_question": {
+        "state": "present",
+        "text": "Can this explanation be delivered live under public-event readiness?",
+        "source_ref": "format-registry:explainer#grounding_question"
+      },
+      "subject": {
+        "label": "Public-live readiness negative fixture",
+        "input_source_refs": ["source-registry:operator-owned-live-state"],
+        "time_window": {"starts_at": "2026-04-29T21:10:00Z", "ends_at": "2026-04-29T21:12:00Z"}
+      },
+      "wcs_snapshot": {
+        "snapshot_ref": "director-world-surface-snapshot:public-live-negative-001",
+        "health_state": "dry_run",
+        "required_surface_refs": ["wcs:live_egress", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "available_surface_refs": ["wcs:live_egress", "wcs:claim_gate"],
+        "missing_surface_refs": ["wcs:public_event_adapter"],
+        "public_event_ready": false,
+        "rights_state": "operator_original",
+        "privacy_state": "public_safe",
+        "monetization_grounding_state": "not_requested"
+      },
+      "evidence_obligations": {
+        "required_evidence_classes": ["source_ref", "grounding_gate", "rights_provenance", "public_event_readiness"],
+        "required_witness_classes": ["wcs_snapshot", "source_observation", "claim_gate", "public_event_gate"],
+        "source_refs": ["source-registry:operator-owned-live-state"],
+        "evidence_envelope_refs": ["evidence-envelope:public-live-negative-001"],
+        "witness_refs": ["witness:live-egress:healthy"],
+        "rights_refs": ["rights:operator-original:live-state"],
+        "public_event_readiness_refs": [],
+        "grounding_gate_refs": ["grounding-gate:public-live-negative-001"],
+        "monetization_evidence_refs": [],
+        "missing_obligations": ["public_event_readiness"]
+      },
+      "claim_shape": {
+        "claim_kind": "explanation",
+        "authority_ceiling": "internal_only",
+        "allowed_claim_verbs": ["rehearses"],
+        "forbidden_claim_verbs": ["publishes"],
+        "confidence_policy": "qualitative_required",
+        "uncertainty_language": "Public-event readiness is missing; live output is refused.",
+        "scope_limit": "Dry-run refusal only.",
+        "public_claim_allowed": false
+      },
+      "director": {
+        "director_snapshot_ref": "director-world-surface-snapshot:public-live-negative-001",
+        "director_move_refs": ["director-move:foreground-refusal"]
+      },
+      "blockers": ["public_event_readiness_missing"],
+      "outcomes": {
+        "outcome_envelope_refs": ["capability-outcome:public-live-negative-refused"],
+        "boundary_event_refs": ["programme-boundary:public-live-negative-refusal"],
+        "public_event_refs": [],
+        "archive_refs": [],
+        "refusal_or_correction_refs": ["refusal:public-live-readiness-missing"],
+        "final_outcome_summary": "Requested public-live run refused because public-event readiness was missing.",
+        "learning_update_allowed": true
+      },
+      "conversion_posture": {
+        "conversion_state": "blocked",
+        "allowed_routes": ["refusal_artifact"],
+        "held_routes": [],
+        "blocked_routes": ["archive_replay", "live_cuepoint", "metadata"],
+        "monetization_state": "not_requested",
+        "monetization_evidence_refs": [],
+        "support_or_grant_refs": [],
+        "revenue_can_override_grounding": false
+      },
+      "operator_labor_policy": {
+        "single_operator_only": true,
+        "recurring_operator_nomination_required": false,
+        "manual_calendar_required": false,
+        "supporter_request_queue_allowed": false
+      },
+      "fixture_case": "public_live_negative_missing_public_event"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "cpre:monetization-blocked.review.001",
+      "programme_id": "programme:content-programming-grounding-train",
+      "format_id": "review",
+      "opportunity": {
+        "opportunity_id": "content-opportunity:monetization-blocked-review-001",
+        "decision_ref": "content-opportunity-decision:monetization-blocked-review-001",
+        "reward_vector_ref": "reward-vector:public-archive-no-monetization",
+        "posterior_refs": ["posterior:format-review", "posterior:monetization-readiness"],
+        "selected_by": "bayesian_model"
+      },
+      "selected_at": "2026-04-29T21:12:50Z",
+      "requested_mode": "public_monetizable",
+      "effective_mode": "public_archive",
+      "final_status": "completed",
+      "grounding_question": {
+        "state": "present",
+        "text": "What can this operator-owned tool review legitimately claim?",
+        "source_ref": "format-registry:review#grounding_question"
+      },
+      "subject": {
+        "label": "Operator-owned tool review",
+        "input_source_refs": ["source-registry:operator-owned-tool-notes"],
+        "time_window": {"starts_at": null, "ends_at": null}
+      },
+      "wcs_snapshot": {
+        "snapshot_ref": "director-world-surface-snapshot:monetization-blocked-review-001",
+        "health_state": "healthy",
+        "required_surface_refs": ["wcs:source_bundle", "wcs:rights_gate", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "available_surface_refs": ["wcs:source_bundle", "wcs:rights_gate", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "missing_surface_refs": [],
+        "public_event_ready": true,
+        "rights_state": "operator_original",
+        "privacy_state": "public_safe",
+        "monetization_grounding_state": "blocked"
+      },
+      "evidence_obligations": {
+        "required_evidence_classes": ["source_ref", "rights_provenance", "grounding_gate", "public_event_readiness", "monetization_readiness"],
+        "required_witness_classes": ["wcs_snapshot", "source_observation", "rights_gate", "claim_gate", "public_event_gate", "monetization_witness"],
+        "source_refs": ["source-registry:operator-owned-tool-notes"],
+        "evidence_envelope_refs": ["evidence-envelope:operator-owned-tool-review-001"],
+        "witness_refs": ["witness:review-source-observed", "witness:archive-sidecar-hash:review-001"],
+        "rights_refs": ["rights:operator-original:tool-review"],
+        "public_event_readiness_refs": ["research-vehicle-public-event-readiness:review-001"],
+        "grounding_gate_refs": ["grounding-gate:operator-owned-tool-review-001"],
+        "monetization_evidence_refs": [],
+        "missing_obligations": []
+      },
+      "claim_shape": {
+        "claim_kind": "observation",
+        "authority_ceiling": "evidence_bound",
+        "allowed_claim_verbs": ["observes", "reviews"],
+        "forbidden_claim_verbs": ["guarantees", "sponsors"],
+        "confidence_policy": "posterior_required",
+        "uncertainty_language": "Review claims are evidence-bound; monetization is blocked.",
+        "scope_limit": "Operator-owned tool notes and observed use only.",
+        "public_claim_allowed": true
+      },
+      "director": {
+        "director_snapshot_ref": "director-world-surface-snapshot:monetization-blocked-review-001",
+        "director_move_refs": ["director-move:foreground-object", "director-move:mark-monetization-block"]
+      },
+      "blockers": [],
+      "outcomes": {
+        "outcome_envelope_refs": ["capability-outcome:review-public-archive-completed"],
+        "boundary_event_refs": ["programme-boundary:review-ended"],
+        "public_event_refs": ["ResearchVehiclePublicEvent:review-001"],
+        "archive_refs": ["archive-sidecar:review-001"],
+        "refusal_or_correction_refs": [],
+        "final_outcome_summary": "Review archived publicly; monetization conversion blocked by missing readiness evidence.",
+        "learning_update_allowed": true
+      },
+      "conversion_posture": {
+        "conversion_state": "blocked",
+        "allowed_routes": ["archive_replay", "metadata"],
+        "held_routes": [],
+        "blocked_routes": ["monetization"],
+        "monetization_state": "blocked",
+        "monetization_evidence_refs": [],
+        "support_or_grant_refs": [],
+        "revenue_can_override_grounding": false
+      },
+      "operator_labor_policy": {
+        "single_operator_only": true,
+        "recurring_operator_nomination_required": false,
+        "manual_calendar_required": false,
+        "supporter_request_queue_allowed": false
+      },
+      "fixture_case": "monetization_blocked_run"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "cpre:refusal.missing-question.001",
+      "programme_id": "programme:content-programming-grounding-train",
+      "format_id": "refusal_breakdown",
+      "opportunity": {
+        "opportunity_id": "content-opportunity:refusal-missing-question-001",
+        "decision_ref": "content-opportunity-decision:refusal-missing-question-001",
+        "reward_vector_ref": "reward-vector:refusal-artifact",
+        "posterior_refs": ["posterior:format-refusal-breakdown"],
+        "selected_by": "bayesian_model"
+      },
+      "selected_at": "2026-04-29T21:13:00Z",
+      "requested_mode": "public_archive",
+      "effective_mode": "dry_run",
+      "final_status": "refused",
+      "grounding_question": {
+        "state": "missing",
+        "text": null,
+        "source_ref": null
+      },
+      "subject": {
+        "label": "Unsupported public claim attempt",
+        "input_source_refs": ["source-registry:unsupported-claim-candidate"],
+        "time_window": {"starts_at": null, "ends_at": null}
+      },
+      "wcs_snapshot": {
+        "snapshot_ref": "director-world-surface-snapshot:refusal-missing-question-001",
+        "health_state": "dry_run",
+        "required_surface_refs": ["wcs:grounding_question", "wcs:claim_gate"],
+        "available_surface_refs": ["wcs:claim_gate"],
+        "missing_surface_refs": ["wcs:grounding_question"],
+        "public_event_ready": false,
+        "rights_state": "unknown",
+        "privacy_state": "unknown",
+        "monetization_grounding_state": "not_requested"
+      },
+      "evidence_obligations": {
+        "required_evidence_classes": ["source_ref", "grounding_gate"],
+        "required_witness_classes": ["wcs_snapshot", "claim_gate"],
+        "source_refs": ["source-registry:unsupported-claim-candidate"],
+        "evidence_envelope_refs": [],
+        "witness_refs": [],
+        "rights_refs": [],
+        "public_event_readiness_refs": [],
+        "grounding_gate_refs": ["grounding-gate:unsupported-claim-refused"],
+        "monetization_evidence_refs": [],
+        "missing_obligations": ["grounding_question", "evidence_envelope", "witness", "rights", "public_event_readiness"]
+      },
+      "claim_shape": {
+        "claim_kind": "refusal",
+        "authority_ceiling": "no_claim",
+        "allowed_claim_verbs": ["refuses"],
+        "forbidden_claim_verbs": ["asserts"],
+        "confidence_policy": "none_allowed_for_refusal_only",
+        "uncertainty_language": "No grounding question exists; refusal is the only public-safe posture.",
+        "scope_limit": "Refusal reason only.",
+        "public_claim_allowed": false
+      },
+      "director": {
+        "director_snapshot_ref": "director-world-surface-snapshot:refusal-missing-question-001",
+        "director_move_refs": ["director-move:foreground-refusal"]
+      },
+      "blockers": ["missing_grounding_question", "missing_evidence_ref", "witness_missing"],
+      "outcomes": {
+        "outcome_envelope_refs": ["capability-outcome:missing-question-refused"],
+        "boundary_event_refs": ["programme-boundary:missing-question-refusal"],
+        "public_event_refs": [],
+        "archive_refs": [],
+        "refusal_or_correction_refs": ["refusal:missing-grounding-question"],
+        "final_outcome_summary": "Unsupported run refused before public/archive conversion.",
+        "learning_update_allowed": true
+      },
+      "conversion_posture": {
+        "conversion_state": "candidate",
+        "allowed_routes": ["refusal_artifact"],
+        "held_routes": [],
+        "blocked_routes": ["archive_replay", "metadata", "monetization"],
+        "monetization_state": "not_requested",
+        "monetization_evidence_refs": [],
+        "support_or_grant_refs": [],
+        "revenue_can_override_grounding": false
+      },
+      "operator_labor_policy": {
+        "single_operator_only": true,
+        "recurring_operator_nomination_required": false,
+        "manual_calendar_required": false,
+        "supporter_request_queue_allowed": false
+      },
+      "fixture_case": "refusal_run"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "cpre:correction.evidence-audit.001",
+      "programme_id": "programme:content-programming-grounding-train",
+      "format_id": "evidence_audit",
+      "opportunity": {
+        "opportunity_id": "content-opportunity:correction-audit-001",
+        "decision_ref": "content-opportunity-decision:correction-audit-001",
+        "reward_vector_ref": "reward-vector:correction-artifact",
+        "posterior_refs": ["posterior:format-evidence-audit", "posterior:correction-yield"],
+        "selected_by": "bayesian_model"
+      },
+      "selected_at": "2026-04-29T21:13:10Z",
+      "requested_mode": "public_archive",
+      "effective_mode": "public_archive",
+      "final_status": "corrected",
+      "grounding_question": {
+        "state": "present",
+        "text": "Which prior public claim needs correction under current evidence?",
+        "source_ref": "format-registry:evidence_audit#correction_question"
+      },
+      "subject": {
+        "label": "Prior archive claim correction",
+        "input_source_refs": ["archive-sidecar:prior-claim-017", "evidence-envelope:claim-017-correction"],
+        "time_window": {"starts_at": "2026-04-29T20:50:00Z", "ends_at": "2026-04-29T21:05:00Z"}
+      },
+      "wcs_snapshot": {
+        "snapshot_ref": "director-world-surface-snapshot:correction-audit-001",
+        "health_state": "healthy",
+        "required_surface_refs": ["wcs:archive_sidecar", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "available_surface_refs": ["wcs:archive_sidecar", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "missing_surface_refs": [],
+        "public_event_ready": true,
+        "rights_state": "operator_original",
+        "privacy_state": "public_safe",
+        "monetization_grounding_state": "not_requested"
+      },
+      "evidence_obligations": {
+        "required_evidence_classes": ["source_ref", "grounding_gate", "public_event_readiness", "archive_sidecar"],
+        "required_witness_classes": ["wcs_snapshot", "claim_gate", "public_event_gate", "archive_witness"],
+        "source_refs": ["archive-sidecar:prior-claim-017", "evidence-envelope:claim-017-correction"],
+        "evidence_envelope_refs": ["evidence-envelope:claim-017-correction"],
+        "witness_refs": ["witness:archive-sidecar-hash:prior-claim-017"],
+        "rights_refs": ["rights:operator-original:prior-claim-017"],
+        "public_event_readiness_refs": ["research-vehicle-public-event-readiness:correction-001"],
+        "grounding_gate_refs": ["grounding-gate:claim-017-correction"],
+        "monetization_evidence_refs": [],
+        "missing_obligations": []
+      },
+      "claim_shape": {
+        "claim_kind": "correction",
+        "authority_ceiling": "evidence_bound",
+        "allowed_claim_verbs": ["corrects", "narrows"],
+        "forbidden_claim_verbs": ["erases"],
+        "confidence_policy": "posterior_required",
+        "uncertainty_language": "Correction is bounded to the prior public claim and new evidence.",
+        "scope_limit": "Prior archive claim 017 only.",
+        "public_claim_allowed": true
+      },
+      "director": {
+        "director_snapshot_ref": "director-world-surface-snapshot:correction-audit-001",
+        "director_move_refs": ["director-move:mark-correction", "director-move:foreground-evidence"]
+      },
+      "blockers": [],
+      "outcomes": {
+        "outcome_envelope_refs": ["capability-outcome:claim-017-corrected"],
+        "boundary_event_refs": ["programme-boundary:claim-017-correction"],
+        "public_event_refs": ["ResearchVehiclePublicEvent:claim-017-correction"],
+        "archive_refs": ["archive-sidecar:claim-017-correction"],
+        "refusal_or_correction_refs": ["correction:claim-017"],
+        "final_outcome_summary": "Prior public claim corrected with evidence-backed public archive event.",
+        "learning_update_allowed": true
+      },
+      "conversion_posture": {
+        "conversion_state": "linked",
+        "allowed_routes": ["correction_artifact", "archive_replay", "metadata"],
+        "held_routes": [],
+        "blocked_routes": [],
+        "monetization_state": "not_requested",
+        "monetization_evidence_refs": [],
+        "support_or_grant_refs": ["grant-evidence:correction-loop-demo"],
+        "revenue_can_override_grounding": false
+      },
+      "operator_labor_policy": {
+        "single_operator_only": true,
+        "recurring_operator_nomination_required": false,
+        "manual_calendar_required": false,
+        "supporter_request_queue_allowed": false
+      },
+      "fixture_case": "correction_run"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "cpre:conversion-held.bracket.001",
+      "programme_id": "programme:content-programming-grounding-train",
+      "format_id": "bracket",
+      "opportunity": {
+        "opportunity_id": "content-opportunity:conversion-held-bracket-001",
+        "decision_ref": "content-opportunity-decision:conversion-held-bracket-001",
+        "reward_vector_ref": "reward-vector:shorts-candidate-held",
+        "posterior_refs": ["posterior:format-bracket", "posterior:shorts-conversion"],
+        "selected_by": "bayesian_model"
+      },
+      "selected_at": "2026-04-29T21:13:20Z",
+      "requested_mode": "public_archive",
+      "effective_mode": "public_archive",
+      "final_status": "conversion_held",
+      "grounding_question": {
+        "state": "present",
+        "text": "Which candidate wins the bracket under the stated evidence criteria?",
+        "source_ref": "format-registry:bracket#grounding_question"
+      },
+      "subject": {
+        "label": "Owned-source grounding bracket",
+        "input_source_refs": ["source-registry:owned-candidate-set-001"],
+        "time_window": {"starts_at": "2026-04-29T21:00:00Z", "ends_at": "2026-04-29T21:13:00Z"}
+      },
+      "wcs_snapshot": {
+        "snapshot_ref": "director-world-surface-snapshot:conversion-held-bracket-001",
+        "health_state": "healthy",
+        "required_surface_refs": ["wcs:source_bundle", "wcs:comparison_trace", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "available_surface_refs": ["wcs:source_bundle", "wcs:comparison_trace", "wcs:claim_gate", "wcs:public_event_adapter"],
+        "missing_surface_refs": [],
+        "public_event_ready": true,
+        "rights_state": "operator_original",
+        "privacy_state": "public_safe",
+        "monetization_grounding_state": "not_requested"
+      },
+      "evidence_obligations": {
+        "required_evidence_classes": ["source_ref", "criteria", "comparison_trace", "grounding_gate", "public_event_readiness"],
+        "required_witness_classes": ["wcs_snapshot", "source_observation", "claim_gate", "public_event_gate"],
+        "source_refs": ["source-registry:owned-candidate-set-001"],
+        "evidence_envelope_refs": ["evidence-envelope:owned-bracket-001"],
+        "witness_refs": ["witness:comparison-trace:owned-bracket-001"],
+        "rights_refs": ["rights:operator-original:owned-candidate-set-001"],
+        "public_event_readiness_refs": ["research-vehicle-public-event-readiness:owned-bracket-001"],
+        "grounding_gate_refs": ["grounding-gate:owned-bracket-001"],
+        "monetization_evidence_refs": [],
+        "missing_obligations": []
+      },
+      "claim_shape": {
+        "claim_kind": "ranking",
+        "authority_ceiling": "evidence_bound",
+        "allowed_claim_verbs": ["ranks", "compares"],
+        "forbidden_claim_verbs": ["proves"],
+        "confidence_policy": "posterior_required",
+        "uncertainty_language": "Bracket winner is limited to the declared criteria and evidence.",
+        "scope_limit": "Owned candidate set 001 only.",
+        "public_claim_allowed": true
+      },
+      "director": {
+        "director_snapshot_ref": "director-world-surface-snapshot:conversion-held-bracket-001",
+        "director_move_refs": ["director-move:transition-round", "director-move:mark-winner-boundary"]
+      },
+      "blockers": [],
+      "outcomes": {
+        "outcome_envelope_refs": ["capability-outcome:owned-bracket-completed"],
+        "boundary_event_refs": ["programme-boundary:owned-bracket-ended"],
+        "public_event_refs": ["ResearchVehiclePublicEvent:owned-bracket-001"],
+        "archive_refs": ["archive-sidecar:owned-bracket-001"],
+        "refusal_or_correction_refs": [],
+        "final_outcome_summary": "Bracket completed publicly; short-form conversion held until owned AV window witness exists.",
+        "learning_update_allowed": true
+      },
+      "conversion_posture": {
+        "conversion_state": "held",
+        "allowed_routes": ["archive_replay", "chapter", "metadata"],
+        "held_routes": ["shorts"],
+        "blocked_routes": [],
+        "monetization_state": "not_requested",
+        "monetization_evidence_refs": [],
+        "support_or_grant_refs": ["grant-evidence:bracket-grounding-demo"],
+        "revenue_can_override_grounding": false
+      },
+      "operator_labor_policy": {
+        "single_operator_only": true,
+        "recurring_operator_nomination_required": false,
+        "manual_calendar_required": false,
+        "supporter_request_queue_allowed": false
+      },
+      "fixture_case": "conversion_held_run"
+    }
+  ]
+}
