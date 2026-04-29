@@ -1,11 +1,10 @@
-"""Stream Deck control surface adapter — Phase 1 (task #140).
+"""Stream Deck control surface adapter - Phase 1 (task #140).
 
 Owns the manifest (Pydantic-validated YAML) and the synchronous
 ``on_key_press(slot: int)`` entry point that physical Stream Deck
 hardware — or any Phase 2 bridge — will drive. Key-presses resolve to
 a single ``(command, args)`` pair and are dispatched to the Logos
-command registry via the existing Tauri WebSocket relay at
-``ws://127.0.0.1:8052/ws/commands``.
+control plane through Logos API or an explicit local compositor handler.
 
 Deliberately thin: the adapter holds no studio / compositor state; it
 is a routing table plus a dispatcher. Phase 2 will register key-image
@@ -24,14 +23,12 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from shared.logos_control_dispatch import DEFAULT_LOGOS_API_BASE_URL, dispatch_logos_control
 from shared.telemetry import hapax_span
 
 log = logging.getLogger(__name__)
 
-# WebSocket relay served by the Tauri runtime (see hapax-logos/src-tauri/
-# src/commands/relay.rs). External clients — MCP, voice, and now the
-# Stream Deck — post `{type: "execute", command, args}` frames here.
-DEFAULT_RELAY_URL = "ws://127.0.0.1:8052/ws/commands"
+DEFAULT_CONTROL_BASE_URL = DEFAULT_LOGOS_API_BASE_URL
 
 # StreamDeck Mini is a 3×5 matrix. Phase 2 can extend by adding new
 # device rows here; the adapter checks the declared device against the
@@ -266,14 +263,14 @@ async def websocket_dispatcher(
     command: str,
     args: dict[str, Any],
     *,
-    url: str = DEFAULT_RELAY_URL,
+    url: str,
     connect: Callable[[str], Any] | None = None,
 ) -> None:
-    """Post a single ``execute`` frame to the Tauri command relay.
+    """Post a single explicit legacy ``execute`` frame to a WebSocket.
 
-    One-shot connection per press — the relay owns reconnect and auth,
-    and opening a fresh socket is cheap locally. Tests inject ``connect``
-    to avoid requiring the ``websockets`` package.
+    This helper has no production default URL. Runtime callers use
+    :func:`logos_control_dispatcher`; tests inject ``connect`` here to avoid
+    requiring the ``websockets`` package.
     """
     if connect is None:
         import websockets  # lazy import: module imports cleanly in test envs without it.
@@ -283,3 +280,15 @@ async def websocket_dispatcher(
     payload = json.dumps({"type": "execute", "command": command, "args": args})
     async with await connect(url) as ws:
         await ws.send(payload)
+
+
+async def logos_control_dispatcher(
+    command: str,
+    args: dict[str, Any],
+    *,
+    base_url: str = DEFAULT_CONTROL_BASE_URL,
+    request: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> None:
+    """Dispatch one key press through Logos API or local compositor control."""
+
+    await dispatch_logos_control(command, args, base_url=base_url, request=request)

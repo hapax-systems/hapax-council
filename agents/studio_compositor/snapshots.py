@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from typing import Any
 
 from .config import SNAPSHOT_DIR
@@ -173,8 +172,8 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     """Add effected frame snapshot: tee -> queue -> nvjpegenc -> appsink -> fx-snapshot.jpg.
 
     Uses NVIDIA hardware JPEG encoder for GPU-speed encoding.  Falls back to
-    CPU jpegenc if nvjpegenc is unavailable.  Target 30fps at 720p for smooth
-    fullscreen preview in the Tauri frame server (:8053/fx).
+    CPU jpegenc if nvjpegenc is unavailable. Target 3fps at 720p for
+    production inspection via /dev/shm/hapax-compositor/fx-snapshot.jpg.
     """
     Gst = compositor._Gst
 
@@ -190,12 +189,10 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     scale = Gst.ElementFactory.make("videoscale", "fx-snap-scale")
     scale_caps = Gst.ElementFactory.make("capsfilter", "fx-snap-scale-caps")
     scale_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=1280,height=720"))
-    # 2026-04-17 CPU audit: jpegenc at 30fps × 1280×720 dominated this
-    # branch of the tee. The downstream consumers — VisualSurface.tsx
-    # (HTTP /frame) and the OutputNode WebSocket (/ws/fx) — poll at 3fps
-    # via Image() preload. Rate-limit the FX snapshot branch to 3fps so
-    # the jpegenc, TCP push, and atomic file write all drop 90% of
-    # their per-second work.
+    # 2026-04-17 CPU audit: jpegenc at 30fps x 1280x720 dominated this
+    # branch of the tee. The current production consumer is the atomic SHM
+    # snapshot inspected through logos-api/studio tooling, so rate-limit to
+    # 3fps and avoid the retired Tauri TCP frame relay entirely.
     rate = Gst.ElementFactory.make("videorate", "fx-snap-rate")
     if rate is not None:
         rate.set_property("drop-only", True)
@@ -214,62 +211,22 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # TCP push socket to Tauri frame server (ws bridge at :8054)
-    import socket
-    import struct
     import threading
 
-    frame_sock: socket.socket | None = None
-    sock_lock = threading.Lock()
-    last_connect_attempt: float = 0.0
-    RECONNECT_COOLDOWN = 5.0  # seconds between TCP reconnect attempts
-
-    def _ensure_sock() -> socket.socket | None:
-        nonlocal frame_sock, last_connect_attempt
-        if frame_sock is not None:
-            return frame_sock
-        now = time.monotonic()
-        if now - last_connect_attempt < RECONNECT_COOLDOWN:
-            return None  # backoff — don't spam reconnects
-        last_connect_attempt = now
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            s.settimeout(0.5)
-            s.connect(("127.0.0.1", 8054))
-            frame_sock = s
-            log.info("FX snapshot: connected to frame relay at :8054")
-            return s
-        except OSError:
-            return None
-
     _fx_frame_count = [0]
-    # Latest frame for background sender — overwritten each frame (drop-newest)
+    # Latest frame for background writer - overwritten each frame (drop-newest)
     _pending_frame: list[bytes | None] = [None]
     _frame_event = threading.Event()
 
     def _sender_loop() -> None:
-        """Background thread: sends frames via TCP + writes to shm.
+        """Background thread: writes the newest frame to shm.
         Decoupled from the GStreamer streaming thread to prevent stalls."""
-        nonlocal frame_sock
         while True:
             _frame_event.wait()
             _frame_event.clear()
             data = _pending_frame[0]
             if data is None:
                 continue
-            # TCP push
-            with sock_lock:
-                s = _ensure_sock()
-                if s is not None:
-                    try:
-                        s.sendall(struct.pack("<I", len(data)) + data)
-                    except OSError:
-                        try:
-                            s.close()
-                        except OSError:
-                            pass
-                        frame_sock = None
             # File write (atomic rename)
             try:
                 tmp = SNAPSHOT_DIR / "fx-snapshot.jpg.tmp"

@@ -333,49 +333,33 @@ else
     fail "provenance: hapax-imagination not installed"
 fi
 
-echo "[Service lifecycle coupling — 'only tauri launched not reverie']"
-# Frustration: starting logos didn't start imagination. They should be coupled.
-if systemctl --user is-active hapax-logos.service &>/dev/null; then
-    if systemctl --user is-active hapax-imagination.service &>/dev/null; then
-        pass "lifecycle: logos running → imagination also running"
+echo "[Tauri Logos decommission — 'no dormant WebKit surface']"
+for unit in hapax-logos.service hapax-build-reload.path logos-dev.service; do
+    if systemctl --user is-active "$unit" &>/dev/null; then
+        fail "decommission: $unit is active"
     else
-        fail "lifecycle: logos running but imagination is NOT — coupling broken"
+        pass "decommission: $unit inactive"
     fi
+    if systemctl --user is-enabled "$unit" &>/dev/null; then
+        fail "decommission: $unit is enabled"
+    else
+        pass "decommission: $unit not enabled"
+    fi
+done
 
-    # Verify ports that depend on logos
-    if ss -tlnp 2>/dev/null | grep -q ':8052 '; then
-        pass "lifecycle: command relay port 8052 listening"
-    else
-        fail "lifecycle: port 8052 (command relay) not listening"
-    fi
-    if ss -tlnp 2>/dev/null | grep -q ':8053 '; then
-        pass "lifecycle: frame server port 8053 listening"
-    else
-        fail "lifecycle: port 8053 (frame server) not listening"
-    fi
+if pgrep -af 'hapax-logos|WebKitWebProcess|pnpm dev|vite' >/dev/null 2>&1; then
+    fail "decommission: retired hapax-logos/WebKit/Vite process running"
 else
-    skip "lifecycle coupling (logos not running)"
+    pass "decommission: no retired hapax-logos/WebKit/Vite process"
 fi
 
-echo "[Service stability — 'logos kept crashing']"
-# Frustration: logos crashed every 1-5 minutes due to Wayland bug.
-# Verify it's been running for at least 2 minutes without restart.
-if systemctl --user is-active hapax-logos.service &>/dev/null; then
-    uptime_us=$(systemctl --user show hapax-logos.service --property=ActiveEnterTimestampMonotonic --value 2>/dev/null)
-    now_us=$(cat /proc/uptime | awk '{printf "%.0f", $1 * 1000000}')
-    if [[ -n "$uptime_us" && "$uptime_us" -gt 0 ]]; then
-        alive_s=$(( (now_us - uptime_us) / 1000000 ))
-        if [[ "$alive_s" -ge 120 ]]; then
-            pass "stability: logos alive for ${alive_s}s (>2min)"
-        else
-            warn "stability: logos only alive ${alive_s}s — too fresh to confirm stable"
-        fi
+for port in 8052 8053 8054 5173; do
+    if ss -ltnp 2>/dev/null | grep -q ":$port "; then
+        fail "decommission: retired listener :$port active"
     else
-        warn "stability: cannot determine logos uptime"
+        pass "decommission: retired listener :$port absent"
     fi
-else
-    skip "stability (logos not running)"
-fi
+done
 
 echo "[Frame liveness — 'video feeds going insane / black']"
 # Frustration: visual pipeline producing black or frozen output.
@@ -463,15 +447,14 @@ else
 fi
 
 echo "[Build-reload no-window guarantee — 'builds keep popping up windows']"
-# Verify the reload script does NOT auto-start windowed services that aren't running.
-# (We can't test the actual window behavior, but we verify the script logic.)
+# Verify the reload script does NOT reference the retired Tauri service.
 if [[ -f scripts/reload-after-build.sh ]]; then
-    # The script should only restart imagination/logos if "is-active" passes
     if grep -q 'is-active hapax-imagination' scripts/reload-after-build.sh &&
-       ! grep -q 'is-enabled hapax-imagination.*restart' scripts/reload-after-build.sh; then
+       ! grep -q 'hapax-logos.service' scripts/reload-after-build.sh &&
+       ! grep -q 'systemctl --user .*hapax-logos' scripts/reload-after-build.sh; then
         pass "reload: imagination restart gated on is-active (not is-enabled)"
     else
-        fail "reload: imagination may auto-start (should only restart if running)"
+        fail "reload: retired Tauri service may still be restarted"
     fi
 else
     warn "reload: scripts/reload-after-build.sh not found"
@@ -480,7 +463,7 @@ fi
 echo "[Systemd unit provenance — 'deployed units match repo']"
 # Verify key deployed units haven't drifted from repo source.
 units_ok=true
-for unit in hapax-logos.service hapax-imagination.service; do
+for unit in hapax-imagination.service; do
     repo_file=""
     if [[ -f "systemd/units/$unit" ]]; then
         repo_file="systemd/units/$unit"
@@ -497,6 +480,15 @@ for unit in hapax-logos.service hapax-imagination.service; do
         fi
     else
         warn "unit: $unit — repo or deployed file missing"
+    fi
+done
+
+for unit in hapax-logos.service hapax-build-reload.path logos-dev.service; do
+    if [[ -e "systemd/units/$unit" ]]; then
+        fail "unit: retired $unit still exists in repo units"
+        units_ok=false
+    else
+        pass "unit: retired $unit absent from repo units"
     fi
 done
 

@@ -3,8 +3,7 @@
 Physical hardware surface — 15-key StreamDeck Mini — mapped to the Logos
 command registry. The operator presses a key, the adapter resolves the
 slot to a ``(command, args)`` pair from ``config/stream-deck/manifest.yaml``,
-and dispatches over the existing Tauri WebSocket relay at
-``ws://127.0.0.1:8052/ws/commands``.
+and dispatches through the central Logos control surface.
 
 Phase 1 (this module) ships the adapter layer only. Wiring to the
 ``streamdeck`` python library is a Phase 2 concern; the probe script

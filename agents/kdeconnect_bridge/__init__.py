@@ -9,8 +9,8 @@ and to degrade gracefully when hardware/IPC is absent:
 
 * ``MessageSource`` — yields inbound text payloads (defaults to a
   subprocess wrapper over ``kdeconnect-cli``; tests inject a fake).
-* ``CommandDispatcher`` — async ``(command, args) -> None`` that posts
-  to the Tauri command-relay WebSocket at ``ws://localhost:8052``.
+* ``CommandDispatcher`` — async ``(command, args) -> None`` that routes
+  through the central Logos control surface.
 * ``AckSender`` — optional ``(message) -> None`` echo back to the
   phone via ``kdeconnect-cli``.
 

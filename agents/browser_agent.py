@@ -1,7 +1,8 @@
-"""agents/browser_agent.py — Agent for web content interaction.
+"""agents/browser_agent.py - retired Tauri browser bridge wrapper.
 
-Takes a URL or natural language task, navigates the headless browser,
-extracts the A11y tree, compresses via LLMLingua-2, and reasons with Claude.
+The old implementation drove a browser embedded in the Tauri/WebKit
+``hapax-logos`` runtime. That runtime is decommissioned in production, so this
+module now fails closed instead of posting directives to an absent consumer.
 
 Usage:
     uv run python -m agents.browser_agent --task "check PR 145"
@@ -15,47 +16,28 @@ import asyncio
 import json
 import logging
 import re
-from pathlib import Path
-
-import httpx
 
 from agents._browser_services import resolve_url
-from agents._config import LOGOS_API_URL
 from agents._context_compression import _get_compressor
 
 log = logging.getLogger(__name__)
 
-DIRECTIVE_URL = f"{LOGOS_API_URL}/api/logos/directive"
-A11Y_PATH = Path("/dev/shm/hapax-logos/browser-a11y.txt")
-RESPONSE_PATH = Path("/dev/shm/hapax-logos/browser-response.json")
+DECOMMISSION_MESSAGE = (
+    "agents.browser_agent used the retired Tauri/WebKit hapax-logos directive "
+    "bridge. Use Codex/Playwright browser tooling or add a Logos API-backed "
+    "browser worker before re-enabling this path."
+)
 
 
-async def post_directive(directive: dict) -> dict:
-    """Post a directive to the Logos bridge."""
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(DIRECTIVE_URL, json=directive)
-        resp.raise_for_status()
-        return resp.json()
+class BrowserAgentUnavailable(RuntimeError):
+    """Raised when callers try to use the retired Tauri browser bridge."""
 
 
 async def navigate_and_extract(url: str, source: str = "browser-agent") -> str:
     """Navigate to URL and extract A11y tree."""
-    # Navigate
-    await post_directive({"browser_navigate": url, "source": source})
 
-    # Wait for navigation to complete
-    await asyncio.sleep(2.0)
-
-    # Extract A11y tree
-    await post_directive({"browser_extract_a11y": True, "source": source})
-
-    # Wait for extraction
-    await asyncio.sleep(1.5)
-
-    # Read the tree
-    if A11Y_PATH.exists():
-        return A11Y_PATH.read_text()
-    return ""
+    del url, source
+    raise BrowserAgentUnavailable(DECOMMISSION_MESSAGE)
 
 
 def compress_a11y_tree(tree: str) -> str:
@@ -125,7 +107,10 @@ async def run_browser_task(task: str | None = None, url: str | None = None) -> d
 
     log.info("Browser task: navigating to %s", url)
 
-    tree = await navigate_and_extract(url)
+    try:
+        tree = await navigate_and_extract(url)
+    except BrowserAgentUnavailable as exc:
+        return {"error": str(exc), "url": url, "status": "decommissioned"}
     if not tree:
         return {"error": "Failed to extract A11y tree", "url": url}
 

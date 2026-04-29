@@ -1,10 +1,11 @@
 # Stream Deck key map (LRR Phase 8 item 6).
 #
 # Each entry maps a Stream Deck key (0-indexed from top-left, left-to-right
-# then top-to-bottom) to a command-registry dispatch. The adapter forwards
-# the `command` + `args` verbatim to the Tauri command relay on
-# `ws://127.0.0.1:8052/ws/commands`, so any command the registry knows is
-# available here.
+# then top-to-bottom) to a logical command-registry dispatch. The adapter
+# routes supported commands through the central Logos control surface
+# (`logos-api` on :8051, compositor UDS, or another explicit local handler).
+# Frontend-only commands from the retired Tauri relay fail closed until they
+# gain a supported production route.
 #
 # Editable: add / re-order / change labels without restarting. The adapter
 # re-reads on start; a SIGHUP rescan can be wired in later if useful.

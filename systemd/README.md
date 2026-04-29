@@ -25,8 +25,7 @@ Docker Compose (infrastructure)     systemd user units (application + utilities)
 qdrant, postgres, redis,            hapax-secrets     → all credentials (oneshot)
 litellm, langfuse, grafana,         logos-api         → FastAPI :8051
 prometheus, clickhouse,             hapax-daimonion       → voice daemon (GPU)
-n8n, open-webui, minio, ntfy       hapax-logos       → Tauri native app (GPU)
-                                    visual-layer-agg  → perception pipeline
+n8n, open-webui, minio, ntfy       visual-layer-agg  → perception pipeline
                                     studio-compositor → camera tiling (GPU)
 Managed by:                         studio-fx-output  → ffmpeg /dev/video50
   llm-stack.service (oneshot)       hapax-watch-recv  → Wear OS biometrics
@@ -37,7 +36,7 @@ Managed by:                         studio-fx-output  → ffmpeg /dev/video50
 
 Two top-level grouping targets organise the application stack:
 
-- **`hapax-visual-stack.target`** — visual surface pipeline: `hapax-imagination`, `hapax-imagination-loop`, `hapax-logos`, `hapax-dmn`, `hapax-reverie`, `hapax-content-resolver`, `visual-layer-aggregator`, `studio-compositor`. Lists dependents explicitly via `Wants=`.
+- **`hapax-visual-stack.target`** — production visual surface pipeline: `hapax-imagination`, `hapax-imagination-loop`, `hapax-dmn`, `hapax-reverie`, `hapax-content-resolver`, `visual-layer-aggregator`, `studio-compositor`. Lists dependents explicitly via `Wants=`. The Tauri/WebKit `hapax-logos` preview is decommissioned and is not pulled in by this target.
 - **`hapax.target`** — non-visual application services: broadcast/audio (`hapax-mastodon-post`, `hapax-bluesky-post`, `hapax-omg-lol-fanout`, `hapax-channel-trailer`, `hapax-live-cuepoints`), awareness (`hapax-operator-awareness`), marketing/observability (`hapax-chronicle-quality-exporter`, `hapax-feedback-loop-detector`, `hapax-impingement-sampler`, `hapax-quota-observability`, `hapax-youtube-telemetry`), mail-monitor (`hapax-mail-monitor-watch-renewal`, `hapax-mail-monitor-weekly-digest`), `hapax-broadcast-orchestrator`, `hapax-discord-webhook`. Dependent units declare `WantedBy=hapax.target`; enabling each unit creates a symlink under `~/.config/systemd/user/hapax.target.wants/`, and starting the target pulls the whole stack.
 
 Both targets are `WantedBy=default.target` so they activate on user login.
@@ -51,11 +50,10 @@ Both targets are `WantedBy=default.target` so they activate on user login.
 4. logos-api.service         After: llm-stack, hapax-secrets
 5. officium-api.service      After: llm-stack, hapax-secrets
 6. hapax-daimonion.service       After: pipewire, hapax-secrets (+10s delay for GPU sequencing)
-7. hapax-logos.service        After: graphical-session, logos-api (__NV_DISABLE_EXPLICIT_SYNC=1)
-7a. hapax-imagination        After: hapax-secrets (GPU wgpu visual surface)
-7b. hapax-reverie             After: hapax-secrets, hapax-dmn (visual expression daemon)
-7c. hapax-content-resolver   After: logos-api (content resolution daemon)
-7d. hapax-imagination-loop   After: hapax-secrets (imagination reverberation)
+7. hapax-imagination        After: hapax-secrets (GPU wgpu visual surface)
+7a. hapax-reverie             After: hapax-secrets, hapax-dmn (visual expression daemon)
+7b. hapax-content-resolver   After: logos-api (content resolution daemon)
+7c. hapax-imagination-loop   After: hapax-secrets (imagination reverberation)
 8. visual-layer-aggregator   After: logos-api, hapax-daimonion, hapax-secrets
 9. studio-compositor         After: hapax-daimonion, visual-layer-aggregator (+10s for USB cameras)
 10. studio-fx-output         After: studio-compositor
@@ -116,7 +114,7 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
   - `vm.swappiness=150` — tuned for zram zstd compression
 - **earlyoom** (`/etc/default/earlyoom`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
   - `--prefer`: `cargo|rustc|ld.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap` (expendable targets for OOM)
-  - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-logos|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
+  - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
 - **System-level OOM overrides**: earlyoom (-1000), docker (-900), pipewire/wireplumber (-900).
 
 **Design principle**: prevent global OOM by bounding the transient memory spikers (cargo builds, ffmpeg) and giving kernel reclaim a larger buffer. Critical stack services are additionally protected via `OOMScoreAdjust=-500/-800` so the kernel strongly prefers killing unbounded leaf processes (interactive Claude sessions, transient tools) over the stack in a true crisis. Interactive Claude sessions run in `session-N.scope` under `user-1000.slice` (not `user@1000.service`) and are intentionally left uncapped + unprotected — they are the designated sacrifice target.
@@ -146,6 +144,11 @@ systemctl --user daemon-reload
 
 **Units are symlinked, not copied.** Edits to `systemd/units/` take effect on `daemon-reload` without re-running the install script. The script covers `.service`, `.timer`, `.target`, and `.path` files.
 
+`install-units.sh` also removes and masks retired Tauri/WebKit runtime units
+(`hapax-logos.service`, `hapax-build-reload.path`,
+`hapax-build-reload.service`, `logos-dev.service`) if stale copies are present
+under `~/.config/systemd/user/`.
+
 **Newly installed timers are auto-enabled.** As of the audit-followups-e1 PR, `install-units.sh` runs `systemctl --user enable --now <name>.timer` for every timer file it sees for the first time. Existing timers are left alone (re-running is idempotent). To suppress this for a one-off install, set `SKIP_TIMER_ENABLE=1` before running the script (intentionally not a flag — disabling auto-enable is the rare case).
 
 `systemd/user-preset.d/hapax.preset` mirrors the timers that must be enabled by default when preset tooling is used. Timer units still belong in `systemd/units/`; root-level `systemd/*.timer` files are not install-visible and should be moved into `systemd/units/`.
@@ -168,7 +171,7 @@ Two timers poll `origin/main` every 5 minutes and rebuild/restart services when 
 
 ### Rust Binaries (`hapax-rebuild-logos.timer`)
 
-`scripts/rebuild-logos.sh` — fetches main, compares SHA to `~/.cache/hapax/rebuild/last-build-sha`, runs `cargo build --release` for hapax-logos and hapax-imagination, copies binaries to `~/.local/bin/`, restarts `hapax-imagination.service`.
+`scripts/rebuild-logos.sh` — compatibility timer name; fetches main, compares SHA to `~/.cache/hapax/rebuild/last-build-sha`, builds and installs only `hapax-imagination`, then restarts `hapax-imagination.service` if the running binary is stale. It intentionally does not build, install, or restart the decommissioned Tauri/WebKit `hapax-logos` runtime.
 
 ### Python Services (`hapax-rebuild-services.timer`)
 

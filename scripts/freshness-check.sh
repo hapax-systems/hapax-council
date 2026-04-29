@@ -38,21 +38,9 @@ else
     warn "imagination binary not installed"
 fi
 
-LOGOS_BIN="$HOME/.local/bin/hapax-logos"
-if [[ -f "$LOGOS_BIN" ]]; then
-    logos_age=$(( $(date +%s) - $(stat -c %Y "$LOGOS_BIN") ))
-    if [[ "$logos_age" -gt 3600 ]]; then
-        warn "logos binary >1h old (${logos_age}s)"
-    else
-        ok "logos binary ${logos_age}s old"
-    fi
-else
-    warn "logos binary not installed"
-fi
-
 # 2. Service running state matches binary
 echo "[Services]"
-for svc in hapax-imagination hapax-logos logos-api; do
+for svc in hapax-imagination logos-api; do
     if systemctl --user is-active "$svc" &>/dev/null; then
         # Check if the binary backing this service is newer than the service start
         svc_start=$(systemctl --user show "$svc" --property=ActiveEnterTimestamp --value 2>/dev/null)
@@ -60,7 +48,6 @@ for svc in hapax-imagination hapax-logos logos-api; do
             svc_epoch=$(date -d "$svc_start" +%s 2>/dev/null || echo 0)
             case "$svc" in
                 hapax-imagination) bin_path="$IMAG_BIN" ;;
-                hapax-logos) bin_path="$LOGOS_BIN" ;;
                 logos-api) bin_path="" ;; # Python, check code dir
             esac
             if [[ -n "$bin_path" && -f "$bin_path" ]]; then
@@ -81,7 +68,7 @@ done
 
 # 3. Systemd unit drift
 echo "[Units]"
-for unit in hapax-logos.service hapax-imagination.service; do
+for unit in hapax-imagination.service; do
     repo_file=""
     if [[ -f "$REPO/systemd/units/$unit" ]]; then
         repo_file="$REPO/systemd/units/$unit"
@@ -95,6 +82,14 @@ for unit in hapax-logos.service hapax-imagination.service; do
         else
             ok "$unit deployed matches repo"
         fi
+    fi
+done
+
+for unit in hapax-logos.service hapax-build-reload.path logos-dev.service; do
+    if systemctl --user is-active "$unit" &>/dev/null; then
+        warn "$unit is active but retired"
+    else
+        ok "$unit retired/inactive"
     fi
 done
 

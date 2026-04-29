@@ -13,6 +13,12 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/../units" && pwd)"
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 DEST_DIR="${HOME}/.config/systemd/user"
+DECOMMISSIONED_UNITS=(
+    hapax-logos.service
+    hapax-build-reload.path
+    hapax-build-reload.service
+    logos-dev.service
+)
 
 EXPECTED_PRIMARY="${HOME}/projects/hapax-council"
 if [ "$PROJECT_DIR" != "$EXPECTED_PRIMARY" ] && [ "${ALLOW_NONSTANDARD_REPO:-0}" != "1" ]; then
@@ -36,12 +42,54 @@ echo "venv synced"
 
 mkdir -p "$DEST_DIR"
 
+is_decommissioned_unit() {
+    local candidate="$1"
+    local retired
+    for retired in "${DECOMMISSIONED_UNITS[@]}"; do
+        if [ "$candidate" = "$retired" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+remove_decommissioned_unit() {
+    local name="$1"
+    local removed=0
+    local dest="$DEST_DIR/$name"
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        rm -f "$dest"
+        echo "removed decommissioned unit: $name"
+        removed=1
+    fi
+    local wants_link
+    for wants_link in "$DEST_DIR"/*.wants/"$name"; do
+        [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
+        rm -f "$wants_link"
+        echo "removed decommissioned wants link: $wants_link"
+        removed=1
+    done
+    systemctl --user disable --now "$name" >/dev/null 2>&1 || true
+    systemctl --user mask "$name" >/dev/null 2>&1 || true
+    [ "$removed" -eq 1 ]
+}
+
 changed=0
 new_timers=()
+for retired_unit in "${DECOMMISSIONED_UNITS[@]}"; do
+    if remove_decommissioned_unit "$retired_unit"; then
+        changed=$((changed + 1))
+    fi
+done
+
 for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REPO_DIR"/*.path; do
     [ -f "$unit" ] || continue
     name="$(basename "$unit")"
     dest="$DEST_DIR/$name"
+    if is_decommissioned_unit "$name"; then
+        echo "skipped decommissioned unit: $name"
+        continue
+    fi
     # Already a correct symlink — skip
     if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$unit" ]; then
         continue

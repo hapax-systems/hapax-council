@@ -1,5 +1,5 @@
 [Unit]
-Description=Hapax Logos/Reverie — rebuild binaries from main
+Description=Hapax Imagination - rebuild production binary from main
 After=network-online.target
 
 [Service]

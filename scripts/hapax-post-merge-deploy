@@ -12,10 +12,12 @@
 # Manual (this script):
 #   config/pipewire/*.conf         → cp + restart pipewire stack
 #   config/wireplumber/*.conf      → cp + restart wireplumber
-#   systemd/units/*.service|timer  → cp + daemon-reload + restart
+#   systemd/*.service|timer|path   → cp + daemon-reload + restart
+#   systemd/units/*.service|timer|path|target → cp + daemon-reload + restart
 #   systemd/units/*.service.d/*.conf → cp drop-in + daemon-reload + restart active unit
 #   systemd/user-preset.d/*.preset → cp user preset
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
+#   systemd/scripts/*              → installer helper scripts; no direct deploy
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
 #
@@ -221,10 +223,12 @@ while IFS= read -r f; do
     case "$f" in
         config/pipewire/*.conf)           PW+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
-        systemd/units/*.service|systemd/units/*.timer) SYSTEMD+=("$f") ;;
+        systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
+        systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target) SYSTEMD+=("$f") ;;
         systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
+        systemd/scripts/*)                ;; # installer helpers; run manually when needed
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable

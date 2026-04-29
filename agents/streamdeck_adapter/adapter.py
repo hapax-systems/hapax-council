@@ -1,4 +1,4 @@
-"""Stream Deck adapter — turn a key press into a command-registry dispatch.
+"""Stream Deck adapter - turn a key press into a central control dispatch.
 
 The design keeps the adapter stateless at the Python layer: every press
 resolves to a ``(command, args)`` pair from the YAML key-map and is sent
@@ -12,8 +12,8 @@ sit idle when the hardware is absent:
   ``set_key_callback(fn)`` and ``run()`` (real devices from the
   ``streamdeck`` library satisfy this; tests pass a fake).
 * ``command_dispatcher`` — ``async def (command, args) -> None``. The
-  default implementation posts a JSON message over the Tauri relay
-  WebSocket; tests pass a recording stub.
+  default implementation routes supported commands through the central
+  Logos API/control dispatcher; tests pass a recording stub.
 """
 
 from __future__ import annotations
@@ -26,11 +26,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from shared.logos_control_dispatch import DEFAULT_LOGOS_API_BASE_URL, dispatch_logos_control
+
 from .key_map import KeyBinding, KeyMap, KeyMapError, load_key_map
 
 log = logging.getLogger(__name__)
 
-DEFAULT_RELAY_URL = "ws://127.0.0.1:8052/ws/commands"
+DEFAULT_CONTROL_BASE_URL = DEFAULT_LOGOS_API_BASE_URL
 
 
 class _Device(Protocol):
@@ -120,17 +122,29 @@ class StreamDeckAdapter:
         )
 
 
+async def logos_control_dispatcher(
+    command: str,
+    args: dict[str, Any],
+    *,
+    base_url: str = DEFAULT_CONTROL_BASE_URL,
+    request: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> None:
+    """Dispatch one key press through Logos API or local compositor control."""
+
+    await dispatch_logos_control(command, args, base_url=base_url, request=request)
+
+
 async def websocket_dispatcher(
     command: str,
     args: dict[str, Any],
     *,
-    url: str = DEFAULT_RELAY_URL,
+    url: str,
     connect: Callable[[str], Awaitable[Any]] | None = None,
 ) -> None:
-    """Send a single ``execute`` message over the Tauri command-relay WS.
+    """Send one explicit legacy WebSocket ``execute`` message.
 
-    The relay owns reconnection + auth; the adapter opens a one-shot
-    connection per press, sends, and closes. Simple and crash-safe.
+    This helper has no production default URL. It remains only as an injection
+    seam for tests or one-off local diagnostics.
     """
     if connect is None:
         import websockets  # lazy import so the module can be imported in tests
@@ -192,7 +206,7 @@ def run_adapter(
     asyncio.set_event_loop(loop)
 
     async def _default_dispatcher(command: str, args: dict[str, Any]) -> None:
-        await websocket_dispatcher(command, args)
+        await logos_control_dispatcher(command, args)
 
     dispatcher = command_dispatcher or _default_dispatcher
     adapter = StreamDeckAdapter(key_map, dispatcher, loop=loop)
