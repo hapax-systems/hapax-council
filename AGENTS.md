@@ -8,6 +8,7 @@ Core invariants:
 - Obsidian is the canonical work-state surface. CC/Codex work items live in `~/Documents/Personal/20-projects/hapax-cc-tasks/`; use `cc-claim` and the active claim files when the task gate is enabled.
 - Use `uv`, not `pip`. Secrets come from `pass` and `hapax-secrets`; do not copy credential values into code or docs.
 - Prefer `scripts/hapax-codex --session cx-<color> --slot <alpha|beta|delta|epsilon>` to launch Codex so hooks, MCP, Obsidian context, and no-ask execution are all active. Without `--cd`, non-primary Codex sessions use Codex-native worktrees named `~/projects/hapax-council--cx-<color>`.
+- Use `scripts/hapax-codex-send --session cx-<color> -- "message"` for parent-to-child visible-session instructions; it targets the live `foot`/`tmux` session and submits with a guarded newline.
 - Respect relay path claims in `~/.cache/hapax/relay/*.yaml` before touching shared areas.
 - Respect protected live-session declarations in `~/.cache/hapax/relay/session-protection.md`; a protected `cx-*` lane must not be killed, replaced, relaunched, or reclaimed unless the operator explicitly overrides it.
 - Idle Codex sessions must stay on the coordination timer from `HAPAX_IDLE_UPDATE_SECONDS` (default 270): when blocked, waiting, or otherwise not actively producing, check parent/user/relay updates on that cadence and leave a concise relay/status update if the wait continues.

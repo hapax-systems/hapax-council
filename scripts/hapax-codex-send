@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# Send an instruction to a live Hapax Codex session and optionally submit it.
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: hapax-codex-send --session cx-color [--transport auto|foot|tmux]
+                         [--no-submit] [--stdin] [--] MESSAGE...
+
+Sends MESSAGE to a visible Hapax Codex session. The default transport prefers a
+visible foot window named hapax-codex-cx-color and falls back to the tmux session
+hapax-codex-cx-color. The submit path waits after paste before pressing Return;
+this avoids the common failure mode where text lands but Enter is swallowed.
+EOF
+}
+
+SESSION=""
+TRANSPORT="auto"
+SUBMIT=1
+READ_STDIN=0
+MESSAGE_PARTS=()
+TMP_FILES=()
+
+cleanup_tmp_files() {
+  if [ "${#TMP_FILES[@]}" -gt 0 ]; then
+    rm -f "${TMP_FILES[@]}"
+  fi
+}
+trap cleanup_tmp_files EXIT
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session|--thread|--name)
+      SESSION="${2:-}"
+      shift 2
+      ;;
+    --session=*|--thread=*|--name=*)
+      SESSION="${1#*=}"
+      shift
+      ;;
+    --transport)
+      TRANSPORT="${2:-}"
+      shift 2
+      ;;
+    --transport=*)
+      TRANSPORT="${1#--transport=}"
+      shift
+      ;;
+    --no-submit)
+      SUBMIT=0
+      shift
+      ;;
+    --stdin)
+      READ_STDIN=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      MESSAGE_PARTS+=("$@")
+      break
+      ;;
+    *)
+      MESSAGE_PARTS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+case "$SESSION" in
+  cx-[a-z]*)
+    ;;
+  *)
+    echo "hapax-codex-send: invalid or missing session '$SESSION' (expected cx-<color>)" >&2
+    exit 2
+    ;;
+esac
+
+case "$TRANSPORT" in
+  auto|foot|tmux)
+    ;;
+  *)
+    echo "hapax-codex-send: invalid transport '$TRANSPORT'" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$READ_STDIN" -eq 1 ]; then
+  MESSAGE="$(cat)"
+else
+  if [ "${#MESSAGE_PARTS[@]}" -eq 0 ]; then
+    echo "hapax-codex-send: missing MESSAGE" >&2
+    exit 2
+  fi
+  MESSAGE="${MESSAGE_PARTS[*]}"
+fi
+
+if [ -z "$MESSAGE" ]; then
+  echo "hapax-codex-send: refusing to send an empty message" >&2
+  exit 2
+fi
+
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+tmux_target_exists() {
+  have_cmd tmux || return 1
+  tmux has-session -t "hapax-codex-$SESSION" 2>/dev/null
+}
+
+foot_window_address() {
+  have_cmd hyprctl || return 1
+  have_cmd jq || return 1
+  local class="hapax-codex-$SESSION"
+  hyprctl clients -j 2>/dev/null \
+    | jq -r --arg class "$class" '[.[]? | select(.class == $class) | .address][0] // empty'
+}
+
+foot_target_exists() {
+  [ -n "$(foot_window_address 2>/dev/null || true)" ]
+}
+
+send_tmux() {
+  local target="hapax-codex-$SESSION"
+  local tmp
+  tmp="$(mktemp)"
+  TMP_FILES+=("$tmp")
+  printf '%s' "$MESSAGE" >"$tmp"
+
+  tmux load-buffer -b hapax-codex-send "$tmp"
+  tmux paste-buffer -b hapax-codex-send -t "$target"
+  if [ "$SUBMIT" -eq 1 ]; then
+    sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.35}"
+    tmux send-keys -t "$target" Enter
+  fi
+}
+
+wait_for_focus() {
+  local address="$1"
+  local active=""
+  local _
+  for _ in {1..30}; do
+    active="$(hyprctl activewindow -j 2>/dev/null | jq -r '.address // empty' 2>/dev/null || true)"
+    if [ "$active" = "$address" ]; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
+save_text_clipboard() {
+  local dest="$1"
+  have_cmd wl-paste || return 1
+  if ! wl-paste --list-types 2>/dev/null | grep -Eqx 'text/plain;charset=utf-8|text/plain'; then
+    return 1
+  fi
+  wl-paste --no-newline >"$dest" 2>/dev/null
+}
+
+send_foot() {
+  have_cmd hyprctl || { echo "hapax-codex-send: hyprctl not found" >&2; exit 10; }
+  have_cmd jq || { echo "hapax-codex-send: jq not found" >&2; exit 10; }
+  have_cmd wtype || { echo "hapax-codex-send: wtype not found" >&2; exit 10; }
+
+  local address
+  address="$(foot_window_address)"
+  if [ -z "$address" ]; then
+    echo "hapax-codex-send: no visible foot window for $SESSION" >&2
+    exit 11
+  fi
+
+  local previous_address
+  previous_address="$(hyprctl activewindow -j 2>/dev/null | jq -r '.address // empty' 2>/dev/null || true)"
+
+  hyprctl dispatch focuswindow "address:$address" >/dev/null
+  wait_for_focus "$address" || {
+    echo "hapax-codex-send: failed to focus $SESSION at $address" >&2
+    exit 11
+  }
+
+  if have_cmd wl-copy; then
+    local msg old
+    msg="$(mktemp)"
+    old="$(mktemp)"
+    TMP_FILES+=("$msg" "$old")
+    local restore_clipboard=0
+    printf '%s' "$MESSAGE" >"$msg"
+    if save_text_clipboard "$old"; then
+      restore_clipboard=1
+    fi
+
+    wl-copy --type text/plain <"$msg"
+    sleep "${HAPAX_CODEX_SEND_PASTE_DELAY:-0.25}"
+    wtype -M ctrl -M shift -k v -m shift -m ctrl
+    sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.75}"
+    if [ "$SUBMIT" -eq 1 ]; then
+      wait_for_focus "$address" || {
+        echo "hapax-codex-send: focus moved before submit for $SESSION" >&2
+        exit 11
+      }
+      wtype -k Return
+    fi
+    sleep "${HAPAX_CODEX_SEND_RESTORE_DELAY:-0.15}"
+    if [ "$restore_clipboard" -eq 1 ]; then
+      wl-copy --type text/plain <"$old" || true
+    fi
+  else
+    wtype "$MESSAGE"
+    sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.75}"
+    if [ "$SUBMIT" -eq 1 ]; then
+      wtype -k Return
+    fi
+  fi
+
+  if [ -n "$previous_address" ] && [ "$previous_address" != "$address" ]; then
+    hyprctl dispatch focuswindow "address:$previous_address" >/dev/null 2>&1 || true
+  fi
+}
+
+case "$TRANSPORT" in
+  foot)
+    send_foot
+    ;;
+  tmux)
+    tmux_target_exists || {
+      echo "hapax-codex-send: no tmux session hapax-codex-$SESSION" >&2
+      exit 11
+    }
+    send_tmux
+    ;;
+  auto)
+    if foot_target_exists; then
+      send_foot
+    elif tmux_target_exists; then
+      send_tmux
+    else
+      echo "hapax-codex-send: no live target for $SESSION" >&2
+      exit 11
+    fi
+    ;;
+esac
