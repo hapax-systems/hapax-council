@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/audio-routing-policy.schema.json",
+  "title": "AudioRoutingPolicy",
+  "description": "Phase 6 bootstrap contract for audio route policy, broadcast eligibility, provenance, and generated PipeWire/WirePlumber artifact ownership.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "policy_id",
+    "description",
+    "generated_output",
+    "loudness_constants",
+    "ducking_constants",
+    "fail_closed_policy",
+    "routes",
+    "artifacts",
+    "follow_ons"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "policy_id": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "generated_output": {
+      "type": "object",
+      "required": [
+        "output_dir",
+        "manifest_path",
+        "generated_conf_writes_allowed",
+        "live_reload_allowed",
+        "dry_run_only"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "output_dir": {"type": "string", "const": "config/pipewire/generated"},
+        "manifest_path": {
+          "type": "string",
+          "const": "config/pipewire/generated/audio-routing-policy.manifest.json"
+        },
+        "generated_conf_writes_allowed": {"type": "boolean", "const": false},
+        "live_reload_allowed": {"type": "boolean", "const": false},
+        "dry_run_only": {"type": "boolean", "const": true}
+      }
+    },
+    "loudness_constants": {"$ref": "#/$defs/loudness_constants"},
+    "ducking_constants": {"$ref": "#/$defs/ducking_constants"},
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "unknown_source_broadcast_eligible",
+        "default_sink_fallback_broadcast_eligible",
+        "private_route_broadcast_eligible",
+        "notification_route_broadcast_eligible",
+        "missing_rights_broadcast_eligible",
+        "missing_provenance_broadcast_eligible",
+        "missing_generated_artifact_owner_broadcast_eligible"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "unknown_source_broadcast_eligible": {"type": "boolean", "const": false},
+        "default_sink_fallback_broadcast_eligible": {"type": "boolean", "const": false},
+        "private_route_broadcast_eligible": {"type": "boolean", "const": false},
+        "notification_route_broadcast_eligible": {"type": "boolean", "const": false},
+        "missing_rights_broadcast_eligible": {"type": "boolean", "const": false},
+        "missing_provenance_broadcast_eligible": {"type": "boolean", "const": false},
+        "missing_generated_artifact_owner_broadcast_eligible": {"type": "boolean", "const": false}
+      }
+    },
+    "routes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/route_policy"},
+      "minItems": 1
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/artifact_mapping"},
+      "minItems": 1
+    },
+    "follow_ons": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/follow_on"},
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "route_policy": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "producer",
+        "role",
+        "pipewire_node",
+        "target_chain",
+        "route_class",
+        "broadcast_eligible",
+        "public_claim_allowed",
+        "broadcast_eligibility_basis",
+        "default_fallback_allowed",
+        "rights_required",
+        "provenance_required",
+        "provenance_refs",
+        "evidence_refs",
+        "pre_normalization",
+        "ducked_by",
+        "generated_artifact_owner",
+        "artifact_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "producer": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1},
+        "pipewire_node": {"type": "string", "minLength": 1},
+        "target_chain": {"$ref": "#/$defs/non_empty_refs"},
+        "route_class": {"$ref": "#/$defs/route_class"},
+        "broadcast_eligible": {"type": "boolean"},
+        "public_claim_allowed": {"type": "boolean"},
+        "broadcast_eligibility_basis": {"$ref": "#/$defs/broadcast_eligibility_basis"},
+        "default_fallback_allowed": {"type": "boolean", "const": false},
+        "rights_required": {"type": "boolean"},
+        "provenance_required": {"type": "boolean"},
+        "provenance_refs": {"$ref": "#/$defs/refs"},
+        "evidence_refs": {"$ref": "#/$defs/refs"},
+        "pre_normalization": {
+          "type": "object",
+          "required": ["target_lufs_i", "constant_ref"],
+          "additionalProperties": false,
+          "properties": {
+            "target_lufs_i": {"type": ["number", "null"]},
+            "constant_ref": {"type": ["string", "null"]}
+          }
+        },
+        "ducked_by": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["operator_voice", "tts"]},
+          "uniqueItems": true
+        },
+        "generated_artifact_owner": {
+          "type": "string",
+          "enum": ["generated", "hand_mirrored", "non_round_trippable"]
+        },
+        "artifact_refs": {"$ref": "#/$defs/non_empty_refs"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"broadcast_eligible": {"const": true}}, "required": ["broadcast_eligible"]},
+          "then": {
+            "properties": {
+              "broadcast_eligibility_basis": {"const": "explicit_policy"},
+              "rights_required": {"const": true},
+              "provenance_required": {"const": true},
+              "provenance_refs": {"minItems": 1},
+              "evidence_refs": {"minItems": 1},
+              "default_fallback_allowed": {"const": false},
+              "route_class": {
+                "not": {"enum": ["private", "notification", "default_multimedia", "monitor_bridge"]}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "route_class": {"enum": ["private", "notification", "monitor_bridge"]}
+            },
+            "required": ["route_class"]
+          },
+          "then": {
+            "properties": {
+              "broadcast_eligible": {"const": false},
+              "public_claim_allowed": {"const": false}
+            }
+          }
+        }
+      ]
+    },
+    "artifact_mapping": {
+      "type": "object",
+      "required": ["path", "status", "owner", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+        "status": {
+          "type": "string",
+          "enum": ["generated", "hand_mirrored", "non_round_trippable"]
+        },
+        "owner": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "follow_on": {
+      "type": "object",
+      "required": ["id", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "loudness_constants": {
+      "type": "object",
+      "required": [
+        "module",
+        "pre_norm_target_lufs_i",
+        "pre_norm_true_peak_dbtp",
+        "egress_target_lufs_i",
+        "egress_true_peak_dbtp"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "module": {"type": "string", "const": "shared/audio_loudness.py"},
+        "pre_norm_target_lufs_i": {"$ref": "#/$defs/constant_value"},
+        "pre_norm_true_peak_dbtp": {"$ref": "#/$defs/constant_value"},
+        "egress_target_lufs_i": {"$ref": "#/$defs/constant_value"},
+        "egress_true_peak_dbtp": {"$ref": "#/$defs/constant_value"}
+      }
+    },
+    "ducking_constants": {
+      "type": "object",
+      "required": ["module", "operator_voice", "tts"],
+      "additionalProperties": false,
+      "properties": {
+        "module": {"type": "string", "const": "shared/audio_loudness.py"},
+        "operator_voice": {"$ref": "#/$defs/duck_constant_value"},
+        "tts": {"$ref": "#/$defs/duck_constant_value"}
+      }
+    },
+    "constant_value": {
+      "type": "object",
+      "required": ["constant_ref", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "constant_ref": {"type": "string", "minLength": 1},
+        "value": {"type": "number"}
+      }
+    },
+    "duck_constant_value": {
+      "type": "object",
+      "required": ["constant_ref", "value_db"],
+      "additionalProperties": false,
+      "properties": {
+        "constant_ref": {"type": "string", "minLength": 1},
+        "value_db": {"type": "number"}
+      }
+    },
+    "route_class": {
+      "type": "string",
+      "enum": [
+        "private",
+        "notification",
+        "broadcast_voice",
+        "broadcast_content",
+        "default_multimedia",
+        "instrument",
+        "monitor_bridge"
+      ]
+    },
+    "broadcast_eligibility_basis": {
+      "type": "string",
+      "enum": [
+        "explicit_policy",
+        "private_refused",
+        "blocked_until_smoke",
+        "non_round_trippable"
+      ]
+    },
+    "refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true
+    },
+    "non_empty_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    }
+  }
+}

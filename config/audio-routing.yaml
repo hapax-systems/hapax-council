@@ -1,0 +1,424 @@
+schema_version: 1
+policy_id: audio-routing-policy-phase6-bootstrap-2026-04-29
+description: |
+  Phase 6 bootstrap policy for Hapax audio routing. This file declares
+  route intent, broadcast eligibility, source provenance, loudness/ducking
+  constants, and generated-artifact ownership before any PipeWire or
+  WirePlumber conf is regenerated from policy.
+
+  Safety rule: no source becomes broadcast-eligible by omission, default sink
+  fallback, or implicit PipeWire behavior. Unknown sources are private/blocked
+  until they receive an explicit policy row.
+
+generated_output:
+  output_dir: config/pipewire/generated
+  manifest_path: config/pipewire/generated/audio-routing-policy.manifest.json
+  generated_conf_writes_allowed: false
+  live_reload_allowed: false
+  dry_run_only: true
+
+loudness_constants:
+  module: shared/audio_loudness.py
+  pre_norm_target_lufs_i:
+    constant_ref: PRE_NORM_TARGET_LUFS_I
+    value: -18.0
+  pre_norm_true_peak_dbtp:
+    constant_ref: PRE_NORM_TRUE_PEAK_DBTP
+    value: -1.0
+  egress_target_lufs_i:
+    constant_ref: EGRESS_TARGET_LUFS_I
+    value: -14.0
+  egress_true_peak_dbtp:
+    constant_ref: EGRESS_TRUE_PEAK_DBTP
+    value: -1.0
+
+ducking_constants:
+  module: shared/audio_loudness.py
+  operator_voice:
+    constant_ref: DUCK_DEPTH_OPERATOR_VOICE_DB
+    value_db: -12.0
+  tts:
+    constant_ref: DUCK_DEPTH_TTS_DB
+    value_db: -8.0
+
+fail_closed_policy:
+  unknown_source_broadcast_eligible: false
+  default_sink_fallback_broadcast_eligible: false
+  private_route_broadcast_eligible: false
+  notification_route_broadcast_eligible: false
+  missing_rights_broadcast_eligible: false
+  missing_provenance_broadcast_eligible: false
+  missing_generated_artifact_owner_broadcast_eligible: false
+
+routes:
+  - source_id: assistant-private
+    producer: hapax-daimonion
+    role: assistant
+    pipewire_node: input.loopback.sink.role.assistant
+    target_chain:
+      - hapax-private
+      - hapax-private-monitor-capture
+      - hapax-private-playback
+    route_class: private
+    broadcast_eligible: false
+    public_claim_allowed: false
+    broadcast_eligibility_basis: private_refused
+    default_fallback_allowed: false
+    rights_required: false
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#assistant-private
+    evidence_refs:
+      - test:private-sink-isolation
+      - test:audio-leak-guard
+    pre_normalization:
+      target_lufs_i: null
+      constant_ref: null
+    ducked_by: []
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/pipewire/hapax-stream-split.conf
+      - config/pipewire/hapax-private-monitor-bridge.conf
+      - config/wireplumber/50-hapax-voice-duck.conf
+
+  - source_id: notification-private
+    producer: desktop-notifications
+    role: notification
+    pipewire_node: input.loopback.sink.role.notification
+    target_chain:
+      - hapax-notification-private
+      - hapax-notification-private-monitor-capture
+      - hapax-notification-private-playback
+    route_class: notification
+    broadcast_eligible: false
+    public_claim_allowed: false
+    broadcast_eligibility_basis: private_refused
+    default_fallback_allowed: false
+    rights_required: false
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#notification-private
+    evidence_refs:
+      - test:notification-isolation
+      - test:audio-leak-guard
+    pre_normalization:
+      target_lufs_i: null
+      constant_ref: null
+    ducked_by: []
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/pipewire/hapax-notification-private.conf
+      - config/pipewire/hapax-private-monitor-bridge.conf
+      - config/wireplumber/92-hapax-notification-private.conf
+      - config/wireplumber/50-hapax-voice-duck.conf
+
+  - source_id: broadcast-tts
+    producer: hapax-daimonion
+    role: broadcast
+    pipewire_node: input.loopback.sink.role.broadcast
+    target_chain:
+      - hapax-voice-fx-capture
+      - hapax-loudnorm-capture
+      - hapax-tts-duck
+      - hapax-livestream-tap
+    route_class: broadcast_voice
+    broadcast_eligible: true
+    public_claim_allowed: true
+    broadcast_eligibility_basis: explicit_policy
+    default_fallback_allowed: false
+    rights_required: true
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#broadcast-tts
+      - docs/superpowers/specs/2026-04-28-broadcast-audio-safety-ssot-design.md
+    evidence_refs:
+      - config/audio-topology.yaml#role-broadcast
+      - test:canonical-audio-topology
+      - test:audio-leak-guard
+    pre_normalization:
+      target_lufs_i: -18.0
+      constant_ref: PRE_NORM_TARGET_LUFS_I
+    ducked_by:
+      - operator_voice
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/wireplumber/50-hapax-voice-duck.conf
+      - config/pipewire/voice-fx-chain.conf
+      - config/pipewire/voice-fx-loudnorm.conf
+      - config/pipewire/hapax-tts-duck.conf
+
+  - source_id: multimedia-default
+    producer: desktop-session
+    role: multimedia
+    pipewire_node: input.loopback.sink.role.multimedia
+    target_chain:
+      - hapax-pc-loudnorm
+      - l12-usb-return
+    route_class: default_multimedia
+    broadcast_eligible: false
+    public_claim_allowed: false
+    broadcast_eligibility_basis: blocked_until_smoke
+    default_fallback_allowed: false
+    rights_required: true
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#multimedia-default
+    evidence_refs:
+      - config/audio-topology.yaml#role-multimedia
+      - test:canonical-audio-topology
+    pre_normalization:
+      target_lufs_i: -18.0
+      constant_ref: PRE_NORM_TARGET_LUFS_I
+    ducked_by:
+      - operator_voice
+      - tts
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/wireplumber/50-hapax-voice-duck.conf
+      - config/pipewire/pc-loudnorm.conf
+
+  - source_id: music-bed
+    producer: local-music-player
+    role: music
+    pipewire_node: hapax-music-loudnorm
+    target_chain:
+      - hapax-music-loudnorm
+      - hapax-music-duck
+      - l12-usb-return
+    route_class: broadcast_content
+    broadcast_eligible: true
+    public_claim_allowed: false
+    broadcast_eligibility_basis: explicit_policy
+    default_fallback_allowed: false
+    rights_required: true
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#music-bed
+      - docs/governance/evil-pet-broadcast-source-policy.md
+    evidence_refs:
+      - config/audio-topology.yaml#music-loudnorm
+      - test:canonical-audio-topology
+      - test:music-policy
+    pre_normalization:
+      target_lufs_i: -18.0
+      constant_ref: PRE_NORM_TARGET_LUFS_I
+    ducked_by:
+      - operator_voice
+      - tts
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/pipewire/hapax-music-loudnorm.conf
+      - config/pipewire/hapax-music-duck.conf
+
+  - source_id: youtube-bed
+    producer: youtube-player
+    role: youtube
+    pipewire_node: hapax-yt-loudnorm
+    target_chain:
+      - hapax-yt-loudnorm
+      - hapax-ytube-ducked
+    route_class: broadcast_content
+    broadcast_eligible: false
+    public_claim_allowed: false
+    broadcast_eligibility_basis: blocked_until_smoke
+    default_fallback_allowed: false
+    rights_required: true
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#youtube-bed
+    evidence_refs:
+      - task:youtube-player-real-content-ducker-smoke
+    pre_normalization:
+      target_lufs_i: -18.0
+      constant_ref: PRE_NORM_TARGET_LUFS_I
+    ducked_by:
+      - operator_voice
+      - tts
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/pipewire/yt-loudnorm.conf
+      - config/pipewire/ytube-over-24c-duck.conf
+      - config/pipewire/yt-over-24c-duck.conf
+
+  - source_id: l12-evilpet-capture
+    producer: l12-aux-capture
+    role: instrument
+    pipewire_node: hapax-l12-evilpet-capture
+    target_chain:
+      - l12-capture
+      - hapax-l12-evilpet-capture
+      - hapax-livestream-tap
+    route_class: broadcast_content
+    broadcast_eligible: true
+    public_claim_allowed: false
+    broadcast_eligibility_basis: explicit_policy
+    default_fallback_allowed: false
+    rights_required: true
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#l12-evilpet-capture
+      - docs/governance/evil-pet-broadcast-source-policy.md
+    evidence_refs:
+      - config/audio-topology.yaml#l12-evilpet-capture
+      - test:canonical-audio-topology
+    pre_normalization:
+      target_lufs_i: -18.0
+      constant_ref: PRE_NORM_TARGET_LUFS_I
+    ducked_by:
+      - operator_voice
+      - tts
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/pipewire/hapax-l12-evilpet-capture.conf
+
+  - source_id: s4-content
+    producer: torso-s4
+    role: instrument
+    pipewire_node: hapax-s4-content
+    target_chain:
+      - s4-output
+      - hapax-s4-content
+      - hapax-livestream-tap
+    route_class: instrument
+    broadcast_eligible: true
+    public_claim_allowed: false
+    broadcast_eligibility_basis: explicit_policy
+    default_fallback_allowed: false
+    rights_required: true
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#s4-content
+      - docs/superpowers/specs/2026-04-29-audio-reference-world-surface.md
+    evidence_refs:
+      - config/audio-topology.yaml#s4-loopback
+      - test:s4-loopback-runtime-safety
+    pre_normalization:
+      target_lufs_i: -18.0
+      constant_ref: PRE_NORM_TARGET_LUFS_I
+    ducked_by:
+      - operator_voice
+      - tts
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/pipewire/s4-usb-sink.conf
+      - config/pipewire/hapax-s4-loopback.conf
+
+  - source_id: m8-instrument
+    producer: dirtywave-m8
+    role: instrument
+    pipewire_node: hapax-m8-loudnorm
+    target_chain:
+      - m8-usb-source
+      - hapax-m8-instrument-capture
+      - hapax-m8-loudnorm
+      - hapax-livestream-tap
+    route_class: instrument
+    broadcast_eligible: true
+    public_claim_allowed: false
+    broadcast_eligibility_basis: explicit_policy
+    default_fallback_allowed: false
+    rights_required: true
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#m8-instrument
+    evidence_refs:
+      - config/audio-topology.yaml#m8-loudnorm
+      - test:canonical-audio-topology
+    pre_normalization:
+      target_lufs_i: -18.0
+      constant_ref: PRE_NORM_TARGET_LUFS_I
+    ducked_by:
+      - operator_voice
+      - tts
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/wireplumber/54-hapax-m8-instrument.conf
+      - config/pipewire/hapax-m8-loudnorm.conf
+
+artifacts:
+  - path: config/pipewire/hapax-stream-split.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#assistant-private
+    reason: Private and legacy livestream null sinks exist today as hand-authored conf; generation waits for Phase 6 parity.
+  - path: config/pipewire/hapax-private-monitor-bridge.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#assistant-private
+    reason: Hardware-dependent private monitor bridge is policy-covered but remains hand-mirrored until generated fail-closed bridge parity exists.
+  - path: config/pipewire/hapax-notification-private.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#notification-private
+    reason: Notification null sink is policy-covered and fail-closed; generation waits for parity.
+  - path: config/wireplumber/50-hapax-voice-duck.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#broadcast-tts
+    reason: Role preferred-target policy is the main routing policy artifact and must be generated in a later pass.
+  - path: config/wireplumber/92-hapax-notification-private.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#notification-private
+    reason: Notification role policy mirrors the private notification route.
+  - path: config/wireplumber/10-default-sink-ryzen.conf
+    status: non_round_trippable
+    owner: config/audio-routing.yaml#multimedia-default
+    reason: Default sink pin is environment policy; it is documented here but not generated until a host-profile layer exists.
+  - path: config/wireplumber/54-hapax-m8-instrument.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#m8-instrument
+    reason: M8 autolink policy is route-policy owned but hardware-optional.
+  - path: config/pipewire/voice-fx-chain.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#broadcast-tts
+    reason: Broadcast voice FX chain mirrors role.broadcast policy.
+  - path: config/pipewire/voice-fx-loudnorm.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#broadcast-tts
+    reason: TTS loudnorm constants must cite shared/audio_loudness.py.
+  - path: config/pipewire/hapax-tts-duck.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#broadcast-tts
+    reason: TTS duck chain mirrors explicit broadcast voice route.
+  - path: config/pipewire/pc-loudnorm.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#multimedia-default
+    reason: Multimedia default remains non-broadcast-eligible by policy even though topology reaches the L-12 return.
+  - path: config/pipewire/hapax-music-loudnorm.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#music-bed
+    reason: Music pre-normalization mirrors policy and loudness constants.
+  - path: config/pipewire/hapax-music-duck.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#music-bed
+    reason: Music ducking mirrors shared ducking constants.
+  - path: config/pipewire/yt-loudnorm.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#youtube-bed
+    reason: YouTube bed remains blocked from broadcast eligibility until real-content smoke and provenance pass.
+  - path: config/pipewire/ytube-over-24c-duck.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#youtube-bed
+    reason: YouTube duck chain is policy-covered but not broadcast-eligible by default.
+  - path: config/pipewire/yt-over-24c-duck.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#youtube-bed
+    reason: Legacy YouTube duck artifact remains policy-covered while migration settles.
+  - path: config/pipewire/hapax-l12-evilpet-capture.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#l12-evilpet-capture
+    reason: Narrowed L-12 capture is policy-bearing and mirrored from topology until route generator parity.
+  - path: config/pipewire/s4-usb-sink.conf
+    status: non_round_trippable
+    owner: config/audio-routing.yaml#s4-content
+    reason: S-4 hardware endpoint depends on live enumeration and host profile; policy row owns eligibility but conf generation waits.
+  - path: config/pipewire/hapax-s4-loopback.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#s4-content
+    reason: S-4 content route is policy-covered and explicitly broadcast-eligible only with provenance.
+  - path: config/pipewire/hapax-m8-loudnorm.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#m8-instrument
+    reason: M8 route is hardware-optional and explicitly fails closed on fallback drift.
+
+follow_ons:
+  - id: audio-routing-policy-conf-generator-parity
+    reason: Generate hand-mirrored PipeWire/WirePlumber artifacts into config/pipewire/generated and diff against current confs.
+  - id: audio-routing-policy-live-graph-evidence
+    reason: Feed route-policy provenance into broadcast-audio-health-producer after generated artifact parity exists.
