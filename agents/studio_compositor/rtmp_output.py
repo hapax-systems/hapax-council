@@ -279,6 +279,14 @@ class RtmpOutputBin:
             mux.set_property("streamable", True)
             mux.set_property("latency", 100_000_000)  # 100 ms
 
+            sink_queue = Gst.ElementFactory.make("queue", "rtmp_sink_queue")
+            if sink_queue is None:
+                log.error("rtmp bin: sink_queue factory failed")
+                return False
+            sink_queue.set_property("max-size-buffers", 200)
+            sink_queue.set_property("max-size-time", 2 * Gst.SECOND)
+            sink_queue.set_property("leaky", 2)  # downstream
+
             sink = Gst.ElementFactory.make("rtmp2sink", "rtmp_sink")
             if sink is None:
                 log.warning("rtmp bin: rtmp2sink unavailable, falling back to rtmpsink")
@@ -287,6 +295,9 @@ class RtmpOutputBin:
                 log.error("rtmp bin: no RTMP sink available")
                 return False
             sink.set_property("location", self._rtmp_location)
+            # Connect on first real FLV push, behind rtmp_sink_queue, so MediaMTX
+            # sees a publish promptly without blocking the compositor thread.
+            sink.set_property("async", False)
             sink.set_property("async-connect", False)
 
             # --- Add elements + link ---
@@ -305,6 +316,7 @@ class RtmpOutputBin:
                 audio_encoder,
                 aac_parse,
                 mux,
+                sink_queue,
                 sink,
             ]
             # A+ Stage 1: cudaconvert + caps inserted between cudaupload
@@ -371,8 +383,11 @@ class RtmpOutputBin:
                 return False
 
             # Mux → sink
-            if not mux.link(sink):
-                log.error("rtmp bin: mux -> sink link failed")
+            if not mux.link(sink_queue):
+                log.error("rtmp bin: mux -> sink_queue link failed")
+                return False
+            if not sink_queue.link(sink):
+                log.error("rtmp bin: sink_queue -> sink link failed")
                 return False
 
             # Ghost pad for the bin's video sink
@@ -686,6 +701,13 @@ class MobileRtmpOutputBin:
             ):
                 log.error("mobile RTMP bin: required audio/mux/sink factory failed")
                 return False
+            sink_queue = Gst.ElementFactory.make("queue", "mobile_rtmp_sink_queue")
+            if sink_queue is None:
+                log.error("mobile RTMP bin: sink_queue factory failed")
+                return False
+            sink_queue.set_property("max-size-buffers", 200)
+            sink_queue.set_property("max-size-time", 2 * Gst.SECOND)
+            sink_queue.set_property("leaky", 2)
             audio_src_queue.set_property("max-size-buffers", 20)
             audio_src_queue.set_property("max-size-time", 500 * Gst.MSECOND)
             audio_src_queue.set_property("leaky", 2)
@@ -701,6 +723,9 @@ class MobileRtmpOutputBin:
             mux.set_property("streamable", True)
             mux.set_property("latency", 100_000_000)
             sink.set_property("location", self._rtmp_location)
+            # Connect on first real FLV push, behind mobile_rtmp_sink_queue, so
+            # MediaMTX sees a publish promptly without blocking the compositor.
+            sink.set_property("async", False)
             sink.set_property("async-connect", False)
 
             elements = [
@@ -726,6 +751,7 @@ class MobileRtmpOutputBin:
                 audio_encoder,
                 aac_parse,
                 mux,
+                sink_queue,
                 sink,
             ]
             if cuda_convert is not None and cuda_caps is not None:
@@ -806,8 +832,11 @@ class MobileRtmpOutputBin:
             if not aac_parse.link_pads("src", mux, "audio"):
                 log.error("mobile RTMP bin: aacparse -> mux.audio link failed")
                 return False
-            if not mux.link(sink):
-                log.error("mobile RTMP bin: mux -> sink link failed")
+            if not mux.link(sink_queue):
+                log.error("mobile RTMP bin: mux -> sink_queue link failed")
+                return False
+            if not sink_queue.link(sink):
+                log.error("mobile RTMP bin: sink_queue -> sink link failed")
                 return False
 
             try:

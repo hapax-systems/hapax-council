@@ -4,6 +4,9 @@ Documentation=https://mediamtx.org/
 After=network-online.target hapax-secrets.service
 Wants=network-online.target
 PartOf=studio-compositor.service
+StartLimitBurst=10
+StartLimitIntervalSec=600
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple
@@ -11,13 +14,10 @@ WorkingDirectory=%h/projects/hapax-council
 ExecStart=%h/projects/hapax-council/scripts/mediamtx-start.sh
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=10
-StartLimitIntervalSec=600
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 SyslogIdentifier=mediamtx
-OnFailure=notify-failure@%n.service
 
 [Install]
 WantedBy=default.target
