@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/programme-scrim-profile-policy.schema.json",
+  "title": "ProgrammeScrimProfilePolicy",
+  "description": "Soft-prior mapping from programme formats/postures to scrim profile and permeability hints. WCS evidence, public-event gates, and director moves retain final authority.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "policy_id",
+    "schema_ref",
+    "generated_at",
+    "content_programme_format_schema_ref",
+    "scrim_state_schema_ref",
+    "soft_prior_only",
+    "wcs_blocker_policy",
+    "targets"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "policy_id": {
+      "type": "string",
+      "pattern": "^programme_scrim_profile_policy:[a-z0-9_:-]+$"
+    },
+    "schema_ref": {"type": "string", "const": "schemas/programme-scrim-profile-policy.schema.json"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "content_programme_format_schema_ref": {
+      "type": "string",
+      "const": "schemas/content-programme-format.schema.json"
+    },
+    "scrim_state_schema_ref": {
+      "type": "string",
+      "const": "schemas/scrim-state-envelope.schema.json"
+    },
+    "soft_prior_only": {
+      "type": "object",
+      "required": [
+        "policy_grants_public_claim_authority",
+        "policy_grants_live_control",
+        "policy_can_override_wcs_blockers",
+        "wcs_decision_required",
+        "director_decision_required",
+        "scheduler_hint_only"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "policy_grants_public_claim_authority": {"type": "boolean", "const": false},
+        "policy_grants_live_control": {"type": "boolean", "const": false},
+        "policy_can_override_wcs_blockers": {"type": "boolean", "const": false},
+        "wcs_decision_required": {"type": "boolean", "const": true},
+        "director_decision_required": {"type": "boolean", "const": true},
+        "scheduler_hint_only": {"type": "boolean", "const": true}
+      }
+    },
+    "wcs_blocker_policy": {
+      "type": "object",
+      "required": [
+        "blocked_context_returns_profile",
+        "blocked_reasons_exposed",
+        "unavailable_profile_reasons_required",
+        "blocked_fallback_mode",
+        "blocker_states"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "blocked_context_returns_profile": {"type": "boolean", "const": false},
+        "blocked_reasons_exposed": {"type": "boolean", "const": true},
+        "unavailable_profile_reasons_required": {"type": "boolean", "const": true},
+        "blocked_fallback_mode": {"type": "string", "enum": ["neutral_hold", "minimum_density"]},
+        "blocker_states": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/blocker_state"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/policy_target"}
+    }
+  },
+  "$defs": {
+    "policy_target": {
+      "type": "object",
+      "required": [
+        "target_id",
+        "target_kind",
+        "display_name",
+        "covered_format_ids",
+        "covered_postures",
+        "grounding_intent",
+        "profile_priors",
+        "blocked_exposure"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "target_id": {"$ref": "#/$defs/target_id"},
+        "target_kind": {"type": "string", "enum": ["format", "programme_posture"]},
+        "display_name": {"type": "string", "minLength": 1},
+        "covered_format_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/format_id"},
+          "uniqueItems": true
+        },
+        "covered_postures": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/programme_posture"},
+          "uniqueItems": true
+        },
+        "grounding_intent": {"type": "string", "minLength": 1},
+        "profile_priors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/profile_prior"}
+        },
+        "blocked_exposure": {
+          "type": "object",
+          "required": [
+            "scheduler_field",
+            "runner_field",
+            "include_blocked_reasons",
+            "include_unavailable_profile_reasons"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "scheduler_field": {"type": "string", "const": "unavailable_profile_reasons"},
+            "runner_field": {"type": "string", "const": "blocked_reasons"},
+            "include_blocked_reasons": {"type": "boolean", "const": true},
+            "include_unavailable_profile_reasons": {"type": "boolean", "const": true}
+          }
+        }
+      }
+    },
+    "profile_prior": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "permeability_mode",
+        "weight",
+        "priority",
+        "density",
+        "refraction",
+        "motion_rate",
+        "depth_bias",
+        "focus_region_kinds",
+        "legibility_constraints",
+        "rationale"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "profile_id": {"$ref": "#/$defs/scrim_profile"},
+        "permeability_mode": {"$ref": "#/$defs/permeability_mode"},
+        "weight": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "priority": {"type": "integer", "minimum": 0, "maximum": 100},
+        "density": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "refraction": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "motion_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "depth_bias": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "focus_region_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/focus_region_kind"},
+          "uniqueItems": true
+        },
+        "legibility_constraints": {"$ref": "#/$defs/legibility_constraints"},
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    },
+    "legibility_constraints": {
+      "type": "object",
+      "required": [
+        "oq02_minimum_translucency",
+        "oq02_label_required",
+        "anti_visualizer_required",
+        "audio_reactive_visualizer_allowed",
+        "preserve_operator_foreground",
+        "max_motion_rate"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "oq02_minimum_translucency": {"type": "number", "minimum": 0.2, "maximum": 0.85},
+        "oq02_label_required": {"type": "boolean", "const": true},
+        "anti_visualizer_required": {"type": "boolean", "const": true},
+        "audio_reactive_visualizer_allowed": {"type": "boolean", "const": false},
+        "preserve_operator_foreground": {"type": "boolean", "const": true},
+        "max_motion_rate": {"type": "number", "minimum": 0.0, "maximum": 0.65}
+      }
+    },
+    "target_id": {
+      "type": "string",
+      "enum": [
+        "tier_list",
+        "ranking",
+        "bracket",
+        "react_commentary",
+        "watch_along",
+        "review",
+        "explainer",
+        "rundown",
+        "what_is_this",
+        "refusal_breakdown",
+        "evidence_audit",
+        "failure_autopsy",
+        "listening",
+        "hothouse",
+        "ritual_boundary"
+      ]
+    },
+    "format_id": {
+      "type": "string",
+      "enum": [
+        "tier_list",
+        "react_commentary",
+        "ranking",
+        "comparison",
+        "review",
+        "watch_along",
+        "explainer",
+        "rundown",
+        "debate",
+        "bracket",
+        "what_is_this",
+        "refusal_breakdown",
+        "evidence_audit"
+      ]
+    },
+    "programme_posture": {
+      "type": "string",
+      "enum": [
+        "failure_autopsy",
+        "listening",
+        "hothouse",
+        "ritual_boundary"
+      ]
+    },
+    "scrim_profile": {
+      "type": "string",
+      "enum": [
+        "gauzy_quiet",
+        "warm_haze",
+        "moire_crackle",
+        "clarity_peak",
+        "dissolving",
+        "ritual_open",
+        "rain_streak"
+      ]
+    },
+    "permeability_mode": {
+      "type": "string",
+      "enum": ["semipermeable_membrane", "solute_suspension", "ionised_glow"]
+    },
+    "focus_region_kind": {
+      "type": "string",
+      "enum": [
+        "criteria_table",
+        "source_metadata",
+        "rank_trace",
+        "object_focus",
+        "refusal_reason",
+        "correction_boundary",
+        "conversion_held_state",
+        "timeline",
+        "question_frame",
+        "listening_field",
+        "ritual_boundary_marker"
+      ]
+    },
+    "blocker_state": {
+      "type": "string",
+      "enum": [
+        "missing_evidence_ref",
+        "missing_grounding_gate",
+        "grounding_gate_failed",
+        "source_stale",
+        "rights_blocked",
+        "privacy_blocked",
+        "consent_blocked",
+        "public_event_missing",
+        "world_surface_blocked",
+        "health_failed",
+        "monetization_blocked",
+        "monetization_readiness_missing",
+        "conversion_held",
+        "operator_review_required",
+        "unknown_state"
+      ]
+    }
+  }
+}
