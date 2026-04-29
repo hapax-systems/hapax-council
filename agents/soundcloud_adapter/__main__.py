@@ -48,6 +48,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from shared.music.provenance import (
+    build_music_provenance_token,
+    classify_music_provenance,
+    is_broadcast_safe,
+)
+
 __all__ = [
     "SOUNDCLOUD_REPO_PATH",
     "fetch_likes",
@@ -241,8 +247,10 @@ def fetch_set(
 def _normalize_sclib_track(t: Any) -> dict[str, Any]:
     """Convert an ``sclib`` Track-ish into a LocalMusicTrack-shaped dict."""
     duration_ms = getattr(t, "duration", 0) or 0
+    path = str(getattr(t, "permalink_url", "") or getattr(t, "uri", ""))
+    provenance = _soundcloud_provenance_fields(path, getattr(t, "license", None))
     return {
-        "path": str(getattr(t, "permalink_url", "") or getattr(t, "uri", "")),
+        "path": path,
         "title": str(getattr(t, "title", "") or "unknown"),
         "artist": str(getattr(t, "artist", "") or "unknown"),
         "album": "",
@@ -258,8 +266,9 @@ def _normalize_sclib_track(t: Any) -> dict[str, Any]:
         # — drops the 1-in-8 oudepode cap and the broadcast-safe gate.
         "source": "soundcloud-oudepode",
         "content_risk": "tier_0_owned",
-        "broadcast_safe": True,
+        "broadcast_safe": provenance["broadcast_safe"],
         "whitelist_source": None,
+        **provenance,
     }
 
 
@@ -267,8 +276,10 @@ def _normalize_soundcloud_track(t: Any) -> dict[str, Any]:
     """Convert a ``soundcloud`` python-client dict into our shape."""
     d = t.fields() if hasattr(t, "fields") else dict(t)
     duration_ms = d.get("duration", 0) or 0
+    path = str(d.get("permalink_url") or d.get("uri") or "")
+    provenance = _soundcloud_provenance_fields(path, d.get("license"))
     return {
-        "path": str(d.get("permalink_url") or d.get("uri") or ""),
+        "path": path,
         "title": str(d.get("title") or "unknown"),
         "artist": str((d.get("user") or {}).get("username") or "unknown"),
         "album": "",
@@ -281,8 +292,32 @@ def _normalize_soundcloud_track(t: Any) -> dict[str, Any]:
         # See _normalize_sclib_track for rationale on these fields.
         "source": "soundcloud-oudepode",
         "content_risk": "tier_0_owned",
-        "broadcast_safe": True,
+        "broadcast_safe": provenance["broadcast_safe"],
         "whitelist_source": None,
+        **provenance,
+    }
+
+
+def _soundcloud_provenance_fields(path: str, raw_license: Any) -> dict[str, Any]:
+    license_text = str(raw_license).strip() if raw_license is not None else None
+    music_provenance, music_license = classify_music_provenance(
+        source="soundcloud-oudepode",
+        track_id=path,
+        license=license_text,
+    )
+    token = build_music_provenance_token(path, music_provenance)
+    has_metadata_license = bool(license_text)
+    return {
+        "music_provenance": music_provenance,
+        "music_license": music_license,
+        "provenance_token": token,
+        "provenance_source": (
+            "soundcloud:license_metadata"
+            if has_metadata_license
+            else "soundcloud:operator_owned_adapter"
+        ),
+        "quarantine_reason": None if token and is_broadcast_safe(music_provenance) else "unknown",
+        "broadcast_safe": token is not None and is_broadcast_safe(music_provenance),
     }
 
 

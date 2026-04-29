@@ -183,6 +183,12 @@ class MusicCandidateSurfacer:
                     "title": c.title,
                     "artist": c.artist,
                     "source_type": c.source_type,
+                    "source": c.source,
+                    "content_risk": c.content_risk,
+                    "broadcast_safe": c.broadcast_safe,
+                    "music_provenance": c.music_provenance,
+                    "music_license": c.music_license,
+                    "provenance_token": c.provenance_token,
                 }
                 for i, c in enumerate(candidates)
             ],
@@ -270,8 +276,16 @@ def handle_play_command(
 
     payload: dict[str, object] = {
         "ts": time.time(),
+        "path": chosen.get("path"),
+        "title": chosen.get("title"),
+        "artist": chosen.get("artist"),
+        "source": chosen.get("source"),
+        "content_risk": chosen.get("content_risk"),
+        "music_provenance": chosen.get("music_provenance"),
+        "music_license": chosen.get("music_license"),
+        "provenance_token": chosen.get("provenance_token"),
         "selection": chosen,
-        "source": "sidechat",
+        "selection_source": "sidechat",
     }
     try:
         spath.parent.mkdir(parents=True, exist_ok=True)

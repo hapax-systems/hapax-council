@@ -30,11 +30,14 @@
     └── beatstars-leases/
 ```
 
-## Per-track YAML sidecar (recommended)
+## Per-track YAML sidecar (required for broadcast ingest)
 
-For tracks without rich ID3/Vorbis tags — and for everything in
-`found-sounds/`, `freesound-cc0/`, `bandcamp-direct/`, `sample-source-only/`
-— drop a YAML sidecar with the same stem:
+Every track admitted by `LocalMusicRepo.scan()` for broadcast needs a YAML
+sidecar with the same stem. Tracks without a sidecar, without a supported
+license, or without required provenance fields are quarantined as
+`music_provenance: unknown`, `broadcast_safe: false`, `content_risk:
+tier_4_risky`; they remain visible for audit/DAW indexing but never surface in
+`select_candidates()` or continuous programming.
 
 ```
 ~/music/hapax-pool/found-sounds/radio-static-short-bursts.mp3
@@ -54,6 +57,9 @@ content_risk: tier_1_platform_cleared
 broadcast_safe: true
 source: found-sound
 whitelist_source: "operator-curated"
+music_provenance: hapax-pool        # written by ingest from license/source
+provenance_token: auto              # sha-derived token written by ingest
+quarantine_reason: null             # non-null means never broadcast-selectable
 bpm: null
 musical_key: null
 duration_seconds: 17
@@ -63,7 +69,12 @@ vocals: false
 stems_available: []
 ```
 
-Phase 2 stores `content_risk`, `broadcast_safe`, `source`, `whitelist_source` directly on `LocalMusicTrack`. The remaining fields land progressively as downstream consumers need richer metadata.
+Phase 2 stores `content_risk`, `broadcast_safe`, `source`,
+`whitelist_source`, `music_provenance`, `music_license`,
+`provenance_token`, and `quarantine_reason` directly on `LocalMusicTrack`.
+Only `cc-by`, `cc-by-sa`, `public-domain`, and `licensed-for-broadcast`
+normalize into Hapax-pool provenance; proprietary, non-commercial, unknown, or
+missing license strings quarantine the row.
 
 ## Gate behaviour by directory
 
@@ -80,10 +91,16 @@ Phase 2 stores `content_risk`, `broadcast_safe`, `source`, `whitelist_source` di
 
 ## Backward compatibility
 
-Existing tracks in `~/hapax-state/music-repo/tracks.jsonl` (the live persistence path) load with safe defaults: `content_risk = "tier_0_owned"`, `broadcast_safe = true`, `source = "local"`, `whitelist_source = null`. No re-scan needed; old records work unchanged.
+Existing tracks in `~/hapax-state/music-repo/tracks.jsonl` still load, but
+legacy rows without `music_provenance` and `provenance_token` now fail closed:
+they validate as `music_provenance = "unknown"` and are excluded from
+broadcast selection until re-ingested or hand-tagged with explicit provenance.
 
 ## What this layout is NOT
 
 - **Not a directory the system creates for you.** Operator runs `mkdir -p ~/music/hapax-pool/{operator-owned,soundcloud-oudepode,found-sounds,...}` when ready to populate.
-- **Not a directory the gate checks.** The broadcast-safety gate reads fields on `LocalMusicTrack`, not paths. A track in `sample-source-only/` with `broadcast_safe=true` would surface — the convention is about preventing operator error, not enforcing it.
+- **Not a directory the gate checks.** The broadcast-safety gate reads fields
+  on `LocalMusicTrack`, not paths. A track in `sample-source-only/` with
+  `broadcast_safe=true` still needs valid `music_provenance` and
+  `provenance_token`; missing provenance quarantines it before selection.
 - **Not a replacement for the existing JSONL persistence path.** `LocalMusicRepo` continues to persist scan results to `~/hapax-state/music-repo/tracks.jsonl`. The pool directory is for source files; the JSONL is the index.

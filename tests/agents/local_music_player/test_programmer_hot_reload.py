@@ -29,6 +29,8 @@ def _track(path: str, *, source: str, artist: str = "A") -> LocalMusicTrack:
         duration_s=120.0,
         broadcast_safe=True,
         source=source,
+        music_provenance="hapax-pool" if source != SOURCE_OUDEPODE else "soundcloud-licensed",
+        music_license="licensed-for-broadcast",
     )
 
 

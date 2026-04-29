@@ -3,8 +3,8 @@
 
 Usage:
   hapax-music-play <n>                 # play candidate N from music-candidates.json
-  hapax-music-play --path <track>      # play a specific track path / URL
-  hapax-music-play --path X --title T --artist A --source S
+  hapax-music-play --path <track> --music-provenance hapax-pool --provenance-token TOKEN
+  hapax-music-play --path X --title T --artist A --source S --music-provenance P --provenance-token TOKEN
   hapax-music-play --stop              # stop continuous music until another selection
 
 Writes ``/dev/shm/hapax-compositor/music-selection.json`` which the
@@ -70,6 +70,30 @@ def main() -> int:
     p.add_argument("--artist", default=None)
     p.add_argument("--source", default=None)
     p.add_argument(
+        "--music-provenance",
+        choices=[
+            "operator-vinyl",
+            "soundcloud-licensed",
+            "hapax-pool",
+            "youtube-react",
+            "unknown",
+        ],
+        default=None,
+    )
+    p.add_argument("--music-license", default=None)
+    p.add_argument("--provenance-token", default=None)
+    p.add_argument(
+        "--content-risk",
+        choices=[
+            "tier_0_owned",
+            "tier_1_platform_cleared",
+            "tier_2_provenance_known",
+            "tier_3_uncertain",
+            "tier_4_risky",
+        ],
+        default=None,
+    )
+    p.add_argument(
         "--candidates",
         type=Path,
         default=CANDIDATES_PATH,
@@ -96,6 +120,10 @@ def main() -> int:
         title = args.title
         artist = args.artist
         source = args.source
+        music_provenance = args.music_provenance
+        music_license = args.music_license
+        provenance_token = args.provenance_token
+        content_risk = args.content_risk
     elif args.n is not None:
         cand = _resolve_candidate(args.n, args.candidates)
         if cand is None:
@@ -107,8 +135,19 @@ def main() -> int:
         title = cand.get("title") or args.title
         artist = cand.get("artist") or args.artist
         source = cand.get("source") or args.source
+        music_provenance = cand.get("music_provenance") or args.music_provenance
+        music_license = cand.get("music_license") or args.music_license
+        provenance_token = cand.get("provenance_token") or args.provenance_token
+        content_risk = cand.get("content_risk") or args.content_risk
     else:
         p.print_help(sys.stderr)
+        return 2
+
+    if not music_provenance or not provenance_token:
+        print(
+            "hapax-music-play: refusing selection without music provenance/token",
+            file=sys.stderr,
+        )
         return 2
 
     write_selection(
@@ -117,6 +156,10 @@ def main() -> int:
         title=title,
         artist=artist,
         source=source,
+        music_provenance=music_provenance,
+        music_license=music_license,
+        provenance_token=provenance_token,
+        content_risk=content_risk,
     )
     print(f"selection written → {args.selection}")
     return 0

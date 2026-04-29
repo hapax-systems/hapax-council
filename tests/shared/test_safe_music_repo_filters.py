@@ -39,6 +39,8 @@ def _track(
         broadcast_safe=broadcast_safe,
         content_risk=content_risk,
         source=source,
+        music_provenance="hapax-pool",
+        music_license="licensed-for-broadcast",
     )
 
 
@@ -140,12 +142,11 @@ def test_tier_4_never_admitted_regardless_of_caller(tmp_path: Path) -> None:
     assert any(t.content_risk == "tier_4_risky" for t in out)
 
 
-# ── backward-compat: old JSONL records load with safe defaults ──────────────
+# ── backward-compat: old JSONL records load, then fail closed ───────────────
 
 
-def test_old_jsonl_without_new_fields_loads_as_broadcast_safe(tmp_path: Path) -> None:
-    """Records written before Phase 2 lack the 4 new fields. Pydantic must
-    fill them with safe defaults so existing repos load without breakage."""
+def test_old_jsonl_without_new_fields_loads_quarantined(tmp_path: Path) -> None:
+    """Legacy rows load but fail closed until provenance is re-tagged."""
     path = tmp_path / "tracks.jsonl"
     legacy = {
         "path": "/legacy/track.mp3",
@@ -163,13 +164,15 @@ def test_old_jsonl_without_new_fields_loads_as_broadcast_safe(tmp_path: Path) ->
     path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
     repo = LocalMusicRepo(path=path)
     assert repo.load() == 1
-    out = repo.select_candidates(k=10)
-    assert len(out) == 1
-    track = out[0]
-    assert track.broadcast_safe is True
-    assert track.content_risk == "tier_0_owned"
+    assert repo.select_candidates(k=10) == []
+    track = repo.all_tracks()[0]
+    assert track.broadcast_safe is False
+    assert track.content_risk == "tier_4_risky"
     assert track.source == "local"
     assert track.whitelist_source is None
+    assert track.music_provenance == "unknown"
+    assert track.provenance_token is None
+    assert track.quarantine_reason == "missing_music_provenance"
 
 
 # ── integration: ranking is preserved within the safe set ───────────────────
@@ -221,6 +224,8 @@ def test_track_round_trips_with_new_fields(tmp_path: Path) -> None:
             broadcast_safe=True,
             source="found-sound",
             whitelist_source="found-sound-direct-drive",
+            music_provenance="hapax-pool",
+            music_license="licensed-for-broadcast",
         )
     )
     repo.save()
@@ -231,3 +236,5 @@ def test_track_round_trips_with_new_fields(tmp_path: Path) -> None:
     assert track.broadcast_safe is True
     assert track.source == "found-sound"
     assert track.whitelist_source == "found-sound-direct-drive"
+    assert track.music_provenance == "hapax-pool"
+    assert track.provenance_token is not None

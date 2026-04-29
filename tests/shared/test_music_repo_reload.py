@@ -25,6 +25,8 @@ def _track(path: str, *, title: str = "T") -> dict:
         duration_s=120.0,
         broadcast_safe=True,
         source="local",
+        music_provenance="hapax-pool",
+        music_license="licensed-for-broadcast",
     ).model_dump(mode="json")
 
 

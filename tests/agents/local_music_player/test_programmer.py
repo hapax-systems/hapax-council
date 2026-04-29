@@ -228,6 +228,8 @@ def _track(
         duration_s=120.0,
         broadcast_safe=broadcast_safe,
         source=source,
+        music_provenance="hapax-pool" if source != SOURCE_OUDEPODE else "soundcloud-licensed",
+        music_license="licensed-for-broadcast",
     )
 
 

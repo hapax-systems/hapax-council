@@ -45,6 +45,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from shared.affordance import ContentRisk
+from shared.music.provenance import (
+    MusicManifestAsset,
+    MusicProvenance,
+    MusicTrackProvenance,
+    classify_music_provenance,
+    is_broadcast_safe,
+    manifest_asset_from_provenance,
+)
 from shared.music_repo import DEFAULT_REPO_PATH, LocalMusicRepo
 from shared.music_sources import (
     SOURCE_FOUND_SOUND,
@@ -57,6 +66,7 @@ log = logging.getLogger("local_music_player")
 
 DEFAULT_SELECTION_PATH = Path("/dev/shm/hapax-compositor/music-selection.json")
 DEFAULT_ATTRIBUTION_PATH = Path("/dev/shm/hapax-compositor/music-attribution.txt")
+DEFAULT_PROVENANCE_PATH = Path("/dev/shm/hapax-compositor/music-provenance.json")
 DEFAULT_POLL_S = 1.0
 # Explicit default sink: the music-mastering-style loudness normalizer
 # (config/pipewire/hapax-music-loudnorm.conf). Earlier revision pointed
@@ -84,6 +94,7 @@ DEFAULT_SINK = "hapax-music-loudnorm"
 class PlayerConfig:
     selection_path: Path = DEFAULT_SELECTION_PATH
     attribution_path: Path = DEFAULT_ATTRIBUTION_PATH
+    provenance_path: Path = DEFAULT_PROVENANCE_PATH
     repo_path: Path = DEFAULT_REPO_PATH
     sc_repo_path: Path = Path.home() / "hapax-state" / "music-repo" / "soundcloud.jsonl"
     interstitial_repo_path: Path = (
@@ -100,6 +111,9 @@ class PlayerConfig:
             ),
             attribution_path=Path(
                 os.environ.get("HAPAX_MUSIC_PLAYER_ATTRIBUTION_PATH", str(DEFAULT_ATTRIBUTION_PATH))
+            ),
+            provenance_path=Path(
+                os.environ.get("HAPAX_MUSIC_PLAYER_PROVENANCE_PATH", str(DEFAULT_PROVENANCE_PATH))
             ),
             repo_path=Path(os.environ.get("HAPAX_MUSIC_PLAYER_REPO_PATH", str(DEFAULT_REPO_PATH))),
             sc_repo_path=Path(
@@ -127,7 +141,12 @@ def is_url(path: str) -> bool:
     return path.startswith(("http://", "https://"))
 
 
-def format_attribution(title: str | None, artist: str | None) -> str:
+def format_attribution(
+    title: str | None,
+    artist: str | None,
+    *,
+    music_provenance: MusicProvenance | None = None,
+) -> str:
     """Splattribution string for ``music-attribution.txt``.
 
     Empty parts collapse cleanly: missing artist + title gives empty
@@ -135,9 +154,14 @@ def format_attribution(title: str | None, artist: str | None) -> str:
     """
     title = (title or "").strip()
     artist = (artist or "").strip()
+    provenance_line = f"Provenance: {music_provenance}" if music_provenance else ""
     if title and artist:
-        return f"{title} — {artist}"
-    return title or artist
+        base = f"{title} — {artist}"
+    else:
+        base = title or artist
+    if base and provenance_line:
+        return f"{base}\n{provenance_line}"
+    return base or provenance_line
 
 
 def write_attribution(path: Path, text: str) -> None:
@@ -148,6 +172,14 @@ def write_attribution(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def write_music_provenance(path: Path, asset: MusicManifestAsset) -> None:
+    """Atomic write of the current music asset for manifest consumers."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(asset.model_dump_json(), encoding="utf-8")
+    tmp.replace(path)
+
+
 def write_selection(
     path: Path,
     track_path: str,
@@ -155,6 +187,10 @@ def write_selection(
     title: str | None = None,
     artist: str | None = None,
     source: str | None = None,
+    music_provenance: MusicProvenance | None = None,
+    music_license: str | None = None,
+    provenance_token: str | None = None,
+    content_risk: ContentRisk | None = None,
     when: float | None = None,
 ) -> None:
     """Write the selection JSON the player daemon watches.
@@ -168,6 +204,10 @@ def write_selection(
         "title": title,
         "artist": artist,
         "source": source,
+        "music_provenance": music_provenance,
+        "music_license": music_license,
+        "provenance_token": provenance_token,
+        "content_risk": content_risk,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -279,10 +319,19 @@ class LocalMusicPlayer:
             return None
         try:
             text = path.read_text(encoding="utf-8")
-            return json.loads(text)
+            payload = json.loads(text)
         except (OSError, json.JSONDecodeError):
             log.debug("Failed to read selection at %s", path, exc_info=True)
             return None
+        if not isinstance(payload, dict):
+            return None
+        nested = payload.get("selection")
+        if isinstance(nested, dict) and "path" not in payload:
+            merged = dict(nested)
+            if "source" in payload and "source" not in merged:
+                merged["selection_source"] = payload["source"]
+            return merged
+        return payload
 
     def _start_playback(self, selection: dict) -> None:
         track_path = selection.get("path")
@@ -301,10 +350,39 @@ class LocalMusicPlayer:
                 log.debug("attribution clear failed", exc_info=True)
             return
 
+        manifest_asset = self._resolve_manifest_asset(selection)
+        try:
+            write_music_provenance(self.config.provenance_path, manifest_asset)
+        except OSError:
+            log.warning("music provenance write failed; skipping track")
+            try:
+                write_attribution(self.config.attribution_path, "")
+            except OSError:
+                log.debug("attribution clear failed", exc_info=True)
+            return
+
+        if not manifest_asset.broadcast_safe:
+            log.warning(
+                "selection missing/unsafe music provenance; skipping track: %s",
+                track_path,
+            )
+            try:
+                write_attribution(self.config.attribution_path, "")
+            except OSError:
+                log.debug("attribution clear failed", exc_info=True)
+            return
+
         # Splattribution write happens FIRST so the overlay updates even
         # if pw-cat fails to start. Empty string is a valid (no-op) value.
         try:
-            write_attribution(self.config.attribution_path, format_attribution(title, artist))
+            write_attribution(
+                self.config.attribution_path,
+                format_attribution(
+                    title,
+                    artist,
+                    music_provenance=manifest_asset.music_provenance,
+                ),
+            )
         except OSError:
             log.warning("attribution write failed", exc_info=True)
 
@@ -364,6 +442,67 @@ class LocalMusicPlayer:
         repo.load()
         repo.mark_played(track_path)
 
+    def _repo_path_for_track(self, track_path: str, *, source: str | None = None) -> Path:
+        source_norm = normalize_source(source)
+        if is_url(track_path):
+            return self.config.sc_repo_path
+        if source_norm in {SOURCE_FOUND_SOUND, SOURCE_WWII_NEWSCLIP}:
+            return self.config.interstitial_repo_path
+        return self.config.repo_path
+
+    def _lookup_track(self, track_path: str, *, source: str | None = None) -> object | None:
+        repo = LocalMusicRepo(path=self._repo_path_for_track(track_path, source=source))
+        repo.load()
+        return next((track for track in repo.all_tracks() if track.path == track_path), None)
+
+    def _resolve_manifest_asset(self, selection: dict) -> MusicManifestAsset:
+        track_path = str(selection.get("path") or "")
+        source = selection.get("source")
+        source_str = str(source) if source is not None else None
+        explicit_provenance = selection.get("music_provenance")
+        explicit_token = selection.get("provenance_token")
+        if explicit_provenance and explicit_token:
+            content_risk = _content_risk_value(selection.get("content_risk")) or "tier_4_risky"
+            provenance = str(explicit_provenance)
+            record = MusicTrackProvenance(
+                track_id=track_path,
+                provenance=provenance,  # type: ignore[arg-type]
+                license=selection.get("music_license"),
+                source=source_str,
+            )
+            asset = manifest_asset_from_provenance(
+                record,
+                content_risk=content_risk,
+                broadcast_safe=True,
+                source=source_str,
+            )
+            return asset.model_copy(update={"token": str(explicit_token)})
+
+        track = self._lookup_track(track_path, source=source_str)
+        if track is not None:
+            to_manifest = getattr(track, "to_manifest_asset", None)
+            if callable(to_manifest):
+                return to_manifest()
+
+        music_provenance, music_license = classify_music_provenance(
+            source=source_str,
+            track_id=track_path,
+            license=str(selection.get("music_license") or ""),
+        )
+        content_risk = _content_risk_value(selection.get("content_risk")) or "tier_4_risky"
+        record = MusicTrackProvenance(
+            track_id=track_path,
+            provenance=music_provenance,
+            license=music_license,
+            source=source_str or "selection",
+        )
+        return manifest_asset_from_provenance(
+            record,
+            content_risk=content_risk,
+            broadcast_safe=is_broadcast_safe(music_provenance),
+            source=source_str or "selection",
+        )
+
     def _current_proc_alive(self) -> bool:
         """True when the current playback chain is still producing audio.
 
@@ -416,6 +555,10 @@ class LocalMusicPlayer:
             title=track.title,
             artist=track.artist,
             source=track.source,
+            music_provenance=track.music_provenance,
+            music_license=track.music_license,
+            provenance_token=track.provenance_token,
+            content_risk=track.content_risk,
         )
         # Mark this write as ours so the next tick recognizes it as
         # programmer-authored rather than external.
@@ -529,6 +672,22 @@ class LocalMusicPlayer:
                 time.sleep(0.1)
         self._kill_current()
         return 0
+
+
+def _content_risk_value(raw: object) -> ContentRisk | None:
+    allowed: set[str] = {
+        "tier_0_owned",
+        "tier_1_platform_cleared",
+        "tier_2_provenance_known",
+        "tier_3_uncertain",
+        "tier_4_risky",
+    }
+    if raw is None:
+        return None
+    key = str(raw).strip().lower().replace("-", "_")
+    if key in allowed:
+        return key  # type: ignore[return-value]
+    return None
 
 
 if __name__ == "__main__":  # pragma: no cover — exercised via __main__.py

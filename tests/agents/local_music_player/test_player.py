@@ -32,6 +32,7 @@ from agents.local_music_player.player import (
     write_selection,
 )
 from shared.music_repo import LocalMusicRepo, LocalMusicTrack
+from shared.music_sources import SOURCE_WWII_NEWSCLIP
 
 # ── pure helpers ────────────────────────────────────────────────────────────
 
@@ -66,6 +67,13 @@ def test_format_attribution_neither() -> None:
     assert format_attribution(None, None) == ""
 
 
+def test_format_attribution_includes_provenance_line() -> None:
+    assert (
+        format_attribution("Direct Drive", "Dusty Decks", music_provenance="hapax-pool")
+        == "Direct Drive — Dusty Decks\nProvenance: hapax-pool"
+    )
+
+
 def test_format_attribution_strips_whitespace() -> None:
     assert format_attribution("  Direct Drive  ", "  Dusty Decks  ") == "Direct Drive — Dusty Decks"
 
@@ -89,6 +97,10 @@ def test_write_selection_round_trip(tmp_path: Path) -> None:
         title="Direct Drive",
         artist="Dusty Decks",
         source="found-sound",
+        music_provenance="hapax-pool",
+        music_license="licensed-for-broadcast",
+        provenance_token="music:hapax-pool:test",
+        content_risk="tier_1_platform_cleared",
         when=1714082345.0,
     )
     payload = json.loads(target.read_text(encoding="utf-8"))
@@ -96,6 +108,8 @@ def test_write_selection_round_trip(tmp_path: Path) -> None:
     assert payload["title"] == "Direct Drive"
     assert payload["artist"] == "Dusty Decks"
     assert payload["source"] == "found-sound"
+    assert payload["music_provenance"] == "hapax-pool"
+    assert payload["provenance_token"] == "music:hapax-pool:test"
     assert payload["ts"] == 1714082345.0
 
 
@@ -181,6 +195,8 @@ def _repo_track(path: str, *, source: str) -> LocalMusicTrack:
         duration_s=10.0,
         broadcast_safe=True,
         source=source,
+        music_provenance="hapax-pool" if source != "soundcloud-oudepode" else "soundcloud-licensed",
+        music_license="licensed-for-broadcast",
     )
 
 
@@ -192,6 +208,22 @@ def test_mark_played_routes_found_sound_to_interstitial_repo(tmp_path: Path) -> 
     interstitial_repo.save()
 
     LocalMusicPlayer(cfg)._mark_played(track_path, source="found-sound")
+
+    fresh = LocalMusicRepo(path=cfg.interstitial_repo_path)
+    fresh.load()
+    track = next((item for item in fresh.all_tracks() if item.path == track_path), None)
+    assert track is not None
+    assert track.play_count == 1
+
+
+def test_mark_played_routes_newsclip_to_interstitial_repo(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    interstitial_repo = LocalMusicRepo(path=cfg.interstitial_repo_path)
+    track_path = "/newsclip/radio-bulletin.mp3"
+    interstitial_repo.upsert(_repo_track(track_path, source=SOURCE_WWII_NEWSCLIP))
+    interstitial_repo.save()
+
+    LocalMusicPlayer(cfg)._mark_played(track_path, source=SOURCE_WWII_NEWSCLIP)
 
     fresh = LocalMusicRepo(path=cfg.interstitial_repo_path)
     fresh.load()
@@ -223,12 +255,26 @@ def _make_config(tmp_path: Path) -> PlayerConfig:
     return PlayerConfig(
         selection_path=tmp_path / "sel.json",
         attribution_path=tmp_path / "attrib.txt",
+        provenance_path=tmp_path / "provenance.json",
         repo_path=tmp_path / "tracks.jsonl",
         sc_repo_path=tmp_path / "soundcloud.jsonl",
         interstitial_repo_path=tmp_path / "interstitials.jsonl",
         poll_s=0.01,
         sink="hapax-music-loudnorm",
     )
+
+
+def _safe_selection_fields(
+    *,
+    provenance: str = "hapax-pool",
+    token: str = "music:hapax-pool:test",
+) -> dict[str, str]:
+    return {
+        "music_provenance": provenance,
+        "music_license": "licensed-for-broadcast",
+        "provenance_token": token,
+        "content_risk": "tier_0_owned",
+    }
 
 
 def test_tick_no_selection_file_is_noop(tmp_path: Path) -> None:
@@ -242,7 +288,7 @@ def test_tick_no_selection_file_is_noop(tmp_path: Path) -> None:
 def test_tick_unchanged_mtime_is_noop(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     player = LocalMusicPlayer(cfg)
-    write_selection(cfg.selection_path, "/abs/x.flac")
+    write_selection(cfg.selection_path, "/abs/x.flac", **_safe_selection_fields())
     with patch("agents.local_music_player.player._spawn_process") as popen:
         popen.return_value = MagicMock()
         player.tick()  # First tick — sees new selection, plays
@@ -255,7 +301,11 @@ def test_tick_local_file_invokes_pwcat(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     player = LocalMusicPlayer(cfg)
     write_selection(
-        cfg.selection_path, "/abs/track.flac", title="Direct Drive", artist="Dusty Decks"
+        cfg.selection_path,
+        "/abs/track.flac",
+        title="Direct Drive",
+        artist="Dusty Decks",
+        **_safe_selection_fields(),
     )
     with patch("agents.local_music_player.player._spawn_process") as popen:
         popen.return_value = MagicMock()
@@ -276,6 +326,7 @@ def test_tick_blocks_decommissioned_livestream_source(tmp_path: Path) -> None:
         title="Old Track",
         artist="Legacy",
         source="epidemic",
+        **_safe_selection_fields(),
     )
     with patch("agents.local_music_player.player._spawn_process") as popen:
         player.tick()
@@ -291,6 +342,11 @@ def test_tick_url_invokes_three_stage_pipeline(tmp_path: Path) -> None:
         "https://soundcloud.com/oudepode/unknowntron-1/s-token",
         title="UNKNOWNTRON",
         artist="Oudepode",
+        source="soundcloud-oudepode",
+        **_safe_selection_fields(
+            provenance="soundcloud-licensed",
+            token="music:soundcloud-licensed:test",
+        ),
     )
     yt_proc = MagicMock()
     yt_proc.stdout = MagicMock()
@@ -317,12 +373,22 @@ def test_tick_writes_attribution(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     player = LocalMusicPlayer(cfg)
     write_selection(
-        cfg.selection_path, "/abs/track.flac", title="Direct Drive", artist="Dusty Decks"
+        cfg.selection_path,
+        "/abs/track.flac",
+        title="Direct Drive",
+        artist="Dusty Decks",
+        **_safe_selection_fields(),
     )
     with patch("agents.local_music_player.player._spawn_process") as popen:
         popen.return_value = MagicMock()
         player.tick()
-    assert cfg.attribution_path.read_text(encoding="utf-8") == "Direct Drive — Dusty Decks"
+    assert (
+        cfg.attribution_path.read_text(encoding="utf-8")
+        == "Direct Drive — Dusty Decks\nProvenance: hapax-pool"
+    )
+    provenance = json.loads(cfg.provenance_path.read_text(encoding="utf-8"))
+    assert provenance["music_provenance"] == "hapax-pool"
+    assert provenance["token"] == "music:hapax-pool:test"
 
 
 def test_tick_kills_in_flight_on_new_selection(tmp_path: Path) -> None:
@@ -332,12 +398,16 @@ def test_tick_kills_in_flight_on_new_selection(tmp_path: Path) -> None:
 
     proc1 = MagicMock()
     proc2 = MagicMock()
-    write_selection(cfg.selection_path, "/abs/a.flac")
+    write_selection(cfg.selection_path, "/abs/a.flac", **_safe_selection_fields(token="music:x:a"))
     with patch("agents.local_music_player.player._spawn_process", side_effect=[proc1, proc2]):
         player.tick()
         # Touch mtime forward and write a new selection
         time.sleep(0.05)
-        write_selection(cfg.selection_path, "/abs/b.flac")
+        write_selection(
+            cfg.selection_path,
+            "/abs/b.flac",
+            **_safe_selection_fields(token="music:x:b"),
+        )
         player.tick()
     # First proc was terminated when second selection arrived
     proc1.terminate.assert_called()
@@ -366,7 +436,7 @@ def test_tick_handles_malformed_selection(tmp_path: Path) -> None:
 def test_tick_handles_missing_pwcat_binary(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     player = LocalMusicPlayer(cfg)
-    write_selection(cfg.selection_path, "/abs/track.flac")
+    write_selection(cfg.selection_path, "/abs/track.flac", **_safe_selection_fields())
     with patch(
         "agents.local_music_player.player._spawn_process", side_effect=FileNotFoundError("pw-cat")
     ):
@@ -382,7 +452,7 @@ def test_tick_handles_missing_pwcat_binary(tmp_path: Path) -> None:
 def test_stop_kills_in_flight(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     player = LocalMusicPlayer(cfg)
-    write_selection(cfg.selection_path, "/abs/x.flac")
+    write_selection(cfg.selection_path, "/abs/x.flac", **_safe_selection_fields())
     proc = MagicMock()
     with patch("agents.local_music_player.player._spawn_process", return_value=proc):
         player.tick()
