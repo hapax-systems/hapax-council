@@ -6,7 +6,9 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 usage: hapax-codex-send --session cx-color [--transport auto|foot|tmux]
-                         [--no-submit] [--append] [--stdin] [--] MESSAGE...
+                         [--no-submit] [--append] [--require-ack]
+                         [--ack-timeout SECONDS] [--json] [--stdin]
+                         [--] MESSAGE...
 
 Sends MESSAGE to a visible Hapax Codex session. The default transport prefers a
 tmux session named hapax-codex-cx-color and falls back to a visible foot window
@@ -20,6 +22,14 @@ SESSION=""
 TRANSPORT="auto"
 SUBMIT=1
 CLEAR_INPUT=1
+REQUIRE_ACK=0
+ACK_INSTRUCTION=1
+ACK_TIMEOUT="${HAPAX_CODEX_SEND_ACK_TIMEOUT:-60}"
+ACK_FILE=""
+ACK_TOKEN=""
+ALLOW_LEGACY_ACK=0
+JSON_OUTPUT=0
+USED_TRANSPORT=""
 READ_STDIN=0
 MESSAGE_PARTS=()
 TMP_FILES=()
@@ -55,6 +65,46 @@ while [ $# -gt 0 ]; do
       ;;
     --append)
       CLEAR_INPUT=0
+      shift
+      ;;
+    --require-ack)
+      REQUIRE_ACK=1
+      shift
+      ;;
+    --no-ack-instruction)
+      ACK_INSTRUCTION=0
+      shift
+      ;;
+    --ack-timeout)
+      ACK_TIMEOUT="${2:-}"
+      shift 2
+      ;;
+    --ack-timeout=*)
+      ACK_TIMEOUT="${1#--ack-timeout=}"
+      shift
+      ;;
+    --ack-file)
+      ACK_FILE="${2:-}"
+      shift 2
+      ;;
+    --ack-file=*)
+      ACK_FILE="${1#--ack-file=}"
+      shift
+      ;;
+    --ack-token)
+      ACK_TOKEN="${2:-}"
+      shift 2
+      ;;
+    --ack-token=*)
+      ACK_TOKEN="${1#--ack-token=}"
+      shift
+      ;;
+    --allow-legacy-ack)
+      ALLOW_LEGACY_ACK=1
+      shift
+      ;;
+    --json)
+      JSON_OUTPUT=1
       shift
       ;;
     --stdin)
@@ -110,6 +160,71 @@ if [ -z "$MESSAGE" ]; then
   exit 2
 fi
 
+case "$ACK_TIMEOUT" in
+  ''|*[!0-9.]*)
+    echo "hapax-codex-send: invalid --ack-timeout '$ACK_TIMEOUT'" >&2
+    exit 2
+    ;;
+esac
+
+json_string() {
+  python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+ack_setup() {
+  [ "$REQUIRE_ACK" -eq 1 ] || return 0
+  if [ -z "$ACK_TOKEN" ]; then
+    ACK_TOKEN="ack-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+  fi
+  if [ -z "$ACK_FILE" ]; then
+    ACK_FILE="${XDG_RUNTIME_DIR:-/tmp}/hapax-codex-acks/$SESSION-$ACK_TOKEN"
+  fi
+  mkdir -p "$(dirname "$ACK_FILE")"
+  rm -f "$ACK_FILE"
+  export HAPAX_CODEX_SEND_ACK_FILE="$ACK_FILE"
+  export HAPAX_CODEX_SEND_ACK_TOKEN="$ACK_TOKEN"
+  if [ "$ACK_INSTRUCTION" -eq 1 ]; then
+    MESSAGE="$MESSAGE
+
+ACK REQUIRED: before substantial work, write this exact token to this exact path:
+mkdir -p '$(dirname "$ACK_FILE")' && printf '%s\n' '$ACK_TOKEN' > '$ACK_FILE'"
+  fi
+}
+
+wait_for_ack() {
+  [ "$REQUIRE_ACK" -eq 1 ] || return 0
+  local start now elapsed
+  start="$(date +%s)"
+  while true; do
+    if [ -f "$ACK_FILE" ] && grep -Fxq "$ACK_TOKEN" "$ACK_FILE" 2>/dev/null; then
+      return 0
+    fi
+    now="$(date +%s)"
+    elapsed=$((now - start))
+    if awk "BEGIN { exit !($elapsed >= $ACK_TIMEOUT) }"; then
+      echo "hapax-codex-send: ack timeout for $SESSION after ${ACK_TIMEOUT}s ($ACK_FILE)" >&2
+      return 12
+    fi
+    sleep 0.25
+  done
+}
+
+emit_status() {
+  [ "$JSON_OUTPUT" -eq 1 ] || return 0
+  printf '{"session":%s,"transport":%s,"submitted":%s,"cleared_input":%s,"ack_required":%s' \
+    "$(json_string "$SESSION")" \
+    "$(json_string "$USED_TRANSPORT")" \
+    "$SUBMIT" \
+    "$CLEAR_INPUT" \
+    "$REQUIRE_ACK"
+  if [ "$REQUIRE_ACK" -eq 1 ]; then
+    printf ',"ack_file":%s,"ack_token":%s' "$(json_string "$ACK_FILE")" "$(json_string "$ACK_TOKEN")"
+  fi
+  printf '}\n'
+}
+
+ack_setup
+
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -144,17 +259,19 @@ foot_window_center() {
 
 send_tmux() {
   local target="hapax-codex-$SESSION"
-  local tmp
+  local tmp buffer
   tmp="$(mktemp)"
+  buffer="hapax-codex-send-$SESSION-$$-$RANDOM"
   TMP_FILES+=("$tmp")
   printf '%s' "$MESSAGE" >"$tmp"
 
-  tmux load-buffer -b hapax-codex-send "$tmp"
+  tmux load-buffer -b "$buffer" "$tmp"
   if [ "$CLEAR_INPUT" -eq 1 ]; then
     tmux send-keys -t "$target" C-u
     sleep "${HAPAX_CODEX_SEND_CLEAR_DELAY:-0.05}"
   fi
-  tmux paste-buffer -b hapax-codex-send -t "$target"
+  tmux paste-buffer -b "$buffer" -t "$target"
+  tmux delete-buffer -b "$buffer" 2>/dev/null || true
   if [ "$SUBMIT" -eq 1 ]; then
     sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.35}"
     tmux send-keys -t "$target" Enter
@@ -344,6 +461,11 @@ send_foot() {
 
 case "$TRANSPORT" in
   foot)
+    if [ "$REQUIRE_ACK" -eq 1 ] && [ "$ALLOW_LEGACY_ACK" -ne 1 ]; then
+      echo "hapax-codex-send: --require-ack needs a tmux-backed session; refusing legacy foot transport for $SESSION" >&2
+      exit 13
+    fi
+    USED_TRANSPORT="foot"
     send_foot
     ;;
   tmux)
@@ -351,12 +473,19 @@ case "$TRANSPORT" in
       echo "hapax-codex-send: no tmux session hapax-codex-$SESSION" >&2
       exit 11
     }
+    USED_TRANSPORT="tmux"
     send_tmux
     ;;
   auto)
     if tmux_target_exists; then
+      USED_TRANSPORT="tmux"
       send_tmux
     elif foot_target_exists; then
+      if [ "$REQUIRE_ACK" -eq 1 ] && [ "$ALLOW_LEGACY_ACK" -ne 1 ]; then
+        echo "hapax-codex-send: --require-ack needs a tmux-backed session; refusing legacy foot fallback for $SESSION" >&2
+        exit 13
+      fi
+      USED_TRANSPORT="foot"
       send_foot
     else
       echo "hapax-codex-send: no live target for $SESSION" >&2
@@ -364,3 +493,6 @@ case "$TRANSPORT" in
     fi
     ;;
 esac
+
+wait_for_ack
+emit_status

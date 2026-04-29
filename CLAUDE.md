@@ -179,6 +179,8 @@ Hapax TTS output (Kokoro 82M CPU) can be routed through a user-configurable Pipe
 - `cc-close <task_id> [--pr N]` — closes the task: status → done (or withdrawn/superseded), moves note to `closed/`, clears claim file.
 - SessionStart preamble (`hooks/scripts/session-context.sh` D-30 Phase 4) shows currently-claimed task + top 5 offered tasks by WSJF.
 
+**Codex multi-session control plane:** load-bearing Codex lanes use tmux as the control plane (`hapax-codex-cx-<color>`). `scripts/hapax-codex --terminal tmux` is acceptable for headless worker lanes; `--terminal foot` attaches a visible foot window to the same tmux session. `cx-red` and protected `cx-violet` stay screen-visible, but `cx-amber`/`cx-blue`/`cx-cyan` may be headless when `~/Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/codex-session-health.md`, relay YAML, active claim files, and PR state are current. Parent instructions that assign or redirect work should use `scripts/hapax-codex-send --require-ack`; a successful key paste is not task receipt.
+
 **Native `TaskCreate` is deprecated for cross-session workstream items** — use the vault SSOT instead. Native TaskTool remains permitted for single-session ephemeral todos that don't need operator visibility.
 
 **Bridges:**

@@ -817,8 +817,112 @@ esac
     tmux_text = tmux_log.read_text()
     assert "has-session -t hapax-codex-cx-amber" in tmux_text
     assert "send-keys -t hapax-codex-cx-amber C-u" in tmux_text
-    assert "paste-buffer -b hapax-codex-send -t hapax-codex-cx-amber" in tmux_text
+    assert "paste-buffer -b hapax-codex-send-cx-amber-" in tmux_text
+    assert "delete-buffer -b hapax-codex-send-cx-amber-" in tmux_text
     assert "send-keys -t hapax-codex-cx-amber Enter" in tmux_text
+
+
+def test_codex_send_tmux_waits_for_required_ack(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    env["HAPAX_CODEX_SEND_SUBMIT_DELAY"] = "0"
+    env["HAPAX_CODEX_SEND_ACK_TIMEOUT"] = "2"
+
+    ack_file = tmp_path / "ack.txt"
+    tmux_log = tmp_path / "tmux.log"
+    tmux_message = tmp_path / "tmux-message.txt"
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+case "$1" in
+  has-session)
+    exit 0
+    ;;
+  load-buffer)
+    file="${{@: -1}}"
+    cat "$file" > {tmux_message}
+    ;;
+  send-keys)
+    if [ "${{@: -1}}" = "Enter" ]; then
+      printf '%s\\n' "$HAPAX_CODEX_SEND_ACK_TOKEN" > "$HAPAX_CODEX_SEND_ACK_FILE"
+    fi
+    ;;
+esac
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(SENDER),
+            "--session",
+            "cx-amber",
+            "--transport",
+            "tmux",
+            "--require-ack",
+            "--ack-file",
+            str(ack_file),
+            "--ack-token",
+            "token-123",
+            "--json",
+            "--",
+            "Repair the PR and report status.",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert ack_file.read_text().strip() == "token-123"
+    assert "ACK REQUIRED" in tmux_message.read_text()
+    assert '"ack_required":1' in result.stdout
+
+
+def test_codex_send_requires_tmux_for_ack_by_default(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        """#!/usr/bin/env bash
+if [ "$1" = "has-session" ]; then
+  exit 1
+fi
+exit 0
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+    fake_hyprctl = tmp_path / "bin" / "hyprctl"
+    fake_hyprctl.write_text(
+        """#!/usr/bin/env bash
+case "$1" in
+  clients)
+    printf '%s\n' '[{"class":"hapax-codex-cx-blue","address":"0xabc"}]'
+    ;;
+esac
+"""
+    )
+    fake_hyprctl.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(SENDER),
+            "--session",
+            "cx-blue",
+            "--require-ack",
+            "--",
+            "Proceed with the current task.",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 13
+    assert "needs a tmux-backed session" in result.stderr
 
 
 def test_codex_send_auto_prefers_tmux_over_visible_foot(tmp_path: Path) -> None:
