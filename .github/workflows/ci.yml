@@ -200,7 +200,9 @@ jobs:
           # tests: ~6-8 min parallel; was 11-15 min serial).
           set +e
           timeout -s KILL 900 \
-            uv run pytest tests/ -q --tb=line -n 4 --dist loadfile \
+            uv run pytest tests/ -q --tb=line --durations=25 \
+              --benchmark-disable \
+              -n 4 --dist loadfile \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \
               --ignore=tests/test_frame_gate.py \
               --ignore=tests/test_hapax_daimonion_pipecat_tts.py \
