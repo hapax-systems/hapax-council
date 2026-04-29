@@ -26,6 +26,9 @@ _CHRONICLE_PATH = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 _STIMMUNG_PATH = Path("/dev/shm/hapax-stimmung/state.json")
 _RESEARCH_MARKER_PATH = Path("/dev/shm/hapax-compositor/research-marker.json")
 _DIRECTOR_INTENT_PATH = Path("/dev/shm/hapax-compositor/director_intent.jsonl")
+_TRIAD_LEDGER_PATH = Path.home() / "hapax-state" / "outcomes" / "narration-triads.jsonl"
+_TRIAD_STATE_PATH = Path("/dev/shm/hapax-daimonion/narration-triad-state.json")
+_VOICE_OUTPUT_WITNESS_PATH = Path("/dev/shm/hapax-daimonion/voice-output-witness.json")
 
 # SS2 cycle 1: vault-context grounding. Operator's recent daily notes +
 # active goals flow into the prompt as "current focus" context, NOT as
@@ -99,6 +102,7 @@ class NarrativeContext:
     director_activity: str
     chronicle_events: tuple[dict, ...] = field(default_factory=tuple)
     vault_context: VaultContext = field(default_factory=lambda: VaultContext())
+    triad_continuity: dict[str, Any] = field(default_factory=dict)
 
 
 def assemble_context(daemon: Any, *, now: float | None = None) -> NarrativeContext:
@@ -107,12 +111,14 @@ def assemble_context(daemon: Any, *, now: float | None = None) -> NarrativeConte
     The daemon argument is the live ``VoiceDaemon``; we pull
     ``programme_manager`` from it and read SHM directly for the rest.
     """
+    chronicle_events = tuple(read_chronicle_window(now=now, window_s=_CHRONICLE_WINDOW_S))
     return NarrativeContext(
         programme=read_active_programme(daemon),
         stimmung_tone=read_stimmung_tone(),
         director_activity=read_director_activity(),
-        chronicle_events=tuple(read_chronicle_window(now=now, window_s=_CHRONICLE_WINDOW_S)),
+        chronicle_events=chronicle_events,
         vault_context=read_recent_vault_context(),
+        triad_continuity=read_triad_continuity(chronicle_events=chronicle_events, now=now),
     )
 
 
@@ -161,6 +167,71 @@ def read_director_activity() -> str:
     except (OSError, ValueError) as exc:
         log.debug("director intent read failed: %s", exc)
     return "observe"
+
+
+def read_triad_continuity(
+    path: Path | None = None,
+    *,
+    ledger_path: Path | None = None,
+    chronicle_events: tuple[dict, ...] = (),
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Read the current narration-triad continuity cache."""
+    state_path = path or _TRIAD_STATE_PATH
+    if path is None or ledger_path is not None:
+        _refresh_triad_continuity(
+            state_path=state_path,
+            ledger_path=ledger_path,
+            chronicle_events=chronicle_events,
+            now=now,
+        )
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        log.debug("triad continuity read failed: %s", exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _refresh_triad_continuity(
+    *,
+    state_path: Path,
+    ledger_path: Path | None,
+    chronicle_events: tuple[dict, ...],
+    now: float | None,
+) -> None:
+    try:
+        from shared.narration_triad import (
+            NarrationTriadLedger,
+            triad_resolution_refs_from_events,
+        )
+
+        observed_refs, semantic_refs = triad_resolution_refs_from_events(chronicle_events)
+        observed_refs.update(_voice_output_witness_refs())
+        ledger = NarrationTriadLedger(
+            ledger_path=ledger_path or _TRIAD_LEDGER_PATH,
+            state_path=state_path,
+        )
+        ledger.resolve_open_triads(
+            now=now,
+            observed_witness_refs=observed_refs,
+            semantic_closure_refs=semantic_refs,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("triad continuity refresh failed: %s", exc)
+
+
+def _voice_output_witness_refs(path: Path | None = None) -> set[str]:
+    witness_path = path or _VOICE_OUTPUT_WITNESS_PATH
+    try:
+        data = json.loads(witness_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    refs = {"wcs:audio.broadcast_voice:voice-output-witness"}
+    status = data.get("status") if isinstance(data, dict) else None
+    if status == "playback_completed":
+        refs.add("voice-output-witness:playback_completed")
+    return refs
 
 
 def read_chronicle_window(

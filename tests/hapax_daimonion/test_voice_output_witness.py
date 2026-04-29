@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from agents.hapax_daimonion.voice_output_witness import (
     read_voice_output_witness,
+    record_composed_autonomous_narrative,
     record_drop,
     record_narration_drive,
     record_playback_result,
@@ -102,6 +103,26 @@ def test_playback_result_marks_playback_present_without_audible_claim(tmp_path: 
     assert witness.last_narration_impulse["impulse_id"] == "impulse-voice-1"
     assert witness.last_narration_impulse["terminal_state"] == "completed"
     assert witness.last_narration_impulse["terminal_reason"] == "playback_completed"
+
+
+def test_composed_narrative_witness_carries_triad_ids(tmp_path: Path) -> None:
+    path = tmp_path / "voice-output-witness.json"
+    imp = SimpleNamespace(source="endogenous.narrative_drive", content={})
+    candidate = SimpleNamespace(capability_name="narration.autonomous_first_system", combined=0.7)
+
+    witness = record_composed_autonomous_narrative(
+        text="A composed narration.",
+        impingement=imp,
+        candidate=candidate,
+        emit_status="emitted",
+        impulse_id="impulse-1",
+        triad_ids=("triad-1",),
+        path=path,
+        now=NOW,
+    )
+
+    assert witness.last_composed_autonomous_narrative is not None
+    assert witness.last_composed_autonomous_narrative["triad_ids"] == ["triad-1"]
 
 
 def test_drop_records_blocker_reason(tmp_path: Path) -> None:

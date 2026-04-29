@@ -21,6 +21,8 @@ def test_emit_writes_impingement_and_chronicle(tmp_path: Path) -> None:
         programme_id="prog-1",
         operator_referent="Oudepode",
         impulse_id="impulse-001",
+        speech_event_id="speech-001",
+        triad_ids=("triad-001",),
         impingement_path=p,
         now=1234.0,
     )
@@ -35,10 +37,14 @@ def test_emit_writes_impingement_and_chronicle(tmp_path: Path) -> None:
     assert impingement["content"]["programme_id"] == "prog-1"
     assert impingement["content"]["operator_referent"] == "Oudepode"
     assert impingement["content"]["impulse_id"] == "impulse-001"
+    assert impingement["content"]["speech_event_id"] == "speech-001"
+    assert impingement["content"]["triad_ids"] == ["triad-001"]
     assert chronicle["source"] == "self_authored_narrative"
     assert chronicle["event_type"] == "narrative.emitted"
     assert chronicle["payload"]["narrative"] == "Vinyl side B started."
     assert chronicle["payload"]["impulse_id"] == "impulse-001"
+    assert chronicle["payload"]["speech_event_id"] == "speech-001"
+    assert chronicle["payload"]["triad_ids"] == ["triad-001"]
 
 
 def test_emit_appends_not_overwrites(tmp_path: Path) -> None:

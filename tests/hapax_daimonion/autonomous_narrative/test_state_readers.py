@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agents.hapax_daimonion.autonomous_narrative import state_readers
@@ -135,6 +136,91 @@ def test_director_activity_from_research_marker(tmp_path: Path, monkeypatch) -> 
     assert state_readers.read_director_activity() == "create"
 
 
+def test_triad_continuity_default_when_missing(tmp_path: Path) -> None:
+    assert state_readers.read_triad_continuity(tmp_path / "missing.json") == {}
+
+
+def test_triad_continuity_reads_current_summary(tmp_path: Path) -> None:
+    p = tmp_path / "triad-state.json"
+    p.write_text(json.dumps({"open_triads": [{"triad_id": "triad-1"}]}))
+    assert state_readers.read_triad_continuity(p)["open_triads"][0]["triad_id"] == "triad-1"
+
+
+def test_triad_continuity_refreshes_stale_open_outcomes(tmp_path: Path) -> None:
+    from shared.narration_triad import NarrationTriadLedger, build_autonomous_narration_triad
+
+    ledger_path = tmp_path / "triads.jsonl"
+    state_path = tmp_path / "triad-state.json"
+    ledger = NarrationTriadLedger(ledger_path=ledger_path, state_path=state_path)
+    triad = build_autonomous_narration_triad(
+        text="Hapax is monitoring the public voice witness.",
+        context=SimpleNamespace(
+            programme=SimpleNamespace(programme_id="prog-1", role="experiment"),
+            stimmung_tone="ambient",
+            director_activity="observe",
+            chronicle_events=(),
+            triad_continuity={},
+        ),
+        impulse_id="impulse-1",
+        speech_event_id="speech-1",
+        now=100.0,
+    )
+    ledger.append(triad)
+
+    state = state_readers.read_triad_continuity(
+        state_path,
+        ledger_path=ledger_path,
+        now=1000.0,
+    )
+
+    assert state["open_triads"] == []
+    assert state["recently_resolved_triads"][0]["status"] == "stale"
+
+
+def test_triad_continuity_refresh_can_satisfy_from_semantic_chronicle_ref(
+    tmp_path: Path,
+) -> None:
+    from shared.narration_triad import NarrationTriadLedger, build_autonomous_narration_triad
+
+    ledger_path = tmp_path / "triads.jsonl"
+    state_path = tmp_path / "triad-state.json"
+    ledger = NarrationTriadLedger(ledger_path=ledger_path, state_path=state_path)
+    triad = build_autonomous_narration_triad(
+        text="Hapax is monitoring the public voice witness.",
+        context=SimpleNamespace(
+            programme=SimpleNamespace(programme_id="prog-1", role="experiment"),
+            stimmung_tone="ambient",
+            director_activity="observe",
+            chronicle_events=(),
+            triad_continuity={},
+        ),
+        impulse_id="impulse-2",
+        speech_event_id="speech-2",
+        now=100.0,
+    )
+    ledger.append(triad)
+
+    state = state_readers.read_triad_continuity(
+        state_path,
+        ledger_path=ledger_path,
+        chronicle_events=(
+            {
+                "payload": {
+                    "capability_outcome_refs": [
+                        "capability_outcome:narration.autonomous_first_system"
+                    ]
+                }
+            },
+        ),
+        now=120.0,
+    )
+
+    assert state["open_triads"] == []
+    resolved = state["recently_resolved_triads"][0]
+    assert resolved["status"] == "satisfied"
+    assert resolved["learning_update_allowed"] is True
+
+
 # ── assemble_context integration ──────────────────────────────────────────
 
 
@@ -143,6 +229,8 @@ def test_assemble_context_pulls_programme_from_daemon(monkeypatch, tmp_path) -> 
     monkeypatch.setattr(state_readers, "_STIMMUNG_PATH", tmp_path / "missing.json")
     monkeypatch.setattr(state_readers, "_RESEARCH_MARKER_PATH", tmp_path / "missing.json")
     monkeypatch.setattr(state_readers, "_DIRECTOR_INTENT_PATH", tmp_path / "missing.jsonl")
+    monkeypatch.setattr(state_readers, "_TRIAD_LEDGER_PATH", tmp_path / "missing-triad.jsonl")
+    monkeypatch.setattr(state_readers, "_TRIAD_STATE_PATH", tmp_path / "missing-triad.json")
     fake_programme = MagicMock(programme_id="prog-1")
     daemon = MagicMock()
     daemon.programme_manager.store.active_programme.return_value = fake_programme
@@ -151,3 +239,4 @@ def test_assemble_context_pulls_programme_from_daemon(monkeypatch, tmp_path) -> 
     assert ctx.stimmung_tone == "ambient"  # default
     assert ctx.director_activity == "observe"  # default
     assert ctx.chronicle_events == ()
+    assert ctx.triad_continuity == {}

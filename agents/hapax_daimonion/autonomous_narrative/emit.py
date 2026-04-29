@@ -43,6 +43,7 @@ class EmitResult:
     impingement_written: bool
     jsonl_chronicle_written: bool
     chronicle_recorded: bool
+    impingement_id: str | None = None
 
     @property
     def success(self) -> bool:
@@ -83,6 +84,8 @@ def emit_narrative(
     programme_id: str | None = None,
     operator_referent: str | None = None,
     impulse_id: str | None = None,
+    speech_event_id: str | None = None,
+    triad_ids: tuple[str, ...] = (),
     impingement_path: Path | None = None,
     now: float | None = None,
 ) -> EmitResult:
@@ -94,7 +97,7 @@ def emit_narrative(
     """
     path = impingement_path or _IMPINGEMENT_PATH
     ts = now if now is not None else time.time()
-    impingement_id = uuid.uuid4().hex[:12]
+    impingement_id = speech_event_id or uuid.uuid4().hex[:12]
 
     impingement = {
         "id": impingement_id,
@@ -108,6 +111,8 @@ def emit_narrative(
             "programme_id": programme_id,
             "operator_referent": operator_referent,
             "impulse_id": impulse_id,
+            "speech_event_id": impingement_id,
+            "triad_ids": list(triad_ids),
         },
         "intent_family": "narrative.autonomous_speech",
     }
@@ -121,6 +126,8 @@ def emit_narrative(
             "programme_id": programme_id,
             "impulse_id": impulse_id,
             "impingement_id": impingement_id,
+            "speech_event_id": impingement_id,
+            "triad_ids": list(triad_ids),
         },
     }
 
@@ -152,6 +159,8 @@ def emit_narrative(
                 "programme_id": programme_id,
                 "impulse_id": impulse_id,
                 "impingement_id": impingement_id,
+                "speech_event_id": impingement_id,
+                "triad_ids": list(triad_ids),
                 "salience": 0.6,
             },
         )
@@ -164,4 +173,5 @@ def emit_narrative(
         impingement_written=impingement_written,
         jsonl_chronicle_written=jsonl_chronicle_written,
         chronicle_recorded=chronicle_recorded,
+        impingement_id=impingement_id,
     )
