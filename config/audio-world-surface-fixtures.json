@@ -1,0 +1,568 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "audio_world_surface:fixtures:2026-04-29",
+  "schema_ref": "schemas/audio-world-surface-fixtures.schema.json",
+  "generated_from": [
+    "vault:20-projects/hapax-research/specs/2026-04-29-audio-reference-world-surface.md",
+    "vault:20-projects/hapax-research/specs/2026-04-29-world-surface-health-no-false-grounding.md",
+    "vault:20-projects/hapax-research/audits/2026-04-29-recent-research-orphan-replenishment-audit.md"
+  ],
+  "declared_at": "2026-04-29T17:12:00Z",
+  "producer": "cx-amber",
+  "health_states": [
+    "safe",
+    "quiet_off_air",
+    "degraded",
+    "unsafe",
+    "broken",
+    "blocked_absent",
+    "stale",
+    "unknown"
+  ],
+  "witness_classes": [
+    {
+      "witness_class": "public_audio_witness",
+      "privacy_scope": "public",
+      "required_evidence_classes": [
+        "semantic_route_binding",
+        "egress_marker",
+        "signal_presence",
+        "loudness_band",
+        "privacy_no_leak",
+        "grounding_gate_when_factual"
+      ],
+      "raw_target_assumptions_allowed": false,
+      "description": "Public audio requires semantic route binding plus observed broadcast egress; commanded speech alone is not evidence."
+    },
+    {
+      "witness_class": "private_audio_witness",
+      "privacy_scope": "private",
+      "required_evidence_classes": [
+        "semantic_route_binding",
+        "exact_private_target",
+        "private_marker",
+        "broadcast_clean"
+      ],
+      "raw_target_assumptions_allowed": false,
+      "description": "Private audio requires the exact private monitor target and proof that the marker did not leak to broadcast."
+    },
+    {
+      "witness_class": "no_leak_audio_witness",
+      "privacy_scope": "no_leak",
+      "required_evidence_classes": [
+        "leak_guard_pass",
+        "private_route_isolation",
+        "broadcast_egress_clean"
+      ],
+      "raw_target_assumptions_allowed": false,
+      "description": "No-leak status is its own witness class and cannot be inferred from route names or private intent."
+    },
+    {
+      "witness_class": "route_binding_witness",
+      "privacy_scope": "route",
+      "required_evidence_classes": ["media_role_exists", "target_exists", "expected_link_exists"],
+      "raw_target_assumptions_allowed": false,
+      "description": "Route binding proves a semantic destination maps to a concrete target binding, not that the world effect happened."
+    },
+    {
+      "witness_class": "freshness_witness",
+      "privacy_scope": "freshness",
+      "required_evidence_classes": ["checked_at", "ttl", "source_mtime_or_probe_time"],
+      "raw_target_assumptions_allowed": false,
+      "description": "Freshness must be measured; stale or missing measurement fails closed."
+    },
+    {
+      "witness_class": "health_witness",
+      "privacy_scope": "health",
+      "required_evidence_classes": ["health_object", "blocking_reasons", "warnings", "evidence_refs"],
+      "raw_target_assumptions_allowed": false,
+      "description": "Health rows project evidence and blockers; they do not grant public claim authority."
+    }
+  ],
+  "route_result_required_fields": [
+    "semantic_destination",
+    "concrete_target_binding",
+    "privacy_posture",
+    "fallback_policy",
+    "witness_class",
+    "freshness",
+    "failure_reason"
+  ],
+  "audio_surface_rows": [
+    {
+      "schema_version": 1,
+      "surface_id": "audio.broadcast_voice",
+      "label": "Broadcast voice",
+      "world_capability_ref": "audio.broadcast_voice",
+      "semantic_destination": "broadcast_public",
+      "surface_role": "expression",
+      "grounding_status": "public_claim_bearing",
+      "health_state": "unknown",
+      "route_result": {
+        "semantic_destination": "broadcast_public",
+        "concrete_target_binding": {
+          "binding_id": "binding:broadcast_voice",
+          "media_role": "Broadcast",
+          "target_ref": "pipewire:role-broadcast",
+          "route_id": "route:broadcast.voice",
+          "substrate_ref": "audio.broadcast_voice",
+          "concrete_interface": "Broadcast role to hapax-voice-fx-capture and livestream tap",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["config:audio-topology.yaml", "shared:broadcast_audio_health"]
+        },
+        "privacy_posture": "public_candidate",
+        "fallback_policy": {
+          "mode": "block_public_speech",
+          "reason_code": "broadcast_witness_missing",
+          "prohibited_fallback_refs": ["route:assistant", "route:private", "pipewire:default"],
+          "operator_visible_reason": "Public narration is blocked until route, egress, no-leak, and grounding witnesses pass."
+        },
+        "witness_class": "public_audio_witness",
+        "freshness": {
+          "state": "unknown",
+          "ttl_s": 5,
+          "checked_at": null,
+          "evidence_ref": null
+        },
+        "failure_reason": "seed_fixture_no_live_public_witness"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "broadcast_egress_marker_missing"],
+      "notes": "High-level code must request broadcast_public; Assistant/private targets cannot satisfy public narration."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "audio.private_assistant_monitor",
+      "label": "Private assistant monitor",
+      "world_capability_ref": "audio.private_assistant_monitor",
+      "semantic_destination": "private_assistant",
+      "surface_role": "expression",
+      "grounding_status": "non_grounding_private",
+      "health_state": "blocked_absent",
+      "route_result": {
+        "semantic_destination": "private_assistant",
+        "concrete_target_binding": {
+          "binding_id": "binding:private_assistant_monitor",
+          "media_role": "Assistant",
+          "target_ref": "pipewire:hapax-private-monitor-capture",
+          "route_id": "route:private.assistant_monitor",
+          "substrate_ref": "audio.private_assistant_monitor",
+          "concrete_interface": "Assistant role to private monitor bridge and exact Yeti playback target",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["config:audio-topology.yaml", "config:pipewire/private-monitor-bridge"]
+        },
+        "privacy_posture": "private_only",
+        "fallback_policy": {
+          "mode": "blocked_absent_silence",
+          "reason_code": "private_monitor_target_absent",
+          "prohibited_fallback_refs": ["pipewire:default", "route:l12", "route:broadcast", "route:multimedia"],
+          "operator_visible_reason": "Private assistant audio remains silent when the exact monitor target is absent."
+        },
+        "witness_class": "private_audio_witness",
+        "freshness": {
+          "state": "blocked_absent",
+          "ttl_s": 5,
+          "checked_at": null,
+          "evidence_ref": null
+        },
+        "failure_reason": "private_monitor_presence_not_witnessed"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "exact_yeti_target_not_witnessed"],
+      "notes": "Missing Yeti or orphaned playback is blocked_absent and must not fallback to public audio."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "audio.private_notification_monitor",
+      "label": "Private notification monitor",
+      "world_capability_ref": "audio.private_notification_monitor",
+      "semantic_destination": "private_notification",
+      "surface_role": "expression",
+      "grounding_status": "non_grounding_private",
+      "health_state": "blocked_absent",
+      "route_result": {
+        "semantic_destination": "private_notification",
+        "concrete_target_binding": {
+          "binding_id": "binding:private_notification_monitor",
+          "media_role": "Notification",
+          "target_ref": "pipewire:hapax-notification-private",
+          "route_id": "route:private.notification_monitor",
+          "substrate_ref": "audio.private_notification_monitor",
+          "concrete_interface": "Notification role to private notification monitor bridge and exact Yeti target",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["config:audio-topology.yaml", "config:pipewire/private-notification-monitor"]
+        },
+        "privacy_posture": "private_only",
+        "fallback_policy": {
+          "mode": "blocked_absent_silence",
+          "reason_code": "notification_monitor_target_absent",
+          "prohibited_fallback_refs": ["pipewire:default", "route:l12", "route:broadcast", "route:multimedia"],
+          "operator_visible_reason": "Private notifications remain silent when the exact private monitor target is absent."
+        },
+        "witness_class": "private_audio_witness",
+        "freshness": {
+          "state": "blocked_absent",
+          "ttl_s": 5,
+          "checked_at": null,
+          "evidence_ref": null
+        },
+        "failure_reason": "notification_private_monitor_not_witnessed"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "private_notification_marker_missing"],
+      "notes": "Notification privacy is distinct from public broadcast health."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "audio.programme_audio",
+      "label": "Programme audio",
+      "world_capability_ref": "audio.programme_audio",
+      "semantic_destination": "programme_audio",
+      "surface_role": "expression",
+      "grounding_status": "public_claim_bearing",
+      "health_state": "degraded",
+      "route_result": {
+        "semantic_destination": "programme_audio",
+        "concrete_target_binding": {
+          "binding_id": "binding:programme_audio",
+          "media_role": "Programme",
+          "target_ref": "policy:programme-audio-route",
+          "route_id": "route:programme.audio",
+          "substrate_ref": "audio.programme_audio",
+          "concrete_interface": "Policy-selected programme source with provenance, loudness, and route binding",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["config:audio-topology.yaml", "shared:audio_loudness"]
+        },
+        "privacy_posture": "public_candidate",
+        "fallback_policy": {
+          "mode": "private_only",
+          "reason_code": "programme_rights_or_route_unwitnessed",
+          "prohibited_fallback_refs": ["route:assistant", "pipewire:default"],
+          "operator_visible_reason": "Programme audio is private or dry-run until route policy, provenance, loudness, and egress witnesses pass."
+        },
+        "witness_class": "public_audio_witness",
+        "freshness": {
+          "state": "unknown",
+          "ttl_s": 10,
+          "checked_at": null,
+          "evidence_ref": null
+        },
+        "failure_reason": "programme_audio_policy_not_witnessed"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "programme_source_rights_unwitnessed"],
+      "notes": "Programme audio carries rights/provenance requirements in addition to route truth."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "audio.stt_captions",
+      "label": "STT and captions",
+      "world_capability_ref": "audio.stt_captions",
+      "semantic_destination": "caption_source",
+      "surface_role": "observation",
+      "grounding_status": "grounding_candidate",
+      "health_state": "stale",
+      "route_result": {
+        "semantic_destination": "caption_source",
+        "concrete_target_binding": {
+          "binding_id": "binding:stt_captions",
+          "media_role": "Capture",
+          "target_ref": "pipeline:stt-caption-bridge",
+          "route_id": "route:audio.stt_captions",
+          "substrate_ref": "audio.stt_captions",
+          "concrete_interface": "Mic or transcript chunk to caption bridge with privacy and redaction policy",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["agents:hapax_daimonion-stt-contract", "studio:captions-lane-contract"]
+        },
+        "privacy_posture": "private_only",
+        "fallback_policy": {
+          "mode": "stale_block",
+          "reason_code": "caption_source_stale",
+          "prohibited_fallback_refs": ["public:captions", "route:broadcast"],
+          "operator_visible_reason": "Stale transcript/caption source cannot become public captions."
+        },
+        "witness_class": "freshness_witness",
+        "freshness": {
+          "state": "stale",
+          "ttl_s": 5,
+          "checked_at": "2026-04-29T17:00:00Z",
+          "evidence_ref": "fixture:stale-caption-chunk"
+        },
+        "failure_reason": "caption_source_stale"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "caption_source_stale"],
+      "notes": "STT/captions are observation/caption inputs and need privacy/redaction evidence before public use."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "audio.l12_capture",
+      "label": "L-12 capture",
+      "world_capability_ref": "audio.l12_capture",
+      "semantic_destination": "l12_capture",
+      "surface_role": "observation",
+      "grounding_status": "public_claim_bearing",
+      "health_state": "unknown",
+      "route_result": {
+        "semantic_destination": "l12_capture",
+        "concrete_target_binding": {
+          "binding_id": "binding:l12_capture",
+          "media_role": "Capture",
+          "target_ref": "pipewire:l12-broadcast-master",
+          "route_id": "route:l12.capture",
+          "substrate_ref": "audio.l12_capture",
+          "concrete_interface": "L-12 capture into livestream tap with channel binding and forward invariant",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["config:audio-topology.yaml", "shared:broadcast_audio_health"]
+        },
+        "privacy_posture": "public_candidate",
+        "fallback_policy": {
+          "mode": "unsafe_block",
+          "reason_code": "l12_capture_unwitnessed",
+          "prohibited_fallback_refs": ["route:private", "pipewire:default"],
+          "operator_visible_reason": "No public audio claim is allowed until L-12 capture binding is witnessed."
+        },
+        "witness_class": "public_audio_witness",
+        "freshness": {
+          "state": "unknown",
+          "ttl_s": 5,
+          "checked_at": null,
+          "evidence_ref": null
+        },
+        "failure_reason": "l12_capture_binding_not_witnessed"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "l12_forward_invariant_unwitnessed"],
+      "notes": "A graph path is not enough; channel binding and egress evidence are required."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "audio.yeti_monitor",
+      "label": "Yeti private monitor",
+      "world_capability_ref": "audio.yeti_monitor",
+      "semantic_destination": "yeti_monitor",
+      "surface_role": "observation",
+      "grounding_status": "non_grounding_private",
+      "health_state": "blocked_absent",
+      "route_result": {
+        "semantic_destination": "yeti_monitor",
+        "concrete_target_binding": {
+          "binding_id": "binding:yeti_monitor",
+          "media_role": "Assistant",
+          "target_ref": "hardware:blue-yeti-playback-exact",
+          "route_id": "route:private.yeti_monitor",
+          "substrate_ref": "audio.yeti_monitor",
+          "concrete_interface": "Exact Blue Yeti playback target and private monitor loopback state",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["config:audio-topology.yaml", "private-monitor-presence-contract"]
+        },
+        "privacy_posture": "private_only",
+        "fallback_policy": {
+          "mode": "blocked_absent_silence",
+          "reason_code": "yeti_monitor_absent",
+          "prohibited_fallback_refs": ["pipewire:default", "route:l12", "route:broadcast"],
+          "operator_visible_reason": "Yeti monitor absence is blocked_absent and must never route private comms elsewhere."
+        },
+        "witness_class": "private_audio_witness",
+        "freshness": {
+          "state": "blocked_absent",
+          "ttl_s": 5,
+          "checked_at": null,
+          "evidence_ref": null
+        },
+        "failure_reason": "exact_yeti_monitor_not_present"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "yeti_exact_target_missing"],
+      "notes": "Sink 4294967295 or orphaned playback is failure, not fallback."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "audio.broadcast_egress",
+      "label": "Broadcast egress",
+      "world_capability_ref": "audio.broadcast_egress",
+      "semantic_destination": "broadcast_egress",
+      "surface_role": "observation",
+      "grounding_status": "public_claim_bearing",
+      "health_state": "unknown",
+      "route_result": {
+        "semantic_destination": "broadcast_egress",
+        "concrete_target_binding": {
+          "binding_id": "binding:broadcast_egress",
+          "media_role": "Broadcast",
+          "target_ref": "egress:obs-or-rtmp-broadcast-audio",
+          "route_id": "route:broadcast.egress",
+          "substrate_ref": "audio.broadcast_egress",
+          "concrete_interface": "OBS or RTMP public egress accepts broadcast audio signal",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["shared:broadcast_audio_health", "public-egress-contract"]
+        },
+        "privacy_posture": "public_candidate",
+        "fallback_policy": {
+          "mode": "dry_run",
+          "reason_code": "public_egress_not_witnessed",
+          "prohibited_fallback_refs": ["route:private", "pipewire:default"],
+          "operator_visible_reason": "Broadcast egress is dry-run until public egress acceptance is witnessed."
+        },
+        "witness_class": "public_audio_witness",
+        "freshness": {
+          "state": "unknown",
+          "ttl_s": 5,
+          "checked_at": null,
+          "evidence_ref": null
+        },
+        "failure_reason": "broadcast_egress_acceptance_missing"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "public_egress_acceptance_missing"],
+      "notes": "Egress is separate from route binding; selected output is not public acceptance."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "audio.broadcast_health",
+      "label": "Broadcast audio health",
+      "world_capability_ref": "audio.broadcast_health",
+      "semantic_destination": "broadcast_health",
+      "surface_role": "health",
+      "grounding_status": "public_claim_bearing",
+      "health_state": "stale",
+      "route_result": {
+        "semantic_destination": "broadcast_health",
+        "concrete_target_binding": {
+          "binding_id": "binding:broadcast_health",
+          "media_role": null,
+          "target_ref": "state:audio-safe-for-broadcast",
+          "route_id": "route:broadcast.audio_health",
+          "substrate_ref": "audio.broadcast_health",
+          "concrete_interface": "Broadcast audio safety health object with blockers, warnings, and evidence refs",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["shared:broadcast_audio_health"]
+        },
+        "privacy_posture": "internal_health",
+        "fallback_policy": {
+          "mode": "stale_block",
+          "reason_code": "broadcast_health_stale",
+          "prohibited_fallback_refs": ["public:audio_claim", "public:monetization_claim"],
+          "operator_visible_reason": "Stale or missing broadcast health blocks public audible claims."
+        },
+        "witness_class": "health_witness",
+        "freshness": {
+          "state": "stale",
+          "ttl_s": 5,
+          "checked_at": "2026-04-29T17:00:00Z",
+          "evidence_ref": "fixture:stale-broadcast-health"
+        },
+        "failure_reason": "broadcast_health_stale"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "broadcast_health_stale"],
+      "notes": "audio_safe_for_broadcast.safe=false or stale blocks public audible readiness."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "audio.no_private_leak",
+      "label": "No private audio leak",
+      "world_capability_ref": "audio.no_private_leak",
+      "semantic_destination": "no_private_leak",
+      "surface_role": "governance_witness",
+      "grounding_status": "public_claim_bearing",
+      "health_state": "unsafe",
+      "route_result": {
+        "semantic_destination": "no_private_leak",
+        "concrete_target_binding": {
+          "binding_id": "binding:no_private_leak",
+          "media_role": null,
+          "target_ref": "witness:audio-leak-guard",
+          "route_id": "route:audio.no_private_leak",
+          "substrate_ref": "audio.no_private_leak",
+          "concrete_interface": "Leak guard plus private marker/broadcast-clean evidence",
+          "raw_high_level_target_assumption": false,
+          "implementation_truth_source_refs": ["script:audio-leak-guard", "config:audio-topology.yaml"]
+        },
+        "privacy_posture": "no_leak",
+        "fallback_policy": {
+          "mode": "unsafe_block",
+          "reason_code": "no_leak_witness_missing",
+          "prohibited_fallback_refs": ["public:audio_claim", "public:live_output"],
+          "operator_visible_reason": "Public audio remains unsafe until no-leak witness passes."
+        },
+        "witness_class": "no_leak_audio_witness",
+        "freshness": {
+          "state": "unknown",
+          "ttl_s": 5,
+          "checked_at": null,
+          "evidence_ref": null
+        },
+        "failure_reason": "no_leak_witness_missing"
+      },
+      "public_claim_allowed": false,
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "no_leak_witness_missing"],
+      "notes": "No-leak is distinct from public and private witness classes."
+    }
+  ],
+  "health_state_fixtures": [
+    {
+      "state": "safe",
+      "public_live_allowed": false,
+      "public_claim_allowed_without_runtime_witness": false,
+      "meaning": "Required audio witnesses pass in a runtime envelope, but this fixture alone does not grant public-live authority.",
+      "failure_reason": "fixture_not_runtime_truth"
+    },
+    {
+      "state": "quiet_off_air",
+      "public_live_allowed": false,
+      "public_claim_allowed_without_runtime_witness": false,
+      "meaning": "No public audio is expected under the current programme or egress mode.",
+      "failure_reason": "quiet_off_air_no_public_audio_expected"
+    },
+    {
+      "state": "degraded",
+      "public_live_allowed": false,
+      "public_claim_allowed_without_runtime_witness": false,
+      "meaning": "Route exists but quality, loudness, freshness, or evidence warnings exist.",
+      "failure_reason": "audio_degraded"
+    },
+    {
+      "state": "unsafe",
+      "public_live_allowed": false,
+      "public_claim_allowed_without_runtime_witness": false,
+      "meaning": "Leak, privacy, route, loudness, or public-claim blocker exists.",
+      "failure_reason": "audio_unsafe"
+    },
+    {
+      "state": "broken",
+      "public_live_allowed": false,
+      "public_claim_allowed_without_runtime_witness": false,
+      "meaning": "Required route, service, target, or state object is absent or malformed.",
+      "failure_reason": "audio_broken"
+    },
+    {
+      "state": "blocked_absent",
+      "public_live_allowed": false,
+      "public_claim_allowed_without_runtime_witness": false,
+      "meaning": "Optional private hardware or route is absent and the system failed closed.",
+      "failure_reason": "blocked_absent_no_fallback"
+    },
+    {
+      "state": "stale",
+      "public_live_allowed": false,
+      "public_claim_allowed_without_runtime_witness": false,
+      "meaning": "Last evidence exceeded its TTL and cannot support fresh/audio/public claims.",
+      "failure_reason": "audio_evidence_stale"
+    },
+    {
+      "state": "unknown",
+      "public_live_allowed": false,
+      "public_claim_allowed_without_runtime_witness": false,
+      "meaning": "No trustworthy evidence exists.",
+      "failure_reason": "audio_evidence_unknown"
+    }
+  ],
+  "fail_closed_policy": {
+    "fixtures_are_runtime_truth": false,
+    "raw_high_level_targets_are_implementation_truth": false,
+    "missing_witness_allows_public_claim": false,
+    "private_audio_may_fallback_to_public": false,
+    "no_leak_can_be_inferred_from_route_name": false
+  }
+}
