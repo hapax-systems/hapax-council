@@ -14,13 +14,17 @@ from shared.content_programme_feedback_ledger import (
     ContentProgrammeFeedbackEvent,
     PosteriorUpdate,
     ProgrammeOutcomeState,
+    RevenueProxy,
     append_feedback_event,
     audience_outcome_is_aggregate_only,
+    build_feedback_event_from_run_envelope,
     build_feedback_fixture,
+    build_scheduler_policy_feedback,
     event_allows_public_truth_claim,
     posterior_update_is_evidence_bound,
     witnessed_outcome_allows_posterior_update,
 )
+from shared.content_programme_run_store import build_fixture_envelope
 
 
 def _event(state: ProgrammeOutcomeState = "completed") -> ContentProgrammeFeedbackEvent:
@@ -151,3 +155,127 @@ def test_fixture_builder_covers_all_outcome_states_and_separates_learning_channe
         update.posterior_family == "grounding_quality" for update in completed.posterior_updates
     )
     assert audience_outcome_is_aggregate_only(completed.audience_outcome) is True
+
+
+def test_live_wire_records_refusal_as_successful_safety_learning_event() -> None:
+    run = build_fixture_envelope("refusal_run")
+    event = build_feedback_event_from_run_envelope(run)
+    scheduler_view = build_scheduler_policy_feedback(event)
+
+    assert event.programme_state == "refused"
+    assert event.event_kind == "run_refused"
+    assert event_allows_public_truth_claim(event) is False
+    assert any(metric.metric_name == "refusal_count" for metric in event.safety_metrics)
+    assert any(
+        artifact.artifact_type == "refusal_artifact" and artifact.state == "emitted"
+        for artifact in event.artifact_outputs
+    )
+    assert any(
+        update.posterior_family == "safety_refusal_rate" and update.update_allowed
+        for update in event.posterior_updates
+    )
+    assert not any(
+        update.posterior_family == "grounding_quality" and update.update_allowed
+        for update in event.posterior_updates
+    )
+    assert scheduler_view.operator_scoring_required is False
+    assert "safety_refusal_rate" in scheduler_view.allowed_posterior_families
+
+
+def test_live_wire_keeps_rights_blocked_high_value_runs_from_upgrading_grounding() -> None:
+    run = build_fixture_envelope("rights_blocked_react_commentary")
+    audience = AudienceOutcome(
+        metrics=(
+            AudienceMetric(
+                metric_name="watch_time",
+                value=0.99,
+                sample_size=250,
+                aggregate_ref="audience:aggregate:rights-blocked",
+                evidence_refs=("audience:aggregate:rights-blocked",),
+            ),
+        ),
+        evidence_refs=("audience:aggregate:rights-blocked",),
+    )
+    revenue = (
+        RevenueProxy(
+            proxy_name="support_intent",
+            value=0.95,
+            evidence_refs=("support:aggregate:rights-blocked",),
+        ),
+    )
+
+    event = build_feedback_event_from_run_envelope(
+        run,
+        audience_outcome=audience,
+        revenue_proxies=revenue,
+    )
+    scheduler_view = build_scheduler_policy_feedback(event)
+
+    assert event.programme_state == "blocked"
+    assert event.public_private_mode == "dry_run"
+    assert event_allows_public_truth_claim(event) is False
+    assert any(
+        gate.gate_name == "rights_gate" and gate.state == "fail" and gate.blocks_public_claim
+        for gate in event.gate_outcomes
+    )
+    assert any(metric.metric_name == "rights_block_count" for metric in event.safety_metrics)
+    assert any(
+        update.posterior_family == "audience_response"
+        and update.source_signal == "audience_aggregate"
+        for update in event.posterior_updates
+    )
+    assert any(
+        update.posterior_family == "revenue_support_response"
+        and update.source_signal == "revenue_aggregate"
+        for update in event.posterior_updates
+    )
+    assert not any(
+        update.posterior_family == "grounding_quality"
+        and update.source_signal in {"audience_aggregate", "revenue_aggregate"}
+        for update in event.posterior_updates
+    )
+    assert not any(
+        update.posterior_family == "grounding_quality" and update.update_allowed
+        for update in event.posterior_updates
+    )
+    assert scheduler_view.audience_revenue_can_upgrade_grounding is False
+    assert scheduler_view.grounding_update_refs == ()
+    assert set(scheduler_view.metric_response_update_refs) == {
+        "posterior:audience:run_rights_blocked_react_commentary",
+        "posterior:revenue:run_rights_blocked_react_commentary",
+    }
+
+
+def test_live_wire_records_correction_outcome_without_public_truth_upgrade() -> None:
+    run = build_fixture_envelope("correction_run")
+    event = build_feedback_event_from_run_envelope(run)
+    scheduler_view = build_scheduler_policy_feedback(event)
+
+    assert event.programme_state == "corrected"
+    assert event.event_kind == "run_corrected"
+    assert event.public_private_mode == "public_archive"
+    assert event_allows_public_truth_claim(event) is False
+    assert any(metric.metric_name == "correction_count" for metric in event.safety_metrics)
+    assert any(
+        artifact.artifact_type == "correction_artifact" and artifact.state == "emitted"
+        for artifact in event.artifact_outputs
+    )
+    assert any(
+        update.posterior_family == "safety_refusal_rate" and update.update_allowed
+        for update in event.posterior_updates
+    )
+    assert "safety_refusal_rate" in scheduler_view.allowed_posterior_families
+    assert scheduler_view.public_truth_claim_allowed is False
+
+
+def test_live_wire_allows_evidence_bound_public_grounding_yield() -> None:
+    run = build_fixture_envelope("public_safe_evidence_audit")
+    event = build_feedback_event_from_run_envelope(run)
+
+    assert event.programme_state == "public_run"
+    assert event_allows_public_truth_claim(event) is True
+    assert event.grounding_outputs
+    assert any(
+        update.posterior_family == "grounding_quality" and update.update_allowed
+        for update in event.posterior_updates
+    )

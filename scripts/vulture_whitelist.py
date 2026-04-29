@@ -168,6 +168,8 @@ append_feedback_event
 audience_outcome_is_aggregate_only
 posterior_update_is_evidence_bound
 event_allows_public_truth_claim
+build_feedback_event_from_run_envelope
+build_scheduler_policy_feedback
 build_feedback_fixture
 
 # Tier/ranking/bracket engine helpers are the public contract for downstream
