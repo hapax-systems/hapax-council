@@ -211,6 +211,121 @@ class TestDispatchAutonomousNarration:
             mock_metric.assert_called_with("write_failed")
             daemon._affordance_pipeline.add_inhibition.assert_not_called()
 
+    def test_narration_drive_uses_composed_text_not_raw_drive_text(self):
+        from agents.hapax_daimonion.run_loops_aux import _dispatch_autonomous_narration
+
+        daemon = _fake_daemon()
+        imp = _fake_imp("endogenous.narrative_drive")
+        imp.content.update(
+            {
+                "drive": "narration",
+                "narrative": "raw pressure text that must not be spoken directly",
+            }
+        )
+        candidate = _fake_candidate()
+
+        with (
+            patch(
+                "agents.hapax_daimonion.autonomous_narrative.compose.compose_narrative",
+                return_value="Composed public narration.",
+            ),
+            patch(
+                "agents.hapax_daimonion.autonomous_narrative.emit.emit_narrative",
+                return_value=True,
+            ) as emit_mock,
+            patch("agents.hapax_daimonion.autonomous_narrative.emit.record_metric"),
+            patch(
+                "agents.hapax_daimonion.autonomous_narrative.state_readers.assemble_context",
+                return_value=SimpleNamespace(
+                    programme=None,
+                    stimmung_tone="ambient",
+                    director_activity="observe",
+                    chronicle_events=(),
+                    vault_context=SimpleNamespace(is_empty=lambda: True),
+                ),
+            ),
+        ):
+            _dispatch_autonomous_narration(daemon, imp, candidate)
+
+        assert emit_mock.call_args.args[0] == "Composed public narration."
+        assert "raw pressure" not in emit_mock.call_args.args[0]
+        assert emit_mock.call_args.kwargs["impulse_id"] == "test-imp-001"
+
+
+class TestNarrationDriveFallback:
+    """Explicit narration drives must not disappear when retrieval misses."""
+
+    def test_detects_only_typed_narration_drive(self):
+        from agents.hapax_daimonion.run_loops_aux import _is_narration_drive_impingement
+
+        imp = _fake_imp("endogenous.narrative_drive")
+        imp.content["drive"] = "narration"
+
+        assert _is_narration_drive_impingement(imp) is True
+        assert _is_narration_drive_impingement(_fake_imp("exploration.stimmung")) is False
+
+        imp.content["drive"] = "observation"
+        assert _is_narration_drive_impingement(imp) is False
+
+    def test_builds_candidate_from_drive_strength(self):
+        from agents.hapax_daimonion.run_loops_aux import _narration_drive_fallback_candidate
+
+        imp = _fake_imp("endogenous.narrative_drive")
+        imp.content["drive"] = "narration"
+        imp.strength = 0.42
+
+        candidate = _narration_drive_fallback_candidate(imp)
+
+        assert candidate.capability_name == "narration.autonomous_first_system"
+        assert candidate.combined == pytest.approx(0.42)
+        assert candidate.similarity == pytest.approx(0.42)
+        assert candidate.payload["source"] == "endogenous.narrative_drive"
+        assert candidate.payload["capability_contract_evidence"] == "typed_narration_drive"
+        assert candidate.payload["impulse_id"] == "test-imp-001"
+        assert candidate.payload["action_tendency"] == "speak"
+        assert candidate.payload["speech_act_candidate"] == "autonomous_narrative"
+        assert candidate.payload["strength_posterior"] == pytest.approx(0.42)
+        assert candidate.payload["evidence_refs"] == [
+            "source:endogenous.narrative_drive",
+            "drive:narration",
+            "impingement:test-imp-001",
+        ]
+
+    def test_dispatches_when_retrieval_misses_narration(self):
+        from agents.hapax_daimonion import run_loops_aux
+
+        daemon = _fake_daemon()
+        imp = _fake_imp("endogenous.narrative_drive")
+        imp.content["drive"] = "narration"
+        candidates = [SimpleNamespace(capability_name="system.exploration_deficit", combined=0.7)]
+
+        with patch.object(run_loops_aux, "_dispatch_autonomous_narration") as dispatch:
+            dispatched = run_loops_aux._dispatch_narration_drive_fallback_if_needed(
+                daemon, imp, candidates
+            )
+
+        assert dispatched is True
+        dispatch.assert_called_once()
+        assert dispatch.call_args.args[0] is daemon
+        assert dispatch.call_args.args[1] is imp
+        assert dispatch.call_args.args[2].capability_name == "narration.autonomous_first_system"
+
+    def test_does_not_duplicate_successful_narration_recruitment(self):
+        from agents.hapax_daimonion import run_loops_aux
+
+        daemon = _fake_daemon()
+        imp = _fake_imp("endogenous.narrative_drive")
+        imp.content["drive"] = "narration"
+        candidates = [_fake_candidate(score=0.5)]
+
+        with patch.object(run_loops_aux, "_dispatch_autonomous_narration") as dispatch:
+            dispatched = run_loops_aux._dispatch_narration_drive_fallback_if_needed(
+                daemon, imp, candidates
+            )
+
+        assert dispatched is False
+        dispatch.assert_not_called()
+
 
 class TestAffordanceRegistration:
     """Verify narration.autonomous_first_system is properly registered."""

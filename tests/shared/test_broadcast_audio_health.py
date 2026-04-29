@@ -33,6 +33,7 @@ def _paths(tmp_path: Path) -> BroadcastAudioHealthPaths:
         topology_descriptor=Path("config/audio-topology.yaml"),
         audio_safety_state=tmp_path / "audio-safety-state.json",
         audio_ducker_state=tmp_path / "audio-ducker-state.json",
+        voice_output_witness=tmp_path / "voice-output-witness.json",
     )
 
 
@@ -147,6 +148,7 @@ def test_safe_state_contains_contract_shape(tmp_path: Path) -> None:
     assert health.evidence["topology"]["verification"] == "pass"
     assert health.evidence["private_routes"]["status"] == "pass"
     assert health.evidence["broadcast_forward"]["status"] == "pass"
+    assert health.evidence["voice_output_witness"]["status"] == "missing"
     assert health.evidence["loudness"]["target_lufs_i"] == -14.0
     assert health.evidence["loudness"]["target_true_peak_dbtp"] == -1.0
     assert health.evidence["egress_binding"]["bound"] is True
@@ -253,6 +255,73 @@ def test_tts_broadcast_path_failure_blocks(tmp_path: Path) -> None:
 
     assert health.safe is False
     assert "tts_broadcast_path_failed" in _codes(health)
+
+
+def test_stale_voice_output_witness_blocks_public_voice_claim(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.voice_output_witness,
+        {
+            "version": 1,
+            "updated_at": "2027-01-15T08:00:00Z",
+            "freshness_s": 0.0,
+            "status": "playback_completed",
+            "last_playback": {"status": "completed", "completed": True},
+        },
+        age_s=300.0,
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "voice_output_witness_stale" in _codes(health)
+    assert health.evidence["voice_output_witness"]["playback_present"] is False
+
+
+def test_voice_output_silent_failure_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.voice_output_witness,
+        {
+            "version": 1,
+            "updated_at": "2027-01-15T08:00:00Z",
+            "freshness_s": 0.0,
+            "status": "drop_recorded",
+            "blocker_drop_reason": "pipeline_unavailable",
+            "downstream_route_status": {
+                "destination": "livestream",
+                "target": "hapax-livestream",
+                "media_role": "Broadcast",
+                "route_present": True,
+            },
+            "last_playback": {
+                "status": "dropped",
+                "completed": False,
+                "pcm_duration_s": None,
+            },
+        },
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "voice_output_silent_failure" in _codes(health)
+    witness = health.evidence["voice_output_witness"]
+    assert witness["route_present"] is True
+    assert witness["playback_present"] is False
+    assert witness["silent_failure"] is True
 
 
 def test_loudness_failure_blocks(tmp_path: Path) -> None:

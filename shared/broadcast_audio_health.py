@@ -35,6 +35,7 @@ DEFAULT_STATE_PATH = Path("/dev/shm/hapax-broadcast/audio-safe-for-broadcast.jso
 DEFAULT_TOPOLOGY_DESCRIPTOR = REPO_ROOT / "config" / "audio-topology.yaml"
 DEFAULT_AUDIO_SAFETY_STATE = Path("/dev/shm/hapax-audio-safety/state.json")
 DEFAULT_AUDIO_DUCKER_STATE = Path("/dev/shm/hapax-audio-ducker/state.json")
+DEFAULT_VOICE_OUTPUT_WITNESS = Path("/dev/shm/hapax-daimonion/voice-output-witness.json")
 
 TOPOLOGY_VERIFY_COMMAND = (
     "scripts/hapax-audio-topology",
@@ -114,6 +115,7 @@ class BroadcastAudioHealthPaths:
     topology_descriptor: Path = DEFAULT_TOPOLOGY_DESCRIPTOR
     audio_safety_state: Path = DEFAULT_AUDIO_SAFETY_STATE
     audio_ducker_state: Path = DEFAULT_AUDIO_DUCKER_STATE
+    voice_output_witness: Path = DEFAULT_VOICE_OUTPUT_WITNESS
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,7 @@ class BroadcastAudioHealthThresholds:
     state_max_age_s: float = 30.0
     audio_safety_state_max_age_s: float = 10.0
     audio_ducker_state_max_age_s: float = 2.0
+    voice_output_witness_max_age_s: float = 180.0
     command_timeout_s: float = 15.0
     loudness_timeout_extra_s: float = 8.0
     loudness_duration_s: int = 5
@@ -240,6 +243,13 @@ def resolve_broadcast_audio_health(
         thresholds=t,
     )
     _evaluate_egress_binding(evidence=evidence, blocking=blocking, runner=runner, thresholds=t)
+    _evaluate_voice_output_witness(
+        p.voice_output_witness,
+        current,
+        t,
+        evidence=evidence,
+        blocking=blocking,
+    )
     _evaluate_runtime_safety(
         p.audio_safety_state,
         current,
@@ -753,6 +763,89 @@ def _evaluate_audio_ducker_state(
             )
 
 
+def _evaluate_voice_output_witness(
+    path: Path,
+    now: float,
+    thresholds: BroadcastAudioHealthThresholds,
+    *,
+    evidence: dict[str, Any],
+    blocking: list[AudioHealthReason],
+) -> None:
+    data, age_s, error = _read_json_file(path, now)
+    record: dict[str, Any] = {
+        "witness_path": str(path),
+        "age_s": round(age_s, 3) if age_s is not None else None,
+        "status": "unknown",
+        "route_present": False,
+        "playback_present": False,
+        "egress_audible": None,
+        "silent_failure": False,
+    }
+    if error is not None:
+        record["status"] = error
+        evidence["voice_output_witness"] = record
+        if error == "missing":
+            return
+        _block(
+            blocking,
+            code=f"voice_output_witness_{error}",
+            owner=str(path),
+            message=f"voice output witness is {error}",
+            evidence_refs=["voice_output_witness"],
+        )
+        return
+
+    if age_s is None or age_s > thresholds.voice_output_witness_max_age_s:
+        record["status"] = "stale"
+        evidence["voice_output_witness"] = record
+        _block(
+            blocking,
+            code="voice_output_witness_stale",
+            owner=str(path),
+            message=(
+                "voice output witness is stale "
+                f"({age_s}s > {thresholds.voice_output_witness_max_age_s}s)"
+            ),
+            evidence_refs=["voice_output_witness"],
+        )
+        return
+
+    status = str(data.get("status", "unknown"))
+    route = data.get("downstream_route_status") if isinstance(data, dict) else {}
+    playback = data.get("last_playback") if isinstance(data, dict) else {}
+    egress = data.get("broadcast_egress_activity") if isinstance(data, dict) else {}
+    route_present = bool(isinstance(route, dict) and route.get("route_present"))
+    playback_present = bool(isinstance(playback, dict) and playback.get("completed"))
+    egress_audible = egress.get("egress_audible") if isinstance(egress, dict) else None
+    silent_failure = status in {"playback_failed", "drop_recorded", "synthesis_failed"}
+    record.update(
+        {
+            "status": status,
+            "updated_at": data.get("updated_at"),
+            "route_present": route_present,
+            "playback_present": playback_present,
+            "egress_audible": egress_audible,
+            "silent_failure": silent_failure,
+            "blocker_drop_reason": data.get("blocker_drop_reason"),
+            "target": route.get("target") if isinstance(route, dict) else None,
+            "media_role": route.get("media_role") if isinstance(route, dict) else None,
+            "planned_utterance": data.get("planned_utterance"),
+            "pcm_duration_s": playback.get("pcm_duration_s")
+            if isinstance(playback, dict)
+            else None,
+        }
+    )
+    evidence["voice_output_witness"] = record
+    if silent_failure:
+        _block(
+            blocking,
+            code="voice_output_silent_failure",
+            owner=str(path),
+            message=f"voice output witness reports {status}",
+            evidence_refs=["voice_output_witness"],
+        )
+
+
 def _evaluate_service_freshness(
     *,
     evidence: dict[str, Any],
@@ -962,6 +1055,7 @@ def _owners() -> dict[str, str]:
         "leak_guard": "scripts/audio-leak-guard.sh",
         "broadcast_forward": "scripts/hapax-audio-topology tts-broadcast-check",
         "egress_binding": "pw-link -l / OBS binding to hapax-broadcast-normalized",
+        "voice_output_witness": str(DEFAULT_VOICE_OUTPUT_WITNESS),
         "runtime_safety": "hapax-audio-safety.service",
         "audio_ducker": "hapax-audio-ducker.service",
         "health_consumer": "livestream-health-group",
@@ -1028,6 +1122,7 @@ __all__ = [
     "BroadcastAudioHealthThresholds",
     "BroadcastAudioStatus",
     "CommandResult",
+    "DEFAULT_VOICE_OUTPUT_WITNESS",
     "ServiceStatus",
     "read_broadcast_audio_health_state",
     "resolve_broadcast_audio_health",

@@ -1,7 +1,8 @@
 """Tests for CPAL runner."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -86,6 +87,70 @@ class TestCpalRunnerLifecycle:
 
         await runner.process_impingement(imp)
         assert runner.evaluator.gain_controller.gain > 0.0
+
+    @pytest.mark.asyncio
+    async def test_inactive_pipeline_records_livestream_drop(self):
+        runner = self._make_runner()
+        runner._pipeline = None
+        runner._impingement_adapter.adapt = MagicMock(
+            return_value=SimpleNamespace(
+                gain_update=None,
+                should_surface=True,
+                narrative="Surface this narration.",
+                error_boost=0.5,
+            )
+        )
+        imp = MagicMock()
+        imp.source = "stimmung"
+        imp.content = {"narrative": "Surface this narration."}
+
+        with patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop:
+            await runner.process_impingement(imp)
+
+        record_drop.assert_called_once()
+        assert record_drop.call_args.kwargs["reason"] == "pipeline_unavailable"
+        assert record_drop.call_args.kwargs["destination"] == "livestream"
+
+    @pytest.mark.asyncio
+    async def test_autonomous_narrative_timeout_not_marked_spoken(self, caplog):
+        runner = self._make_runner()
+        daemon = MagicMock()
+        daemon.tts.synthesize.return_value = b"\x00" * 100
+        runner._daemon = daemon
+        runner._impingement_adapter.adapt = MagicMock(
+            return_value=SimpleNamespace(
+                gain_update=None,
+                should_surface=False,
+                narrative="Composed public narration.",
+                error_boost=0.0,
+            )
+        )
+        imp = MagicMock()
+        imp.source = "autonomous_narrative"
+        imp.content = {
+            "narrative": "Composed public narration.",
+            "impulse_id": "impulse-timeout-1",
+        }
+        playback_result = SimpleNamespace(
+            status="timeout",
+            completed=False,
+            returncode=None,
+            duration_s=30.0,
+            timeout_s=35.0,
+            error="timeout",
+        )
+
+        with (
+            patch("agents.hapax_daimonion.pw_audio_output.play_pcm", return_value=playback_result),
+            patch("agents.hapax_daimonion.cpal.runner.record_tts_synthesis"),
+            patch("agents.hapax_daimonion.cpal.runner.record_playback_result") as record_playback,
+            caplog.at_level("INFO", logger="agents.hapax_daimonion.cpal.runner"),
+        ):
+            await runner.process_impingement(imp)
+
+        record_playback.assert_called_once()
+        assert record_playback.call_args.kwargs["impulse_id"] == "impulse-timeout-1"
+        assert "Autonomous narrative spoken" not in caplog.text
 
     def test_presynthesize_signals(self):
         runner = self._make_runner()

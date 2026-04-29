@@ -16,8 +16,42 @@ import logging
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
+from typing import Literal
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PlaybackResult:
+    """Structured outcome for one-shot ``pw-cat`` playback."""
+
+    status: Literal["completed", "failed", "timeout", "spawn_failed"]
+    returncode: int | None
+    duration_s: float
+    timeout_s: float
+    target: str | None
+    media_role: str
+    error: str | None = None
+
+    @property
+    def completed(self) -> bool:
+        return self.status == "completed"
+
+
+def _pcm_duration_s(pcm: bytes, *, rate: int, channels: int) -> float:
+    """Return raw int16 PCM duration in seconds."""
+    if rate <= 0 or channels <= 0:
+        return 0.0
+    bytes_per_sample = 2
+    n_samples = len(pcm) // (bytes_per_sample * channels)
+    return n_samples / rate
+
+
+def _playback_timeout_s(pcm: bytes, *, rate: int, channels: int) -> float:
+    """Timeout long enough for the full audio plus process overhead."""
+    duration_s = _pcm_duration_s(pcm, rate=rate, channels=channels)
+    return duration_s + max(5.0, duration_s * 0.10)
 
 
 class PwAudioOutput:
@@ -188,9 +222,7 @@ class PwAudioOutput:
         single-role behavior.
         """
         # Calculate audio duration before acquiring lock
-        bytes_per_sample = 2  # int16
-        n_samples = len(pcm) // (bytes_per_sample * self._channels)
-        duration_s = n_samples / self._rate if self._rate > 0 else 0.0
+        duration_s = _pcm_duration_s(pcm, rate=self._rate, channels=self._channels)
 
         resolved_target = target if target is not None else self._default_target
         resolved_role = media_role if media_role is not None else self._default_media_role
@@ -256,13 +288,15 @@ def play_pcm(
     channels: int = 1,
     target: str | None = None,
     media_role: str = "Assistant",
-) -> None:
+) -> PlaybackResult:
     """One-shot blocking PCM playback via pw-cat.
 
     Spawns a pw-cat process, writes all PCM, waits for completion.
     Use for infrequent playback (chimes, samples). For high-frequency
     writes, use PwAudioOutput instead.
     """
+    duration_s = _pcm_duration_s(pcm, rate=rate, channels=channels)
+    timeout_s = _playback_timeout_s(pcm, rate=rate, channels=channels)
     try:
         cmd = [
             "pw-cat",
@@ -286,17 +320,62 @@ def play_pcm(
         if target:
             cmd.extend(["--target", target])
         cmd.append("-")
-        subprocess.run(
+        result = subprocess.run(
             cmd,
             input=pcm,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=30,
+            timeout=timeout_s,
             check=False,
+        )
+        if result.returncode == 0:
+            return PlaybackResult(
+                status="completed",
+                returncode=result.returncode,
+                duration_s=duration_s,
+                timeout_s=timeout_s,
+                target=target,
+                media_role=media_role,
+            )
+        return PlaybackResult(
+            status="failed",
+            returncode=result.returncode,
+            duration_s=duration_s,
+            timeout_s=timeout_s,
+            target=target,
+            media_role=media_role,
+            error=f"pw-cat exited with returncode {result.returncode}",
         )
     except FileNotFoundError:
         log.error("pw-cat not found — install pipewire")
+        return PlaybackResult(
+            status="spawn_failed",
+            returncode=None,
+            duration_s=duration_s,
+            timeout_s=timeout_s,
+            target=target,
+            media_role=media_role,
+            error="pw-cat not found",
+        )
     except subprocess.TimeoutExpired:
         log.warning("pw-cat playback timed out")
+        return PlaybackResult(
+            status="timeout",
+            returncode=None,
+            duration_s=duration_s,
+            timeout_s=timeout_s,
+            target=target,
+            media_role=media_role,
+            error=f"pw-cat playback timed out after {timeout_s:.3f}s",
+        )
     except Exception as exc:
         log.warning("pw-cat playback failed: %s", exc)
+        return PlaybackResult(
+            status="failed",
+            returncode=None,
+            duration_s=duration_s,
+            timeout_s=timeout_s,
+            target=target,
+            media_role=media_role,
+            error=str(exc),
+        )
