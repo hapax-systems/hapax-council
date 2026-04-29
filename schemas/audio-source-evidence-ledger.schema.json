@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/audio-source-evidence-ledger.schema.json",
+  "title": "AudioSourceEvidenceLedger",
+  "description": "Runtime role-scoped audio evidence ledger. Route/process activity cannot prove source activity or public-audible egress without fresh measured signal or explicit marker evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ledger_id", "schema_ref", "generated_at", "source_rows", "compatibility_aliases"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "ledger_id": {"type": "string", "minLength": 1},
+    "schema_ref": {"const": "schemas/audio-source-evidence-ledger.schema.json"},
+    "generated_at": {"type": "string", "minLength": 1},
+    "source_rows": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/audio_source_evidence"}},
+    "compatibility_aliases": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "audio_source_role": {
+      "type": "string",
+      "enum": [
+        "legacy_mixer",
+        "desk_contact",
+        "music",
+        "youtube",
+        "tts",
+        "operator_voice",
+        "instrument",
+        "multimedia",
+        "assistant",
+        "notification",
+        "broadcast_egress",
+        "unknown"
+      ]
+    },
+    "freshness_state": {"type": "string", "enum": ["fresh", "stale", "missing", "unknown"]},
+    "activity_basis": {
+      "type": "string",
+      "enum": [
+        "measured_signal",
+        "explicit_marker",
+        "process_activity",
+        "route_policy",
+        "broadcast_health",
+        "missing"
+      ]
+    },
+    "route_posture_state": {
+      "type": "string",
+      "enum": ["witnessed", "route_only", "blocked", "stale", "missing", "unknown"]
+    },
+    "egress_posture_state": {
+      "type": "string",
+      "enum": ["witnessed_public", "quiet", "blocked", "not_egress", "unknown"]
+    },
+    "public_private_posture": {
+      "type": "string",
+      "enum": ["public_candidate", "private_only", "internal_health", "blocked", "unknown"]
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "non_empty_string_array": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "signal_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rms",
+        "onset",
+        "centroid",
+        "zcr",
+        "bpm_estimate",
+        "energy_delta",
+        "bass_band",
+        "mid_band",
+        "treble_band",
+        "loudness_lufs_i",
+        "true_peak_dbtp",
+        "measurement_present",
+        "measured_non_silent"
+      ],
+      "properties": {
+        "rms": {"type": "number", "minimum": 0, "maximum": 1},
+        "onset": {"type": "number", "minimum": 0, "maximum": 1},
+        "centroid": {"type": "number", "minimum": 0, "maximum": 1},
+        "zcr": {"type": "number", "minimum": 0, "maximum": 1},
+        "bpm_estimate": {"type": "number", "minimum": 0, "maximum": 300},
+        "energy_delta": {"type": "number", "minimum": -1, "maximum": 1},
+        "bass_band": {"type": "number", "minimum": 0, "maximum": 1},
+        "mid_band": {"type": "number", "minimum": 0, "maximum": 1},
+        "treble_band": {"type": "number", "minimum": 0, "maximum": 1},
+        "loudness_lufs_i": {"type": ["number", "null"]},
+        "true_peak_dbtp": {"type": ["number", "null"]},
+        "measurement_present": {"type": "boolean"},
+        "measured_non_silent": {"type": "boolean"}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "ttl_s", "observed_age_s", "checked_at", "evidence_refs"],
+      "properties": {
+        "state": {"$ref": "#/$defs/freshness_state"},
+        "ttl_s": {"type": "number", "minimum": 0},
+        "observed_age_s": {"type": ["number", "null"], "minimum": 0},
+        "checked_at": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "route_posture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "route_exists",
+        "route_witnessed",
+        "egress_verified",
+        "public_audible",
+        "private_monitor_verified",
+        "no_leak_verified",
+        "evidence_refs"
+      ],
+      "properties": {
+        "state": {"$ref": "#/$defs/route_posture_state"},
+        "route_exists": {"type": "boolean"},
+        "route_witnessed": {"type": "boolean"},
+        "egress_verified": {"type": "boolean"},
+        "public_audible": {"type": "boolean"},
+        "private_monitor_verified": {"type": "boolean"},
+        "no_leak_verified": {"type": "boolean"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "egress_posture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "health_safe", "public_audible", "quiet", "evidence_refs"],
+      "properties": {
+        "state": {"$ref": "#/$defs/egress_posture_state"},
+        "health_safe": {"type": "boolean"},
+        "public_audible": {"type": "boolean"},
+        "quiet": {"type": "boolean"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "downstream_permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "visual_modulation",
+        "director_move",
+        "semantic_fx",
+        "public_claim",
+        "clip_candidate",
+        "artifact_release"
+      ],
+      "properties": {
+        "visual_modulation": {"type": "boolean"},
+        "director_move": {"type": "boolean"},
+        "semantic_fx": {"type": "boolean"},
+        "public_claim": {"type": "boolean"},
+        "clip_candidate": {"type": "boolean"},
+        "artifact_release": {"type": "boolean"}
+      }
+    },
+    "audio_source_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "row_id",
+        "source_id",
+        "role",
+        "producer",
+        "semantic_surface_id",
+        "route_policy_ref",
+        "pipewire_node",
+        "target_chain",
+        "signal_metrics",
+        "freshness",
+        "active",
+        "activity_basis",
+        "marker_evidence_refs",
+        "route_posture",
+        "egress_posture",
+        "public_private_posture",
+        "wcs_refs",
+        "evidence_envelope_refs",
+        "egress_refs",
+        "provenance_refs",
+        "rights_refs",
+        "privacy_refs",
+        "programme_id",
+        "run_id",
+        "downstream_evidence_refs",
+        "compatibility_aliases",
+        "permissions",
+        "blocking_reasons",
+        "warnings"
+      ],
+      "properties": {
+        "row_id": {"type": "string", "minLength": 1},
+        "source_id": {"type": "string", "minLength": 1},
+        "role": {"$ref": "#/$defs/audio_source_role"},
+        "producer": {"type": "string", "minLength": 1},
+        "semantic_surface_id": {"type": "string", "minLength": 1},
+        "route_policy_ref": {"type": ["string", "null"]},
+        "pipewire_node": {"type": ["string", "null"]},
+        "target_chain": {"$ref": "#/$defs/string_array"},
+        "signal_metrics": {"$ref": "#/$defs/signal_metrics"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "active": {"type": "boolean"},
+        "activity_basis": {"$ref": "#/$defs/activity_basis"},
+        "marker_evidence_refs": {"$ref": "#/$defs/string_array"},
+        "route_posture": {"$ref": "#/$defs/route_posture"},
+        "egress_posture": {"$ref": "#/$defs/egress_posture"},
+        "public_private_posture": {"$ref": "#/$defs/public_private_posture"},
+        "wcs_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "egress_refs": {"$ref": "#/$defs/string_array"},
+        "provenance_refs": {"$ref": "#/$defs/string_array"},
+        "rights_refs": {"$ref": "#/$defs/string_array"},
+        "privacy_refs": {"$ref": "#/$defs/string_array"},
+        "programme_id": {"type": ["string", "null"]},
+        "run_id": {"type": ["string", "null"]},
+        "downstream_evidence_refs": {"$ref": "#/$defs/string_array"},
+        "compatibility_aliases": {"$ref": "#/$defs/string_array"},
+        "permissions": {"$ref": "#/$defs/downstream_permissions"},
+        "blocking_reasons": {"$ref": "#/$defs/string_array"},
+        "warnings": {"$ref": "#/$defs/string_array"}
+      }
+    }
+  },
+  "x-fail_closed_policy": {
+    "process_activity_marks_source_active": false,
+    "route_existence_satisfies_egress": false,
+    "public_claim_without_public_audible_egress": false,
+    "legacy_aliases_bypass_role_scope": false
+  }
+}

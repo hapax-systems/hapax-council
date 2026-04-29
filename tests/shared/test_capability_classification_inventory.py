@@ -33,6 +33,7 @@ def _inventory():
 def _canonical_inventory_dump(payload: dict) -> dict:
     for row in payload["rows"]:
         row["kind"] = sorted(row["kind"])
+        row["claim_types_allowed"] = sorted(row["claim_types_allowed"])
     return payload
 
 
