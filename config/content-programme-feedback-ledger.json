@@ -1,0 +1,1077 @@
+{
+  "schema_version": 1,
+  "ledger_id": "content_programme_feedback_ledger:2026-04-29",
+  "declared_at": "2026-04-29T13:05:00Z",
+  "producer": "cx-amber",
+  "global_policy": {
+    "single_operator_only": true,
+    "append_only_events": true,
+    "aggregate_audience_only": true,
+    "per_person_audience_state_allowed": false,
+    "public_payer_identity_allowed": false,
+    "raw_comment_text_allowed": false,
+    "engagement_can_override_grounding": false,
+    "revenue_can_override_grounding": false,
+    "selected_commanded_states_update_posteriors": false,
+    "posterior_store_mutation_allowed": false,
+    "blocked_claims_become_public_truth": false
+  },
+  "posterior_update_families": [
+    "grounding_quality",
+    "audience_response",
+    "artifact_conversion",
+    "revenue_support_response",
+    "rights_pass_probability",
+    "safety_refusal_rate",
+    "format_prior",
+    "source_prior"
+  ],
+  "outcome_states": [
+    "selected",
+    "blocked",
+    "dry_run",
+    "public_run",
+    "completed",
+    "aborted",
+    "refused",
+    "corrected",
+    "private_only",
+    "conversion_held"
+  ],
+  "feedback_event_kinds": [
+    "run_selected",
+    "run_blocked",
+    "dry_run_completed",
+    "public_run_completed",
+    "run_completed",
+    "run_aborted",
+    "run_refused",
+    "run_corrected",
+    "private_only_recorded",
+    "conversion_held",
+    "posterior_update_proposed"
+  ],
+  "events": [
+    {
+      "schema_version": 1,
+      "ledger_event_id": "feedback:selected:evidence_audit:20260429",
+      "run_id": "run_feedback_selected_20260429",
+      "programme_id": "programme_content_grounding_20260429",
+      "opportunity_decision_id": "cod_feedback_selected_20260429",
+      "format_id": "evidence_audit",
+      "input_source_id": "operator_owned_archive_segments",
+      "subject_cluster": "evidence_audit",
+      "occurred_at": "2026-04-29T13:05:00Z",
+      "event_kind": "run_selected",
+      "programme_state": "selected",
+      "public_private_mode": "dry_run",
+      "run_store_ref": "run-store:run_feedback_selected_20260429",
+      "selected_state_refs": ["command:selected:evidence_audit"],
+      "commanded_state_refs": [],
+      "gate_outcomes": [
+        {
+          "gate_name": "truth_gate",
+          "state": "held",
+          "gate_ref": "grounding-gate:selected",
+          "evidence_refs": [],
+          "unavailable_reasons": ["not_witnessed_yet"],
+          "blocks_public_claim": true,
+          "posterior_update_allowed": false
+        }
+      ],
+      "grounding_outputs": [],
+      "artifact_outputs": [],
+      "audience_outcome": {
+        "aggregate_only": true,
+        "per_person_identity_allowed": false,
+        "raw_comment_text_allowed": false,
+        "public_payer_identity_allowed": false,
+        "metrics": [],
+        "evidence_refs": []
+      },
+      "revenue_proxies": [],
+      "safety_metrics": [
+        {
+          "metric_name": "unsupported_claim_count",
+          "count": 0,
+          "evidence_refs": ["run-store:run_feedback_selected_20260429"]
+        }
+      ],
+      "witnessed_capability_outcomes": [],
+      "posterior_updates": [
+        {
+          "update_id": "posterior:selected:format-prior",
+          "posterior_family": "format_prior",
+          "target_ref": "content-opportunity-model.posterior_state.format_prior",
+          "source_signal": "run_lifecycle",
+          "value": 0.0,
+          "confidence": 1.0,
+          "prior_ref": "posterior:format:evidence_audit:prior",
+          "evidence_refs": [],
+          "update_allowed": false,
+          "blocked_reason": "selected_state_is_not_witnessed"
+        }
+      ],
+      "exploration": {
+        "exploration_budget_ref": "exploration:daily:20260429",
+        "exploration_regret": 0.0,
+        "novelty_distance": 0.32,
+        "cooldown_effect_ref": "cooldown:format:evidence_audit",
+        "evidence_refs": ["sampler:cod_feedback_selected_20260429"]
+      },
+      "separation_policy": {
+        "selected_commanded_states_update_posteriors": false,
+        "witnessed_capability_outcomes_update_grounding": true,
+        "format_grounding_evaluations_update_grounding": true,
+        "engagement_can_override_grounding": false,
+        "revenue_can_override_grounding": false,
+        "audience_data_aggregate_only": true,
+        "per_person_audience_state_allowed": false,
+        "public_payer_identity_allowed": false,
+        "blocked_claims_become_public_truth": false
+      },
+      "learning_policy": {
+        "blocked_refused_corrected_private_only_are_learning_events": true,
+        "public_truth_claim_allowed": false,
+        "posterior_store_mutation_allowed": false
+      },
+      "append_only": true,
+      "idempotency_key": "run_feedback_selected_20260429:selected"
+    },
+    {
+      "schema_version": 1,
+      "ledger_event_id": "feedback:blocked:rights:20260429",
+      "run_id": "run_feedback_blocked_20260429",
+      "programme_id": "programme_content_grounding_20260429",
+      "opportunity_decision_id": "cod_feedback_blocked_20260429",
+      "format_id": "evidence_audit",
+      "input_source_id": "third_party_av_link_along_pool",
+      "subject_cluster": "third_party_av_rights",
+      "occurred_at": "2026-04-29T13:06:00Z",
+      "event_kind": "run_blocked",
+      "programme_state": "blocked",
+      "public_private_mode": "dry_run",
+      "run_store_ref": "run-store:run_feedback_blocked_20260429",
+      "selected_state_refs": ["command:selected:rights_blocked"],
+      "commanded_state_refs": ["command:blocked:rights_blocked"],
+      "gate_outcomes": [
+        {
+          "gate_name": "rights_gate",
+          "state": "fail",
+          "gate_ref": "rights:third_party_av_link_along_pool",
+          "evidence_refs": ["rights:third_party_av_uncleared"],
+          "unavailable_reasons": ["rights_blocked", "third_party_av_uncleared"],
+          "blocks_public_claim": true,
+          "posterior_update_allowed": true
+        }
+      ],
+      "grounding_outputs": [],
+      "artifact_outputs": [
+        {
+          "artifact_id": "artifact:rights_blocked_refusal",
+          "artifact_type": "refusal_artifact",
+          "state": "emitted",
+          "public_event_ref": null,
+          "evidence_refs": ["rights:third_party_av_uncleared"]
+        }
+      ],
+      "audience_outcome": {
+        "aggregate_only": true,
+        "per_person_identity_allowed": false,
+        "raw_comment_text_allowed": false,
+        "public_payer_identity_allowed": false,
+        "metrics": [],
+        "evidence_refs": []
+      },
+      "revenue_proxies": [],
+      "safety_metrics": [
+        {
+          "metric_name": "rights_block_count",
+          "count": 1,
+          "evidence_refs": ["rights:third_party_av_uncleared"]
+        }
+      ],
+      "witnessed_capability_outcomes": [],
+      "posterior_updates": [
+        {
+          "update_id": "posterior:rights:block",
+          "posterior_family": "rights_pass_probability",
+          "target_ref": "content-opportunity-model.posterior_state.rights_pass_probability",
+          "source_signal": "rights_gate",
+          "value": 0.0,
+          "confidence": 1.0,
+          "prior_ref": "posterior:rights:third_party_av:prior",
+          "evidence_refs": ["rights:third_party_av_uncleared"],
+          "update_allowed": true,
+          "blocked_reason": null
+        },
+        {
+          "update_id": "posterior:source:block",
+          "posterior_family": "source_prior",
+          "target_ref": "content-opportunity-model.posterior_state.source_prior",
+          "source_signal": "rights_gate",
+          "value": 0.1,
+          "confidence": 0.9,
+          "prior_ref": "posterior:source:third_party_av:prior",
+          "evidence_refs": ["rights:third_party_av_uncleared"],
+          "update_allowed": true,
+          "blocked_reason": null
+        }
+      ],
+      "exploration": {
+        "exploration_budget_ref": "exploration:daily:20260429",
+        "exploration_regret": 0.4,
+        "novelty_distance": 0.56,
+        "cooldown_effect_ref": "cooldown:source:third_party_av_link_along_pool",
+        "evidence_refs": ["sampler:cod_feedback_blocked_20260429"]
+      },
+      "separation_policy": {
+        "selected_commanded_states_update_posteriors": false,
+        "witnessed_capability_outcomes_update_grounding": true,
+        "format_grounding_evaluations_update_grounding": true,
+        "engagement_can_override_grounding": false,
+        "revenue_can_override_grounding": false,
+        "audience_data_aggregate_only": true,
+        "per_person_audience_state_allowed": false,
+        "public_payer_identity_allowed": false,
+        "blocked_claims_become_public_truth": false
+      },
+      "learning_policy": {
+        "blocked_refused_corrected_private_only_are_learning_events": true,
+        "public_truth_claim_allowed": false,
+        "posterior_store_mutation_allowed": false
+      },
+      "append_only": true,
+      "idempotency_key": "run_feedback_blocked_20260429:blocked"
+    },
+    {
+      "schema_version": 1,
+      "ledger_event_id": "feedback:dry-run:tier-list:20260429",
+      "run_id": "run_feedback_dry_run_20260429",
+      "programme_id": "programme_content_grounding_20260429",
+      "opportunity_decision_id": "cod_feedback_dry_run_20260429",
+      "format_id": "tier_list",
+      "input_source_id": "research_corpus_export_rows",
+      "subject_cluster": "model_routing_grounding",
+      "occurred_at": "2026-04-29T13:07:00Z",
+      "event_kind": "dry_run_completed",
+      "programme_state": "dry_run",
+      "public_private_mode": "dry_run",
+      "run_store_ref": "run-store:run_feedback_dry_run_20260429",
+      "selected_state_refs": ["command:selected:dry_run"],
+      "commanded_state_refs": ["command:accepted:dry_run"],
+      "gate_outcomes": [
+        {
+          "gate_name": "egress_gate",
+          "state": "held",
+          "gate_ref": "egress:dry_run",
+          "evidence_refs": ["egress:public_live_blocked"],
+          "unavailable_reasons": ["dry_run_mode"],
+          "blocks_public_claim": true,
+          "posterior_update_allowed": true
+        }
+      ],
+      "grounding_outputs": [
+        {
+          "evaluation_id": "fge:dry_run:tier_list",
+          "event_kind": "format_grounding_evaluation",
+          "grounding_quality_score": 0.7,
+          "update_allowed": true,
+          "infraction_refs": [],
+          "evidence_refs": ["fge:dry_run:tier_list"],
+          "posterior_refs": ["grounding_yield_probability"]
+        }
+      ],
+      "artifact_outputs": [
+        {
+          "artifact_id": "artifact:dry_run_rank_table",
+          "artifact_type": "archive_card",
+          "state": "held",
+          "public_event_ref": null,
+          "evidence_refs": ["artifact:dry_run_rank_table"]
+        }
+      ],
+      "audience_outcome": {
+        "aggregate_only": true,
+        "per_person_identity_allowed": false,
+        "raw_comment_text_allowed": false,
+        "public_payer_identity_allowed": false,
+        "metrics": [],
+        "evidence_refs": []
+      },
+      "revenue_proxies": [],
+      "safety_metrics": [
+        {
+          "metric_name": "unsupported_claim_count",
+          "count": 0,
+          "evidence_refs": ["fge:dry_run:tier_list"]
+        }
+      ],
+      "witnessed_capability_outcomes": [
+        {
+          "capability_outcome_ref": "coe:dry_run:tier_list",
+          "capability_outcome_envelope_ref": "CapabilityOutcomeEnvelope:coe:dry_run:tier_list",
+          "witness_state": "witness_verified",
+          "evidence_envelope_refs": ["ee:dry_run:tier_list"],
+          "posterior_update_allowed": true
+        }
+      ],
+      "posterior_updates": [
+        {
+          "update_id": "posterior:grounding:dry_run",
+          "posterior_family": "grounding_quality",
+          "target_ref": "content-opportunity-model.posterior_state.grounding_yield_probability",
+          "source_signal": "format_grounding_evaluation",
+          "value": 0.7,
+          "confidence": 0.64,
+          "prior_ref": "posterior:grounding:tier_list:prior",
+          "evidence_refs": ["fge:dry_run:tier_list", "ee:dry_run:tier_list"],
+          "update_allowed": true,
+          "blocked_reason": null
+        }
+      ],
+      "exploration": {
+        "exploration_budget_ref": "exploration:daily:20260429",
+        "exploration_regret": 0.12,
+        "novelty_distance": 0.48,
+        "cooldown_effect_ref": "cooldown:format:tier_list",
+        "evidence_refs": ["sampler:cod_feedback_dry_run_20260429"]
+      },
+      "separation_policy": {
+        "selected_commanded_states_update_posteriors": false,
+        "witnessed_capability_outcomes_update_grounding": true,
+        "format_grounding_evaluations_update_grounding": true,
+        "engagement_can_override_grounding": false,
+        "revenue_can_override_grounding": false,
+        "audience_data_aggregate_only": true,
+        "per_person_audience_state_allowed": false,
+        "public_payer_identity_allowed": false,
+        "blocked_claims_become_public_truth": false
+      },
+      "learning_policy": {
+        "blocked_refused_corrected_private_only_are_learning_events": true,
+        "public_truth_claim_allowed": false,
+        "posterior_store_mutation_allowed": false
+      },
+      "append_only": true,
+      "idempotency_key": "run_feedback_dry_run_20260429:dry_run"
+    },
+    {
+      "schema_version": 1,
+      "ledger_event_id": "feedback:public-run:evidence-audit:20260429",
+      "run_id": "run_feedback_public_run_20260429",
+      "programme_id": "programme_content_grounding_20260429",
+      "opportunity_decision_id": "cod_feedback_public_run_20260429",
+      "format_id": "evidence_audit",
+      "input_source_id": "operator_owned_archive_segments",
+      "subject_cluster": "evidence_audit",
+      "occurred_at": "2026-04-29T13:08:00Z",
+      "event_kind": "public_run_completed",
+      "programme_state": "public_run",
+      "public_private_mode": "public_archive",
+      "run_store_ref": "run-store:run_feedback_public_run_20260429",
+      "selected_state_refs": ["command:selected:public_run"],
+      "commanded_state_refs": ["command:accepted:public_run"],
+      "gate_outcomes": [
+        {
+          "gate_name": "truth_gate",
+          "state": "pass",
+          "gate_ref": "grounding-gate:public_run",
+          "evidence_refs": ["ee:public_run"],
+          "unavailable_reasons": [],
+          "blocks_public_claim": false,
+          "posterior_update_allowed": true
+        }
+      ],
+      "grounding_outputs": [
+        {
+          "evaluation_id": "fge:public_run:evidence_audit",
+          "event_kind": "format_grounding_evaluation",
+          "grounding_quality_score": 0.78,
+          "update_allowed": true,
+          "infraction_refs": [],
+          "evidence_refs": ["fge:public_run:evidence_audit"],
+          "posterior_refs": ["grounding_yield_probability"]
+        }
+      ],
+      "artifact_outputs": [
+        {
+          "artifact_id": "artifact:public_run_archive_card",
+          "artifact_type": "archive_card",
+          "state": "emitted",
+          "public_event_ref": "rvpe:public_run:evidence_audit",
+          "evidence_refs": ["artifact:public_run_archive_card"]
+        }
+      ],
+      "audience_outcome": {
+        "aggregate_only": true,
+        "per_person_identity_allowed": false,
+        "raw_comment_text_allowed": false,
+        "public_payer_identity_allowed": false,
+        "metrics": [
+          {
+            "metric_name": "retention",
+            "value": 0.62,
+            "sample_size": 18,
+            "identity_scope": "aggregate",
+            "aggregate_ref": "audience:aggregate:public_run",
+            "evidence_refs": ["youtube:analytics:aggregate:public_run"]
+          }
+        ],
+        "evidence_refs": ["youtube:analytics:aggregate:public_run"]
+      },
+      "revenue_proxies": [],
+      "safety_metrics": [
+        {
+          "metric_name": "unsupported_claim_count",
+          "count": 0,
+          "evidence_refs": ["fge:public_run:evidence_audit"]
+        }
+      ],
+      "witnessed_capability_outcomes": [
+        {
+          "capability_outcome_ref": "coe:public_run:evidence_audit",
+          "capability_outcome_envelope_ref": "CapabilityOutcomeEnvelope:coe:public_run:evidence_audit",
+          "witness_state": "witness_verified",
+          "evidence_envelope_refs": ["ee:public_run"],
+          "posterior_update_allowed": true
+        }
+      ],
+      "posterior_updates": [
+        {
+          "update_id": "posterior:audience:public_run",
+          "posterior_family": "audience_response",
+          "target_ref": "content-opportunity-model.posterior_state.audience_response",
+          "source_signal": "audience_aggregate",
+          "value": 0.62,
+          "confidence": 0.55,
+          "prior_ref": "posterior:audience:evidence_audit:prior",
+          "evidence_refs": ["youtube:analytics:aggregate:public_run"],
+          "update_allowed": true,
+          "blocked_reason": null
+        }
+      ],
+      "exploration": {
+        "exploration_budget_ref": "exploration:daily:20260429",
+        "exploration_regret": 0.06,
+        "novelty_distance": 0.38,
+        "cooldown_effect_ref": "cooldown:format:evidence_audit",
+        "evidence_refs": ["sampler:cod_feedback_public_run_20260429"]
+      },
+      "separation_policy": {
+        "selected_commanded_states_update_posteriors": false,
+        "witnessed_capability_outcomes_update_grounding": true,
+        "format_grounding_evaluations_update_grounding": true,
+        "engagement_can_override_grounding": false,
+        "revenue_can_override_grounding": false,
+        "audience_data_aggregate_only": true,
+        "per_person_audience_state_allowed": false,
+        "public_payer_identity_allowed": false,
+        "blocked_claims_become_public_truth": false
+      },
+      "learning_policy": {
+        "blocked_refused_corrected_private_only_are_learning_events": true,
+        "public_truth_claim_allowed": true,
+        "posterior_store_mutation_allowed": false
+      },
+      "append_only": true,
+      "idempotency_key": "run_feedback_public_run_20260429:public_run"
+    },
+    {
+      "schema_version": 1,
+      "ledger_event_id": "feedback:completed:evidence-audit:20260429",
+      "run_id": "run_feedback_completed_20260429",
+      "programme_id": "programme_content_grounding_20260429",
+      "opportunity_decision_id": "cod_feedback_completed_20260429",
+      "format_id": "evidence_audit",
+      "input_source_id": "operator_owned_archive_segments",
+      "subject_cluster": "evidence_audit",
+      "occurred_at": "2026-04-29T13:09:00Z",
+      "event_kind": "run_completed",
+      "programme_state": "completed",
+      "public_private_mode": "public_archive",
+      "run_store_ref": "run-store:run_feedback_completed_20260429",
+      "selected_state_refs": ["command:selected:completed"],
+      "commanded_state_refs": ["command:accepted:completed"],
+      "gate_outcomes": [
+        {
+          "gate_name": "truth_gate",
+          "state": "pass",
+          "gate_ref": "grounding-gate:completed",
+          "evidence_refs": ["ee:completed"],
+          "unavailable_reasons": [],
+          "blocks_public_claim": false,
+          "posterior_update_allowed": true
+        }
+      ],
+      "grounding_outputs": [
+        {
+          "evaluation_id": "fge:completed:evidence_audit",
+          "event_kind": "format_grounding_evaluation",
+          "grounding_quality_score": 0.82,
+          "update_allowed": true,
+          "infraction_refs": [],
+          "evidence_refs": ["fge:completed:evidence_audit"],
+          "posterior_refs": ["grounding_yield_probability", "format_prior"]
+        }
+      ],
+      "artifact_outputs": [
+        {
+          "artifact_id": "artifact:completed_archive_card",
+          "artifact_type": "archive_card",
+          "state": "emitted",
+          "public_event_ref": "rvpe:completed:evidence_audit",
+          "evidence_refs": ["artifact:completed_archive_card"]
+        }
+      ],
+      "audience_outcome": {
+        "aggregate_only": true,
+        "per_person_identity_allowed": false,
+        "raw_comment_text_allowed": false,
+        "public_payer_identity_allowed": false,
+        "metrics": [
+          {
+            "metric_name": "watch_time",
+            "value": 0.58,
+            "sample_size": 12,
+            "identity_scope": "aggregate",
+            "aggregate_ref": "audience:aggregate:completed",
+            "evidence_refs": ["youtube:analytics:aggregate:completed"]
+          }
+        ],
+        "evidence_refs": ["youtube:analytics:aggregate:completed"]
+      },
+      "revenue_proxies": [
+        {
+          "proxy_name": "support_intent",
+          "value": 0.2,
+          "aggregate_only": true,
+          "public_payer_identity_allowed": false,
+          "evidence_refs": ["support:aggregate:completed"]
+        }
+      ],
+      "safety_metrics": [
+        {
+          "metric_name": "unsupported_claim_count",
+          "count": 0,
+          "evidence_refs": ["fge:completed:evidence_audit"]
+        }
+      ],
+      "witnessed_capability_outcomes": [
+        {
+          "capability_outcome_ref": "coe:completed:evidence_audit",
+          "capability_outcome_envelope_ref": "CapabilityOutcomeEnvelope:coe:completed:evidence_audit",
+          "witness_state": "witness_verified",
+          "evidence_envelope_refs": ["ee:completed"],
+          "posterior_update_allowed": true
+        }
+      ],
+      "posterior_updates": [
+        {
+          "update_id": "posterior:grounding:completed",
+          "posterior_family": "grounding_quality",
+          "target_ref": "content-opportunity-model.posterior_state.grounding_yield_probability",
+          "source_signal": "format_grounding_evaluation",
+          "value": 0.82,
+          "confidence": 0.74,
+          "prior_ref": "posterior:grounding:evidence_audit:prior",
+          "evidence_refs": ["fge:completed:evidence_audit", "ee:completed"],
+          "update_allowed": true,
+          "blocked_reason": null
+        },
+        {
+          "update_id": "posterior:artifact:completed",
+          "posterior_family": "artifact_conversion",
+          "target_ref": "content-opportunity-model.posterior_state.artifact_conversion_probability",
+          "source_signal": "artifact_conversion",
+          "value": 1.0,
+          "confidence": 0.8,
+          "prior_ref": "posterior:artifact:evidence_audit:prior",
+          "evidence_refs": ["artifact:completed_archive_card"],
+          "update_allowed": true,
+          "blocked_reason": null
+        },
+        {
+          "update_id": "posterior:revenue:completed",
+          "posterior_family": "revenue_support_response",
+          "target_ref": "content-opportunity-model.posterior_state.revenue_support_response",
+          "source_signal": "revenue_aggregate",
+          "value": 0.2,
+          "confidence": 0.4,
+          "prior_ref": "posterior:revenue:evidence_audit:prior",
+          "evidence_refs": ["support:aggregate:completed"],
+          "update_allowed": true,
+          "blocked_reason": null
+        }
+      ],
+      "exploration": {
+        "exploration_budget_ref": "exploration:daily:20260429",
+        "exploration_regret": 0.08,
+        "novelty_distance": 0.42,
+        "cooldown_effect_ref": "cooldown:format:evidence_audit",
+        "evidence_refs": ["sampler:cod_feedback_completed_20260429"]
+      },
+      "separation_policy": {
+        "selected_commanded_states_update_posteriors": false,
+        "witnessed_capability_outcomes_update_grounding": true,
+        "format_grounding_evaluations_update_grounding": true,
+        "engagement_can_override_grounding": false,
+        "revenue_can_override_grounding": false,
+        "audience_data_aggregate_only": true,
+        "per_person_audience_state_allowed": false,
+        "public_payer_identity_allowed": false,
+        "blocked_claims_become_public_truth": false
+      },
+      "learning_policy": {
+        "blocked_refused_corrected_private_only_are_learning_events": true,
+        "public_truth_claim_allowed": true,
+        "posterior_store_mutation_allowed": false
+      },
+      "append_only": true,
+      "idempotency_key": "run_feedback_completed_20260429:completed"
+    },
+    {
+      "schema_version": 1,
+      "ledger_event_id": "feedback:aborted:egress:20260429",
+      "run_id": "run_feedback_aborted_20260429",
+      "programme_id": "programme_content_grounding_20260429",
+      "opportunity_decision_id": "cod_feedback_aborted_20260429",
+      "format_id": "rundown",
+      "input_source_id": "youtube_platform_metadata",
+      "subject_cluster": "platform_metadata",
+      "occurred_at": "2026-04-29T13:10:00Z",
+      "event_kind": "run_aborted",
+      "programme_state": "aborted",
+      "public_private_mode": "dry_run",
+      "run_store_ref": "run-store:run_feedback_aborted_20260429",
+      "selected_state_refs": ["command:selected:aborted"],
+      "commanded_state_refs": ["command:aborted:egress"],
+      "gate_outcomes": [
+        {
+          "gate_name": "egress_gate",
+          "state": "fail",
+          "gate_ref": "egress:public_live_unavailable",
+          "evidence_refs": ["egress:public_live_unavailable"],
+          "unavailable_reasons": ["egress_blocked"],
+          "blocks_public_claim": true,
+          "posterior_update_allowed": true
+        }
+      ],
+      "grounding_outputs": [],
+      "artifact_outputs": [],
+      "audience_outcome": {
+        "aggregate_only": true,
+        "per_person_identity_allowed": false,
+        "raw_comment_text_allowed": false,
+        "public_payer_identity_allowed": false,
+        "metrics": [],
+        "evidence_refs": []
+      },
+      "revenue_proxies": [],
+      "safety_metrics": [
+        {
+          "metric_name": "egress_block_count",
+          "count": 1,
+          "evidence_refs": ["egress:public_live_unavailable"]
+        }
+      ],
+      "witnessed_capability_outcomes": [],
+      "posterior_updates": [
+        {
+          "update_id": "posterior:safety:aborted",
+          "posterior_family": "safety_refusal_rate",
+          "target_ref": "content-opportunity-model.posterior_state.safety_refusal_rate",
+          "source_signal": "safety_gate",
+          "value": 1.0,
+          "confidence": 1.0,
+          "prior_ref": "posterior:safety:egress:prior",
+          "evidence_refs": ["egress:public_live_unavailable"],
+          "update_allowed": true,
+          "blocked_reason": null
+        }
+      ],
+      "exploration": {
+        "exploration_budget_ref": "exploration:daily:20260429",
+        "exploration_regret": 0.5,
+        "novelty_distance": 0.31,
+        "cooldown_effect_ref": "cooldown:public_mode:public_live",
+        "evidence_refs": ["sampler:cod_feedback_aborted_20260429"]
+      },
+      "separation_policy": {
+        "selected_commanded_states_update_posteriors": false,
+        "witnessed_capability_outcomes_update_grounding": true,
+        "format_grounding_evaluations_update_grounding": true,
+        "engagement_can_override_grounding": false,
+        "revenue_can_override_grounding": false,
+        "audience_data_aggregate_only": true,
+        "per_person_audience_state_allowed": false,
+        "public_payer_identity_allowed": false,
+        "blocked_claims_become_public_truth": false
+      },
+      "learning_policy": {
+        "blocked_refused_corrected_private_only_are_learning_events": true,
+        "public_truth_claim_allowed": false,
+        "posterior_store_mutation_allowed": false
+      },
+      "append_only": true,
+      "idempotency_key": "run_feedback_aborted_20260429:aborted"
+    },
+    {
+      "schema_version": 1,
+      "ledger_event_id": "feedback:refused:unsupported-claim:20260429",
+      "run_id": "run_feedback_refused_20260429",
+      "programme_id": "programme_content_grounding_20260429",
+      "opportunity_decision_id": "cod_feedback_refused_20260429",
+      "format_id": "refusal_breakdown",
+      "input_source_id": "unknown_source_intake_hold",
+      "subject_cluster": "unsupported_claim",
+      "occurred_at": "2026-04-29T13:11:00Z",
+      "event_kind": "run_refused",
+      "programme_state": "refused",
+      "public_private_mode": "dry_run",
+      "run_store_ref": "run-store:run_feedback_refused_20260429",
+      "selected_state_refs": ["command:selected:refused"],
+      "commanded_state_refs": ["command:refused:unsupported_claim"],
+      "gate_outcomes": [
+        {
+          "gate_name": "truth_gate",
+          "state": "fail",
+          "gate_ref": "grounding-gate:unsupported_claim",
+          "evidence_refs": ["gate:unsupported_claim"],
+          "unavailable_reasons": ["unsupported_claim", "missing_evidence_ref"],
+          "blocks_public_claim": true,
+          "posterior_update_allowed": true
+        }
+      ],
+      "grounding_outputs": [
+        {
+          "evaluation_id": "fge:refused:unsupported_claim",
+          "event_kind": "format_grounding_evaluation",
+          "grounding_quality_score": 0.0,
+          "update_allowed": false,
+          "infraction_refs": ["unsupported_claim", "missing_evidence_ref"],
+          "evidence_refs": ["gate:unsupported_claim"],
+          "posterior_refs": []
+        }
+      ],
+      "artifact_outputs": [
+        {
+          "artifact_id": "artifact:unsupported_claim_refusal",
+          "artifact_type": "refusal_artifact",
+          "state": "emitted",
+          "public_event_ref": null,
+          "evidence_refs": ["gate:unsupported_claim"]
+        }
+      ],
+      "audience_outcome": {
+        "aggregate_only": true,
+        "per_person_identity_allowed": false,
+        "raw_comment_text_allowed": false,
+        "public_payer_identity_allowed": false,
+        "metrics": [],
+        "evidence_refs": []
+      },
+      "revenue_proxies": [],
+      "safety_metrics": [
+        {
+          "metric_name": "refusal_count",
+          "count": 1,
+          "evidence_refs": ["gate:unsupported_claim"]
+        }
+      ],
+      "witnessed_capability_outcomes": [],
+      "posterior_updates": [
+        {
+          "update_id": "posterior:safety:refused",
+          "posterior_family": "safety_refusal_rate",
+          "target_ref": "content-opportunity-model.posterior_state.safety_refusal_rate",
+          "source_signal": "safety_gate",
+          "value": 1.0,
+          "confidence": 1.0,
+          "prior_ref": "posterior:safety:unsupported_claim:prior",
+          "evidence_refs": ["gate:unsupported_claim"],
+          "update_allowed": true,
+          "blocked_reason": null
+        }
+      ],
+      "exploration": {
+        "exploration_budget_ref": "exploration:daily:20260429",
+        "exploration_regret": 0.35,
+        "novelty_distance": 0.44,
+        "cooldown_effect_ref": "cooldown:refusal:unsupported_claim",
+        "evidence_refs": ["sampler:cod_feedback_refused_20260429"]
+      },
+      "separation_policy": {
+        "selected_commanded_states_update_posteriors": false,
+        "witnessed_capability_outcomes_update_grounding": true,
+        "format_grounding_evaluations_update_grounding": true,
+        "engagement_can_override_grounding": false,
+        "revenue_can_override_grounding": false,
+        "audience_data_aggregate_only": true,
+        "per_person_audience_state_allowed": false,
+        "public_payer_identity_allowed": false,
+        "blocked_claims_become_public_truth": false
+      },
+      "learning_policy": {
+        "blocked_refused_corrected_private_only_are_learning_events": true,
+        "public_truth_claim_allowed": false,
+        "posterior_store_mutation_allowed": false
+      },
+      "append_only": true,
+      "idempotency_key": "run_feedback_refused_20260429:refused"
+    },
+    {
+      "schema_version": 1,
+      "ledger_event_id": "feedback:corrected:evidence-audit:20260429",
+      "run_id": "run_feedback_corrected_20260429",
+      "programme_id": "programme_content_grounding_20260429",
+      "opportunity_decision_id": "cod_feedback_corrected_20260429",
+      "format_id": "evidence_audit",
+      "input_source_id": "operator_owned_archive_segments",
+      "subject_cluster": "correction",
+      "occurred_at": "2026-04-29T13:12:00Z",
+      "event_kind": "run_corrected",
+      "programme_state": "corrected",
+      "public_private_mode": "public_archive",
+      "run_store_ref": "run-store:run_feedback_corrected_20260429",
+      "selected_state_refs": ["command:selected:corrected"],
+      "commanded_state_refs": ["command:corrected:evidence_audit"],
+      "gate_outcomes": [
+        {
+          "gate_name": "truth_gate",
+          "state": "warn",
+          "gate_ref": "grounding-gate:corrected",
+          "evidence_refs": ["correction:evidence_audit"],
+          "unavailable_reasons": ["correction_required"],
+          "blocks_public_claim": true,
+          "posterior_update_allowed": true
+        }
+      ],
+      "grounding_outputs": [
+        {
+          "evaluation_id": "fge:corrected:evidence_audit",
+          "event_kind": "format_grounding_evaluation",
+          "grounding_quality_score": 0.55,
+          "update_allowed": true,
+          "infraction_refs": ["overbroad_claim"],
+          "evidence_refs": ["correction:evidence_audit"],
+          "posterior_refs": ["grounding_yield_probability"]
+        }
+      ],
+      "artifact_outputs": [
+        {
+          "artifact_id": "artifact:evidence_audit_correction",
+          "artifact_type": "correction_artifact",
+          "state": "emitted",
+          "public_event_ref": null,
+          "evidence_refs": ["correction:evidence_audit"]
+        }
+      ],
+      "audience_outcome": {
+        "aggregate_only": true,
+        "per_person_identity_allowed": false,
+        "raw_comment_text_allowed": false,
+        "public_payer_identity_allowed": false,
+        "metrics": [],
+        "evidence_refs": []
+      },
+      "revenue_proxies": [],
+      "safety_metrics": [
+        {
+          "metric_name": "correction_count",
+          "count": 1,
+          "evidence_refs": ["correction:evidence_audit"]
+        }
+      ],
+      "witnessed_capability_outcomes": [
+        {
+          "capability_outcome_ref": "coe:corrected:evidence_audit",
+          "capability_outcome_envelope_ref": "CapabilityOutcomeEnvelope:coe:corrected:evidence_audit",
+          "witness_state": "witness_verified",
+          "evidence_envelope_refs": ["ee:corrected"],
+          "posterior_update_allowed": true
+        }
+      ],
+      "posterior_updates": [
+        {
+          "update_id": "posterior:grounding:corrected",
+          "posterior_family": "grounding_quality",
+          "target_ref": "content-opportunity-model.posterior_state.grounding_yield_probability",
+          "source_signal": "format_grounding_evaluation",
+          "value": 0.55,
+          "confidence": 0.7,
+          "prior_ref": "posterior:grounding:corrected:prior",
+          "evidence_refs": ["correction:evidence_audit", "ee:corrected"],
+          "update_allowed": true,
+          "blocked_reason": null
+        }
+      ],
+      "exploration": {
+        "exploration_budget_ref": "exploration:daily:20260429",
+        "exploration_regret": 0.22,
+        "novelty_distance": 0.36,
+        "cooldown_effect_ref": "cooldown:correction:evidence_audit",
+        "evidence_refs": ["sampler:cod_feedback_corrected_20260429"]
+      },
+      "separation_policy": {
+        "selected_commanded_states_update_posteriors": false,
+        "witnessed_capability_outcomes_update_grounding": true,
+        "format_grounding_evaluations_update_grounding": true,
+        "engagement_can_override_grounding": false,
+        "revenue_can_override_grounding": false,
+        "audience_data_aggregate_only": true,
+        "per_person_audience_state_allowed": false,
+        "public_payer_identity_allowed": false,
+        "blocked_claims_become_public_truth": false
+      },
+      "learning_policy": {
+        "blocked_refused_corrected_private_only_are_learning_events": true,
+        "public_truth_claim_allowed": false,
+        "posterior_store_mutation_allowed": false
+      },
+      "append_only": true,
+      "idempotency_key": "run_feedback_corrected_20260429:corrected"
+    },
+    {
+      "schema_version": 1,
+      "ledger_event_id": "feedback:private-only:world-surface:20260429",
+      "run_id": "run_feedback_private_only_20260429",
+      "programme_id": "programme_content_grounding_20260429",
+      "opportunity_decision_id": "cod_feedback_private_only_20260429",
+      "format_id": "watch_along",
+      "input_source_id": "third_party_av_link_along_pool",
+      "subject_cluster": "world_surface_blocked",
+      "occurred_at": "2026-04-29T13:13:00Z",
+      "event_kind": "private_only_recorded",
+      "programme_state": "private_only",
+      "public_private_mode": "private",
+      "run_store_ref": "run-store:run_feedback_private_only_20260429",
+      "selected_state_refs": ["command:selected:private_only"],
+      "commanded_state_refs": ["command:private_only:world_surface"],
+      "gate_outcomes": [
+        {
+          "gate_name": "world_surface_gate",
+          "state": "fail",
+          "gate_ref": "wcs:world_surface_blocked",
+          "evidence_refs": ["wcs:world_surface_blocked"],
+          "unavailable_reasons": ["world_surface_blocked", "witness_missing"],
+          "blocks_public_claim": true,
+          "posterior_update_allowed": true
+        }
+      ],
+      "grounding_outputs": [],
+      "artifact_outputs": [
+        {
+          "artifact_id": "artifact:private_only_hold",
+          "artifact_type": "refusal_artifact",
+          "state": "held",
+          "public_event_ref": null,
+          "evidence_refs": ["wcs:world_surface_blocked"]
+        }
+      ],
+      "audience_outcome": {
+        "aggregate_only": true,
+        "per_person_identity_allowed": false,
+        "raw_comment_text_allowed": false,
+        "public_payer_identity_allowed": false,
+        "metrics": [],
+        "evidence_refs": []
+      },
+      "revenue_proxies": [],
+      "safety_metrics": [
+        {
+          "metric_name": "witness_missing_count",
+          "count": 1,
+          "evidence_refs": ["wcs:world_surface_blocked"]
+        }
+      ],
+      "witnessed_capability_outcomes": [
+        {
+          "capability_outcome_ref": "coe:private_only:world_surface",
+          "capability_outcome_envelope_ref": "CapabilityOutcomeEnvelope:coe:private_only:world_surface",
+          "witness_state": "witness_unavailable",
+          "evidence_envelope_refs": [],
+          "posterior_update_allowed": false
+        }
+      ],
+      "posterior_updates": [
+        {
+          "update_id": "posterior:safety:private_only",
+          "posterior_family": "safety_refusal_rate",
+          "target_ref": "content-opportunity-model.posterior_state.safety_refusal_rate",
+          "source_signal": "safety_gate",
+          "value": 1.0,
+          "confidence": 1.0,
+          "prior_ref": "posterior:safety:world_surface:prior",
+          "evidence_refs": ["wcs:world_surface_blocked"],
+          "update_allowed": true,
+          "blocked_reason": null
+        }
+      ],
+      "exploration": {
+        "exploration_budget_ref": "exploration:daily:20260429",
+        "exploration_regret": 0.45,
+        "novelty_distance": 0.63,
+        "cooldown_effect_ref": "cooldown:format:watch_along",
+        "evidence_refs": ["sampler:cod_feedback_private_only_20260429"]
+      },
+      "separation_policy": {
+        "selected_commanded_states_update_posteriors": false,
+        "witnessed_capability_outcomes_update_grounding": true,
+        "format_grounding_evaluations_update_grounding": true,
+        "engagement_can_override_grounding": false,
+        "revenue_can_override_grounding": false,
+        "audience_data_aggregate_only": true,
+        "per_person_audience_state_allowed": false,
+        "public_payer_identity_allowed": false,
+        "blocked_claims_become_public_truth": false
+      },
+      "learning_policy": {
+        "blocked_refused_corrected_private_only_are_learning_events": true,
+        "public_truth_claim_allowed": false,
+        "posterior_store_mutation_allowed": false
+      },
+      "append_only": true,
+      "idempotency_key": "run_feedback_private_only_20260429:private_only"
+    }
+  ],
+  "downstream_contract": {
+    "machine_consumers": [
+      "content_opportunity_model",
+      "programme_scheduler_policy",
+      "content_programme_run_store",
+      "format_grounding_evaluator",
+      "conversion_broker",
+      "metrics_dashboard"
+    ],
+    "preserved_fields": [
+      "ledger_event_id",
+      "run_id",
+      "programme_id",
+      "opportunity_decision_id",
+      "format_id",
+      "input_source_id",
+      "subject_cluster",
+      "programme_state",
+      "run_store_ref",
+      "gate_outcomes",
+      "grounding_outputs",
+      "artifact_outputs",
+      "audience_outcome",
+      "revenue_proxies",
+      "safety_metrics",
+      "witnessed_capability_outcomes",
+      "posterior_updates",
+      "exploration",
+      "separation_policy"
+    ],
+    "forbidden_inferences": [
+      "engagement_as_truth",
+      "revenue_as_truth",
+      "selected_state_as_witness",
+      "command_acceptance_as_witness",
+      "public_artifact_as_grounding",
+      "blocked_claim_as_public_truth"
+    ]
+  }
+}

@@ -1,0 +1,641 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/content-programme-feedback-ledger.schema.json",
+  "title": "ContentProgrammeFeedbackLedger",
+  "description": "Append-only feedback ledger for content programme learning events and separated posterior update proposals.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "ledger_id",
+    "declared_at",
+    "producer",
+    "global_policy",
+    "posterior_update_families",
+    "outcome_states",
+    "feedback_event_kinds",
+    "events",
+    "downstream_contract"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "ledger_id": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "global_policy": {
+      "type": "object",
+      "required": [
+        "single_operator_only",
+        "append_only_events",
+        "aggregate_audience_only",
+        "per_person_audience_state_allowed",
+        "public_payer_identity_allowed",
+        "raw_comment_text_allowed",
+        "engagement_can_override_grounding",
+        "revenue_can_override_grounding",
+        "selected_commanded_states_update_posteriors",
+        "posterior_store_mutation_allowed",
+        "blocked_claims_become_public_truth"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "single_operator_only": {"type": "boolean", "const": true},
+        "append_only_events": {"type": "boolean", "const": true},
+        "aggregate_audience_only": {"type": "boolean", "const": true},
+        "per_person_audience_state_allowed": {"type": "boolean", "const": false},
+        "public_payer_identity_allowed": {"type": "boolean", "const": false},
+        "raw_comment_text_allowed": {"type": "boolean", "const": false},
+        "engagement_can_override_grounding": {"type": "boolean", "const": false},
+        "revenue_can_override_grounding": {"type": "boolean", "const": false},
+        "selected_commanded_states_update_posteriors": {
+          "type": "boolean",
+          "const": false
+        },
+        "posterior_store_mutation_allowed": {"type": "boolean", "const": false},
+        "blocked_claims_become_public_truth": {"type": "boolean", "const": false}
+      }
+    },
+    "posterior_update_families": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/posterior_update_family"},
+      "uniqueItems": true,
+      "minItems": 8
+    },
+    "outcome_states": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/programme_outcome_state"},
+      "uniqueItems": true,
+      "minItems": 10
+    },
+    "feedback_event_kinds": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/feedback_event_kind"},
+      "uniqueItems": true,
+      "minItems": 10
+    },
+    "events": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/content_programme_feedback_event"},
+      "minItems": 1
+    },
+    "downstream_contract": {
+      "type": "object",
+      "required": ["machine_consumers", "preserved_fields", "forbidden_inferences"],
+      "additionalProperties": false,
+      "properties": {
+        "machine_consumers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/downstream_consumer"},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "preserved_fields": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "forbidden_inferences": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/forbidden_inference"},
+          "uniqueItems": true,
+          "minItems": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ref_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "format_id": {
+      "type": "string",
+      "enum": [
+        "tier_list",
+        "react_commentary",
+        "ranking",
+        "comparison",
+        "review",
+        "watch_along",
+        "explainer",
+        "rundown",
+        "debate",
+        "bracket",
+        "what_is_this",
+        "refusal_breakdown",
+        "evidence_audit"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": [
+        "private",
+        "dry_run",
+        "public_live",
+        "public_archive",
+        "public_monetizable"
+      ]
+    },
+    "programme_outcome_state": {
+      "type": "string",
+      "enum": [
+        "selected",
+        "blocked",
+        "dry_run",
+        "public_run",
+        "completed",
+        "aborted",
+        "refused",
+        "corrected",
+        "private_only",
+        "conversion_held"
+      ]
+    },
+    "feedback_event_kind": {
+      "type": "string",
+      "enum": [
+        "run_selected",
+        "run_blocked",
+        "dry_run_completed",
+        "public_run_completed",
+        "run_completed",
+        "run_aborted",
+        "run_refused",
+        "run_corrected",
+        "private_only_recorded",
+        "conversion_held",
+        "posterior_update_proposed"
+      ]
+    },
+    "gate_name": {
+      "type": "string",
+      "enum": [
+        "truth_gate",
+        "rights_gate",
+        "consent_gate",
+        "monetization_gate",
+        "substrate_freshness_gate",
+        "egress_gate",
+        "no_expert_system_gate",
+        "world_surface_gate",
+        "public_event_gate",
+        "safety_gate"
+      ]
+    },
+    "gate_state": {
+      "type": "string",
+      "enum": ["pass", "warn", "fail", "held", "not_applicable"]
+    },
+    "posterior_update_family": {
+      "type": "string",
+      "enum": [
+        "grounding_quality",
+        "audience_response",
+        "artifact_conversion",
+        "revenue_support_response",
+        "rights_pass_probability",
+        "safety_refusal_rate",
+        "format_prior",
+        "source_prior"
+      ]
+    },
+    "source_signal": {
+      "type": "string",
+      "enum": [
+        "format_grounding_evaluation",
+        "capability_outcome_witness",
+        "audience_aggregate",
+        "revenue_aggregate",
+        "rights_gate",
+        "safety_gate",
+        "artifact_conversion",
+        "exploration",
+        "run_lifecycle"
+      ]
+    },
+    "audience_metric_name": {
+      "type": "string",
+      "enum": [
+        "views",
+        "watch_time",
+        "retention",
+        "click_through_rate",
+        "aggregate_comment_signal",
+        "rewatch",
+        "follow_through",
+        "support_intent"
+      ]
+    },
+    "revenue_proxy_name": {
+      "type": "string",
+      "enum": [
+        "platform_revenue_readiness",
+        "support_count_bucket",
+        "support_intent",
+        "grant_lead_signal",
+        "license_interest",
+        "artifact_conversion_intent",
+        "product_interest"
+      ]
+    },
+    "safety_metric_name": {
+      "type": "string",
+      "enum": [
+        "unsupported_claim_count",
+        "overbroad_claim_count",
+        "refusal_count",
+        "correction_count",
+        "rights_block_count",
+        "privacy_block_count",
+        "egress_block_count",
+        "witness_missing_count",
+        "safety_block_count"
+      ]
+    },
+    "artifact_type": {
+      "type": "string",
+      "enum": [
+        "archive_card",
+        "chapter",
+        "clip",
+        "shorts",
+        "dataset",
+        "zine",
+        "caption",
+        "refusal_artifact",
+        "correction_artifact",
+        "support_prompt",
+        "grant_packet"
+      ]
+    },
+    "artifact_state": {
+      "type": "string",
+      "enum": ["candidate", "held", "blocked", "linked", "emitted"]
+    },
+    "witness_state": {
+      "type": "string",
+      "enum": [
+        "not_required",
+        "not_observed",
+        "observed_without_witness",
+        "witness_verified",
+        "witness_failed",
+        "witness_stale",
+        "witness_unavailable",
+        "inferred_only"
+      ]
+    },
+    "downstream_consumer": {
+      "type": "string",
+      "enum": [
+        "content_opportunity_model",
+        "programme_scheduler_policy",
+        "content_programme_run_store",
+        "format_grounding_evaluator",
+        "conversion_broker",
+        "metrics_dashboard"
+      ]
+    },
+    "forbidden_inference": {
+      "type": "string",
+      "enum": [
+        "engagement_as_truth",
+        "revenue_as_truth",
+        "selected_state_as_witness",
+        "command_acceptance_as_witness",
+        "public_artifact_as_grounding",
+        "blocked_claim_as_public_truth"
+      ]
+    },
+    "gate_outcome": {
+      "type": "object",
+      "required": [
+        "gate_name",
+        "state",
+        "gate_ref",
+        "evidence_refs",
+        "unavailable_reasons",
+        "blocks_public_claim",
+        "posterior_update_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "gate_name": {"$ref": "#/$defs/gate_name"},
+        "state": {"$ref": "#/$defs/gate_state"},
+        "gate_ref": {"type": ["string", "null"], "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "unavailable_reasons": {"$ref": "#/$defs/ref_list"},
+        "blocks_public_claim": {"type": "boolean"},
+        "posterior_update_allowed": {"type": "boolean"}
+      }
+    },
+    "grounding_output": {
+      "type": "object",
+      "required": [
+        "evaluation_id",
+        "event_kind",
+        "grounding_quality_score",
+        "update_allowed",
+        "infraction_refs",
+        "evidence_refs",
+        "posterior_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "evaluation_id": {"type": "string", "minLength": 1},
+        "event_kind": {"type": "string", "const": "format_grounding_evaluation"},
+        "grounding_quality_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "update_allowed": {"type": "boolean"},
+        "infraction_refs": {"$ref": "#/$defs/ref_list"},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "posterior_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "artifact_output": {
+      "type": "object",
+      "required": [
+        "artifact_id",
+        "artifact_type",
+        "state",
+        "public_event_ref",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {"type": "string", "minLength": 1},
+        "artifact_type": {"$ref": "#/$defs/artifact_type"},
+        "state": {"$ref": "#/$defs/artifact_state"},
+        "public_event_ref": {"type": ["string", "null"], "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "audience_metric": {
+      "type": "object",
+      "required": [
+        "metric_name",
+        "value",
+        "sample_size",
+        "identity_scope",
+        "aggregate_ref",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "metric_name": {"$ref": "#/$defs/audience_metric_name"},
+        "value": {"type": "number", "minimum": 0},
+        "sample_size": {"type": "integer", "minimum": 0},
+        "identity_scope": {"type": "string", "const": "aggregate"},
+        "aggregate_ref": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "audience_outcome": {
+      "type": "object",
+      "required": [
+        "aggregate_only",
+        "per_person_identity_allowed",
+        "raw_comment_text_allowed",
+        "public_payer_identity_allowed",
+        "metrics",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_only": {"type": "boolean", "const": true},
+        "per_person_identity_allowed": {"type": "boolean", "const": false},
+        "raw_comment_text_allowed": {"type": "boolean", "const": false},
+        "public_payer_identity_allowed": {"type": "boolean", "const": false},
+        "metrics": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/audience_metric"}
+        },
+        "evidence_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "revenue_proxy": {
+      "type": "object",
+      "required": [
+        "proxy_name",
+        "value",
+        "aggregate_only",
+        "public_payer_identity_allowed",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "proxy_name": {"$ref": "#/$defs/revenue_proxy_name"},
+        "value": {"type": "number"},
+        "aggregate_only": {"type": "boolean", "const": true},
+        "public_payer_identity_allowed": {"type": "boolean", "const": false},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "safety_metric": {
+      "type": "object",
+      "required": ["metric_name", "count", "evidence_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "metric_name": {"$ref": "#/$defs/safety_metric_name"},
+        "count": {"type": "integer", "minimum": 0},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "capability_outcome_witness": {
+      "type": "object",
+      "required": [
+        "capability_outcome_ref",
+        "capability_outcome_envelope_ref",
+        "witness_state",
+        "evidence_envelope_refs",
+        "posterior_update_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "capability_outcome_ref": {"type": "string", "minLength": 1},
+        "capability_outcome_envelope_ref": {
+          "type": "string",
+          "pattern": "^CapabilityOutcomeEnvelope:"
+        },
+        "witness_state": {"$ref": "#/$defs/witness_state"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/ref_list"},
+        "posterior_update_allowed": {"type": "boolean"}
+      }
+    },
+    "posterior_update": {
+      "type": "object",
+      "required": [
+        "update_id",
+        "posterior_family",
+        "target_ref",
+        "source_signal",
+        "value",
+        "confidence",
+        "prior_ref",
+        "evidence_refs",
+        "update_allowed",
+        "blocked_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "update_id": {"type": "string", "minLength": 1},
+        "posterior_family": {"$ref": "#/$defs/posterior_update_family"},
+        "target_ref": {"type": "string", "minLength": 1},
+        "source_signal": {"$ref": "#/$defs/source_signal"},
+        "value": {"type": "number"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "prior_ref": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "update_allowed": {"type": "boolean"},
+        "blocked_reason": {"type": ["string", "null"]}
+      }
+    },
+    "exploration": {
+      "type": "object",
+      "required": [
+        "exploration_budget_ref",
+        "exploration_regret",
+        "novelty_distance",
+        "cooldown_effect_ref",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "exploration_budget_ref": {"type": "string", "minLength": 1},
+        "exploration_regret": {"type": "number", "minimum": 0, "maximum": 1},
+        "novelty_distance": {"type": "number", "minimum": 0, "maximum": 1},
+        "cooldown_effect_ref": {"type": ["string", "null"], "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "separation_policy": {
+      "type": "object",
+      "required": [
+        "selected_commanded_states_update_posteriors",
+        "witnessed_capability_outcomes_update_grounding",
+        "format_grounding_evaluations_update_grounding",
+        "engagement_can_override_grounding",
+        "revenue_can_override_grounding",
+        "audience_data_aggregate_only",
+        "per_person_audience_state_allowed",
+        "public_payer_identity_allowed",
+        "blocked_claims_become_public_truth"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "selected_commanded_states_update_posteriors": {"type": "boolean", "const": false},
+        "witnessed_capability_outcomes_update_grounding": {"type": "boolean", "const": true},
+        "format_grounding_evaluations_update_grounding": {"type": "boolean", "const": true},
+        "engagement_can_override_grounding": {"type": "boolean", "const": false},
+        "revenue_can_override_grounding": {"type": "boolean", "const": false},
+        "audience_data_aggregate_only": {"type": "boolean", "const": true},
+        "per_person_audience_state_allowed": {"type": "boolean", "const": false},
+        "public_payer_identity_allowed": {"type": "boolean", "const": false},
+        "blocked_claims_become_public_truth": {"type": "boolean", "const": false}
+      }
+    },
+    "learning_policy": {
+      "type": "object",
+      "required": [
+        "blocked_refused_corrected_private_only_are_learning_events",
+        "public_truth_claim_allowed",
+        "posterior_store_mutation_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "blocked_refused_corrected_private_only_are_learning_events": {
+          "type": "boolean",
+          "const": true
+        },
+        "public_truth_claim_allowed": {"type": "boolean"},
+        "posterior_store_mutation_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "content_programme_feedback_event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "ledger_event_id",
+        "run_id",
+        "programme_id",
+        "opportunity_decision_id",
+        "format_id",
+        "input_source_id",
+        "subject_cluster",
+        "occurred_at",
+        "event_kind",
+        "programme_state",
+        "public_private_mode",
+        "run_store_ref",
+        "selected_state_refs",
+        "commanded_state_refs",
+        "gate_outcomes",
+        "grounding_outputs",
+        "artifact_outputs",
+        "audience_outcome",
+        "revenue_proxies",
+        "safety_metrics",
+        "witnessed_capability_outcomes",
+        "posterior_updates",
+        "exploration",
+        "separation_policy",
+        "learning_policy",
+        "append_only",
+        "idempotency_key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "ledger_event_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "programme_id": {"type": "string", "minLength": 1},
+        "opportunity_decision_id": {"type": "string", "minLength": 1},
+        "format_id": {"$ref": "#/$defs/format_id"},
+        "input_source_id": {"type": "string", "minLength": 1},
+        "subject_cluster": {"type": "string", "minLength": 1},
+        "occurred_at": {"type": "string", "format": "date-time"},
+        "event_kind": {"$ref": "#/$defs/feedback_event_kind"},
+        "programme_state": {"$ref": "#/$defs/programme_outcome_state"},
+        "public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+        "run_store_ref": {"type": "string", "minLength": 1},
+        "selected_state_refs": {"$ref": "#/$defs/ref_list"},
+        "commanded_state_refs": {"$ref": "#/$defs/ref_list"},
+        "gate_outcomes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/gate_outcome"}
+        },
+        "grounding_outputs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/grounding_output"}
+        },
+        "artifact_outputs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/artifact_output"}
+        },
+        "audience_outcome": {"$ref": "#/$defs/audience_outcome"},
+        "revenue_proxies": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/revenue_proxy"}
+        },
+        "safety_metrics": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/safety_metric"}
+        },
+        "witnessed_capability_outcomes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/capability_outcome_witness"}
+        },
+        "posterior_updates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/posterior_update"}
+        },
+        "exploration": {"$ref": "#/$defs/exploration"},
+        "separation_policy": {"$ref": "#/$defs/separation_policy"},
+        "learning_policy": {"$ref": "#/$defs/learning_policy"},
+        "append_only": {"type": "boolean", "const": true},
+        "idempotency_key": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

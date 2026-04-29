@@ -8,6 +8,13 @@ vulture cannot see. Do not use this as a baseline for ordinary dead code.
 
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
 from shared.audio_topology_inspector import check_l12_forward_invariant
+from shared.content_programme_feedback_ledger import (
+    append_feedback_event,
+    audience_outcome_is_aggregate_only,
+    build_feedback_fixture,
+    event_allows_public_truth_claim,
+    posterior_update_is_evidence_bound,
+)
 from shared.content_programme_run_store import (
     append_run_store_event,
     build_fixture_envelope,
@@ -70,3 +77,13 @@ command_execution_allows_posterior_update
 witnessed_outcome_allows_posterior_update
 public_conversion_is_allowed
 build_fixture_envelope
+
+# Content programme feedback-ledger helpers are the deterministic public API for
+# downstream Bayesian posterior, scheduler, metrics, and conversion consumers.
+# This contract lands before those consumers, so vulture cannot see the call
+# path yet.
+append_feedback_event
+audience_outcome_is_aggregate_only
+posterior_update_is_evidence_bound
+event_allows_public_truth_claim
+build_feedback_fixture
