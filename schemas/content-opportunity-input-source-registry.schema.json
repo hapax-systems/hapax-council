@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/content-opportunity-input-source-registry.schema.json",
+  "title": "ContentOpportunityInputSourceRegistry",
+  "description": "Machine-readable registry of source classes that may produce Hapax content opportunities.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "registry_id",
+    "declared_at",
+    "producer",
+    "global_policy",
+    "source_classes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "registry_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$"
+    },
+    "declared_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "global_policy": {
+      "type": "object",
+      "required": [
+        "single_operator_only",
+        "supporter_controlled_programming_allowed",
+        "per_person_request_queues_allowed",
+        "aggregate_audience_only",
+        "trend_as_truth_allowed",
+        "official_current_source_required_for_current_event",
+        "missing_freshness_blocks_public_claim",
+        "private_dry_run_default_for_uncertain_sources",
+        "forbidden_uses"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "single_operator_only": {
+          "type": "boolean",
+          "const": true
+        },
+        "supporter_controlled_programming_allowed": {
+          "type": "boolean",
+          "const": false
+        },
+        "per_person_request_queues_allowed": {
+          "type": "boolean",
+          "const": false
+        },
+        "aggregate_audience_only": {
+          "type": "boolean",
+          "const": true
+        },
+        "trend_as_truth_allowed": {
+          "type": "boolean",
+          "const": false
+        },
+        "official_current_source_required_for_current_event": {
+          "type": "boolean",
+          "const": true
+        },
+        "missing_freshness_blocks_public_claim": {
+          "type": "boolean",
+          "const": true
+        },
+        "private_dry_run_default_for_uncertain_sources": {
+          "type": "boolean",
+          "const": true
+        },
+        "forbidden_uses": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/forbidden_use"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "source_classes": {
+      "type": "array",
+      "minItems": 8,
+      "items": {
+        "$ref": "#/$defs/source_class_record"
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "source_class": {
+      "type": "string",
+      "enum": [
+        "local_state",
+        "owned_media",
+        "platform_native_state",
+        "trend_sources",
+        "curated_watchlists",
+        "public_web_references",
+        "ambient_aggregate_audience",
+        "internal_anomalies"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": [
+        "private",
+        "dry_run",
+        "public_live",
+        "public_archive",
+        "public_monetizable"
+      ]
+    },
+    "forbidden_use": {
+      "type": "string",
+      "enum": [
+        "per_person_request_queue",
+        "supporter_controlled_programming",
+        "supporter_priority_queue",
+        "personalized_supporter_perk_content",
+        "trend_as_truth_warrant",
+        "uncleared_media_rebroadcast",
+        "stale_current_event_claim",
+        "private_analytics_disclosure",
+        "identifiable_person_audience_targeting"
+      ]
+    },
+    "rights_assumption": {
+      "type": "string",
+      "enum": [
+        "operator_controlled",
+        "owned_or_licensed_only",
+        "public_metadata_only",
+        "official_primary_sources_only",
+        "aggregate_metadata_only",
+        "unknown_blocks_public"
+      ]
+    },
+    "privacy_posture": {
+      "type": "string",
+      "enum": [
+        "operator_private",
+        "public_safe_when_sanitized",
+        "aggregate_only",
+        "public_reference",
+        "private_or_dry_run_only"
+      ]
+    },
+    "prior_field_name": {
+      "type": "string",
+      "enum": [
+        "source_reliability_prior",
+        "freshness_decay_prior",
+        "rights_pass_probability",
+        "privacy_pass_probability",
+        "grounding_yield_prior",
+        "audience_signal_prior",
+        "artifact_conversion_prior",
+        "quota_cost_prior",
+        "trend_decay_prior",
+        "anomaly_yield_prior"
+      ]
+    },
+    "stale_behavior": {
+      "type": "string",
+      "enum": [
+        "block_public_claim",
+        "downgrade_to_dry_run",
+        "private_only",
+        "refresh_required"
+      ]
+    },
+    "source_prior_field": {
+      "type": "object",
+      "required": [
+        "field_name",
+        "meaning",
+        "initial_value",
+        "update_signal"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "field_name": {
+          "$ref": "#/$defs/prior_field_name"
+        },
+        "meaning": {
+          "type": "string",
+          "minLength": 1
+        },
+        "initial_value": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "update_signal": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "official_current_source_policy": {
+      "type": "object",
+      "required": [
+        "required",
+        "applies_to",
+        "primary_source_required",
+        "max_source_age_s",
+        "recency_label_required",
+        "sensitivity_gate_required"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "applies_to": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "all_candidates",
+              "current_event_claim",
+              "trend_candidate",
+              "public_claim",
+              "sensitive_topic"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "primary_source_required": {
+          "type": "boolean"
+        },
+        "max_source_age_s": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "recency_label_required": {
+          "type": "boolean"
+        },
+        "sensitivity_gate_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "source_class_record": {
+      "type": "object",
+      "required": [
+        "source_class",
+        "description",
+        "freshness",
+        "provenance_requirements",
+        "quota_rate_limits",
+        "rights_assumptions",
+        "privacy_posture",
+        "source_prior_fields",
+        "allowed_public_private_modes",
+        "private_dry_run_only",
+        "public_claim_requirements",
+        "official_current_source_policy"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_class": {
+          "$ref": "#/$defs/source_class"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "freshness": {
+          "type": "object",
+          "required": [
+            "default_ttl_s",
+            "public_claim_ttl_s",
+            "stale_behavior",
+            "watermark_required"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "default_ttl_s": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "public_claim_ttl_s": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "stale_behavior": {
+              "$ref": "#/$defs/stale_behavior"
+            },
+            "watermark_required": {
+              "type": "boolean"
+            }
+          }
+        },
+        "provenance_requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "quota_rate_limits": {
+          "type": "object",
+          "required": [
+            "quota_owner",
+            "rate_limit_ref",
+            "failure_mode"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "quota_owner": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rate_limit_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "failure_mode": {
+              "type": "string",
+              "enum": [
+                "hold_candidate",
+                "downgrade_to_dry_run",
+                "private_only",
+                "deny_public_claim"
+              ]
+            }
+          }
+        },
+        "rights_assumptions": {
+          "$ref": "#/$defs/rights_assumption"
+        },
+        "privacy_posture": {
+          "$ref": "#/$defs/privacy_posture"
+        },
+        "source_prior_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/source_prior_field"
+          }
+        },
+        "allowed_public_private_modes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/public_private_mode"
+          },
+          "uniqueItems": true
+        },
+        "private_dry_run_only": {
+          "type": "boolean"
+        },
+        "public_claim_requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "official_current_source_policy": {
+          "$ref": "#/$defs/official_current_source_policy"
+        }
+      }
+    }
+  }
+}
