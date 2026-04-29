@@ -8,6 +8,7 @@ export interface StudioState {
   smoothMode: boolean;
   activePreset: string;
   recording: boolean;
+  broadcastMode: "desktop" | "mobile" | "dual";
 }
 
 export interface StudioActions {
@@ -15,6 +16,7 @@ export interface StudioActions {
   setActivePreset(name: string): void;
   cyclePreset(direction: "next" | "prev"): void;
   setRecording(value: boolean): void;
+  setBroadcastMode(value: "desktop" | "mobile" | "dual"): void;
 }
 
 // ─── Register ────────────────────────────────────────────────────────────────
@@ -86,6 +88,22 @@ export function registerStudioCommands(
     description: "Toggle recording on/off",
     execute(): CommandResult {
       actions.setRecording(!getState().recording);
+      return { ok: true };
+    },
+  });
+
+  registry.register({
+    path: "studio.broadcast.mode",
+    description: "Set compositor livestream egress mode",
+    args: {
+      mode: { type: "string", required: true, enum: ["desktop", "mobile", "dual"] },
+    },
+    execute(args): CommandResult {
+      if (args.mode !== "desktop" && args.mode !== "mobile" && args.mode !== "dual") {
+        return { ok: false, error: `Invalid broadcast mode: ${String(args.mode)}` };
+      }
+      actions.setBroadcastMode(args.mode);
+      api.patch("/studio/broadcast-mode", { mode: args.mode }).catch(() => {});
       return { ok: true };
     },
   });
@@ -184,4 +202,5 @@ export function registerStudioCommands(
   registry.registerQuery("studio.smoothMode", () => getState().smoothMode);
   registry.registerQuery("studio.activePreset", () => getState().activePreset);
   registry.registerQuery("studio.recording", () => getState().recording);
+  registry.registerQuery("studio.broadcastMode", () => getState().broadcastMode);
 }

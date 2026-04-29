@@ -32,6 +32,9 @@ from .source_registry import SourceRegistry
 
 log = logging.getLogger(__name__)
 
+BROADCAST_MODE_PATH = Path("/dev/shm/hapax-compositor/broadcast-mode.json")
+_VALID_BROADCAST_MODES = frozenset({"desktop", "mobile", "dual"})
+
 
 # ---------------------------------------------------------------------------
 # Source-registry epic Phase D task 13 — Layout loader + hardcoded rescue
@@ -560,6 +563,10 @@ class StudioCompositor:
         self._recording_status_lock = threading.Lock()
         self._element_to_role: dict[str, str] = {}
         self._status_timer_id: int | None = None
+        self._broadcast_mode_timer_id: int | None = None
+        self._broadcast_mode: str = self._resolve_broadcast_mode()
+        self._mobile_salience_router: Any | None = None
+        self._mobile_cairo_runner: Any | None = None
         self._overlay_state = OverlayState()
         self._overlay_canvas_size: tuple[int, int] = (config.output_width, config.output_height)
         self._tile_layout: dict[str, TileRect] = {}
@@ -748,25 +755,32 @@ class StudioCompositor:
         elif t == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
             src_name = message.src.get_name() if message.src else "unknown"
-            # Phase 5: scope RTMP bin errors to the bin and rebuild in place.
-            # src-name filtering is reliable because every RTMP bin element is
-            # named with the rtmp_ prefix in rtmp_output.py.
-            if src_name.startswith("rtmp_"):
+            # Scope RTMP bin errors to their bin and rebuild in place.
+            # Prefix filtering is reliable because every element in each
+            # detachable egress bin is named with its endpoint prefix.
+            if src_name.startswith("rtmp_") or src_name.startswith("mobile_rtmp_"):
+                is_mobile = src_name.startswith("mobile_rtmp_")
+                endpoint = "mobile" if is_mobile else "youtube"
                 log.error(
-                    "RTMP bin error (element %s): %s (debug=%s)",
+                    "RTMP bin error endpoint=%s (element %s): %s (debug=%s)",
+                    endpoint,
                     src_name,
                     err.message,
                     debug,
                 )
-                rtmp_bin = getattr(self, "_rtmp_bin", None)
+                rtmp_bin = (
+                    getattr(self, "_mobile_rtmp_bin", None)
+                    if is_mobile
+                    else getattr(self, "_rtmp_bin", None)
+                )
                 pipeline = self.pipeline
                 if rtmp_bin is not None and pipeline is not None and self._GLib is not None:
                     self._GLib.idle_add(lambda: (rtmp_bin.rebuild_in_place(pipeline), False)[1])
                 try:
                     from . import metrics
 
-                    metrics.RTMP_ENCODER_ERRORS_TOTAL.labels(endpoint="youtube").inc()
-                    metrics.RTMP_BIN_REBUILDS_TOTAL.labels(endpoint="youtube").inc()
+                    metrics.RTMP_ENCODER_ERRORS_TOTAL.labels(endpoint=endpoint).inc()
+                    metrics.RTMP_BIN_REBUILDS_TOTAL.labels(endpoint=endpoint).inc()
                 except Exception:
                     pass
                 return True
@@ -873,6 +887,13 @@ class StudioCompositor:
         rtmp_rebuild_count = (
             int(getattr(rtmp_bin, "rebuild_count", 0)) if rtmp_bin is not None else 0
         )
+        mobile_rtmp_bin = getattr(self, "_mobile_rtmp_bin", None)
+        mobile_rtmp_attached = (
+            bool(mobile_rtmp_bin.is_attached()) if mobile_rtmp_bin is not None else False
+        )
+        mobile_rtmp_rebuild_count = (
+            int(getattr(mobile_rtmp_bin, "rebuild_count", 0)) if mobile_rtmp_bin is not None else 0
+        )
         status = {
             "state": state,
             "pid": os.getpid(),
@@ -887,6 +908,9 @@ class StudioCompositor:
             "hls_url": hls_url,
             "rtmp_attached": rtmp_attached,
             "rtmp_rebuild_count": rtmp_rebuild_count,
+            "mobile_rtmp_attached": mobile_rtmp_attached,
+            "mobile_rtmp_rebuild_count": mobile_rtmp_rebuild_count,
+            "broadcast_mode": self._broadcast_mode,
             "camera_profile": self._active_profile_name,
             "consent_recording_allowed": self._consent_recording_allowed,
             "guest_present": guest_present,
@@ -921,6 +945,85 @@ class StudioCompositor:
             except Exception:
                 log.debug("fd count gauge update failed", exc_info=True)
         return self._running
+
+    def _resolve_broadcast_mode(self) -> str:
+        mode = (os.environ.get("HAPAX_BROADCAST_MODE") or "dual").strip().lower()
+        try:
+            if BROADCAST_MODE_PATH.exists():
+                data = json.loads(BROADCAST_MODE_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    mode = str(data.get("mode") or mode).strip().lower()
+        except (OSError, json.JSONDecodeError):
+            log.debug("broadcast-mode read failed", exc_info=True)
+        if mode not in _VALID_BROADCAST_MODES:
+            log.warning("invalid broadcast mode %r; falling back to dual", mode)
+            mode = "dual"
+        return mode
+
+    def _set_broadcast_mode(self, mode: str) -> None:
+        self._broadcast_mode = mode if mode in _VALID_BROADCAST_MODES else "dual"
+        try:
+            from . import metrics
+
+            metrics.set_broadcast_mode(self._broadcast_mode)
+        except Exception:
+            log.debug("broadcast mode metric update failed", exc_info=True)
+
+    def _broadcast_mode_tick(self) -> bool:
+        if not self._running:
+            return False
+        mode = self._resolve_broadcast_mode()
+        if mode == self._broadcast_mode:
+            return True
+        previous = self._broadcast_mode
+        self._set_broadcast_mode(mode)
+        self._sync_mobile_support_threads()
+        if self.pipeline is not None and self._any_livestream_attached():
+            ok, detail = self._apply_livestream_mode(activate=True, mode=mode)
+            if not ok:
+                log.error("broadcast mode apply failed (%s -> %s): %s", previous, mode, detail)
+        self._write_status("running")
+        return True
+
+    def _any_livestream_attached(self) -> bool:
+        rtmp_bin = getattr(self, "_rtmp_bin", None)
+        mobile_bin = getattr(self, "_mobile_rtmp_bin", None)
+        return bool(
+            (rtmp_bin is not None and rtmp_bin.is_attached())
+            or (mobile_bin is not None and mobile_bin.is_attached())
+        )
+
+    def _sync_mobile_support_threads(self) -> None:
+        if self._broadcast_mode in ("mobile", "dual"):
+            self._ensure_mobile_support_threads()
+        else:
+            self._stop_mobile_support_threads()
+
+    def _ensure_mobile_support_threads(self) -> None:
+        try:
+            if self._mobile_salience_router is None:
+                from agents.studio_compositor.mobile_salience_router import MobileSalienceRouter
+
+                self._mobile_salience_router = MobileSalienceRouter()
+                self._mobile_salience_router.start()
+            if self._mobile_cairo_runner is None:
+                from agents.studio_compositor.mobile_cairo_sources import MobileCairoRunner
+
+                self._mobile_cairo_runner = MobileCairoRunner()
+                self._mobile_cairo_runner.start()
+        except Exception:
+            log.exception("mobile support thread start failed")
+
+    def _stop_mobile_support_threads(self) -> None:
+        for attr in ("_mobile_cairo_runner", "_mobile_salience_router"):
+            worker = getattr(self, attr, None)
+            if worker is None:
+                continue
+            try:
+                worker.stop()
+            except Exception:
+                log.exception("%s stop failed", attr)
+            setattr(self, attr, None)
 
     def start_layout_only(self) -> None:
         """Phase D task 14 — load the Layout and populate SourceRegistry.
@@ -1185,50 +1288,52 @@ class StudioCompositor:
         stop_compositor(self)
 
     def toggle_livestream(self, activate: bool, reason: str = "") -> tuple[bool, str]:
-        """Attach or detach the RTMP output bin. Consent-gated by the
+        """Attach or detach the configured RTMP output bins. Consent-gated by the
         unified semantic recruitment pipeline — this method should only be
         called from the affordance handler which runs after the consent
         check.
 
         Phase 5 of the camera 24/7 resilience epic (closes A7).
         """
-        rtmp_bin = getattr(self, "_rtmp_bin", None)
-        if rtmp_bin is None:
-            return False, "rtmp bin not constructed (compositor not started?)"
         if self.pipeline is None:
             return False, "composite pipeline not built"
 
+        mode = self._resolve_broadcast_mode()
+        self._set_broadcast_mode(mode)
+        self._sync_mobile_support_threads()
+
         if activate:
-            if rtmp_bin.is_attached():
+            if self._livestream_matches_mode(mode):
                 return True, "already live"
-            ok = rtmp_bin.build_and_attach(self.pipeline)
+            ok, detail = self._apply_livestream_mode(activate=True, mode=mode)
             if not ok:
-                return False, "rtmp bin build_and_attach failed"
+                return False, detail
             try:
                 from shared.notify import send_notification
 
                 from . import metrics
 
-                metrics.RTMP_CONNECTED.labels(endpoint="youtube").set(1)
+                metrics.set_broadcast_mode(mode)
                 send_notification(
                     title="Livestream started",
-                    message=f"Reason: {reason}",
+                    message=f"Mode: {mode}. Reason: {reason}",
                     priority="default",
                     tags=["rocket"],
                 )
             except Exception:
                 log.exception("rtmp attach side-effects raised (non-fatal)")
-            return True, "rtmp bin attached"
+            return True, f"livestream egress attached ({mode})"
         else:
-            if not rtmp_bin.is_attached():
+            if not self._any_livestream_attached():
                 return True, "already off"
-            rtmp_bin.detach_and_teardown(self.pipeline)
+            ok, detail = self._apply_livestream_mode(activate=False, mode=mode)
             try:
                 from shared.notify import send_notification
 
                 from . import metrics
 
                 metrics.RTMP_CONNECTED.labels(endpoint="youtube").set(0)
+                metrics.RTMP_CONNECTED.labels(endpoint="mobile").set(0)
                 send_notification(
                     title="Livestream stopped",
                     message=f"Reason: {reason}",
@@ -1237,4 +1342,70 @@ class StudioCompositor:
                 )
             except Exception:
                 log.exception("rtmp detach side-effects raised (non-fatal)")
-            return True, "rtmp bin detached"
+            return ok, detail
+
+    def _livestream_matches_mode(self, mode: str) -> bool:
+        rtmp_bin = getattr(self, "_rtmp_bin", None)
+        mobile_bin = getattr(self, "_mobile_rtmp_bin", None)
+        desktop_attached = bool(rtmp_bin.is_attached()) if rtmp_bin is not None else False
+        mobile_attached = bool(mobile_bin.is_attached()) if mobile_bin is not None else False
+        return desktop_attached == (mode in ("desktop", "dual")) and mobile_attached == (
+            mode in ("mobile", "dual")
+        )
+
+    def _apply_livestream_mode(self, *, activate: bool, mode: str) -> tuple[bool, str]:
+        if self.pipeline is None:
+            return False, "composite pipeline not built"
+        rtmp_bin = getattr(self, "_rtmp_bin", None)
+        mobile_bin = getattr(self, "_mobile_rtmp_bin", None)
+        if rtmp_bin is None and mode in ("desktop", "dual"):
+            return False, "desktop rtmp bin not constructed"
+        if mobile_bin is None and mode in ("mobile", "dual"):
+            return False, "mobile rtmp bin not constructed"
+
+        if not activate:
+            if rtmp_bin is not None and rtmp_bin.is_attached():
+                rtmp_bin.detach_and_teardown(self.pipeline)
+            if mobile_bin is not None and mobile_bin.is_attached():
+                mobile_bin.detach_and_teardown(self.pipeline)
+            self._publish_livestream_metrics(mode)
+            return True, "livestream egress detached"
+
+        errors: list[str] = []
+        if rtmp_bin is not None:
+            should_attach_desktop = mode in ("desktop", "dual")
+            if should_attach_desktop and not rtmp_bin.is_attached():
+                if not rtmp_bin.build_and_attach(self.pipeline):
+                    errors.append("desktop rtmp attach failed")
+            elif not should_attach_desktop and rtmp_bin.is_attached():
+                rtmp_bin.detach_and_teardown(self.pipeline)
+
+        if mobile_bin is not None:
+            should_attach_mobile = mode in ("mobile", "dual")
+            if should_attach_mobile and not mobile_bin.is_attached():
+                if not mobile_bin.build_and_attach(self.pipeline):
+                    errors.append("mobile rtmp attach failed")
+            elif not should_attach_mobile and mobile_bin.is_attached():
+                mobile_bin.detach_and_teardown(self.pipeline)
+
+        if errors:
+            return False, "; ".join(errors)
+        self._publish_livestream_metrics(mode)
+        return True, f"livestream egress mode applied: {mode}"
+
+    def _publish_livestream_metrics(self, mode: str) -> None:
+        try:
+            from . import metrics
+
+            rtmp_bin = getattr(self, "_rtmp_bin", None)
+            mobile_bin = getattr(self, "_mobile_rtmp_bin", None)
+            if metrics.RTMP_CONNECTED is not None:
+                metrics.RTMP_CONNECTED.labels(endpoint="youtube").set(
+                    1 if rtmp_bin is not None and rtmp_bin.is_attached() else 0
+                )
+                metrics.RTMP_CONNECTED.labels(endpoint="mobile").set(
+                    1 if mobile_bin is not None and mobile_bin.is_attached() else 0
+                )
+            metrics.set_broadcast_mode(mode)
+        except Exception:
+            log.debug("livestream metric publish failed", exc_info=True)
