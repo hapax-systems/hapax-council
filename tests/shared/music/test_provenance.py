@@ -12,8 +12,14 @@ from pydantic import ValidationError
 
 from shared.music.provenance import (
     HAPAX_POOL_ALLOWED_LICENSES,
+    MUSIC_PROVENANCE_INVENTORY,
+    RETIRED_MUSIC_PROVENANCE_COMMITMENTS,
     MusicTrackProvenance,
+    build_music_provenance_token,
+    classify_music_provenance,
     is_broadcast_safe,
+    manifest_asset_from_provenance,
+    normalize_music_license,
 )
 
 # ── broadcast-safety predicate ────────────────────────────────────────
@@ -75,6 +81,86 @@ def test_hapax_pool_rejects_proprietary_licenses() -> None:
         "unknown",
     }
     assert HAPAX_POOL_ALLOWED_LICENSES.isdisjoint(forbidden)
+
+
+def test_license_normalization_accepts_allowed_aliases() -> None:
+    assert normalize_music_license("CC-BY-4.0") == "cc-by"
+    assert normalize_music_license("CC0-1.0") == "public-domain"
+    assert normalize_music_license("operator-owned") == "licensed-for-broadcast"
+
+
+def test_license_normalization_rejects_unknown_or_noncommercial() -> None:
+    assert normalize_music_license("CC-BY-NC") is None
+    assert normalize_music_license("all-rights-reserved") is None
+    assert normalize_music_license(None) is None
+
+
+def test_soundcloud_operator_adapter_is_explicitly_operator_owned_contract() -> None:
+    provenance, license_slug = classify_music_provenance(
+        source="soundcloud-oudepode",
+        track_id="https://soundcloud.com/oudepode/track",
+        license=None,
+    )
+    assert provenance == "soundcloud-licensed"
+    assert license_slug == "licensed-for-broadcast"
+
+
+def test_non_operator_soundcloud_without_license_fails_unknown() -> None:
+    provenance, license_slug = classify_music_provenance(
+        source="soundcloud-other",
+        track_id="https://soundcloud.com/someone/track",
+        license=None,
+    )
+    assert provenance == "unknown"
+    assert license_slug is None
+
+
+def test_manifest_projection_has_token_and_tier() -> None:
+    rec = MusicTrackProvenance(
+        track_id="/pool/track.flac",
+        provenance="hapax-pool",
+        license="cc-by",
+        source="hapax-pool:sidecar",
+    )
+    asset = manifest_asset_from_provenance(
+        rec,
+        content_risk="tier_3_uncertain",
+        broadcast_safe=True,
+        source="bandcamp-direct",
+    )
+    assert asset.token == build_music_provenance_token("/pool/track.flac", "hapax-pool")
+    assert asset.tier == "tier_3_uncertain"
+    assert asset.music_provenance == "hapax-pool"
+    assert asset.broadcast_safe is True
+
+
+def test_unknown_manifest_projection_missing_token_fails_closed() -> None:
+    rec = MusicTrackProvenance(track_id="/pool/track.flac", provenance="unknown")
+    asset = manifest_asset_from_provenance(
+        rec,
+        content_risk="tier_4_risky",
+        broadcast_safe=True,
+    )
+    assert asset.token is None
+    assert asset.broadcast_safe is False
+
+
+def test_inventory_covers_music_provenance_surfaces_and_retirements() -> None:
+    inventory = {item.surface: item for item in MUSIC_PROVENANCE_INVENTORY}
+    assert set(inventory) == {"soundcloud", "local-pool", "vinyl", "overlay"}
+    assert "retired" in inventory["soundcloud"].current_contract
+    assert "music-provenance.json" in inventory["overlay"].fields
+
+
+def test_stale_soundcloud_and_vinyl_commitments_are_explicitly_retired() -> None:
+    assert (
+        "credential-blocked"
+        in RETIRED_MUSIC_PROVENANCE_COMMITMENTS["soundcloud_oauth_me_tracks_license_parser"]
+    )
+    assert (
+        "operator-vinyl only"
+        in RETIRED_MUSIC_PROVENANCE_COMMITMENTS["vinyl_per_record_broadcast_license_resolver"]
+    )
 
 
 # ── Pydantic record contract ──────────────────────────────────────────

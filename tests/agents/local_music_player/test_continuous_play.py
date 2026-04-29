@@ -28,6 +28,7 @@ def _player_cfg(tmp_path: Path) -> PlayerConfig:
     return PlayerConfig(
         selection_path=tmp_path / "sel.json",
         attribution_path=tmp_path / "attrib.txt",
+        provenance_path=tmp_path / "provenance.json",
         repo_path=tmp_path / "tracks.jsonl",
         sc_repo_path=tmp_path / "soundcloud.jsonl",
         poll_s=0.01,
@@ -55,7 +56,22 @@ def _track(path: str, *, source: str = SOURCE_FOUND_SOUND, artist: str = "x") ->
         duration_s=120.0,
         broadcast_safe=True,
         source=source,
+        music_provenance="soundcloud-licensed" if source == SOURCE_OUDEPODE else "hapax-pool",
+        music_license="licensed-for-broadcast",
     )
+
+
+def _safe_selection_fields(
+    *,
+    provenance: str = "hapax-pool",
+    token: str = "music:hapax-pool:test",
+) -> dict[str, str]:
+    return {
+        "music_provenance": provenance,
+        "music_license": "licensed-for-broadcast",
+        "provenance_token": token,
+        "content_risk": "tier_0_owned",
+    }
 
 
 # ── continuous play ─────────────────────────────────────────────────────────
@@ -201,7 +217,12 @@ def test_non_stop_selection_clears_silence(tmp_path: Path) -> None:
     player._silenced = True  # in silence
 
     write_selection(
-        cfg.selection_path, "/found/a.flac", title="X", artist="A", source=SOURCE_FOUND_SOUND
+        cfg.selection_path,
+        "/found/a.flac",
+        title="X",
+        artist="A",
+        source=SOURCE_FOUND_SOUND,
+        **_safe_selection_fields(),
     )
     proc = MagicMock()
     proc.poll.return_value = None
@@ -226,7 +247,15 @@ def test_external_oudepode_cue_advances_cap_window(tmp_path: Path) -> None:
 
     # Operator runs `hapax-music-play --path /oude/a.flac` which writes selection
     write_selection(
-        cfg.selection_path, "/oude/a.flac", title="X", artist="op", source=SOURCE_OUDEPODE
+        cfg.selection_path,
+        "/oude/a.flac",
+        title="X",
+        artist="op",
+        source=SOURCE_OUDEPODE,
+        **_safe_selection_fields(
+            provenance="soundcloud-licensed",
+            token="music:soundcloud-licensed:test",
+        ),
     )
     proc = MagicMock()
     proc.poll.return_value = None  # playing

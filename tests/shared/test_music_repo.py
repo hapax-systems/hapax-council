@@ -124,6 +124,10 @@ def _touch_audio(root: Path, relpath: str) -> Path:
     return p
 
 
+def _write_sidecar(audio_path: Path, body: str) -> None:
+    audio_path.with_suffix(".yaml").write_text(body, encoding="utf-8")
+
+
 class TestRepoScanAndRoundTrip:
     def test_scan_without_mutagen_produces_degraded_records(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -153,6 +157,9 @@ class TestRepoScanAndRoundTrip:
             assert t.title
             assert t.artist == "unknown"
             assert t.duration_s >= 1.0
+            assert t.music_provenance == "unknown"
+            assert t.quarantine_reason == "missing_provenance_sidecar"
+            assert t.broadcast_safe is False
 
     def test_scan_skips_unsupported_extensions(self, tmp_path: Path) -> None:
         root = tmp_path / "library"
@@ -161,6 +168,89 @@ class TestRepoScanAndRoundTrip:
         repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
         count = repo.scan(root)
         assert count == 0
+
+    def test_scan_with_valid_sidecar_admits_hapax_pool_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_import = builtins.__import__
+
+        def _fail_import(name: str, *a: object, **kw: object) -> ModuleType:
+            if name == "mutagen" or name.startswith("mutagen."):
+                raise ImportError("forced for test")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.delitem(sys.modules, "mutagen", raising=False)
+        monkeypatch.setattr(builtins, "__import__", _fail_import)
+
+        root = tmp_path / "library"
+        audio = _touch_audio(root, "found-sounds/direct-drive.flac")
+        _write_sidecar(
+            audio,
+            """
+attribution:
+  artist: Dusty Decks
+  title: Direct Drive
+license:
+  spdx: CC-BY-4.0
+content_risk: tier_3_uncertain
+broadcast_safe: true
+source: bandcamp-direct
+whitelist_source: dusty-decks-direct-drive
+bpm: 92
+mood_tags: [dusty, warm]
+taxonomy_tags: [boom-bap]
+duration_seconds: 151
+""".lstrip(),
+        )
+
+        repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
+        assert repo.scan(root) == 1
+        track = repo.all_tracks()[0]
+        assert track.music_provenance == "hapax-pool"
+        assert track.music_license == "cc-by"
+        assert track.provenance_token is not None
+        assert track.broadcast_safe is True
+        assert track.content_risk == "tier_3_uncertain"
+        assert track.quarantine_reason is None
+        assert repo.select_candidates(
+            k=10,
+            max_content_risk="tier_3_uncertain",
+        ) == [track]
+
+    def test_scan_quarantines_missing_or_unallowed_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_import = builtins.__import__
+
+        def _fail_import(name: str, *a: object, **kw: object) -> ModuleType:
+            if name == "mutagen" or name.startswith("mutagen."):
+                raise ImportError("forced for test")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.delitem(sys.modules, "mutagen", raising=False)
+        monkeypatch.setattr(builtins, "__import__", _fail_import)
+
+        root = tmp_path / "library"
+        missing = _touch_audio(root, "missing-sidecar.mp3")
+        proprietary = _touch_audio(root, "proprietary.mp3")
+        _write_sidecar(
+            proprietary,
+            """
+license:
+  spdx: all-rights-reserved
+content_risk: tier_4_risky
+broadcast_safe: true
+source: local
+""".lstrip(),
+        )
+
+        repo = LocalMusicRepo(path=tmp_path / "tracks.jsonl")
+        assert repo.scan(root) == 2
+        by_path = {Path(track.path).name: track for track in repo.all_tracks()}
+        assert by_path[missing.name].quarantine_reason == "missing_provenance_sidecar"
+        assert by_path[proprietary.name].music_provenance == "unknown"
+        assert by_path[proprietary.name].broadcast_safe is False
+        assert repo.select_candidates(k=10, max_content_risk="tier_4_risky") == []
 
     def test_supported_extensions_covers_common_formats(self) -> None:
         for ext in (".mp3", ".flac", ".ogg", ".opus", ".m4a", ".wav"):
@@ -188,6 +278,8 @@ class TestRepoScanAndRoundTrip:
                 duration_s=30.0,
                 tags=["ambient"],
                 energy=0.2,
+                music_provenance="hapax-pool",
+                music_license="licensed-for-broadcast",
             )
         )
         repo.upsert(
@@ -198,6 +290,8 @@ class TestRepoScanAndRoundTrip:
                 duration_s=200.0,
                 tags=["rap"],
                 energy=0.8,
+                music_provenance="hapax-pool",
+                music_license="licensed-for-broadcast",
             )
         )
         repo.save()
@@ -244,6 +338,8 @@ class TestCandidateSelection:
                 duration_s=60.0,
                 tags=["ambient"],
                 energy=0.1,
+                music_provenance="hapax-pool",
+                music_license="licensed-for-broadcast",
             )
         )
         repo.upsert(
@@ -254,6 +350,8 @@ class TestCandidateSelection:
                 duration_s=60.0,
                 tags=["boom-bap"],
                 energy=0.5,
+                music_provenance="hapax-pool",
+                music_license="licensed-for-broadcast",
             )
         )
         repo.upsert(
@@ -264,6 +362,8 @@ class TestCandidateSelection:
                 duration_s=60.0,
                 tags=["hype"],
                 energy=0.95,
+                music_provenance="hapax-pool",
+                music_license="licensed-for-broadcast",
             )
         )
         return repo
@@ -322,6 +422,8 @@ class TestMusicCandidateSurfacer:
                     artist="A",
                     duration_s=60.0,
                     energy=0.5,
+                    music_provenance="hapax-pool",
+                    music_license="licensed-for-broadcast",
                 )
             )
         repo.save()
@@ -404,6 +506,8 @@ class TestMusicCandidateSurfacer:
             assert "path" in c
             assert "title" in c
             assert "source_type" in c
+            assert "music_provenance" in c
+            assert "provenance_token" in c
         assert "Phase 1" in data["note"]
 
 
@@ -426,6 +530,12 @@ class TestHandlePlayCommand:
                             "title": "A",
                             "artist": "X",
                             "source_type": "local",
+                            "source": "local",
+                            "content_risk": "tier_0_owned",
+                            "broadcast_safe": True,
+                            "music_provenance": "hapax-pool",
+                            "music_license": "licensed-for-broadcast",
+                            "provenance_token": "music:hapax-pool:a",
                         },
                         {
                             "index": 2,
@@ -433,6 +543,12 @@ class TestHandlePlayCommand:
                             "title": "B",
                             "artist": "Y",
                             "source_type": "soundcloud",
+                            "source": "soundcloud-oudepode",
+                            "content_risk": "tier_0_owned",
+                            "broadcast_safe": True,
+                            "music_provenance": "soundcloud-licensed",
+                            "music_license": "licensed-for-broadcast",
+                            "provenance_token": "music:soundcloud-licensed:b",
                         },
                     ],
                     "note": "",
@@ -476,6 +592,8 @@ class TestHandlePlayCommand:
         assert spath.exists()
         on_disk = json.loads(spath.read_text())
         assert on_disk["selection"]["source_type"] == "soundcloud"
+        assert on_disk["path"] == "https://soundcloud.com/x/y"
+        assert on_disk["music_provenance"] == "soundcloud-licensed"
 
     def test_unknown_index_returns_none(self, tmp_path: Path) -> None:
         from agents.studio_compositor.music_candidate_surfacer import handle_play_command
@@ -515,13 +633,14 @@ class TestSoundCloudAdapterGracefulDegradation:
         rows = sc.fetch_likes("some-user")
         assert rows == []
 
-    def test_main_exits_nonzero_without_user_id(
+    def test_main_exits_nonzero_without_configured_sources(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         from agents.soundcloud_adapter import __main__ as sc
 
         monkeypatch.delenv("HAPAX_SOUNDCLOUD_USER_ID", raising=False)
         monkeypatch.delenv("HAPAX_SOUNDCLOUD_USERNAME", raising=False)
+        monkeypatch.delenv("HAPAX_SOUNDCLOUD_BANKED_URL", raising=False)
         monkeypatch.setattr(sc, "SOUNDCLOUD_REPO_PATH", tmp_path / "sc.jsonl")
 
         rc = sc.main(["--auto"])

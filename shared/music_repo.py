@@ -33,9 +33,19 @@ import time
 from pathlib import Path
 from typing import Any
 
+import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.affordance import ContentRisk
+from shared.music.provenance import (
+    MusicManifestAsset,
+    MusicProvenance,
+    MusicTrackProvenance,
+    build_music_provenance_token,
+    classify_music_provenance,
+    is_broadcast_safe,
+    manifest_asset_from_provenance,
+)
 from shared.music_sources import is_decommissioned_broadcast_selection
 
 __all__ = [
@@ -118,12 +128,10 @@ class LocalMusicTrack(BaseModel):
         description="Number of operator-approved plays recorded so far.",
     )
 
-    # ── content-source-registry Phase 2 (2026-04-23) ─────────────────────
-    # Provenance fields for the broadcast-safety gate. Default to safe
-    # so old JSONL records load with a conservative posture (treated as
-    # operator-owned, broadcast-OK). Explicit re-tagging for tracks that
-    # came from external safe sources lands alongside their respective
-    # adapters.
+    # ── content-source-registry Phase 2 + music provenance Phase 7 ────────
+    # Provenance fields for the broadcast-safety gate. Older JSONL records
+    # still validate, then load/upsert policy quarantines anything missing
+    # music_provenance or a stable provenance token.
     content_risk: ContentRisk = Field(
         default="tier_0_owned",
         description=(
@@ -161,6 +169,35 @@ class LocalMusicTrack(BaseModel):
             "broadcast safety per-asset."
         ),
     )
+    music_provenance: MusicProvenance = Field(
+        default="unknown",
+        description=(
+            "Phase 7 music provenance class. ``unknown`` never surfaces for "
+            "broadcast and causes the player to fail closed."
+        ),
+    )
+    music_license: str | None = Field(
+        default=None,
+        description="Normalized Phase 7 license slug, if the provenance class uses one.",
+    )
+    provenance_token: str | None = Field(
+        default=None,
+        description=(
+            "Stable token for the downstream broadcast manifest. Missing "
+            "tokens are treated as missing provenance at egress."
+        ),
+    )
+    provenance_source: str | None = Field(
+        default=None,
+        description="How the music provenance was established.",
+    )
+    quarantine_reason: str | None = Field(
+        default=None,
+        description=(
+            "Set when scan/load admitted the row only for audit/DAW visibility. "
+            "Quarantined rows are never selected for broadcast."
+        ),
+    )
 
     @field_validator("tags")
     @classmethod
@@ -177,6 +214,24 @@ class LocalMusicTrack(BaseModel):
     def source_type(self) -> str:
         """Return ``"soundcloud"`` if the track is from SC, else ``"local"``."""
         return "soundcloud" if "soundcloud" in self.tags else "local"
+
+    def to_music_provenance_record(self) -> MusicTrackProvenance:
+        """Return the Phase 7 provenance record for this track."""
+        return MusicTrackProvenance(
+            track_id=self.path,
+            provenance=self.music_provenance,
+            license=self.music_license,
+            source=self.provenance_source or self.source,
+        )
+
+    def to_manifest_asset(self) -> MusicManifestAsset:
+        """Return the manifest projection consumed by the egress gate."""
+        return manifest_asset_from_provenance(
+            self.to_music_provenance_record(),
+            content_risk=self.content_risk,
+            broadcast_safe=self.broadcast_safe,
+            source=self.source,
+        )
 
 
 class LocalMusicRepo:
@@ -222,6 +277,7 @@ class LocalMusicRepo:
             try:
                 obj = json.loads(stripped)
                 track = LocalMusicTrack.model_validate(obj)
+                track = _with_provenance_token(track)
                 self._by_path[track.path] = track
             except Exception:
                 log.debug("Skipping malformed music-repo line: %s", stripped[:80])
@@ -318,6 +374,15 @@ class LocalMusicRepo:
         duration_s: float = 1.0
         tags: list[str] = []
         bpm: float | None = None
+        content_risk: ContentRisk = "tier_4_risky"
+        broadcast_safe = False
+        source = "local"
+        whitelist_source: str | None = None
+        music_provenance: MusicProvenance = "unknown"
+        music_license: str | None = None
+        provenance_token: str | None = None
+        provenance_source: str | None = None
+        quarantine_reason: str | None = None
 
         if has_mutagen:
             try:
@@ -346,6 +411,73 @@ class LocalMusicRepo:
             except Exception:
                 log.debug("mutagen read failed for %s", full, exc_info=True)
 
+        sidecar = _read_sidecar(full.with_suffix(".yaml"))
+        if sidecar is None:
+            quarantine_reason = "missing_provenance_sidecar"
+        else:
+            attribution = sidecar.get("attribution")
+            if isinstance(attribution, dict):
+                title = _string_value(attribution.get("title"), title)
+                artist = _string_value(attribution.get("artist"), artist)
+                album = _string_value(attribution.get("album"), album)
+
+            duration_raw = sidecar.get("duration_seconds")
+            if duration_raw is not None:
+                try:
+                    duration_s = max(float(duration_raw), 1.0)
+                except (TypeError, ValueError):
+                    pass
+            bpm_raw = sidecar.get("bpm")
+            if bpm_raw is not None:
+                try:
+                    bpm = float(bpm_raw)
+                except (TypeError, ValueError):
+                    bpm = None
+            tags.extend(_string_list(sidecar.get("mood_tags")))
+            tags.extend(_string_list(sidecar.get("taxonomy_tags")))
+
+            missing: list[str] = []
+            source_raw = sidecar.get("source")
+            source = _string_value(source_raw, "")
+            if not source:
+                source = "local"
+                missing.append("source")
+
+            content_risk_raw = sidecar.get("content_risk")
+            risk = _normalize_content_risk(content_risk_raw)
+            if risk is None:
+                missing.append("content_risk")
+            else:
+                content_risk = risk
+
+            broadcast_flag = _bool_value(sidecar.get("broadcast_safe"))
+            if broadcast_flag is None:
+                missing.append("broadcast_safe")
+            else:
+                broadcast_safe = broadcast_flag
+
+            whitelist_source = _string_value(sidecar.get("whitelist_source"), "") or None
+            raw_license = _license_value(sidecar)
+            if raw_license is None:
+                missing.append("license.spdx")
+
+            music_provenance, music_license = classify_music_provenance(
+                source=source,
+                track_id=str(full),
+                license=raw_license,
+            )
+            provenance_token = build_music_provenance_token(str(full), music_provenance)
+            provenance_source = "hapax-pool:sidecar"
+
+            if missing:
+                quarantine_reason = "missing_provenance_fields:" + ",".join(sorted(missing))
+            elif not is_broadcast_safe(music_provenance) or provenance_token is None:
+                quarantine_reason = f"unknown_or_unallowed_music_provenance:{raw_license or ''}"
+
+        if quarantine_reason is not None:
+            broadcast_safe = False
+            content_risk = "tier_4_risky"
+
         try:
             track = LocalMusicTrack(
                 path=str(full),
@@ -356,6 +488,15 @@ class LocalMusicRepo:
                 tags=tags,
                 energy=0.5,
                 bpm=bpm,
+                content_risk=content_risk,
+                broadcast_safe=broadcast_safe,
+                source=source,
+                whitelist_source=whitelist_source,
+                music_provenance=music_provenance,
+                music_license=music_license,
+                provenance_token=provenance_token,
+                provenance_source=provenance_source,
+                quarantine_reason=quarantine_reason,
             )
         except Exception:
             log.debug("Validation failed for %s", full, exc_info=True)
@@ -367,7 +508,7 @@ class LocalMusicRepo:
 
     def upsert(self, track: LocalMusicTrack) -> None:
         """Insert or replace a track by path."""
-        self._by_path[track.path] = track
+        self._by_path[track.path] = _with_provenance_token(track)
 
     def all_tracks(self) -> list[LocalMusicTrack]:
         """Return a list copy of every track currently in the repo."""
@@ -410,6 +551,12 @@ class LocalMusicRepo:
         scored: list[tuple[float, LocalMusicTrack]] = []
         for t in self._by_path.values():
             if not t.broadcast_safe:
+                continue
+            if t.quarantine_reason is not None:
+                continue
+            if not is_broadcast_safe(t.music_provenance):
+                continue
+            if not t.provenance_token:
                 continue
             if is_decommissioned_broadcast_selection(t.path, t.source):
                 continue
@@ -462,3 +609,85 @@ def _first_tag(mf: Any, key: str, *, default: str) -> str:
     if isinstance(value, (list, tuple)):
         return str(value[0]) if value else default
     return str(value)
+
+
+def _with_provenance_token(track: LocalMusicTrack) -> LocalMusicTrack:
+    updates: dict[str, Any] = {}
+    token = track.provenance_token
+    if token is None and track.music_provenance != "unknown":
+        token = build_music_provenance_token(track.path, track.music_provenance)
+        updates["provenance_token"] = token
+
+    if track.quarantine_reason is not None:
+        updates["broadcast_safe"] = False
+        updates["content_risk"] = "tier_4_risky"
+    elif not is_broadcast_safe(track.music_provenance):
+        updates["broadcast_safe"] = False
+        updates["content_risk"] = "tier_4_risky"
+        updates["quarantine_reason"] = (
+            "missing_music_provenance"
+            if track.music_provenance == "unknown"
+            else f"unallowed_music_provenance:{track.music_provenance}"
+        )
+    elif token is None:
+        updates["broadcast_safe"] = False
+        updates["content_risk"] = "tier_4_risky"
+        updates["quarantine_reason"] = "missing_provenance_token"
+
+    if not updates:
+        return track
+    return track.model_copy(update=updates)
+
+
+def _read_sidecar(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        log.debug("Failed to parse music sidecar %s", path, exc_info=True)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _string_value(value: Any, default: str) -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _bool_value(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    return None
+
+
+def _license_value(sidecar: dict[str, Any]) -> str | None:
+    raw = sidecar.get("license")
+    if isinstance(raw, dict):
+        return _string_value(raw.get("spdx"), "") or None
+    if isinstance(raw, str):
+        return _string_value(raw, "") or None
+    return None
+
+
+def _normalize_content_risk(raw: Any) -> ContentRisk | None:
+    if raw is None:
+        return None
+    key = str(raw).strip().lower().replace("-", "_")
+    if key.startswith("tier_") and key in _CONTENT_RISK_RANK:
+        return key  # type: ignore[return-value]
+    return None

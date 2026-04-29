@@ -36,6 +36,9 @@ def test_sclib_normalize_includes_source_and_safety_fields() -> None:
     assert row["content_risk"] == "tier_0_owned"
     assert row["broadcast_safe"] is True
     assert row["whitelist_source"] is None
+    assert row["music_provenance"] == "soundcloud-licensed"
+    assert row["music_license"] == "licensed-for-broadcast"
+    assert row["provenance_token"].startswith("music:soundcloud-licensed:")
     assert "soundcloud" in row["tags"]
 
 
@@ -52,6 +55,9 @@ def test_soundcloud_dict_normalize_includes_source_and_safety_fields() -> None:
     assert row["content_risk"] == "tier_0_owned"
     assert row["broadcast_safe"] is True
     assert row["whitelist_source"] is None
+    assert row["music_provenance"] == "soundcloud-licensed"
+    assert row["music_license"] == "licensed-for-broadcast"
+    assert row["provenance_token"].startswith("music:soundcloud-licensed:")
 
 
 def test_normalized_row_round_trips_through_local_music_track() -> None:
@@ -72,3 +78,5 @@ def test_normalized_row_round_trips_through_local_music_track() -> None:
     assert parsed.source == "soundcloud-oudepode"
     assert parsed.broadcast_safe is True
     assert parsed.content_risk == "tier_0_owned"
+    assert parsed.music_provenance == "soundcloud-licensed"
+    assert parsed.provenance_token is not None

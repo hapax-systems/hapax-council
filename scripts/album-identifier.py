@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -30,6 +31,10 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from shared.music.provenance import build_music_provenance_token
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("album-identifier")
@@ -704,6 +709,8 @@ def write_state(album: dict, track: str) -> None:
     ]
     if track and playing_now:
         lines.append(f'Track: "{track}"')
+    if playing_now:
+        lines.append("Provenance: operator-vinyl")
     # "(LOL)" is deliberate commentary on dumb-LLM-attribution-confidence —
     # it rides inline with the Confidence value rather than dangling on its
     # own line below where it read as an LLM artifact.
@@ -721,6 +728,8 @@ def write_state(album: dict, track: str) -> None:
     # `_vinyl_probably_playing()` so downstream prompts can treat absence
     # of `current_track` as "nothing is playing" rather than "I don't
     # know what's playing but here's what's on the deck".
+    track_id = f"vinyl:{artist}:{title}:{track or 'album'}"
+    music_provenance = "operator-vinyl" if playing_now else "unknown"
     state = {
         "type": "splattribution",
         "artist": artist,
@@ -731,6 +740,12 @@ def write_state(album: dict, track: str) -> None:
         "confidence": album.get("confidence", 0),
         "current_track": track if playing_now else "",
         "playing": playing_now,
+        "music_provenance": music_provenance,
+        "provenance_token": build_music_provenance_token(track_id, "operator-vinyl")
+        if playing_now
+        else None,
+        "content_risk": "tier_4_risky",
+        "source": "vinyl",
         "timestamp": time.time(),
     }
     try:

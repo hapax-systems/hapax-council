@@ -38,6 +38,8 @@ def _track(
         duration_s=120.0,
         broadcast_safe=True,
         source=source,
+        music_provenance="soundcloud-licensed" if source == SOURCE_OUDEPODE else "hapax-pool",
+        music_license="licensed-for-broadcast",
     )
 
 
@@ -142,6 +144,8 @@ def test_single_artist_pool_respects_broadcast_safe_under_fallback(
                 duration_s=120.0,
                 broadcast_safe=False,  # NEVER
                 source=SOURCE_OUDEPODE,
+                music_provenance="soundcloud-licensed",
+                music_license="licensed-for-broadcast",
             ),
         ],
     )

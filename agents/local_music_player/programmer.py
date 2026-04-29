@@ -41,6 +41,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shared.music.provenance import is_broadcast_safe
 from shared.music_repo import LocalMusicRepo, LocalMusicTrack
 from shared.music_sources import (
     SOURCE_FOUND_SOUND,
@@ -366,6 +367,12 @@ class MusicProgrammer:
                 )
             for track in repo.all_tracks():
                 if not track.broadcast_safe:
+                    continue
+                if track.quarantine_reason is not None:
+                    continue
+                if not is_broadcast_safe(track.music_provenance):
+                    continue
+                if not track.provenance_token:
                     continue
                 if is_decommissioned_broadcast_selection(track.path, track.source):
                     continue
