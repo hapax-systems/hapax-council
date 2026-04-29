@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/cross-surface-event-contract.schema.json",
+  "title": "CrossSurfaceEventContract",
+  "description": "Machine-readable cross-surface fanout policy for ResearchVehiclePublicEvent adapters.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "actions",
+    "failure_event_type",
+    "health_contract",
+    "apertures"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fanout_action"
+      },
+      "contains": {
+        "const": "publish"
+      },
+      "uniqueItems": true
+    },
+    "failure_event_type": {
+      "type": "string",
+      "const": "fanout.decision",
+      "description": "Blocked or degraded fanout is itself reportable as a public-event health/failure decision."
+    },
+    "health_contract": {
+      "type": "object",
+      "required": ["ok", "degraded", "blocked"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": {"type": "string", "minLength": 1},
+        "degraded": {"type": "string", "minLength": 1},
+        "blocked": {"type": "string", "minLength": 1}
+      }
+    },
+    "apertures": {
+      "type": "array",
+      "minItems": 10,
+      "items": {
+        "$ref": "#/$defs/aperture_contract"
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "aperture": {
+      "type": "string",
+      "enum": [
+        "youtube",
+        "omg_statuslog",
+        "omg_weblog",
+        "arena",
+        "mastodon",
+        "bluesky",
+        "discord",
+        "shorts",
+        "archive",
+        "replay"
+      ]
+    },
+    "surface": {
+      "type": "string",
+      "enum": [
+        "youtube_description",
+        "youtube_cuepoints",
+        "youtube_chapters",
+        "youtube_captions",
+        "youtube_shorts",
+        "youtube_channel_sections",
+        "arena",
+        "omg_statuslog",
+        "omg_weblog",
+        "omg_now",
+        "mastodon",
+        "bluesky",
+        "discord",
+        "archive",
+        "replay",
+        "captions",
+        "cuepoints",
+        "health",
+        "monetization"
+      ]
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "broadcast.boundary",
+        "programme.boundary",
+        "condition.changed",
+        "chronicle.high_salience",
+        "aesthetic.frame_capture",
+        "caption.segment",
+        "cuepoint.candidate",
+        "chapter.marker",
+        "shorts.candidate",
+        "shorts.upload",
+        "metadata.update",
+        "channel_section.candidate",
+        "arena_block.candidate",
+        "omg.statuslog",
+        "omg.weblog",
+        "publication.artifact",
+        "archive.segment",
+        "monetization.review",
+        "fanout.decision"
+      ]
+    },
+    "fanout_action": {
+      "type": "string",
+      "enum": [
+        "publish",
+        "link",
+        "embed",
+        "redact",
+        "hold",
+        "archive",
+        "replay"
+      ]
+    },
+    "fanout_decision": {
+      "type": "string",
+      "enum": ["allow", "redact", "hold", "deny"]
+    },
+    "health_status": {
+      "type": "string",
+      "enum": ["ok", "degraded", "blocked"]
+    },
+    "surface_reference": {
+      "type": "string",
+      "enum": ["public_url", "frame_ref", "chapter_ref"]
+    },
+    "aperture_reality": {
+      "type": "string",
+      "enum": [
+        "active_canonical",
+        "active_legacy",
+        "active_artifact",
+        "active_archive",
+        "inactive",
+        "missing_unit",
+        "credential_blocked",
+        "unavailable",
+        "operator_review"
+      ]
+    },
+    "aperture_contract": {
+      "type": "object",
+      "required": [
+        "aperture_id",
+        "display_name",
+        "target_surfaces",
+        "allowed_event_types",
+        "allowed_actions",
+        "current_reality",
+        "publication_contract",
+        "child_task",
+        "health_owner",
+        "requires_human_review",
+        "requires_one_reference"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "aperture_id": {"$ref": "#/$defs/aperture"},
+        "display_name": {"type": "string", "minLength": 1},
+        "target_surfaces": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/surface"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "allowed_event_types": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/event_type"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "allowed_actions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/fanout_action"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "current_reality": {"$ref": "#/$defs/aperture_reality"},
+        "publication_contract": {"type": ["string", "null"]},
+        "child_task": {"type": "string", "minLength": 1},
+        "health_owner": {"type": "string", "minLength": 1},
+        "requires_human_review": {"type": "boolean"},
+        "requires_one_reference": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/surface_reference"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "fanout_decision_event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "decision_id",
+        "source_event_id",
+        "source_event_type",
+        "target_aperture",
+        "target_surfaces",
+        "requested_action",
+        "resolved_action",
+        "decision",
+        "reasons",
+        "health_status",
+        "health_ref",
+        "failure_event_type",
+        "failure_event_id",
+        "child_task",
+        "dry_run",
+        "surface_policy_snapshot"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "decision_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_:-]*$"
+        },
+        "source_event_id": {"type": "string", "minLength": 1},
+        "source_event_type": {"$ref": "#/$defs/event_type"},
+        "target_aperture": {"$ref": "#/$defs/aperture"},
+        "target_surfaces": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/surface"},
+          "uniqueItems": true
+        },
+        "requested_action": {"$ref": "#/$defs/fanout_action"},
+        "resolved_action": {"$ref": "#/$defs/fanout_action"},
+        "decision": {"$ref": "#/$defs/fanout_decision"},
+        "reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        },
+        "health_status": {"$ref": "#/$defs/health_status"},
+        "health_ref": {"type": "string", "minLength": 1},
+        "failure_event_type": {
+          "type": ["string", "null"],
+          "enum": ["fanout.decision", null]
+        },
+        "failure_event_id": {"type": ["string", "null"]},
+        "child_task": {"type": "string", "minLength": 1},
+        "dry_run": {"type": "boolean"},
+        "surface_policy_snapshot": {"type": "object"}
+      }
+    }
+  }
+}
