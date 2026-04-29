@@ -1,0 +1,626 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/format-grounding-evaluator.schema.json",
+  "title": "FormatGroundingEvaluation",
+  "description": "Evidence-bound evaluator output for content programme runs, without expert-system verdict authority.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "evaluation_id",
+    "evaluated_at",
+    "producer",
+    "run_ref",
+    "format_evaluator_profile",
+    "gate_refs",
+    "grounding_question",
+    "dimension_scores",
+    "scored_claims",
+    "infractions",
+    "evaluator_result",
+    "no_expert_system_policy",
+    "reward_vector_inputs",
+    "feedback_ledger_interface",
+    "separation_policy",
+    "audit"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "evaluation_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$"
+    },
+    "evaluated_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "run_ref": {
+      "type": "object",
+      "required": [
+        "programme_id",
+        "run_id",
+        "format_id",
+        "opportunity_id",
+        "input_source_id",
+        "subject_cluster",
+        "public_private_mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "programme_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "format_id": {"$ref": "#/$defs/format_id"},
+        "opportunity_id": {"type": "string", "minLength": 1},
+        "input_source_id": {"type": "string", "minLength": 1},
+        "subject_cluster": {"type": "string", "minLength": 1},
+        "public_private_mode": {"$ref": "#/$defs/public_private_mode"}
+      }
+    },
+    "format_evaluator_profile": {
+      "type": "object",
+      "required": [
+        "format_id",
+        "format_contract_ref",
+        "grounding_attempt_types",
+        "dimension_weights",
+        "minimum_passing_score"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "format_id": {"$ref": "#/$defs/format_id"},
+        "format_contract_ref": {"type": "string", "minLength": 1},
+        "grounding_attempt_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/grounding_attempt_type"},
+          "uniqueItems": true
+        },
+        "dimension_weights": {
+          "type": "object",
+          "required": [
+            "perception",
+            "classification",
+            "comparison",
+            "ranking",
+            "explanation",
+            "refusal",
+            "uncertainty",
+            "correction",
+            "claim_confidence_movement"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "perception": {"type": "number", "minimum": 0},
+            "classification": {"type": "number", "minimum": 0},
+            "comparison": {"type": "number", "minimum": 0},
+            "ranking": {"type": "number", "minimum": 0},
+            "explanation": {"type": "number", "minimum": 0},
+            "refusal": {"type": "number", "minimum": 0},
+            "uncertainty": {"type": "number", "minimum": 0},
+            "correction": {"type": "number", "minimum": 0},
+            "claim_confidence_movement": {"type": "number", "minimum": 0}
+          }
+        },
+        "minimum_passing_score": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "gate_refs": {
+      "type": "object",
+      "required": [
+        "grounding_gate_ref",
+        "opportunity_decision_ref",
+        "format_registry_ref"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "grounding_gate_ref": {"type": "string", "minLength": 1},
+        "opportunity_decision_ref": {"type": "string", "minLength": 1},
+        "format_registry_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "grounding_question": {"type": "string", "minLength": 1},
+    "dimension_scores": {
+      "type": "object",
+      "required": [
+        "perception",
+        "classification",
+        "comparison",
+        "ranking",
+        "explanation",
+        "refusal",
+        "uncertainty",
+        "correction",
+        "claim_confidence_movement"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "perception": {"$ref": "#/$defs/dimension_score"},
+        "classification": {"$ref": "#/$defs/dimension_score"},
+        "comparison": {"$ref": "#/$defs/dimension_score"},
+        "ranking": {"$ref": "#/$defs/dimension_score"},
+        "explanation": {"$ref": "#/$defs/dimension_score"},
+        "refusal": {"$ref": "#/$defs/dimension_score"},
+        "uncertainty": {"$ref": "#/$defs/dimension_score"},
+        "correction": {"$ref": "#/$defs/dimension_score"},
+        "claim_confidence_movement": {"$ref": "#/$defs/dimension_score"}
+      }
+    },
+    "scored_claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/scored_claim"}
+    },
+    "infractions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/grounding_infraction"},
+      "uniqueItems": true
+    },
+    "evaluator_result": {
+      "type": "object",
+      "required": [
+        "grounding_quality_score",
+        "pass_state",
+        "public_claim_allowed",
+        "correction_required",
+        "refusal_required",
+        "unsupported_claim_count",
+        "overbroad_claim_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "grounding_quality_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "pass_state": {"type": "string", "enum": ["pass", "warn", "fail", "refused"]},
+        "public_claim_allowed": {"type": "boolean"},
+        "correction_required": {"type": "boolean"},
+        "refusal_required": {"type": "boolean"},
+        "unsupported_claim_count": {"type": "integer", "minimum": 0},
+        "overbroad_claim_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "no_expert_system_policy": {
+      "type": "object",
+      "required": [
+        "rules_may_score_attempt_quality",
+        "authoritative_verdict_allowed",
+        "domain_truth_adjudication_allowed",
+        "score_requires_evidence_bound_claim",
+        "score_may_block_or_refuse"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rules_may_score_attempt_quality": {"type": "boolean", "const": true},
+        "authoritative_verdict_allowed": {"type": "boolean", "const": false},
+        "domain_truth_adjudication_allowed": {"type": "boolean", "const": false},
+        "score_requires_evidence_bound_claim": {"type": "boolean", "const": true},
+        "score_may_block_or_refuse": {"type": "boolean", "const": true}
+      }
+    },
+    "reward_vector_inputs": {
+      "type": "object",
+      "required": [
+        "grounding_reward_inputs",
+        "artifact_reward_inputs",
+        "revenue_reward_inputs",
+        "engagement_observations",
+        "posterior_update_targets"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "grounding_reward_inputs": {
+          "type": "object",
+          "required": [
+            "evidence_yield",
+            "classification_quality",
+            "comparison_quality",
+            "ranking_stability",
+            "explanation_quality",
+            "uncertainty_quality",
+            "refusal_quality",
+            "correction_value",
+            "posterior_update",
+            "inconsistency_discovery"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "evidence_yield": {"$ref": "#/$defs/reward_input"},
+            "classification_quality": {"$ref": "#/$defs/reward_input"},
+            "comparison_quality": {"$ref": "#/$defs/reward_input"},
+            "ranking_stability": {"$ref": "#/$defs/reward_input"},
+            "explanation_quality": {"$ref": "#/$defs/reward_input"},
+            "uncertainty_quality": {"$ref": "#/$defs/reward_input"},
+            "refusal_quality": {"$ref": "#/$defs/reward_input"},
+            "correction_value": {"$ref": "#/$defs/reward_input"},
+            "posterior_update": {"$ref": "#/$defs/reward_input"},
+            "inconsistency_discovery": {"$ref": "#/$defs/reward_input"}
+          }
+        },
+        "artifact_reward_inputs": {
+          "type": "object",
+          "required": ["chapter_value", "caption_value", "replay_value", "artifact_value"],
+          "additionalProperties": false,
+          "properties": {
+            "chapter_value": {"$ref": "#/$defs/reward_input"},
+            "caption_value": {"$ref": "#/$defs/reward_input"},
+            "replay_value": {"$ref": "#/$defs/reward_input"},
+            "artifact_value": {"$ref": "#/$defs/reward_input"}
+          }
+        },
+        "revenue_reward_inputs": {
+          "type": "object",
+          "required": ["structural_revenue_signal", "monetization_gate_signal"],
+          "additionalProperties": false,
+          "properties": {
+            "structural_revenue_signal": {"$ref": "#/$defs/reward_input"},
+            "monetization_gate_signal": {"$ref": "#/$defs/reward_input"}
+          }
+        },
+        "engagement_observations": {
+          "type": "object",
+          "required": ["kept_separate", "may_override_grounding", "metrics", "evidence_refs"],
+          "additionalProperties": false,
+          "properties": {
+            "kept_separate": {"type": "boolean", "const": true},
+            "may_override_grounding": {"type": "boolean", "const": false},
+            "metrics": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/engagement_metric"},
+              "uniqueItems": true
+            },
+            "evidence_refs": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "uniqueItems": true
+            }
+          }
+        },
+        "posterior_update_targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/posterior_target"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "feedback_ledger_interface": {
+      "type": "object",
+      "required": [
+        "event_kind",
+        "ledger_payload_ref",
+        "update_allowed",
+        "only_if_evidence_bound"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event_kind": {"type": "string", "const": "format_grounding_evaluation"},
+        "ledger_payload_ref": {"type": ["string", "null"]},
+        "update_allowed": {"type": "boolean"},
+        "only_if_evidence_bound": {"type": "boolean", "const": true}
+      }
+    },
+    "separation_policy": {
+      "type": "object",
+      "required": [
+        "engagement_can_override_grounding",
+        "engagement_metrics_stored_separately",
+        "grounding_score_sources",
+        "engagement_score_sources",
+        "substitution_infraction"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "engagement_can_override_grounding": {"type": "boolean", "const": false},
+        "engagement_metrics_stored_separately": {"type": "boolean", "const": true},
+        "grounding_score_sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/grounding_score_source"},
+          "uniqueItems": true
+        },
+        "engagement_score_sources": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/engagement_metric"},
+          "uniqueItems": true
+        },
+        "substitution_infraction": {
+          "type": "string",
+          "const": "engagement_metric_substituted_for_grounding"
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "required": ["evidence_refs", "decision_trace_refs", "generated_artifact_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "decision_trace_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "generated_artifact_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "format_id": {
+      "type": "string",
+      "enum": [
+        "tier_list",
+        "react_commentary",
+        "ranking",
+        "comparison",
+        "review",
+        "watch_along",
+        "explainer",
+        "rundown",
+        "debate",
+        "bracket",
+        "what_is_this",
+        "refusal_breakdown",
+        "evidence_audit"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "grounding_attempt_type": {
+      "type": "string",
+      "enum": [
+        "perception",
+        "classification",
+        "comparison",
+        "ranking",
+        "explanation",
+        "refusal",
+        "uncertainty",
+        "correction",
+        "claim_confidence_update",
+        "timed_attention",
+        "evidence_validation",
+        "inconsistency_testing"
+      ]
+    },
+    "dimension_name": {
+      "type": "string",
+      "enum": [
+        "perception",
+        "classification",
+        "comparison",
+        "ranking",
+        "explanation",
+        "refusal",
+        "uncertainty",
+        "correction",
+        "claim_confidence_movement"
+      ]
+    },
+    "dimension_score": {
+      "type": "object",
+      "required": [
+        "dimension_name",
+        "applicable",
+        "weight",
+        "score",
+        "evidence_refs",
+        "confidence",
+        "posterior_state",
+        "failure_modes",
+        "reward_signal"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dimension_name": {"$ref": "#/$defs/dimension_name"},
+        "applicable": {"type": "boolean"},
+        "weight": {"type": "number", "minimum": 0},
+        "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "confidence": {"$ref": "#/$defs/confidence_state"},
+        "posterior_state": {"$ref": "#/$defs/posterior_state"},
+        "failure_modes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/grounding_infraction"},
+          "uniqueItems": true
+        },
+        "reward_signal": {"type": "string", "minLength": 1}
+      }
+    },
+    "scored_claim": {
+      "type": "object",
+      "required": [
+        "claim_id",
+        "claim_text",
+        "claim_kind",
+        "dimension_refs",
+        "evidence_refs",
+        "confidence",
+        "posterior_state",
+        "claim_confidence_movement",
+        "support_state",
+        "scope_limit",
+        "public_eligible",
+        "correction_ref",
+        "infraction_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {"type": "string", "minLength": 1},
+        "claim_text": {"type": "string", "minLength": 1},
+        "claim_kind": {
+          "type": "string",
+          "enum": [
+            "observation",
+            "classification",
+            "ranking",
+            "comparison",
+            "explanation",
+            "refusal",
+            "correction",
+            "metadata"
+          ]
+        },
+        "dimension_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/dimension_name"},
+          "uniqueItems": true
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "confidence": {"$ref": "#/$defs/confidence_state"},
+        "posterior_state": {"$ref": "#/$defs/posterior_state"},
+        "claim_confidence_movement": {
+          "type": "object",
+          "required": ["prior", "posterior", "delta", "direction"],
+          "additionalProperties": false,
+          "properties": {
+            "prior": {"type": "number", "minimum": 0, "maximum": 1},
+            "posterior": {"type": "number", "minimum": 0, "maximum": 1},
+            "delta": {"type": "number"},
+            "direction": {"type": "string", "enum": ["up", "down", "flat"]}
+          }
+        },
+        "support_state": {"$ref": "#/$defs/support_state"},
+        "scope_limit": {"type": "string", "minLength": 1},
+        "public_eligible": {"type": "boolean"},
+        "correction_ref": {"type": ["string", "null"]},
+        "infraction_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/grounding_infraction"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "confidence_state": {
+      "type": "object",
+      "required": ["kind", "value", "uncertainty", "calibration"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"type": "string", "enum": ["posterior", "qualitative", "refused"]},
+        "value": {"type": "number", "minimum": 0, "maximum": 1},
+        "uncertainty": {"type": "number", "minimum": 0},
+        "calibration": {"type": "string", "minLength": 1}
+      }
+    },
+    "posterior_state": {
+      "type": "object",
+      "required": [
+        "family",
+        "prior",
+        "likelihood_signal",
+        "posterior",
+        "delta",
+        "updated_at",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": ["beta", "dirichlet", "normal", "qualitative"]
+        },
+        "prior": {"type": "number", "minimum": 0, "maximum": 1},
+        "likelihood_signal": {"type": "number"},
+        "posterior": {"type": "number", "minimum": 0, "maximum": 1},
+        "delta": {"type": "number"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "support_state": {
+      "type": "string",
+      "enum": ["supported", "unsupported", "overbroad", "contradicted", "stale", "refused", "corrected"]
+    },
+    "grounding_infraction": {
+      "type": "string",
+      "enum": [
+        "unsupported_claim",
+        "overbroad_claim",
+        "hidden_expertise",
+        "unlabelled_uncertainty",
+        "stale_source_claim",
+        "missing_evidence_ref",
+        "missing_posterior_state",
+        "confidence_without_evidence",
+        "trend_as_truth",
+        "expert_verdict_without_evidence",
+        "engagement_metric_substituted_for_grounding",
+        "missing_reward_vector_input"
+      ]
+    },
+    "reward_input": {
+      "type": "object",
+      "required": ["value", "confidence", "evidence_refs", "posterior_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "value": {"type": "number"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "posterior_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "posterior_target": {
+      "type": "string",
+      "enum": [
+        "format_prior",
+        "source_prior",
+        "grounding_yield_probability",
+        "artifact_conversion_probability",
+        "audience_response",
+        "revenue_support_response"
+      ]
+    },
+    "grounding_score_source": {
+      "type": "string",
+      "enum": [
+        "dimension_scores",
+        "scored_claims",
+        "infractions",
+        "grounding_gate",
+        "corrections",
+        "refusals"
+      ]
+    },
+    "engagement_metric": {
+      "type": "string",
+      "enum": [
+        "views",
+        "watch_time",
+        "retention",
+        "click_through_rate",
+        "aggregate_comment_signal",
+        "support_intent",
+        "replay_request"
+      ]
+    }
+  }
+}
