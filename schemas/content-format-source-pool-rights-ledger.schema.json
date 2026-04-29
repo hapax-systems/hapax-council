@@ -1,0 +1,459 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/content-format-source-pool-rights-ledger.schema.json",
+  "title": "ContentFormatSourcePoolRightsLedger",
+  "description": "Rights, provenance, WCS, and Bayesian-prior ledger for content-programming source pools.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "ledger_id",
+    "declared_at",
+    "producer",
+    "global_policy",
+    "rights_class_definitions",
+    "source_posture_definitions",
+    "source_pool",
+    "format_policies",
+    "downstream_contract"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "ledger_id": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "global_policy": {
+      "type": "object",
+      "required": [
+        "single_operator_only",
+        "unknown_rights_fail_closed",
+        "third_party_av_non_autonomous_public_default",
+        "explicit_clearance_required_for_third_party_av_public",
+        "rights_pass_prior_required",
+        "source_prior_required",
+        "wcs_substrate_refs_required",
+        "evidence_refs_required",
+        "absolute_local_paths_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "single_operator_only": {"type": "boolean", "const": true},
+        "unknown_rights_fail_closed": {"type": "boolean", "const": true},
+        "third_party_av_non_autonomous_public_default": {"type": "boolean", "const": true},
+        "explicit_clearance_required_for_third_party_av_public": {
+          "type": "boolean",
+          "const": true
+        },
+        "rights_pass_prior_required": {"type": "boolean", "const": true},
+        "source_prior_required": {"type": "boolean", "const": true},
+        "wcs_substrate_refs_required": {"type": "boolean", "const": true},
+        "evidence_refs_required": {"type": "boolean", "const": true},
+        "absolute_local_paths_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "rights_class_definitions": {
+      "type": "array",
+      "minItems": 8,
+      "items": {"$ref": "#/$defs/rights_class_definition"},
+      "uniqueItems": true
+    },
+    "source_posture_definitions": {
+      "type": "array",
+      "minItems": 5,
+      "items": {"$ref": "#/$defs/source_posture_definition"},
+      "uniqueItems": true
+    },
+    "source_pool": {
+      "type": "array",
+      "minItems": 8,
+      "items": {"$ref": "#/$defs/source_pool_record"},
+      "uniqueItems": true
+    },
+    "format_policies": {
+      "type": "array",
+      "minItems": 13,
+      "items": {"$ref": "#/$defs/format_policy"},
+      "uniqueItems": true
+    },
+    "downstream_contract": {"$ref": "#/$defs/downstream_contract"}
+  },
+  "$defs": {
+    "rights_class": {
+      "type": "string",
+      "enum": [
+        "owned",
+        "public_domain",
+        "cc_compatible",
+        "licensed",
+        "platform_embed_only",
+        "fair_use_candidate",
+        "forbidden",
+        "unknown"
+      ]
+    },
+    "source_posture": {
+      "type": "string",
+      "enum": [
+        "link_along",
+        "metadata_first",
+        "owned_cleared",
+        "archive_only",
+        "refusal_artifact"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "format_id": {
+      "type": "string",
+      "enum": [
+        "tier_list",
+        "react_commentary",
+        "ranking",
+        "comparison",
+        "review",
+        "watch_along",
+        "explainer",
+        "rundown",
+        "debate",
+        "bracket",
+        "what_is_this",
+        "refusal_breakdown",
+        "evidence_audit"
+      ]
+    },
+    "source_class": {
+      "type": "string",
+      "enum": [
+        "local_state",
+        "owned_media",
+        "platform_native_state",
+        "trend_sources",
+        "curated_watchlists",
+        "public_web_references",
+        "ambient_aggregate_audience",
+        "internal_anomalies"
+      ]
+    },
+    "media_kind": {
+      "type": "string",
+      "enum": ["text", "metadata", "image", "audio", "video", "av", "archive", "dataset", "mixed"]
+    },
+    "downstream_consumer": {
+      "type": "string",
+      "enum": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    "rights_class_definition": {
+      "type": "object",
+      "required": [
+        "rights_class",
+        "meaning",
+        "default_public_mode",
+        "autonomous_public_allowed_by_default",
+        "monetization_allowed_by_default",
+        "required_evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rights_class": {"$ref": "#/$defs/rights_class"},
+        "meaning": {"type": "string", "minLength": 1},
+        "default_public_mode": {"$ref": "#/$defs/public_private_mode"},
+        "autonomous_public_allowed_by_default": {"type": "boolean"},
+        "monetization_allowed_by_default": {"type": "boolean"},
+        "required_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "source_posture_definition": {
+      "type": "object",
+      "required": ["posture", "meaning", "allowed_public_modes"],
+      "additionalProperties": false,
+      "properties": {
+        "posture": {"$ref": "#/$defs/source_posture"},
+        "meaning": {"type": "string", "minLength": 1},
+        "allowed_public_modes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/public_private_mode"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "media_profile": {
+      "type": "object",
+      "required": [
+        "media_kind",
+        "third_party_av",
+        "explicitly_cleared_for_autonomous_public",
+        "clearance_evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "media_kind": {"$ref": "#/$defs/media_kind"},
+        "third_party_av": {"type": "boolean"},
+        "explicitly_cleared_for_autonomous_public": {"type": "boolean"},
+        "clearance_evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "eligibility": {
+      "type": "object",
+      "required": [
+        "private_allowed",
+        "dry_run_allowed",
+        "public_live_allowed",
+        "public_archive_allowed",
+        "public_monetizable_allowed",
+        "autonomous_public_allowed",
+        "link_along_allowed",
+        "metadata_first_allowed",
+        "archive_only_allowed",
+        "refusal_artifact_allowed",
+        "allowed_public_modes",
+        "block_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "private_allowed": {"type": "boolean"},
+        "dry_run_allowed": {"type": "boolean"},
+        "public_live_allowed": {"type": "boolean"},
+        "public_archive_allowed": {"type": "boolean"},
+        "public_monetizable_allowed": {"type": "boolean"},
+        "autonomous_public_allowed": {"type": "boolean"},
+        "link_along_allowed": {"type": "boolean"},
+        "metadata_first_allowed": {"type": "boolean"},
+        "archive_only_allowed": {"type": "boolean"},
+        "refusal_artifact_allowed": {"type": "boolean"},
+        "allowed_public_modes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/public_private_mode"},
+          "uniqueItems": true
+        },
+        "block_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "beta_prior": {
+      "type": "object",
+      "required": ["alpha", "beta", "mean", "evidence_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "alpha": {"type": "number", "exclusiveMinimum": 0},
+        "beta": {"type": "number", "exclusiveMinimum": 0},
+        "mean": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "bayesian_priors": {
+      "type": "object",
+      "required": [
+        "source_prior",
+        "rights_pass_prior",
+        "provenance_strength_prior",
+        "risk_prior",
+        "posterior_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_prior": {"$ref": "#/$defs/beta_prior"},
+        "rights_pass_prior": {"$ref": "#/$defs/beta_prior"},
+        "provenance_strength_prior": {"$ref": "#/$defs/beta_prior"},
+        "risk_prior": {"$ref": "#/$defs/beta_prior"},
+        "posterior_refs": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "source_pool_record": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "source_class",
+        "title",
+        "source_url",
+        "creator",
+        "rightsholder",
+        "platform",
+        "rights_class",
+        "license",
+        "permission",
+        "acquisition_method",
+        "capture_method",
+        "date_checked",
+        "media_profile",
+        "eligibility",
+        "postures",
+        "wcs_substrate_refs",
+        "evidence_refs",
+        "provenance_requirements",
+        "bayesian_priors",
+        "downstream_consumers"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+        "source_class": {"$ref": "#/$defs/source_class"},
+        "title": {"type": "string", "minLength": 1},
+        "source_url": {"type": "string", "minLength": 1},
+        "creator": {"type": "string", "minLength": 1},
+        "rightsholder": {"type": "string", "minLength": 1},
+        "platform": {"type": "string", "minLength": 1},
+        "rights_class": {"$ref": "#/$defs/rights_class"},
+        "license": {"type": "string", "minLength": 1},
+        "permission": {"type": "string", "minLength": 1},
+        "acquisition_method": {"type": "string", "minLength": 1},
+        "capture_method": {"type": "string", "minLength": 1},
+        "date_checked": {"type": "string", "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"},
+        "media_profile": {"$ref": "#/$defs/media_profile"},
+        "eligibility": {"$ref": "#/$defs/eligibility"},
+        "postures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/source_posture"},
+          "uniqueItems": true
+        },
+        "wcs_substrate_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "provenance_requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "bayesian_priors": {"$ref": "#/$defs/bayesian_priors"},
+        "downstream_consumers": {
+          "type": "array",
+          "minItems": 5,
+          "items": {"$ref": "#/$defs/downstream_consumer"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "format_policy": {
+      "type": "object",
+      "required": [
+        "format_id",
+        "allowed_source_postures",
+        "public_mode_ceiling",
+        "third_party_av_default",
+        "autonomous_public_third_party_av_allowed",
+        "clearance_required_for_third_party_av_public",
+        "required_rights_for_public_modes",
+        "blocked_rights_classes",
+        "bayesian_inputs",
+        "required_downstream_fields"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "format_id": {"$ref": "#/$defs/format_id"},
+        "allowed_source_postures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/source_posture"},
+          "uniqueItems": true
+        },
+        "public_mode_ceiling": {"$ref": "#/$defs/public_private_mode"},
+        "third_party_av_default": {
+          "type": "string",
+          "enum": ["non_autonomous_public"]
+        },
+        "autonomous_public_third_party_av_allowed": {"type": "boolean", "const": false},
+        "clearance_required_for_third_party_av_public": {"type": "boolean", "const": true},
+        "required_rights_for_public_modes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/rights_class"},
+          "uniqueItems": true
+        },
+        "blocked_rights_classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/rights_class"},
+          "uniqueItems": true
+        },
+        "bayesian_inputs": {
+          "type": "object",
+          "required": ["source_prior_ref", "rights_pass_prior_ref", "risk_prior_ref"],
+          "additionalProperties": false,
+          "properties": {
+            "source_prior_ref": {"type": "string", "minLength": 1},
+            "rights_pass_prior_ref": {"type": "string", "minLength": 1},
+            "risk_prior_ref": {"type": "string", "minLength": 1}
+          }
+        },
+        "required_downstream_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "downstream_contract": {
+      "type": "object",
+      "required": [
+        "machine_consumers",
+        "preserved_fields",
+        "public_gate_inputs",
+        "bayesian_model_inputs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "machine_consumers": {
+          "type": "array",
+          "minItems": 5,
+          "items": {"$ref": "#/$defs/downstream_consumer"},
+          "uniqueItems": true
+        },
+        "preserved_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "public_gate_inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "bayesian_model_inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

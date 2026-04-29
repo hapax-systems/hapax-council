@@ -225,7 +225,7 @@ class SierpinskiCairoSource(HomageTransitionalSource):
             self._featured_slot_id = None
             return
 
-    def _slot_opacity(self, slot_id: int) -> float:
+    def _slot_opacity(self, slot_id: int, *, now: float | None = None) -> float:
         """Resolve the per-slot opacity given current featured + active state.
 
         Precedence (highest first):
@@ -241,9 +241,8 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         idle as appropriate.
         """
         if self._featured_slot_id is not None and slot_id == self._featured_slot_id:
-            import time as _time
-
-            age = _time.time() - self._featured_ts
+            now = time.time() if now is None else now
+            age = now - self._featured_ts
             if 0.0 <= age <= FEATURED_TTL_S:
                 # Lerp inside the boost band: at level=1.0 -> full boost,
                 # at level=0.0 -> active opacity (still visible).
@@ -297,7 +296,7 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         # future WGSL parity node can scale their activation budgets.
         self._publish_video_attention()
 
-    def _publish_video_attention(self) -> None:
+    def _publish_video_attention(self, *, now: float | None = None) -> None:
         """Write the ``video_attention`` scalar to SHM (spec §5.1).
 
         ``video_attention = max(slot_opacity) * frame_freshness``. Slots
@@ -310,7 +309,7 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         file. Best-effort — OSError is logged and swallowed; a missed
         publish just means GEAL falls back to its previous cached value.
         """
-        now = time.time()
+        now = time.time() if now is None else now
         max_attention = 0.0
         for slot_id in range(3):
             surface = self._frame_surfaces.get(slot_id)
@@ -322,7 +321,7 @@ class SierpinskiCairoSource(HomageTransitionalSource):
                 freshness = 1.0
             else:
                 freshness = math.exp(-(age - VIDEO_ATTENTION_FRESH_S) / VIDEO_ATTENTION_DECAY_TAU_S)
-            attention = self._slot_opacity(slot_id) * freshness
+            attention = self._slot_opacity(slot_id, now=now) * freshness
             if attention > max_attention:
                 max_attention = attention
 
