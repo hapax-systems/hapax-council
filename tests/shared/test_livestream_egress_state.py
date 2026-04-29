@@ -74,6 +74,7 @@ def _audio_health_payload(*, safe: bool = True) -> dict:
 
 
 def _write_good_fixture(paths: LivestreamEgressPaths, *, now: float) -> None:
+    now_iso = datetime.fromtimestamp(now, tz=UTC).isoformat().replace("+00:00", "Z")
     _write(
         paths.compositor_status,
         json.dumps(
@@ -111,7 +112,7 @@ def _write_good_fixture(paths: LivestreamEgressPaths, *, now: float) -> None:
         json.dumps(
             {
                 "event_type": "broadcast_rotated",
-                "timestamp": "2026-04-28T23:00:00Z",
+                "timestamp": now_iso,
                 "incoming_broadcast_id": "video-123",
                 "seed_title": "Legomena Live - Segment 1",
             }
