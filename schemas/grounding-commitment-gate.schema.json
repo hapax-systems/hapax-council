@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/grounding-commitment-gate.schema.json",
+  "title": "GroundingCommitmentGateResult",
+  "description": "Machine-readable gate result for Hapax grounding attempts and no-expert-system policy.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "gate_id",
+    "evaluated_at",
+    "producer",
+    "programme_id",
+    "format_id",
+    "run_id",
+    "public_private_mode",
+    "grounding_question",
+    "permitted_claim_shape",
+    "claim",
+    "infractions",
+    "gate_state",
+    "gate_result",
+    "no_expert_system_policy",
+    "downstream"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "gate_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$"
+    },
+    "evaluated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "programme_id": {
+      "type": ["string", "null"]
+    },
+    "format_id": {
+      "type": ["string", "null"]
+    },
+    "run_id": {
+      "type": ["string", "null"]
+    },
+    "public_private_mode": {
+      "$ref": "#/$defs/public_private_mode"
+    },
+    "grounding_question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "permitted_claim_shape": {
+      "type": "object",
+      "required": [
+        "claim_kind",
+        "authority_ceiling",
+        "allowed_verbs",
+        "forbidden_verbs",
+        "scope_limit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_kind": {
+          "type": "string",
+          "enum": [
+            "observation",
+            "classification",
+            "ranking",
+            "comparison",
+            "explanation",
+            "refusal",
+            "correction",
+            "metadata"
+          ]
+        },
+        "authority_ceiling": {
+          "type": "string",
+          "enum": ["evidence_bound", "speculative", "internal_only"]
+        },
+        "allowed_verbs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "forbidden_verbs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "scope_limit": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "required": [
+        "claim_text",
+        "evidence_refs",
+        "provenance",
+        "confidence",
+        "uncertainty",
+        "scope_limit",
+        "freshness",
+        "rights_state",
+        "privacy_state",
+        "public_private_mode",
+        "refusal_correction_path"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "provenance": {
+          "type": "object",
+          "required": ["producer", "source_refs", "model_id", "tool_id", "retrieved_at"],
+          "additionalProperties": false,
+          "properties": {
+            "producer": {"type": "string", "minLength": 1},
+            "source_refs": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "uniqueItems": true
+            },
+            "model_id": {"type": ["string", "null"]},
+            "tool_id": {"type": ["string", "null"]},
+            "retrieved_at": {"type": ["string", "null"], "format": "date-time"}
+          }
+        },
+        "confidence": {
+          "type": "object",
+          "required": ["kind", "value", "label"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"type": "string", "enum": ["posterior", "qualitative", "none"]},
+            "value": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+            "label": {
+              "type": "string",
+              "enum": ["none", "low", "medium", "medium_high", "high"]
+            }
+          }
+        },
+        "uncertainty": {"type": "string", "minLength": 1},
+        "scope_limit": {"type": "string", "minLength": 1},
+        "freshness": {
+          "type": "object",
+          "required": ["status", "checked_at", "age_s", "ttl_s"],
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["fresh", "stale", "missing", "unknown", "not_applicable"]
+            },
+            "checked_at": {"type": ["string", "null"], "format": "date-time"},
+            "age_s": {"type": ["number", "null"], "minimum": 0},
+            "ttl_s": {"type": ["number", "null"], "minimum": 0}
+          }
+        },
+        "rights_state": {
+          "type": "string",
+          "enum": [
+            "operator_original",
+            "operator_controlled",
+            "third_party_attributed",
+            "third_party_uncleared",
+            "unknown"
+          ]
+        },
+        "privacy_state": {
+          "type": "string",
+          "enum": ["operator_private", "consent_required", "aggregate_only", "public_safe", "unknown"]
+        },
+        "public_private_mode": {
+          "$ref": "#/$defs/public_private_mode"
+        },
+        "refusal_correction_path": {
+          "type": "object",
+          "required": ["refusal_reason", "correction_event_ref", "artifact_ref"],
+          "additionalProperties": false,
+          "properties": {
+            "refusal_reason": {"type": ["string", "null"]},
+            "correction_event_ref": {"type": ["string", "null"]},
+            "artifact_ref": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "infractions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/grounding_infraction"},
+      "uniqueItems": true
+    },
+    "gate_state": {
+      "type": "string",
+      "enum": ["pass", "fail", "dry_run", "private_only", "refusal", "correction_required"]
+    },
+    "gate_result": {
+      "type": "object",
+      "required": [
+        "may_emit_claim",
+        "may_publish_live",
+        "may_publish_archive",
+        "may_monetize",
+        "must_emit_refusal_artifact",
+        "must_emit_correction_artifact",
+        "blockers",
+        "unavailable_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "may_emit_claim": {"type": "boolean"},
+        "may_publish_live": {"type": "boolean"},
+        "may_publish_archive": {"type": "boolean"},
+        "may_monetize": {"type": "boolean"},
+        "must_emit_refusal_artifact": {"type": "boolean"},
+        "must_emit_correction_artifact": {"type": "boolean"},
+        "blockers": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "unavailable_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "no_expert_system_policy": {
+      "type": "object",
+      "required": [
+        "rules_may_gate_and_structure_attempts",
+        "authoritative_verdict_allowed",
+        "verdict_requires_evidence_bound_claim",
+        "latest_intelligence_default",
+        "older_model_exception_requires_grounding_evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rules_may_gate_and_structure_attempts": {"type": "boolean", "const": true},
+        "authoritative_verdict_allowed": {"type": "boolean", "const": false},
+        "verdict_requires_evidence_bound_claim": {"type": "boolean", "const": true},
+        "latest_intelligence_default": {"type": "boolean", "const": true},
+        "older_model_exception_requires_grounding_evidence": {"type": "boolean", "const": true}
+      }
+    },
+    "downstream": {
+      "type": "object",
+      "required": [
+        "format_registry_ready",
+        "opportunity_model_ready",
+        "format_evaluator_ready",
+        "runner_ready",
+        "public_event_ready",
+        "caption_ready",
+        "chapter_ready",
+        "metadata_ready",
+        "monetization_ready",
+        "event_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "format_registry_ready": {"type": "boolean"},
+        "opportunity_model_ready": {"type": "boolean"},
+        "format_evaluator_ready": {"type": "boolean"},
+        "runner_ready": {"type": "boolean"},
+        "public_event_ready": {"type": "boolean"},
+        "caption_ready": {"type": "boolean"},
+        "chapter_ready": {"type": "boolean"},
+        "metadata_ready": {"type": "boolean"},
+        "monetization_ready": {"type": "boolean"},
+        "event_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "grounding_infraction": {
+      "type": "string",
+      "enum": [
+        "unsupported_claim",
+        "hidden_expertise",
+        "unlabelled_uncertainty",
+        "stale_source_claim",
+        "rights_provenance_bypass",
+        "trend_as_truth",
+        "false_public_live_claim",
+        "false_monetization_claim",
+        "missing_grounding_question",
+        "missing_permitted_claim_shape",
+        "expert_verdict_without_evidence"
+      ]
+    }
+  }
+}
