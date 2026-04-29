@@ -1,0 +1,452 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/content-opportunity-model.schema.json",
+  "title": "ContentOpportunityModelDecision",
+  "description": "Bayesian opportunity model decision for grounded autonomous content programming.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "decision_id",
+    "evaluated_at",
+    "producer",
+    "opportunity",
+    "eligibility",
+    "reward_vector",
+    "posterior_state",
+    "sampler_policy",
+    "sampler_decision",
+    "cold_start_priors",
+    "persistence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$"
+    },
+    "evaluated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "opportunity": {
+      "type": "object",
+      "required": [
+        "opportunity_id",
+        "format_id",
+        "input_source_id",
+        "subject",
+        "subject_cluster",
+        "time_window",
+        "substrate_refs",
+        "public_mode",
+        "rights_state",
+        "grounding_question",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "opportunity_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_:-]*$"
+        },
+        "format_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input_source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject_cluster": {
+          "type": "string",
+          "minLength": 1
+        },
+        "time_window": {
+          "type": "object",
+          "required": ["starts_at", "ends_at", "freshness_ttl_s"],
+          "additionalProperties": false,
+          "properties": {
+            "starts_at": {"type": ["string", "null"], "format": "date-time"},
+            "ends_at": {"type": ["string", "null"], "format": "date-time"},
+            "freshness_ttl_s": {"type": ["integer", "null"], "minimum": 0}
+          }
+        },
+        "substrate_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "public_mode": {
+          "$ref": "#/$defs/public_mode"
+        },
+        "rights_state": {
+          "$ref": "#/$defs/rights_state"
+        },
+        "grounding_question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "eligibility": {
+      "type": "object",
+      "required": [
+        "eligible",
+        "public_selectable",
+        "monetizable",
+        "truth_gate",
+        "rights_gate",
+        "consent_gate",
+        "monetization_gate",
+        "substrate_freshness_gate",
+        "egress_gate",
+        "no_expert_system_gate"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "eligible": {"type": "boolean"},
+        "public_selectable": {"type": "boolean"},
+        "monetizable": {"type": "boolean"},
+        "truth_gate": {"$ref": "#/$defs/eligibility_gate"},
+        "rights_gate": {"$ref": "#/$defs/eligibility_gate"},
+        "consent_gate": {"$ref": "#/$defs/eligibility_gate"},
+        "monetization_gate": {"$ref": "#/$defs/eligibility_gate"},
+        "substrate_freshness_gate": {"$ref": "#/$defs/eligibility_gate"},
+        "egress_gate": {"$ref": "#/$defs/eligibility_gate"},
+        "no_expert_system_gate": {"$ref": "#/$defs/eligibility_gate"}
+      }
+    },
+    "reward_vector": {
+      "type": "object",
+      "required": [
+        "grounding_value",
+        "audience_value",
+        "artifact_value",
+        "revenue_value",
+        "novelty_bonus",
+        "cost_penalty",
+        "risk_penalty",
+        "expected_total"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "grounding_value": {"$ref": "#/$defs/reward_component"},
+        "audience_value": {"$ref": "#/$defs/reward_component"},
+        "artifact_value": {"$ref": "#/$defs/reward_component"},
+        "revenue_value": {"$ref": "#/$defs/reward_component"},
+        "novelty_bonus": {"$ref": "#/$defs/reward_component"},
+        "cost_penalty": {"$ref": "#/$defs/reward_component"},
+        "risk_penalty": {"$ref": "#/$defs/reward_component"},
+        "expected_total": {"type": "number"}
+      }
+    },
+    "posterior_state": {
+      "type": "object",
+      "required": [
+        "format_prior",
+        "source_prior",
+        "rights_pass_probability",
+        "grounding_yield_probability",
+        "artifact_conversion_probability",
+        "audience_response",
+        "revenue_support_response",
+        "trend_decay"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "format_prior": {"$ref": "#/$defs/posterior"},
+        "source_prior": {"$ref": "#/$defs/posterior"},
+        "rights_pass_probability": {"$ref": "#/$defs/posterior"},
+        "grounding_yield_probability": {"$ref": "#/$defs/posterior"},
+        "artifact_conversion_probability": {"$ref": "#/$defs/posterior"},
+        "audience_response": {"$ref": "#/$defs/posterior"},
+        "revenue_support_response": {"$ref": "#/$defs/posterior"},
+        "trend_decay": {"$ref": "#/$defs/posterior"}
+      }
+    },
+    "sampler_policy": {
+      "type": "object",
+      "required": [
+        "hierarchy",
+        "exploration_budget",
+        "cooldowns",
+        "risk_ceiling",
+        "random_seed_ref"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "hierarchy": {
+          "type": "array",
+          "prefixItems": [
+            {"type": "string", "const": "format"},
+            {"type": "string", "const": "source"},
+            {"type": "string", "const": "subject_cluster"}
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "exploration_budget": {
+          "type": "object",
+          "required": [
+            "budget_window",
+            "max_exploration_fraction",
+            "used_fraction",
+            "remaining_fraction",
+            "private_first",
+            "max_public_risk_tier"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "budget_window": {
+              "type": "string",
+              "enum": ["run", "daily", "weekly"]
+            },
+            "max_exploration_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+            "used_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+            "remaining_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+            "private_first": {"type": "boolean", "const": true},
+            "max_public_risk_tier": {"$ref": "#/$defs/risk_tier"}
+          }
+        },
+        "cooldowns": {
+          "type": "object",
+          "required": [
+            "format_cooldown_s",
+            "source_cooldown_s",
+            "subject_cluster_cooldown_s",
+            "public_mode_cooldown_s",
+            "refusal_cooldown_s"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "format_cooldown_s": {"type": "integer", "minimum": 0},
+            "source_cooldown_s": {"type": "integer", "minimum": 0},
+            "subject_cluster_cooldown_s": {"type": "integer", "minimum": 0},
+            "public_mode_cooldown_s": {"type": "integer", "minimum": 0},
+            "refusal_cooldown_s": {"type": "integer", "minimum": 0}
+          }
+        },
+        "risk_ceiling": {
+          "type": "object",
+          "required": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"],
+          "additionalProperties": false,
+          "properties": {
+            "private": {"$ref": "#/$defs/risk_tier"},
+            "dry_run": {"$ref": "#/$defs/risk_tier"},
+            "public_live": {"$ref": "#/$defs/risk_tier"},
+            "public_archive": {"$ref": "#/$defs/risk_tier"},
+            "public_monetizable": {"$ref": "#/$defs/risk_tier"}
+          }
+        },
+        "random_seed_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "sampler_decision": {
+      "type": "object",
+      "required": [
+        "decision",
+        "decision_reason",
+        "selected_for",
+        "held_reasons",
+        "refusal_required"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": ["select_private", "select_dry_run", "select_public", "hold", "refuse"]
+        },
+        "decision_reason": {"type": "string", "minLength": 1},
+        "selected_for": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "held_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "refusal_required": {"type": "boolean"}
+      }
+    },
+    "cold_start_priors": {
+      "type": "object",
+      "required": [
+        "low_rights_high_grounding_bias",
+        "preferred_rights_states",
+        "preferred_formats",
+        "deprioritized_risks"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "low_rights_high_grounding_bias": {"type": "boolean", "const": true},
+        "preferred_rights_states": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/rights_state"},
+          "contains": {"const": "operator_original"},
+          "uniqueItems": true
+        },
+        "preferred_formats": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "deprioritized_risks": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "required": [
+        "audit_log_ref",
+        "replay_key",
+        "posterior_update_ref",
+        "refusal_artifact_ref",
+        "decision_trace_refs",
+        "state_store_ref",
+        "idempotency_key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "audit_log_ref": {"type": "string", "minLength": 1},
+        "replay_key": {"type": "string", "minLength": 1},
+        "posterior_update_ref": {"type": ["string", "null"]},
+        "refusal_artifact_ref": {"type": ["string", "null"]},
+        "decision_trace_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "state_store_ref": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "$defs": {
+    "public_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "rights_state": {
+      "type": "string",
+      "enum": [
+        "operator_original",
+        "operator_controlled",
+        "public_domain",
+        "cc_compatible",
+        "third_party_attributed",
+        "third_party_uncleared",
+        "platform_embedded",
+        "unknown"
+      ]
+    },
+    "gate_state": {
+      "type": "string",
+      "enum": ["pass", "fail", "unknown", "not_applicable"]
+    },
+    "risk_tier": {
+      "type": "string",
+      "enum": ["minimal", "low", "medium", "high", "blocked"]
+    },
+    "eligibility_gate": {
+      "type": "object",
+      "required": ["state", "gate_ref", "evidence_refs", "blockers", "unavailable_reasons"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"$ref": "#/$defs/gate_state"},
+        "gate_ref": {"type": ["string", "null"]},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "blockers": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "unavailable_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "reward_component": {
+      "type": "object",
+      "required": ["mean", "uncertainty", "posterior_refs", "evidence_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "mean": {"type": "number"},
+        "uncertainty": {"type": "number", "minimum": 0},
+        "posterior_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "posterior": {
+      "type": "object",
+      "required": [
+        "family",
+        "alpha",
+        "beta",
+        "mean",
+        "sample",
+        "update_count",
+        "cold_start",
+        "updated_at",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": ["beta", "dirichlet", "normal", "lognormal", "gamma", "exponential_decay"]
+        },
+        "alpha": {"type": ["number", "null"], "minimum": 0},
+        "beta": {"type": ["number", "null"], "minimum": 0},
+        "mean": {"type": "number"},
+        "sample": {"type": "number"},
+        "update_count": {"type": "integer", "minimum": 0},
+        "cold_start": {"type": "boolean"},
+        "updated_at": {"type": ["string", "null"], "format": "date-time"},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}
