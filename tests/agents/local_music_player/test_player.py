@@ -234,7 +234,7 @@ def _make_config(tmp_path: Path) -> PlayerConfig:
 def test_tick_no_selection_file_is_noop(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     player = LocalMusicPlayer(cfg)
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         player.tick()
         popen.assert_not_called()
 
@@ -243,7 +243,7 @@ def test_tick_unchanged_mtime_is_noop(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     player = LocalMusicPlayer(cfg)
     write_selection(cfg.selection_path, "/abs/x.flac")
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         popen.return_value = MagicMock()
         player.tick()  # First tick — sees new selection, plays
         popen.reset_mock()
@@ -257,7 +257,7 @@ def test_tick_local_file_invokes_pwcat(tmp_path: Path) -> None:
     write_selection(
         cfg.selection_path, "/abs/track.flac", title="Direct Drive", artist="Dusty Decks"
     )
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         popen.return_value = MagicMock()
         player.tick()
     # pw-cat called exactly once (no yt-dlp leg for local files)
@@ -277,7 +277,7 @@ def test_tick_blocks_decommissioned_livestream_source(tmp_path: Path) -> None:
         artist="Legacy",
         source="epidemic",
     )
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         player.tick()
         popen.assert_not_called()
     assert cfg.attribution_path.read_text(encoding="utf-8") == ""
@@ -297,7 +297,10 @@ def test_tick_url_invokes_three_stage_pipeline(tmp_path: Path) -> None:
     ffmpeg_proc = MagicMock()
     ffmpeg_proc.stdout = MagicMock()
     pw_proc = MagicMock()
-    with patch("subprocess.Popen", side_effect=[yt_proc, ffmpeg_proc, pw_proc]) as popen:
+    with patch(
+        "agents.local_music_player.player._spawn_process",
+        side_effect=[yt_proc, ffmpeg_proc, pw_proc],
+    ) as popen:
         player.tick()
     assert popen.call_count == 3
     yt_cmd = popen.call_args_list[0][0][0]
@@ -316,7 +319,7 @@ def test_tick_writes_attribution(tmp_path: Path) -> None:
     write_selection(
         cfg.selection_path, "/abs/track.flac", title="Direct Drive", artist="Dusty Decks"
     )
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         popen.return_value = MagicMock()
         player.tick()
     assert cfg.attribution_path.read_text(encoding="utf-8") == "Direct Drive — Dusty Decks"
@@ -330,7 +333,7 @@ def test_tick_kills_in_flight_on_new_selection(tmp_path: Path) -> None:
     proc1 = MagicMock()
     proc2 = MagicMock()
     write_selection(cfg.selection_path, "/abs/a.flac")
-    with patch("subprocess.Popen", side_effect=[proc1, proc2]):
+    with patch("agents.local_music_player.player._spawn_process", side_effect=[proc1, proc2]):
         player.tick()
         # Touch mtime forward and write a new selection
         time.sleep(0.05)
@@ -345,7 +348,7 @@ def test_tick_handles_missing_path_gracefully(tmp_path: Path) -> None:
     player = LocalMusicPlayer(cfg)
     cfg.selection_path.parent.mkdir(parents=True, exist_ok=True)
     cfg.selection_path.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         player.tick()
         popen.assert_not_called()
 
@@ -355,7 +358,7 @@ def test_tick_handles_malformed_selection(tmp_path: Path) -> None:
     player = LocalMusicPlayer(cfg)
     cfg.selection_path.parent.mkdir(parents=True, exist_ok=True)
     cfg.selection_path.write_text("not json", encoding="utf-8")
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         player.tick()
         popen.assert_not_called()
 
@@ -364,7 +367,9 @@ def test_tick_handles_missing_pwcat_binary(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     player = LocalMusicPlayer(cfg)
     write_selection(cfg.selection_path, "/abs/track.flac")
-    with patch("subprocess.Popen", side_effect=FileNotFoundError("pw-cat")):
+    with patch(
+        "agents.local_music_player.player._spawn_process", side_effect=FileNotFoundError("pw-cat")
+    ):
         # Must not raise
         player.tick()
     # State cleaned
@@ -379,7 +384,7 @@ def test_stop_kills_in_flight(tmp_path: Path) -> None:
     player = LocalMusicPlayer(cfg)
     write_selection(cfg.selection_path, "/abs/x.flac")
     proc = MagicMock()
-    with patch("subprocess.Popen", return_value=proc):
+    with patch("agents.local_music_player.player._spawn_process", return_value=proc):
         player.tick()
     player.stop()
     proc.terminate.assert_called()

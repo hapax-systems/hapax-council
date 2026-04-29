@@ -66,7 +66,7 @@ def test_player_without_programmer_does_not_auto_recruit(tmp_path: Path) -> None
     cfg = _player_cfg(tmp_path)
     player = LocalMusicPlayer(cfg, programmer=None)
     # No selection, no programmer; tick is a no-op
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         player.tick()
         popen.assert_not_called()
     assert not cfg.selection_path.exists()
@@ -79,7 +79,7 @@ def test_player_auto_recruits_when_no_track_playing(tmp_path: Path) -> None:
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
 
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         popen.return_value = MagicMock()
         player.tick()
     # Programmer picked the track + wrote selection + player started playback
@@ -100,14 +100,14 @@ def test_player_does_not_auto_recruit_while_playing(tmp_path: Path) -> None:
     # Start playback (programmer recruits + player launches)
     proc = MagicMock()
     proc.poll.return_value = None  # still alive
-    with patch("subprocess.Popen", return_value=proc):
+    with patch("agents.local_music_player.player._spawn_process", return_value=proc):
         player.tick()
     assert player._current_proc is proc
 
     # Second tick while still playing — auto-recruit must NOT fire again.
     # The selection mtime hasn't changed, current_proc is alive, so tick is a no-op.
     select_calls_before = len(prog.history)
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         player.tick()
         popen.assert_not_called()
     # No new history events recorded
@@ -125,7 +125,7 @@ def test_player_recruits_again_when_track_ends(tmp_path: Path) -> None:
     # Tick 1: pick + start. Use a proc that "exits" after one poll.
     first_proc = MagicMock()
     first_proc.poll.return_value = None  # alive on this tick
-    with patch("subprocess.Popen", return_value=first_proc):
+    with patch("agents.local_music_player.player._spawn_process", return_value=first_proc):
         player.tick()
 
     # Simulate track ending: poll() now returns 0.
@@ -134,7 +134,7 @@ def test_player_recruits_again_when_track_ends(tmp_path: Path) -> None:
     second_proc = MagicMock()
     second_proc.poll.return_value = None
     time.sleep(0.02)  # ensure mtime granularity ticks forward
-    with patch("subprocess.Popen", return_value=second_proc):
+    with patch("agents.local_music_player.player._spawn_process", return_value=second_proc):
         player.tick()
     # Two plays recorded; second one is different track from first.
     assert len(prog.history) == 2
@@ -154,7 +154,7 @@ def test_stop_signal_silences_player(tmp_path: Path) -> None:
     # Start a track
     proc = MagicMock()
     proc.poll.return_value = None
-    with patch("subprocess.Popen", return_value=proc):
+    with patch("agents.local_music_player.player._spawn_process", return_value=proc):
         player.tick()
     assert player._current_proc is proc
 
@@ -167,7 +167,7 @@ def test_stop_signal_silences_player(tmp_path: Path) -> None:
     )
     time.sleep(0.02)
 
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         player.tick()
     # Track was killed
     assert player._current_proc is None
@@ -187,7 +187,7 @@ def test_stop_signal_blocks_auto_recruit(tmp_path: Path) -> None:
     player._silenced = True  # simulate post-stop state
 
     # No current track + silenced → must NOT auto-recruit
-    with patch("subprocess.Popen") as popen:
+    with patch("agents.local_music_player.player._spawn_process") as popen:
         player.tick()
         popen.assert_not_called()
 
@@ -205,7 +205,7 @@ def test_non_stop_selection_clears_silence(tmp_path: Path) -> None:
     )
     proc = MagicMock()
     proc.poll.return_value = None
-    with patch("subprocess.Popen", return_value=proc):
+    with patch("agents.local_music_player.player._spawn_process", return_value=proc):
         player.tick()
     assert player._silenced is False
     assert player._current_proc is proc
@@ -230,7 +230,7 @@ def test_external_oudepode_cue_advances_cap_window(tmp_path: Path) -> None:
     )
     proc = MagicMock()
     proc.poll.return_value = None  # playing
-    with patch("subprocess.Popen", return_value=proc):
+    with patch("agents.local_music_player.player._spawn_process", return_value=proc):
         player.tick()
     # External play recorded
     assert len(prog.history) == 1
@@ -241,7 +241,7 @@ def test_external_oudepode_cue_advances_cap_window(tmp_path: Path) -> None:
     proc.poll.return_value = 0
     new_proc = MagicMock()
     new_proc.poll.return_value = None
-    with patch("subprocess.Popen", return_value=new_proc):
+    with patch("agents.local_music_player.player._spawn_process", return_value=new_proc):
         player.tick()
     # Second play happened, and it is NOT oudepode (cap holds)
     assert len(prog.history) == 2
@@ -257,7 +257,7 @@ def test_programmer_authored_play_recorded_as_programmer(tmp_path: Path) -> None
 
     proc = MagicMock()
     proc.poll.return_value = None
-    with patch("subprocess.Popen", return_value=proc):
+    with patch("agents.local_music_player.player._spawn_process", return_value=proc):
         player.tick()
     assert len(prog.history) == 1
     # Auto-recruit path → by=programmer
