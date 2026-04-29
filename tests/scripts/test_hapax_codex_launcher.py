@@ -511,3 +511,63 @@ esac
     assert "--title\ncx-violet" in args
     assert "--working-directory" in args
     assert "dispatch movetoworkspacesilent name:1,address:0xabc" in hyprctl_args.read_text()
+
+
+def test_protected_live_session_refuses_duplicate_visible_launch(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    protection = Path(env["HOME"]) / ".cache" / "hapax" / "relay" / "session-protection.md"
+    protection.parent.mkdir(parents=True, exist_ok=True)
+    protection.write_text("- `cx-violet` is protected.\n", encoding="utf-8")
+
+    foot_args = tmp_path / "foot-args.txt"
+    fake_foot = tmp_path / "bin" / "foot"
+    fake_foot.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {foot_args}
+"""
+    )
+    fake_foot.chmod(0o755)
+
+    fake_hyprctl = tmp_path / "bin" / "hyprctl"
+    fake_hyprctl.write_text(
+        """#!/usr/bin/env bash
+case "$1" in
+  clients)
+    printf '%s\\n' '[{"class":"hapax-codex-cx-violet","address":"0xabc"}]'
+    ;;
+  activeworkspace)
+    printf '%s\\n' '{"name":"1"}'
+    ;;
+esac
+"""
+    )
+    fake_hyprctl.chmod(0o755)
+
+    bootstrap = tmp_path / "bootstrap.md"
+    bootstrap.write_text("# bootstrap\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-violet",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--terminal",
+            "foot",
+            "--bootstrap",
+            str(bootstrap),
+            "--no-claim",
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 12
+    assert "refusing to launch protected live session 'cx-violet'" in result.stderr
+    assert not foot_args.exists()
