@@ -38,6 +38,21 @@ def test_auto_fix_typecheck_guidance_matches_pyrefly_and_pyright_split() -> None
     assert "If pyright safety-net failed: `uv run pyright`" in workflow_text
 
 
+def test_ci_typecheck_uses_minimal_pyrefly_fast_path() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    typecheck_start = ci_text.index("\n  typecheck:")
+    test_start = ci_text.index("\n  test:", typecheck_start)
+    typecheck_block = ci_text[typecheck_start:test_start]
+
+    assert "astral-sh/setup-uv@v7" in typecheck_block
+    assert "enable-cache: true" in typecheck_block
+    assert "uv run --no-project --with pyrefly==0.62.0 pyrefly check" in typecheck_block
+    assert "apt-get" not in typecheck_block
+    assert "uv sync --extra ci" not in typecheck_block
+    assert "actions/cache@v4" not in typecheck_block
+    assert "~/.cache/pyrefly" not in typecheck_block
+
+
 def test_cargo_hook_advisory_has_matching_path_gated_ci_job() -> None:
     ci_text = _read(".github/workflows/ci.yml")
     hook_text = _read("hooks/scripts/cargo-check-rust.sh")
