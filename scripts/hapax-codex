@@ -134,6 +134,67 @@ relay_value_is_retired() {
   esac
 }
 
+session_is_protected() {
+  local session="$1"
+  local protection_file="${HAPAX_SESSION_PROTECTION_FILE:-$HOME/.cache/hapax/relay/session-protection.md}"
+
+  [ -f "$protection_file" ] || return 1
+  awk -v session="$session" '
+    {
+      line = tolower($0)
+      needle = "`" session "`"
+      if (index($0, needle) && line ~ /protected/) {
+        found = 1
+      }
+    }
+    END {
+      exit(found ? 0 : 1)
+    }
+  ' "$protection_file"
+}
+
+live_codex_session_exists() {
+  local session="$1"
+  local class="hapax-codex-$session"
+  local tmux_name="hapax-codex-$session"
+
+  if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    if hyprctl clients -j 2>/dev/null \
+      | jq -e --arg class "$class" 'any(.[]?; .class == $class)' >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$tmux_name" 2>/dev/null; then
+    return 0
+  fi
+
+  if command -v pgrep >/dev/null 2>&1; then
+    if pgrep -af -- "$class|run-[0-9TZ]+-$session\\.sh" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+assert_protected_terminal_launch_allowed() {
+  local session="$1"
+  local terminal="$2"
+
+  [ "$terminal" != "none" ] || return 0
+  [ "${HAPAX_CODEX_PROTECTED_SESSION_OVERRIDE:-0}" != "1" ] || return 0
+  session_is_protected "$session" || return 0
+  live_codex_session_exists "$session" || return 0
+
+  cat >&2 <<EOF
+hapax-codex: refusing to launch protected live session '$session' because it already appears active.
+  protection: ${HAPAX_SESSION_PROTECTION_FILE:-$HOME/.cache/hapax/relay/session-protection.md}
+  override only with an explicit operator directive and HAPAX_CODEX_PROTECTED_SESSION_OVERRIDE=1
+EOF
+  exit 12
+}
+
 foot_color_theme_for_current_mode() {
   local mode
   mode="$(cat "$HOME/.cache/hapax/working-mode" 2>/dev/null || printf '%s\n' rnd)"
@@ -527,6 +588,8 @@ case "$TERMINAL" in
     FOOT_COLOR_THEME="$(foot_color_theme_for_current_mode)"
     ;;
 esac
+
+assert_protected_terminal_launch_allowed "$SESSION" "$TERMINAL"
 
 if [ "$FORCE" -ne 1 ]; then
   if relay_retired "$SESSION"; then
