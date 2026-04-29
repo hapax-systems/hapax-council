@@ -1,0 +1,710 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/content-programme-format.schema.json",
+  "title": "ContentProgrammeFormat",
+  "description": "Registry row for recognizable content programme formats used as grounded, rights-safe, no-expert-system attempts.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "format_id",
+    "display_name",
+    "traditional_content_analogue",
+    "grounding_question",
+    "grounding_attempt_types",
+    "input_substrates",
+    "allowed_media_classes",
+    "director_verbs",
+    "permitted_claim_shape",
+    "evidence_requirement",
+    "no_expert_system_policy",
+    "rights_posture",
+    "public_claim_policy",
+    "public_output_mapping",
+    "archive_outputs",
+    "monetization_posture",
+    "bayesian_policy",
+    "metrics",
+    "grounding_infraction_behavior",
+    "operator_labor_policy",
+    "boundary_event_types",
+    "status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "format_id": {
+      "$ref": "#/$defs/format_id"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "traditional_content_analogue": {
+      "type": "string",
+      "minLength": 1
+    },
+    "grounding_question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "grounding_attempt_types": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/grounding_attempt_type"},
+      "uniqueItems": true
+    },
+    "input_substrates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "allowed_media_classes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/media_class"},
+      "uniqueItems": true
+    },
+    "director_verbs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/director_verb"},
+      "uniqueItems": true
+    },
+    "permitted_claim_shape": {
+      "type": "object",
+      "required": [
+        "claim_kind",
+        "authority_ceiling",
+        "allowed_verbs",
+        "forbidden_verbs",
+        "confidence_policy",
+        "uncertainty_language",
+        "scope_limit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_kind": {
+          "type": "string",
+          "enum": [
+            "observation",
+            "classification",
+            "ranking",
+            "comparison",
+            "explanation",
+            "refusal",
+            "correction",
+            "metadata"
+          ]
+        },
+        "authority_ceiling": {
+          "type": "string",
+          "enum": ["evidence_bound", "speculative", "internal_only"]
+        },
+        "allowed_verbs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "forbidden_verbs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "confidence_policy": {
+          "type": "string",
+          "enum": ["posterior_required", "qualitative_required", "none_allowed_for_refusal_only"]
+        },
+        "uncertainty_language": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope_limit": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "evidence_requirement": {
+      "type": "object",
+      "required": [
+        "required_evidence_classes",
+        "minimum_evidence_refs",
+        "freshness_ttl_s",
+        "requires_primary_or_official_source",
+        "requires_rights_provenance",
+        "requires_grounding_gate",
+        "requires_public_event_mapping"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "required_evidence_classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/evidence_class"},
+          "uniqueItems": true
+        },
+        "minimum_evidence_refs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "freshness_ttl_s": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "requires_primary_or_official_source": {
+          "type": "boolean"
+        },
+        "requires_rights_provenance": {
+          "type": "boolean",
+          "const": true
+        },
+        "requires_grounding_gate": {
+          "type": "boolean",
+          "const": true
+        },
+        "requires_public_event_mapping": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "no_expert_system_policy": {
+      "type": "object",
+      "required": [
+        "rules_may_gate_and_structure_attempts",
+        "authoritative_verdict_allowed",
+        "trend_as_truth_allowed",
+        "hidden_expertise_allowed",
+        "must_emit_uncertainty"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rules_may_gate_and_structure_attempts": {"type": "boolean", "const": true},
+        "authoritative_verdict_allowed": {"type": "boolean", "const": false},
+        "trend_as_truth_allowed": {"type": "boolean", "const": false},
+        "hidden_expertise_allowed": {"type": "boolean", "const": false},
+        "must_emit_uncertainty": {"type": "boolean", "const": true}
+      }
+    },
+    "rights_posture": {
+      "type": "object",
+      "required": [
+        "default_public_mode",
+        "third_party_media_policy",
+        "consent_required_media_allowed",
+        "uncleared_media_allowed_publicly",
+        "monetization_requires_rights_clearance",
+        "fail_closed_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "default_public_mode": {"$ref": "#/$defs/public_private_mode"},
+        "third_party_media_policy": {
+          "type": "string",
+          "enum": [
+            "owned_or_cleared_only",
+            "metadata_or_link_only",
+            "public_domain_or_cc_only",
+            "private_only",
+            "blocked"
+          ]
+        },
+        "consent_required_media_allowed": {"type": "boolean", "const": false},
+        "uncleared_media_allowed_publicly": {"type": "boolean", "const": false},
+        "monetization_requires_rights_clearance": {"type": "boolean", "const": true},
+        "fail_closed_reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "public_claim_policy": {
+      "type": "object",
+      "required": [
+        "public_live_allowed",
+        "public_archive_allowed",
+        "metadata_allowed",
+        "captions_allowed",
+        "chapters_allowed",
+        "shorts_allowed",
+        "monetization_allowed",
+        "refusal_artifact_allowed",
+        "correction_artifact_required_on_public_error"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "public_live_allowed": {"type": "boolean"},
+        "public_archive_allowed": {"type": "boolean"},
+        "metadata_allowed": {"type": "boolean"},
+        "captions_allowed": {"type": "boolean"},
+        "chapters_allowed": {"type": "boolean"},
+        "shorts_allowed": {"type": "boolean"},
+        "monetization_allowed": {"type": "boolean"},
+        "refusal_artifact_allowed": {"type": "boolean"},
+        "correction_artifact_required_on_public_error": {"type": "boolean", "const": true}
+      }
+    },
+    "public_output_mapping": {
+      "type": "object",
+      "required": [
+        "title_policy",
+        "description_policy",
+        "chapter_policy",
+        "caption_policy",
+        "shorts_policy",
+        "archive_replay_policy",
+        "public_event_policy",
+        "false_claim_controls"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "title_policy": {"type": "string", "minLength": 1},
+        "description_policy": {"type": "string", "minLength": 1},
+        "chapter_policy": {"type": "string", "minLength": 1},
+        "caption_policy": {"type": "string", "minLength": 1},
+        "shorts_policy": {"type": "string", "minLength": 1},
+        "archive_replay_policy": {"type": "string", "minLength": 1},
+        "public_event_policy": {"type": "string", "minLength": 1},
+        "false_claim_controls": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/false_claim_control"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "archive_outputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/archive_output"},
+      "uniqueItems": true
+    },
+    "monetization_posture": {
+      "type": "object",
+      "required": [
+        "revenue_routes",
+        "support_prompt_allowed",
+        "artifact_allowed",
+        "edition_allowed",
+        "grant_demo_allowed",
+        "paid_promotion_allowed",
+        "monetization_blockers"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "revenue_routes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/revenue_route"},
+          "uniqueItems": true
+        },
+        "support_prompt_allowed": {"type": "boolean"},
+        "artifact_allowed": {"type": "boolean"},
+        "edition_allowed": {"type": "boolean"},
+        "grant_demo_allowed": {"type": "boolean"},
+        "paid_promotion_allowed": {"type": "boolean", "const": false},
+        "monetization_blockers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "bayesian_policy": {
+      "type": "object",
+      "required": [
+        "format_prior",
+        "source_compatibility",
+        "grounding_reward_dimensions",
+        "artifact_revenue_reward_dimensions",
+        "exploration_eligibility",
+        "cooldown_policy"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "format_prior": {
+          "type": "object",
+          "required": [
+            "grounding_value",
+            "audience_value",
+            "artifact_value",
+            "revenue_value",
+            "risk"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "grounding_value": {"type": "number", "minimum": 0, "maximum": 1},
+            "audience_value": {"type": "number", "minimum": 0, "maximum": 1},
+            "artifact_value": {"type": "number", "minimum": 0, "maximum": 1},
+            "revenue_value": {"type": "number", "minimum": 0, "maximum": 1},
+            "risk": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "source_compatibility": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/source_compatibility"},
+          "uniqueItems": true
+        },
+        "grounding_reward_dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/grounding_reward_dimension"},
+          "uniqueItems": true
+        },
+        "artifact_revenue_reward_dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/artifact_revenue_reward_dimension"},
+          "uniqueItems": true
+        },
+        "exploration_eligibility": {
+          "type": "string",
+          "enum": ["eligible_public", "eligible_private_first", "dry_run_only", "blocked"]
+        },
+        "cooldown_policy": {
+          "type": "object",
+          "required": ["minimum_interval_s", "repeat_penalty", "risk_reset_requires"],
+          "additionalProperties": false,
+          "properties": {
+            "minimum_interval_s": {"type": "integer", "minimum": 0},
+            "repeat_penalty": {"type": "number", "minimum": 0, "maximum": 1},
+            "risk_reset_requires": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "uniqueItems": true
+            }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/metric"},
+      "uniqueItems": true
+    },
+    "grounding_infraction_behavior": {
+      "type": "object",
+      "required": [
+        "unsupported_claim",
+        "hidden_expertise",
+        "unlabelled_uncertainty",
+        "stale_source_claim",
+        "rights_provenance_bypass",
+        "trend_as_truth",
+        "false_public_live_claim",
+        "false_monetization_claim",
+        "missing_grounding_question",
+        "missing_permitted_claim_shape",
+        "expert_verdict_without_evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "unsupported_claim": {"$ref": "#/$defs/infraction_action"},
+        "hidden_expertise": {"$ref": "#/$defs/infraction_action"},
+        "unlabelled_uncertainty": {"$ref": "#/$defs/infraction_action"},
+        "stale_source_claim": {"$ref": "#/$defs/infraction_action"},
+        "rights_provenance_bypass": {"$ref": "#/$defs/infraction_action"},
+        "trend_as_truth": {"$ref": "#/$defs/infraction_action"},
+        "false_public_live_claim": {"$ref": "#/$defs/infraction_action"},
+        "false_monetization_claim": {"$ref": "#/$defs/infraction_action"},
+        "missing_grounding_question": {"$ref": "#/$defs/infraction_action"},
+        "missing_permitted_claim_shape": {"$ref": "#/$defs/infraction_action"},
+        "expert_verdict_without_evidence": {"$ref": "#/$defs/infraction_action"}
+      }
+    },
+    "operator_labor_policy": {
+      "type": "object",
+      "required": [
+        "recurring_operator_labor_allowed",
+        "community_obligation_allowed",
+        "request_queue_allowed",
+        "personalized_supporter_treatment_allowed",
+        "manual_exception_allowed_only_for"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "recurring_operator_labor_allowed": {"type": "boolean", "const": false},
+        "community_obligation_allowed": {"type": "boolean", "const": false},
+        "request_queue_allowed": {"type": "boolean", "const": false},
+        "personalized_supporter_treatment_allowed": {"type": "boolean", "const": false},
+        "manual_exception_allowed_only_for": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/manual_exception"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "boundary_event_types": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/boundary_event_type"},
+      "uniqueItems": true
+    },
+    "status": {
+      "type": "string",
+      "enum": ["proposed", "dry-run-ready", "private-ready", "public-eligible", "paused", "retired"]
+    }
+  },
+  "$defs": {
+    "format_id": {
+      "type": "string",
+      "enum": [
+        "tier_list",
+        "react_commentary",
+        "ranking",
+        "comparison",
+        "review",
+        "watch_along",
+        "explainer",
+        "rundown",
+        "debate",
+        "bracket",
+        "what_is_this",
+        "refusal_breakdown",
+        "evidence_audit"
+      ]
+    },
+    "grounding_attempt_type": {
+      "type": "string",
+      "enum": [
+        "perception",
+        "classification",
+        "comparison",
+        "ranking",
+        "explanation",
+        "refusal",
+        "uncertainty",
+        "correction",
+        "claim_confidence_update",
+        "timed_attention",
+        "evidence_validation",
+        "inconsistency_testing"
+      ]
+    },
+    "media_class": {
+      "type": "string",
+      "enum": [
+        "operator_original",
+        "operator_controlled",
+        "public_domain",
+        "creative_commons_compatible",
+        "explicitly_licensed",
+        "text_reference",
+        "metadata_only",
+        "link_along",
+        "open_data",
+        "third_party_uncleared",
+        "fair_use_candidate",
+        "synthetic_realistic_media",
+        "identifiable_person_media",
+        "sensitive_current_event_media",
+        "consent_required",
+        "unknown"
+      ]
+    },
+    "director_verb": {
+      "type": "string",
+      "enum": [
+        "stage",
+        "foreground",
+        "background",
+        "hold",
+        "suppress",
+        "transition",
+        "compare",
+        "rank",
+        "explain",
+        "mark boundary",
+        "refuse",
+        "correct"
+      ]
+    },
+    "evidence_class": {
+      "type": "string",
+      "enum": [
+        "source_ref",
+        "primary_source",
+        "official_source",
+        "criterion",
+        "comparison_trace",
+        "ranking_trace",
+        "perception_trace",
+        "archive_ref",
+        "public_event_ref",
+        "grounding_gate_ref",
+        "rights_provenance_ref",
+        "freshness_ref",
+        "correction_ref"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "unavailable_reason": {
+      "type": "string",
+      "enum": [
+        "private_mode",
+        "dry_run_mode",
+        "missing_grounding_gate",
+        "grounding_gate_failed",
+        "unsupported_claim",
+        "source_stale",
+        "rights_blocked",
+        "privacy_blocked",
+        "egress_blocked",
+        "audio_blocked",
+        "archive_missing",
+        "video_id_missing",
+        "cuepoint_smoke_missing",
+        "rate_limited",
+        "monetization_blocked",
+        "operator_review_required",
+        "live_provider_smoke_missing"
+      ]
+    },
+    "false_claim_control": {
+      "type": "string",
+      "enum": [
+        "no_live_claim_without_egress",
+        "no_archive_claim_without_archive_ref",
+        "no_monetization_claim_without_ledger",
+        "no_rights_claim_without_provenance",
+        "no_source_claim_without_evidence_refs",
+        "no_short_without_owned_or_cleared_media"
+      ]
+    },
+    "archive_output": {
+      "type": "string",
+      "enum": [
+        "run_card",
+        "rank_table",
+        "criteria_sheet",
+        "comparison_matrix",
+        "claim_audit",
+        "replay_card",
+        "clip_candidate",
+        "dataset_card",
+        "refusal_artifact",
+        "correction_artifact"
+      ]
+    },
+    "revenue_route": {
+      "type": "string",
+      "enum": [
+        "platform_native",
+        "support_prompt",
+        "artifact",
+        "replay",
+        "edition",
+        "grant_demo_evidence",
+        "refusal_artifact"
+      ]
+    },
+    "source_compatibility": {
+      "type": "string",
+      "enum": [
+        "official_docs",
+        "primary_sources",
+        "operator_owned_archive",
+        "public_metadata",
+        "open_data",
+        "creative_commons_media",
+        "public_domain_media",
+        "link_along_source",
+        "internal_state",
+        "programme_boundary_events"
+      ]
+    },
+    "grounding_reward_dimension": {
+      "type": "string",
+      "enum": [
+        "evidence_yield",
+        "classification_quality",
+        "ranking_stability",
+        "comparison_quality",
+        "explanation_quality",
+        "uncertainty_quality",
+        "refusal_quality",
+        "correction_value",
+        "posterior_update",
+        "inconsistency_discovery"
+      ]
+    },
+    "artifact_revenue_reward_dimension": {
+      "type": "string",
+      "enum": [
+        "chapter_value",
+        "caption_value",
+        "shorts_value",
+        "replay_value",
+        "artifact_value",
+        "support_prompt_value",
+        "grant_demo_value",
+        "platform_native_value",
+        "refusal_artifact_value"
+      ]
+    },
+    "metric": {
+      "type": "string",
+      "enum": [
+        "grounding_success",
+        "evidence_count",
+        "posterior_delta",
+        "uncertainty_quality",
+        "refusal_count",
+        "correction_count",
+        "archive_conversion",
+        "public_event_conversion",
+        "revenue_route_attempted",
+        "rights_block_count",
+        "operator_touch_count"
+      ]
+    },
+    "infraction_action": {
+      "type": "string",
+      "enum": [
+        "block_runner",
+        "block_claim_emit_refusal",
+        "block_public_claim",
+        "downgrade_to_private",
+        "refresh_or_dry_run",
+        "block_public_and_monetized",
+        "rewrite_as_trend_observation",
+        "emit_correction",
+        "block_monetization"
+      ]
+    },
+    "manual_exception": {
+      "type": "string",
+      "enum": ["bootstrap", "credentials", "legal_attestation", "guarded_approval", "refusal_boundary"]
+    },
+    "boundary_event_type": {
+      "type": "string",
+      "enum": [
+        "programme.started",
+        "criterion.declared",
+        "evidence.observed",
+        "claim.made",
+        "rank.assigned",
+        "comparison.resolved",
+        "uncertainty.marked",
+        "refusal.issued",
+        "correction.made",
+        "clip.candidate",
+        "live_cuepoint.candidate",
+        "chapter.boundary",
+        "artifact.candidate",
+        "programme.ended"
+      ]
+    }
+  }
+}
