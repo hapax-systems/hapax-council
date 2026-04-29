@@ -6,18 +6,20 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 usage: hapax-codex-send --session cx-color [--transport auto|foot|tmux]
-                         [--no-submit] [--stdin] [--] MESSAGE...
+                         [--no-submit] [--append] [--stdin] [--] MESSAGE...
 
 Sends MESSAGE to a visible Hapax Codex session. The default transport prefers a
 tmux session named hapax-codex-cx-color and falls back to a visible foot window
-named hapax-codex-cx-color. Tmux-backed foot windows keep operator visibility
-while avoiding Wayland paste/Return races.
+named hapax-codex-cx-color. Visible foot delivery targets the window address
+directly when Hyprland supports it, avoiding focus-follow-mouse paste/Return
+races.
 EOF
 }
 
 SESSION=""
 TRANSPORT="auto"
 SUBMIT=1
+CLEAR_INPUT=1
 READ_STDIN=0
 MESSAGE_PARTS=()
 TMP_FILES=()
@@ -49,6 +51,10 @@ while [ $# -gt 0 ]; do
       ;;
     --no-submit)
       SUBMIT=0
+      shift
+      ;;
+    --append)
+      CLEAR_INPUT=0
       shift
       ;;
     --stdin)
@@ -125,6 +131,17 @@ foot_target_exists() {
   [ -n "$(foot_window_address 2>/dev/null || true)" ]
 }
 
+foot_window_center() {
+  have_cmd hyprctl || return 1
+  have_cmd jq || return 1
+  local class="hapax-codex-$SESSION"
+  hyprctl clients -j 2>/dev/null \
+    | jq -r --arg class "$class" '[.[]? | select(.class == $class) | [
+        (.at[0] + ((.size[0] / 2) | floor)),
+        (.at[1] + ((.size[1] / 2) | floor))
+      ] | @tsv][0] // empty'
+}
+
 send_tmux() {
   local target="hapax-codex-$SESSION"
   local tmp
@@ -133,6 +150,10 @@ send_tmux() {
   printf '%s' "$MESSAGE" >"$tmp"
 
   tmux load-buffer -b hapax-codex-send "$tmp"
+  if [ "$CLEAR_INPUT" -eq 1 ]; then
+    tmux send-keys -t "$target" C-u
+    sleep "${HAPAX_CODEX_SEND_CLEAR_DELAY:-0.05}"
+  fi
   tmux paste-buffer -b hapax-codex-send -t "$target"
   if [ "$SUBMIT" -eq 1 ]; then
     sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.35}"
@@ -148,6 +169,21 @@ send_foot_return() {
   }
   wtype -P Return -s "${HAPAX_CODEX_SEND_RETURN_HOLD_MS:-80}" -p Return
   sleep "${HAPAX_CODEX_SEND_AFTER_SUBMIT_DELAY:-0.35}"
+}
+
+send_hypr_shortcut() {
+  local address="$1"
+  local modifiers="$2"
+  local key="$3"
+  local out
+  out="$(hyprctl dispatch sendshortcut "$modifiers,$key,address:$address" 2>&1 || true)"
+  [ "$out" = "ok" ]
+}
+
+send_wtype_clear() {
+  [ "$CLEAR_INPUT" -eq 1 ] || return 0
+  wtype -M ctrl -k u -m ctrl
+  sleep "${HAPAX_CODEX_SEND_CLEAR_DELAY:-0.05}"
 }
 
 wait_for_focus() {
@@ -173,10 +209,76 @@ save_text_clipboard() {
   wl-paste --no-newline >"$dest" 2>/dev/null
 }
 
+restore_text_clipboard() {
+  local src="$1"
+  wl-copy --type text/plain <"$src" || true
+}
+
+send_foot_targeted() {
+  local address="$1"
+  have_cmd wl-copy || return 1
+
+  local msg old
+  msg="$(mktemp)"
+  old="$(mktemp)"
+  TMP_FILES+=("$msg" "$old")
+  local restore_clipboard=0
+  printf '%s' "$MESSAGE" >"$msg"
+  if save_text_clipboard "$old"; then
+    restore_clipboard=1
+  fi
+
+  if [ "$CLEAR_INPUT" -eq 1 ]; then
+    if ! send_hypr_shortcut "$address" "CTRL" "U"; then
+      if [ "$restore_clipboard" -eq 1 ]; then
+        restore_text_clipboard "$old"
+      fi
+      return 1
+    fi
+    sleep "${HAPAX_CODEX_SEND_CLEAR_DELAY:-0.05}"
+  fi
+
+  wl-copy --type text/plain <"$msg"
+  sleep "${HAPAX_CODEX_SEND_PASTE_DELAY:-0.25}"
+  if ! send_hypr_shortcut "$address" "CTRL SHIFT" "V"; then
+    if [ "$restore_clipboard" -eq 1 ]; then
+      restore_text_clipboard "$old"
+    fi
+    return 1
+  fi
+
+  sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.60}"
+  if [ "$SUBMIT" -eq 1 ]; then
+    if ! send_hypr_shortcut "$address" "" "Return"; then
+      if [ "$restore_clipboard" -eq 1 ]; then
+        restore_text_clipboard "$old"
+      fi
+      return 1
+    fi
+    sleep "${HAPAX_CODEX_SEND_AFTER_SUBMIT_DELAY:-0.35}"
+  fi
+
+  sleep "${HAPAX_CODEX_SEND_RESTORE_DELAY:-0.35}"
+  if [ "$restore_clipboard" -eq 1 ]; then
+    restore_text_clipboard "$old"
+  fi
+}
+
+move_cursor_to_foot_center() {
+  local center
+  center="$(foot_window_center 2>/dev/null || true)"
+  [ -n "$center" ] || return 0
+  local x y
+  IFS=$'\t' read -r x y <<EOF
+$center
+EOF
+  [ -n "${x:-}" ] && [ -n "${y:-}" ] || return 0
+  hyprctl dispatch movecursor "$x" "$y" >/dev/null 2>&1 || true
+}
+
 send_foot() {
   have_cmd hyprctl || { echo "hapax-codex-send: hyprctl not found" >&2; exit 10; }
   have_cmd jq || { echo "hapax-codex-send: jq not found" >&2; exit 10; }
-  have_cmd wtype || { echo "hapax-codex-send: wtype not found" >&2; exit 10; }
 
   local address
   address="$(foot_window_address)"
@@ -185,9 +287,16 @@ send_foot() {
     exit 11
   fi
 
+  if send_foot_targeted "$address"; then
+    return
+  fi
+
+  have_cmd wtype || { echo "hapax-codex-send: targeted delivery failed and wtype not found" >&2; exit 10; }
+
   local previous_address
   previous_address="$(hyprctl activewindow -j 2>/dev/null | jq -r '.address // empty' 2>/dev/null || true)"
 
+  move_cursor_to_foot_center
   hyprctl dispatch focuswindow "address:$address" >/dev/null
   wait_for_focus "$address" || {
     echo "hapax-codex-send: failed to focus $SESSION at $address" >&2
@@ -205,21 +314,25 @@ send_foot() {
       restore_clipboard=1
     fi
 
+    send_wtype_clear
     wl-copy --type text/plain <"$msg"
     sleep "${HAPAX_CODEX_SEND_PASTE_DELAY:-0.25}"
     wtype -M ctrl -M shift -k v -m shift -m ctrl
     sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-1.10}"
     if [ "$SUBMIT" -eq 1 ]; then
+      move_cursor_to_foot_center
       send_foot_return "$address"
     fi
     sleep "${HAPAX_CODEX_SEND_RESTORE_DELAY:-0.35}"
     if [ "$restore_clipboard" -eq 1 ]; then
-      wl-copy --type text/plain <"$old" || true
+      restore_text_clipboard "$old"
     fi
   else
+    send_wtype_clear
     wtype "$MESSAGE"
     sleep "${HAPAX_CODEX_SEND_SUBMIT_DELAY:-1.10}"
     if [ "$SUBMIT" -eq 1 ]; then
+      move_cursor_to_foot_center
       send_foot_return "$address"
     fi
   fi
