@@ -77,6 +77,35 @@ def render_impingement_text(imp: Impingement) -> str:
     narrative = imp.content.get("narrative")
     if narrative:
         parts.append(f"intent: {narrative}")
+    if imp.content.get("content_summary"):
+        parts.append(f"content summary: {imp.content['content_summary']}")
+    if imp.content.get("action_tendency"):
+        parts.append(f"action tendency: {imp.content['action_tendency']}")
+    if imp.content.get("speech_act_candidate"):
+        parts.append(f"speech act candidate: {imp.content['speech_act_candidate']}")
+    if imp.content.get("drive_name") or imp.content.get("drive"):
+        parts.append(f"drive: {imp.content.get('drive_name') or imp.content.get('drive')}")
+    if imp.content.get("strength_posterior") is not None:
+        parts.append(f"posterior pressure: {imp.content['strength_posterior']}")
+    if imp.content.get("valence"):
+        parts.append(f"valence: {imp.content['valence']}")
+    if imp.content.get("urgency") is not None:
+        parts.append(f"urgency: {imp.content['urgency']}")
+    if imp.content.get("role_context"):
+        parts.append(f"role context: {imp.content['role_context']}")
+    if imp.content.get("inhibition_policy"):
+        parts.append(f"inhibition policy: {imp.content['inhibition_policy']}")
+    if imp.content.get("wcs_snapshot_ref"):
+        parts.append(f"wcs evidence: {imp.content['wcs_snapshot_ref']}")
+    if imp.content.get("route_evidence_ref"):
+        parts.append(f"route evidence: {imp.content['route_evidence_ref']}")
+    if imp.content.get("public_claim_evidence_ref"):
+        parts.append(f"claim posture: {imp.content['public_claim_evidence_ref']}")
+    if imp.content.get("learning_policy"):
+        parts.append(f"learning policy: {imp.content['learning_policy']}")
+    evidence_refs = imp.content.get("evidence_refs")
+    if isinstance(evidence_refs, list | tuple) and evidence_refs:
+        parts.append(f"evidence refs: {', '.join(str(ref) for ref in evidence_refs[:5])}")
     if imp.content.get("metric"):
         parts.append(f"signal: {imp.content['metric']}")
     if imp.content.get("value") is not None:

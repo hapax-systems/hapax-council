@@ -8,7 +8,6 @@ present.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from datetime import UTC, datetime
@@ -16,6 +15,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+
+from shared.conative_impingement import (
+    ImpulseTerminalState,
+    action_tendency_impulse_from_impingement,
+    impulse_id_from_impingement,
+)
 
 WITNESS_PATH = Path("/dev/shm/hapax-daimonion/voice-output-witness.json")
 
@@ -32,8 +37,6 @@ WitnessStatus = Literal[
     "malformed",
     "stale",
 ]
-
-ImpulseTerminalState = Literal["pending", "completed", "inhibited", "interrupted", "failed"]
 
 
 class VoiceOutputWitness(BaseModel):
@@ -328,21 +331,7 @@ def _merge_and_publish(
 
 
 def narration_impulse_id(impingement: object) -> str:
-    content = getattr(impingement, "content", {}) or {}
-    if isinstance(content, dict):
-        content_id = content.get("impulse_id") or content.get("drive_id")
-        if content_id:
-            return str(content_id)
-    imp_id = getattr(impingement, "id", None)
-    if imp_id:
-        return str(imp_id)
-    source = str(getattr(impingement, "source", "unknown"))
-    digest_source = {"source": source, "content": content}
-    try:
-        encoded = json.dumps(digest_source, sort_keys=True, default=str)
-    except TypeError:
-        encoded = repr(digest_source)
-    return f"narration-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:12]}"
+    return impulse_id_from_impingement(impingement)
 
 
 def build_narration_impulse(
@@ -355,37 +344,13 @@ def build_narration_impulse(
     now: float | None = None,
 ) -> dict[str, Any]:
     ts = _now(now)
-    content = getattr(impingement, "content", {}) or {}
-    content_dict = content if isinstance(content, dict) else {}
-    strength = _float_or_none(getattr(impingement, "strength", None))
-    posterior = _clamp(strength if strength is not None else 0.3, 0.0, 1.0)
-    envelope = {
-        "ts": _iso(ts),
-        "impulse_id": narration_impulse_id(impingement),
-        "content_summary": _content_summary(content_dict),
-        "evidence_refs": _evidence_refs(impingement, content_dict),
-        "valence": str(content_dict.get("valence") or "pressure"),
-        "urgency": posterior,
-        "drive_name": str(content_dict.get("drive") or "narration"),
-        "action_tendency": str(content_dict.get("action_tendency") or "speak"),
-        "speech_act_candidate": str(
-            content_dict.get("speech_act_candidate") or "autonomous_narrative"
-        ),
-        "strength_posterior": posterior,
-        "role_context": str(content_dict.get("role_context") or "livestream_public_voice"),
-        "inhibition_policy": str(
-            content_dict.get("inhibition_policy") or "wcs_route_role_claim_gates"
-        ),
-        "wcs_snapshot_ref": str(
-            content_dict.get("wcs_snapshot_ref") or "broadcast_audio_health.voice_output_witness"
-        ),
-        "learning_policy": str(
-            content_dict.get("learning_policy") or "separate_drive_selection_execution_world_claim"
-        ),
-        "terminal_state": terminal_state,
-        "terminal_reason": terminal_reason,
-        "capability_contract": "narration.autonomous_first_system",
-    }
+    envelope = action_tendency_impulse_from_impingement(
+        impingement,
+        terminal_state=terminal_state,
+        terminal_reason=terminal_reason,
+    ).model_dump(mode="json")
+    envelope["ts"] = _iso(ts)
+    envelope["capability_contract"] = "narration.autonomous_first_system"
     if fallback_dispatched is not None:
         envelope["fallback_dispatched"] = fallback_dispatched
     if duplicate_prevented is not None:
@@ -424,35 +389,6 @@ def _playback_terminal_state(
     if status == "timeout":
         return "interrupted"
     return "failed"
-
-
-def _content_summary(content: dict[str, Any]) -> str:
-    value = (
-        content.get("content_summary")
-        or content.get("summary")
-        or content.get("narrative")
-        or content.get("metric")
-        or "narration drive"
-    )
-    return str(value).strip()[:240]
-
-
-def _evidence_refs(impingement: object, content: dict[str, Any]) -> list[str]:
-    refs = [
-        f"source:{getattr(impingement, 'source', 'unknown')}",
-        f"drive:{content.get('drive') or 'narration'}",
-    ]
-    imp_id = getattr(impingement, "id", None)
-    if imp_id:
-        refs.append(f"impingement:{imp_id}")
-    existing = content.get("evidence_refs")
-    if isinstance(existing, list):
-        refs.extend(str(ref) for ref in existing if ref)
-    return refs
-
-
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
 
 
 def _load_existing_payload(path: Path) -> dict[str, Any]:

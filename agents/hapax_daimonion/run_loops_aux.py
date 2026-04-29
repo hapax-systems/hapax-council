@@ -324,6 +324,9 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
     + inhibition mechanism rather than a hardcoded interval.
     """
     try:
+        if _inhibit_narration_drive_if_missing_evidence(daemon, imp, candidate):
+            return
+
         from agents.hapax_daimonion.autonomous_narrative import compose, emit
         from agents.hapax_daimonion.autonomous_narrative.state_readers import assemble_context
 
@@ -413,6 +416,58 @@ def _is_narration_drive_impingement(imp: object) -> bool:
         and isinstance(content, dict)
         and content.get("drive") == "narration"
     )
+
+
+def _inhibit_narration_drive_if_missing_evidence(
+    daemon: object, imp: object, candidate: object
+) -> bool:
+    """Fail closed when a conative speech impulse lacks execution evidence."""
+    if not _is_narration_drive_impingement(imp):
+        return False
+    try:
+        from shared.conative_impingement import (
+            action_tendency_impulse_from_impingement,
+            execution_inhibition_reasons,
+        )
+
+        impulse = action_tendency_impulse_from_impingement(
+            imp,
+            default_execution_refs=False,
+        )
+        reasons = execution_inhibition_reasons(impulse)
+        if not reasons:
+            return False
+        reason = "execution_evidence_missing:" + ",".join(reasons)
+        fallback_dispatched = bool(
+            (getattr(candidate, "payload", {}) or {}).get("capability_contract_evidence")
+            == "typed_narration_drive"
+        )
+        from agents.hapax_daimonion.voice_output_witness import record_drop, record_narration_drive
+
+        record_narration_drive(
+            imp,
+            fallback_dispatched=fallback_dispatched,
+            duplicate_prevented=False,
+            terminal_state="inhibited",
+            terminal_reason=reason,
+        )
+        record_drop(
+            reason=reason,
+            source="autonomous_narrative",
+            impulse_id=impulse.impulse_id,
+            terminal_state="inhibited",
+        )
+        pipeline = getattr(daemon, "_affordance_pipeline", None)
+        if pipeline is not None:
+            pipeline.record_outcome(
+                getattr(candidate, "capability_name", "narration.autonomous_first_system"),
+                success=False,
+                context={"source": getattr(imp, "source", ""), "reason": reason},
+            )
+        return True
+    except Exception:
+        log.warning("conative narration evidence inhibition failed", exc_info=True)
+        return False
 
 
 def _narration_drive_fallback_candidate(imp: object) -> Any:

@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from shared.conative_impingement import narrative_drive_content_payload
 from shared.endogenous_drive import DriveContext, EndogenousDrive
 
 log = logging.getLogger(__name__)
@@ -125,20 +126,24 @@ def _emit_drive_impingement(drive: EndogenousDrive, context: DriveContext) -> bo
     """
     now = context.now or time.time()
     narrative = drive.build_narrative(context)
+    posterior_pressure = min(1.0, max(0.0, drive.evaluate(context)))
+    impingement_id = uuid.uuid4().hex[:12]
 
     imp = {
-        "id": uuid.uuid4().hex[:12],
+        "id": impingement_id,
         "timestamp": now,
         "source": "endogenous.narrative_drive",
         "type": "endogenous",
-        "strength": min(1.0, drive.base_pressure(now)),
-        "content": {
-            "narrative": narrative,
-            "drive": drive.name,
-            "chronicle_event_count": context.chronicle_event_count,
-            "stimmung_stance": context.stimmung_stance,
-            "programme_role": context.programme_role or "none",
-        },
+        "strength": posterior_pressure,
+        "content": narrative_drive_content_payload(
+            impingement_id=impingement_id,
+            narrative=narrative,
+            drive_name=drive.name,
+            strength_posterior=posterior_pressure,
+            chronicle_event_count=context.chronicle_event_count,
+            stimmung_stance=context.stimmung_stance,
+            programme_role=context.programme_role,
+        ),
         "context": {},
     }
     try:
@@ -147,7 +152,7 @@ def _emit_drive_impingement(drive: EndogenousDrive, context: DriveContext) -> bo
             f.write(json.dumps(imp) + "\n")
         log.info(
             "Narrative drive emitted impingement (pressure=%.3f, chronicle=%d, role=%s)",
-            drive.base_pressure(now),
+            posterior_pressure,
             context.chronicle_event_count,
             context.programme_role or "none",
         )

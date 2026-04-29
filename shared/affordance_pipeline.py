@@ -16,6 +16,7 @@ from typing import Any
 
 from shared.affordance import ActivationState, CapabilityRecord, SelectionCandidate
 from shared.affordance_metrics import AffordanceMetrics
+from shared.conative_impingement import action_tendency_prior_for_candidate
 from shared.embed_cache import DiskEmbeddingCache
 from shared.exploration import ExplorationSignal
 from shared.impingement import Impingement, render_impingement_text
@@ -108,6 +109,14 @@ def _apply_exploration_noise(
     noise_scale = sigma_explore * signal.boredom_index
     for c in candidates:
         c.combined = max(0.0, c.combined + random.gauss(0, noise_scale))
+
+
+def _conative_strength_posterior(impingement: Impingement) -> float:
+    raw = impingement.content.get("strength_posterior", impingement.strength)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return impingement.strength
 
 
 def _emit_consent_refusal(*, axiom: str, surface: str, reason: str) -> None:
@@ -737,6 +746,15 @@ class AffordancePipeline:
                 + w_recency * c.recency_distance
                 - c.exact_recency_penalty
             ) * c.cost_weight
+            # Conative action tendency is a small scoring prior, never a
+            # candidate filter. This lets a "speak" impulse lean toward
+            # narration while preserving competing non-speech affordances.
+            c.combined += action_tendency_prior_for_candidate(
+                action_tendency=impingement.content.get("action_tendency"),
+                strength_posterior=_conative_strength_posterior(impingement),
+                capability_name=c.capability_name,
+                payload=c.payload,
+            )
         # Phase 4 of programme-layer plan (D-28): apply programme bias as
         # SOFT PRIOR multiplier on the composed score. Per
         # `project_programmes_enable_grounding` memory + spec §5.1: the
