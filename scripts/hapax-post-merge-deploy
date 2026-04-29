@@ -22,6 +22,9 @@
 # Usage:
 #   hapax-post-merge-deploy <commit-sha>
 #       deploy classified files for the given commit
+#   hapax-post-merge-deploy --dry-run <commit-sha>
+#       classify files and write the post-merge trace without copying files
+#       or restarting services
 #   hapax-post-merge-deploy --report-coverage <commit-sha>
 #       drift-report mode — exit 1 if any systemd/** path in the commit
 #       falls outside the case-globs above. Used by CI to catch the
@@ -34,9 +37,16 @@
 # mode, if any systemd/** path is unclassified).
 set -euo pipefail
 
+DRY_RUN=0
 REPORT_COVERAGE=0
 COVERAGE_FROM_STDIN=0
+TRACE_READY=0
+TRACE_WRITTEN=0
 SHA=""
+if [ "${1:-}" = "--dry-run" ]; then
+    DRY_RUN=1
+    shift
+fi
 if [ "${1:-}" = "--report-coverage" ]; then
     REPORT_COVERAGE=1
     SHA="${2:?commit SHA required after --report-coverage}"
@@ -52,10 +62,112 @@ WP_CONF_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 SYSTEMD_USER_PRESET_DIR="$HOME/.config/systemd/user-preset"
 LOCAL_BIN="$HOME/.local/bin"
+TRACE_PATH="${HAPAX_POST_MERGE_TRACE_PATH:-$HOME/.cache/hapax/post-merge-traces/post-merge-traces.jsonl}"
+TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
+
+_trace_join() {
+    local item
+    for item in "$@"; do
+        printf '%s\n' "$item"
+    done
+}
+
+record_post_merge_trace() {
+    local status="$1"
+    local exit_code="${2:-0}"
+
+    HAPAX_TRACE_FILES="$FILES" \
+    HAPAX_TRACE_PW="$(_trace_join "${PW[@]}")" \
+    HAPAX_TRACE_WP="$(_trace_join "${WP[@]}")" \
+    HAPAX_TRACE_SYSTEMD="$(_trace_join "${SYSTEMD[@]}")" \
+    HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
+    HAPAX_TRACE_USER_PRESETS="$(_trace_join "${USER_PRESETS[@]}")" \
+    HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
+    HAPAX_TRACE_SCRIPTS="$(_trace_join "${SCRIPTS[@]}")" \
+    HAPAX_TRACE_SCRIPT_PY="$(_trace_join "${SCRIPT_PY[@]}")" \
+    HAPAX_TRACE_SYSTEMD_UNCLASSIFIED="$(_trace_join "${SYSTEMD_UNCLASSIFIED[@]}")" \
+    python3 - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
+        "$DID_ANYTHING" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+
+def lines(name: str) -> list[str]:
+    return [line for line in os.environ.get(name, "").splitlines() if line]
+
+
+path = Path(sys.argv[1]).expanduser()
+try:
+    max_records = int(sys.argv[2])
+except ValueError:
+    max_records = 200
+max_records = max(1, max_records)
+sha = sys.argv[3]
+dry_run = sys.argv[4] == "1"
+status = sys.argv[5]
+exit_code = int(sys.argv[6])
+manual_deploy_executed = sys.argv[7] == "1"
+
+deploy_groups = {
+    "pipewire": lines("HAPAX_TRACE_PW"),
+    "wireplumber": lines("HAPAX_TRACE_WP"),
+    "systemd_units": lines("HAPAX_TRACE_SYSTEMD"),
+    "systemd_dropins": lines("HAPAX_TRACE_SYSTEMD_DROPINS"),
+    "systemd_user_presets": lines("HAPAX_TRACE_USER_PRESETS"),
+    "systemd_watchdogs": lines("HAPAX_TRACE_WATCHDOGS"),
+    "hapax_scripts": lines("HAPAX_TRACE_SCRIPTS"),
+    "unit_backing_scripts": lines("HAPAX_TRACE_SCRIPT_PY"),
+}
+record = {
+    "schema_version": 1,
+    "event": "post_merge_deploy",
+    "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "sha": sha,
+    "mode": "dry_run" if dry_run else "deploy",
+    "status": status,
+    "exit_code": exit_code,
+    "changed_files": lines("HAPAX_TRACE_FILES"),
+    "deploy_groups": deploy_groups,
+    "manual_deploy_needed": any(deploy_groups.values()),
+    "manual_deploy_executed": manual_deploy_executed,
+    "systemd_unclassified": lines("HAPAX_TRACE_SYSTEMD_UNCLASSIFIED"),
+}
+
+path.parent.mkdir(parents=True, exist_ok=True)
+previous = []
+if path.exists():
+    previous = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+previous.append(json.dumps(record, sort_keys=True))
+kept = previous[-max_records:]
+tmp_path = path.with_name(f"{path.name}.tmp")
+tmp_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+os.replace(tmp_path, path)
+PY
+}
+
+trace_on_exit() {
+    local rc=$?
+    if [ "$REPORT_COVERAGE" != "1" ] \
+        && [ "$TRACE_READY" = "1" ] \
+        && [ "$TRACE_WRITTEN" != "1" ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+            record_post_merge_trace "dry_run_failed" "$rc" || true
+        elif [ "$rc" -ne 0 ]; then
+            record_post_merge_trace "failed" "$rc" || true
+        fi
+    fi
+}
+
+trap trace_on_exit EXIT
 
 cd "$REPO"
 # Ensure the commit's objects are available locally even if main hasn't been
-# pulled yet; git-show against an unfetched SHA would fail and falsely signal
+# pulled yet; diffing an unfetched SHA would fail and falsely signal
 # "file deleted" to the per-file branches below.
 if [ "$COVERAGE_FROM_STDIN" != "1" ]; then
     git fetch --quiet origin main 2>/dev/null || true
@@ -72,9 +184,15 @@ fi
 
 if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
     FILES="$(cat)"
+elif FIRST_PARENT="$(git rev-parse --verify --quiet "$SHA^1")"; then
+    FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" | sort -u)"
 else
-    FILES="$(git show --name-only --format='' "$SHA")"
+    FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
+
+PW=(); WP=(); SYSTEMD=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
+SYSTEMD_UNCLASSIFIED=()
+DID_ANYTHING=0
 
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
 # to read commit-time content, decoupling the deploy decision from local
@@ -83,6 +201,12 @@ fi
 # pulled locally, a deletion commit's [ -f ] returned true (old file still
 # present) and the script mistakenly cp-re-deployed the pre-deletion version.
 if [ -z "$FILES" ]; then
+    if [ "$REPORT_COVERAGE" != "1" ]; then
+        TRACE_READY=1
+        if record_post_merge_trace "no_changes" "0"; then
+            TRACE_WRITTEN=1
+        fi
+    fi
     echo "no files changed in $SHA"
     exit 0
 fi
@@ -92,8 +216,6 @@ fi
 # catch the absence-class deploy bug where a new unit lands at a path
 # this script can't reach (P-4 of the absence-class-bug-prevention-and-
 # remediation epic).
-PW=(); WP=(); SYSTEMD=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
-SYSTEMD_UNCLASSIFIED=()
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     case "$f" in
@@ -128,7 +250,13 @@ if [ "$REPORT_COVERAGE" = "1" ]; then
     exit 0
 fi
 
-DID_ANYTHING=0
+TRACE_READY=1
+if [ "$DRY_RUN" = "1" ]; then
+    record_post_merge_trace "dry_run" "0"
+    TRACE_WRITTEN=1
+    echo "dry-run: post-merge deploy trace written to $TRACE_PATH"
+    exit 0
+fi
 
 # --- PipeWire confs ---
 if [ "${#PW[@]}" -gt 0 ]; then
@@ -319,4 +447,10 @@ fi
 
 if [ "$DID_ANYTHING" -eq 0 ]; then
     echo "merge $SHA: no manual deploys needed (only auto-rebuild paths changed)"
+fi
+
+if record_post_merge_trace "completed" "0"; then
+    TRACE_WRITTEN=1
+else
+    echo "warning: failed to write post-merge deploy trace to $TRACE_PATH" >&2
 fi
