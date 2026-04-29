@@ -1,0 +1,128 @@
+{
+  "schema_ref": "schemas/conative-impingement-envelope.schema.json",
+  "fixtures": [
+    {
+      "case_id": "healthy-public-narration-speak",
+      "expected_compulsion_band": "healthy",
+      "expected_execution_inhibition_reasons": [],
+      "envelope": {
+        "schema_version": 1,
+        "impulse_id": "narration-fixture-healthy",
+        "content_summary": "A shift in the live programme is worth narrating with a bounded public voice.",
+        "evidence_refs": [
+          "source:endogenous.narrative_drive",
+          "drive:narration",
+          "chronicle:window_count:12",
+          "stimmung:reflective"
+        ],
+        "valence": "pressure",
+        "urgency": 0.54,
+        "drive_name": "narration",
+        "action_tendency": "speak",
+        "speech_act_candidate": "autonomous_narrative",
+        "strength_posterior": 0.54,
+        "role_context": "programme_role:listening",
+        "inhibition_policy": "wcs_route_role_claim_gates",
+        "wcs_snapshot_ref": "wcs:audio.broadcast_voice:voice-output-witness",
+        "learning_policy": "separate_drive_selection_execution_world_claim",
+        "route_evidence_ref": "route:audio.broadcast_voice:health_witness_required",
+        "public_claim_evidence_ref": "claim_posture:bounded_nonassertive_narration",
+        "terminal_state": "pending",
+        "terminal_reason": null,
+        "raw_drive_text_spoken": false
+      }
+    },
+    {
+      "case_id": "too-low-hold-pressure",
+      "expected_compulsion_band": "too_low",
+      "expected_execution_inhibition_reasons": [],
+      "envelope": {
+        "schema_version": 1,
+        "impulse_id": "narration-fixture-low",
+        "content_summary": "A weak urge is visible but should remain a soft pressure signal.",
+        "evidence_refs": [
+          "source:endogenous.narrative_drive",
+          "drive:narration"
+        ],
+        "valence": "pressure",
+        "urgency": 0.06,
+        "drive_name": "narration",
+        "action_tendency": "hold_pressure",
+        "speech_act_candidate": "autonomous_narrative",
+        "strength_posterior": 0.06,
+        "role_context": "programme_role:none",
+        "inhibition_policy": "wcs_route_role_claim_gates",
+        "wcs_snapshot_ref": "wcs:audio.broadcast_voice:voice-output-witness",
+        "learning_policy": "separate_drive_selection_execution_world_claim",
+        "route_evidence_ref": "route:audio.broadcast_voice:health_witness_required",
+        "public_claim_evidence_ref": "claim_posture:bounded_nonassertive_narration",
+        "terminal_state": "pending",
+        "terminal_reason": null,
+        "raw_drive_text_spoken": false
+      }
+    },
+    {
+      "case_id": "too-high-withhold",
+      "expected_compulsion_band": "too_high",
+      "expected_execution_inhibition_reasons": [],
+      "envelope": {
+        "schema_version": 1,
+        "impulse_id": "narration-fixture-high",
+        "content_summary": "A very strong pressure should suppress over-speaking rather than become a hard route.",
+        "evidence_refs": [
+          "source:endogenous.narrative_drive",
+          "drive:narration",
+          "stimmung:hothouse"
+        ],
+        "valence": "pressure",
+        "urgency": 0.94,
+        "drive_name": "narration",
+        "action_tendency": "withhold",
+        "speech_act_candidate": "autonomous_narrative",
+        "strength_posterior": 0.94,
+        "role_context": "programme_role:hothouse_pressure",
+        "inhibition_policy": "wcs_route_role_claim_gates",
+        "wcs_snapshot_ref": "wcs:audio.broadcast_voice:voice-output-witness",
+        "learning_policy": "separate_drive_selection_execution_world_claim",
+        "route_evidence_ref": "route:audio.broadcast_voice:health_witness_required",
+        "public_claim_evidence_ref": "claim_posture:bounded_nonassertive_narration",
+        "terminal_state": "pending",
+        "terminal_reason": null,
+        "raw_drive_text_spoken": false
+      }
+    },
+    {
+      "case_id": "missing-execution-evidence-inhibits",
+      "expected_compulsion_band": "healthy",
+      "expected_execution_inhibition_reasons": [
+        "wcs_snapshot_ref_missing",
+        "route_evidence_ref_missing",
+        "public_claim_evidence_ref_missing"
+      ],
+      "envelope": {
+        "schema_version": 1,
+        "impulse_id": "narration-fixture-missing-evidence",
+        "content_summary": "The urge exists, but the public execution evidence is absent.",
+        "evidence_refs": [
+          "source:endogenous.narrative_drive",
+          "drive:narration"
+        ],
+        "valence": "pressure",
+        "urgency": 0.48,
+        "drive_name": "narration",
+        "action_tendency": "speak",
+        "speech_act_candidate": "autonomous_narrative",
+        "strength_posterior": 0.48,
+        "role_context": "programme_role:listening",
+        "inhibition_policy": "wcs_route_role_claim_gates",
+        "wcs_snapshot_ref": "missing",
+        "learning_policy": "separate_drive_selection_execution_world_claim",
+        "route_evidence_ref": null,
+        "public_claim_evidence_ref": null,
+        "terminal_state": "inhibited",
+        "terminal_reason": "execution_evidence_missing",
+        "raw_drive_text_spoken": false
+      }
+    }
+  ]
+}

@@ -45,6 +45,11 @@ class TestEmitDriveImpingement:
         assert imp["source"] == "endogenous.narrative_drive"
         assert imp["type"] == "endogenous"
         assert imp["content"]["drive"] == "narration"
+        assert imp["content"]["impulse_id"] == f"narration-{imp['id']}"
+        assert imp["content"]["action_tendency"] == "speak"
+        assert imp["content"]["speech_act_candidate"] == "autonomous_narrative"
+        assert imp["content"]["strength_posterior"] == imp["strength"]
+        assert imp["content"]["raw_drive_text_spoken"] is False
         assert isinstance(imp["content"]["narrative"], str)
         assert len(imp["content"]["narrative"]) > 20
 
@@ -87,6 +92,24 @@ class TestEmitDriveImpingement:
 
         imp = json.loads(tmp_impingements.read_text().strip())
         assert 0 <= imp["strength"] <= 1.0
+        assert 0 <= imp["content"]["strength_posterior"] <= 1.0
+
+    def test_strength_uses_posterior_pressure(self, tmp_impingements: Path):
+        drive = EndogenousDrive(tau=120.0)
+        ctx = DriveContext(chronicle_event_count=2, stimmung_stance="ambient")
+
+        with (
+            mock.patch(
+                "agents.hapax_daimonion.narrative_drive._IMPINGEMENTS_FILE",
+                tmp_impingements,
+            ),
+            mock.patch.object(drive, "evaluate", return_value=0.73),
+        ):
+            _emit_drive_impingement(drive, ctx)
+
+        imp = json.loads(tmp_impingements.read_text().strip())
+        assert imp["strength"] == 0.73
+        assert imp["content"]["strength_posterior"] == 0.73
 
 
 class TestAssembleDriveContext:

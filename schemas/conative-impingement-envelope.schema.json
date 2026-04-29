@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/conative-impingement-envelope.schema.json",
+  "title": "Conative action-tendency impingement envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "impulse_id",
+    "content_summary",
+    "evidence_refs",
+    "valence",
+    "urgency",
+    "drive_name",
+    "action_tendency",
+    "speech_act_candidate",
+    "strength_posterior",
+    "role_context",
+    "inhibition_policy",
+    "wcs_snapshot_ref",
+    "learning_policy",
+    "terminal_state",
+    "raw_drive_text_spoken"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "impulse_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content_summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "valence": {
+      "type": "string",
+      "minLength": 1
+    },
+    "urgency": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "drive_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action_tendency": {
+      "enum": [
+        "speak",
+        "withhold",
+        "repair",
+        "refuse",
+        "annotate",
+        "route_attention",
+        "mark_boundary",
+        "hold_pressure"
+      ]
+    },
+    "speech_act_candidate": {
+      "type": "string",
+      "minLength": 1
+    },
+    "strength_posterior": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "role_context": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inhibition_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wcs_snapshot_ref": {
+      "type": ["string", "null"]
+    },
+    "learning_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "route_evidence_ref": {
+      "type": ["string", "null"]
+    },
+    "public_claim_evidence_ref": {
+      "type": ["string", "null"]
+    },
+    "terminal_state": {
+      "enum": [
+        "pending",
+        "completed",
+        "inhibited",
+        "redirected",
+        "interrupted",
+        "failed"
+      ]
+    },
+    "terminal_reason": {
+      "type": ["string", "null"]
+    },
+    "raw_drive_text_spoken": {
+      "const": false
+    }
+  }
+}
