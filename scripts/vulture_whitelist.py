@@ -60,6 +60,11 @@ from shared.grounding_provider_router import (
     validate_provider_registry,
 )
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
+from shared.scrim_wcs_claim_posture import (
+    EvidenceReference,
+    ScrimWCSClaimPostureProjection,
+    WCSClaimReference,
+)
 from shared.semantic_recruitment import (
     SemanticDescription,
     SemanticRecruitmentFixtureSet,
@@ -255,6 +260,13 @@ WorldSurfaceHealthRecord._validate_fail_closed_claimability
 WorldSurfaceHealthEnvelope._validate_envelope_counts_and_public_gates
 WorldSurfaceHealthFixtureSet._validate_contract_coverage
 WorldSurfaceHealthFixtureSet.rows_for_fixture_case
+
+# Scrim WCS claim-posture models are validated by Pydantic and consumed by
+# downstream director/scrim adapters. The first slice publishes the contract and
+# fixtures, so keep the dynamic validator references explicit.
+WCSClaimReference._public_claims_need_public_refs
+EvidenceReference._fresh_evidence_needs_refs_and_age
+ScrimWCSClaimPostureProjection._validate_no_claim_expansion
 
 # WCS witness probe runtime helpers are the public contract for downstream WCS
 # director snapshots, health blocker bus, and programme WCS snapshot tasks.
