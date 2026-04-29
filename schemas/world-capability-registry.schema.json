@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/world-capability-registry.schema.json",
+  "title": "WorldCapabilitySurfaceRegistry",
+  "description": "Fail-closed seed registry for World Capability Surface records. Static records are declarations, not live witnesses.",
+  "type": "object",
+  "required": ["schema_version", "generated_from", "records"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema_version": {"type": "integer", "const": 1},
+    "generated_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/world_capability_record"}
+    }
+  },
+  "$defs": {
+    "world_capability_record": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "capability_id",
+        "capability_name",
+        "description",
+        "daemon",
+        "realm",
+        "domain",
+        "direction",
+        "intent_family",
+        "recruitment_family",
+        "surface_refs",
+        "substrate_refs",
+        "lane_refs",
+        "route_refs",
+        "producer",
+        "consumer_refs",
+        "grounding_role",
+        "authority_ceiling",
+        "grounding_status",
+        "freshness_ttl_s",
+        "availability_state",
+        "evidence_envelope_requirements",
+        "witness_requirements",
+        "public_claim_policy",
+        "public_private_posture",
+        "blocked_reasons",
+        "fallback",
+        "health_signal",
+        "notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "capability_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"},
+        "capability_name": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "daemon": {"type": "string", "minLength": 1},
+        "realm": {"type": "string", "minLength": 1},
+        "domain": {
+          "type": "string",
+          "enum": [
+            "audio",
+            "camera",
+            "archive",
+            "public_aperture",
+            "file_obsidian",
+            "browser_mcp",
+            "music_midi",
+            "mobile_watch"
+          ]
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["observe", "express", "act", "route", "recall", "communicate", "regulate"]
+        },
+        "intent_family": {"type": "string", "minLength": 1},
+        "recruitment_family": {"type": "string", "minLength": 1},
+        "surface_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "substrate_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "lane_refs": {"$ref": "#/$defs/string_array"},
+        "route_refs": {"$ref": "#/$defs/string_array"},
+        "producer": {"type": "string", "minLength": 1},
+        "consumer_refs": {"$ref": "#/$defs/string_array"},
+        "grounding_role": {
+          "type": "string",
+          "enum": [
+            "raw_observation",
+            "derived_observation",
+            "source_acquiring_provider",
+            "supplied_evidence_generator",
+            "non_grounding_reasoner",
+            "expression_only",
+            "action_only",
+            "governance_refusal"
+          ]
+        },
+        "authority_ceiling": {
+          "type": "string",
+          "enum": [
+            "no_claim",
+            "internal_only",
+            "speculative",
+            "evidence_bound",
+            "posterior_bound",
+            "public_gate_required"
+          ]
+        },
+        "grounding_status": {
+          "type": "string",
+          "enum": [
+            "non_grounding",
+            "grounding_candidate",
+            "grounding_required",
+            "public_claim_bearing"
+          ]
+        },
+        "freshness_ttl_s": {"type": ["integer", "null"], "minimum": 0},
+        "availability_state": {
+          "type": "string",
+          "enum": [
+            "unavailable",
+            "dormant",
+            "dry_run",
+            "private",
+            "mounted",
+            "degraded",
+            "public_live",
+            "archive_only",
+            "blocked"
+          ]
+        },
+        "evidence_envelope_requirements": {"$ref": "#/$defs/evidence_envelope_requirements"},
+        "witness_requirements": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/witness_requirement"}
+        },
+        "public_claim_policy": {"$ref": "#/$defs/public_claim_policy"},
+        "public_private_posture": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["private", "dry_run", "public_live", "archive", "disabled"]
+          },
+          "uniqueItems": true
+        },
+        "blocked_reasons": {"$ref": "#/$defs/non_empty_string_array"},
+        "fallback": {"$ref": "#/$defs/fallback"},
+        "health_signal": {"type": ["string", "null"]},
+        "notes": {"type": "string"}
+      }
+    },
+    "evidence_envelope_requirements": {
+      "type": "object",
+      "required": [
+        "required_fields",
+        "required_evidence_classes",
+        "inferred_context_satisfies_witness",
+        "missing_evidence_state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "required_fields": {"$ref": "#/$defs/non_empty_string_array"},
+        "required_evidence_classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/evidence_class"},
+          "uniqueItems": true
+        },
+        "inferred_context_satisfies_witness": {"type": "boolean", "const": false},
+        "missing_evidence_state": {
+          "type": "string",
+          "enum": ["blocked", "unavailable", "dry_run", "private_only"]
+        }
+      }
+    },
+    "witness_requirement": {
+      "type": "object",
+      "required": ["witness_id", "evidence_classes", "required_for", "freshness_ttl_s", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "witness_id": {"type": "string", "minLength": 1},
+        "evidence_classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/evidence_class"},
+          "uniqueItems": true,
+          "not": {
+            "contains": {"const": "inferred_context"}
+          }
+        },
+        "required_for": {"$ref": "#/$defs/non_empty_string_array"},
+        "freshness_ttl_s": {"type": ["integer", "null"], "minimum": 0},
+        "description": {"type": "string", "minLength": 1}
+      }
+    },
+    "public_claim_policy": {
+      "type": "object",
+      "required": [
+        "claim_private",
+        "claim_dry_run",
+        "claim_public_live",
+        "claim_archive",
+        "claim_monetizable",
+        "requires_egress_public_claim",
+        "requires_audio_safe",
+        "requires_grounding_gate",
+        "requires_rights_manifest",
+        "requires_privacy_public_safe",
+        "requires_provenance",
+        "requires_operator_action",
+        "allowed_surface_refs",
+        "denied_surface_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_private": {"type": "boolean"},
+        "claim_dry_run": {"type": "boolean"},
+        "claim_public_live": {"type": "boolean", "const": false},
+        "claim_archive": {"type": "boolean"},
+        "claim_monetizable": {"type": "boolean", "const": false},
+        "requires_egress_public_claim": {"type": "boolean"},
+        "requires_audio_safe": {"type": "boolean"},
+        "requires_grounding_gate": {"type": "boolean"},
+        "requires_rights_manifest": {"type": "boolean"},
+        "requires_privacy_public_safe": {"type": "boolean"},
+        "requires_provenance": {"type": "boolean"},
+        "requires_operator_action": {"type": "boolean"},
+        "allowed_surface_refs": {"$ref": "#/$defs/string_array"},
+        "denied_surface_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "required": ["mode", "reason_code", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "hide",
+            "no_op_explain",
+            "dry_run_badge",
+            "private_only",
+            "archive_only",
+            "hold_last_safe",
+            "suppress",
+            "degraded_status",
+            "operator_prompt",
+            "kill_switch"
+          ]
+        },
+        "reason_code": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "evidence_class": {
+      "type": "string",
+      "enum": [
+        "route_binding",
+        "signal_presence",
+        "nonblank_frame",
+        "fresh_state_file",
+        "source_item",
+        "citation",
+        "hash",
+        "mtime",
+        "tool_response",
+        "tool_error",
+        "egress_acceptance",
+        "public_url",
+        "rights_manifest",
+        "privacy_policy",
+        "grounding_gate_result",
+        "programme_boundary_event",
+        "public_event_ref",
+        "operator_action",
+        "inferred_context"
+      ]
+    },
+    "non_empty_string_array": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    }
+  }
+}
