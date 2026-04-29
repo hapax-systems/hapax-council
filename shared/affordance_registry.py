@@ -12,7 +12,58 @@ Competitive recruitment across domains mirrors Cisek's affordance competition
 hypothesis (2007). See spec §6 for full theoretical analysis.
 """
 
-from shared.affordance import CapabilityRecord, OperationalProperties
+from shared.affordance import CapabilityRecord, ContentRisk, MonetizationRisk, OperationalProperties
+
+_PUBLIC_MONETIZATION_REASON = (
+    "Operator-owned or generated local system output; no third-party monetizable source is "
+    "introduced by this capability."
+)
+_PUBLIC_CONTENT_REASON = (
+    "Operator-owned, generated, or hardware-captured local studio output; tier_0_owned for "
+    "broadcast provenance."
+)
+_PUBLIC_RIGHTS_REF = "rights:operator-owned-local-system-output"
+_PUBLIC_PROVENANCE_REF = "provenance:capability-registry-local-studio-output"
+_PUBLIC_EVIDENCE_REFS = (
+    "docs/superpowers/specs/2026-04-29-world-capability-surface-parent-spec.md",
+)
+
+
+def _public_operational(
+    *,
+    requires_gpu: bool = False,
+    requires_network: bool = False,
+    latency_class: str = "fast",
+    persistence: str = "none",
+    medium: str | None = None,
+    consent_required: bool = False,
+    priority_floor: bool = False,
+    monetization_risk: MonetizationRisk = "none",
+    risk_reason: str | None = _PUBLIC_MONETIZATION_REASON,
+    content_risk: ContentRisk = "tier_0_owned",
+    content_risk_reason: str | None = _PUBLIC_CONTENT_REASON,
+    rights_ref: str | None = _PUBLIC_RIGHTS_REF,
+    provenance_ref: str | None = _PUBLIC_PROVENANCE_REF,
+    evidence_refs: tuple[str, ...] = _PUBLIC_EVIDENCE_REFS,
+) -> OperationalProperties:
+    return OperationalProperties(
+        requires_gpu=requires_gpu,
+        requires_network=requires_network,
+        latency_class=latency_class,
+        persistence=persistence,
+        medium=medium,
+        consent_required=consent_required,
+        priority_floor=priority_floor,
+        public_capable=True,
+        monetization_risk=monetization_risk,
+        risk_reason=risk_reason,
+        content_risk=content_risk,
+        content_risk_reason=content_risk_reason,
+        rights_ref=rights_ref,
+        provenance_ref=provenance_ref,
+        evidence_refs=evidence_refs,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Domain 1: Environment (env.*)
@@ -255,26 +306,26 @@ STUDIO_AFFORDANCES = [
             "Begin or end broadcasting the composed studio visual to a live streaming destination"
         ),
         daemon="compositor",
-        operational=OperationalProperties(latency_class="slow", consent_required=True),
+        operational=_public_operational(latency_class="slow", consent_required=True),
     ),
     # --- Output Destinations ---
     CapabilityRecord(
         name="studio.output_snapshot",
         description="Capture the current effected frame as a high-quality still image",
         daemon="compositor",
-        operational=OperationalProperties(latency_class="fast", medium="visual"),
+        operational=_public_operational(latency_class="fast", medium="visual"),
     ),
     CapabilityRecord(
         name="studio.output_fullscreen",
         description="Display the composed visual fullscreen with overlay controls for monitoring",
         daemon="compositor",
-        operational=OperationalProperties(latency_class="fast", medium="visual"),
+        operational=_public_operational(latency_class="fast", medium="visual"),
     ),
     CapabilityRecord(
         name="studio.output_record",
         description="Route the composed visual to persistent disk recording as video segments",
         daemon="compositor",
-        operational=OperationalProperties(latency_class="fast"),
+        operational=_public_operational(latency_class="fast"),
     ),
     # Re-Splay Homage Ward — Dirtywave M8 LCD reveal. cc-task
     # re-splay-homage-ward-m8 Phase 4. Recruitment is narrative-first +
@@ -293,7 +344,7 @@ STUDIO_AFFORDANCES = [
             "when the instrument is the subject of attention"
         ),
         daemon="compositor",
-        operational=OperationalProperties(
+        operational=_public_operational(
             latency_class="fast",
             medium="visual",
             consent_required=False,
@@ -330,19 +381,19 @@ SPACE_AFFORDANCES = [
             "Observe workspace from above providing spatial context for physical activity"
         ),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="fast", medium="visual"),
+        operational=_public_operational(latency_class="fast", medium="visual"),
     ),
     CapabilityRecord(
         name="space.desk_perspective",
         description=("Observe the operator's face hands and immediate work surface at close range"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="fast", medium="visual"),
+        operational=_public_operational(latency_class="fast", medium="visual"),
     ),
     CapabilityRecord(
         name="space.operator_perspective",
         description=("Observe the operator directly capturing presence and expression"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="fast", medium="visual"),
+        operational=_public_operational(latency_class="fast", medium="visual"),
     ),
     CapabilityRecord(
         name="space.room_occupancy",
@@ -464,7 +515,12 @@ KNOWLEDGE_AFFORDANCES = [
             "Search the operator's personal knowledge base for relevant notes and concepts"
         ),
         daemon="recall",
-        operational=OperationalProperties(latency_class="slow", medium="visual"),
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            monetization_risk="low",
+            risk_reason="Operator-authored vault snippets can be displayed, but visible text still gets low-risk catalog scrutiny before broadcast.",
+        ),
     ),
     CapabilityRecord(
         name="knowledge.episodic_recall",
@@ -472,19 +528,38 @@ KNOWLEDGE_AFFORDANCES = [
             "Recall and visualize past experiences similar to the current moment from memory"
         ),
         daemon="recall",
-        operational=OperationalProperties(latency_class="slow", medium="visual"),
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            monetization_risk="low",
+            risk_reason="Operator episodic memory visualization is first-party, but visible narrative text remains low-risk public surface material.",
+        ),
     ),
     CapabilityRecord(
         name="knowledge.profile_facts",
         description=("Recall known facts about the operator's preferences patterns and history"),
         daemon="recall",
-        operational=OperationalProperties(latency_class="slow", medium="visual"),
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            monetization_risk="low",
+            risk_reason="Operator profile facts are first-party, but visible text remains low-risk public surface material.",
+        ),
     ),
     CapabilityRecord(
         name="knowledge.document_search",
         description=("Search ingested documents and notes for relevant knowledge on a topic"),
         daemon="recall",
-        operational=OperationalProperties(latency_class="slow", medium="visual"),
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            monetization_risk="medium",
+            risk_reason="Ingested document snippets can include third-party or copyrighted text; Programme opt-in required before visual broadcast.",
+            content_risk="tier_2_provenance_known",
+            content_risk_reason="Document corpus provenance is known at ingest time but may include third-party materials; requires Programme content opt-in.",
+            rights_ref="rights:document-ingest-provenance-required",
+            provenance_ref="provenance:rag-ingest-document-source",
+        ),
     ),
     CapabilityRecord(
         name="knowledge.web_search",
@@ -514,13 +589,17 @@ KNOWLEDGE_AFFORDANCES = [
         name="knowledge.image_search",
         description="Find relevant images from the open web for visual reference",
         daemon="discovery",
-        operational=OperationalProperties(
+        operational=_public_operational(
             latency_class="slow",
             requires_network=True,
             consent_required=True,
             medium="visual",
             monetization_risk="high",
             risk_reason="Open-web image search returns arbitrary third-party imagery; Content-ID fingerprint risk + potential graphic content. Blocked unconditionally from broadcast; operator must resolve images via a curated pipeline instead.",
+            content_risk="tier_4_risky",
+            content_risk_reason="Open-web image results have unknown rights and visual fingerprints; broadcast egress is blocked.",
+            rights_ref="rights:open-web-image-search-unlicensed",
+            provenance_ref="provenance:open-web-image-search",
         ),
     ),
 ]
@@ -625,7 +704,7 @@ SYSTEM_AFFORDANCES = [
         name="system.notify_operator",
         description="Alert the operator to urgent or noteworthy events via push notification",
         daemon="system",
-        operational=OperationalProperties(latency_class="fast", medium="notification"),
+        operational=_public_operational(latency_class="fast", medium="notification"),
     ),
 ]
 
@@ -683,73 +762,73 @@ SHADER_NODE_AFFORDANCES = [
             "Generate continuous procedural texture as the visual field's ambient substrate"
         ),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.reaction_diffusion",
         description=("Produce self-organizing emergent patterns that respond to regime shifts"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.colorgrade",
         description=("Transform the visual field's color palette warmth and atmospheric tone"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.drift",
         description="Displace spatial patterns with gentle coherent warping",
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.breathing",
         description=("Modulate rhythmic expansion and contraction to convey life cadence"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.feedback",
         description=("Sustain temporal persistence and afterimage as a dwelling trace"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.content_layer",
         description="Materialize imagination content onto the visual surface",
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.postprocess",
         description=("Enclose the final composition with vignette sediment and grading"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.fluid_sim",
         description=("Propel directional flow with inertia and viscous vorticity"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.trail",
         description=("Accumulate motion history as temporal thickness from velocity"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.voronoi_overlay",
         description=("Partition space into organic cellular boundaries and territories"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.echo",
         description=("Replicate discrete temporal copies as ghosting and fading repetition"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     # yt-content-reverie-sierpinski-separation Phase 1C (2026-04-21).
     # Sierpinski tiles a YouTube frame inside a triangular composition
@@ -767,7 +846,16 @@ SHADER_NODE_AFFORDANCES = [
             "letting it bleed into the generative substrate"
         ),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(
+            latency_class="realtime",
+            medium="visual",
+            monetization_risk="high",
+            risk_reason="Sierpinski can tile YouTube frames; third-party video fingerprints are blocked until source provenance is explicit.",
+            content_risk="tier_4_risky",
+            content_risk_reason="YouTube frame content is external video unless a later provenance gate proves otherwise.",
+            rights_ref="rights:youtube-frame-unverified",
+            provenance_ref="provenance:youtube-slot-unverified",
+        ),
     ),
 ]
 
@@ -783,7 +871,7 @@ CONTENT_AFFORDANCES = [
             " in the visual field"
         ),
         daemon="reverie",
-        operational=OperationalProperties(
+        operational=_public_operational(
             latency_class="slow",
             medium="visual",
             monetization_risk="medium",
@@ -794,7 +882,7 @@ CONTENT_AFFORDANCES = [
         name="content.waveform_viz",
         description=("Sense acoustic energy and render sound as visible waveform shape"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="fast", medium="visual"),
+        operational=_public_operational(latency_class="fast", medium="visual"),
     ),
     # Phase 2 of yt-content-reverie-sierpinski-separation (2026-04-21).
     # Hapax-authored YT featuring affordance — director impingements at
@@ -813,7 +901,16 @@ CONTENT_AFFORDANCES = [
             "rather than ambient backdrop"
         ),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="fast", medium="visual"),
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            monetization_risk="high",
+            risk_reason="Featured YouTube thumbnails/video frames are third-party visual content until a provenance gate proves clearance; blocked unconditionally from broadcast.",
+            content_risk="tier_4_risky",
+            content_risk_reason="YouTube video visual content has unverified source rights and Content ID risk.",
+            rights_ref="rights:youtube-feature-unverified",
+            provenance_ref="provenance:youtube-slot-unverified",
+        ),
     ),
 ]
 
@@ -837,7 +934,7 @@ GEM_AFFORDANCES = [
             "in the lower-band CP437 raster surface; frame the word, hold it, fade it"
         ),
         daemon="hapax_daimonion",
-        operational=OperationalProperties(
+        operational=_public_operational(
             latency_class="fast",
             medium="visual",
             monetization_risk="low",
@@ -854,7 +951,7 @@ GEM_AFFORDANCES = [
             "animation, box-draw containers — in the mural surface"
         ),
         daemon="hapax_daimonion",
-        operational=OperationalProperties(
+        operational=_public_operational(
             latency_class="fast",
             medium="visual",
             monetization_risk="low",
@@ -878,7 +975,12 @@ EXPRESSION_AFFORDANCES = [
             " events into TTS-ready prose during operator-absent stretches"
         ),
         daemon="daimonion",
-        operational=OperationalProperties(latency_class="slow", medium="speech"),
+        operational=_public_operational(
+            latency_class="slow",
+            medium="speech",
+            monetization_risk="medium",
+            risk_reason="Autonomous LLM narration can produce monetization-sensitive wording; Programme opt-in required for broadcast speech.",
+        ),
     ),
 ]
 
@@ -891,19 +993,19 @@ LEGACY_AFFORDANCES = [
         name="shader_graph",
         description="Activate shader graph effects from imagination",
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="visual_chain",
         description=("Modulate visual chain from stimmung and evaluative signals"),
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="fortress_visual_response",
         description="Visual pipeline for fortress crisis events",
         daemon="reverie",
-        operational=OperationalProperties(latency_class="realtime", medium="visual"),
+        operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
 ]
 

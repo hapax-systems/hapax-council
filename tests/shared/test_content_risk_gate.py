@@ -50,11 +50,26 @@ def test_tier_1_platform_cleared_always_permitted() -> None:
     assert GATE.assess(cand).allowed is True
 
 
-def test_default_payload_treated_as_tier_0() -> None:
-    cand = _Candidate("untagged-cap", payload={})  # no content_risk key
+def test_missing_public_payload_fails_closed_as_unknown() -> None:
+    cand = _Candidate("untagged-cap", payload={"public_capable": True})
+    result = GATE.assess(cand)
+    assert result.allowed is False
+    assert result.tier == "unknown"
+    assert "fail" in result.reason.lower()
+
+
+def test_missing_internal_payload_allowed_but_remains_unknown() -> None:
+    cand = _Candidate("internal-cap", payload={"public_capable": False})
     result = GATE.assess(cand)
     assert result.allowed is True
-    assert result.tier == "tier_0_owned"
+    assert result.tier == "unknown"
+
+
+def test_stale_public_medium_without_tier_fails_closed() -> None:
+    cand = _Candidate("stale-visual-cap", payload={"medium": "visual"})
+    result = GATE.assess(cand)
+    assert result.allowed is False
+    assert result.tier == "unknown"
 
 
 # ── tier 4: unconditional block ──────────────────────────────────────────────
@@ -125,7 +140,10 @@ def test_tier_3_permitted_with_session_unlock(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_unknown_tier_failes_closed() -> None:
-    cand = _Candidate("future-tier-cap", payload={"content_risk": "tier_99_quantum"})
+    cand = _Candidate(
+        "future-tier-cap",
+        payload={"public_capable": True, "content_risk": "tier_99_quantum"},
+    )
     result = GATE.assess(cand)
     assert result.allowed is False
     assert "unknown" in result.reason.lower()

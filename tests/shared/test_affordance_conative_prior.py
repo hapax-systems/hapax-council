@@ -49,12 +49,12 @@ def test_action_tendency_is_soft_scoring_prior_not_family_filter(monkeypatch) ->
     narration = SelectionCandidate(
         capability_name="narration.autonomous_first_system",
         similarity=0.5,
-        payload={"medium": "auditory"},
+        payload={"medium": "auditory", "public_capable": False},
     )
     visual = SelectionCandidate(
         capability_name="visual.marker",
         similarity=0.5,
-        payload={"medium": "visual"},
+        payload={"medium": "visual", "public_capable": False},
     )
 
     with (

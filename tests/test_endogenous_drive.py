@@ -152,8 +152,9 @@ class TestEvaluate:
         posterior = drive.evaluate(ctx)
         assert posterior > 0
 
-    def test_high_pressure_high_chronicle_high_posterior(self):
+    def test_high_pressure_high_chronicle_high_posterior(self, monkeypatch: pytest.MonkeyPatch):
         drive = EndogenousDrive(tau=120.0)
+        monkeypatch.setattr(drive, "_thompson_sample", lambda: 0.8)
         now = time.time()
         drive._last_emission_ts = now - 600.0  # 5*tau
         ctx = DriveContext(

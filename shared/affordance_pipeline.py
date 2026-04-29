@@ -311,10 +311,14 @@ class AffordancePipeline:
                             "consent_required": record.operational.consent_required,
                             "priority_floor": record.operational.priority_floor,
                             "medium": record.operational.medium,
+                            "public_capable": record.operational.public_capable,
                             "monetization_risk": record.operational.monetization_risk,
                             "risk_reason": record.operational.risk_reason,
                             "content_risk": record.operational.content_risk,
                             "content_risk_reason": record.operational.content_risk_reason,
+                            "rights_ref": record.operational.rights_ref,
+                            "provenance_ref": record.operational.provenance_ref,
+                            "evidence_refs": list(record.operational.evidence_refs),
                             "activation_summary": self._activation.get(
                                 record.name, ActivationState()
                             ).to_summary(),
@@ -387,6 +391,14 @@ class AffordancePipeline:
                         "consent_required": record.operational.consent_required,
                         "priority_floor": record.operational.priority_floor,
                         "medium": record.operational.medium,
+                        "public_capable": record.operational.public_capable,
+                        "monetization_risk": record.operational.monetization_risk,
+                        "risk_reason": record.operational.risk_reason,
+                        "content_risk": record.operational.content_risk,
+                        "content_risk_reason": record.operational.content_risk_reason,
+                        "rights_ref": record.operational.rights_ref,
+                        "provenance_ref": record.operational.provenance_ref,
+                        "evidence_refs": list(record.operational.evidence_refs),
                         "activation_summary": self._activation.get(
                             record.name, ActivationState()
                         ).to_summary(),

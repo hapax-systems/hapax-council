@@ -33,11 +33,13 @@ class _FakeProgramme:
 
 
 class TestOperationalPropertiesDefault:
-    def test_monetization_risk_defaults_to_none(self) -> None:
+    def test_risk_defaults_to_unknown(self) -> None:
         from shared.affordance import OperationalProperties
 
-        assert OperationalProperties().monetization_risk == "none"
+        assert OperationalProperties().monetization_risk == "unknown"
         assert OperationalProperties().risk_reason is None
+        assert OperationalProperties().content_risk == "unknown"
+        assert OperationalProperties().public_capable is False
 
 
 class TestAssessHighAlwaysBlocks:
@@ -90,11 +92,33 @@ class TestAssessLowAndNonePass:
         assert r.allowed is True
         assert r.risk == "none"
 
-    def test_missing_risk_treated_as_none(self) -> None:
-        cand = _FakeCandidate("unlabelled", payload={})
+    def test_missing_public_risk_treated_as_unknown_and_blocked(self) -> None:
+        cand = _FakeCandidate("unlabelled", payload={"public_capable": True})
+        r = GATE.assess(cand, programme=None)
+        assert r.allowed is False
+        assert r.risk == "unknown"
+        assert "fail closed" in r.reason
+
+    def test_missing_private_risk_does_not_block_internal_capability(self) -> None:
+        cand = _FakeCandidate("internal-only", payload={"public_capable": False})
         r = GATE.assess(cand, programme=None)
         assert r.allowed is True
-        assert r.risk == "none"
+        assert r.risk == "unknown"
+
+    def test_stale_public_medium_without_risk_fails_closed(self) -> None:
+        cand = _FakeCandidate("stale-visual", payload={"medium": "visual"})
+        r = GATE.assess(cand, programme=None)
+        assert r.allowed is False
+        assert r.risk == "unknown"
+
+    def test_unknown_public_risk_blocks(self) -> None:
+        cand = _FakeCandidate(
+            "public-unknown",
+            payload={"public_capable": True, "monetization_risk": "unknown"},
+        )
+        r = GATE.assess(cand, programme=None)
+        assert r.allowed is False
+        assert r.risk == "unknown"
 
 
 class TestCandidateFilter:

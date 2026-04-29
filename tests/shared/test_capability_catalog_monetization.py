@@ -28,9 +28,10 @@ from __future__ import annotations
 
 from typing import Any, get_args
 
-from shared.affordance import MonetizationRisk
+from shared.affordance import ContentRisk, MonetizationRisk
 
 _ALLOWED_RISK_LEVELS: frozenset[str] = frozenset(get_args(MonetizationRisk))
+_ALLOWED_CONTENT_RISK_LEVELS: frozenset[str] = frozenset(get_args(ContentRisk))
 
 
 def _collect_all_capability_records() -> list[Any]:
@@ -100,11 +101,51 @@ class TestMonetizationRiskInvariants:
         for rec in _collect_all_capability_records():
             risk = rec.operational.monetization_risk
             reason = rec.operational.risk_reason or ""
-            if risk != "none" and not reason.strip():
+            if risk in {"low", "medium", "high"} and not reason.strip():
                 offenders.append(f"{rec.name}: risk={risk}, reason is empty")
         assert not offenders, (
             "Records with non-'none' monetization_risk but empty risk_reason "
             "(violates governance rubric §2):\n  " + "\n  ".join(offenders)
+        )
+
+    def test_every_record_has_valid_content_risk_level(self) -> None:
+        """content_risk must be one of the Literal members."""
+        offenders: list[str] = []
+        for rec in _collect_all_capability_records():
+            risk = getattr(rec.operational, "content_risk", None)
+            if risk not in _ALLOWED_CONTENT_RISK_LEVELS:
+                offenders.append(f"{rec.name}: content_risk={risk!r}")
+        assert not offenders, "CapabilityRecords with invalid content_risk:\n  " + "\n  ".join(
+            offenders
+        )
+
+    def test_public_capable_records_have_complete_risk_metadata(self) -> None:
+        """Public-capable catalog records must not inherit unknown/silent defaults."""
+        offenders: list[str] = []
+        for rec in _collect_all_capability_records():
+            op = rec.operational
+            if not op.public_capable:
+                continue
+            missing: list[str] = []
+            if op.monetization_risk == "unknown":
+                missing.append("monetization_risk")
+            if not (op.risk_reason or "").strip():
+                missing.append("risk_reason")
+            if op.content_risk == "unknown":
+                missing.append("content_risk")
+            if not (op.content_risk_reason or "").strip():
+                missing.append("content_risk_reason")
+            if not (op.rights_ref or "").strip():
+                missing.append("rights_ref")
+            if not (op.provenance_ref or "").strip():
+                missing.append("provenance_ref")
+            if not op.evidence_refs:
+                missing.append("evidence_refs")
+            if missing:
+                offenders.append(f"{rec.name}: missing {', '.join(missing)}")
+        assert not offenders, (
+            "Public-capable CapabilityRecords with incomplete risk metadata:\n  "
+            + "\n  ".join(offenders)
         )
 
     def test_high_risk_reason_names_block_semantics(self) -> None:

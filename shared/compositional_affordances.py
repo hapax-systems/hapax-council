@@ -25,12 +25,35 @@ Run the seeding script after adding entries here:
 
 from __future__ import annotations
 
-from shared.affordance import CapabilityRecord, OperationalProperties
+from shared.affordance import CapabilityRecord, ContentRisk, MonetizationRisk, OperationalProperties
 
 _DAEMON = "studio_compositor"
+_PUBLIC_EVIDENCE_REFS = (
+    "docs/superpowers/specs/2026-04-17-volitional-grounded-director-design.md",
+)
+_PUBLIC_RIGHTS_REF = "rights:operator-owned-compositor-control"
+_PUBLIC_PROVENANCE_REF = "provenance:compositional-affordance-catalog"
+_PUBLIC_MONETIZATION_REASON = (
+    "Operator-authored compositor control; it changes local presentation and does not introduce "
+    "new third-party monetizable content."
+)
+_PUBLIC_CONTENT_REASON = (
+    "Compositor control over already-gated local sources; no new external media source is acquired."
+)
 
 
-def _record(name: str, description: str, *, medium: str = "visual") -> CapabilityRecord:
+def _record(
+    name: str,
+    description: str,
+    *,
+    medium: str = "visual",
+    monetization_risk: MonetizationRisk = "none",
+    risk_reason: str = _PUBLIC_MONETIZATION_REASON,
+    content_risk: ContentRisk = "tier_0_owned",
+    content_risk_reason: str = _PUBLIC_CONTENT_REASON,
+    rights_ref: str = _PUBLIC_RIGHTS_REF,
+    provenance_ref: str = _PUBLIC_PROVENANCE_REF,
+) -> CapabilityRecord:
     return CapabilityRecord(
         name=name,
         description=description,
@@ -43,6 +66,14 @@ def _record(name: str, description: str, *, medium: str = "visual") -> Capabilit
             # consent_required override applies where it matters
             # (e.g. camera.hero on rooms with possible guest presence).
             consent_required=False,
+            public_capable=True,
+            monetization_risk=monetization_risk,
+            risk_reason=risk_reason,
+            content_risk=content_risk,
+            content_risk_reason=content_risk_reason,
+            rights_ref=rights_ref,
+            provenance_ref=provenance_ref,
+            evidence_refs=_PUBLIC_EVIDENCE_REFS,
         ),
     )
 
@@ -178,16 +209,32 @@ _YOUTUBE_DIRECTION: list[CapabilityRecord] = [
         "youtube.cut-to",
         "cuts the hero focus to the currently-playing YouTube slot when the video content claims center-stage",
         medium="visual",
+        monetization_risk="high",
+        risk_reason="Cutting to an unverified YouTube slot foregrounds third-party video; blocked until provenance gate proves clearance.",
+        content_risk="tier_4_risky",
+        content_risk_reason="YouTube slot video source is unverified external media by default.",
+        rights_ref="rights:youtube-slot-unverified",
+        provenance_ref="provenance:youtube-slot-unverified",
     ),
     _record(
         "youtube.advance-queue",
         "pulls the next contextually relevant YouTube video into rotation when the current slot has run its course",
         medium="visual",
+        monetization_risk="high",
+        risk_reason="Advancing an unverified YouTube queue can introduce third-party video; blocked until provenance gate proves clearance.",
+        content_risk="tier_4_risky",
+        content_risk_reason="YouTube queue source is unverified external media by default.",
+        rights_ref="rights:youtube-slot-unverified",
+        provenance_ref="provenance:youtube-slot-unverified",
     ),
     _record(
         "youtube.cut-away",
         "shifts the hero focus away from YouTube to live operator content when the live moment is more relevant",
         medium="visual",
+        monetization_risk="low",
+        risk_reason="Cutting away from YouTube reduces third-party exposure; low risk because it is a public control over source egress.",
+        content_risk="tier_0_owned",
+        content_risk_reason="The control exits external video toward local operator/studio content.",
     ),
 ]
 
@@ -233,6 +280,14 @@ _STREAM_MODE: list[CapabilityRecord] = [
             latency_class="fast",
             medium="notification",
             consent_required=True,
+            public_capable=True,
+            monetization_risk="none",
+            risk_reason=_PUBLIC_MONETIZATION_REASON,
+            content_risk="tier_0_owned",
+            content_risk_reason=_PUBLIC_CONTENT_REASON,
+            rights_ref=_PUBLIC_RIGHTS_REF,
+            provenance_ref=_PUBLIC_PROVENANCE_REF,
+            evidence_refs=_PUBLIC_EVIDENCE_REFS,
         ),
     ),
 ]

@@ -5,8 +5,10 @@ SEMANTIC content risk (profanity, reaction-content), this gate classifies
 BROADCAST PROVENANCE risk: where the audio/visual came from and whether
 playing it on YouTube can trigger Content ID claims.
 
-Five tiers (`shared.affordance.ContentRisk`):
+Risk tiers (`shared.affordance.ContentRisk`):
 
+  unknown                  — missing/stale metadata; blocks public-capable
+                              broadcast payloads
   tier_0_owned             — operator-owned, generated, hardware-captured
   tier_1_platform_cleared  — Storyblocks, Streambeats, YT Audio Library
   tier_2_provenance_known  — verified CC0, Internet Archive raw PD uploads
@@ -15,6 +17,8 @@ Five tiers (`shared.affordance.ContentRisk`):
 
 Gate policy:
 
+  unknown → block when public-capable/monetizable; allow only internal-only
+            candidates that explicitly declare public_capable=False
   tier_4 → unconditional block
   tier_3 → permitted only when HAPAX_CONTENT_RISK_UNLOCK_TIER env contains
            the tier slug (operator session unlock, never auto-recruit)
@@ -30,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from shared.affordance import ContentRisk
 
@@ -49,6 +53,17 @@ _log = logging.getLogger(__name__)
 # that haven't been migrated to opt into TIER 2+ default to tier_0/tier_1
 # only — the safest posture.
 _AUTO_PERMITTED: frozenset[str] = frozenset({"tier_0_owned", "tier_1_platform_cleared"})
+_VALID_TIERS: frozenset[str] = frozenset(
+    {
+        "unknown",
+        "tier_0_owned",
+        "tier_1_platform_cleared",
+        "tier_2_provenance_known",
+        "tier_3_uncertain",
+        "tier_4_risky",
+    }
+)
+_PUBLIC_MEDIA: frozenset[str] = frozenset({"visual", "auditory", "speech", "textual"})
 
 # tier_4 is the bottom of the broadcast scale. No path through; the only
 # way TIER 4 content reaches broadcast is hardware-side (operator opens
@@ -70,6 +85,26 @@ def is_unlocked(tier: ContentRisk) -> bool:
     if not raw:
         return False
     return tier in {chunk.strip() for chunk in raw.split(",") if chunk.strip()}
+
+
+def _coerce_tier(raw: Any) -> ContentRisk:
+    """Normalize missing/stale payload tiers to ``unknown``."""
+    if raw in _VALID_TIERS:
+        return cast("ContentRisk", raw)
+    return "unknown"
+
+
+def _public_or_monetizable(payload: dict[str, Any]) -> bool:
+    """Whether missing content-risk metadata must fail closed."""
+    if payload.get("monetizable") is True:
+        return True
+    public_capable = payload.get("public_capable")
+    if public_capable is True:
+        return True
+    if public_capable is False:
+        return False
+    medium = payload.get("medium")
+    return isinstance(medium, str) and medium in _PUBLIC_MEDIA
 
 
 @runtime_checkable
@@ -117,8 +152,22 @@ class ContentRiskGate:
         programme: _ProgrammeLike | None = None,
     ) -> ContentRiskAssessment:
         """Verdict for a single candidate. Reads tier from ``payload``."""
-        tier: ContentRisk = candidate.payload.get("content_risk", "tier_0_owned")
+        raw_tier = candidate.payload.get("content_risk")
+        tier = _coerce_tier(raw_tier)
         name = candidate.capability_name
+        if tier == "unknown":
+            if _public_or_monetizable(candidate.payload):
+                reason = "missing" if raw_tier is None else f"unknown value {raw_tier!r}"
+                return ContentRiskAssessment(
+                    allowed=False,
+                    tier=tier,
+                    reason=f"{name}: content_risk {reason}; public-capable broadcast fails closed",
+                )
+            return ContentRiskAssessment(
+                allowed=True,
+                tier=tier,
+                reason=f"{name}: unknown content_risk on non-public capability — passed",
+            )
         if tier in _AUTO_PERMITTED:
             return ContentRiskAssessment(
                 allowed=True, tier=tier, reason=f"{name}: {tier} auto-permitted"
