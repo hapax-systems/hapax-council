@@ -20,13 +20,31 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 # Beta PR #756 queue-024 Phase 1 measured Kokoro CPU synth at
-# ~6.6 chars/sec (361-char text → 54.6 s synth). Compositor react
-# texts run 200–425 chars, which would time out 82% of long calls
-# under the original 30 s cap. Raise to 90 s, which covers up to
-# ~600 chars at the measured throughput. The complementary fix is
-# a character cap enforced by ``director_loop._synthesize`` so the
-# voice path never waits that long on a single speak-react call.
+# ~6.6 chars/sec (361-char text -> 54.6 s synth). Use a conservative
+# throughput estimate here so valid long speech gets a long enough
+# watchdog without moving length decisions into the transport layer.
 _DEFAULT_TIMEOUT_S = 90.0
+_KOKORO_SAFE_CHARS_PER_SECOND = 5.0
+_SYNTHESIS_TIMEOUT_OVERHEAD_MIN_S = 10.0
+_SYNTHESIS_TIMEOUT_OVERHEAD_RATIO = 0.15
+
+
+def synthesis_timeout_s(text: str, *, minimum_s: float = _DEFAULT_TIMEOUT_S) -> float:
+    """Return a synthesis watchdog scaled to the requested utterance text.
+
+    This is a stuck-call guard, not a length policy. Short utterances keep
+    the configured minimum; long utterances get enough wall-clock budget
+    for Kokoro CPU synthesis plus process/socket overhead.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return minimum_s
+    estimated_s = len(stripped) / _KOKORO_SAFE_CHARS_PER_SECOND
+    overhead_s = max(
+        _SYNTHESIS_TIMEOUT_OVERHEAD_MIN_S,
+        estimated_s * _SYNTHESIS_TIMEOUT_OVERHEAD_RATIO,
+    )
+    return max(minimum_s, estimated_s + overhead_s)
 
 
 class DaimonionTtsClient:
@@ -58,9 +76,10 @@ class DaimonionTtsClient:
         if not text or not text.strip():
             return b""
 
+        request_timeout_s = synthesis_timeout_s(text, minimum_s=self.timeout_s)
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(self.timeout_s)
+                s.settimeout(request_timeout_s)
                 s.connect(str(self.socket_path))
                 request = json.dumps({"text": text, "use_case": use_case})
                 s.sendall(request.encode("utf-8") + b"\n")
@@ -116,7 +135,7 @@ class DaimonionTtsClient:
             log.warning("tts client: daimonion refused connection at %s", self.socket_path)
             return b""
         except TimeoutError:
-            log.warning("tts client: synthesize timed out after %.1fs", self.timeout_s)
+            log.warning("tts client: synthesize timed out after %.1fs", request_timeout_s)
             try:
                 from agents.studio_compositor.metrics import record_tts_client_timeout
 

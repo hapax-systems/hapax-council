@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from agents.studio_compositor.tts_client import DaimonionTtsClient
+from agents.studio_compositor.tts_client import DaimonionTtsClient, synthesis_timeout_s
 
 
 class _StubServer:
@@ -222,3 +222,37 @@ def test_body_split_across_multiple_recvs_is_reassembled(socket_path: Path) -> N
         assert pcm == body
     finally:
         server.close()
+
+
+def test_synthesis_timeout_scales_with_long_text() -> None:
+    short = "brief director beat"
+    long = "word " * 260
+
+    assert synthesis_timeout_s(short, minimum_s=90.0) == 90.0
+    assert synthesis_timeout_s(long, minimum_s=90.0) > 260.0
+
+
+def test_client_uses_duration_aware_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    observed_timeouts: list[float] = []
+    text = "word " * 260
+
+    class _FakeSocket:
+        def __enter__(self) -> _FakeSocket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def settimeout(self, value: float) -> None:
+            observed_timeouts.append(value)
+
+        def connect(self, _path: str) -> None:
+            raise FileNotFoundError
+
+    monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: _FakeSocket())
+
+    client = DaimonionTtsClient(socket_path=tmp_path / "tts.sock", timeout_s=90.0)
+    assert client.synthesize(text) == b""
+    assert observed_timeouts == [synthesis_timeout_s(text, minimum_s=90.0)]
