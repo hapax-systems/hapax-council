@@ -1,0 +1,534 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/revenue-metrics-dashboard.schema.json",
+  "title": "RevenueMetricsDashboard",
+  "description": "Canonical private/train revenue actuals dashboard for corrected autonomous content-programming grounding revenue targets.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "forecast_source",
+    "horizon_progress",
+    "monthly_run_rate",
+    "total_actuals",
+    "streams",
+    "formats",
+    "readiness",
+    "source_metrics",
+    "separation_policy",
+    "train_status"
+  ],
+  "additionalProperties": false,
+  "x-corrected_content_programming_forecast": {
+    "baseline": {
+      "1_month": 800,
+      "6_months": 64000,
+      "1_year": 220000,
+      "2_years": 715000
+    },
+    "doubled": {
+      "1_month": 1600,
+      "6_months": 128000,
+      "1_year": 440000,
+      "2_years": 1430000
+    },
+    "stream_baseline": {
+      "platform_native": {"1_month": 0, "6_months": 8000, "1_year": 45000, "2_years": 190000},
+      "support_rails": {"1_month": 200, "6_months": 10000, "1_year": 30000, "2_years": 95000},
+      "grants_fellowships": {"1_month": 0, "6_months": 25000, "1_year": 70000, "2_years": 160000},
+      "research_artifacts_licensing": {"1_month": 400, "6_months": 10000, "1_year": 35000, "2_years": 110000},
+      "product_tool_ip": {"1_month": 150, "6_months": 5000, "1_year": 20000, "2_years": 70000},
+      "consulting_by_artifact": {"1_month": 0, "6_months": 0, "1_year": 0, "2_years": 0},
+      "aesthetic_editions": {"1_month": 50, "6_months": 4000, "1_year": 15000, "2_years": 65000},
+      "studio_adjacent": {"1_month": 0, "6_months": 2000, "1_year": 5000, "2_years": 25000}
+    }
+  },
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "forecast_source": {
+      "type": "string",
+      "const": "corrected_content_programming_grounding_train"
+    },
+    "horizon_progress": {"$ref": "#/$defs/horizon_progress_map"},
+    "monthly_run_rate": {"$ref": "#/$defs/monthly_run_rate"},
+    "total_actuals": {"$ref": "#/$defs/financial_actuals"},
+    "streams": {"$ref": "#/$defs/stream_metrics_map"},
+    "formats": {"$ref": "#/$defs/format_metrics_map"},
+    "readiness": {"$ref": "#/$defs/readiness_map"},
+    "source_metrics": {"$ref": "#/$defs/source_metrics"},
+    "separation_policy": {"$ref": "#/$defs/separation_policy"},
+    "train_status": {"$ref": "#/$defs/train_status"}
+  },
+  "$defs": {
+    "horizon": {
+      "type": "string",
+      "enum": ["1_month", "6_months", "1_year", "2_years"]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["unknown", "low", "low_med", "medium", "high"]
+    },
+    "revenue_stream": {
+      "type": "string",
+      "enum": [
+        "platform_native",
+        "support_rails",
+        "grants_fellowships",
+        "research_artifacts_licensing",
+        "product_tool_ip",
+        "consulting_by_artifact",
+        "aesthetic_editions",
+        "studio_adjacent"
+      ]
+    },
+    "content_format": {
+      "type": "string",
+      "enum": [
+        "tier_list",
+        "bracket",
+        "review",
+        "comparison",
+        "what_is_this",
+        "react_commentary",
+        "watch_along",
+        "explainer_rundown",
+        "debate",
+        "refusal_breakdown",
+        "claim_audit",
+        "failure_autopsy"
+      ]
+    },
+    "readiness_dimension": {
+      "type": "string",
+      "enum": [
+        "safe_to_broadcast",
+        "safe_to_archive",
+        "safe_to_promote",
+        "safe_to_monetize",
+        "safe_to_publish_offer",
+        "safe_to_publish_artifact",
+        "safe_to_accept_payment"
+      ]
+    },
+    "revenue_progress": {
+      "type": "object",
+      "required": [
+        "baseline_usd",
+        "doubled_target_usd",
+        "actual_usd",
+        "delta_from_baseline_usd",
+        "delta_from_doubled_target_usd",
+        "confidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "baseline_usd": {"type": "number", "minimum": 0},
+        "doubled_target_usd": {"type": "number", "minimum": 0},
+        "actual_usd": {"type": "number", "minimum": 0},
+        "delta_from_baseline_usd": {"type": "number"},
+        "delta_from_doubled_target_usd": {"type": "number"},
+        "confidence": {"$ref": "#/$defs/confidence"}
+      }
+    },
+    "horizon_progress_map": {
+      "type": "object",
+      "required": ["1_month", "6_months", "1_year", "2_years"],
+      "additionalProperties": false,
+      "properties": {
+        "1_month": {"$ref": "#/$defs/revenue_progress"},
+        "6_months": {"$ref": "#/$defs/revenue_progress"},
+        "1_year": {"$ref": "#/$defs/revenue_progress"},
+        "2_years": {"$ref": "#/$defs/revenue_progress"}
+      }
+    },
+    "monthly_run_rate": {
+      "type": "object",
+      "required": [
+        "actual_usd",
+        "baseline_usd_by_horizon",
+        "doubled_usd_by_horizon",
+        "confidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actual_usd": {"type": "number", "minimum": 0},
+        "baseline_usd_by_horizon": {"$ref": "#/$defs/horizon_amount_map"},
+        "doubled_usd_by_horizon": {"$ref": "#/$defs/horizon_amount_map"},
+        "confidence": {"$ref": "#/$defs/confidence"}
+      }
+    },
+    "horizon_amount_map": {
+      "type": "object",
+      "required": ["1_month", "6_months", "1_year", "2_years"],
+      "additionalProperties": false,
+      "properties": {
+        "1_month": {"type": "number", "minimum": 0},
+        "6_months": {"type": "number", "minimum": 0},
+        "1_year": {"type": "number", "minimum": 0},
+        "2_years": {"type": "number", "minimum": 0}
+      }
+    },
+    "financial_actuals": {
+      "type": "object",
+      "required": [
+        "cumulative_gross_usd",
+        "monthly_run_rate_usd",
+        "costs_usd",
+        "platform_fees_usd",
+        "taxes_withholding_placeholder_usd",
+        "processor_leakage_usd",
+        "net_estimate_usd"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "cumulative_gross_usd": {"type": "number", "minimum": 0},
+        "monthly_run_rate_usd": {"type": "number", "minimum": 0},
+        "costs_usd": {"type": "number", "minimum": 0},
+        "platform_fees_usd": {"type": "number", "minimum": 0},
+        "taxes_withholding_placeholder_usd": {"type": "number", "minimum": 0},
+        "processor_leakage_usd": {"type": "number", "minimum": 0},
+        "net_estimate_usd": {"type": "number"}
+      }
+    },
+    "stream_metric": {
+      "type": "object",
+      "required": [
+        "stream_id",
+        "display_name",
+        "actuals",
+        "horizon_progress",
+        "confidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "stream_id": {"$ref": "#/$defs/revenue_stream"},
+        "display_name": {"type": "string", "minLength": 1},
+        "actuals": {"$ref": "#/$defs/financial_actuals"},
+        "horizon_progress": {"$ref": "#/$defs/horizon_progress_map"},
+        "confidence": {"$ref": "#/$defs/confidence"}
+      }
+    },
+    "stream_metrics_map": {
+      "type": "object",
+      "required": [
+        "platform_native",
+        "support_rails",
+        "grants_fellowships",
+        "research_artifacts_licensing",
+        "product_tool_ip",
+        "consulting_by_artifact",
+        "aesthetic_editions",
+        "studio_adjacent"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "platform_native": {"$ref": "#/$defs/stream_metric"},
+        "support_rails": {"$ref": "#/$defs/stream_metric"},
+        "grants_fellowships": {"$ref": "#/$defs/stream_metric"},
+        "research_artifacts_licensing": {"$ref": "#/$defs/stream_metric"},
+        "product_tool_ip": {"$ref": "#/$defs/stream_metric"},
+        "consulting_by_artifact": {"$ref": "#/$defs/stream_metric"},
+        "aesthetic_editions": {"$ref": "#/$defs/stream_metric"},
+        "studio_adjacent": {"$ref": "#/$defs/stream_metric"}
+      }
+    },
+    "engagement_observations": {
+      "type": "object",
+      "required": [
+        "kept_separate",
+        "may_override_grounding",
+        "public_event_count",
+        "views",
+        "watch_time_hours",
+        "support_prompt_impressions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kept_separate": {"type": "boolean", "const": true},
+        "may_override_grounding": {"type": "boolean", "const": false},
+        "public_event_count": {"type": "integer", "minimum": 0},
+        "views": {"type": "integer", "minimum": 0},
+        "watch_time_hours": {"type": "number", "minimum": 0},
+        "support_prompt_impressions": {"type": "integer", "minimum": 0}
+      }
+    },
+    "format_metric": {
+      "type": "object",
+      "required": [
+        "format_id",
+        "display_name",
+        "run_count",
+        "artifact_conversion_count",
+        "revenue_gross_usd",
+        "engagement_observations",
+        "grounding_quality_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "format_id": {"$ref": "#/$defs/content_format"},
+        "display_name": {"type": "string", "minLength": 1},
+        "run_count": {"type": "integer", "minimum": 0},
+        "artifact_conversion_count": {"type": "integer", "minimum": 0},
+        "revenue_gross_usd": {"type": "number", "minimum": 0},
+        "engagement_observations": {"$ref": "#/$defs/engagement_observations"},
+        "grounding_quality_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "format_metrics_map": {
+      "type": "object",
+      "required": [
+        "tier_list",
+        "bracket",
+        "review",
+        "comparison",
+        "what_is_this",
+        "react_commentary",
+        "watch_along",
+        "explainer_rundown",
+        "debate",
+        "refusal_breakdown",
+        "claim_audit",
+        "failure_autopsy"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "tier_list": {"$ref": "#/$defs/format_metric"},
+        "bracket": {"$ref": "#/$defs/format_metric"},
+        "review": {"$ref": "#/$defs/format_metric"},
+        "comparison": {"$ref": "#/$defs/format_metric"},
+        "what_is_this": {"$ref": "#/$defs/format_metric"},
+        "react_commentary": {"$ref": "#/$defs/format_metric"},
+        "watch_along": {"$ref": "#/$defs/format_metric"},
+        "explainer_rundown": {"$ref": "#/$defs/format_metric"},
+        "debate": {"$ref": "#/$defs/format_metric"},
+        "refusal_breakdown": {"$ref": "#/$defs/format_metric"},
+        "claim_audit": {"$ref": "#/$defs/format_metric"},
+        "failure_autopsy": {"$ref": "#/$defs/format_metric"}
+      }
+    },
+    "readiness_state": {
+      "type": "object",
+      "required": [
+        "dimension",
+        "state",
+        "evidence_refs",
+        "blocked_reasons",
+        "last_checked_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dimension": {"$ref": "#/$defs/readiness_dimension"},
+        "state": {"type": "string", "enum": ["unknown", "blocked", "ready", "not_applicable"]},
+        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "blocked_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "last_checked_at": {"type": ["string", "null"], "format": "date-time"}
+      }
+    },
+    "readiness_map": {
+      "type": "object",
+      "required": [
+        "safe_to_broadcast",
+        "safe_to_archive",
+        "safe_to_promote",
+        "safe_to_monetize",
+        "safe_to_publish_offer",
+        "safe_to_publish_artifact",
+        "safe_to_accept_payment"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "safe_to_broadcast": {"$ref": "#/$defs/readiness_state"},
+        "safe_to_archive": {"$ref": "#/$defs/readiness_state"},
+        "safe_to_promote": {"$ref": "#/$defs/readiness_state"},
+        "safe_to_monetize": {"$ref": "#/$defs/readiness_state"},
+        "safe_to_publish_offer": {"$ref": "#/$defs/readiness_state"},
+        "safe_to_publish_artifact": {"$ref": "#/$defs/readiness_state"},
+        "safe_to_accept_payment": {"$ref": "#/$defs/readiness_state"}
+      }
+    },
+    "source_metrics": {
+      "type": "object",
+      "required": [
+        "public_events",
+        "support_prompts",
+        "aggregate_support_receipts",
+        "artifacts",
+        "license_requests",
+        "grants",
+        "editions",
+        "youtube_state",
+        "costs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "public_events": {"$ref": "#/$defs/public_event_metrics"},
+        "support_prompts": {"$ref": "#/$defs/support_prompt_metrics"},
+        "aggregate_support_receipts": {"$ref": "#/$defs/aggregate_support_receipts"},
+        "artifacts": {"$ref": "#/$defs/artifact_metrics"},
+        "license_requests": {"$ref": "#/$defs/license_metrics"},
+        "grants": {"$ref": "#/$defs/grant_metrics"},
+        "editions": {"$ref": "#/$defs/edition_metrics"},
+        "youtube_state": {"$ref": "#/$defs/youtube_state_metrics"},
+        "costs": {"$ref": "#/$defs/cost_metrics"}
+      }
+    },
+    "public_event_metrics": {
+      "type": "object",
+      "required": ["event_count", "safe_to_publish_count", "archive_refs_created"],
+      "additionalProperties": false,
+      "properties": {
+        "event_count": {"type": "integer", "minimum": 0},
+        "safe_to_publish_count": {"type": "integer", "minimum": 0},
+        "archive_refs_created": {"type": "integer", "minimum": 0}
+      }
+    },
+    "support_prompt_metrics": {
+      "type": "object",
+      "required": ["prompt_count", "impressions", "conversion_receipt_count"],
+      "additionalProperties": false,
+      "properties": {
+        "prompt_count": {"type": "integer", "minimum": 0},
+        "impressions": {"type": "integer", "minimum": 0},
+        "conversion_receipt_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "aggregate_support_receipts": {
+      "type": "object",
+      "required": [
+        "receipt_count",
+        "gross_usd",
+        "rail_counts",
+        "public_state_aggregate_only",
+        "per_receipt_public_state_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "receipt_count": {"type": "integer", "minimum": 0},
+        "gross_usd": {"type": "number", "minimum": 0},
+        "rail_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "public_state_aggregate_only": {"type": "boolean", "const": true},
+        "per_receipt_public_state_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "artifact_metrics": {
+      "type": "object",
+      "required": ["page_views", "downloads", "paid_conversions", "refund_count", "support_burden_count"],
+      "additionalProperties": false,
+      "properties": {
+        "page_views": {"type": "integer", "minimum": 0},
+        "downloads": {"type": "integer", "minimum": 0},
+        "paid_conversions": {"type": "integer", "minimum": 0},
+        "refund_count": {"type": "integer", "minimum": 0},
+        "support_burden_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "license_metrics": {
+      "type": "object",
+      "required": ["request_count", "quoted_count", "accepted_count", "paid_exception_count"],
+      "additionalProperties": false,
+      "properties": {
+        "request_count": {"type": "integer", "minimum": 0},
+        "quoted_count": {"type": "integer", "minimum": 0},
+        "accepted_count": {"type": "integer", "minimum": 0},
+        "paid_exception_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "grant_metrics": {
+      "type": "object",
+      "required": ["generated_count", "submitted_count", "refused_count", "won_count", "disbursed_usd"],
+      "additionalProperties": false,
+      "properties": {
+        "generated_count": {"type": "integer", "minimum": 0},
+        "submitted_count": {"type": "integer", "minimum": 0},
+        "refused_count": {"type": "integer", "minimum": 0},
+        "won_count": {"type": "integer", "minimum": 0},
+        "disbursed_usd": {"type": "number", "minimum": 0}
+      }
+    },
+    "edition_metrics": {
+      "type": "object",
+      "required": ["candidate_count", "published_count", "gross_usd"],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_count": {"type": "integer", "minimum": 0},
+        "published_count": {"type": "integer", "minimum": 0},
+        "gross_usd": {"type": "number", "minimum": 0}
+      }
+    },
+    "youtube_state_metrics": {
+      "type": "object",
+      "required": ["subscribers", "public_watch_hours", "shorts_views", "rpm_usd", "fan_funding_usd", "ypp_state"],
+      "additionalProperties": false,
+      "properties": {
+        "subscribers": {"type": "integer", "minimum": 0},
+        "public_watch_hours": {"type": "number", "minimum": 0},
+        "shorts_views": {"type": "integer", "minimum": 0},
+        "rpm_usd": {"type": "number", "minimum": 0},
+        "fan_funding_usd": {"type": "number", "minimum": 0},
+        "ypp_state": {"type": "string", "enum": ["unknown", "ineligible", "eligible", "in_review", "active", "blocked"]}
+      }
+    },
+    "cost_metrics": {
+      "type": "object",
+      "required": ["compute_usd", "storage_usd", "platform_fees_usd", "taxes_withholding_placeholder_usd", "processor_leakage_usd"],
+      "additionalProperties": false,
+      "properties": {
+        "compute_usd": {"type": "number", "minimum": 0},
+        "storage_usd": {"type": "number", "minimum": 0},
+        "platform_fees_usd": {"type": "number", "minimum": 0},
+        "taxes_withholding_placeholder_usd": {"type": "number", "minimum": 0},
+        "processor_leakage_usd": {"type": "number", "minimum": 0}
+      }
+    },
+    "separation_policy": {
+      "type": "object",
+      "required": [
+        "engagement_can_override_grounding",
+        "revenue_can_override_grounding",
+        "popularity_is_scientific_warrant",
+        "grounding_quality_metric_refs",
+        "engagement_metric_refs",
+        "revenue_metric_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "engagement_can_override_grounding": {"type": "boolean", "const": false},
+        "revenue_can_override_grounding": {"type": "boolean", "const": false},
+        "popularity_is_scientific_warrant": {"type": "boolean", "const": false},
+        "grounding_quality_metric_refs": {"type": "array", "items": {"type": "string"}},
+        "engagement_metric_refs": {"type": "array", "items": {"type": "string"}},
+        "revenue_metric_refs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "train_status": {
+      "type": "object",
+      "required": [
+        "status",
+        "generated_for_task_id",
+        "under_target_streams",
+        "under_target_horizons",
+        "next_correction_stream",
+        "next_correction_packet",
+        "next_correction_reason",
+        "blocked_by",
+        "metric_contract_ready"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"type": "string", "enum": ["unknown", "under_target", "on_track"]},
+        "generated_for_task_id": {"type": "string", "const": "revenue-metrics-dashboard"},
+        "under_target_streams": {"type": "array", "items": {"$ref": "#/$defs/revenue_stream"}, "uniqueItems": true},
+        "under_target_horizons": {"type": "array", "items": {"$ref": "#/$defs/horizon"}, "uniqueItems": true},
+        "next_correction_stream": {"anyOf": [{"$ref": "#/$defs/revenue_stream"}, {"type": "null"}]},
+        "next_correction_packet": {"type": "string"},
+        "next_correction_reason": {"type": "string"},
+        "blocked_by": {"type": "array", "items": {"type": "string"}},
+        "metric_contract_ready": {"type": "boolean", "const": true}
+      }
+    }
+  }
+}
