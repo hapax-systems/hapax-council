@@ -813,9 +813,16 @@ def _evaluate_voice_output_witness(
     status = str(data.get("status", "unknown"))
     route = data.get("downstream_route_status") if isinstance(data, dict) else {}
     playback = data.get("last_playback") if isinstance(data, dict) else {}
+    last_successful_playback = (
+        data.get("last_successful_playback") if isinstance(data, dict) else {}
+    )
+    last_failed_playback = data.get("last_failed_playback") if isinstance(data, dict) else {}
+    last_drop = data.get("last_drop") if isinstance(data, dict) else {}
     egress = data.get("broadcast_egress_activity") if isinstance(data, dict) else {}
     route_present = bool(isinstance(route, dict) and route.get("route_present"))
-    playback_present = bool(isinstance(playback, dict) and playback.get("completed"))
+    playback_present = bool(isinstance(playback, dict) and playback.get("completed")) or bool(
+        isinstance(last_successful_playback, dict) and last_successful_playback.get("completed")
+    )
     egress_audible = egress.get("egress_audible") if isinstance(egress, dict) else None
     silent_failure = status in {"playback_failed", "drop_recorded", "synthesis_failed"}
     record.update(
@@ -827,6 +834,13 @@ def _evaluate_voice_output_witness(
             "egress_audible": egress_audible,
             "silent_failure": silent_failure,
             "blocker_drop_reason": data.get("blocker_drop_reason"),
+            "last_drop": last_drop if isinstance(last_drop, dict) else {},
+            "last_failed_playback": last_failed_playback
+            if isinstance(last_failed_playback, dict)
+            else {},
+            "last_successful_playback": last_successful_playback
+            if isinstance(last_successful_playback, dict)
+            else {},
             "target": route.get("target") if isinstance(route, dict) else None,
             "media_role": route.get("media_role") if isinstance(route, dict) else None,
             "planned_utterance": data.get("planned_utterance"),

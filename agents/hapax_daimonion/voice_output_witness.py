@@ -48,6 +48,9 @@ class VoiceOutputWitness(BaseModel):
     last_composed_autonomous_narrative: dict[str, Any] | None = None
     last_tts_synthesis: dict[str, Any] | None = None
     last_playback: dict[str, Any] | None = None
+    last_successful_playback: dict[str, Any] | None = None
+    last_failed_playback: dict[str, Any] | None = None
+    last_drop: dict[str, Any] | None = None
     downstream_route_status: dict[str, Any] | None = None
     broadcast_egress_activity: dict[str, Any] | None = None
     planned_utterance: dict[str, Any] | None = None
@@ -223,6 +226,8 @@ def record_playback_result(
         now=ts,
         status="playback_completed" if completed else "playback_failed",
         last_playback=playback,
+        last_successful_playback=playback if completed else None,
+        last_failed_playback=playback if not completed else None,
         downstream_route_status=route,
         broadcast_egress_activity=egress,
         planned_utterance=_planned_utterance(text),
@@ -264,7 +269,7 @@ def record_drop(
         downstream_route_status=route,
         planned_utterance=_planned_utterance(text) if text is not None else None,
         blocker_drop_reason=reason,
-        last_playback={
+        last_drop={
             "ts": _iso(ts),
             "status": "dropped",
             "completed": False,
