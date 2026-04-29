@@ -61,6 +61,7 @@ from shared.tier_ranking_bracket_engine import (
     emit_deterministic_boundaries,
 )
 from shared.trend_current_event_gate import evaluate_candidate, validate_policy
+from shared.wcs_witness_probe_runtime import WCSWitnessProbeFixtureSet, WitnessProbeRecord
 from shared.world_capability_surface import (
     EvidenceEnvelopeRequirements,
     WitnessRequirement,
@@ -200,3 +201,11 @@ WorldSurfaceHealthRecord._validate_fail_closed_claimability
 WorldSurfaceHealthEnvelope._validate_envelope_counts_and_public_gates
 WorldSurfaceHealthFixtureSet._validate_contract_coverage
 WorldSurfaceHealthFixtureSet.rows_for_fixture_case
+
+# WCS witness probe runtime helpers are the public contract for downstream WCS
+# director snapshots, health blocker bus, and programme WCS snapshot tasks.
+# Pydantic invokes validators dynamically; downstream tasks consume the read
+# helpers after this first runtime slice lands.
+WitnessProbeRecord._validate_state_evidence
+WCSWitnessProbeFixtureSet.require_probe
+WCSWitnessProbeFixtureSet.probes_for_surface

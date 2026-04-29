@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "wcs-witness-probe-runtime-fixtures-v1",
+  "schema_ref": "schemas/wcs-witness-probe-runtime.schema.json",
+  "generated_from": [
+    "vault-spec:2026-04-29-capability-outcome-witness-learning",
+    "vault-spec:2026-04-29-world-surface-health-no-false-grounding",
+    "vault-spec:2026-04-29-audio-reference-world-surface",
+    "vault-plan:2026-04-29-next-high-value-direction-runtime-truth-conversion"
+  ],
+  "declared_at": "2026-04-29T18:10:25Z",
+  "witness_class_interfaces": [
+    {
+      "witness_class": "read_only",
+      "certifies": "a source, file, API, or registry row was read and its declared freshness/provenance fields were available",
+      "required_evidence_fields": [
+        "source_refs",
+        "checked_at",
+        "freshness_window_s",
+        "confidence"
+      ],
+      "source_ref_required": true,
+      "is_truth_oracle": false
+    },
+    {
+      "witness_class": "command_result",
+      "certifies": "a command, write, API call, or route request was accepted or failed as an execution fact",
+      "required_evidence_fields": [
+        "command_ref",
+        "commanded_at",
+        "command_result_success",
+        "source_refs"
+      ],
+      "source_ref_required": true,
+      "is_truth_oracle": false
+    },
+    {
+      "witness_class": "public_egress",
+      "certifies": "a public aperture, route, or platform egress marker was observed within its declared freshness window",
+      "required_evidence_fields": [
+        "witness_ref",
+        "witnessed_at",
+        "source_refs",
+        "freshness_window_s",
+        "confidence"
+      ],
+      "source_ref_required": true,
+      "is_truth_oracle": false
+    },
+    {
+      "witness_class": "archive_ref",
+      "certifies": "an archive or replay artifact exists as a local/archive reference, not as public publication",
+      "required_evidence_fields": [
+        "witness_ref",
+        "source_refs",
+        "checked_at",
+        "freshness_window_s",
+        "confidence"
+      ],
+      "source_ref_required": true,
+      "is_truth_oracle": false
+    },
+    {
+      "witness_class": "audio_video_state",
+      "certifies": "an audio/video state marker, frame, signal, or route witness was observed within the relevant TTL",
+      "required_evidence_fields": [
+        "witness_ref",
+        "observed_at",
+        "source_refs",
+        "freshness_window_s",
+        "confidence"
+      ],
+      "source_ref_required": true,
+      "is_truth_oracle": false
+    }
+  ],
+  "states": [
+    "selected",
+    "commanded",
+    "observed",
+    "witnessed",
+    "blocked",
+    "stale",
+    "failed"
+  ],
+  "probes": [
+    {
+      "schema_version": 1,
+      "probe_id": "audio.broadcast_voice.commanded_no_egress_witness",
+      "surface_id": "audio.broadcast_voice",
+      "capability_id": "audio.broadcast_voice",
+      "witness_class": "command_result",
+      "state": "commanded",
+      "checked_at": "2026-04-29T18:10:25Z",
+      "selected_ref": "selection:narration.autonomous_first_system",
+      "command_ref": "command:cpal.autonomous_narrative.play_pcm",
+      "witness_ref": null,
+      "source_refs": [
+        "wcs-registry:audio.broadcast_voice",
+        "audio-fixture:audio.broadcast_voice",
+        "route-intent:broadcast_public"
+      ],
+      "freshness_window_s": 30,
+      "confidence": 0.92,
+      "failure_reason": null,
+      "blocked_reasons": [],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "public_egress",
+        "audio_video_state"
+      ],
+      "command_result_success": true,
+      "selected_at": "2026-04-29T18:10:20Z",
+      "commanded_at": "2026-04-29T18:10:23Z",
+      "observed_at": null,
+      "witnessed_at": null,
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "audio.broadcast_voice.public_egress_witnessed",
+      "surface_id": "audio.broadcast_voice",
+      "capability_id": "audio.broadcast_voice",
+      "witness_class": "public_egress",
+      "state": "witnessed",
+      "checked_at": "2026-04-29T18:10:25Z",
+      "selected_ref": "selection:narration.autonomous_first_system",
+      "command_ref": "command:cpal.autonomous_narrative.play_pcm",
+      "witness_ref": "shm:hapax-daimonion/voice-output-witness.json#playback_completed",
+      "source_refs": [
+        "wcs-registry:audio.broadcast_voice",
+        "audio-fixture:audio.broadcast_voice",
+        "shm:hapax-broadcast/audio-safe-for-broadcast.json",
+        "shm:hapax-daimonion/voice-output-witness.json"
+      ],
+      "freshness_window_s": 180,
+      "confidence": 0.87,
+      "failure_reason": null,
+      "blocked_reasons": [],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "public_egress"
+      ],
+      "command_result_success": true,
+      "selected_at": "2026-04-29T18:10:20Z",
+      "commanded_at": "2026-04-29T18:10:23Z",
+      "observed_at": "2026-04-29T18:10:24Z",
+      "witnessed_at": "2026-04-29T18:10:24Z",
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "archive.replay_sidecar.selected_only",
+      "surface_id": "archive.replay_sidecar",
+      "capability_id": "archive.replay_sidecar",
+      "witness_class": "archive_ref",
+      "state": "selected",
+      "checked_at": "2026-04-29T18:10:25Z",
+      "selected_ref": "selection:archive.replay_sidecar",
+      "command_ref": null,
+      "witness_ref": null,
+      "source_refs": [
+        "wcs-registry:archive.replay_sidecar"
+      ],
+      "freshness_window_s": 300,
+      "confidence": 0.64,
+      "failure_reason": null,
+      "blocked_reasons": [],
+      "required_for_public_claim": false,
+      "required_witness_classes": [
+        "archive_ref"
+      ],
+      "command_result_success": false,
+      "selected_at": "2026-04-29T18:10:01Z",
+      "commanded_at": null,
+      "observed_at": null,
+      "witnessed_at": null,
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "camera.studio_compositor_frame.observed_without_witness",
+      "surface_id": "camera.studio_compositor_frame",
+      "capability_id": "camera.studio_compositor_frame",
+      "witness_class": "audio_video_state",
+      "state": "observed",
+      "checked_at": "2026-04-29T18:10:25Z",
+      "selected_ref": "selection:camera.studio_compositor_frame",
+      "command_ref": "command:compositor.snapshot.read",
+      "witness_ref": "shm:hapax-compositor/snapshot.jpg",
+      "source_refs": [
+        "wcs-registry:camera.studio_compositor_frame",
+        "shm:hapax-compositor/snapshot.jpg"
+      ],
+      "freshness_window_s": 10,
+      "confidence": 0.79,
+      "failure_reason": null,
+      "blocked_reasons": [],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "audio_video_state",
+        "public_egress"
+      ],
+      "command_result_success": true,
+      "selected_at": "2026-04-29T18:10:17Z",
+      "commanded_at": "2026-04-29T18:10:18Z",
+      "observed_at": "2026-04-29T18:10:24Z",
+      "witnessed_at": null,
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "audio.broadcast_voice.stale_public_egress",
+      "surface_id": "audio.broadcast_voice",
+      "capability_id": "audio.broadcast_voice",
+      "witness_class": "public_egress",
+      "state": "stale",
+      "checked_at": "2026-04-29T18:10:25Z",
+      "selected_ref": "selection:narration.autonomous_first_system",
+      "command_ref": "command:cpal.autonomous_narrative.play_pcm",
+      "witness_ref": "shm:hapax-daimonion/voice-output-witness.json#playback_completed",
+      "source_refs": [
+        "wcs-registry:audio.broadcast_voice",
+        "shm:hapax-daimonion/voice-output-witness.json"
+      ],
+      "freshness_window_s": 30,
+      "confidence": 0.82,
+      "failure_reason": "voice_output_witness_stale",
+      "blocked_reasons": [
+        "stale_public_egress_witness"
+      ],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "public_egress"
+      ],
+      "command_result_success": true,
+      "selected_at": "2026-04-29T18:02:00Z",
+      "commanded_at": "2026-04-29T18:02:02Z",
+      "observed_at": "2026-04-29T18:02:03Z",
+      "witnessed_at": "2026-04-29T18:02:03Z",
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "public.research_vehicle_apertures.policy_blocked",
+      "surface_id": "public.research_vehicle_apertures",
+      "capability_id": "public.research_vehicle_apertures",
+      "witness_class": "public_egress",
+      "state": "blocked",
+      "checked_at": "2026-04-29T18:10:25Z",
+      "selected_ref": "selection:public.research_vehicle_apertures",
+      "command_ref": null,
+      "witness_ref": null,
+      "source_refs": [
+        "wcs-registry:public.research_vehicle_apertures"
+      ],
+      "freshness_window_s": 60,
+      "confidence": 0.0,
+      "failure_reason": "public_event_policy_missing",
+      "blocked_reasons": [
+        "public_event_policy_missing"
+      ],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "public_egress"
+      ],
+      "command_result_success": false,
+      "selected_at": "2026-04-29T18:09:59Z",
+      "commanded_at": null,
+      "observed_at": null,
+      "witnessed_at": null,
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "browser.mcp_tool_read.failed_source_acquisition",
+      "surface_id": "browser.mcp_tool_read",
+      "capability_id": "browser.mcp_tool_read",
+      "witness_class": "read_only",
+      "state": "failed",
+      "checked_at": "2026-04-29T18:10:25Z",
+      "selected_ref": "selection:browser.mcp_tool_read",
+      "command_ref": "command:mcp.read_source",
+      "witness_ref": null,
+      "source_refs": [
+        "wcs-registry:browser.mcp_tool_read",
+        "tool-error:mcp.read_source.timeout"
+      ],
+      "freshness_window_s": 120,
+      "confidence": 0.0,
+      "failure_reason": "source_acquisition_failed",
+      "blocked_reasons": [
+        "source_acquisition_failed"
+      ],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "read_only"
+      ],
+      "command_result_success": false,
+      "selected_at": "2026-04-29T18:09:51Z",
+      "commanded_at": "2026-04-29T18:09:53Z",
+      "observed_at": null,
+      "witnessed_at": null,
+      "certifies_declared_obligation_only": true
+    }
+  ],
+  "fail_closed_policy": {
+    "selected_or_commanded_is_public_truth": false,
+    "missing_witness_allows_public_claim": false,
+    "stale_witness_allows_public_claim": false,
+    "probes_are_expert_truth_oracle": false
+  }
+}
