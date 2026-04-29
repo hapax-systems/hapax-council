@@ -179,7 +179,7 @@
       "next_packet": {
         "task_id": "archive-replay-public-event-link-adapter",
         "task_note": "active/archive-replay-public-event-link-adapter.md",
-        "state": "offered",
+        "state": "closed",
         "reason": "This adapter is the first concrete bridge from public events to replayable artifacts."
       },
       "guardrails": [
@@ -255,7 +255,7 @@
       "status": "offered",
       "next_packet": {
         "task_id": "cross-surface-event-contract",
-        "task_note": "active/cross-surface-event-contract.md",
+        "task_note": "closed/cross-surface-event-contract.md",
         "state": "offered",
         "reason": "This contract is the shared public-event shape downstream adapters should consume."
       },

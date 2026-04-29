@@ -81,7 +81,7 @@ The seeded registry covers the streams from the 2026-04-29 synthesis:
 |---|---|---|---|---|
 | `livestream_public_aperture` | live aperture | `GUARDED` | guarded | `youtube-captions-cuepoints-sections-shorts-reconcile` closed evidence |
 | `vod_archive_replay_shorts_chapters` | archive replay | `AUTO` | blocked | `archive-replay-public-event-link-adapter` |
-| `cross_surface_publication_bus` | publication bus | `AUTO` | offered | `cross-surface-event-contract` |
+| `cross_surface_publication_bus` | publication bus | `AUTO` | offered | `cross-surface-event-contract` closed evidence |
 | `direct_no_perk_support_rails` | support rail | `AUTO` | offered | `support-surface-registry` |
 | `commercial_license_agent_payment_rail` | commercial license | `GUARDED` | guarded | `license-request-price-class-router` |
 | `product_tool_ip_artifact_packs` | artifact product | `AUTO` | blocked | `artifact-catalog-release-workflow` |
@@ -149,7 +149,7 @@ Exact next packet notes:
 
 - `closed/youtube-captions-cuepoints-sections-shorts-reconcile.md`
 - `active/archive-replay-public-event-link-adapter.md`
-- `active/cross-surface-event-contract.md`
+- `closed/cross-surface-event-contract.md`
 - `active/support-surface-registry.md`
 - `active/license-request-price-class-router.md`
 - `active/artifact-catalog-release-workflow.md`

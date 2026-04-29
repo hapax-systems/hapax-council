@@ -99,6 +99,64 @@
         "failure_autopsy"
       ]
     },
+    "format_family": {
+      "type": "string",
+      "enum": [
+        "ranking_ordering",
+        "review_comparison",
+        "attention_commentary",
+        "explanation_rundown",
+        "governance_refusal",
+        "claim_audit"
+      ]
+    },
+    "source_class": {
+      "type": "string",
+      "enum": [
+        "operator_state",
+        "owned_source",
+        "generated_asset",
+        "public_web_reference",
+        "platform_native_aggregate",
+        "third_party_media",
+        "unknown"
+      ]
+    },
+    "rights_class": {
+      "type": "string",
+      "enum": [
+        "owned",
+        "public_domain",
+        "cc_compatible",
+        "licensed",
+        "platform_embed_only",
+        "fair_use_candidate",
+        "forbidden",
+        "unknown"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": [
+        "private",
+        "dry_run",
+        "public_archive",
+        "public_live",
+        "monetized"
+      ]
+    },
+    "format_learning_outcome": {
+      "type": "string",
+      "enum": [
+        "refused",
+        "corrected",
+        "private",
+        "dry_run",
+        "public_archive",
+        "public_live",
+        "monetized"
+      ]
+    },
     "readiness_dimension": {
       "type": "string",
       "enum": [
@@ -238,6 +296,8 @@
       "required": [
         "kept_separate",
         "may_override_grounding",
+        "public_state_aggregate_only",
+        "per_audience_member_public_state_allowed",
         "public_event_count",
         "views",
         "watch_time_hours",
@@ -247,6 +307,8 @@
       "properties": {
         "kept_separate": {"type": "boolean", "const": true},
         "may_override_grounding": {"type": "boolean", "const": false},
+        "public_state_aggregate_only": {"type": "boolean", "const": true},
+        "per_audience_member_public_state_allowed": {"type": "boolean", "const": false},
         "public_event_count": {"type": "integer", "minimum": 0},
         "views": {"type": "integer", "minimum": 0},
         "watch_time_hours": {"type": "number", "minimum": 0},
@@ -258,9 +320,20 @@
       "required": [
         "format_id",
         "display_name",
+        "format_family",
+        "source_class_counts",
+        "rights_class_counts",
+        "public_private_mode_counts",
         "run_count",
+        "grounding_score",
+        "refusal_rate",
+        "correction_rate",
         "artifact_conversion_count",
+        "artifact_conversion_rate",
         "revenue_gross_usd",
+        "youtube_content_revenue_usd",
+        "learning_by_outcome",
+        "n1_weirdness_value_stream",
         "engagement_observations",
         "grounding_quality_refs"
       ],
@@ -268,11 +341,160 @@
       "properties": {
         "format_id": {"$ref": "#/$defs/content_format"},
         "display_name": {"type": "string", "minLength": 1},
+        "format_family": {"$ref": "#/$defs/format_family"},
+        "source_class_counts": {"$ref": "#/$defs/source_class_count_map"},
+        "rights_class_counts": {"$ref": "#/$defs/rights_class_count_map"},
+        "public_private_mode_counts": {"$ref": "#/$defs/public_private_mode_count_map"},
         "run_count": {"type": "integer", "minimum": 0},
+        "grounding_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "refusal_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "correction_rate": {"type": "number", "minimum": 0, "maximum": 1},
         "artifact_conversion_count": {"type": "integer", "minimum": 0},
+        "artifact_conversion_rate": {"type": "number", "minimum": 0, "maximum": 1},
         "revenue_gross_usd": {"type": "number", "minimum": 0},
+        "youtube_content_revenue_usd": {"type": "number", "minimum": 0},
+        "learning_by_outcome": {"$ref": "#/$defs/format_learning_map"},
+        "n1_weirdness_value_stream": {"$ref": "#/$defs/n1_weirdness_value_stream"},
         "engagement_observations": {"$ref": "#/$defs/engagement_observations"},
         "grounding_quality_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "source_class_count_map": {
+      "type": "object",
+      "required": [
+        "operator_state",
+        "owned_source",
+        "generated_asset",
+        "public_web_reference",
+        "platform_native_aggregate",
+        "third_party_media",
+        "unknown"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "operator_state": {"type": "integer", "minimum": 0},
+        "owned_source": {"type": "integer", "minimum": 0},
+        "generated_asset": {"type": "integer", "minimum": 0},
+        "public_web_reference": {"type": "integer", "minimum": 0},
+        "platform_native_aggregate": {"type": "integer", "minimum": 0},
+        "third_party_media": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0}
+      }
+    },
+    "rights_class_count_map": {
+      "type": "object",
+      "required": [
+        "owned",
+        "public_domain",
+        "cc_compatible",
+        "licensed",
+        "platform_embed_only",
+        "fair_use_candidate",
+        "forbidden",
+        "unknown"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "owned": {"type": "integer", "minimum": 0},
+        "public_domain": {"type": "integer", "minimum": 0},
+        "cc_compatible": {"type": "integer", "minimum": 0},
+        "licensed": {"type": "integer", "minimum": 0},
+        "platform_embed_only": {"type": "integer", "minimum": 0},
+        "fair_use_candidate": {"type": "integer", "minimum": 0},
+        "forbidden": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0}
+      }
+    },
+    "public_private_mode_count_map": {
+      "type": "object",
+      "required": [
+        "private",
+        "dry_run",
+        "public_archive",
+        "public_live",
+        "monetized"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "private": {"type": "integer", "minimum": 0},
+        "dry_run": {"type": "integer", "minimum": 0},
+        "public_archive": {"type": "integer", "minimum": 0},
+        "public_live": {"type": "integer", "minimum": 0},
+        "monetized": {"type": "integer", "minimum": 0}
+      }
+    },
+    "format_learning_map": {
+      "type": "object",
+      "required": [
+        "refused",
+        "corrected",
+        "private",
+        "dry_run",
+        "public_archive",
+        "public_live",
+        "monetized"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "refused": {"$ref": "#/$defs/format_learning_bucket"},
+        "corrected": {"$ref": "#/$defs/format_learning_bucket"},
+        "private": {"$ref": "#/$defs/format_learning_bucket"},
+        "dry_run": {"$ref": "#/$defs/format_learning_bucket"},
+        "public_archive": {"$ref": "#/$defs/format_learning_bucket"},
+        "public_live": {"$ref": "#/$defs/format_learning_bucket"},
+        "monetized": {"$ref": "#/$defs/format_learning_bucket"}
+      }
+    },
+    "format_learning_bucket": {
+      "type": "object",
+      "required": [
+        "outcome",
+        "run_count",
+        "grounding_score",
+        "refusal_count",
+        "correction_count",
+        "artifact_conversion_count",
+        "youtube_content_revenue_usd",
+        "engagement_can_override_grounding",
+        "revenue_can_override_grounding",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {"$ref": "#/$defs/format_learning_outcome"},
+        "run_count": {"type": "integer", "minimum": 0},
+        "grounding_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "refusal_count": {"type": "integer", "minimum": 0},
+        "correction_count": {"type": "integer", "minimum": 0},
+        "artifact_conversion_count": {"type": "integer", "minimum": 0},
+        "youtube_content_revenue_usd": {"type": "number", "minimum": 0},
+        "engagement_can_override_grounding": {"type": "boolean", "const": false},
+        "revenue_can_override_grounding": {"type": "boolean", "const": false},
+        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "n1_weirdness_value_stream": {
+      "type": "object",
+      "required": [
+        "dimension_id",
+        "tracked",
+        "audience_response_is_scientific_warrant",
+        "spectacle_response_metric_refs",
+        "grounding_warrant_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dimension_id": {"type": "string", "const": "n1_weirdness"},
+        "tracked": {"type": "boolean", "const": true},
+        "audience_response_is_scientific_warrant": {"type": "boolean", "const": false},
+        "spectacle_response_metric_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "grounding_warrant_refs": {
           "type": "array",
           "items": {"type": "string", "minLength": 1}
         }

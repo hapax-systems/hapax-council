@@ -42,7 +42,7 @@ Required top-level fields:
 - `monthly_run_rate`: actual run-rate plus baseline and doubled run-rate targets.
 - `total_actuals`: cumulative gross, costs, platform fees, taxes/withholding placeholder, processor leakage, and net estimate.
 - `streams`: one row for every canonical stream.
-- `formats`: one row for every canonical content-programming format.
+- `formats`: one row for every canonical content-programming format, including format-aware dimensions, grounding rates, outcome learning buckets, and YouTube/content revenue.
 - `readiness`: one row for every public/revenue readiness dimension.
 - `source_metrics`: source-specific counters and amounts.
 - `separation_policy`: machine-readable guarantee that revenue and engagement never stand in for grounding quality.
@@ -90,7 +90,29 @@ The required content-programming formats are:
 - `claim_audit`
 - `failure_autopsy`
 
-Format rows may include engagement observations and revenue/artifact conversion counters, but these observations are only selection and revenue signals. They are never scientific warrant.
+Format rows may include engagement observations and revenue/artifact conversion counters, but these observations are only selection and revenue signals. They are never scientific warrant. Audience/engagement observations are aggregate-only: counts, views, watch time, public-event counts, and support-prompt impressions, never per-audience-member state.
+
+Each format row must track these format-aware dimensions:
+
+- `format_family`: `ranking_ordering`, `review_comparison`, `attention_commentary`, `explanation_rundown`, `governance_refusal`, or `claim_audit`.
+- `source_class_counts`: aggregate counts for `operator_state`, `owned_source`, `generated_asset`, `public_web_reference`, `platform_native_aggregate`, `third_party_media`, and `unknown`.
+- `rights_class_counts`: aggregate counts for `owned`, `public_domain`, `cc_compatible`, `licensed`, `platform_embed_only`, `fair_use_candidate`, `forbidden`, and `unknown`.
+- `public_private_mode_counts`: separate counts for `private`, `dry_run`, `public_archive`, `public_live`, and `monetized`.
+- `grounding_score`, `refusal_rate`, `correction_rate`, `artifact_conversion_rate`, `artifact_conversion_count`, `revenue_gross_usd`, and `youtube_content_revenue_usd`.
+
+Format-level learning is separated by outcome bucket:
+
+- `refused`
+- `corrected`
+- `private`
+- `dry_run`
+- `public_archive`
+- `public_live`
+- `monetized`
+
+Each bucket tracks runs, grounding score, refusal count, correction count, artifact conversions, YouTube/content revenue, and evidence refs. Bucket-level engagement and revenue override flags are always `false`.
+
+The dashboard also treats n=1 weirdness as a value-stream dimension through `n1_weirdness_value_stream`. That dimension may track spectacle and audience-response metric refs, but `audience_response_is_scientific_warrant` is always `false`; grounding warrant still has to come from evaluator, witness, or public-event evidence.
 
 ## Readiness Dimensions
 
@@ -130,6 +152,9 @@ Revenue and engagement are separate from grounding quality:
 - `revenue_can_override_grounding` is always `false`.
 - `popularity_is_scientific_warrant` is always `false`.
 - Format engagement observations carry `kept_separate: true` and `may_override_grounding: false`.
+- Format engagement observations carry `public_state_aggregate_only: true` and `per_audience_member_public_state_allowed: false`.
+- Format learning buckets carry `engagement_can_override_grounding: false` and `revenue_can_override_grounding: false`.
+- `n1_weirdness_value_stream.audience_response_is_scientific_warrant` is always `false`.
 - Grounding quality references must point to evaluator or public-event evidence, not view counts, receipt counts, or platform revenue.
 
 ## Train-Readable Status
