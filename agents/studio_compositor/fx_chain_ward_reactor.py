@@ -52,6 +52,7 @@ from agents.studio_compositor.ward_fx_mapping import (
 from agents.studio_compositor.ward_properties import (
     WardProperties,
     get_specific_ward_properties,
+    set_many_ward_properties,
     set_ward_properties,
 )
 from shared.ward_fx_bus import (
@@ -203,10 +204,11 @@ class WardFxReactor:
 
     def _pulse_all_wards(self, pulse_hz: float, ttl_s: float) -> None:
         """Accent-pulse every known ward."""
+        updates: dict[str, WardProperties] = {}
         for ward_id in _known_ward_ids():
             base = get_specific_ward_properties(ward_id) or WardProperties()
-            next_props = _with_border_pulse(base, pulse_hz)
-            set_ward_properties(ward_id, next_props, ttl_s=ttl_s)
+            updates[ward_id] = _with_border_pulse(base, pulse_hz)
+        set_many_ward_properties(updates, ttl_s=ttl_s)
 
     def _bump_audio_reactive_wards(self, scale_bump_pct: float, ttl_s: float) -> None:
         for ward_id in _audio_reactive_ward_ids():

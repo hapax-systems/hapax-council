@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -66,6 +67,23 @@ class TestSetAndResolve:
         wp.set_ward_properties("hothouse", wp.WardProperties(visible=False), ttl_s=10.0)
         wp.clear_ward_properties_cache()
         assert wp.resolve_ward_properties("hothouse").visible is False
+
+    def test_many_ward_write_uses_shared_expiry(self):
+        wp.set_many_ward_properties(
+            {
+                "chat_ambient": wp.WardProperties(border_pulse_hz=2.0),
+                "token_pole": wp.WardProperties(border_pulse_hz=2.0),
+            },
+            ttl_s=0.5,
+        )
+
+        raw = json.loads(wp.WARD_PROPERTIES_PATH.read_text())
+        wards = raw["wards"]
+        assert wards["chat_ambient"]["expires_at"] == wards["token_pole"]["expires_at"]
+
+        wp.clear_ward_properties_cache()
+        assert wp.get_specific_ward_properties("chat_ambient") is not None
+        assert wp.get_specific_ward_properties("token_pole") is not None
 
 
 class TestExpiry:

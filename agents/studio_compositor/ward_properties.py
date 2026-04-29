@@ -35,6 +35,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from itertools import count
@@ -282,26 +283,39 @@ def set_ward_properties(
     operate on a stale cached snapshot and silently drop the first
     write's fields.
     """
+    set_many_ward_properties({ward_id: properties}, ttl_s=ttl_s)
+
+
+def set_many_ward_properties(
+    properties_by_ward: Mapping[str, WardProperties],
+    ttl_s: float,
+) -> None:
+    """Atomic upsert of multiple ward override entries with one expiry.
+
+    Multi-ward producers, especially FX preset-family pulses, need all
+    affected wards to share the same expiration window. Calling
+    :func:`set_ward_properties` in a loop computes one ``expires_at`` per
+    ward; under CI or compositor load, early entries can expire before the
+    last ward has even been written. This helper preserves the existing
+    race-safe write semantics while committing the whole batch in one
+    read-modify-write transaction.
+    """
     if ttl_s <= 0:
-        log.warning("set_ward_properties: ttl_s must be > 0, got %.3f", ttl_s)
+        log.warning("set_many_ward_properties: ttl_s must be > 0, got %.3f", ttl_s)
         return
-    if ward_id in ORPHAN_WARD_IDS:
-        # Silent skip — legacy producers (vinyl_platter,
-        # objective_hero_switcher, music_candidate_surfacer,
-        # scene_director, structural_director) still call this with
-        # orphan IDs but no layout consumes them. Filtering here keeps
-        # ward-properties.json free of dead entries; see ORPHAN_WARD_IDS
-        # docstring above for provenance.
+    filtered = {
+        ward_id: properties
+        for ward_id, properties in properties_by_ward.items()
+        if ward_id not in ORPHAN_WARD_IDS
+    }
+    if not filtered:
         return
     with _WRITE_LOCK:
         try:
             WARD_PROPERTIES_PATH.parent.mkdir(parents=True, exist_ok=True)
             current = _safe_load_raw()
             wards = current.get("wards") or {}
-            new_entry = {
-                **_dataclass_to_jsonable(properties),
-                "expires_at": time.time() + ttl_s,
-            }
+            expires_at = time.time() + ttl_s
             # 2026-04-23 race-safe preservation of modulator-owned fields
             # (``z_plane`` + ``z_index_float``). The ``ward_stimmung_modulator``
             # writes these every ~200 ms from imagination depth; non-modulator
@@ -315,20 +329,25 @@ def set_ward_properties(
             # values, assume caller is round-tripping and preserve disk.
             # z_plane + z_index_float have no non-default callers outside
             # the modulator today (2026-04-23 grep), so this is a safe merge.
-            existing = wards.get(ward_id)
-            if existing is not None:
-                if (
-                    new_entry.get("z_plane") == DEFAULT_Z_PLANE
-                    and existing.get("z_plane", DEFAULT_Z_PLANE) != DEFAULT_Z_PLANE
-                ):
-                    new_entry["z_plane"] = existing["z_plane"]
-                if (
-                    new_entry.get("z_index_float") == DEFAULT_Z_INDEX_FLOAT
-                    and existing.get("z_index_float", DEFAULT_Z_INDEX_FLOAT)
-                    != DEFAULT_Z_INDEX_FLOAT
-                ):
-                    new_entry["z_index_float"] = existing["z_index_float"]
-            wards[ward_id] = new_entry
+            for ward_id, properties in filtered.items():
+                new_entry = {
+                    **_dataclass_to_jsonable(properties),
+                    "expires_at": expires_at,
+                }
+                existing = wards.get(ward_id)
+                if existing is not None:
+                    if (
+                        new_entry.get("z_plane") == DEFAULT_Z_PLANE
+                        and existing.get("z_plane", DEFAULT_Z_PLANE) != DEFAULT_Z_PLANE
+                    ):
+                        new_entry["z_plane"] = existing["z_plane"]
+                    if (
+                        new_entry.get("z_index_float") == DEFAULT_Z_INDEX_FLOAT
+                        and existing.get("z_index_float", DEFAULT_Z_INDEX_FLOAT)
+                        != DEFAULT_Z_INDEX_FLOAT
+                    ):
+                        new_entry["z_index_float"] = existing["z_index_float"]
+                wards[ward_id] = new_entry
             out = {"wards": wards, "updated_at": time.time()}
             # 2026-04-23 per-writer unique tmp suffix. Single shared ``.tmp``
             # filename loses writes when two concurrent callers
@@ -342,7 +361,7 @@ def set_ward_properties(
             tmp.write_text(json.dumps(out), encoding="utf-8")
             tmp.replace(WARD_PROPERTIES_PATH)
         except Exception:
-            log.warning("set_ward_properties write failed for %s", ward_id, exc_info=True)
+            log.warning("set_many_ward_properties write failed", exc_info=True)
         finally:
             clear_ward_properties_cache()
 
@@ -582,6 +601,7 @@ __all__ = [
     "all_resolved_properties",
     "clear_ward_properties_cache",
     "resolve_ward_properties",
+    "set_many_ward_properties",
     "set_ward_properties",
     "ward_render_scope",
 ]
