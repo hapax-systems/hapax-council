@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 LAUNCHER = REPO_ROOT / "scripts" / "hapax-codex"
 SENDER = REPO_ROOT / "scripts" / "hapax-codex-send"
 HEALTH = REPO_ROOT / "scripts" / "hapax-codex-health"
+FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "codex"
 
 
 def _env_with_fake_codex(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
@@ -242,6 +243,79 @@ def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_
     assert "off by default as baseline defects" in bootstrap
     assert "not watching" in bootstrap
     assert "baseline clean/regroup/stop" in bootstrap
+
+
+def test_task_launch_appends_safe_operator_dossier_context(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    env["HAPAX_CODEX_OPERATOR_DOSSIER"] = str(FIXTURE_ROOT / "operator-dossier-safe.md")
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-green",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--task",
+            "demo-task",
+            "--no-claim",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    bootstrap_files = list(
+        (tmp_path / "cache" / "hapax" / "codex-spawns").glob("*cx-green-demo-task.md")
+    )
+    assert len(bootstrap_files) == 1
+    bootstrap = bootstrap_files[0].read_text()
+    assert "## Codex-Visible Operator Dossier" in bootstrap
+    assert "status: safe_summary" in bootstrap
+    assert "SAFE-CODEX-DOSSIER-FIXTURE" in bootstrap
+    assert "Update only from durable operator directives" in bootstrap
+    assert "Invalidate after contradiction" in bootstrap
+
+
+def test_task_launch_rejects_unsafe_operator_dossier_context(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    env["HAPAX_CODEX_OPERATOR_DOSSIER"] = str(FIXTURE_ROOT / "operator-dossier-unsafe.md")
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-green",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--task",
+            "demo-task",
+            "--no-claim",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    bootstrap_files = list(
+        (tmp_path / "cache" / "hapax" / "codex-spawns").glob("*cx-green-demo-task.md")
+    )
+    assert len(bootstrap_files) == 1
+    bootstrap = bootstrap_files[0].read_text()
+    assert "## Codex-Visible Operator Dossier" in bootstrap
+    assert "status: unavailable" in bootstrap
+    assert "source failed leak guard" in bootstrap
+    assert "do-not-leak-token-value" not in bootstrap
+    assert "do-not-leak-private-transcript-content" not in bootstrap
+    assert "Operator:" not in bootstrap
 
 
 def test_idle_cadence_contract_defaults_to_relay_protocol_270() -> None:
