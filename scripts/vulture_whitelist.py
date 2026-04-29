@@ -67,6 +67,13 @@ from shared.world_capability_surface import (
     WorldCapabilityRecord,
     WorldCapabilityRegistry,
 )
+from shared.world_surface_health import (
+    Freshness,
+    HealthDimension,
+    WorldSurfaceHealthEnvelope,
+    WorldSurfaceHealthFixtureSet,
+    WorldSurfaceHealthRecord,
+)
 
 # FastAPI registers this route by decorator; vulture does not follow APIRouter.
 studio_egress_state
@@ -182,3 +189,14 @@ AudioWorldSurfaceFixtureSet.rows_for_witness
 VisualPoolSidecar._normalize_source
 VisualPoolSidecar._normalize_aesthetic_tags
 VisualPoolSidecar._normalize_color_palette
+
+# World Surface Health envelope helpers are the public contract for downstream
+# audio, visual, control, provider/tool, public-event, and no-false-grounding
+# adapters. Pydantic invokes validators dynamically; downstream tasks consume
+# these read helpers after this schema/fixture contract lands.
+HealthDimension._passing_required_dimensions_need_evidence
+Freshness._fresh_sources_need_age_and_ttl
+WorldSurfaceHealthRecord._validate_fail_closed_claimability
+WorldSurfaceHealthEnvelope._validate_envelope_counts_and_public_gates
+WorldSurfaceHealthFixtureSet._validate_contract_coverage
+WorldSurfaceHealthFixtureSet.rows_for_fixture_case

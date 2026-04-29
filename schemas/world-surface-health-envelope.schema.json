@@ -1,0 +1,743 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/world-surface-health-envelope.schema.json",
+  "title": "WorldSurfaceHealthEnvelopeFixtures",
+  "description": "Fixture-backed contract rows for World Capability Surface health records and envelopes. Candidate, unknown, stale, missing, inferred, selected-only, and commanded-only rows fail closed.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "health_statuses",
+    "surface_families",
+    "health_record_required_fields",
+    "health_envelope_required_fields",
+    "claim_blocker_cases",
+    "status_fixtures",
+    "envelopes",
+    "fail_closed_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/world-surface-health-envelope.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "declared_at": {"type": "string", "minLength": 1},
+    "producer": {"type": "string", "minLength": 1},
+    "health_statuses": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/health_status"},
+      "uniqueItems": true,
+      "minItems": 11
+    },
+    "surface_families": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/surface_family"},
+      "uniqueItems": true,
+      "minItems": 7
+    },
+    "health_record_required_fields": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/health_record_field"},
+      "uniqueItems": true,
+      "minItems": 37
+    },
+    "health_envelope_required_fields": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/health_envelope_field"},
+      "uniqueItems": true,
+      "minItems": 16
+    },
+    "claim_blocker_cases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/claim_blocker_case"},
+      "uniqueItems": true,
+      "minItems": 7
+    },
+    "status_fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/status_fixture"},
+      "minItems": 11
+    },
+    "envelopes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/health_envelope"},
+      "minItems": 1
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "unknown_health_allows_public_claim",
+        "candidate_surface_allows_claim",
+        "selected_only_satisfies_action",
+        "commanded_only_satisfies_action",
+        "inferred_context_satisfies_witness",
+        "stale_source_allows_public_live",
+        "missing_source_allows_claim",
+        "monetization_without_public_health"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "unknown_health_allows_public_claim": {"type": "boolean", "const": false},
+        "candidate_surface_allows_claim": {"type": "boolean", "const": false},
+        "selected_only_satisfies_action": {"type": "boolean", "const": false},
+        "commanded_only_satisfies_action": {"type": "boolean", "const": false},
+        "inferred_context_satisfies_witness": {"type": "boolean", "const": false},
+        "stale_source_allows_public_live": {"type": "boolean", "const": false},
+        "missing_source_allows_claim": {"type": "boolean", "const": false},
+        "monetization_without_public_health": {"type": "boolean", "const": false}
+      }
+    }
+  },
+  "x-required_health_statuses": [
+    "healthy",
+    "degraded",
+    "blocked",
+    "unsafe",
+    "stale",
+    "missing",
+    "unknown",
+    "private_only",
+    "dry_run",
+    "quiet_off_air",
+    "candidate"
+  ],
+  "x-required_surface_families": [
+    "audio",
+    "visual",
+    "control",
+    "provider_tool",
+    "public_event",
+    "archive_file",
+    "refusal_correction"
+  ],
+  "x-claim_blocker_cases": [
+    "candidate",
+    "unknown",
+    "stale",
+    "missing",
+    "inferred",
+    "selected_only",
+    "commanded_only"
+  ],
+  "x-health_record_required_fields": [
+    "schema_version",
+    "surface_id",
+    "surface_family",
+    "checked_at",
+    "status",
+    "health_dimensions",
+    "source_refs",
+    "producer_refs",
+    "consumer_refs",
+    "route_refs",
+    "substrate_refs",
+    "capability_refs",
+    "evidence_envelope_refs",
+    "outcome_envelope_refs",
+    "witness_refs",
+    "grounding_gate_refs",
+    "public_event_refs",
+    "freshness",
+    "confidence",
+    "authority_ceiling",
+    "privacy_state",
+    "rights_state",
+    "public_private_posture",
+    "public_claim_allowed",
+    "private_only",
+    "dry_run_allowed",
+    "monetization_allowed",
+    "blocking_reasons",
+    "warnings",
+    "fallback",
+    "kill_switch_state",
+    "owner",
+    "next_probe_due_at",
+    "claimable_health",
+    "claimability",
+    "witness_policy",
+    "fixture_case"
+  ],
+  "x-health_envelope_required_fields": [
+    "schema_version",
+    "envelope_id",
+    "checked_at",
+    "overall_status",
+    "records",
+    "summary",
+    "public_live_allowed",
+    "public_archive_allowed",
+    "public_monetization_allowed",
+    "blocked_surface_count",
+    "unsafe_surface_count",
+    "stale_surface_count",
+    "unknown_surface_count",
+    "false_grounding_risk_count",
+    "next_required_actions",
+    "metrics_refs"
+  ],
+  "$defs": {
+    "health_status": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "degraded",
+        "blocked",
+        "unsafe",
+        "stale",
+        "missing",
+        "unknown",
+        "private_only",
+        "dry_run",
+        "quiet_off_air",
+        "candidate"
+      ]
+    },
+    "envelope_status": {
+      "type": "string",
+      "enum": ["healthy", "degraded", "blocked", "unsafe", "unknown"]
+    },
+    "surface_family": {
+      "type": "string",
+      "enum": [
+        "audio",
+        "visual",
+        "control",
+        "provider_tool",
+        "public_event",
+        "archive_file",
+        "refusal_correction",
+        "perception_observation"
+      ]
+    },
+    "claim_blocker_case": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "unknown",
+        "stale",
+        "missing",
+        "inferred",
+        "selected_only",
+        "commanded_only"
+      ]
+    },
+    "fixture_case": {
+      "type": "string",
+      "enum": [
+        "healthy_witnessed",
+        "degraded_witnessed",
+        "blocked_with_reason",
+        "unsafe_no_leak",
+        "stale",
+        "missing",
+        "unknown",
+        "private_only",
+        "dry_run",
+        "quiet_off_air",
+        "candidate",
+        "inferred",
+        "selected_only",
+        "commanded_only"
+      ]
+    },
+    "health_dimension_id": {
+      "type": "string",
+      "enum": [
+        "source_freshness",
+        "producer_exists",
+        "consumer_exists",
+        "route_binding",
+        "execution_witness",
+        "world_witness",
+        "renderability",
+        "no_leak",
+        "egress_public",
+        "public_event_policy",
+        "rights_provenance",
+        "privacy_consent",
+        "grounding_gate",
+        "claim_authority",
+        "monetization_readiness",
+        "fallback_known",
+        "kill_switch"
+      ]
+    },
+    "health_dimension_state": {
+      "type": "string",
+      "enum": ["pass", "fail", "blocked", "stale", "missing", "unknown", "not_applicable"]
+    },
+    "freshness_state": {
+      "type": "string",
+      "enum": ["fresh", "stale", "missing", "unknown", "not_applicable"]
+    },
+    "authority_ceiling": {
+      "type": "string",
+      "enum": [
+        "no_claim",
+        "internal_only",
+        "speculative",
+        "evidence_bound",
+        "posterior_bound",
+        "public_gate_required"
+      ]
+    },
+    "privacy_state": {
+      "type": "string",
+      "enum": ["public_safe", "private_only", "dry_run", "archive_only", "blocked", "unknown"]
+    },
+    "rights_state": {
+      "type": "string",
+      "enum": [
+        "public_clear",
+        "private_only",
+        "aggregate_only",
+        "blocked",
+        "missing",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "public_private_posture": {
+      "type": "string",
+      "enum": ["public_live", "private_only", "dry_run", "archive_only", "disabled", "blocked"]
+    },
+    "witness_policy": {
+      "type": "string",
+      "enum": [
+        "witnessed",
+        "inferred",
+        "selected_only",
+        "commanded_only",
+        "fixture_only",
+        "absent",
+        "candidate"
+      ]
+    },
+    "fallback_mode": {
+      "type": "string",
+      "enum": [
+        "none",
+        "hide",
+        "no_op_explain",
+        "dry_run_badge",
+        "private_only",
+        "archive_only",
+        "hold_last_safe",
+        "suppress",
+        "degraded_status",
+        "operator_prompt",
+        "kill_switch",
+        "block_public_claim",
+        "correction_required"
+      ]
+    },
+    "kill_switch_status": {
+      "type": "string",
+      "enum": ["clear", "triggered", "unknown", "not_applicable"]
+    },
+    "health_record_field": {
+      "type": "string",
+      "enum": [
+        "schema_version",
+        "surface_id",
+        "surface_family",
+        "checked_at",
+        "status",
+        "health_dimensions",
+        "source_refs",
+        "producer_refs",
+        "consumer_refs",
+        "route_refs",
+        "substrate_refs",
+        "capability_refs",
+        "evidence_envelope_refs",
+        "outcome_envelope_refs",
+        "witness_refs",
+        "grounding_gate_refs",
+        "public_event_refs",
+        "freshness",
+        "confidence",
+        "authority_ceiling",
+        "privacy_state",
+        "rights_state",
+        "public_private_posture",
+        "public_claim_allowed",
+        "private_only",
+        "dry_run_allowed",
+        "monetization_allowed",
+        "blocking_reasons",
+        "warnings",
+        "fallback",
+        "kill_switch_state",
+        "owner",
+        "next_probe_due_at",
+        "claimable_health",
+        "claimability",
+        "witness_policy",
+        "fixture_case"
+      ]
+    },
+    "health_envelope_field": {
+      "type": "string",
+      "enum": [
+        "schema_version",
+        "envelope_id",
+        "checked_at",
+        "overall_status",
+        "records",
+        "summary",
+        "public_live_allowed",
+        "public_archive_allowed",
+        "public_monetization_allowed",
+        "blocked_surface_count",
+        "unsafe_surface_count",
+        "stale_surface_count",
+        "unknown_surface_count",
+        "false_grounding_risk_count",
+        "next_required_actions",
+        "metrics_refs"
+      ]
+    },
+    "non_empty_string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "health_dimension": {
+      "type": "object",
+      "required": ["dimension", "state", "required_for_claimable", "evidence_refs", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "dimension": {"$ref": "#/$defs/health_dimension_id"},
+        "state": {"$ref": "#/$defs/health_dimension_state"},
+        "required_for_claimable": {"type": "boolean"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"},
+        "note": {"type": "string", "minLength": 1}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["state", "ttl_s", "observed_age_s", "source_ref", "checked_at"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"$ref": "#/$defs/freshness_state"},
+        "ttl_s": {"type": ["integer", "null"], "minimum": 0},
+        "observed_age_s": {"type": ["integer", "null"], "minimum": 0},
+        "source_ref": {"type": ["string", "null"], "minLength": 1},
+        "checked_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "required": ["mode", "reason_code", "operator_visible_reason", "safe_state"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"$ref": "#/$defs/fallback_mode"},
+        "reason_code": {"type": "string", "minLength": 1},
+        "operator_visible_reason": {"type": "string", "minLength": 1},
+        "safe_state": {"type": "string", "minLength": 1}
+      }
+    },
+    "kill_switch_state": {
+      "type": "object",
+      "required": ["state", "evidence_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"$ref": "#/$defs/kill_switch_status"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "claimability": {
+      "type": "object",
+      "required": ["public_live", "action", "grounded", "monetization"],
+      "additionalProperties": false,
+      "properties": {
+        "public_live": {"type": "boolean"},
+        "action": {"type": "boolean"},
+        "grounded": {"type": "boolean"},
+        "monetization": {"type": "boolean"}
+      }
+    },
+    "health_record": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "surface_id",
+        "surface_family",
+        "checked_at",
+        "status",
+        "health_dimensions",
+        "source_refs",
+        "producer_refs",
+        "consumer_refs",
+        "route_refs",
+        "substrate_refs",
+        "capability_refs",
+        "evidence_envelope_refs",
+        "outcome_envelope_refs",
+        "witness_refs",
+        "grounding_gate_refs",
+        "public_event_refs",
+        "freshness",
+        "confidence",
+        "authority_ceiling",
+        "privacy_state",
+        "rights_state",
+        "public_private_posture",
+        "public_claim_allowed",
+        "private_only",
+        "dry_run_allowed",
+        "monetization_allowed",
+        "blocking_reasons",
+        "warnings",
+        "fallback",
+        "kill_switch_state",
+        "owner",
+        "next_probe_due_at",
+        "claimable_health",
+        "claimability",
+        "witness_policy",
+        "fixture_case"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "surface_id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$"},
+        "surface_family": {"$ref": "#/$defs/surface_family"},
+        "checked_at": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/health_status"},
+        "health_dimensions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/health_dimension"},
+          "minItems": 1
+        },
+        "source_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "producer_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "consumer_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "route_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "substrate_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "capability_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "outcome_envelope_refs": {"$ref": "#/$defs/string_array"},
+        "witness_refs": {"$ref": "#/$defs/string_array"},
+        "grounding_gate_refs": {"$ref": "#/$defs/string_array"},
+        "public_event_refs": {"$ref": "#/$defs/string_array"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "privacy_state": {"$ref": "#/$defs/privacy_state"},
+        "rights_state": {"$ref": "#/$defs/rights_state"},
+        "public_private_posture": {"$ref": "#/$defs/public_private_posture"},
+        "public_claim_allowed": {"type": "boolean"},
+        "private_only": {"type": "boolean"},
+        "dry_run_allowed": {"type": "boolean"},
+        "monetization_allowed": {"type": "boolean"},
+        "blocking_reasons": {"$ref": "#/$defs/string_array"},
+        "warnings": {"$ref": "#/$defs/string_array"},
+        "fallback": {"$ref": "#/$defs/fallback"},
+        "kill_switch_state": {"$ref": "#/$defs/kill_switch_state"},
+        "owner": {"type": "string", "minLength": 1},
+        "next_probe_due_at": {"type": "string", "minLength": 1},
+        "claimable_health": {"type": "boolean"},
+        "claimability": {"$ref": "#/$defs/claimability"},
+        "witness_policy": {"$ref": "#/$defs/witness_policy"},
+        "fixture_case": {"$ref": "#/$defs/fixture_case"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"not": {"const": "healthy"}}},
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "public_claim_allowed": {"const": false},
+              "claimable_health": {"const": false},
+              "monetization_allowed": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "fixture_case": {
+                "enum": [
+                  "candidate",
+                  "unknown",
+                  "stale",
+                  "missing",
+                  "inferred",
+                  "selected_only",
+                  "commanded_only"
+                ]
+              }
+            },
+            "required": ["fixture_case"]
+          },
+          "then": {
+            "properties": {
+              "public_claim_allowed": {"const": false},
+              "claimable_health": {"const": false},
+              "monetization_allowed": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "witness_policy": {
+                "enum": [
+                  "inferred",
+                  "selected_only",
+                  "commanded_only",
+                  "fixture_only",
+                  "absent",
+                  "candidate"
+                ]
+              }
+            },
+            "required": ["witness_policy"]
+          },
+          "then": {
+            "properties": {
+              "public_claim_allowed": {"const": false},
+              "claimable_health": {"const": false},
+              "monetization_allowed": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "freshness": {
+                "properties": {"state": {"not": {"const": "fresh"}}},
+                "required": ["state"]
+              }
+            },
+            "required": ["freshness"]
+          },
+          "then": {
+            "properties": {
+              "public_claim_allowed": {"const": false},
+              "claimable_health": {"const": false},
+              "monetization_allowed": {"const": false}
+            }
+          }
+        }
+      ]
+    },
+    "health_summary": {
+      "type": "object",
+      "required": [
+        "total_records",
+        "by_status",
+        "by_surface_family",
+        "claimable_health_count",
+        "public_claim_allowed_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "total_records": {"type": "integer", "minimum": 0},
+        "by_status": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "by_surface_family": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "claimable_health_count": {"type": "integer", "minimum": 0},
+        "public_claim_allowed_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "health_envelope": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "envelope_id",
+        "checked_at",
+        "overall_status",
+        "records",
+        "summary",
+        "public_live_allowed",
+        "public_archive_allowed",
+        "public_monetization_allowed",
+        "blocked_surface_count",
+        "unsafe_surface_count",
+        "stale_surface_count",
+        "unknown_surface_count",
+        "false_grounding_risk_count",
+        "next_required_actions",
+        "metrics_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "envelope_id": {"type": "string", "minLength": 1},
+        "checked_at": {"type": "string", "minLength": 1},
+        "overall_status": {"$ref": "#/$defs/envelope_status"},
+        "records": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/health_record"},
+          "minItems": 1
+        },
+        "summary": {"$ref": "#/$defs/health_summary"},
+        "public_live_allowed": {"type": "boolean"},
+        "public_archive_allowed": {"type": "boolean"},
+        "public_monetization_allowed": {"type": "boolean"},
+        "blocked_surface_count": {"type": "integer", "minimum": 0},
+        "unsafe_surface_count": {"type": "integer", "minimum": 0},
+        "stale_surface_count": {"type": "integer", "minimum": 0},
+        "unknown_surface_count": {"type": "integer", "minimum": 0},
+        "false_grounding_risk_count": {"type": "integer", "minimum": 0},
+        "next_required_actions": {"$ref": "#/$defs/non_empty_string_array"},
+        "metrics_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "status_fixture": {
+      "type": "object",
+      "required": [
+        "status",
+        "claimable_health_allowed",
+        "public_live_allowed_without_witness",
+        "meaning",
+        "failure_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"$ref": "#/$defs/health_status"},
+        "claimable_health_allowed": {"type": "boolean"},
+        "public_live_allowed_without_witness": {"type": "boolean", "const": false},
+        "meaning": {"type": "string", "minLength": 1},
+        "failure_reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"not": {"const": "healthy"}}},
+            "required": ["status"]
+          },
+          "then": {"properties": {"claimable_health_allowed": {"const": false}}}
+        }
+      ]
+    }
+  }
+}
