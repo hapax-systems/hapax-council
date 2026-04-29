@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent.parent
 LAUNCHER = REPO_ROOT / "scripts" / "hapax-codex"
 SENDER = REPO_ROOT / "scripts" / "hapax-codex-send"
+HEALTH = REPO_ROOT / "scripts" / "hapax-codex-health"
 
 
 def _env_with_fake_codex(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
@@ -251,6 +252,73 @@ def test_idle_cadence_contract_defaults_to_relay_protocol_270() -> None:
     assert 'HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-180}"' not in launcher
     assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 270)" in agents
     assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 180)" not in agents
+
+
+def test_health_dashboard_uses_lane_level_status_not_nested_notes(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    relay_dir = Path(env["XDG_CACHE_HOME"]) / "hapax" / "relay"
+    relay_dir.mkdir(parents=True)
+    (relay_dir / "cx-green.yaml").write_text(
+        "\n".join(
+            [
+                "session: cx-green",
+                "status: watching_idle_cadence",
+                "mode: coordination_glue_only",
+                "task_id: null",
+                "current_claim: null",
+                "worktree:",
+                "  branch: codex/cx-green-flow-expeditor",
+                "protected_sessions:",
+                "  cx-violet:",
+                "    note: Protected lane remains visible; observe only.",
+                "notes:",
+                "  - Green should monitor claims and PRs every cadence.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        """#!/usr/bin/env bash
+if [ "$1" = "has-session" ] && [ "$3" = "hapax-codex-cx-green" ]; then
+  exit 0
+fi
+exit 1
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+    fake_hyprctl = tmp_path / "bin" / "hyprctl"
+    fake_hyprctl.write_text(
+        """#!/usr/bin/env bash
+if [ "$1" = "clients" ]; then
+  printf '%s\n' '[]'
+fi
+"""
+    )
+    fake_hyprctl.chmod(0o755)
+
+    dashboard = tmp_path / "dashboard.md"
+    result = subprocess.run(
+        [
+            str(HEALTH),
+            "--write-obsidian",
+            str(dashboard),
+            "cx-green",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    text = dashboard.read_text(encoding="utf-8")
+    assert "coordination_glue_only" in text
+    assert "codex/cx-green-flow-expeditor" in text
+    assert "Protected lane remains visible" not in text
 
 
 def test_slot_relay_history_does_not_block_new_codex_session(tmp_path: Path) -> None:
@@ -667,6 +735,8 @@ printf '%s\\n' "$*" >> {wtype_log}
             str(SENDER),
             "--session",
             "cx-blue",
+            "--transport",
+            "foot",
             "--",
             "Proceed with the current task.",
         ],
@@ -753,6 +823,8 @@ printf '%s\\n' "$*" >> {wtype_log}
             str(SENDER),
             "--session",
             "cx-blue",
+            "--transport",
+            "foot",
             "--",
             "Proceed with the current task.",
         ],

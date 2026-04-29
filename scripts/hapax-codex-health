@@ -65,7 +65,7 @@ def _relay_summary(path: Path) -> dict[str, Any]:
         "task_id": _yaml_scalar(text, "task_id"),
         "current_claim": _yaml_scalar(text, "current_claim"),
         "current_pr": _yaml_scalar(text, "current_pr"),
-        "branch": _yaml_scalar(text, "branch"),
+        "branch": _yaml_scalar(text, "branch") or _nested_yaml_scalar(text, "worktree", "branch"),
         "why": _first_relay_note(text),
     }
 
@@ -80,14 +80,35 @@ def _yaml_scalar(text: str, key: str) -> str | None:
     return value
 
 
+def _nested_yaml_scalar(text: str, parent: str, key: str) -> str | None:
+    parent_match = re.search(
+        rf"^{re.escape(parent)}:\s*$((?:\n[ \t]+[^\n]*)*)",
+        text,
+        flags=re.MULTILINE,
+    )
+    if not parent_match:
+        return None
+    block = parent_match.group(1)
+    match = re.search(rf"^[ \t]+{re.escape(key)}:\s*(.*)$", block, flags=re.MULTILINE)
+    if not match:
+        return None
+    value = match.group(1).strip().strip("'\"")
+    if value in {"", "null", "None"}:
+        return None
+    return value
+
+
 def _first_relay_note(text: str) -> str | None:
-    for pattern in (
-        r"^\s*goal:\s*(.+)$",
-        r"^\s*summary:\s*(.+)$",
-        r"^\s*note:\s*(.+)$",
-        r"^\s*-\s*\"?([^\"\n].{12,})\"?\s*$",
-    ):
-        match = re.search(pattern, text, flags=re.MULTILINE)
+    for key in ("why_current_status", "goal", "summary", "mode", "status"):
+        value = _yaml_scalar(text, key)
+        if value:
+            return value
+
+    notes_match = re.search(r"^notes:\s*$((?:\n[ \t]+[^\n]*)*)", text, flags=re.MULTILINE)
+    if notes_match:
+        match = re.search(
+            r"^[ \t]+-\s*\"?([^\"\n].{12,})\"?\s*$", notes_match.group(1), flags=re.MULTILINE
+        )
         if match:
             return match.group(1).strip().strip("'\"")
     return None
