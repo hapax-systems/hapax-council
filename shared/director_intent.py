@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from shared.stimmung import Stance
 
@@ -121,6 +121,53 @@ IntentFamily = Literal[
 # avoid an import cycle; keep values aligned.
 CompositionalMaterial = Literal["water", "fire", "earth", "air", "void"]
 
+SYNTHETIC_GROUNDING_PREFIXES = ("inferred.", "fallback.")
+
+
+def is_synthetic_grounding_marker(value: str) -> bool:
+    """True for provenance-like markers that are diagnostics, not evidence."""
+    if not isinstance(value, str):
+        return False
+    marker = value.strip()
+    if not marker:
+        return False
+    lowered = marker.lower()
+    normalized = lowered.replace("_", "-")
+    return (
+        lowered.startswith(SYNTHETIC_GROUNDING_PREFIXES)
+        or normalized in {"parser-error", "silence-hold"}
+        or normalized.startswith("parser-error.")
+        or normalized.startswith("silence-hold.")
+    )
+
+
+def split_grounding_provenance(entries: list[str]) -> tuple[list[str], list[str]]:
+    """Split real evidence refs from diagnostic grounding placeholders."""
+    real: list[str] = []
+    synthetic: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        cleaned = entry.strip()
+        if not cleaned:
+            continue
+        if is_synthetic_grounding_marker(cleaned):
+            synthetic.append(cleaned)
+        else:
+            real.append(cleaned)
+    return real, synthetic
+
+
+def _dedupe_preserve_order(entries: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in entries:
+        if entry in seen:
+            continue
+        seen.add(entry)
+        out.append(entry)
+    return out
+
 
 # ── Models ────────────────────────────────────────────────────────────────
 
@@ -171,7 +218,20 @@ class CompositionalImpingement(BaseModel):
             "['audio.midi.beat_position'], a camera.hero cites "
             "['ir.ir_hand_zone.turntable']. Empty list is allowed (the "
             "pipeline accepts it) but the audit emits an UNGROUNDED "
-            "warning for the operator to track in research-mode logs."
+            "warning for the operator to track in research-mode logs. "
+            "Synthetic diagnostics such as inferred.* and fallback.* are "
+            "migrated to synthetic_grounding_markers and must not satisfy "
+            "public/WCS/recruitment grounding gates."
+        ),
+    )
+    synthetic_grounding_markers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Diagnostic placeholders for missing real grounding, e.g. "
+            "inferred.<stance>.<family>, fallback.<reason>, parser-error, "
+            "or silence-hold. These markers keep LLM/fallback compliance "
+            "observable but are not evidence and must not satisfy public "
+            "claim, WCS, or recruitment audit success."
         ),
     )
     intent_family: IntentFamily = Field(
@@ -199,6 +259,22 @@ class CompositionalImpingement(BaseModel):
         if not stripped:
             raise ValueError("narrative must be non-empty after strip")
         return stripped
+
+    @model_validator(mode="after")
+    def _separate_synthetic_grounding(self) -> CompositionalImpingement:
+        real, moved_synthetic = split_grounding_provenance(self.grounding_provenance)
+        misplaced_real, explicit_synthetic = split_grounding_provenance(
+            self.synthetic_grounding_markers
+        )
+        self.grounding_provenance = _dedupe_preserve_order(real + misplaced_real)
+        self.synthetic_grounding_markers = _dedupe_preserve_order(
+            moved_synthetic + explicit_synthetic
+        )
+        return self
+
+    @property
+    def has_real_grounding_provenance(self) -> bool:
+        return bool(self.grounding_provenance)
 
 
 # Per-tick rotation strategy the narrative director chooses to drive the
@@ -384,7 +460,18 @@ class DirectorIntent(BaseModel):
             "PerceptualField signal names this move grounds in. Examples: "
             "'audio.contact_mic.desk_activity.drumming', "
             "'visual.overhead_hand_zones.turntable', "
-            "'ir.ir_hand_zone.turntable', 'album.artist'."
+            "'ir.ir_hand_zone.turntable', 'album.artist'. Synthetic "
+            "fallback/inferred markers are migrated to "
+            "synthetic_grounding_markers and do not count as evidence."
+        ),
+    )
+    synthetic_grounding_markers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Diagnostic placeholders for missing top-level grounding. "
+            "Kept out of grounding_provenance so downstream claim, WCS, "
+            "and recruitment gates fail closed when only synthetic markers "
+            "are present."
         ),
     )
     activity: ActivityVocabulary = Field(
@@ -424,6 +511,22 @@ class DirectorIntent(BaseModel):
             "no-ops on an empty container."
         ),
     )
+
+    @model_validator(mode="after")
+    def _separate_synthetic_grounding(self) -> DirectorIntent:
+        real, moved_synthetic = split_grounding_provenance(self.grounding_provenance)
+        misplaced_real, explicit_synthetic = split_grounding_provenance(
+            self.synthetic_grounding_markers
+        )
+        self.grounding_provenance = _dedupe_preserve_order(real + misplaced_real)
+        self.synthetic_grounding_markers = _dedupe_preserve_order(
+            moved_synthetic + explicit_synthetic
+        )
+        return self
+
+    @property
+    def has_real_grounding_provenance(self) -> bool:
+        return bool(self.grounding_provenance)
 
     def model_dump_for_jsonl(self) -> dict:
         """Serialization used by the research-observability JSONL writer.

@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from shared.director_intent import (
     CompositionalImpingement,
     DirectorIntent,
+    is_synthetic_grounding_marker,
+    split_grounding_provenance,
 )
 from shared.stimmung import Stance
 
@@ -71,6 +73,22 @@ class TestCompositionalImpingement:
         )
         assert imp.dimensions["intensity"] == 0.7
         assert imp.material == "earth"
+
+    def test_synthetic_grounding_markers_are_migrated_out_of_real_provenance(self):
+        imp = CompositionalImpingement(
+            narrative="fallback move",
+            intent_family="overlay.emphasis",
+            grounding_provenance=[
+                "fallback.parser_non_dict",
+                "audio.contact_mic.desk_activity",
+                "inferred.nominal.overlay.emphasis",
+            ],
+        )
+        assert imp.grounding_provenance == ["audio.contact_mic.desk_activity"]
+        assert imp.synthetic_grounding_markers == [
+            "fallback.parser_non_dict",
+            "inferred.nominal.overlay.emphasis",
+        ]
 
 
 class TestDirectorIntent:
@@ -214,6 +232,44 @@ class TestDirectorIntent:
             compositional_impingements=[_silence_hold_imp()],
         )
         assert intent.grounding_provenance == []
+
+    def test_synthetic_grounding_markers_do_not_satisfy_real_intent_provenance(self):
+        intent = DirectorIntent(
+            activity="silence",
+            stance=Stance.NOMINAL,
+            narrative_text="",
+            grounding_provenance=["fallback.parser_json_decode"],
+            compositional_impingements=[_silence_hold_imp()],
+        )
+        assert intent.grounding_provenance == []
+        assert intent.synthetic_grounding_markers == ["fallback.parser_json_decode"]
+        assert intent.has_real_grounding_provenance is False
+
+
+def test_synthetic_grounding_marker_classifier():
+    assert is_synthetic_grounding_marker("inferred.nominal.camera.hero")
+    assert is_synthetic_grounding_marker("fallback.parser_non_dict")
+    assert is_synthetic_grounding_marker("parser-error")
+    assert is_synthetic_grounding_marker("silence_hold")
+    assert not is_synthetic_grounding_marker("audio.contact_mic.desk_activity")
+
+
+def test_split_grounding_provenance_keeps_real_wcs_and_capability_keys():
+    real, synthetic = split_grounding_provenance(
+        [
+            "fallback.micromove.llm_empty",
+            "audio.contact_mic.desk_activity",
+            "wcs.capability.audio.broadcast_voice",
+            "capability_outcome.route.broadcast_public",
+            "inferred.seeking.preset.bias",
+        ]
+    )
+    assert real == [
+        "audio.contact_mic.desk_activity",
+        "wcs.capability.audio.broadcast_voice",
+        "capability_outcome.route.broadcast_public",
+    ]
+    assert synthetic == ["fallback.micromove.llm_empty", "inferred.seeking.preset.bias"]
 
 
 class TestDiagnosticFlag:

@@ -295,7 +295,8 @@ class TestSilenceHoldImpingementDiagnostic:
 
     def test_silence_hold_reason_propagates_to_grounding(self):
         imp = dl._silence_hold_impingement(reason="parser_non_dict")
-        assert imp.grounding_provenance == ["fallback.parser_non_dict"]
+        assert imp.grounding_provenance == []
+        assert imp.synthetic_grounding_markers == ["fallback.parser_non_dict"]
         assert imp.diagnostic is True
 
     def test_parser_silence_fallback_carries_diagnostic_flag(self):

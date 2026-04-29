@@ -318,6 +318,41 @@ class TestGroundingCoverage:
         # Considered: 3 (events with the field). Grounded: 2 (non-empty list).
         assert exp.grounding_coverage_5m._value.get() == pytest.approx(2.0 / 3.0)
 
+    def test_synthetic_only_grounding_does_not_count_as_grounded(
+        self, chronicle_path: Path, make_exporter, now: float
+    ) -> None:
+        _write_chronicle(
+            chronicle_path,
+            [
+                {
+                    "ts": now - 50,
+                    "source": "x",
+                    "event_type": "e",
+                    "payload": {"grounding_provenance": ["fallback.parser_non_dict"]},
+                },
+                {
+                    "ts": now - 40,
+                    "source": "x",
+                    "event_type": "e",
+                    "payload": {"grounding_provenance": ["inferred.nominal.camera.hero"]},
+                },
+                {
+                    "ts": now - 30,
+                    "source": "x",
+                    "event_type": "e",
+                    "payload": {
+                        "grounding_provenance": [
+                            "fallback.micromove.llm_empty",
+                            "audio.contact_mic.desk_activity",
+                        ]
+                    },
+                },
+            ],
+        )
+        exp = make_exporter()
+        exp.tick_once(now=now)
+        assert exp.grounding_coverage_5m._value.get() == pytest.approx(1.0 / 3.0)
+
     def test_no_groundable_events_yields_nan(
         self, chronicle_path: Path, make_exporter, now: float
     ) -> None:

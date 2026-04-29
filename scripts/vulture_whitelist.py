@@ -42,6 +42,7 @@ from shared.content_programme_run_store import (
     witnessed_outcome_allows_posterior_update,
 )
 from shared.director_control_audit import DirectorControlMoveAuditRecord
+from shared.director_intent import CompositionalImpingement, DirectorIntent
 from shared.director_vocabulary import DirectorVocabulary, SpectacleLaneState
 from shared.grounding_provider_router import (
     build_eval_artifact,
@@ -110,6 +111,14 @@ DirectorVocabulary.for_content_runner
 
 # Pydantic invokes model validators dynamically during model validation.
 DirectorControlMoveAuditRecord._validate_boundary_and_evidence
+
+# Director intent models split real provenance from synthetic diagnostics via
+# Pydantic validators. The properties are consumed as public read helpers, but
+# vulture cannot see Pydantic/property dynamic access reliably.
+CompositionalImpingement._separate_synthetic_grounding
+CompositionalImpingement.has_real_grounding_provenance
+DirectorIntent._separate_synthetic_grounding
+DirectorIntent.has_real_grounding_provenance
 
 # Grounding-provider router helpers are a public contract for the content
 # runner/evaluator train. The first PR publishes the schema and static helpers;

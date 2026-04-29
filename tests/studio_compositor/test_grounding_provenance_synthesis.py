@@ -1,4 +1,4 @@
-"""FINDING-X Phase 1 — grounding-provenance synthesis hook tests."""
+"""FINDING-X Phase 1 — synthetic grounding-marker hook tests."""
 
 from __future__ import annotations
 
@@ -34,9 +34,11 @@ def test_empty_provenance_synthesized_seeking() -> None:
         grounding_provenance=[],
     )
     result = _ensure_impingement_grounded(imp, stance=Stance.SEEKING)
-    assert result.grounding_provenance == ["inferred.seeking.preset.bias"]
+    assert result.grounding_provenance == []
+    assert result.synthetic_grounding_markers == ["inferred.seeking.preset.bias"]
     # Copy, not mutation
     assert imp.grounding_provenance == []
+    assert imp.synthetic_grounding_markers == []
 
 
 def test_empty_provenance_synthesized_nominal() -> None:
@@ -46,7 +48,8 @@ def test_empty_provenance_synthesized_nominal() -> None:
         grounding_provenance=[],
     )
     result = _ensure_impingement_grounded(imp, stance=Stance.NOMINAL)
-    assert result.grounding_provenance == ["inferred.nominal.ward.highlight"]
+    assert result.grounding_provenance == []
+    assert result.synthetic_grounding_markers == ["inferred.nominal.ward.highlight"]
 
 
 def test_synth_counter_increments_on_empty() -> None:
@@ -124,7 +127,8 @@ def test_intent_with_one_empty_one_populated_synthesises_only_empty() -> None:
     result = _ensure_intent_grounded(intent)
     assert result is not intent  # new copy
     assert result.compositional_impingements[0].grounding_provenance == ["audio.onset"]
-    assert result.compositional_impingements[1].grounding_provenance == [
+    assert result.compositional_impingements[1].grounding_provenance == []
+    assert result.compositional_impingements[1].synthetic_grounding_markers == [
         "inferred.cautious.preset.bias"
     ]
 
@@ -148,7 +152,8 @@ def test_intent_top_level_empty_provenance_not_synthesised() -> None:
     # Top-level stays empty (emit_ungrounded_audit still fires on this scope)
     assert result.grounding_provenance == []
     # Per-impingement synthesised
-    assert result.compositional_impingements[0].grounding_provenance == [
+    assert result.compositional_impingements[0].grounding_provenance == []
+    assert result.compositional_impingements[0].synthetic_grounding_markers == [
         "inferred.nominal.ward.highlight"
     ]
 
@@ -176,10 +181,11 @@ def test_parse_from_llm_synthesises_empty_impingement_provenance() -> None:
     intent = _parse_intent_from_llm(raw, condition_id="test")
     assert intent.compositional_impingements, "expected one impingement"
     for imp in intent.compositional_impingements:
-        assert imp.grounding_provenance, (
-            f"impingement {imp.intent_family} has empty provenance after parse"
+        assert imp.grounding_provenance == []
+        assert imp.synthetic_grounding_markers, (
+            f"impingement {imp.intent_family} lacks synthetic marker after parse"
         )
-        assert imp.grounding_provenance[0].startswith("inferred.")
+        assert imp.synthetic_grounding_markers[0].startswith("inferred.")
 
 
 def test_parse_from_llm_preserves_populated_impingement_provenance() -> None:

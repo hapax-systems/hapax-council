@@ -350,6 +350,24 @@ class TestGroundingProvenanceTickerEmissive:
             f"expected ≥3 emissive point calls (one per signal), got {count['n']}"
         )
 
+    def test_synthetic_only_provenance_renders_ungrounded(self):
+        """Diagnostic placeholders must not render as grounded evidence."""
+        ward = ls.GroundingProvenanceTickerCairoSource()
+
+        with patch.object(
+            ls,
+            "_read_latest_intent",
+            return_value={
+                "grounding_provenance": [
+                    "fallback.parser_non_dict",
+                    "inferred.nominal.camera.hero",
+                ]
+            },
+        ):
+            _render_ward(ward, 480, 40, t=0.0)
+        assert ward._last_prov_hash == hash(())
+        assert ward._prov_change_started_at is None
+
     def test_slide_in_on_prov_change(self):
         """Changing the provenance set triggers a slide-in: the
         ``_prov_change_started_at`` timestamp updates and
