@@ -11,8 +11,12 @@ from shared.revenue_metrics_dashboard import (
     BASE_TARGETS,
     CONTENT_FORMATS,
     DOUBLED_TARGETS,
+    FORMAT_LEARNING_OUTCOMES,
+    PUBLIC_PRIVATE_MODES,
     READINESS_DIMENSIONS,
     REVENUE_STREAMS,
+    RIGHTS_CLASSES,
+    SOURCE_CLASSES,
     AggregateSupportReceiptMetrics,
     SourceMetrics,
     StreamActualInput,
@@ -46,6 +50,12 @@ def test_all_required_dimensions_are_present() -> None:
     assert set(dashboard.streams) == set(REVENUE_STREAMS)
     assert set(dashboard.formats) == set(CONTENT_FORMATS)
     assert set(dashboard.readiness) == set(READINESS_DIMENSIONS)
+    tier_list = dashboard.formats["tier_list"]
+    assert tier_list.format_family == "ranking_ordering"
+    assert set(tier_list.source_class_counts) == set(SOURCE_CLASSES)
+    assert set(tier_list.rights_class_counts) == set(RIGHTS_CLASSES)
+    assert set(tier_list.public_private_mode_counts) == set(PUBLIC_PRIVATE_MODES)
+    assert set(tier_list.learning_by_outcome) == set(FORMAT_LEARNING_OUTCOMES)
     assert dashboard.source_metrics.public_events.event_count == 0
     assert dashboard.source_metrics.support_prompts.impressions == 0
     assert dashboard.source_metrics.aggregate_support_receipts.public_state_aggregate_only is True
@@ -101,8 +111,35 @@ def test_revenue_and_engagement_cannot_override_grounding() -> None:
     assert dashboard.separation_policy.revenue_can_override_grounding is False
     assert dashboard.separation_policy.popularity_is_scientific_warrant is False
     for metric in dashboard.formats.values():
+        assert 0 <= metric.grounding_score <= 1
+        assert 0 <= metric.refusal_rate <= 1
+        assert 0 <= metric.correction_rate <= 1
+        assert 0 <= metric.artifact_conversion_rate <= 1
+        assert metric.youtube_content_revenue_usd == 0.0
         assert metric.engagement_observations.kept_separate is True
         assert metric.engagement_observations.may_override_grounding is False
+        assert metric.engagement_observations.public_state_aggregate_only is True
+        assert metric.engagement_observations.per_audience_member_public_state_allowed is False
+        assert metric.n1_weirdness_value_stream.audience_response_is_scientific_warrant is False
+        for bucket in metric.learning_by_outcome.values():
+            assert bucket.engagement_can_override_grounding is False
+            assert bucket.revenue_can_override_grounding is False
+
+
+def test_format_learning_buckets_track_outcomes_separately() -> None:
+    dashboard = build_revenue_metrics_dashboard()
+    format_metric = dashboard.formats["react_commentary"]
+
+    assert format_metric.format_family == "attention_commentary"
+    assert format_metric.learning_by_outcome["refused"].outcome == "refused"
+    assert format_metric.learning_by_outcome["corrected"].outcome == "corrected"
+    assert format_metric.learning_by_outcome["private"].outcome == "private"
+    assert format_metric.learning_by_outcome["dry_run"].outcome == "dry_run"
+    assert format_metric.learning_by_outcome["public_archive"].outcome == "public_archive"
+    assert format_metric.learning_by_outcome["public_live"].outcome == "public_live"
+    assert format_metric.learning_by_outcome["monetized"].outcome == "monetized"
+    assert format_metric.n1_weirdness_value_stream.dimension_id == "n1_weirdness"
+    assert format_metric.n1_weirdness_value_stream.tracked is True
 
 
 def test_support_receipts_are_aggregate_only() -> None:

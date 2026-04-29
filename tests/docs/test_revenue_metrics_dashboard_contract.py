@@ -122,6 +122,94 @@ def test_schema_names_required_stream_format_and_readiness_dimensions() -> None:
     }
 
 
+def test_schema_names_format_aware_revenue_dimensions() -> None:
+    schema = _schema()
+
+    assert set(schema["$defs"]["format_family"]["enum"]) == {
+        "ranking_ordering",
+        "review_comparison",
+        "attention_commentary",
+        "explanation_rundown",
+        "governance_refusal",
+        "claim_audit",
+    }
+    assert set(schema["$defs"]["source_class"]["enum"]) == {
+        "operator_state",
+        "owned_source",
+        "generated_asset",
+        "public_web_reference",
+        "platform_native_aggregate",
+        "third_party_media",
+        "unknown",
+    }
+    assert set(schema["$defs"]["rights_class"]["enum"]) == {
+        "owned",
+        "public_domain",
+        "cc_compatible",
+        "licensed",
+        "platform_embed_only",
+        "fair_use_candidate",
+        "forbidden",
+        "unknown",
+    }
+    assert set(schema["$defs"]["public_private_mode"]["enum"]) == {
+        "private",
+        "dry_run",
+        "public_archive",
+        "public_live",
+        "monetized",
+    }
+
+    format_required = set(schema["$defs"]["format_metric"]["required"])
+    for field in (
+        "format_family",
+        "source_class_counts",
+        "rights_class_counts",
+        "public_private_mode_counts",
+        "grounding_score",
+        "refusal_rate",
+        "correction_rate",
+        "artifact_conversion_rate",
+        "youtube_content_revenue_usd",
+        "learning_by_outcome",
+        "n1_weirdness_value_stream",
+    ):
+        assert field in format_required
+
+
+def test_format_learning_and_n1_weirdness_are_structural() -> None:
+    schema = _schema()
+
+    assert set(schema["$defs"]["format_learning_outcome"]["enum"]) == {
+        "refused",
+        "corrected",
+        "private",
+        "dry_run",
+        "public_archive",
+        "public_live",
+        "monetized",
+    }
+    learning = schema["$defs"]["format_learning_bucket"]["properties"]
+    assert learning["engagement_can_override_grounding"]["const"] is False
+    assert learning["revenue_can_override_grounding"]["const"] is False
+
+    n1 = schema["$defs"]["n1_weirdness_value_stream"]["properties"]
+    assert n1["dimension_id"]["const"] == "n1_weirdness"
+    assert n1["tracked"]["const"] is True
+    assert n1["audience_response_is_scientific_warrant"]["const"] is False
+
+    body = _body()
+    for phrase in (
+        "`source_class_counts`",
+        "`rights_class_counts`",
+        "`public_private_mode_counts`",
+        "Format-level learning is separated by outcome bucket",
+        "`n1_weirdness_value_stream`",
+        "audience-response metric refs",
+    ):
+        assert phrase in body
+
+
 def test_source_metrics_and_support_privacy_are_structural() -> None:
     schema = _schema()
     source_required = set(schema["$defs"]["source_metrics"]["required"])
@@ -160,11 +248,15 @@ def test_engagement_revenue_and_grounding_are_pinned_separate() -> None:
     assert separation["popularity_is_scientific_warrant"]["const"] is False
     assert engagement["kept_separate"]["const"] is True
     assert engagement["may_override_grounding"]["const"] is False
+    assert engagement["public_state_aggregate_only"]["const"] is True
+    assert engagement["per_audience_member_public_state_allowed"]["const"] is False
 
     body = _body()
     for phrase in (
         "They are never scientific warrant",
+        "Audience/engagement observations are aggregate-only",
         "`popularity_is_scientific_warrant` is always `false`",
+        "`per_audience_member_public_state_allowed: false`",
         "not view counts, receipt counts, or platform revenue",
     ):
         assert phrase in body

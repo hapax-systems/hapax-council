@@ -34,6 +34,49 @@ type ContentFormat = Literal[
     "claim_audit",
     "failure_autopsy",
 ]
+type FormatFamily = Literal[
+    "ranking_ordering",
+    "review_comparison",
+    "attention_commentary",
+    "explanation_rundown",
+    "governance_refusal",
+    "claim_audit",
+]
+type SourceClass = Literal[
+    "operator_state",
+    "owned_source",
+    "generated_asset",
+    "public_web_reference",
+    "platform_native_aggregate",
+    "third_party_media",
+    "unknown",
+]
+type RightsClass = Literal[
+    "owned",
+    "public_domain",
+    "cc_compatible",
+    "licensed",
+    "platform_embed_only",
+    "fair_use_candidate",
+    "forbidden",
+    "unknown",
+]
+type PublicPrivateMode = Literal[
+    "private",
+    "dry_run",
+    "public_archive",
+    "public_live",
+    "monetized",
+]
+type FormatLearningOutcome = Literal[
+    "refused",
+    "corrected",
+    "private",
+    "dry_run",
+    "public_archive",
+    "public_live",
+    "monetized",
+]
 type ReadinessDimension = Literal[
     "safe_to_broadcast",
     "safe_to_archive",
@@ -85,6 +128,49 @@ CONTENT_FORMATS: tuple[ContentFormat, ...] = (
     "claim_audit",
     "failure_autopsy",
 )
+FORMAT_FAMILIES: tuple[FormatFamily, ...] = (
+    "ranking_ordering",
+    "review_comparison",
+    "attention_commentary",
+    "explanation_rundown",
+    "governance_refusal",
+    "claim_audit",
+)
+SOURCE_CLASSES: tuple[SourceClass, ...] = (
+    "operator_state",
+    "owned_source",
+    "generated_asset",
+    "public_web_reference",
+    "platform_native_aggregate",
+    "third_party_media",
+    "unknown",
+)
+RIGHTS_CLASSES: tuple[RightsClass, ...] = (
+    "owned",
+    "public_domain",
+    "cc_compatible",
+    "licensed",
+    "platform_embed_only",
+    "fair_use_candidate",
+    "forbidden",
+    "unknown",
+)
+PUBLIC_PRIVATE_MODES: tuple[PublicPrivateMode, ...] = (
+    "private",
+    "dry_run",
+    "public_archive",
+    "public_live",
+    "monetized",
+)
+FORMAT_LEARNING_OUTCOMES: tuple[FormatLearningOutcome, ...] = (
+    "refused",
+    "corrected",
+    "private",
+    "dry_run",
+    "public_archive",
+    "public_live",
+    "monetized",
+)
 READINESS_DIMENSIONS: tuple[ReadinessDimension, ...] = (
     "safe_to_broadcast",
     "safe_to_archive",
@@ -118,6 +204,20 @@ FORMAT_DISPLAY_NAMES: dict[ContentFormat, str] = {
     "refusal_breakdown": "Refusal breakdown",
     "claim_audit": "Claim audit",
     "failure_autopsy": "Failure autopsy",
+}
+FORMAT_FAMILY_BY_FORMAT: dict[ContentFormat, FormatFamily] = {
+    "tier_list": "ranking_ordering",
+    "bracket": "ranking_ordering",
+    "review": "review_comparison",
+    "comparison": "review_comparison",
+    "what_is_this": "review_comparison",
+    "react_commentary": "attention_commentary",
+    "watch_along": "attention_commentary",
+    "explainer_rundown": "explanation_rundown",
+    "debate": "explanation_rundown",
+    "refusal_breakdown": "governance_refusal",
+    "claim_audit": "claim_audit",
+    "failure_autopsy": "claim_audit",
 }
 STREAM_BASE_TARGETS: dict[RevenueStream, dict[Horizon, float]] = {
     "platform_native": {
@@ -249,18 +349,74 @@ class StreamMetric(RevenueModel):
 class EngagementObservations(RevenueModel):
     kept_separate: Literal[True] = True
     may_override_grounding: Literal[False] = False
+    public_state_aggregate_only: Literal[True] = True
+    per_audience_member_public_state_allowed: Literal[False] = False
     public_event_count: int = Field(default=0, ge=0)
     views: int = Field(default=0, ge=0)
     watch_time_hours: float = Field(default=0.0, ge=0)
     support_prompt_impressions: int = Field(default=0, ge=0)
 
 
+class N1WeirdnessValueStream(RevenueModel):
+    dimension_id: Literal["n1_weirdness"] = "n1_weirdness"
+    tracked: Literal[True] = True
+    audience_response_is_scientific_warrant: Literal[False] = False
+    spectacle_response_metric_refs: list[str] = Field(default_factory=list)
+    grounding_warrant_refs: list[str] = Field(default_factory=list)
+
+
+class FormatLearningBucket(RevenueModel):
+    outcome: FormatLearningOutcome
+    run_count: int = Field(default=0, ge=0)
+    grounding_score: float = Field(default=0.0, ge=0, le=1)
+    refusal_count: int = Field(default=0, ge=0)
+    correction_count: int = Field(default=0, ge=0)
+    artifact_conversion_count: int = Field(default=0, ge=0)
+    youtube_content_revenue_usd: float = Field(default=0.0, ge=0)
+    engagement_can_override_grounding: Literal[False] = False
+    revenue_can_override_grounding: Literal[False] = False
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+def _source_class_counts() -> dict[SourceClass, int]:
+    return {source_class: 0 for source_class in SOURCE_CLASSES}
+
+
+def _rights_class_counts() -> dict[RightsClass, int]:
+    return {rights_class: 0 for rights_class in RIGHTS_CLASSES}
+
+
+def _public_private_mode_counts() -> dict[PublicPrivateMode, int]:
+    return {mode: 0 for mode in PUBLIC_PRIVATE_MODES}
+
+
+def _format_learning_buckets() -> dict[FormatLearningOutcome, FormatLearningBucket]:
+    return {outcome: FormatLearningBucket(outcome=outcome) for outcome in FORMAT_LEARNING_OUTCOMES}
+
+
 class FormatMetric(RevenueModel):
     format_id: ContentFormat
     display_name: str
+    format_family: FormatFamily
+    source_class_counts: dict[SourceClass, int] = Field(default_factory=_source_class_counts)
+    rights_class_counts: dict[RightsClass, int] = Field(default_factory=_rights_class_counts)
+    public_private_mode_counts: dict[PublicPrivateMode, int] = Field(
+        default_factory=_public_private_mode_counts
+    )
     run_count: int = Field(default=0, ge=0)
+    grounding_score: float = Field(default=0.0, ge=0, le=1)
+    refusal_rate: float = Field(default=0.0, ge=0, le=1)
+    correction_rate: float = Field(default=0.0, ge=0, le=1)
     artifact_conversion_count: int = Field(default=0, ge=0)
+    artifact_conversion_rate: float = Field(default=0.0, ge=0, le=1)
     revenue_gross_usd: float = Field(default=0.0, ge=0)
+    youtube_content_revenue_usd: float = Field(default=0.0, ge=0)
+    learning_by_outcome: dict[FormatLearningOutcome, FormatLearningBucket] = Field(
+        default_factory=_format_learning_buckets
+    )
+    n1_weirdness_value_stream: N1WeirdnessValueStream = Field(
+        default_factory=N1WeirdnessValueStream
+    )
     engagement_observations: EngagementObservations = Field(default_factory=EngagementObservations)
     grounding_quality_refs: list[str] = Field(default_factory=list)
 
@@ -421,7 +577,11 @@ def build_revenue_metrics_dashboard(
         confidence="unknown",
     )
     formats = {
-        format_id: FormatMetric(format_id=format_id, display_name=FORMAT_DISPLAY_NAMES[format_id])
+        format_id: FormatMetric(
+            format_id=format_id,
+            display_name=FORMAT_DISPLAY_NAMES[format_id],
+            format_family=FORMAT_FAMILY_BY_FORMAT[format_id],
+        )
         for format_id in CONTENT_FORMATS
     }
     readiness = {
@@ -577,9 +737,14 @@ __all__ = [
     "BASE_TARGETS",
     "CONTENT_FORMATS",
     "DOUBLED_TARGETS",
+    "FORMAT_FAMILIES",
+    "FORMAT_LEARNING_OUTCOMES",
     "HORIZONS",
+    "PUBLIC_PRIVATE_MODES",
     "READINESS_DIMENSIONS",
     "REVENUE_STREAMS",
+    "RIGHTS_CLASSES",
+    "SOURCE_CLASSES",
     "STREAM_BASE_TARGETS",
     "AggregateSupportReceiptMetrics",
     "ArtifactMetrics",
@@ -587,10 +752,12 @@ __all__ = [
     "EditionMetrics",
     "EngagementObservations",
     "FinancialActuals",
+    "FormatLearningBucket",
     "FormatMetric",
     "GrantMetrics",
     "LicenseMetrics",
     "MonthlyRunRateMetric",
+    "N1WeirdnessValueStream",
     "PublicEventMetrics",
     "ReadinessMetric",
     "RevenueMetricsDashboard",
