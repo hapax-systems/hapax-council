@@ -34,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_STATE_PATH = Path("/dev/shm/hapax-broadcast/audio-safe-for-broadcast.json")
 DEFAULT_TOPOLOGY_DESCRIPTOR = REPO_ROOT / "config" / "audio-topology.yaml"
 DEFAULT_AUDIO_SAFETY_STATE = Path("/dev/shm/hapax-audio-safety/state.json")
+DEFAULT_AUDIO_DUCKER_STATE = Path("/dev/shm/hapax-audio-ducker/state.json")
 
 TOPOLOGY_VERIFY_COMMAND = (
     "scripts/hapax-audio-topology",
@@ -57,6 +58,7 @@ REQUIRED_SERVICE_UNITS = (
     "pipewire-pulse.service",
     "wireplumber.service",
     "hapax-audio-safety.service",
+    "hapax-audio-ducker.service",
 )
 
 EXPECTED_EGRESS_SOURCES = (
@@ -111,12 +113,14 @@ class BroadcastAudioHealthPaths:
     state_path: Path = DEFAULT_STATE_PATH
     topology_descriptor: Path = DEFAULT_TOPOLOGY_DESCRIPTOR
     audio_safety_state: Path = DEFAULT_AUDIO_SAFETY_STATE
+    audio_ducker_state: Path = DEFAULT_AUDIO_DUCKER_STATE
 
 
 @dataclass(frozen=True)
 class BroadcastAudioHealthThresholds:
     state_max_age_s: float = 30.0
     audio_safety_state_max_age_s: float = 10.0
+    audio_ducker_state_max_age_s: float = 2.0
     command_timeout_s: float = 15.0
     loudness_timeout_extra_s: float = 8.0
     loudness_duration_s: int = 5
@@ -238,6 +242,13 @@ def resolve_broadcast_audio_health(
     _evaluate_egress_binding(evidence=evidence, blocking=blocking, runner=runner, thresholds=t)
     _evaluate_runtime_safety(
         p.audio_safety_state,
+        current,
+        t,
+        evidence=evidence,
+        blocking=blocking,
+    )
+    _evaluate_audio_ducker_state(
+        p.audio_ducker_state,
         current,
         t,
         evidence=evidence,
@@ -629,6 +640,119 @@ def _evaluate_runtime_safety(
         )
 
 
+def _evaluate_audio_ducker_state(
+    path: Path,
+    now: float,
+    thresholds: BroadcastAudioHealthThresholds,
+    *,
+    evidence: dict[str, Any],
+    blocking: list[AudioHealthReason],
+) -> None:
+    data, age_s, error = _read_json_file(path, now)
+    record: dict[str, Any] = {
+        "audio_ducker_state_path": str(path),
+        "audio_ducker_state_age_s": age_s,
+        "status": "unknown",
+    }
+    if error is not None:
+        record["error"] = error
+        evidence["audio_ducker"] = record
+        _block(
+            blocking,
+            code=f"audio_ducker_state_{error}",
+            owner=str(path),
+            message=f"audio ducker state is {error}",
+            evidence_refs=["audio_ducker"],
+        )
+        return
+    if age_s is None or age_s > thresholds.audio_ducker_state_max_age_s:
+        record["status"] = "stale"
+        evidence["audio_ducker"] = record
+        _block(
+            blocking,
+            code="audio_ducker_state_stale",
+            owner=str(path),
+            message=(
+                "audio ducker state is stale "
+                f"({age_s}s > {thresholds.audio_ducker_state_max_age_s}s)"
+            ),
+            evidence_refs=["audio_ducker"],
+        )
+        return
+
+    blockers_raw = data.get("blockers", [])
+    blockers = [str(item) for item in blockers_raw] if isinstance(blockers_raw, list) else []
+    malformed_blockers = (
+        [] if isinstance(blockers_raw, list) else ["audio_ducker_blockers_malformed"]
+    )
+    all_blockers = [*blockers, *malformed_blockers]
+    commanded_music = _number_or_none(data.get("commanded_music_duck_gain"))
+    actual_music = _number_or_none(data.get("actual_music_duck_gain"))
+    commanded_tts = _number_or_none(data.get("commanded_tts_duck_gain"))
+    actual_tts = _number_or_none(data.get("actual_tts_duck_gain"))
+    fail_open = bool(data.get("fail_open", False)) or bool(all_blockers)
+    record.update(
+        {
+            "status": "fail_open" if fail_open else "ok",
+            "trigger_cause": data.get("trigger_cause"),
+            "fail_open": fail_open,
+            "blockers": all_blockers,
+            "commanded_music_duck_gain": commanded_music,
+            "actual_music_duck_gain": actual_music,
+            "commanded_tts_duck_gain": commanded_tts,
+            "actual_tts_duck_gain": actual_tts,
+            "music_duck": data.get("music_duck")
+            if isinstance(data.get("music_duck"), dict)
+            else {},
+            "tts_duck": data.get("tts_duck") if isinstance(data.get("tts_duck"), dict) else {},
+            "rode": data.get("rode") if isinstance(data.get("rode"), dict) else {},
+            "tts": data.get("tts") if isinstance(data.get("tts"), dict) else {},
+        }
+    )
+    evidence["audio_ducker"] = record
+
+    if all_blockers:
+        _block(
+            blocking,
+            code="audio_ducker_fail_open",
+            owner=str(path),
+            message=f"audio ducker reports fail-open blockers: {', '.join(all_blockers[:3])}",
+            evidence_refs=["audio_ducker"],
+        )
+    elif data.get("fail_open", False):
+        _block(
+            blocking,
+            code="audio_ducker_fail_open",
+            owner=str(path),
+            message="audio ducker reports fail-open state",
+            evidence_refs=["audio_ducker"],
+        )
+
+    for label, commanded, actual in (
+        ("music", commanded_music, actual_music),
+        ("tts", commanded_tts, actual_tts),
+    ):
+        if commanded is None or actual is None:
+            _block(
+                blocking,
+                code=f"audio_ducker_{label}_readback_missing",
+                owner=str(path),
+                message=f"audio ducker {label} commanded/actual gain evidence is missing",
+                evidence_refs=["audio_ducker"],
+            )
+        elif abs(commanded - actual) > 0.025:
+            _block(
+                blocking,
+                code=f"audio_ducker_{label}_readback_mismatch",
+                owner=str(path),
+                message=(
+                    f"audio ducker {label} commanded gain {commanded} "
+                    f"does not match actual gain {actual}"
+                ),
+                evidence_refs=["audio_ducker"],
+            )
+
+
 def _evaluate_service_freshness(
     *,
     evidence: dict[str, Any],
@@ -839,6 +963,7 @@ def _owners() -> dict[str, str]:
         "broadcast_forward": "scripts/hapax-audio-topology tts-broadcast-check",
         "egress_binding": "pw-link -l / OBS binding to hapax-broadcast-normalized",
         "runtime_safety": "hapax-audio-safety.service",
+        "audio_ducker": "hapax-audio-ducker.service",
         "health_consumer": "livestream-health-group",
     }
 
@@ -878,6 +1003,14 @@ def _int_or_none(value: str | None) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _number_or_none(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
 
 
 def _tail(text: str, *, max_chars: int = 1200) -> str:

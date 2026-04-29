@@ -32,7 +32,41 @@ def _paths(tmp_path: Path) -> BroadcastAudioHealthPaths:
         state_path=tmp_path / "audio-safe-for-broadcast.json",
         topology_descriptor=Path("config/audio-topology.yaml"),
         audio_safety_state=tmp_path / "audio-safety-state.json",
+        audio_ducker_state=tmp_path / "audio-ducker-state.json",
     )
+
+
+def _audio_ducker_state(**overrides: object) -> dict:
+    payload = {
+        "trigger_cause": "none",
+        "fail_open": False,
+        "blockers": [],
+        "commanded_music_duck_gain": 1.0,
+        "actual_music_duck_gain": 1.0,
+        "commanded_tts_duck_gain": 1.0,
+        "actual_tts_duck_gain": 1.0,
+        "music_duck": {
+            "commanded_gain": 1.0,
+            "actual_gain": 1.0,
+            "last_readback_error": None,
+            "last_write_error": None,
+        },
+        "tts_duck": {
+            "commanded_gain": 1.0,
+            "actual_gain": 1.0,
+            "last_readback_error": None,
+            "last_write_error": None,
+        },
+        "rode": {"fresh": True, "sample_age_ms": 20.0, "last_error": None},
+        "tts": {"fresh": True, "sample_age_ms": 20.0, "last_error": None},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _write_clear_runtime_states(paths: BroadcastAudioHealthPaths) -> None:
+    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_json(paths.audio_ducker_state, _audio_ducker_state())
 
 
 def _runner(
@@ -90,7 +124,7 @@ def _service_probe(overrides: dict[str, ServiceStatus | None] | None = None):
 
 def _safe_fixture(tmp_path: Path):
     paths = _paths(tmp_path)
-    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_clear_runtime_states(paths)
     health = resolve_broadcast_audio_health(
         paths=paths,
         now=NOW,
@@ -116,6 +150,8 @@ def test_safe_state_contains_contract_shape(tmp_path: Path) -> None:
     assert health.evidence["loudness"]["target_lufs_i"] == -14.0
     assert health.evidence["loudness"]["target_true_peak_dbtp"] == -1.0
     assert health.evidence["egress_binding"]["bound"] is True
+    assert health.evidence["audio_ducker"]["actual_music_duck_gain"] == 1.0
+    assert "hapax-audio-ducker.service" in health.evidence["service_freshness"]["required_units"]
     assert health.owners["loudness_constants"] == "shared/audio_loudness.py"
 
 
@@ -166,8 +202,9 @@ def test_missing_topology_descriptor_fails_closed(tmp_path: Path) -> None:
         state_path=tmp_path / "out.json",
         topology_descriptor=tmp_path / "missing-topology.yaml",
         audio_safety_state=tmp_path / "audio-safety-state.json",
+        audio_ducker_state=tmp_path / "audio-ducker-state.json",
     )
-    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_clear_runtime_states(paths)
 
     health = resolve_broadcast_audio_health(
         paths=paths,
@@ -182,7 +219,7 @@ def test_missing_topology_descriptor_fails_closed(tmp_path: Path) -> None:
 
 def test_private_leak_guard_failure_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_clear_runtime_states(paths)
 
     health = resolve_broadcast_audio_health(
         paths=paths,
@@ -203,7 +240,7 @@ def test_private_leak_guard_failure_blocks(tmp_path: Path) -> None:
 
 def test_tts_broadcast_path_failure_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_clear_runtime_states(paths)
 
     health = resolve_broadcast_audio_health(
         paths=paths,
@@ -220,7 +257,7 @@ def test_tts_broadcast_path_failure_blocks(tmp_path: Path) -> None:
 
 def test_loudness_failure_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_clear_runtime_states(paths)
 
     health = resolve_broadcast_audio_health(
         paths=paths,
@@ -245,7 +282,7 @@ def test_loudness_failure_blocks(tmp_path: Path) -> None:
 
 def test_true_peak_failure_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_clear_runtime_states(paths)
 
     health = resolve_broadcast_audio_health(
         paths=paths,
@@ -270,7 +307,7 @@ def test_true_peak_failure_blocks(tmp_path: Path) -> None:
 
 def test_missing_egress_binding_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_clear_runtime_states(paths)
 
     health = resolve_broadcast_audio_health(
         paths=paths,
@@ -285,7 +322,7 @@ def test_missing_egress_binding_blocks(tmp_path: Path) -> None:
 
 def test_obs_bound_to_pre_normalized_master_still_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_clear_runtime_states(paths)
 
     health = resolve_broadcast_audio_health(
         paths=paths,
@@ -315,6 +352,7 @@ def test_obs_bound_to_pre_normalized_master_still_blocks(tmp_path: Path) -> None
 
 def test_runtime_safety_state_stale_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
+    _write_json(paths.audio_ducker_state, _audio_ducker_state())
     _write_json(
         paths.audio_safety_state,
         {"status": "clear", "breach_active": False},
@@ -334,6 +372,7 @@ def test_runtime_safety_state_stale_blocks(tmp_path: Path) -> None:
 
 def test_runtime_safety_breach_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
+    _write_json(paths.audio_ducker_state, _audio_ducker_state())
     _write_json(paths.audio_safety_state, {"status": "breach", "breach_active": True})
 
     health = resolve_broadcast_audio_health(
@@ -349,6 +388,7 @@ def test_runtime_safety_breach_blocks(tmp_path: Path) -> None:
 
 def test_runtime_safety_source_missing_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
+    _write_json(paths.audio_ducker_state, _audio_ducker_state())
     _write_json(paths.audio_safety_state, {"status": "source_missing", "breach_active": False})
 
     health = resolve_broadcast_audio_health(
@@ -362,9 +402,70 @@ def test_runtime_safety_source_missing_blocks(tmp_path: Path) -> None:
     assert "runtime_safety_failed" in _codes(health)
 
 
-def test_failed_service_blocks(tmp_path: Path) -> None:
+def test_audio_ducker_state_missing_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "audio_ducker_state_missing" in _codes(health)
+
+
+def test_audio_ducker_fail_open_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_json(
+        paths.audio_ducker_state,
+        _audio_ducker_state(
+            fail_open=True,
+            trigger_cause="fail_open",
+            blockers=["rode_capture_stale:820ms"],
+        ),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "audio_ducker_fail_open" in _codes(health)
+    assert health.evidence["audio_ducker"]["blockers"] == ["rode_capture_stale:820ms"]
+
+
+def test_audio_ducker_readback_mismatch_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_json(
+        paths.audio_ducker_state,
+        _audio_ducker_state(
+            commanded_music_duck_gain=0.5,
+            actual_music_duck_gain=1.0,
+        ),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "audio_ducker_music_readback_mismatch" in _codes(health)
+
+
+def test_failed_service_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
 
     health = resolve_broadcast_audio_health(
         paths=paths,
@@ -392,7 +493,7 @@ def test_failed_service_blocks(tmp_path: Path) -> None:
 
 def test_loudness_command_failure_blocks_as_missing_measurement(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_clear_runtime_states(paths)
 
     health = resolve_broadcast_audio_health(
         paths=paths,
