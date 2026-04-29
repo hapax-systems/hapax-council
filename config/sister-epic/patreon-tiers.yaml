@@ -1,81 +1,32 @@
-# Patreon tier structure — sister epic Phase S1 + S4 + S5 scaffolding
+# Patreon tier structure — superseded refusal artifact.
 #
-# Tier taxonomy inherited from Bundle 7 §8.3:
-#   Companion < Listener < Studio < Lab < Patron
-#
-# Operator fills in prices, perk specifics, and tier-specific copy.
-# Alpha guarantees the schema is well-formed; operator owns the values.
-#
-# Constraint: perks MUST be structural (access, files, roles) NOT
-# parasocial (shoutouts, individual recognition, sentiment reward).
-# Token pole 7 principle 7 applies.
+# This file used to scaffold Patreon tiers for the sister epic. The later
+# Patreon refusal brief and support-surface registry supersede that assumption:
+# no Patreon account, no tiers, no role sync, no private posts, and no perk
+# ladder. Keep the file only as a compatibility marker for older references.
 
 version: 1
 schema_owner: operator
-operator_action_required: true
+operator_action_required: false
+status: superseded_refusal
+activation_allowed: false
+superseded_by: config/support-surface-registry.json
+refusal_refs:
+  - docs/refusal-briefs/leverage-patreon.md
+replacement_surface_ids:
+  - liberapay_recurring
+  - lightning_invoice_receive
+  - nostr_zaps
 
-tiers:
-  # Tier 1 — entry
-  - id: companion
-    display_name: TODO-operator-fills
-    price_usd_monthly: null  # TODO
-    description: TODO-operator-fills
-    perks:
-      - Early access to Bandcamp releases (24h window)
-      - Patron-only Discord role
-      - Monthly Substack paid post
-    discord_role: patron-companion
+tiers: []
 
-  # Tier 2
-  - id: listener
-    display_name: TODO
-    price_usd_monthly: null
-    description: TODO
-    perks:
-      - All Companion perks
-      - Free download of all Bandcamp releases (including back catalog)
-      - Listener-only Discord channel read access
-    discord_role: patron-listener
-
-  # Tier 3
-  - id: studio
-    display_name: TODO
-    price_usd_monthly: null
-    description: TODO
-    perks:
-      - All Listener perks
-      - Monthly Q&A livestream access
-      - Studio-only Discord channels
-      - Stem file drop access (read-only)
-    discord_role: patron-studio
-
-  # Tier 4
-  - id: lab
-    display_name: TODO
-    price_usd_monthly: null
-    description: TODO
-    perks:
-      - All Studio perks
-      - Full project file + session file access
-      - Early research update access
-      - Condition A/A-prime data access after claim close
-    discord_role: patron-lab
-
-  # Tier 5 — top
-  - id: patron
-    display_name: TODO
-    price_usd_monthly: null
-    description: TODO
-    perks:
-      - All Lab perks
-      - Name acknowledgment in research publications (opt-in)
-      - Quarterly operator 1:1 (structural, not parasocial)
-    discord_role: patron-patron
-
-# Constraints — enforced by schema validator
 constraints:
-  no_parasocial_perks: true  # No shoutouts, no name-in-stream, no individual recognition
-  no_sentiment_reward: true  # No "supporter of the week," no leaderboards
-  no_loss_framing: true      # No "don't miss out" scarcity marketing
-  token_pole_7_compliant: true
-  interpersonal_transparency_compliant: true  # No persistent per-supporter state beyond tier membership
+  no_patreon_account: true
+  no_tiers: true
+  no_perks: true
+  no_role_sync: true
+  no_private_posts: true
+  no_name_acknowledgments: true
+  no_leaderboards: true
+  no_supporter_identity_public_state: true
+  work_continues_regardless: true

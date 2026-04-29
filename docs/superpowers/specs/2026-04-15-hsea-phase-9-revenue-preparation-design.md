@@ -19,7 +19,9 @@ Ship the **8 revenue preparation touch points** that drop #58 silently omitted: 
 
 **What this phase is:** sponsor copy drafter + NLnet drafter + consulting gate + deadline tracker + music revenue tracker + revenue queue overlay + budget reconciliation + axiom compliance gate.
 
-**What this phase is NOT:** does NOT auto-post sponsorships, does NOT auto-submit grant applications, does NOT execute consulting contracts, does NOT process payments, does NOT track individual donors (zero per-payer state per the "thermometer not scoreboard" commitment from LRR Phase 7 persona spec).
+**What this phase is NOT:** does NOT auto-post sponsorships, does NOT auto-submit grant applications, does NOT execute consulting contracts, does NOT process payments, does NOT track individual support receipts (zero per-receipt public state per the "thermometer not scoreboard" commitment from LRR Phase 7 persona spec).
+
+**Supersession 2026-04-29:** `support-surface-registry` supersedes the older H1/H3 support copy assumptions where they name GitHub Sponsors, Patreon-style tiers, Discord roles/server subscriptions, Stripe Payment Links, or consulting-as-service. Those generic forms are now refusal conversions unless a future constitutional change retires the relevant refusal brief. Valid support copy is no-perk instrument support with aggregate-only receipts.
 
 ---
 
@@ -42,8 +44,8 @@ Ship the **8 revenue preparation touch points** that drop #58 silently omitted: 
 **Scope (per epic spec §5 Phase 9 9.1):**
 - `agents/revenue/sponsor_copy_drafter.py` — pydantic-ai agent
 - Pydantic validators enforce "no deliverables" clause + "work continues regardless" thank-you framing at field level
-- `TierCopy` output type with per-tier validation
-- Drafts: tier descriptions (≤$25 to keep relationships anonymous), GitHub Sponsors profile copy, Ko-fi profile copy, Nostr profile copy, FAQ, thank-you variant library
+- `NoPerkSupportCopy` output type validated against `config/support-surface-registry.json`
+- Drafts: no-perk support page copy, guarded Ko-fi copy, Nostr/Lightning/Liberapay copy, FAQ, thank-you variant library; GitHub Sponsors profile copy, Patreon-style tier copy, and Discord role-sync copy are refused conversion artifacts only
 - **Hardcoded intrinsic-motivation clause in system prompt** — operator cannot override via input
 - Operator reviews in Obsidian inbox; dispatches via `dispatch-approved.sh sponsor-copy <id>` — clipboard only, never auto-posts
 - **Target files:** `agents/revenue/sponsor_copy_drafter.py` (~350 LOC), `agents/revenue/_tier_copy_schema.py` (~120 LOC pydantic schema + validators), tests (~250 LOC)
@@ -70,7 +72,7 @@ Ship the **8 revenue preparation touch points** that drop #58 silently omitted: 
 **Scope (per epic spec §5 Phase 9 9.3):**
 - **Two-phase workflow with hard gate:**
   - **Phase 1 (always runs):** drafts an employer pre-disclosure email for the operator to send to their day-job employer BEFORE any consulting artifacts go public. Content: proposed consulting scope, conflict-of-interest framing, hours expectation, approval request.
-  - **Phase 2 (ONLY runs after operator flips `consulting-gate.json::phase_1_acknowledged: true`):** drafts public consulting artifacts — one-line footer, rate card, contract boilerplate skeleton, pitch response template
+  - **Phase 2 (superseded by support-surface-registry unless constitutionally re-opened):** generic public consulting artifacts are refused as consulting-as-service. If this lane is revisited, it may only draft artifact/license-request routing that does not create client service, calls, retainers, or methodology-as-service.
 - Engagement types supported: short-form (days), medium-form (weeks); **long-form (months) explicitly OUT OF SCOPE** — constitutional constraint protects the day-job boundary
 - **Post-generation regex check:** every Phase 2 artifact must contain the literal string `"no long-term engagements"` (or equivalent; validated at field level)
 - **Target files:** `agents/revenue/consulting_channel_drafter.py` (~400 LOC with phase 1 + phase 2 gate logic), `~/hapax-state/revenue/consulting-gate.json` (operator-controlled flag), tests (~300 LOC)
@@ -101,8 +103,8 @@ Ship the **8 revenue preparation touch points** that drop #58 silently omitted: 
 
 **Scope (per epic spec §5 Phase 9 9.6):**
 - `agents/studio_compositor/revenue_queue_overlay.py` — Cairo overlay showing revenue preparation ACTIVITY (not income)
-- Example: `"NLnet draft 78% · sponsor copy staged · T+14d"`
-- **Zero per-donor state** — shows Hapax's preparation work, not operator's revenue
+- Example: `"NLnet draft 78% · no-perk support copy staged · T+14d"`
+- **Zero per-receipt public state** — shows Hapax's preparation work, not operator revenue or individual support events
 - Default hidden on public livestream; opt-in per session via command registry `revenue.overlay.show`
 - **Target files:** `agents/studio_compositor/revenue_queue_overlay.py` (~200 LOC), `hapax-logos/src/lib/commands/revenue.ts` (~50 LOC command wiring), tests (~120 LOC)
 - **Size:** ~370 LOC
@@ -124,8 +126,8 @@ Ship the **8 revenue preparation touch points** that drop #58 silently omitted: 
 **Scope (per epic spec §5 Phase 9 9.8):**
 - `hooks/scripts/axiom-patterns-revenue.sh` — extension to `axiom-commit-scan.sh` with revenue-specific patterns
 - Rejects (commit blocks):
-  - `\bdonors?\b` — implies per-donor tracking
-  - `\bsubscribers?\b` — implies subscription relationship
+  - `\bdonors?\b` — implies individual support tracking
+  - `\bsubscribers?\b` — implies a subscription relationship
   - `\bguarantee\b` + `\bpromise\b` — implies commitment language
   - Email/phone patterns in sponsor-position context
 - Advisory-only (warning, not blocking) for missing "work continues regardless" clause — **promoted to BLOCKING after 30 days** (gives operator time to author sponsor copy with the clause before strict enforcement)
@@ -136,7 +138,7 @@ Ship the **8 revenue preparation touch points** that drop #58 silently omitted: 
 
 ## 4. Phase-specific decisions
 
-1. **H3 employer pre-disclosure is a HARD GATE** — Phase 2 public consulting artifacts are gated behind `consulting-gate.json::phase_1_acknowledged: true`. This is a constitutional constraint protecting the operator's day-job. No override.
+1. **H3 employer pre-disclosure is a HARD GATE, but public consulting artifacts are superseded** — Phase 2 public consulting artifacts remain locked and should not be emitted as consulting-as-service unless a later constitutional change re-opens that refusal. Artifact/license-request routing is the replacement path.
 
 2. **H5 music revenue is ORTHOGONAL** — music creative work is outside Hapax constitutional scope. Hapax tracks preparation + distribution, not the music itself.
 
@@ -154,12 +156,12 @@ Ship the **8 revenue preparation touch points** that drop #58 silently omitted: 
 
 1. **H1 sponsor copy draft** produced with all constitutional constraints validated at schema level
 2. **H2 NLnet application draft** for one candidate with at least 3 provenance-backed milestones
-3. **H3 consulting pre-disclosure email draft** produced; Phase 2 artifacts locked until operator acknowledges
+3. **H3 consulting pre-disclosure email draft** produced only as private boundary evidence; public consulting-as-service artifacts remain refused unless constitutionally re-opened
 4. **H4 deadline tracker** running with real NLnet cycle data
 5. **H5 music beat metadata** extracted for at least 5 operator beats
 6. **H6 revenue queue overlay** registered + hidden by default
 7. **H7 revenue reconciliation dashboard** accessible via command registry
-8. **H8 axiom compliance gate** rejects `\bdonors?\b` + similar patterns in a test commit
+8. **H8 axiom compliance gate** rejects `\bdonors?\b` + similar individual-support or subscription patterns in a test commit
 9. `hsea-state.yaml::phase_statuses[9].status == closed`
 10. Phase 9 handoff doc written
 
@@ -169,7 +171,7 @@ Ship the **8 revenue preparation touch points** that drop #58 silently omitted: 
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| H1 sponsor copy leaks per-donor tracking language | Constitutional violation | H8 axiom compliance gate catches at commit time; pydantic validators catch at generation time |
+| H1 sponsor copy leaks individual receipt tracking language | Constitutional violation | H8 axiom compliance gate catches at commit time; pydantic validators catch at generation time |
 | H2 NLnet drafter hallucinates milestones | Research integrity violation | `INSUFFICIENT_PROVENANCE` marker + provenance extractor cross-reference |
 | H3 Phase 2 artifacts drafted before operator acknowledges Phase 1 | Day-job conflict of interest | Hard gate on `consulting-gate.json` flag; no code path bypasses |
 | H5 music tracker leaks operator creative work to public stream | Privacy violation | Sierpinski slot default-hidden; per-session opt-in only |

@@ -32,6 +32,16 @@ from shared.grounding_provider_router import (
     validate_eval_suite,
     validate_provider_registry,
 )
+from shared.support_surface_registry import (
+    AggregateReceiptPolicy,
+    NoPerkSupportDoctrine,
+    SupportSurface,
+    SupportSurfaceRegistry,
+    build_aggregate_receipt_projection,
+    load_support_surface_registry,
+    public_prompt_allowed,
+    surfaces_by_decision,
+)
 from shared.tier_ranking_bracket_engine import (
     BracketMatchRecord,
     BracketRecord,
@@ -122,3 +132,16 @@ FinalDecisionRecord.validate_decision
 can_feed_grounding_evaluator
 emit_deterministic_boundaries
 build_run_store_events
+
+# Support-surface registry helpers are a public contract for downstream payment
+# aggregator, no-perk offer-page, and support-copy generator tasks. Pydantic
+# invokes validators dynamically, and downstream tasks consume these entrypoints
+# after this registry lands.
+NoPerkSupportDoctrine.validate_doctrine
+AggregateReceiptPolicy.validate_receipt_policy
+SupportSurface.validate_surface_policy
+SupportSurfaceRegistry.validate_registry_contract
+load_support_surface_registry
+surfaces_by_decision
+public_prompt_allowed
+build_aggregate_receipt_projection

@@ -1,0 +1,364 @@
+{
+  "schema_version": 1,
+  "registry_id": "support_surface_registry",
+  "declared_at": "2026-04-29T13:49:36Z",
+  "producer": "cx-blue",
+  "source_refs": [
+    "vault-plan:2026-04-29-autonomous-grounding-value-stream-map",
+    "docs/refusal-briefs/leverage-patreon.md",
+    "docs/refusal-briefs/sponsorships-multi-user-pattern.md",
+    "docs/refusal-briefs/leverage-stripe-kyc.md",
+    "docs/refusal-briefs/leverage-consulting-methodology-as-service.md",
+    "docs/refusal-briefs/leverage-discord-community.md",
+    "closed-task:leverage-money-lightning-nostr-zaps",
+    "closed-task:leverage-money-liberapay-recurring"
+  ],
+  "no_perk_support_doctrine": {
+    "doctrine_id": "no_perk_instrument_support",
+    "support_buys_access": false,
+    "support_buys_requests": false,
+    "support_buys_private_advice": false,
+    "support_buys_priority": false,
+    "support_buys_shoutouts": false,
+    "support_buys_guarantees": false,
+    "support_buys_client_service": false,
+    "support_buys_deliverables": false,
+    "support_buys_control": false,
+    "work_continues_regardless": true,
+    "allowed_copy_clauses": [
+      "Support keeps compute, archive storage, rights-safe production, and publication plumbing running.",
+      "No access, requests, private advice, priority, shoutouts, guarantees, client service, deliverables, or control are sold.",
+      "Work continues regardless of support."
+    ],
+    "forbidden_copy_shapes": [
+      "early_access",
+      "exclusive_content",
+      "private_channel",
+      "role_gate",
+      "request_queue",
+      "priority_response",
+      "name_acknowledgment",
+      "leaderboard",
+      "client_service",
+      "ad_read_deliverable"
+    ]
+  },
+  "aggregate_receipt_policy": {
+    "policy_id": "aggregate_only_support_receipts",
+    "public_state_aggregate_only": true,
+    "per_receipt_public_state_allowed": false,
+    "identity_retention_allowed": false,
+    "comment_text_retention_allowed": false,
+    "public_fields": [
+      "window_started_at",
+      "window_ended_at",
+      "receipt_count",
+      "gross_amount_by_currency",
+      "rail_counts",
+      "surface_counts",
+      "readiness_state"
+    ],
+    "forbidden_public_fields": [
+      "identity",
+      "handle",
+      "name",
+      "email",
+      "comment_text",
+      "message_text",
+      "per_receipt_history",
+      "supporter_list",
+      "leaderboard"
+    ],
+    "private_storage_policy": "Store only processor audit references needed for reconciliation; do not project identity, comments, request text, or per-receipt history to public state."
+  },
+  "surfaces": [
+    {
+      "surface_id": "youtube_ads",
+      "display_name": "YouTube ads and Premium revenue share",
+      "surface_family": "platform_native",
+      "money_form": "YPP ads and Premium revenue share",
+      "decision": "guarded",
+      "automation_class": "GUARDED",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "MonetizationReadiness.safe_to_monetize",
+        "BroadcastAudioSafety.audio_safe_for_broadcast",
+        "rights_provenance_current"
+      ],
+      "allowed_public_copy": [
+        "Platform-native revenue may run only when the public event is safe to monetize."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "Ads are not a support relationship and must not be described as audience scientific warrant."
+    },
+    {
+      "surface_id": "youtube_supers",
+      "display_name": "YouTube Supers",
+      "surface_family": "platform_native",
+      "money_form": "Super Chat and Super Stickers",
+      "decision": "guarded",
+      "automation_class": "GUARDED",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "MonetizationReadiness.safe_to_monetize",
+        "support_surface_registry.no_perk_copy_valid",
+        "payment_aggregator_v2.aggregate_only_projection"
+      ],
+      "allowed_public_copy": [
+        "Supers are accepted only as aggregate platform-native support for the instrument."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "Names, handles, comment text, and request text are stripped from public state."
+    },
+    {
+      "surface_id": "youtube_super_thanks",
+      "display_name": "YouTube Super Thanks",
+      "surface_family": "platform_native",
+      "money_form": "Super Thanks",
+      "decision": "guarded",
+      "automation_class": "GUARDED",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "MonetizationReadiness.safe_to_monetize",
+        "support_surface_registry.no_perk_copy_valid",
+        "payment_aggregator_v2.aggregate_only_projection"
+      ],
+      "allowed_public_copy": [
+        "Super Thanks is aggregate support and does not buy follow-up, private response, or request handling."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "Treat thank-you events as receipt counts only."
+    },
+    {
+      "surface_id": "youtube_memberships_no_perk",
+      "display_name": "YouTube memberships without perks",
+      "surface_family": "platform_native",
+      "money_form": "Platform-native memberships",
+      "decision": "guarded",
+      "automation_class": "GUARDED",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "MonetizationReadiness.safe_to_monetize",
+        "support_surface_registry.no_perk_copy_valid",
+        "membership_perks_disabled_or_empty",
+        "payment_aggregator_v2.aggregate_only_projection"
+      ],
+      "allowed_public_copy": [
+        "Membership support is valid only when it sells no access, role, file, channel, shoutout, request, or priority."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "If the platform requires perk delivery, this surface demotes to refusal_conversion."
+    },
+    {
+      "surface_id": "liberapay_recurring",
+      "display_name": "Liberapay recurring",
+      "surface_family": "direct_support",
+      "money_form": "Liberapay recurring support",
+      "decision": "allowed",
+      "automation_class": "AUTO",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "liberapay_credentials_bootstrapped",
+        "payment_aggregator_v2.aggregate_only_projection"
+      ],
+      "allowed_public_copy": [
+        "Liberapay support keeps compute and archive costs covered without perks or access."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "Sub-threshold receive rail from the closed Liberapay task."
+    },
+    {
+      "surface_id": "lightning_invoice_receive",
+      "display_name": "Lightning receive rail",
+      "surface_family": "direct_support",
+      "money_form": "Lightning invoice settlement",
+      "decision": "allowed",
+      "automation_class": "AUTO",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "lightning_credentials_bootstrapped",
+        "payment_aggregator_v2.aggregate_only_projection"
+      ],
+      "allowed_public_copy": [
+        "Lightning support is receive-only and buys no access, requests, priority, or deliverables."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "Receive-only; no outbound payment surface."
+    },
+    {
+      "surface_id": "nostr_zaps",
+      "display_name": "Nostr zaps",
+      "surface_family": "direct_support",
+      "money_form": "NIP-57 zaps",
+      "decision": "allowed",
+      "automation_class": "AUTO",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "nostr_credentials_bootstrapped",
+        "payment_aggregator_v2.aggregate_only_projection"
+      ],
+      "allowed_public_copy": [
+        "Zaps are aggregate support receipts, not a conversation or request channel."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "Zap messages are not retained in public state."
+    },
+    {
+      "surface_id": "kofi_tips_guarded",
+      "display_name": "Ko-fi tips",
+      "surface_family": "direct_support",
+      "money_form": "Ko-fi one-time tips or monthly tips",
+      "decision": "guarded",
+      "automation_class": "GUARDED",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "MonetizationReadiness.safe_to_accept_payment",
+        "kofi_profile_perks_disabled",
+        "payment_aggregator_v2.aggregate_only_projection"
+      ],
+      "allowed_public_copy": [
+        "Ko-fi may be listed only as no-perk support; commissions, shop items, memberships, and request prompts stay disabled."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "Guarded because default Ko-fi affordances can become perk, commission, or request surfaces."
+    },
+    {
+      "surface_id": "sponsor_support_copy",
+      "display_name": "Sponsor/support copy",
+      "surface_family": "copy",
+      "money_form": "Non-deliverable instrument support copy",
+      "decision": "guarded",
+      "automation_class": "GUARDED",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "support_surface_registry.no_perk_copy_valid",
+        "MonetizationReadiness.safe_to_publish_offer"
+      ],
+      "allowed_public_copy": [
+        "Support keeps the instrument running. No access, requests, private advice, priority, shoutouts, guarantees, client service, deliverables, or control are sold. Work continues regardless of support."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "Replaces older sponsor-tier and ad-read copy expectations."
+    },
+    {
+      "surface_id": "github_sponsors",
+      "display_name": "GitHub Sponsors",
+      "surface_family": "patronage",
+      "money_form": "GitHub Sponsors funding file or repo sponsor button",
+      "decision": "refusal_conversion",
+      "automation_class": "REFUSAL_ARTIFACT",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [],
+      "allowed_public_copy": [],
+      "refusal_brief_refs": [
+        "docs/refusal-briefs/sponsorships-multi-user-pattern.md"
+      ],
+      "buildable_conversion": "Keep has_sponsorships=false and no FUNDING.yml; route to no-perk support page and license-request intake.",
+      "notes": "Refused as a multi-user-shape affordance on pushable repos."
+    },
+    {
+      "surface_id": "patreon",
+      "display_name": "Patreon",
+      "surface_family": "patronage",
+      "money_form": "Patreon account, tiers, posts, or role sync",
+      "decision": "refusal_conversion",
+      "automation_class": "REFUSAL_ARTIFACT",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [],
+      "allowed_public_copy": [],
+      "refusal_brief_refs": [
+        "docs/refusal-briefs/leverage-patreon.md"
+      ],
+      "buildable_conversion": "Convert to no-perk public support page using Liberapay, Lightning, and Nostr zaps.",
+      "notes": "Refused because tier perks and relationship management are operator-physical."
+    },
+    {
+      "surface_id": "substack_paid_subscription",
+      "display_name": "Substack paid subscription",
+      "surface_family": "patronage",
+      "money_form": "Paid subscriber access model",
+      "decision": "refusal_conversion",
+      "automation_class": "REFUSAL_ARTIFACT",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [],
+      "allowed_public_copy": [],
+      "refusal_brief_refs": [
+        "vault-plan:2026-04-29-autonomous-grounding-value-stream-map"
+      ],
+      "buildable_conversion": "Use public newsletter, weblog, or RSS fanout only when automated and free of paid access tiers.",
+      "notes": "Paid access creates a subscriber relationship and content calendar pressure."
+    },
+    {
+      "surface_id": "discord_community_subscriptions",
+      "display_name": "Discord community or server subscriptions",
+      "surface_family": "community",
+      "money_form": "Discord server, role gates, community subscriptions, or support channels",
+      "decision": "refusal_conversion",
+      "automation_class": "REFUSAL_ARTIFACT",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [],
+      "allowed_public_copy": [],
+      "refusal_brief_refs": [
+        "docs/refusal-briefs/leverage-discord-community.md"
+      ],
+      "buildable_conversion": "Keep Discord out of support; if used at all, it is one-way publication-bus fanout under the cross-surface event contract.",
+      "notes": "No server, moderation, role sync, private channel, or two-way support surface."
+    },
+    {
+      "surface_id": "stripe_payment_links",
+      "display_name": "Stripe payment links",
+      "surface_family": "commercial",
+      "money_form": "Stripe Payment Link, Connect, or webhook flow",
+      "decision": "refusal_conversion",
+      "automation_class": "REFUSAL_ARTIFACT",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [],
+      "allowed_public_copy": [],
+      "refusal_brief_refs": [
+        "docs/refusal-briefs/leverage-stripe-kyc.md"
+      ],
+      "buildable_conversion": "Use Lightning, Liberapay, Nostr zaps, or receive-only artifact payment routes instead.",
+      "notes": "Refused because KYC and dispute handling are operator-physical."
+    },
+    {
+      "surface_id": "consulting_as_service",
+      "display_name": "Consulting as service",
+      "surface_family": "commercial",
+      "money_form": "Consulting, client calls, retainers, or methodology-as-service",
+      "decision": "refusal_conversion",
+      "automation_class": "REFUSAL_ARTIFACT",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [],
+      "allowed_public_copy": [],
+      "refusal_brief_refs": [
+        "docs/refusal-briefs/leverage-consulting-methodology-as-service.md"
+      ],
+      "buildable_conversion": "Package methodology as self-serve artifacts, PyPI packages, docs, templates, datasets, and license-request intake.",
+      "notes": "Refused because client engagement is operator-mediated and multi-tenant."
+    }
+  ]
+}
