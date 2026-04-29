@@ -6,6 +6,7 @@ framework, subprocess entrypoint, import string, or other dynamic path that
 vulture cannot see. Do not use this as a baseline for ordinary dead code.
 """
 
+from agents.visual_pool.repository import VisualPoolSidecar
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
 from shared.audio_topology_inspector import check_l12_forward_invariant
 from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
@@ -174,3 +175,10 @@ AudioSurfaceFixture._route_destination_matches_row
 AudioWorldSurfaceFixtureSet._validate_contract_coverage
 AudioWorldSurfaceFixtureSet.require_surface
 AudioWorldSurfaceFixtureSet.rows_for_witness
+
+# Local visual-pool sidecar validators are invoked by Pydantic while scanning
+# and ingesting Sierpinski frame assets. The pool lands before downstream visual
+# source consumers, so keep the dynamic-entrypoint references explicit.
+VisualPoolSidecar._normalize_source
+VisualPoolSidecar._normalize_aesthetic_tags
+VisualPoolSidecar._normalize_color_palette

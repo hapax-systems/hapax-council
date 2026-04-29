@@ -177,6 +177,28 @@ def _director_model_legacy_mode() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _slot_uses_external_frames(slot: Any) -> bool:
+    """True when a slot's frame source is managed outside the playlist path."""
+    return bool(getattr(slot, "externally_managed_frames", False))
+
+
+def _slot_current_frame_path(slot: Any) -> Path | None:
+    """Best-effort frame path accessor for local-pool-managed slots."""
+    raw = getattr(slot, "current_frame_path", None)
+    if callable(raw):
+        try:
+            raw = raw()
+        except Exception:
+            log.debug("slot current_frame_path callable failed", exc_info=True)
+            return None
+    if raw is None:
+        return None
+    try:
+        return Path(raw)
+    except TypeError:
+        return None
+
+
 # Where the director publishes its per-tick intent for downstream consumers.
 _DIRECTOR_INTENT_JSONL = Path(
     os.path.expanduser("~/hapax-state/stream-experiment/director-intent.jsonl")
@@ -1519,6 +1541,8 @@ class DirectorLoop:
         """
         missing: list[int] = []
         for s in self._slots:
+            if _slot_uses_external_frames(s):
+                continue
             path = SHM_DIR / f"yt-frame-{s.slot_id}.jpg"
             try:
                 if not path.exists() or path.stat().st_size == 0:
@@ -1609,8 +1633,12 @@ class DirectorLoop:
                 except Exception:
                     log.debug("youtube-direction honor failed", exc_info=True)
 
-                # Check for finished videos — reload from playlist
+                # Check for finished playlist-managed videos and reload them.
+                # Local visual-pool Sierpinski slots are externally managed
+                # and must not fall back into the YouTube playlist path.
                 for s in self._slots:
+                    if _slot_uses_external_frames(s):
+                        continue
                     if s.check_finished():
                         log.info("Slot %d finished, reloading from playlist", s.slot_id)
                         threading.Thread(
@@ -2912,9 +2940,15 @@ class DirectorLoop:
         images: list[str] = []
         # Phase 3: LLM_FRAME (camera-only) replaces FX_SNAPSHOT here too —
         # _gather_images is the chat-reaction LLM's perceptual surface.
-        for path in (SHM_DIR / f"yt-frame-{self._active_slot}.jpg", LLM_FRAME):
+        active_slot = self._slots[self._active_slot] if self._slots else None
+        active_frame = (
+            _slot_current_frame_path(active_slot)
+            if active_slot is not None and _slot_uses_external_frames(active_slot)
+            else SHM_DIR / f"yt-frame-{self._active_slot}.jpg"
+        )
+        for path in (active_frame, LLM_FRAME):
             try:
-                if path.exists() and path.stat().st_size > 0:
+                if path is not None and path.exists() and path.stat().st_size > 0:
                     images.append(str(path))
             except OSError:
                 continue
