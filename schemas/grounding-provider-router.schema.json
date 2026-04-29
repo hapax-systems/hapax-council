@@ -1,0 +1,327 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/grounding-provider-router.schema.json",
+  "title": "GroundingProviderRouterRegistry",
+  "description": "Machine-readable provider route registry for source-acquiring and source-conditioned grounding routes.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "registry_id",
+    "declared_at",
+    "producer",
+    "routing_policy",
+    "providers"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "registry_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_:-]*$"
+    },
+    "declared_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "routing_policy": {
+      "type": "object",
+      "required": [
+        "open_world_claims_require_grounding",
+        "latest_cloud_model_default",
+        "older_model_exception_required",
+        "command_r_source_supplied_only",
+        "privacy_egress_preflight_required_for_cloud",
+        "director_model_swap_requires_eval_pass",
+        "grounding_required_claim_types",
+        "anthropic_required_aliases",
+        "gemini_required_route_family"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "open_world_claims_require_grounding": {
+          "type": "boolean",
+          "const": true
+        },
+        "latest_cloud_model_default": {
+          "type": "boolean",
+          "const": true
+        },
+        "older_model_exception_required": {
+          "type": "boolean",
+          "const": true
+        },
+        "command_r_source_supplied_only": {
+          "type": "boolean",
+          "const": true
+        },
+        "privacy_egress_preflight_required_for_cloud": {
+          "type": "boolean",
+          "const": true
+        },
+        "director_model_swap_requires_eval_pass": {
+          "type": "boolean",
+          "const": true
+        },
+        "grounding_required_claim_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/grounding_required_claim_type"
+          },
+          "uniqueItems": true
+        },
+        "anthropic_required_aliases": {
+          "type": "object",
+          "required": [
+            "claude-sonnet",
+            "claude-opus"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "claude-sonnet": {
+              "type": "string",
+              "const": "claude-sonnet-4-6"
+            },
+            "claude-opus": {
+              "type": "string",
+              "const": "claude-opus-4-7"
+            }
+          }
+        },
+        "gemini_required_route_family": {
+          "type": "string",
+          "const": "gemini-3"
+        }
+      }
+    },
+    "providers": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "$ref": "#/$defs/provider"
+      }
+    }
+  },
+  "$defs": {
+    "grounding_required_claim_type": {
+      "type": "string",
+      "enum": [
+        "open_world_factual_claim",
+        "current_event_claim",
+        "model_vendor_comparison",
+        "rights_provenance_claim",
+        "public_content_programming_assertion"
+      ]
+    },
+    "provider_kind": {
+      "type": "string",
+      "enum": [
+        "source_acquiring",
+        "source_conditioned",
+        "general_reasoning"
+      ]
+    },
+    "evidence_field": {
+      "type": "string",
+      "enum": [
+        "provider_id",
+        "model_id",
+        "tool_id",
+        "input_claim_request",
+        "retrieval_events",
+        "source_items",
+        "claim_items",
+        "citations",
+        "confidence_or_posterior",
+        "source_quality",
+        "freshness",
+        "refusal_or_uncertainty",
+        "tool_errors",
+        "raw_source_hashes",
+        "retrieved_at"
+      ]
+    },
+    "exception_record": {
+      "type": "object",
+      "required": [
+        "route_scope",
+        "reason",
+        "evidence_ref",
+        "owner",
+        "expires_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "route_scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "latency",
+            "reliability",
+            "privacy_locality",
+            "cost_containment",
+            "grounding_quality_regression",
+            "local_director_grounding_evidence"
+          ]
+        },
+        "evidence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expires_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "required": [
+        "provider_id",
+        "adapter_id",
+        "provider_family",
+        "provider_kind",
+        "model_id",
+        "tool_id",
+        "cloud_route",
+        "latest_model_default",
+        "requires_supplied_evidence",
+        "can_satisfy_open_world_claims",
+        "egress_preflight_required",
+        "director_default_allowed",
+        "capabilities",
+        "evidence_contract",
+        "exception_record",
+        "source_docs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_:-]*$"
+        },
+        "adapter_id": {
+          "type": "string",
+          "enum": [
+            "local_supplied_evidence_command_r",
+            "openai_web_search",
+            "anthropic_web_search",
+            "gemini_google_search",
+            "gemini_deep_research",
+            "perplexity_search_or_sonar"
+          ]
+        },
+        "provider_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_kind": {
+          "$ref": "#/$defs/provider_kind"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cloud_route": {
+          "type": "boolean"
+        },
+        "latest_model_default": {
+          "type": "boolean"
+        },
+        "requires_supplied_evidence": {
+          "type": "boolean"
+        },
+        "can_satisfy_open_world_claims": {
+          "type": "boolean"
+        },
+        "egress_preflight_required": {
+          "type": "boolean"
+        },
+        "director_default_allowed": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "evidence_contract": {
+          "type": "object",
+          "required": [
+            "required_fields",
+            "citation_binding_required",
+            "raw_source_hash_required",
+            "freshness_required",
+            "tool_error_surface_required"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "required_fields": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/evidence_field"
+              },
+              "uniqueItems": true
+            },
+            "citation_binding_required": {
+              "type": "boolean",
+              "const": true
+            },
+            "raw_source_hash_required": {
+              "type": "boolean",
+              "const": true
+            },
+            "freshness_required": {
+              "type": "boolean",
+              "const": true
+            },
+            "tool_error_surface_required": {
+              "type": "boolean",
+              "const": true
+            }
+          }
+        },
+        "exception_record": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/exception_record"
+            }
+          ]
+        },
+        "source_docs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri"
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}
