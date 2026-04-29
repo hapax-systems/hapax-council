@@ -10,6 +10,7 @@ Risk levels (matched on ``OperationalProperties.monetization_risk``):
 - **medium**: blocked unless the active ``Programme`` opts the capability
   in via ``Programme.constraints.monetization_opt_ins``
 - **low** / **none**: pass through the filter unchanged
+- **unknown** / missing: blocks public-capable or monetizable payloads
 
 The filter is pure (no side effects, no network, no state) in its
 Ring-1-only mode. Optional Ring 2 integration (Phase 3) calls an
@@ -31,7 +32,7 @@ import random
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from shared.affordance import MonetizationRisk
 from shared.governance.demonet_metrics import METRICS as _METRICS
@@ -243,12 +244,43 @@ class _ProgrammeLike(Protocol):
 # Risk ordering used by the Ring 1 ↔ Ring 2 escalation merge. Ring 2 can
 # raise the effective risk to the strictest of the two verdicts; it
 # cannot drop below the catalog-declared floor.
-_RISK_ORDER: dict[str, int] = {"none": 0, "low": 1, "medium": 2, "high": 3}
+_RISK_ORDER: dict[str, int] = {"none": 0, "low": 1, "medium": 2, "high": 3, "unknown": 4}
+_PUBLIC_MEDIA: frozenset[str] = frozenset({"visual", "auditory", "speech", "textual"})
+_BROADCAST_SURFACES: frozenset[SurfaceKind] = frozenset(
+    {SurfaceKind.TTS, SurfaceKind.CAPTIONS, SurfaceKind.OVERLAY, SurfaceKind.WARD}
+)
 
 
 def _max_risk(a: str, b: str) -> str:
     """Return the stricter of two risk strings."""
     return a if _RISK_ORDER.get(a, 0) >= _RISK_ORDER.get(b, 0) else b
+
+
+def _coerce_risk(raw: Any) -> MonetizationRisk:
+    """Normalize missing/stale payload risk to ``unknown``."""
+    if raw in _RISK_ORDER:
+        return cast("MonetizationRisk", raw)
+    return "unknown"
+
+
+def _public_or_monetizable(payload: dict[str, Any], surface: SurfaceKind | None) -> bool:
+    """Whether missing risk metadata must fail closed for this candidate.
+
+    New payloads carry ``public_capable`` explicitly. Older Qdrant payloads
+    predate that field, so the medium fallback remains conservative for
+    stale indexed public surfaces until they are reseeded.
+    """
+    if payload.get("monetizable") is True:
+        return True
+    public_capable = payload.get("public_capable")
+    if public_capable is True:
+        return True
+    if public_capable is False:
+        return False
+    if surface in _BROADCAST_SURFACES:
+        return True
+    medium = payload.get("medium")
+    return isinstance(medium, str) and medium in _PUBLIC_MEDIA
 
 
 def _should_sample_audit(assessment: RiskAssessment) -> bool:
@@ -356,13 +388,40 @@ class MonetizationRiskGate:
         ``max_risk`` (stricter wins). Classifier failures go through
         ``classify_with_fallback`` which applies the fail-closed policy.
         """
-        ring1_risk: MonetizationRisk = candidate.payload.get("monetization_risk", "none")
+        raw_ring1_risk = candidate.payload.get("monetization_risk")
+        ring1_risk = _coerce_risk(raw_ring1_risk)
         ring1_reason = candidate.payload.get("risk_reason") or ""
         name = candidate.capability_name
         # D-27: extract programme_id once for audit propagation. Programme
         # primitive carries `programme_id` per `shared/programme.py`; getattr
         # keeps the gate's structural-typing contract.
         programme_id = getattr(programme, "programme_id", None) if programme else None
+
+        if ring1_risk == "unknown":
+            if _public_or_monetizable(candidate.payload, surface):
+                reason = (
+                    "missing" if raw_ring1_risk is None else f"unknown value {raw_ring1_risk!r}"
+                )
+                return _record_and_return(
+                    RiskAssessment(
+                        allowed=False,
+                        risk=ring1_risk,
+                        reason=f"{name}: monetization_risk {reason}; public/monetizable surfaces fail closed",
+                        surface=surface,
+                    ),
+                    capability_name=name,
+                    programme_id=programme_id,
+                )
+            return _record_and_return(
+                RiskAssessment(
+                    allowed=True,
+                    risk=ring1_risk,
+                    reason=f"{name}: unknown monetization_risk on non-public capability — passed",
+                    surface=surface,
+                ),
+                capability_name=name,
+                programme_id=programme_id,
+            )
 
         # Short-circuit: ring-1 high is authoritative — no Ring 2 call,
         # no Programme opt-in path. Saves the GPU round-trip on the

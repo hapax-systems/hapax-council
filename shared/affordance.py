@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-MonetizationRisk = Literal["none", "low", "medium", "high"]
+MonetizationRisk = Literal["unknown", "none", "low", "medium", "high"]
 
 # Provenance/ContentID risk taxonomy. Distinct axis from `monetization_risk`
 # (which classifies SEMANTIC content risk: profanity, reaction-content, etc.).
@@ -31,10 +31,9 @@ MonetizationRisk = Literal["none", "low", "medium", "high"]
 #   tier_4_risky             — vinyl, commercial music, raw type-beats,
 #                              stream-ripped YouTube, uncleared TV/film
 #
-# Default is `tier_0_owned` — most existing capabilities (cameras, generated
-# visuals, daimonion voice) qualify. Only capabilities that pull EXTERNAL
-# content into broadcast (SC adapter, future YouTube embed ward) need
-# explicit re-tagging at higher tiers.
+# Default is `unknown` so missing metadata cannot silently become safe.
+# Public-capable capabilities must opt into a concrete tier with a reason,
+# rights/provenance refs, and evidence refs.
 #
 # Gate semantics in `shared/governance/content_risk.py`:
 #   tier_4 → unconditional block
@@ -44,6 +43,7 @@ MonetizationRisk = Literal["none", "low", "medium", "high"]
 #            Programme.content_opt_ins
 #   tier_0 / tier_1 → always permitted
 ContentRisk = Literal[
+    "unknown",
     "tier_0_owned",
     "tier_1_platform_cleared",
     "tier_2_provenance_known",
@@ -67,18 +67,23 @@ class OperationalProperties(BaseModel, frozen=True):
     # "medium": blocked unless the active Programme opts the capability in
     # via Programme.constraints.monetization_opt_ins (Phase 5 wiring).
     # "low"/"none": passes through the gate unchanged.
+    # "unknown": blocks public/monetizable surfaces until the catalog
+    # supplies an explicit classification.
     # See shared/governance/monetization_safety.py for the filter semantics
     # and docs/research/2026-04-19-demonetization-safety-design.md §1.1
     # for the classification rubric.
-    monetization_risk: MonetizationRisk = "none"
+    public_capable: bool = False
+    monetization_risk: MonetizationRisk = "unknown"
     risk_reason: str | None = None
 
     # Provenance/ContentID risk — see ContentRisk Literal above.
-    # Default tier_0_owned: capabilities that don't pull external content
-    # (cameras, shaders, daimonion voice) require no further tagging.
-    # Capabilities that DO pull external broadcast content must override.
-    content_risk: ContentRisk = "tier_0_owned"
+    # Default unknown: public-capable capabilities must make their rights
+    # and provenance posture explicit instead of inheriting tier_0_owned.
+    content_risk: ContentRisk = "unknown"
     content_risk_reason: str | None = None
+    rights_ref: str | None = None
+    provenance_ref: str | None = None
+    evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
 
 
 class CapabilityRecord(BaseModel, frozen=True):

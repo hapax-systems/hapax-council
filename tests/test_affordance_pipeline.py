@@ -323,6 +323,53 @@ class TestBatchIndexing:
         assert len(embedded_texts) == 1
         assert "Brand new" in embedded_texts[0]
 
+    def test_batch_payload_includes_risk_metadata(self):
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance import CapabilityRecord, OperationalProperties
+        from shared.affordance_pipeline import AffordancePipeline
+
+        records = [
+            CapabilityRecord(
+                name="public_cap",
+                description="Public capability description",
+                daemon="test",
+                operational=OperationalProperties(
+                    latency_class="fast",
+                    medium="visual",
+                    public_capable=True,
+                    monetization_risk="low",
+                    risk_reason="test monetization reason",
+                    content_risk="tier_1_platform_cleared",
+                    content_risk_reason="test content reason",
+                    rights_ref="rights:test",
+                    provenance_ref="provenance:test",
+                    evidence_refs=("evidence:test",),
+                ),
+            )
+        ]
+
+        with (
+            patch("shared.affordance_pipeline.embed_batch_safe", return_value=[[1.0] * 768]),
+            patch("shared.config.get_qdrant") as mock_qdrant,
+        ):
+            mock_client = MagicMock()
+            mock_client.collection_exists.return_value = True
+            mock_qdrant.return_value = mock_client
+
+            pipeline = AffordancePipeline()
+            assert pipeline.index_capabilities_batch(records) == 1
+
+        point = mock_client.upsert.call_args.kwargs["points"][0]
+        assert point.payload["public_capable"] is True
+        assert point.payload["monetization_risk"] == "low"
+        assert point.payload["risk_reason"] == "test monetization reason"
+        assert point.payload["content_risk"] == "tier_1_platform_cleared"
+        assert point.payload["content_risk_reason"] == "test content reason"
+        assert point.payload["rights_ref"] == "rights:test"
+        assert point.payload["provenance_ref"] == "provenance:test"
+        assert point.payload["evidence_refs"] == ["evidence:test"]
+
     def test_batch_empty_list_returns_zero(self):
         from shared.affordance_pipeline import AffordancePipeline
 
