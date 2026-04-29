@@ -1,0 +1,689 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/capability-outcome-envelope.schema.json",
+  "title": "CapabilityOutcomeEnvelopeFixtures",
+  "description": "Fixture-backed contract rows for capability outcomes. Selected-only, commanded-only, inferred, stale, and missing outcomes fail closed and cannot update verified success.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "outcome_statuses",
+    "no_update_fixture_cases",
+    "outcome_envelope_required_fields",
+    "status_fixtures",
+    "outcomes",
+    "summary",
+    "fail_closed_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/capability-outcome-envelope.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "declared_at": {"type": "string", "minLength": 1},
+    "producer": {"type": "string", "minLength": 1},
+    "outcome_statuses": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/outcome_status"},
+      "uniqueItems": true,
+      "minItems": 9
+    },
+    "no_update_fixture_cases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/no_update_fixture_case"},
+      "uniqueItems": true,
+      "minItems": 5
+    },
+    "outcome_envelope_required_fields": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/outcome_envelope_field"},
+      "uniqueItems": true,
+      "minItems": 35
+    },
+    "status_fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/status_fixture"},
+      "minItems": 9
+    },
+    "outcomes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/capability_outcome_envelope"},
+      "minItems": 9
+    },
+    "summary": {"$ref": "#/$defs/outcome_summary"},
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "selected_only_allows_success",
+        "commanded_only_allows_success",
+        "inferred_context_updates_success",
+        "stale_witness_updates_success",
+        "missing_witness_updates_success",
+        "public_claim_without_evidence_updates_posterior",
+        "capability_success_updates_claim_posterior_by_itself",
+        "legacy_public_event_without_gate_counts_as_public_success"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "selected_only_allows_success": {"type": "boolean", "const": false},
+        "commanded_only_allows_success": {"type": "boolean", "const": false},
+        "inferred_context_updates_success": {"type": "boolean", "const": false},
+        "stale_witness_updates_success": {"type": "boolean", "const": false},
+        "missing_witness_updates_success": {"type": "boolean", "const": false},
+        "public_claim_without_evidence_updates_posterior": {"type": "boolean", "const": false},
+        "capability_success_updates_claim_posterior_by_itself": {"type": "boolean", "const": false},
+        "legacy_public_event_without_gate_counts_as_public_success": {"type": "boolean", "const": false}
+      }
+    }
+  },
+  "x-required_outcome_statuses": [
+    "success",
+    "failure",
+    "neutral_defer",
+    "blocked",
+    "refused",
+    "stale",
+    "missing",
+    "inferred",
+    "public_event_accepted"
+  ],
+  "x-no_update_fixture_cases": [
+    "selected_only",
+    "commanded_only",
+    "inferred",
+    "stale",
+    "missing"
+  ],
+  "x-outcome_envelope_required_fields": [
+    "schema_version",
+    "outcome_id",
+    "created_at",
+    "capability_id",
+    "capability_name",
+    "attempt_kind",
+    "selection_ref",
+    "selection_state",
+    "command_ref",
+    "route_ref",
+    "substrate_refs",
+    "programme_refs",
+    "director_move_ref",
+    "evidence_envelope_refs",
+    "witness_refs",
+    "expected_effect",
+    "outcome_status",
+    "execution_status",
+    "manifestation_status",
+    "claim_status",
+    "public_event_status",
+    "learning_update",
+    "claim_posterior_update",
+    "blocked_reasons",
+    "refusal_or_correction_refs",
+    "health_refs",
+    "privacy_state",
+    "rights_state",
+    "freshness",
+    "authority_ceiling",
+    "witness_policy",
+    "verified_success",
+    "public_claim_evidence",
+    "operator_visible_summary",
+    "fixture_case"
+  ],
+  "$defs": {
+    "outcome_status": {
+      "type": "string",
+      "enum": [
+        "success",
+        "failure",
+        "neutral_defer",
+        "blocked",
+        "refused",
+        "stale",
+        "missing",
+        "inferred",
+        "public_event_accepted"
+      ]
+    },
+    "selection_state": {
+      "type": "string",
+      "enum": [
+        "candidate_scored",
+        "selected",
+        "suppressed",
+        "threshold_miss",
+        "consent_veto",
+        "monetization_veto",
+        "not_selected"
+      ]
+    },
+    "attempt_kind": {
+      "type": "string",
+      "enum": ["observe", "express", "act", "route", "recall", "communicate", "regulate"]
+    },
+    "execution_status": {
+      "type": "string",
+      "enum": [
+        "not_attempted",
+        "accepted",
+        "applied",
+        "queued",
+        "write_failed",
+        "tool_error",
+        "timeout",
+        "blocked_by_policy",
+        "dry_run",
+        "unknown"
+      ]
+    },
+    "manifestation_status": {
+      "type": "string",
+      "enum": [
+        "not_required",
+        "not_observed",
+        "observed_without_witness",
+        "witness_verified",
+        "witness_failed",
+        "witness_stale",
+        "witness_unavailable",
+        "inferred_only"
+      ]
+    },
+    "claim_status": {
+      "type": "string",
+      "enum": [
+        "not_claim_bearing",
+        "private_draft",
+        "gate_pass",
+        "gate_fail",
+        "dry_run",
+        "refusal",
+        "correction_required",
+        "posterior_updated",
+        "posterior_not_allowed"
+      ]
+    },
+    "public_event_status": {
+      "type": "string",
+      "enum": [
+        "not_public",
+        "eligible",
+        "accepted",
+        "held",
+        "archive_only",
+        "dry_run",
+        "blocked",
+        "published",
+        "failed"
+      ]
+    },
+    "learning_policy": {
+      "type": "string",
+      "enum": ["success", "failure", "neutral", "defer"]
+    },
+    "learning_target": {
+      "type": "string",
+      "enum": [
+        "affordance_activation",
+        "context_association",
+        "surface_health",
+        "opportunity_model",
+        "none"
+      ]
+    },
+    "authority_ceiling": {
+      "type": "string",
+      "enum": [
+        "no_claim",
+        "internal_only",
+        "speculative",
+        "evidence_bound",
+        "posterior_bound",
+        "public_gate_required"
+      ]
+    },
+    "privacy_state": {
+      "type": "string",
+      "enum": ["public_safe", "private_only", "dry_run", "archive_only", "blocked", "unknown"]
+    },
+    "rights_state": {
+      "type": "string",
+      "enum": [
+        "public_clear",
+        "private_only",
+        "aggregate_only",
+        "blocked",
+        "missing",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "freshness_state": {
+      "type": "string",
+      "enum": ["fresh", "stale", "missing", "unknown", "not_applicable"]
+    },
+    "witness_policy": {
+      "type": "string",
+      "enum": [
+        "witnessed",
+        "inferred",
+        "selected_only",
+        "commanded_only",
+        "missing",
+        "stale",
+        "public_event_adapter",
+        "fixture_only"
+      ]
+    },
+    "fixture_case": {
+      "type": "string",
+      "enum": [
+        "witnessed_success",
+        "witnessed_failure",
+        "neutral_defer",
+        "blocked",
+        "refused",
+        "stale",
+        "missing",
+        "inferred",
+        "public_event_accepted",
+        "selected_only",
+        "commanded_only"
+      ]
+    },
+    "no_update_fixture_case": {
+      "type": "string",
+      "enum": ["selected_only", "commanded_only", "inferred", "stale", "missing"]
+    },
+    "outcome_envelope_field": {
+      "type": "string",
+      "enum": [
+        "schema_version",
+        "outcome_id",
+        "created_at",
+        "capability_id",
+        "capability_name",
+        "attempt_kind",
+        "selection_ref",
+        "selection_state",
+        "command_ref",
+        "route_ref",
+        "substrate_refs",
+        "programme_refs",
+        "director_move_ref",
+        "evidence_envelope_refs",
+        "witness_refs",
+        "expected_effect",
+        "outcome_status",
+        "execution_status",
+        "manifestation_status",
+        "claim_status",
+        "public_event_status",
+        "learning_update",
+        "claim_posterior_update",
+        "blocked_reasons",
+        "refusal_or_correction_refs",
+        "health_refs",
+        "privacy_state",
+        "rights_state",
+        "freshness",
+        "authority_ceiling",
+        "witness_policy",
+        "verified_success",
+        "public_claim_evidence",
+        "operator_visible_summary",
+        "fixture_case"
+      ]
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "expected_effect": {
+      "type": "object",
+      "required": [
+        "effect_id",
+        "description",
+        "witness_class",
+        "public_claim_bearing",
+        "action_bearing"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "effect_id": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "witness_class": {"type": "string", "minLength": 1},
+        "public_claim_bearing": {"type": "boolean"},
+        "action_bearing": {"type": "boolean"}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["state", "ttl_s", "observed_age_s", "source_ref", "checked_at"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"$ref": "#/$defs/freshness_state"},
+        "ttl_s": {"type": ["integer", "null"], "minimum": 0},
+        "observed_age_s": {"type": ["integer", "null"], "minimum": 0},
+        "source_ref": {"type": ["string", "null"]},
+        "checked_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "learning_update": {
+      "type": "object",
+      "required": [
+        "policy",
+        "allowed",
+        "target",
+        "reason",
+        "required_witness_refs",
+        "missing_witness_refs",
+        "thompson_delta",
+        "context_association_delta"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "policy": {"$ref": "#/$defs/learning_policy"},
+        "allowed": {"type": "boolean"},
+        "target": {"$ref": "#/$defs/learning_target"},
+        "reason": {"type": "string", "minLength": 1},
+        "required_witness_refs": {"$ref": "#/$defs/string_array"},
+        "missing_witness_refs": {"$ref": "#/$defs/string_array"},
+        "thompson_delta": {"type": ["number", "null"]},
+        "context_association_delta": {"type": ["number", "null"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"allowed": {"const": false}}},
+          "then": {"properties": {"target": {"const": "none"}}}
+        }
+      ]
+    },
+    "claim_posterior_update": {
+      "type": "object",
+      "required": [
+        "allowed",
+        "claim_ids",
+        "evidence_envelope_refs",
+        "gate_refs",
+        "claim_engine_refs",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {"type": "boolean"},
+        "claim_ids": {"$ref": "#/$defs/string_array"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/string_array"},
+        "gate_refs": {"$ref": "#/$defs/string_array"},
+        "claim_engine_refs": {"$ref": "#/$defs/string_array"},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"allowed": {"const": true}}},
+          "then": {
+            "properties": {
+              "claim_ids": {"minItems": 1},
+              "evidence_envelope_refs": {"minItems": 1},
+              "gate_refs": {"minItems": 1}
+            }
+          }
+        }
+      ]
+    },
+    "verified_success": {
+      "type": "object",
+      "required": ["capability", "action", "public", "claim_posterior"],
+      "additionalProperties": false,
+      "properties": {
+        "capability": {"type": "boolean"},
+        "action": {"type": "boolean"},
+        "public": {"type": "boolean"},
+        "claim_posterior": {"type": "boolean"}
+      }
+    },
+    "public_claim_evidence": {
+      "type": "object",
+      "required": [
+        "required",
+        "present",
+        "evidence_envelope_refs",
+        "public_event_refs",
+        "gate_refs",
+        "note"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "required": {"type": "boolean"},
+        "present": {"type": "boolean"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/string_array"},
+        "public_event_refs": {"$ref": "#/$defs/string_array"},
+        "gate_refs": {"$ref": "#/$defs/string_array"},
+        "note": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"present": {"const": true}}},
+          "then": {
+            "properties": {
+              "evidence_envelope_refs": {"minItems": 1},
+              "public_event_refs": {"minItems": 1},
+              "gate_refs": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"required": {"const": true}}},
+          "then": {"properties": {"present": {"const": true}}}
+        }
+      ]
+    },
+    "capability_outcome_envelope": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "outcome_id",
+        "created_at",
+        "capability_id",
+        "capability_name",
+        "attempt_kind",
+        "selection_ref",
+        "selection_state",
+        "command_ref",
+        "route_ref",
+        "substrate_refs",
+        "programme_refs",
+        "director_move_ref",
+        "evidence_envelope_refs",
+        "witness_refs",
+        "expected_effect",
+        "outcome_status",
+        "execution_status",
+        "manifestation_status",
+        "claim_status",
+        "public_event_status",
+        "learning_update",
+        "claim_posterior_update",
+        "blocked_reasons",
+        "refusal_or_correction_refs",
+        "health_refs",
+        "privacy_state",
+        "rights_state",
+        "freshness",
+        "authority_ceiling",
+        "witness_policy",
+        "verified_success",
+        "public_claim_evidence",
+        "operator_visible_summary",
+        "fixture_case"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "outcome_id": {"type": "string", "minLength": 1},
+        "created_at": {"type": "string", "minLength": 1},
+        "capability_id": {"type": "string", "minLength": 1},
+        "capability_name": {"type": "string", "minLength": 1},
+        "attempt_kind": {"$ref": "#/$defs/attempt_kind"},
+        "selection_ref": {"type": "string", "minLength": 1},
+        "selection_state": {"$ref": "#/$defs/selection_state"},
+        "command_ref": {"type": ["string", "null"]},
+        "route_ref": {"type": ["string", "null"]},
+        "substrate_refs": {"$ref": "#/$defs/string_array"},
+        "programme_refs": {"$ref": "#/$defs/string_array"},
+        "director_move_ref": {"type": ["string", "null"]},
+        "evidence_envelope_refs": {"$ref": "#/$defs/string_array"},
+        "witness_refs": {"$ref": "#/$defs/string_array"},
+        "expected_effect": {"$ref": "#/$defs/expected_effect"},
+        "outcome_status": {"$ref": "#/$defs/outcome_status"},
+        "execution_status": {"$ref": "#/$defs/execution_status"},
+        "manifestation_status": {"$ref": "#/$defs/manifestation_status"},
+        "claim_status": {"$ref": "#/$defs/claim_status"},
+        "public_event_status": {"$ref": "#/$defs/public_event_status"},
+        "learning_update": {"$ref": "#/$defs/learning_update"},
+        "claim_posterior_update": {"$ref": "#/$defs/claim_posterior_update"},
+        "blocked_reasons": {"$ref": "#/$defs/string_array"},
+        "refusal_or_correction_refs": {"$ref": "#/$defs/string_array"},
+        "health_refs": {"$ref": "#/$defs/string_array"},
+        "privacy_state": {"$ref": "#/$defs/privacy_state"},
+        "rights_state": {"$ref": "#/$defs/rights_state"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "witness_policy": {"$ref": "#/$defs/witness_policy"},
+        "verified_success": {"$ref": "#/$defs/verified_success"},
+        "public_claim_evidence": {"$ref": "#/$defs/public_claim_evidence"},
+        "operator_visible_summary": {"type": "string", "minLength": 1},
+        "fixture_case": {"$ref": "#/$defs/fixture_case"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "fixture_case": {
+                "enum": ["selected_only", "commanded_only", "inferred", "stale", "missing"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "learning_update": {"properties": {"allowed": {"const": false}}},
+              "claim_posterior_update": {"properties": {"allowed": {"const": false}}},
+              "verified_success": {
+                "properties": {
+                  "capability": {"const": false},
+                  "action": {"const": false},
+                  "public": {"const": false},
+                  "claim_posterior": {"const": false}
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"outcome_status": {"const": "success"}}},
+          "then": {
+            "properties": {
+              "selection_state": {"const": "selected"},
+              "manifestation_status": {"const": "witness_verified"},
+              "witness_policy": {"const": "witnessed"},
+              "freshness": {"properties": {"state": {"const": "fresh"}}},
+              "verified_success": {"properties": {"capability": {"const": true}}}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"verified_success": {"properties": {"public": {"const": true}}}}},
+          "then": {
+            "properties": {
+              "public_event_status": {"enum": ["accepted", "published"]},
+              "public_claim_evidence": {"properties": {"present": {"const": true}}}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"claim_posterior_update": {"properties": {"allowed": {"const": true}}}}},
+          "then": {
+            "properties": {
+              "public_claim_evidence": {"properties": {"present": {"const": true}}},
+              "claim_status": {"enum": ["gate_pass", "posterior_updated"]}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"outcome_status": {"const": "stale"}}},
+          "then": {
+            "properties": {
+              "freshness": {"properties": {"state": {"const": "stale"}}},
+              "manifestation_status": {"const": "witness_stale"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"outcome_status": {"const": "missing"}}},
+          "then": {
+            "properties": {
+              "freshness": {"properties": {"state": {"const": "missing"}}},
+              "manifestation_status": {"const": "witness_unavailable"}
+            }
+          }
+        }
+      ]
+    },
+    "status_fixture": {
+      "type": "object",
+      "required": [
+        "status",
+        "success_learning_allowed_without_witness",
+        "verified_public_success_without_claim_evidence",
+        "meaning",
+        "failure_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"$ref": "#/$defs/outcome_status"},
+        "success_learning_allowed_without_witness": {"type": "boolean", "const": false},
+        "verified_public_success_without_claim_evidence": {"type": "boolean", "const": false},
+        "meaning": {"type": "string", "minLength": 1},
+        "failure_reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "outcome_summary": {
+      "type": "object",
+      "required": [
+        "total_outcomes",
+        "by_status",
+        "success_validated_count",
+        "learning_update_allowed_count",
+        "claim_posterior_update_allowed_count",
+        "public_success_update_allowed_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "total_outcomes": {"type": "integer", "minimum": 0},
+        "by_status": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "success_validated_count": {"type": "integer", "minimum": 0},
+        "learning_update_allowed_count": {"type": "integer", "minimum": 0},
+        "claim_posterior_update_allowed_count": {"type": "integer", "minimum": 0},
+        "public_success_update_allowed_count": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

@@ -10,6 +10,22 @@ from agents.visual_pool.repository import VisualPoolSidecar
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
 from shared.audio_topology_inspector import check_l12_forward_invariant
 from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
+from shared.capability_outcome import (
+    CapabilityOutcomeEnvelope,
+    CapabilityOutcomeFixtureSet,
+)
+from shared.capability_outcome import (
+    ClaimPosteriorUpdate as CapabilityClaimPosteriorUpdate,
+)
+from shared.capability_outcome import (
+    Freshness as CapabilityFreshness,
+)
+from shared.capability_outcome import (
+    LearningUpdate as CapabilityLearningUpdate,
+)
+from shared.capability_outcome import (
+    PublicClaimEvidence as CapabilityPublicClaimEvidence,
+)
 from shared.content_programme_feedback_ledger import (
     append_feedback_event,
     audience_outcome_is_aggregate_only,
@@ -209,3 +225,18 @@ WorldSurfaceHealthFixtureSet.rows_for_fixture_case
 WitnessProbeRecord._validate_state_evidence
 WCSWitnessProbeFixtureSet.require_probe
 WCSWitnessProbeFixtureSet.probes_for_surface
+
+# Capability outcome envelope helpers are the public contract for downstream
+# affordance outcome adapters, dispatch audits, public-event adapters, and
+# no-false-grounding tests. Pydantic invokes validators dynamically; downstream
+# tasks consume these read helpers after this schema/fixture contract lands.
+CapabilityFreshness._fresh_sources_need_age_and_ttl
+CapabilityLearningUpdate._no_target_when_update_not_allowed
+CapabilityClaimPosteriorUpdate._allowed_claim_updates_need_evidence_and_gate
+CapabilityPublicClaimEvidence._present_public_claims_need_evidence_event_and_gate
+CapabilityOutcomeEnvelope._validate_outcome_learning_and_claims
+CapabilityOutcomeEnvelope.allows_verified_public_or_action_success_update
+CapabilityOutcomeEnvelope.allows_claim_posterior_update
+CapabilityOutcomeFixtureSet._validate_contract_coverage
+CapabilityOutcomeFixtureSet.require_outcome
+CapabilityOutcomeFixtureSet.rows_for_fixture_case
