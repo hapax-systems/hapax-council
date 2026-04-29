@@ -13,6 +13,7 @@ Per `docs/governance/evil-pet-broadcast-source-policy.md`.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -46,6 +47,7 @@ DEFAULT_AUX_VINYL_L = 8  # AUX8 = CH9 Handytraxx L
 DEFAULT_AUX_VINYL_R = 9  # AUX9 = CH10 Handytraxx R
 
 DEFAULT_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
+DEFAULT_STATE_FILE = Path("/dev/shm/hapax-audio-safety/state.json")
 
 # ── Pure DSP / decision logic (testable) ─────────────────────────────────────
 
@@ -103,6 +105,7 @@ class DetectorConfig:
     aux_vinyl_l: int = DEFAULT_AUX_VINYL_L
     aux_vinyl_r: int = DEFAULT_AUX_VINYL_R
     impingements_file: Path = DEFAULT_IMPINGEMENTS_FILE
+    state_file: Path = DEFAULT_STATE_FILE
 
     @classmethod
     def from_env(cls) -> DetectorConfig:
@@ -123,6 +126,9 @@ class DetectorConfig:
                 os.environ.get(
                     "HAPAX_AUDIO_SAFETY_IMPINGEMENTS_FILE", str(DEFAULT_IMPINGEMENTS_FILE)
                 )
+            ),
+            state_file=Path(
+                os.environ.get("HAPAX_AUDIO_SAFETY_STATE_FILE", str(DEFAULT_STATE_FILE))
             ),
         )
 
@@ -214,6 +220,37 @@ def fire_alert(
         log.warning("impingement write failed for %s", config.impingements_file, exc_info=True)
 
 
+def publish_state(
+    *,
+    config: DetectorConfig,
+    status: str,
+    breach_active: bool,
+    now: float,
+    vinyl_l_rms: float | None = None,
+    vinyl_r_rms: float | None = None,
+    evilpet_rms: float | None = None,
+) -> None:
+    """Publish the detector state consumed by broadcast audio health."""
+    payload = {
+        "status": status,
+        "breach_active": breach_active,
+        "checked_at": now,
+        "threshold": config.rms_threshold,
+        "dwell_s": config.dwell_s,
+        "target": config.target,
+        "vinyl_l_rms": round(vinyl_l_rms, 4) if vinyl_l_rms is not None else None,
+        "vinyl_r_rms": round(vinyl_r_rms, 4) if vinyl_r_rms is not None else None,
+        "evilpet_rms": round(evilpet_rms, 4) if evilpet_rms is not None else None,
+    }
+    try:
+        config.state_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = config.state_file.with_name(f"{config.state_file.name}.tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(config.state_file)
+    except OSError:
+        log.warning("audio safety state write failed for %s", config.state_file, exc_info=True)
+
+
 # ── pw-cat process management ────────────────────────────────────────────────
 
 
@@ -294,6 +331,12 @@ def run(config: DetectorConfig | None = None) -> int:
             if not chunk:
                 # pw-cat ended (device disappeared, etc.) — back off + restart
                 log.warning("pw-cat stdout closed; restarting after 2s")
+                publish_state(
+                    config=cfg,
+                    status="source_missing",
+                    breach_active=False,
+                    now=time.time(),
+                )
                 proc.terminate()
                 proc.wait(timeout=5)
                 time.sleep(2)
@@ -303,7 +346,26 @@ def run(config: DetectorConfig | None = None) -> int:
             now = time.time()
             fired, vl, vr, ep = process_frame(frame=chunk, config=cfg, state=state, now=now)
             if fired:
+                publish_state(
+                    config=cfg,
+                    status="breach",
+                    breach_active=True,
+                    now=now,
+                    vinyl_l_rms=vl,
+                    vinyl_r_rms=vr,
+                    evilpet_rms=ep,
+                )
                 fire_alert(config=cfg, vinyl_l_rms=vl, vinyl_r_rms=vr, evilpet_rms=ep)
+            else:
+                publish_state(
+                    config=cfg,
+                    status="clear",
+                    breach_active=False,
+                    now=now,
+                    vinyl_l_rms=vl,
+                    vinyl_r_rms=vr,
+                    evilpet_rms=ep,
+                )
     finally:
         try:
             proc.terminate()

@@ -20,6 +20,7 @@ from agents.audio_safety.vinyl_pet_detector import (
     fire_alert,
     is_simultaneous_activity,
     process_frame,
+    publish_state,
     should_fire,
 )
 
@@ -138,6 +139,7 @@ def _config_for_test(impingements_path: Path) -> DetectorConfig:
         aux_vinyl_l=8,
         aux_vinyl_r=9,
         impingements_file=impingements_path,
+        state_file=impingements_path.with_name("state.json"),
     )
 
 
@@ -247,3 +249,43 @@ def test_fire_alert_notifier_failure_does_not_break_impingement_write(tmp_path: 
     assert impingements.exists()
     payload = json.loads(impingements.read_text(encoding="utf-8").strip())
     assert payload["source"] == "audio.safety.vinyl_pet"
+
+
+def test_publish_state_writes_clear_runtime_health(tmp_path: Path) -> None:
+    cfg = _config_for_test(tmp_path / "imp.jsonl")
+
+    publish_state(
+        config=cfg,
+        status="clear",
+        breach_active=False,
+        now=123.0,
+        vinyl_l_rms=0.01,
+        vinyl_r_rms=0.02,
+        evilpet_rms=0.0,
+    )
+
+    payload = json.loads(cfg.state_file.read_text(encoding="utf-8"))
+    assert payload["status"] == "clear"
+    assert payload["breach_active"] is False
+    assert payload["checked_at"] == 123.0
+    assert payload["vinyl_l_rms"] == 0.01
+    assert payload["evilpet_rms"] == 0.0
+
+
+def test_publish_state_writes_breach_runtime_health(tmp_path: Path) -> None:
+    cfg = _config_for_test(tmp_path / "imp.jsonl")
+
+    publish_state(
+        config=cfg,
+        status="breach",
+        breach_active=True,
+        now=124.0,
+        vinyl_l_rms=0.3,
+        vinyl_r_rms=0.31,
+        evilpet_rms=0.4,
+    )
+
+    payload = json.loads(cfg.state_file.read_text(encoding="utf-8"))
+    assert payload["status"] == "breach"
+    assert payload["breach_active"] is True
+    assert payload["vinyl_r_rms"] == 0.31
