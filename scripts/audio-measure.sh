@@ -28,7 +28,8 @@ fi
 
 SAMPLE_RATE=48000
 CHANNELS=2
-SAMPLE_FMT=s16le
+PWCAT_SAMPLE_FMT=s16
+FFMPEG_SAMPLE_FMT=s16le
 
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -37,31 +38,28 @@ CAPTURE="$TMPDIR/capture.raw"
 EBUR128_LOG="$TMPDIR/ebur128.log"
 
 echo "Capturing ${DURATION}s from ${NODE}..." >&2
-if ! timeout "$((DURATION + 5))" pw-cat \
-        --record "$CAPTURE" \
-        --target "${NODE}.monitor" \
-        --rate "$SAMPLE_RATE" \
-        --format "$SAMPLE_FMT" \
-        --channels "$CHANNELS" \
-        --raw \
-        &>/dev/null &
-then
-    echo "ERROR: pw-cat failed to launch" >&2
-    exit 1
-fi
+timeout "$((DURATION + 5))" pw-cat \
+    --record "$CAPTURE" \
+    --target "${NODE}.monitor" \
+    --rate "$SAMPLE_RATE" \
+    --format "$PWCAT_SAMPLE_FMT" \
+    --channels "$CHANNELS" \
+    --raw \
+    &>/dev/null &
 PWPID=$!
 sleep "$DURATION"
 kill "$PWPID" 2>/dev/null || true
-wait "$PWPID" 2>/dev/null || true
+PWCAT_RC=0
+wait "$PWPID" 2>/dev/null || PWCAT_RC=$?
 
 if [ ! -s "$CAPTURE" ]; then
-    echo "ERROR: capture is empty (${NODE}.monitor not producing audio?)" >&2
+    echo "ERROR: capture is empty (${NODE}.monitor not producing audio? pw-cat rc=${PWCAT_RC})" >&2
     exit 1
 fi
 
 echo "Analyzing with ffmpeg ebur128..." >&2
 if ! ffmpeg -hide_banner -nostats -loglevel info \
-        -f "$SAMPLE_FMT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" -i "$CAPTURE" \
+        -f "$FFMPEG_SAMPLE_FMT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" -i "$CAPTURE" \
         -filter_complex "ebur128=peak=true:framelog=quiet" \
         -f null - 2>"$EBUR128_LOG"
 then

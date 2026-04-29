@@ -550,6 +550,70 @@ class TestVerify:
         assert "+ edges only in right:" in result.stdout
         assert "runtime-fallback-m8-source-absent" not in result.stdout
 
+    def test_private_monitor_runtime_playback_edge_is_classified(self, tmp_path: Path) -> None:
+        import json
+
+        descriptor = _write_yaml(
+            tmp_path / "d",
+            """
+            schema_version: 1
+            nodes:
+              - id: yeti-headphone-output
+                kind: alsa_sink
+                pipewire_name: alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo
+                hw: front:Yeti
+                params:
+                  private_monitor_endpoint: true
+              - id: private-monitor-output
+                kind: loopback
+                pipewire_name: hapax-private-playback
+                target_object: alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo
+                params:
+                  private_monitor_bridge: true
+            edges: []
+            """,
+        )
+        dump = tmp_path / "dump.json"
+        dump.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": 100,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-private-playback",
+                                "media.class": "Stream/Output/Audio",
+                                "target.object": "alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo",
+                            }
+                        },
+                    },
+                    {
+                        "id": 101,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "api.alsa.pcm.sink",
+                                "api.alsa.path": "front:Yeti",
+                            }
+                        },
+                    },
+                    {
+                        "id": 200,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": 100, "input-node-id": 101},
+                    },
+                ]
+            )
+        )
+
+        result = _run(["verify", str(descriptor), "--dump-file", str(dump)])
+
+        assert result.returncode == 0
+        assert "private-monitor-runtime-output-binding" in result.stdout
+
 
 class TestAudit:
     def test_audit_prints_counts(self, tmp_path: Path) -> None:
