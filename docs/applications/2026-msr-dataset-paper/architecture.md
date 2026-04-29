@@ -47,6 +47,15 @@ A good dataset paper enumerates 5-10 distinct research questions the corpus enab
 
 Per MSR's reproducibility-track requirements:
 
+- **Anonymization and rights ledger**:
+  `config/research-corpus-export-ledger.yaml` is the machine-readable gate for
+  dataset cards, grant packets, replay kits, and artifact bundles. The contract
+  schema is `schemas/research-corpus-export-ledger.schema.json`; CI/local
+  verification is `uv run python scripts/verify-research-corpus-export-ledger.py`.
+  No corpus row can be exported by downstream composers unless the ledger
+  assigns per-field status (`public`, `anonymized`, `hash_only`,
+  `aggregate_only`, `private`, or `forbidden`), rights posture, baseline
+  redaction tests, and a fail-closed release gate.
 - **Stable identifiers**: SWHIDs minted by `agents/attribution/swh_register.py` for each repo's HEAD at corpus snapshot time. Zenodo concept-DOI for the Hapax citation graph (minted by `agents/publication_bus/datacite_mirror.py`).
 - **Versioned snapshot**: deposit one MSR snapshot at submission time; future researchers cite the exact SWHID/DOI rather than chasing main.
 - **Consent posture**: the cc-task vault and inflection corpus require anonymisation (per `interpersonal_transparency` axiom — no persistent state about non-operator persons without consent). The deposit excludes any inflections referencing third parties; only intra-Hapax relay traffic is included.

@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/research-corpus-export-ledger.schema.json",
+  "title": "ResearchCorpusExportLedger",
+  "description": "Machine-readable export, anonymization, and rights ledger for Hapax research corpora.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "ledger_id",
+    "declared_at",
+    "producer",
+    "global_policy",
+    "export_status_definitions",
+    "redaction_filter_catalog",
+    "corpora"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "ledger_id": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "global_policy": {"$ref": "#/$defs/global_policy"},
+    "export_status_definitions": {
+      "type": "array",
+      "minItems": 6,
+      "items": {"$ref": "#/$defs/export_status_definition"},
+      "uniqueItems": true
+    },
+    "redaction_filter_catalog": {
+      "type": "array",
+      "minItems": 10,
+      "items": {"$ref": "#/$defs/redaction_filter"},
+      "uniqueItems": true
+    },
+    "corpora": {
+      "type": "array",
+      "minItems": 9,
+      "items": {"$ref": "#/$defs/corpus_record"},
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "export_status": {
+      "type": "string",
+      "enum": ["public", "anonymized", "hash_only", "aggregate_only", "private", "forbidden"]
+    },
+    "machine_consumer": {
+      "type": "string",
+      "enum": [
+        "dataset_cards",
+        "grant_packets",
+        "replay_kits",
+        "artifact_bundles",
+        "msr_dataset_paper",
+        "hf_dataset_card",
+        "openai_safety_fellowship_packet"
+      ]
+    },
+    "forbidden_export": {
+      "type": "string",
+      "enum": [
+        "credential_values",
+        "employer_material",
+        "third_party_pii",
+        "non_operator_person_identifiable_state",
+        "private_vault_body",
+        "raw_biometric_stream",
+        "raw_chat_or_comment_body",
+        "consent_required_media_without_contract",
+        "third_party_uncleared_media",
+        "platform_private_token_or_cookie"
+      ]
+    },
+    "filter_action": {
+      "type": "string",
+      "enum": ["redact", "block", "hash", "aggregate", "drop"]
+    },
+    "rights_class": {
+      "type": "string",
+      "enum": [
+        "operator_controlled",
+        "operator_original",
+        "repo_license",
+        "third_party_attributed",
+        "third_party_uncleared",
+        "mixed",
+        "unknown"
+      ]
+    },
+    "failure_mode": {
+      "type": "string",
+      "enum": ["block_release", "private_only", "aggregate_only", "deny"]
+    },
+    "global_policy": {
+      "type": "object",
+      "required": [
+        "single_operator_only",
+        "default_export_status",
+        "no_recurring_operator_review",
+        "operator_review_boundary",
+        "fail_closed_on_uncertain_status",
+        "public_release_requires_ledger_record",
+        "machine_consumers",
+        "forbidden_exports"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "single_operator_only": {"type": "boolean", "const": true},
+        "default_export_status": {"$ref": "#/$defs/export_status"},
+        "no_recurring_operator_review": {"type": "boolean", "const": true},
+        "operator_review_boundary": {
+          "type": "string",
+          "enum": ["bootstrap_legal_attestation_only"]
+        },
+        "fail_closed_on_uncertain_status": {"type": "boolean", "const": true},
+        "public_release_requires_ledger_record": {"type": "boolean", "const": true},
+        "machine_consumers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/machine_consumer"},
+          "uniqueItems": true
+        },
+        "forbidden_exports": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/forbidden_export"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "export_status_definition": {
+      "type": "object",
+      "required": ["status", "meaning"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"$ref": "#/$defs/export_status"},
+        "meaning": {"type": "string", "minLength": 1}
+      }
+    },
+    "redaction_filter": {
+      "type": "object",
+      "required": ["filter_id", "detects", "action", "test_pattern_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "filter_id": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+        "detects": {"type": "string", "minLength": 1},
+        "action": {"$ref": "#/$defs/filter_action"},
+        "test_pattern_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "field_status": {
+      "type": "object",
+      "required": ["field", "status", "transform", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "field": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/export_status"},
+        "transform": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    },
+    "rights_posture": {
+      "type": "object",
+      "required": [
+        "rights_class",
+        "license_basis",
+        "public_license",
+        "attribution_required",
+        "monetization_allowed",
+        "public_release_allowed",
+        "notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rights_class": {"$ref": "#/$defs/rights_class"},
+        "license_basis": {"type": "string", "minLength": 1},
+        "public_license": {"type": ["string", "null"]},
+        "attribution_required": {"type": "boolean"},
+        "monetization_allowed": {"type": "boolean"},
+        "public_release_allowed": {"type": "boolean"},
+        "notes": {"type": "string", "minLength": 1}
+      }
+    },
+    "release_gate": {
+      "type": "object",
+      "required": [
+        "recurring_operator_review_required",
+        "bootstrap_attestation_required",
+        "bootstrap_attestation_ref",
+        "blocks_on_uncertain_fields"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "recurring_operator_review_required": {"type": "boolean", "const": false},
+        "bootstrap_attestation_required": {"type": "boolean"},
+        "bootstrap_attestation_ref": {"type": ["string", "null"]},
+        "blocks_on_uncertain_fields": {"type": "boolean", "const": true}
+      }
+    },
+    "corpus_record": {
+      "type": "object",
+      "required": [
+        "corpus_id",
+        "display_name",
+        "source_refs",
+        "consumer_modes",
+        "default_export_status",
+        "field_statuses",
+        "rights_posture",
+        "automated_test_refs",
+        "release_gate",
+        "failure_mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "corpus_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "display_name": {"type": "string", "minLength": 1},
+        "source_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "consumer_modes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/machine_consumer"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "default_export_status": {"$ref": "#/$defs/export_status"},
+        "field_statuses": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/field_status"},
+          "minItems": 3,
+          "uniqueItems": true
+        },
+        "rights_posture": {"$ref": "#/$defs/rights_posture"},
+        "automated_test_refs": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+          "minItems": 6,
+          "uniqueItems": true
+        },
+        "release_gate": {"$ref": "#/$defs/release_gate"},
+        "failure_mode": {"$ref": "#/$defs/failure_mode"}
+      }
+    }
+  }
+}
