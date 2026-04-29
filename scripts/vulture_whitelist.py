@@ -8,6 +8,14 @@ vulture cannot see. Do not use this as a baseline for ordinary dead code.
 
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
 from shared.audio_topology_inspector import check_l12_forward_invariant
+from shared.content_programme_run_store import (
+    append_run_store_event,
+    build_fixture_envelope,
+    command_execution_allows_posterior_update,
+    decide_fail_closed_mode,
+    public_conversion_is_allowed,
+    witnessed_outcome_allows_posterior_update,
+)
 from shared.director_control_audit import DirectorControlMoveAuditRecord
 from shared.director_vocabulary import DirectorVocabulary, SpectacleLaneState
 from shared.grounding_provider_router import (
@@ -52,3 +60,13 @@ build_privacy_egress_preflight
 # before those consumers so vulture cannot see the dynamic call path yet.
 evaluate_candidate
 validate_policy
+
+# Content programme run-store helpers are the deterministic public API for
+# downstream scheduler, runner, feedback, conversion, and adapter tasks. This
+# contract lands before those consumers, so vulture cannot see the call path yet.
+append_run_store_event
+decide_fail_closed_mode
+command_execution_allows_posterior_update
+witnessed_outcome_allows_posterior_update
+public_conversion_is_allowed
+build_fixture_envelope
