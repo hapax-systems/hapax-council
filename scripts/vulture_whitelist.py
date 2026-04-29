@@ -10,6 +10,14 @@ from agents.visual_pool.repository import VisualPoolSidecar
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
 from shared.audio_topology_inspector import check_l12_forward_invariant
 from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
+from shared.capability_classification_inventory import (
+    AvailabilityProbe,
+    CapabilityClassificationInventory,
+    CapabilityClassificationRow,
+    build_seed_inventory,
+    capability_classification_rows_by_id,
+    validate_daimonion_tool_affordance_parity,
+)
 from shared.capability_outcome import (
     CapabilityOutcomeEnvelope,
     CapabilityOutcomeFixtureSet,
@@ -268,6 +276,21 @@ CapabilityOutcomeEnvelope.allows_claim_posterior_update
 CapabilityOutcomeFixtureSet._validate_contract_coverage
 CapabilityOutcomeFixtureSet.require_outcome
 CapabilityOutcomeFixtureSet.rows_for_fixture_case
+
+# Capability-classification inventory helpers are the public contract for
+# downstream WCS registry adapters, director snapshots, and tool/provider
+# parity checks. Pydantic invokes validators dynamically; downstream tasks
+# consume the read helpers after this first seed inventory lands.
+AvailabilityProbe._freshness_probe_has_ttl
+CapabilityClassificationRow._validate_classification_contract
+CapabilityClassificationInventory._validate_inventory_contract
+CapabilityClassificationInventory.rows_for_family
+CapabilityClassificationInventory.rows_for_availability
+CapabilityClassificationInventory.director_snapshot_rows
+CapabilityClassificationInventory.wcs_projection_payloads
+capability_classification_rows_by_id
+validate_daimonion_tool_affordance_parity
+build_seed_inventory
 
 # Narration triad validators are invoked dynamically by Pydantic while the
 # autonomous narration ledger validates open/closed semantic-outcome policy.

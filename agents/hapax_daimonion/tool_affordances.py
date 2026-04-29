@@ -67,6 +67,18 @@ TOOL_AFFORDANCES: list[tuple[str, str]] = [
         "query_scene_inventory",
         "Retrieve detected objects and spatial relationships from the current visual scene",
     ),
+    (
+        "query_person_details",
+        "Observe person-adjacent scene details when consent gates permit private visual grounding",
+    ),
+    (
+        "query_object_motion",
+        "Observe object movement across recent frames to ground scene change and activity",
+    ),
+    (
+        "query_scene_state",
+        "Retrieve current scene posture and salience to ground visual context decisions",
+    ),
     # --- Action tools ---
     (
         "generate_image",

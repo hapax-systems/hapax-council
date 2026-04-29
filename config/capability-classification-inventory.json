@@ -1,0 +1,5489 @@
+{
+  "$schema": "../schemas/capability-classification-inventory.schema.json",
+  "schema_version": 1,
+  "generated_from": [
+    "vault-spec:capability-semantic-classification-inventory",
+    "vault-audit:capability-semantic-classification-system-scour",
+    "repo:shared.semantic_recruitment.SemanticRecruitmentRow"
+  ],
+  "rows": [
+    {
+      "row_id": "capability.affordance.env_weather_conditions",
+      "semantic_version": 1,
+      "relatum_id": "affordance:env.weather_conditions",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Sense current weather to ground atmospheric context and environmental awareness"
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "static_affordance"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "static_affordance",
+          "intent_binding": "capability_classification.static_affordance",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "observe",
+      "effect_type": "sense",
+      "realm": "hybrid",
+      "medium": "data",
+      "submedium": "affordance_record",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "affordance:env.weather_conditions"
+      ],
+      "process_refs": [
+        "shared.affordance_registry.ALL_AFFORDANCES"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:affordance_record"
+      ],
+      "provider_refs": [
+        "shared.affordance_registry.ALL_AFFORDANCES"
+      ],
+      "concrete_interfaces": [
+        "python:shared.affordance_registry.ALL_AFFORDANCES"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:static_affordance",
+          "evidence_ref": "repo:shared.affordance_registry.ALL_AFFORDANCES",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "import:shared.affordance_registry.ALL_AFFORDANCES",
+          "evidence_ref": "repo:shared.affordance_registry.ALL_AFFORDANCES",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "import:shared.affordance_registry.ALL_AFFORDANCES",
+      "freshness_ttl_s": 900,
+      "evidence_refs": [
+        "repo:shared.affordance_registry.ALL_AFFORDANCES"
+      ],
+      "witness_contract_id": "witness.affordance.env_weather_conditions.imported",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.static_affordance",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "env.weather_conditions",
+        "daemon": "perception",
+        "requires_gpu": false,
+        "requires_network": true,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:affordance:env.weather_conditions",
+        "provenance_ref": "provenance:affordance:env.weather_conditions"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.affordance.env.weather_conditions",
+      "surface_id": "affordance:env.weather_conditions",
+      "display_name": "Weather conditions affordance",
+      "surface_family": "affordance_record",
+      "gibson_verb": "Sense",
+      "semantic_description": "Sense current weather to ground atmospheric context and environmental awareness",
+      "producer": "shared.affordance_registry.ALL_AFFORDANCES",
+      "consumer_refs": [
+        "consumer:affordance_pipeline"
+      ],
+      "concrete_interface": "python:shared.affordance_registry.ALL_AFFORDANCES",
+      "availability_probe": {
+        "probe_id": "probe.affordance.env_weather_conditions",
+        "kind": "import_symbol",
+        "expected_state": "available",
+        "witness_ref": "import:shared.affordance_registry.ALL_AFFORDANCES",
+        "stale_after_s": 900,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:shared.affordance_registry.ALL_AFFORDANCES",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": true,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.affordance.env_weather_conditions.imported"
+      ],
+      "recruitment_family": "static_affordance",
+      "existing_record_refs": [
+        "capability_record:env.weather_conditions"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.compositional.cam_hero_overhead_hardware_active",
+      "semantic_version": 1,
+      "relatum_id": "affordance:cam.hero.overhead.hardware-active",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Compose the overhead hardware view when studio attention belongs to physical instruments and workspace activity."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "compositional_affordance"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "compositional_affordance",
+          "intent_binding": "capability_classification.compositional_affordance",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "compose",
+      "realm": "local",
+      "medium": "visual",
+      "submedium": "operator_aperture",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "affordance:cam.hero.overhead.hardware-active"
+      ],
+      "process_refs": [
+        "shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:operator_aperture"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "python:shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:compositional_affordance",
+          "evidence_ref": "repo:shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "import:shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES",
+          "evidence_ref": "repo:shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "import:shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES"
+      ],
+      "witness_contract_id": "witness.video.overhead_hero_frame",
+      "authority_ceiling": "public_gate_required",
+      "claim_types_allowed": [
+        "evidence_bound_claim",
+        "internal_observation",
+        "public_claim"
+      ],
+      "privacy_label": "public_broadcast",
+      "consent_label": "public_broadcast",
+      "required_clearance": "public_broadcast",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.compositional_affordance",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "public_witness_required",
+      "projection": {
+        "capability_name": "compositor.cam_hero_overhead_hardware_active",
+        "daemon": "studio_compositor",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": true,
+        "rights_ref": "rights:affordance:cam.hero.overhead.hardware-active",
+        "provenance_ref": "provenance:affordance:cam.hero.overhead.hardware-active"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.compositional.cam_hero_overhead_hardware_active",
+      "surface_id": "affordance:cam.hero.overhead.hardware-active",
+      "display_name": "Overhead hardware hero camera move",
+      "surface_family": "operator_aperture",
+      "gibson_verb": "Compose",
+      "semantic_description": "Compose the overhead hardware view when studio attention belongs to physical instruments and workspace activity.",
+      "producer": "shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES",
+      "consumer_refs": [
+        "consumer:studio_compositor.compositional_consumer"
+      ],
+      "concrete_interface": "python:shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES",
+      "availability_probe": {
+        "probe_id": "probe.compositional.cam_hero_overhead_hardware_active",
+        "kind": "import_symbol",
+        "expected_state": "available",
+        "witness_ref": "import:shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:shared.compositional_affordances.COMPOSITIONAL_CAPABILITIES",
+      "privacy_class": "public_broadcast",
+      "rights_class": "operator_owned",
+      "consent_policy": "public_broadcast",
+      "claim_authority_ceiling": "public_gate_required",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "public_gate_required",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.video.overhead_hero_frame"
+      ],
+      "recruitment_family": "compositional_affordance",
+      "existing_record_refs": [
+        "capability_record:cam.hero.overhead.hardware-active"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.tool.query_person_details",
+      "semantic_version": 1,
+      "relatum_id": "tool_schema:query_person_details",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Observe person-adjacent scene details when consent gates permit private visual grounding"
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "tool_schema"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "tool_schema",
+          "intent_binding": "capability_classification.tool_schema",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "observe",
+      "effect_type": "sense",
+      "realm": "local",
+      "medium": "visual",
+      "submedium": "tool_schema",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "tool_schema:query_person_details"
+      ],
+      "process_refs": [
+        "agents.hapax_daimonion.tools.TOOL_SCHEMAS"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:tool_schema"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "function_schema:query_person_details"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:tool_schema",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "import:agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "import:agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+      "freshness_ttl_s": 5,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.tool.query_person_details.scene_snapshot",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "person_adjacent",
+      "consent_label": "person_adjacent",
+      "required_clearance": "person_adjacent",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.tool_schema",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "tool.query_person_details",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:tool_schema:query_person_details",
+        "provenance_ref": "provenance:tool_schema:query_person_details"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.tool.query_person_details",
+      "surface_id": "tool_schema:query_person_details",
+      "display_name": "Person detail scene query",
+      "surface_family": "tool_schema",
+      "gibson_verb": "Observe",
+      "semantic_description": "Observe person-adjacent scene details when consent gates permit private visual grounding",
+      "producer": "agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+      "consumer_refs": [
+        "consumer:hapax_daimonion.tool_recruitment"
+      ],
+      "concrete_interface": "function_schema:query_person_details",
+      "availability_probe": {
+        "probe_id": "probe.tool.query_person_details",
+        "kind": "import_symbol",
+        "expected_state": "private_only",
+        "witness_ref": "import:agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+        "stale_after_s": 5,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "person_adjacent",
+      "rights_class": "operator_owned",
+      "consent_policy": "person_adjacent",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "private_only",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.tool.query_person_details.scene_snapshot"
+      ],
+      "recruitment_family": "tool_schema",
+      "existing_record_refs": [
+        "tool_affordance:query_person_details"
+      ],
+      "missing_record_action": "add_tool_affordance"
+    },
+    {
+      "row_id": "capability.tool.query_object_motion",
+      "semantic_version": 1,
+      "relatum_id": "tool_schema:query_object_motion",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Observe object movement across recent frames to ground scene change and activity"
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "tool_schema"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "tool_schema",
+          "intent_binding": "capability_classification.tool_schema",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "observe",
+      "effect_type": "sense",
+      "realm": "local",
+      "medium": "visual",
+      "submedium": "tool_schema",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "tool_schema:query_object_motion"
+      ],
+      "process_refs": [
+        "agents.hapax_daimonion.tools.TOOL_SCHEMAS"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:tool_schema"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "function_schema:query_object_motion"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:tool_schema",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "import:agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "import:agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+      "freshness_ttl_s": 5,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.tool.query_object_motion.scene_snapshot",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.tool_schema",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "tool.query_object_motion",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:tool_schema:query_object_motion",
+        "provenance_ref": "provenance:tool_schema:query_object_motion"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.tool.query_object_motion",
+      "surface_id": "tool_schema:query_object_motion",
+      "display_name": "Object motion scene query",
+      "surface_family": "tool_schema",
+      "gibson_verb": "Observe",
+      "semantic_description": "Observe object movement across recent frames to ground scene change and activity",
+      "producer": "agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+      "consumer_refs": [
+        "consumer:hapax_daimonion.tool_recruitment"
+      ],
+      "concrete_interface": "function_schema:query_object_motion",
+      "availability_probe": {
+        "probe_id": "probe.tool.query_object_motion",
+        "kind": "import_symbol",
+        "expected_state": "private_only",
+        "witness_ref": "import:agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+        "stale_after_s": 5,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "private_only",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.tool.query_object_motion.scene_snapshot"
+      ],
+      "recruitment_family": "tool_schema",
+      "existing_record_refs": [
+        "tool_affordance:query_object_motion"
+      ],
+      "missing_record_action": "add_tool_affordance"
+    },
+    {
+      "row_id": "capability.tool.query_scene_state",
+      "semantic_version": 1,
+      "relatum_id": "tool_schema:query_scene_state",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Retrieve current scene posture and salience to ground visual context decisions"
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "tool_schema"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "tool_schema",
+          "intent_binding": "capability_classification.tool_schema",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "observe",
+      "effect_type": "sense",
+      "realm": "local",
+      "medium": "visual",
+      "submedium": "tool_schema",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "tool_schema:query_scene_state"
+      ],
+      "process_refs": [
+        "agents.hapax_daimonion.tools.TOOL_SCHEMAS"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:tool_schema"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "function_schema:query_scene_state"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:tool_schema",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "import:agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "import:agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+      "freshness_ttl_s": 5,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.tool.query_scene_state.scene_snapshot",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.tool_schema",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "tool.query_scene_state",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:tool_schema:query_scene_state",
+        "provenance_ref": "provenance:tool_schema:query_scene_state"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.tool.query_scene_state",
+      "surface_id": "tool_schema:query_scene_state",
+      "display_name": "Scene state query",
+      "surface_family": "tool_schema",
+      "gibson_verb": "Retrieve",
+      "semantic_description": "Retrieve current scene posture and salience to ground visual context decisions",
+      "producer": "agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+      "consumer_refs": [
+        "consumer:hapax_daimonion.tool_recruitment"
+      ],
+      "concrete_interface": "function_schema:query_scene_state",
+      "availability_probe": {
+        "probe_id": "probe.tool.query_scene_state",
+        "kind": "import_symbol",
+        "expected_state": "private_only",
+        "witness_ref": "import:agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+        "stale_after_s": 5,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "private_only",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.tool.query_scene_state.scene_snapshot"
+      ],
+      "recruitment_family": "tool_schema",
+      "existing_record_refs": [
+        "tool_affordance:query_scene_state"
+      ],
+      "missing_record_action": "add_tool_affordance"
+    },
+    {
+      "row_id": "capability.mcp.context7_docs",
+      "semantic_version": 1,
+      "relatum_id": "mcp:context7.query_docs",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Retrieve governed documentation examples for library questions while preserving source attribution and version context."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "knowledge",
+          "subdomain": "remote_documentation"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "remote_documentation",
+          "intent_binding": "capability_classification.remote_documentation",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "remote",
+      "medium": "textual",
+      "submedium": "mcp_tool",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "mcp:context7.query_docs"
+      ],
+      "process_refs": [
+        "mcp.context7.query_docs"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:mcp_tool"
+      ],
+      "provider_refs": [
+        "mcp.context7.query_docs"
+      ],
+      "concrete_interfaces": [
+        "mcp:context7.query_docs"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:remote_documentation",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "mcp:context7.query_docs.self_check",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "mcp:context7.query_docs.self_check",
+      "freshness_ttl_s": 1800,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.mcp.context7.cited_result",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.remote_documentation",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "mcp.context7_docs",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": true,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:mcp:context7.query_docs",
+        "provenance_ref": "provenance:mcp:context7.query_docs"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.mcp.context7_docs",
+      "surface_id": "mcp:context7.query_docs",
+      "display_name": "Context7 documentation retrieval",
+      "surface_family": "mcp_tool",
+      "gibson_verb": "Retrieve",
+      "semantic_description": "Retrieve governed documentation examples for library questions while preserving source attribution and version context.",
+      "producer": "mcp.context7.query_docs",
+      "consumer_refs": [
+        "consumer:codex_research_context"
+      ],
+      "concrete_interface": "mcp:context7.query_docs",
+      "availability_probe": {
+        "probe_id": "probe.mcp.context7_docs",
+        "kind": "remote_query",
+        "expected_state": "available",
+        "witness_ref": "mcp:context7.query_docs.self_check",
+        "stale_after_s": 1800,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": true,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.mcp.context7.cited_result"
+      ],
+      "recruitment_family": "remote_documentation",
+      "existing_record_refs": [
+        "mcp_tool:context7.query_docs"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.runtime.logos_api_health",
+      "semantic_version": 1,
+      "relatum_id": "service:logos-api",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall local orientation and health state for grounded operator context and status-aware decisions."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "system",
+          "subdomain": "local_service"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "local_service",
+          "intent_binding": "capability_classification.local_service",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "local",
+      "medium": "data",
+      "submedium": "runtime_service",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "service:logos-api"
+      ],
+      "process_refs": [
+        "systemd:user:logos-api.service"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:runtime_service"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "systemd:user:logos-api.service"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:local_service",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "http:127.0.0.1:8051/health",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "http:127.0.0.1:8051/health",
+      "freshness_ttl_s": 30,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.runtime.logos_health_ok",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.local_service",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "runtime.logos_health",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:service:logos-api",
+        "provenance_ref": "provenance:service:logos-api"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.runtime.logos_api_health",
+      "surface_id": "service:logos-api",
+      "display_name": "Logos local health surface",
+      "surface_family": "runtime_service",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall local orientation and health state for grounded operator context and status-aware decisions.",
+      "producer": "systemd:user:logos-api.service",
+      "consumer_refs": [
+        "consumer:orientation_panel",
+        "consumer:mcp_hapax_status"
+      ],
+      "concrete_interface": "systemd:user:logos-api.service",
+      "availability_probe": {
+        "probe_id": "probe.runtime.logos_health",
+        "kind": "health_endpoint",
+        "expected_state": "available",
+        "witness_ref": "http:127.0.0.1:8051/health",
+        "stale_after_s": 30,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.runtime.logos_health_ok"
+      ],
+      "recruitment_family": "local_service",
+      "existing_record_refs": [
+        "systemd:logos-api.service"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "state.vision.classifications_stale",
+      "semantic_version": 1,
+      "relatum_id": "shm:hapax-vision/classifications.json",
+      "kind": [
+        "State",
+        "Substrate",
+        "Representation"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": false,
+      "catalog_only": false,
+      "lifecycle": "stale",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Observe prior scene classification state only as stale context until a fresh vision witness appears."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "runtime_state"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "runtime_state",
+          "intent_binding": "capability_classification.runtime_state",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "observe",
+      "effect_type": "sense",
+      "realm": "local",
+      "medium": "data",
+      "submedium": "state_file",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "shm:hapax-vision/classifications.json"
+      ],
+      "process_refs": [
+        "visual-layer-aggregator"
+      ],
+      "state_refs": [
+        "shm:hapax-vision/classifications.json"
+      ],
+      "substrate_refs": [
+        "substrate:state_file"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "shm:hapax-vision/classifications.json"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:runtime_state",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "mtime:shm:hapax-vision/classifications.json",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "mtime:shm:hapax-vision/classifications.json",
+      "freshness_ttl_s": 5,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": null,
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [
+        "state file is useful only with a fresh modification-time witness"
+      ],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.runtime_state",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "disabled",
+      "projection": null,
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.state.vision_classifications_stale",
+      "surface_id": "shm:hapax-vision/classifications.json",
+      "display_name": "Stale vision classifications",
+      "surface_family": "state_file",
+      "gibson_verb": "Observe",
+      "semantic_description": "Observe prior scene classification state only as stale context until a fresh vision witness appears.",
+      "producer": "visual-layer-aggregator",
+      "consumer_refs": [
+        "consumer:wcs_snapshot",
+        "consumer:director_snapshot"
+      ],
+      "concrete_interface": "shm:hapax-vision/classifications.json",
+      "availability_probe": {
+        "probe_id": "probe.state.vision_classifications_stale",
+        "kind": "state_mtime",
+        "expected_state": "stale",
+        "witness_ref": "mtime:shm:hapax-vision/classifications.json",
+        "stale_after_s": 5,
+        "notes": ""
+      },
+      "availability_state": "stale",
+      "state_ref": "shm:hapax-vision/classifications.json",
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "stale_badge",
+      "fallback_policy": "stale_context_only",
+      "degraded_reason": "state file is useful only with a fresh modification-time witness",
+      "witness_requirements": [
+        "witness.not_recruitable.state.vision.classifications_stale"
+      ],
+      "recruitment_family": "runtime_state",
+      "existing_record_refs": [
+        "state:/dev/shm/hapax-vision/classifications.json"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.device.camera_overhead_brio",
+      "semantic_version": 1,
+      "relatum_id": "device:camera.overhead_brio",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Observe the overhead hardware workspace from a fixed perspective for studio object and activity evidence."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "camera_perception"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "camera_perception",
+          "intent_binding": "capability_classification.camera_perception",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "observe",
+      "effect_type": "sense",
+      "realm": "local",
+      "medium": "visual",
+      "submedium": "device",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "device:camera.overhead_brio"
+      ],
+      "process_refs": [
+        "studio-person-detector.service"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:device"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "video4linux:overhead-brio"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:camera_perception",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "device:video4linux:overhead-brio",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "device:video4linux:overhead-brio",
+      "freshness_ttl_s": 2,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.device.camera_frame_current",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "person_adjacent",
+      "consent_label": "person_adjacent",
+      "required_clearance": "person_adjacent",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.camera_perception",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "device.camera_overhead_brio",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:device:camera.overhead_brio",
+        "provenance_ref": "provenance:device:camera.overhead_brio"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.device.camera_overhead_brio",
+      "surface_id": "device:camera.overhead_brio",
+      "display_name": "Overhead Brio camera",
+      "surface_family": "device",
+      "gibson_verb": "Observe",
+      "semantic_description": "Observe the overhead hardware workspace from a fixed perspective for studio object and activity evidence.",
+      "producer": "studio-person-detector.service",
+      "consumer_refs": [
+        "consumer:studio_compositor",
+        "consumer:visual_layer_aggregator"
+      ],
+      "concrete_interface": "video4linux:overhead-brio",
+      "availability_probe": {
+        "probe_id": "probe.device.camera_overhead_brio",
+        "kind": "device_present",
+        "expected_state": "private_only",
+        "witness_ref": "device:video4linux:overhead-brio",
+        "stale_after_s": 2,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "person_adjacent",
+      "rights_class": "operator_owned",
+      "consent_policy": "person_adjacent",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.device.camera_frame_current"
+      ],
+      "recruitment_family": "camera_perception",
+      "existing_record_refs": [
+        "device:overhead-brio"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.audio.l12_raw_hardware",
+      "semantic_version": 1,
+      "relatum_id": "audio_route:l12.raw_hardware",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Route raw mixer audio into private monitoring so hardware state can be checked before broadcast use."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "audio_route"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "audio_route",
+          "intent_binding": "capability_classification.audio_route",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "route",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "audio_route",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "audio_route:l12.raw_hardware"
+      ],
+      "process_refs": [
+        "audio-topology-inspector"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:audio_route"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "pipewire:l12.raw_hardware"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:audio_route",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "witness:audio.l12_forward_invariant",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "witness:audio.l12_forward_invariant",
+      "freshness_ttl_s": 2,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.audio.l12_forward_invariant",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "private_action"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.audio_route",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "audio.l12_raw_hardware",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:audio_route:l12.raw_hardware",
+        "provenance_ref": "provenance:audio_route:l12.raw_hardware"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.audio.l12_raw_hardware",
+      "surface_id": "audio_route:l12.raw_hardware",
+      "display_name": "L-12 raw hardware route",
+      "surface_family": "audio_route",
+      "gibson_verb": "Route",
+      "semantic_description": "Route raw mixer audio into private monitoring so hardware state can be checked before broadcast use.",
+      "producer": "audio-topology-inspector",
+      "consumer_refs": [
+        "consumer:audio_router"
+      ],
+      "concrete_interface": "pipewire:l12.raw_hardware",
+      "availability_probe": {
+        "probe_id": "probe.audio.l12_raw_hardware",
+        "kind": "route_witness",
+        "expected_state": "private_only",
+        "witness_ref": "witness:audio.l12_forward_invariant",
+        "stale_after_s": 2,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "private_only",
+      "fallback_policy": "private_monitor_only",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.audio.l12_forward_invariant"
+      ],
+      "recruitment_family": "audio_route",
+      "existing_record_refs": [
+        "audio_route:l12.raw_hardware"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.audio.broadcast_master_normalized",
+      "semantic_version": 1,
+      "relatum_id": "audio_route:broadcast.master.normalized",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Route normalized programme audio to the public mix only after loudness and leak witnesses pass."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "audio_route"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "audio_route",
+          "intent_binding": "capability_classification.audio_route",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "route",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "audio_route",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "audio_route:broadcast.master.normalized"
+      ],
+      "process_refs": [
+        "broadcast-audio-health"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:audio_route"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "pipewire:broadcast.master.normalized"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:audio_route",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "witness:audio.broadcast_loudness_safe",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "witness:audio.broadcast_loudness_safe",
+      "freshness_ttl_s": 2,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.audio.broadcast_loudness_safe",
+      "authority_ceiling": "public_gate_required",
+      "claim_types_allowed": [
+        "evidence_bound_claim",
+        "internal_observation",
+        "public_claim"
+      ],
+      "privacy_label": "public_broadcast",
+      "consent_label": "public_broadcast",
+      "required_clearance": "public_broadcast",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.audio_route",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "public_witness_required",
+      "projection": {
+        "capability_name": "audio.broadcast_master_normalized",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": true,
+        "rights_ref": "rights:audio_route:broadcast.master.normalized",
+        "provenance_ref": "provenance:audio_route:broadcast.master.normalized"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.audio.broadcast_master_normalized",
+      "surface_id": "audio_route:broadcast.master.normalized",
+      "display_name": "Normalized broadcast master",
+      "surface_family": "audio_route",
+      "gibson_verb": "Route",
+      "semantic_description": "Route normalized programme audio to the public mix only after loudness and leak witnesses pass.",
+      "producer": "broadcast-audio-health",
+      "consumer_refs": [
+        "consumer:studio_compositor",
+        "consumer:obs_output"
+      ],
+      "concrete_interface": "pipewire:broadcast.master.normalized",
+      "availability_probe": {
+        "probe_id": "probe.audio.broadcast_master_normalized",
+        "kind": "route_witness",
+        "expected_state": "available",
+        "witness_ref": "witness:audio.broadcast_loudness_safe",
+        "stale_after_s": 2,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_broadcast",
+      "rights_class": "operator_owned",
+      "consent_policy": "public_broadcast",
+      "claim_authority_ceiling": "public_gate_required",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "public_gate_required",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.audio.broadcast_loudness_safe"
+      ],
+      "recruitment_family": "audio_route",
+      "existing_record_refs": [
+        "audio_route:broadcast.master.normalized"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.audio.obs_broadcast_remap",
+      "semantic_version": 1,
+      "relatum_id": "audio_route:obs.broadcast_remap",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Route remapped broadcast audio away from raw devices when stream egress requires the safe mix."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "audio_route"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "audio_route",
+          "intent_binding": "capability_classification.audio_route",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "route",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "audio_route",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "audio_route:obs.broadcast_remap"
+      ],
+      "process_refs": [
+        "audio-router-policy"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:audio_route"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "pipewire:obs.broadcast_remap"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:audio_route",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "witness:audio.obs_remap_not_raw",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "witness:audio.obs_remap_not_raw",
+      "freshness_ttl_s": 2,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.audio.obs_remap_not_raw",
+      "authority_ceiling": "public_gate_required",
+      "claim_types_allowed": [
+        "evidence_bound_claim",
+        "internal_observation",
+        "public_claim"
+      ],
+      "privacy_label": "public_broadcast",
+      "consent_label": "public_broadcast",
+      "required_clearance": "public_broadcast",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.audio_route",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "public_witness_required",
+      "projection": {
+        "capability_name": "audio.obs_broadcast_remap",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": true,
+        "rights_ref": "rights:audio_route:obs.broadcast_remap",
+        "provenance_ref": "provenance:audio_route:obs.broadcast_remap"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.audio.obs_broadcast_remap",
+      "surface_id": "audio_route:obs.broadcast_remap",
+      "display_name": "OBS broadcast remap",
+      "surface_family": "audio_route",
+      "gibson_verb": "Route",
+      "semantic_description": "Route remapped broadcast audio away from raw devices when stream egress requires the safe mix.",
+      "producer": "audio-router-policy",
+      "consumer_refs": [
+        "consumer:obs_output",
+        "consumer:studio_compositor"
+      ],
+      "concrete_interface": "pipewire:obs.broadcast_remap",
+      "availability_probe": {
+        "probe_id": "probe.audio.obs_broadcast_remap",
+        "kind": "route_witness",
+        "expected_state": "available",
+        "witness_ref": "witness:audio.obs_remap_not_raw",
+        "stale_after_s": 2,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_broadcast",
+      "rights_class": "operator_owned",
+      "consent_policy": "public_broadcast",
+      "claim_authority_ceiling": "public_gate_required",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "public_gate_required",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.audio.obs_remap_not_raw"
+      ],
+      "recruitment_family": "audio_route",
+      "existing_record_refs": [
+        "audio_route:obs.broadcast_remap"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.visual.logos_api_frame_surface",
+      "semantic_version": 1,
+      "relatum_id": "video_surface:studio_compositor.composed_frame",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Compose the current studio frame for public viewing only after visual freshness and source witnesses pass."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "video_surface"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "video_surface",
+          "intent_binding": "capability_classification.video_surface",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "compose",
+      "realm": "local",
+      "medium": "visual",
+      "submedium": "video_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "video_surface:studio_compositor.composed_frame"
+      ],
+      "process_refs": [
+        "studio-compositor.service"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:video_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "http:127.0.0.1:8051/api/logos/frame"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:video_surface",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "witness:video.composed_frame_nonblank",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "witness:video.composed_frame_nonblank",
+      "freshness_ttl_s": 2,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.video.composed_frame_nonblank",
+      "authority_ceiling": "public_gate_required",
+      "claim_types_allowed": [
+        "evidence_bound_claim",
+        "internal_observation",
+        "public_claim"
+      ],
+      "privacy_label": "public_broadcast",
+      "consent_label": "public_broadcast",
+      "required_clearance": "public_broadcast",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.video_surface",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "public_witness_required",
+      "projection": {
+        "capability_name": "visual.logos_api_frame_surface",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": true,
+        "rights_ref": "rights:video_surface:studio_compositor.composed_frame",
+        "provenance_ref": "provenance:video_surface:studio_compositor.composed_frame"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.video.studio_composed_frame",
+      "surface_id": "video_surface:studio_compositor.composed_frame",
+      "display_name": "Composed studio frame",
+      "surface_family": "video_surface",
+      "gibson_verb": "Compose",
+      "semantic_description": "Compose the current studio frame for public viewing only after visual freshness and source witnesses pass.",
+      "producer": "studio-compositor.service",
+      "consumer_refs": [
+        "consumer:livestream_output",
+        "consumer:director_snapshot"
+      ],
+      "concrete_interface": "http:127.0.0.1:8051/api/logos/frame",
+      "availability_probe": {
+        "probe_id": "probe.video.studio_composed_frame",
+        "kind": "frame_witness",
+        "expected_state": "available",
+        "witness_ref": "witness:video.composed_frame_nonblank",
+        "stale_after_s": 2,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_broadcast",
+      "rights_class": "operator_owned",
+      "consent_policy": "public_broadcast",
+      "claim_authority_ceiling": "public_gate_required",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "public_gate_required",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.video.composed_frame_nonblank"
+      ],
+      "recruitment_family": "video_surface",
+      "existing_record_refs": [
+        "surface:studio_compositor.composed_frame"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.midi.s4_clock_transport",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:s4.clock_transport",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Modulate hardware timing and transport so sonic gestures remain aligned with programme rhythm."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "midi_expression"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "midi_expression",
+          "intent_binding": "capability_classification.midi_expression",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:s4.clock_transport"
+      ],
+      "process_refs": [
+        "agents.hapax_daimonion.s4_midi"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "midi:torso_s4"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:midi_expression",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "witness:midi.s4_clock_seen",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "witness:midi.s4_clock_seen",
+      "freshness_ttl_s": 10,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.midi.s4_clock_seen",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.midi_expression",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "midi.s4_clock_transport",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:midi_surface:s4.clock_transport",
+        "provenance_ref": "provenance:midi_surface:s4.clock_transport"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.midi.s4_clock_transport",
+      "surface_id": "midi_surface:s4.clock_transport",
+      "display_name": "S-4 clock and transport",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Modulate",
+      "semantic_description": "Modulate hardware timing and transport so sonic gestures remain aligned with programme rhythm.",
+      "producer": "agents.hapax_daimonion.s4_midi",
+      "consumer_refs": [
+        "consumer:vocal_chain",
+        "consumer:vinyl_chain"
+      ],
+      "concrete_interface": "midi:torso_s4",
+      "availability_probe": {
+        "probe_id": "probe.midi.s4_clock_transport",
+        "kind": "route_witness",
+        "expected_state": "available",
+        "witness_ref": "witness:midi.s4_clock_seen",
+        "stale_after_s": 10,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.midi.s4_clock_seen"
+      ],
+      "recruitment_family": "midi_expression",
+      "existing_record_refs": [
+        "midi_surface:s4.clock_transport"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.desktop.hyprland_focus",
+      "semantic_version": 1,
+      "relatum_id": "desktop_control:hyprland.focus_window",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Act on the focused workspace only after operator-facing command gates keep desktop changes reversible."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "desktop_control"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "desktop_control",
+          "intent_binding": "capability_classification.desktop_control",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "act",
+      "effect_type": "act",
+      "realm": "local",
+      "medium": "control",
+      "submedium": "desktop_control",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "desktop_control:hyprland.focus_window"
+      ],
+      "process_refs": [
+        "agents.hapax_daimonion.desktop_tools"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:desktop_control"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "hyprctl:dispatch:focuswindow"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:desktop_control",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "witness:desktop.command_noop_or_confirmed",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "witness:desktop.command_noop_or_confirmed",
+      "freshness_ttl_s": 5,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.desktop.command_noop_or_confirmed",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "private_action"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.desktop_control",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "desktop.hyprland_focus",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:desktop_control:hyprland.focus_window",
+        "provenance_ref": "provenance:desktop_control:hyprland.focus_window"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.desktop.hyprland_focus",
+      "surface_id": "desktop_control:hyprland.focus_window",
+      "display_name": "Hyprland focus control",
+      "surface_family": "desktop_control",
+      "gibson_verb": "Act",
+      "semantic_description": "Act on the focused workspace only after operator-facing command gates keep desktop changes reversible.",
+      "producer": "agents.hapax_daimonion.desktop_tools",
+      "consumer_refs": [
+        "consumer:operator_desktop"
+      ],
+      "concrete_interface": "hyprctl:dispatch:focuswindow",
+      "availability_probe": {
+        "probe_id": "probe.desktop.hyprland_focus",
+        "kind": "operator_gate",
+        "expected_state": "private_only",
+        "witness_ref": "witness:desktop.command_noop_or_confirmed",
+        "stale_after_s": 5,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "hard_block",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.desktop.command_noop_or_confirmed"
+      ],
+      "recruitment_family": "desktop_control",
+      "existing_record_refs": [
+        "tool_affordance:focus_window"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.companion.phone_awareness",
+      "semantic_version": 1,
+      "relatum_id": "companion_device:phone.awareness",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Observe paired phone context as private operator state for interruption and mobile-awareness decisions."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "operator_state",
+          "subdomain": "companion_state"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "companion_state",
+          "intent_binding": "capability_classification.companion_state",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "observe",
+      "effect_type": "sense",
+      "realm": "local",
+      "medium": "data",
+      "submedium": "companion_device",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "companion_device:phone.awareness"
+      ],
+      "process_refs": [
+        "agents.hapax_daimonion.backends.phone_awareness"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:companion_device"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "kdeconnect:phone_awareness"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:companion_state",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "state:phone_kde_connected",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "state:phone_kde_connected",
+      "freshness_ttl_s": 120,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.companion.phone_fresh",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "private",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.companion_state",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "companion.phone_awareness",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:companion_device:phone.awareness",
+        "provenance_ref": "provenance:companion_device:phone.awareness"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.companion.phone_awareness",
+      "surface_id": "companion_device:phone.awareness",
+      "display_name": "Phone awareness payload",
+      "surface_family": "companion_device",
+      "gibson_verb": "Observe",
+      "semantic_description": "Observe paired phone context as private operator state for interruption and mobile-awareness decisions.",
+      "producer": "agents.hapax_daimonion.backends.phone_awareness",
+      "consumer_refs": [
+        "consumer:engagement_governor",
+        "consumer:presence_model"
+      ],
+      "concrete_interface": "kdeconnect:phone_awareness",
+      "availability_probe": {
+        "probe_id": "probe.companion.phone_awareness",
+        "kind": "state_mtime",
+        "expected_state": "private_only",
+        "witness_ref": "state:phone_kde_connected",
+        "stale_after_s": 120,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "private",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "private_only",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.companion.phone_fresh"
+      ],
+      "recruitment_family": "companion_state",
+      "existing_record_refs": [
+        "backend:phone_awareness"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.local_api.orientation",
+      "semantic_version": 1,
+      "relatum_id": "local_api:logos.orientation",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall local orientation state for dashboard and assistant context without expanding public claims."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "system",
+          "subdomain": "local_api"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "local_api",
+          "intent_binding": "capability_classification.local_api",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "local",
+      "medium": "data",
+      "submedium": "local_api",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "local_api:logos.orientation"
+      ],
+      "process_refs": [
+        "logos-api.service"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:local_api"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "http:127.0.0.1:8051/api/orientation"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:local_api",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "http:127.0.0.1:8051/api/orientation",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "http:127.0.0.1:8051/api/orientation",
+      "freshness_ttl_s": 300,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.local_api.orientation_ok",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.local_api",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "local_api.orientation",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:local_api:logos.orientation",
+        "provenance_ref": "provenance:local_api:logos.orientation"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.local_api.orientation",
+      "surface_id": "local_api:logos.orientation",
+      "display_name": "Local orientation endpoint",
+      "surface_family": "local_api",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall local orientation state for dashboard and assistant context without expanding public claims.",
+      "producer": "logos-api.service",
+      "consumer_refs": [
+        "consumer:obsidian_plugin",
+        "consumer:hapax_mcp"
+      ],
+      "concrete_interface": "http:127.0.0.1:8051/api/orientation",
+      "availability_probe": {
+        "probe_id": "probe.local_api.orientation",
+        "kind": "health_endpoint",
+        "expected_state": "private_only",
+        "witness_ref": "http:127.0.0.1:8051/api/orientation",
+        "stale_after_s": 300,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.local_api.orientation_ok"
+      ],
+      "recruitment_family": "local_api",
+      "existing_record_refs": [
+        "route:logos.orientation"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.container.vector_memory",
+      "semantic_version": 1,
+      "relatum_id": "docker_container:qdrant",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall embedded memory neighborhoods for capability matching and grounded context retrieval."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "system",
+          "subdomain": "local_infrastructure"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "local_infrastructure",
+          "intent_binding": "capability_classification.local_infrastructure",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "local",
+      "medium": "data",
+      "submedium": "docker_container",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "docker_container:qdrant"
+      ],
+      "process_refs": [
+        "docker-compose:qdrant"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:docker_container"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "docker:qdrant"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:local_infrastructure",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "container:qdrant:healthy",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "container:qdrant:healthy",
+      "freshness_ttl_s": 30,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.container.vector_memory_healthy",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "private",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.local_infrastructure",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "container.vector_memory",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:docker_container:qdrant",
+        "provenance_ref": "provenance:docker_container:qdrant"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.container.vector_memory",
+      "surface_id": "docker_container:qdrant",
+      "display_name": "Vector memory container",
+      "surface_family": "docker_container",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall embedded memory neighborhoods for capability matching and grounded context retrieval.",
+      "producer": "docker-compose:qdrant",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:rag_ingest"
+      ],
+      "concrete_interface": "docker:qdrant",
+      "availability_probe": {
+        "probe_id": "probe.container.vector_memory",
+        "kind": "container_health",
+        "expected_state": "available",
+        "witness_ref": "container:qdrant:healthy",
+        "stale_after_s": 30,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "private",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.container.vector_memory_healthy"
+      ],
+      "recruitment_family": "local_infrastructure",
+      "existing_record_refs": [
+        "container:qdrant"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.model.litellm_supplied_evidence",
+      "semantic_version": 1,
+      "relatum_id": "model_provider:litellm.supplied_evidence",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall supplied evidence through model reasoning without treating generated text as a source acquisition route."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "knowledge",
+          "subdomain": "model_provider"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "model_provider",
+          "intent_binding": "capability_classification.model_provider",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "hybrid",
+      "medium": "textual",
+      "submedium": "model_provider",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "model_provider:litellm.supplied_evidence"
+      ],
+      "process_refs": [
+        "litellm-gateway"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:model_provider"
+      ],
+      "provider_refs": [
+        "litellm-gateway"
+      ],
+      "concrete_interfaces": [
+        "provider:litellm:reasoning"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:model_provider",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "provider:litellm:health",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "provider:litellm:health",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.model.litellm_health",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "private",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.model_provider",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "model.litellm_supplied_evidence",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": true,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:model_provider:litellm.supplied_evidence",
+        "provenance_ref": "provenance:model_provider:litellm.supplied_evidence"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.model.litellm_supplied_evidence",
+      "surface_id": "model_provider:litellm.supplied_evidence",
+      "display_name": "LiteLLM supplied-evidence reasoning",
+      "surface_family": "model_provider",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall supplied evidence through model reasoning without treating generated text as a source acquisition route.",
+      "producer": "litellm-gateway",
+      "consumer_refs": [
+        "consumer:content_grounding",
+        "consumer:daimonion_reasoning"
+      ],
+      "concrete_interface": "provider:litellm:reasoning",
+      "availability_probe": {
+        "probe_id": "probe.model.litellm_supplied_evidence",
+        "kind": "remote_query",
+        "expected_state": "available",
+        "witness_ref": "provider:litellm:health",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "private",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": true,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.model.litellm_health"
+      ],
+      "recruitment_family": "model_provider",
+      "existing_record_refs": [
+        "provider:litellm"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.search.tavily_source_acquisition",
+      "semantic_version": 1,
+      "relatum_id": "search_provider:tavily",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Retrieve public source candidates for current claims with citation freshness and acquisition evidence."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "knowledge",
+          "subdomain": "source_acquisition"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "source_acquisition",
+          "intent_binding": "capability_classification.source_acquisition",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "remote",
+      "medium": "textual",
+      "submedium": "search_provider",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "search_provider:tavily"
+      ],
+      "process_refs": [
+        "mcp.tavily.search"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:search_provider"
+      ],
+      "provider_refs": [
+        "mcp.tavily.search"
+      ],
+      "concrete_interfaces": [
+        "mcp:tavily.search"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:source_acquisition",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "provider:tavily:cited_result",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "provider:tavily:cited_result",
+      "freshness_ttl_s": 900,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.search.cited_result",
+      "authority_ceiling": "public_gate_required",
+      "claim_types_allowed": [
+        "evidence_bound_claim",
+        "internal_observation",
+        "public_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "public_broadcast",
+      "required_clearance": "public_broadcast",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.source_acquisition",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "public_witness_required",
+      "projection": {
+        "capability_name": "search.tavily_source_acquisition",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": true,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": true,
+        "rights_ref": "rights:search_provider:tavily",
+        "provenance_ref": "provenance:search_provider:tavily"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.search.tavily_source_acquisition",
+      "surface_id": "search_provider:tavily",
+      "display_name": "Tavily source acquisition",
+      "surface_family": "search_provider",
+      "gibson_verb": "Retrieve",
+      "semantic_description": "Retrieve public source candidates for current claims with citation freshness and acquisition evidence.",
+      "producer": "mcp.tavily.search",
+      "consumer_refs": [
+        "consumer:grounding_provider_router"
+      ],
+      "concrete_interface": "mcp:tavily.search",
+      "availability_probe": {
+        "probe_id": "probe.search.tavily_source_acquisition",
+        "kind": "remote_query",
+        "expected_state": "available",
+        "witness_ref": "provider:tavily:cited_result",
+        "stale_after_s": 900,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "public_broadcast",
+      "claim_authority_ceiling": "public_gate_required",
+      "can_acquire_sources": true,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "public_gate_required",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.search.cited_result"
+      ],
+      "recruitment_family": "source_acquisition",
+      "existing_record_refs": [
+        "provider:tavily"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.publication.youtube_live",
+      "semantic_version": 1,
+      "relatum_id": "publication_endpoint:youtube.live",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Communicate witnessed programme output to public viewers only when rights and egress gates pass."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "publication_endpoint"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "publication_endpoint",
+          "intent_binding": "capability_classification.publication_endpoint",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "communicate",
+      "effect_type": "communicate",
+      "realm": "remote",
+      "medium": "visual",
+      "submedium": "publication_endpoint",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "publication_endpoint:youtube.live"
+      ],
+      "process_refs": [
+        "youtube.live.integration"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:publication_endpoint"
+      ],
+      "provider_refs": [
+        "youtube.live.integration"
+      ],
+      "concrete_interfaces": [
+        "provider:youtube.live"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:publication_endpoint",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "provider:youtube.live.broadcast_eligible",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "provider:youtube.live.broadcast_eligible",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.publication.youtube_egress_safe",
+      "authority_ceiling": "public_gate_required",
+      "claim_types_allowed": [
+        "evidence_bound_claim",
+        "internal_observation",
+        "public_claim"
+      ],
+      "privacy_label": "public_broadcast",
+      "consent_label": "public_broadcast",
+      "required_clearance": "public_broadcast",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.publication_endpoint",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "public_witness_required",
+      "projection": {
+        "capability_name": "publication.youtube_live",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": true,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": true,
+        "rights_ref": "rights:publication_endpoint:youtube.live",
+        "provenance_ref": "provenance:publication_endpoint:youtube.live"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.publication.youtube_live",
+      "surface_id": "publication_endpoint:youtube.live",
+      "display_name": "YouTube live publication",
+      "surface_family": "publication_endpoint",
+      "gibson_verb": "Communicate",
+      "semantic_description": "Communicate witnessed programme output to public viewers only when rights and egress gates pass.",
+      "producer": "youtube.live.integration",
+      "consumer_refs": [
+        "consumer:studio_compositor",
+        "consumer:content_programme_runner"
+      ],
+      "concrete_interface": "provider:youtube.live",
+      "availability_probe": {
+        "probe_id": "probe.publication.youtube_live",
+        "kind": "remote_query",
+        "expected_state": "available",
+        "witness_ref": "provider:youtube.live.broadcast_eligible",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_broadcast",
+      "rights_class": "operator_owned",
+      "consent_policy": "public_broadcast",
+      "claim_authority_ceiling": "public_gate_required",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "public_gate_required",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.publication.youtube_egress_safe"
+      ],
+      "recruitment_family": "publication_endpoint",
+      "existing_record_refs": [
+        "provider:youtube.live"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.archive.video_processor",
+      "semantic_version": 1,
+      "relatum_id": "archive_processor:video_processor",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall archived visual windows as evidence priors without converting them into public truth."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "archive_processor"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "archive_processor",
+          "intent_binding": "capability_classification.archive_processor",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "local",
+      "medium": "visual",
+      "submedium": "archive_processor",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "archive_processor:video_processor"
+      ],
+      "process_refs": [
+        "video-processor.timer"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:archive_processor"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "systemd:user:video-processor.timer"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:archive_processor",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "archive:video_processor:last_success",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "archive:video_processor:last_success",
+      "freshness_ttl_s": 86400,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.archive.video_processor_recent",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "private",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.archive_processor",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "archive.video_processor",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:archive_processor:video_processor",
+        "provenance_ref": "provenance:archive_processor:video_processor"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.archive.video_processor",
+      "surface_id": "archive_processor:video_processor",
+      "display_name": "Video archive processor",
+      "surface_family": "archive_processor",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall archived visual windows as evidence priors without converting them into public truth.",
+      "producer": "video-processor.timer",
+      "consumer_refs": [
+        "consumer:rag_ingest",
+        "consumer:director_memory"
+      ],
+      "concrete_interface": "systemd:user:video-processor.timer",
+      "availability_probe": {
+        "probe_id": "probe.archive.video_processor",
+        "kind": "state_mtime",
+        "expected_state": "private_only",
+        "witness_ref": "archive:video_processor:last_success",
+        "stale_after_s": 86400,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "private",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": true,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.archive.video_processor_recent"
+      ],
+      "recruitment_family": "archive_processor",
+      "existing_record_refs": [
+        "timer:video-processor"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.storage.backblaze_restic_sync",
+      "semantic_version": 1,
+      "relatum_id": "storage_sync:backblaze.restic",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Act on encrypted backup transfer state for durability without exposing private contents."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "storage_sync"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "storage_sync",
+          "intent_binding": "capability_classification.storage_sync",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "act",
+      "effect_type": "act",
+      "realm": "remote",
+      "medium": "data",
+      "submedium": "storage_sync",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "storage_sync:backblaze.restic"
+      ],
+      "process_refs": [
+        "restic-rclone-backup.timer"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:storage_sync"
+      ],
+      "provider_refs": [
+        "restic-rclone-backup.timer"
+      ],
+      "concrete_interfaces": [
+        "provider:backblaze.restic"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:storage_sync",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "backup:restic:last_success",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "backup:restic:last_success",
+      "freshness_ttl_s": 86400,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.storage.backup_recent",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "private_action"
+      ],
+      "privacy_label": "private",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.storage_sync",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "storage.backblaze_restic_sync",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": true,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:storage_sync:backblaze.restic",
+        "provenance_ref": "provenance:storage_sync:backblaze.restic"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.storage.backblaze_restic_sync",
+      "surface_id": "storage_sync:backblaze.restic",
+      "display_name": "Backblaze restic storage sync",
+      "surface_family": "storage_sync",
+      "gibson_verb": "Act",
+      "semantic_description": "Act on encrypted backup transfer state for durability without exposing private contents.",
+      "producer": "restic-rclone-backup.timer",
+      "consumer_refs": [
+        "consumer:system_health"
+      ],
+      "concrete_interface": "provider:backblaze.restic",
+      "availability_probe": {
+        "probe_id": "probe.storage.backblaze_restic_sync",
+        "kind": "remote_query",
+        "expected_state": "private_only",
+        "witness_ref": "backup:restic:last_success",
+        "stale_after_s": 86400,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "private",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.storage.backup_recent"
+      ],
+      "recruitment_family": "storage_sync",
+      "existing_record_refs": [
+        "provider:backblaze",
+        "tool:restic"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.public_event.github_pr",
+      "semantic_version": 1,
+      "relatum_id": "public_event:github.pull_request",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Communicate code-change evidence to repository review surfaces with explicit provenance and status witnesses."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "public_event"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "public_event",
+          "intent_binding": "capability_classification.public_event",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "communicate",
+      "effect_type": "communicate",
+      "realm": "remote",
+      "medium": "textual",
+      "submedium": "public_event",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "public_event:github.pull_request"
+      ],
+      "process_refs": [
+        "github.pr.workflow"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:public_event"
+      ],
+      "provider_refs": [
+        "github.pr.workflow"
+      ],
+      "concrete_interfaces": [
+        "provider:github.pull_request"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:public_event",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "provider:github.pull_request.status",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "provider:github.pull_request.status",
+      "freshness_ttl_s": 300,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.public_event.github_status",
+      "authority_ceiling": "public_gate_required",
+      "claim_types_allowed": [
+        "evidence_bound_claim",
+        "internal_observation",
+        "public_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "public_broadcast",
+      "required_clearance": "public_broadcast",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.public_event",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "public_witness_required",
+      "projection": {
+        "capability_name": "public_event.github_pr",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": true,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": true,
+        "rights_ref": "rights:public_event:github.pull_request",
+        "provenance_ref": "provenance:public_event:github.pull_request"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.public_event.github_pr",
+      "surface_id": "public_event:github.pull_request",
+      "display_name": "GitHub pull request public event",
+      "surface_family": "public_event",
+      "gibson_verb": "Communicate",
+      "semantic_description": "Communicate code-change evidence to repository review surfaces with explicit provenance and status witnesses.",
+      "producer": "github.pr.workflow",
+      "consumer_refs": [
+        "consumer:sdlc_pipeline",
+        "consumer:operator_review"
+      ],
+      "concrete_interface": "provider:github.pull_request",
+      "availability_probe": {
+        "probe_id": "probe.public_event.github_pr",
+        "kind": "remote_query",
+        "expected_state": "available",
+        "witness_ref": "provider:github.pull_request.status",
+        "stale_after_s": 300,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "public_broadcast",
+      "claim_authority_ceiling": "public_gate_required",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "public_gate_required",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.public_event.github_status"
+      ],
+      "recruitment_family": "public_event",
+      "existing_record_refs": [
+        "provider:github.pull_request"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.governance.orcid_identity",
+      "semantic_version": 1,
+      "relatum_id": "governance_surface:orcid.identity",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall scholarly identity provenance for formal records without broadening personal-state disclosure."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "capability",
+          "subdomain": "identity_provenance"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "identity_provenance",
+          "intent_binding": "capability_classification.identity_provenance",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "remote",
+      "medium": "textual",
+      "submedium": "governance_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "governance_surface:orcid.identity"
+      ],
+      "process_refs": [
+        "shared.orcid"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:governance_surface"
+      ],
+      "provider_refs": [
+        "shared.orcid"
+      ],
+      "concrete_interfaces": [
+        "provider:orcid.identity"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:identity_provenance",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "provider:orcid.identity.profile",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "provider:orcid.identity.profile",
+      "freshness_ttl_s": 86400,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.governance.orcid_profile",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.identity_provenance",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "governance.orcid_identity",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": true,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:governance_surface:orcid.identity",
+        "provenance_ref": "provenance:governance_surface:orcid.identity"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.governance.orcid_identity",
+      "surface_id": "governance_surface:orcid.identity",
+      "display_name": "ORCID identity provenance",
+      "surface_family": "governance_surface",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall scholarly identity provenance for formal records without broadening personal-state disclosure.",
+      "producer": "shared.orcid",
+      "consumer_refs": [
+        "consumer:research_artifact_packaging"
+      ],
+      "concrete_interface": "provider:orcid.identity",
+      "availability_probe": {
+        "probe_id": "probe.governance.orcid_identity",
+        "kind": "remote_query",
+        "expected_state": "available",
+        "witness_ref": "provider:orcid.identity.profile",
+        "stale_after_s": 86400,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.governance.orcid_profile"
+      ],
+      "recruitment_family": "identity_provenance",
+      "existing_record_refs": [
+        "provider:orcid"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.infrastructure.prometheus_telemetry",
+      "semantic_version": 1,
+      "relatum_id": "infrastructure:prometheus",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall local telemetry trends for system health decisions without treating metrics as public claims."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "system",
+          "subdomain": "telemetry"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "telemetry",
+          "intent_binding": "capability_classification.telemetry",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "local",
+      "medium": "data",
+      "submedium": "infrastructure",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "infrastructure:prometheus"
+      ],
+      "process_refs": [
+        "docker-compose:prometheus"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:infrastructure"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "docker:prometheus"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:telemetry",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "container:prometheus:healthy",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "container:prometheus:healthy",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.infrastructure.prometheus_healthy",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "private",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.telemetry",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "infrastructure.prometheus_telemetry",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:infrastructure:prometheus",
+        "provenance_ref": "provenance:infrastructure:prometheus"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.infrastructure.prometheus_telemetry",
+      "surface_id": "infrastructure:prometheus",
+      "display_name": "Prometheus telemetry",
+      "surface_family": "infrastructure",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall local telemetry trends for system health decisions without treating metrics as public claims.",
+      "producer": "docker-compose:prometheus",
+      "consumer_refs": [
+        "consumer:health_monitor",
+        "consumer:mesh_health"
+      ],
+      "concrete_interface": "docker:prometheus",
+      "availability_probe": {
+        "probe_id": "probe.infrastructure.prometheus_telemetry",
+        "kind": "container_health",
+        "expected_state": "available",
+        "witness_ref": "container:prometheus:healthy",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "private",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.infrastructure.prometheus_healthy"
+      ],
+      "recruitment_family": "telemetry",
+      "existing_record_refs": [
+        "container:prometheus"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "provider.soundcloud.publication_unavailable",
+      "semantic_version": 1,
+      "relatum_id": "publication_endpoint:soundcloud",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": false,
+      "catalog_only": false,
+      "lifecycle": "blocked",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Communicate audio releases only after provider credentials and rights evidence are freshly witnessed."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "publication_endpoint"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "publication_endpoint",
+          "intent_binding": "capability_classification.publication_endpoint",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "communicate",
+      "effect_type": "communicate",
+      "realm": "remote",
+      "medium": "auditory",
+      "submedium": "publication_endpoint",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "publication_endpoint:soundcloud"
+      ],
+      "process_refs": [
+        "soundcloud.publisher"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:publication_endpoint"
+      ],
+      "provider_refs": [
+        "soundcloud.publisher"
+      ],
+      "concrete_interfaces": [
+        "provider:soundcloud.upload"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:publication_endpoint",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "provider:soundcloud.credentials_missing",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "provider:soundcloud.credentials_missing",
+      "freshness_ttl_s": 3600,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": null,
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "private_action"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "public_broadcast",
+      "required_clearance": "public_broadcast",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [
+        "publication credentials and rights witness are not available"
+      ],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.publication_endpoint",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "disabled",
+      "projection": null,
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.remote.soundcloud_unavailable",
+      "surface_id": "publication_endpoint:soundcloud",
+      "display_name": "SoundCloud publication unavailable",
+      "surface_family": "publication_endpoint",
+      "gibson_verb": "Communicate",
+      "semantic_description": "Communicate audio releases only after provider credentials and rights evidence are freshly witnessed.",
+      "producer": "soundcloud.publisher",
+      "consumer_refs": [
+        "consumer:content_programme_runner"
+      ],
+      "concrete_interface": "provider:soundcloud.upload",
+      "availability_probe": {
+        "probe_id": "probe.remote.soundcloud_unavailable",
+        "kind": "remote_query",
+        "expected_state": "unavailable",
+        "witness_ref": "provider:soundcloud.credentials_missing",
+        "stale_after_s": 3600,
+        "notes": ""
+      },
+      "availability_state": "unavailable",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "public_broadcast",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "hard_block",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": "publication credentials and rights witness are not available",
+      "witness_requirements": [
+        "witness.not_recruitable.provider.soundcloud.publication_unavailable"
+      ],
+      "recruitment_family": "publication_endpoint",
+      "existing_record_refs": [
+        "provider:soundcloud"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "surface.tauri_logos.decommissioned_frame_server",
+      "semantic_version": 1,
+      "relatum_id": "video_surface:tauri_logos.frame_server",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": false,
+      "catalog_only": false,
+      "lifecycle": "decommissioned",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Observe former visual frame surface only as a blocked replacement cue for current studio surfaces."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "video_surface"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "video_surface",
+          "intent_binding": "capability_classification.video_surface",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "compose",
+      "realm": "local",
+      "medium": "visual",
+      "submedium": "video_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "video_surface:tauri_logos.frame_server"
+      ],
+      "process_refs": [
+        "tauri-logos.decommissioned"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:video_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "tauri:hapax-logos-frame-server"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:video_surface",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "task:tauri-logos-decommission-enforcement",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "task:tauri-logos-decommission-enforcement",
+      "freshness_ttl_s": null,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": null,
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [
+        "surface is decommissioned and must be replaced by the current frame row"
+      ],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.video_surface",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "disabled",
+      "projection": null,
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": "capability.visual.logos_api_frame_surface",
+      "blocked_reason": "Tauri visual path is decommissioned; use the current studio frame row.",
+      "classification_id": "classification.surface.tauri_logos_decommissioned",
+      "surface_id": "video_surface:tauri_logos.frame_server",
+      "display_name": "Decommissioned Tauri frame server",
+      "surface_family": "video_surface",
+      "gibson_verb": "Observe",
+      "semantic_description": "Observe former visual frame surface only as a blocked replacement cue for current studio surfaces.",
+      "producer": "tauri-logos.decommissioned",
+      "consumer_refs": [
+        "consumer:wcs_snapshot",
+        "consumer:director_snapshot"
+      ],
+      "concrete_interface": "tauri:hapax-logos-frame-server",
+      "availability_probe": {
+        "probe_id": "probe.surface.tauri_logos_decommissioned",
+        "kind": "decommission_evidence",
+        "expected_state": "decommissioned",
+        "witness_ref": "task:tauri-logos-decommission-enforcement",
+        "stale_after_s": null,
+        "notes": ""
+      },
+      "availability_state": "decommissioned",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "replacement_only",
+      "fallback_policy": "use_replacement_row",
+      "degraded_reason": "surface is decommissioned and must be replaced by the current frame row",
+      "witness_requirements": [
+        "witness.not_recruitable.surface.tauri_logos.decommissioned_frame_server"
+      ],
+      "recruitment_family": "video_surface",
+      "existing_record_refs": [
+        "surface:tauri_logos.frame_server"
+      ],
+      "missing_record_action": "replaced_by_row"
+    },
+    {
+      "row_id": "capability.voice_tier.unadorned",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:voice_tier.unadorned",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Express speech in the unadorned register while preserving intelligibility floor and monetization ceiling."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "voice_tier"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "voice_tier",
+          "intent_binding": "capability_classification.voice_tier",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:voice_tier.unadorned"
+      ],
+      "process_refs": [
+        "shared.voice_tier.tier_capability_record"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "voice_tier:unadorned"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:voice_tier",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "record:voice.tier.unadorned",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "record:voice.tier.unadorned",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:shared.voice_tier.tier_capability_record"
+      ],
+      "witness_contract_id": "witness.voice_tier.unadorned.intelligibility",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.voice_tier",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "voice.tier.unadorned",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:midi_surface:voice_tier.unadorned",
+        "provenance_ref": "provenance:midi_surface:voice_tier.unadorned"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.voice_tier.unadorned",
+      "surface_id": "midi_surface:voice_tier.unadorned",
+      "display_name": "Voice tier 0 unadorned",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Express",
+      "semantic_description": "Express speech in the unadorned register while preserving intelligibility floor and monetization ceiling.",
+      "producer": "shared.voice_tier.tier_capability_record",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:audio_router"
+      ],
+      "concrete_interface": "voice_tier:unadorned",
+      "availability_probe": {
+        "probe_id": "probe.voice_tier.unadorned",
+        "kind": "import_symbol",
+        "expected_state": "available",
+        "witness_ref": "record:voice.tier.unadorned",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.voice_tier.unadorned.intelligibility"
+      ],
+      "recruitment_family": "voice_tier",
+      "existing_record_refs": [
+        "capability_record:voice.tier.unadorned"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.voice_tier.radio",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:voice_tier.radio",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Express speech in the radio register while preserving intelligibility floor and monetization ceiling."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "voice_tier"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "voice_tier",
+          "intent_binding": "capability_classification.voice_tier",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:voice_tier.radio"
+      ],
+      "process_refs": [
+        "shared.voice_tier.tier_capability_record"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "voice_tier:radio"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:voice_tier",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "record:voice.tier.radio",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "record:voice.tier.radio",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:shared.voice_tier.tier_capability_record"
+      ],
+      "witness_contract_id": "witness.voice_tier.radio.intelligibility",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.voice_tier",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "voice.tier.radio",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:midi_surface:voice_tier.radio",
+        "provenance_ref": "provenance:midi_surface:voice_tier.radio"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.voice_tier.radio",
+      "surface_id": "midi_surface:voice_tier.radio",
+      "display_name": "Voice tier 1 radio",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Express",
+      "semantic_description": "Express speech in the radio register while preserving intelligibility floor and monetization ceiling.",
+      "producer": "shared.voice_tier.tier_capability_record",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:audio_router"
+      ],
+      "concrete_interface": "voice_tier:radio",
+      "availability_probe": {
+        "probe_id": "probe.voice_tier.radio",
+        "kind": "import_symbol",
+        "expected_state": "available",
+        "witness_ref": "record:voice.tier.radio",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.voice_tier.radio.intelligibility"
+      ],
+      "recruitment_family": "voice_tier",
+      "existing_record_refs": [
+        "capability_record:voice.tier.radio"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.voice_tier.broadcast_ghost",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:voice_tier.broadcast_ghost",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Express speech in the broadcast-ghost register while preserving intelligibility floor and monetization ceiling."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "voice_tier"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "voice_tier",
+          "intent_binding": "capability_classification.voice_tier",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:voice_tier.broadcast_ghost"
+      ],
+      "process_refs": [
+        "shared.voice_tier.tier_capability_record"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "voice_tier:broadcast_ghost"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:voice_tier",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "record:voice.tier.broadcast_ghost",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "record:voice.tier.broadcast_ghost",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:shared.voice_tier.tier_capability_record"
+      ],
+      "witness_contract_id": "witness.voice_tier.broadcast_ghost.intelligibility",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.voice_tier",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "voice.tier.broadcast_ghost",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:midi_surface:voice_tier.broadcast_ghost",
+        "provenance_ref": "provenance:midi_surface:voice_tier.broadcast_ghost"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.voice_tier.broadcast_ghost",
+      "surface_id": "midi_surface:voice_tier.broadcast_ghost",
+      "display_name": "Voice tier 2 broadcast-ghost",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Express",
+      "semantic_description": "Express speech in the broadcast-ghost register while preserving intelligibility floor and monetization ceiling.",
+      "producer": "shared.voice_tier.tier_capability_record",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:audio_router"
+      ],
+      "concrete_interface": "voice_tier:broadcast_ghost",
+      "availability_probe": {
+        "probe_id": "probe.voice_tier.broadcast_ghost",
+        "kind": "import_symbol",
+        "expected_state": "available",
+        "witness_ref": "record:voice.tier.broadcast_ghost",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.voice_tier.broadcast_ghost.intelligibility"
+      ],
+      "recruitment_family": "voice_tier",
+      "existing_record_refs": [
+        "capability_record:voice.tier.broadcast_ghost"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.voice_tier.memory",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:voice_tier.memory",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Express speech in the memory register while preserving intelligibility floor and monetization ceiling."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "voice_tier"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "voice_tier",
+          "intent_binding": "capability_classification.voice_tier",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:voice_tier.memory"
+      ],
+      "process_refs": [
+        "shared.voice_tier.tier_capability_record"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "voice_tier:memory"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:voice_tier",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "record:voice.tier.memory",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "record:voice.tier.memory",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:shared.voice_tier.tier_capability_record"
+      ],
+      "witness_contract_id": "witness.voice_tier.memory.intelligibility",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.voice_tier",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "voice.tier.memory",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:midi_surface:voice_tier.memory",
+        "provenance_ref": "provenance:midi_surface:voice_tier.memory"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.voice_tier.memory",
+      "surface_id": "midi_surface:voice_tier.memory",
+      "display_name": "Voice tier 3 memory",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Express",
+      "semantic_description": "Express speech in the memory register while preserving intelligibility floor and monetization ceiling.",
+      "producer": "shared.voice_tier.tier_capability_record",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:audio_router"
+      ],
+      "concrete_interface": "voice_tier:memory",
+      "availability_probe": {
+        "probe_id": "probe.voice_tier.memory",
+        "kind": "import_symbol",
+        "expected_state": "available",
+        "witness_ref": "record:voice.tier.memory",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.voice_tier.memory.intelligibility"
+      ],
+      "recruitment_family": "voice_tier",
+      "existing_record_refs": [
+        "capability_record:voice.tier.memory"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.voice_tier.underwater",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:voice_tier.underwater",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Express speech in the underwater register while preserving intelligibility floor and monetization ceiling."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "voice_tier"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "voice_tier",
+          "intent_binding": "capability_classification.voice_tier",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:voice_tier.underwater"
+      ],
+      "process_refs": [
+        "shared.voice_tier.tier_capability_record"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "voice_tier:underwater"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:voice_tier",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "record:voice.tier.underwater",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "record:voice.tier.underwater",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:shared.voice_tier.tier_capability_record"
+      ],
+      "witness_contract_id": "witness.voice_tier.underwater.intelligibility",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "low",
+      "governance_risk_reasons": [
+        "heavily processed but audible; minor viewer-parse cost"
+      ],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.voice_tier",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "voice.tier.underwater",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:midi_surface:voice_tier.underwater",
+        "provenance_ref": "provenance:midi_surface:voice_tier.underwater"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.voice_tier.underwater",
+      "surface_id": "midi_surface:voice_tier.underwater",
+      "display_name": "Voice tier 4 underwater",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Express",
+      "semantic_description": "Express speech in the underwater register while preserving intelligibility floor and monetization ceiling.",
+      "producer": "shared.voice_tier.tier_capability_record",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:audio_router"
+      ],
+      "concrete_interface": "voice_tier:underwater",
+      "availability_probe": {
+        "probe_id": "probe.voice_tier.underwater",
+        "kind": "import_symbol",
+        "expected_state": "available",
+        "witness_ref": "record:voice.tier.underwater",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": "heavily processed but audible; minor viewer-parse cost",
+      "witness_requirements": [
+        "witness.voice_tier.underwater.intelligibility"
+      ],
+      "recruitment_family": "voice_tier",
+      "existing_record_refs": [
+        "capability_record:voice.tier.underwater"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.voice_tier.granular_wash",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:voice_tier.granular_wash",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Express speech in the granular-wash register while preserving intelligibility floor and monetization ceiling."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "voice_tier"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "voice_tier",
+          "intent_binding": "capability_classification.voice_tier",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:voice_tier.granular_wash"
+      ],
+      "process_refs": [
+        "shared.voice_tier.tier_capability_record"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "voice_tier:granular_wash"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:voice_tier",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "record:voice.tier.granular_wash",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "record:voice.tier.granular_wash",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:shared.voice_tier.tier_capability_record"
+      ],
+      "witness_contract_id": "witness.voice_tier.granular_wash.intelligibility",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "medium",
+      "governance_risk_reasons": [
+        "Evil Pet granular engine + 0.85 diffusion produces tape-loop-like texture that can ping Content-ID false-positives; needs Programme opt-in"
+      ],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.voice_tier",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "voice.tier.granular_wash",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:midi_surface:voice_tier.granular_wash",
+        "provenance_ref": "provenance:midi_surface:voice_tier.granular_wash"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.voice_tier.granular_wash",
+      "surface_id": "midi_surface:voice_tier.granular_wash",
+      "display_name": "Voice tier 5 granular-wash",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Express",
+      "semantic_description": "Express speech in the granular-wash register while preserving intelligibility floor and monetization ceiling.",
+      "producer": "shared.voice_tier.tier_capability_record",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:audio_router"
+      ],
+      "concrete_interface": "voice_tier:granular_wash",
+      "availability_probe": {
+        "probe_id": "probe.voice_tier.granular_wash",
+        "kind": "import_symbol",
+        "expected_state": "available",
+        "witness_ref": "record:voice.tier.granular_wash",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": "Evil Pet granular engine + 0.85 diffusion produces tape-loop-like texture that can ping Content-ID false-positives; needs Programme opt-in",
+      "witness_requirements": [
+        "witness.voice_tier.granular_wash.intelligibility"
+      ],
+      "recruitment_family": "voice_tier",
+      "existing_record_refs": [
+        "capability_record:voice.tier.granular_wash"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.voice_tier.obliterated",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:voice_tier.obliterated",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": false,
+      "catalog_only": false,
+      "lifecycle": "blocked",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Express speech in the obliterated register while preserving intelligibility floor and monetization ceiling."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "voice_tier"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "voice_tier",
+          "intent_binding": "capability_classification.voice_tier",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:voice_tier.obliterated"
+      ],
+      "process_refs": [
+        "shared.voice_tier.tier_capability_record"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "voice_tier:obliterated"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:voice_tier",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "record:voice.tier.obliterated",
+          "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "record:voice.tier.obliterated",
+      "freshness_ttl_s": 15,
+      "evidence_refs": [
+        "repo:shared.voice_tier.tier_capability_record"
+      ],
+      "witness_contract_id": null,
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "high",
+      "governance_risk_reasons": [
+        "pure granular dissolution at 0.0 intelligibility floor; unbounded listener-abandonment + Content-ID risk — gated behind explicit excursion + 15 s duration cap"
+      ],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.voice_tier",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "disabled",
+      "projection": null,
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.voice_tier.obliterated",
+      "surface_id": "midi_surface:voice_tier.obliterated",
+      "display_name": "Voice tier 6 obliterated",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Express",
+      "semantic_description": "Express speech in the obliterated register while preserving intelligibility floor and monetization ceiling.",
+      "producer": "shared.voice_tier.tier_capability_record",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:audio_router"
+      ],
+      "concrete_interface": "voice_tier:obliterated",
+      "availability_probe": {
+        "probe_id": "probe.voice_tier.obliterated",
+        "kind": "import_symbol",
+        "expected_state": "blocked",
+        "witness_ref": "record:voice.tier.obliterated",
+        "stale_after_s": 15,
+        "notes": ""
+      },
+      "availability_state": "blocked",
+      "state_ref": null,
+      "evidence_ref": "repo:shared.voice_tier.tier_capability_record",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "hard_block",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": "pure granular dissolution at 0.0 intelligibility floor; unbounded listener-abandonment + Content-ID risk — gated behind explicit excursion + 15 s duration cap",
+      "witness_requirements": [
+        "witness.not_recruitable.capability.voice_tier.obliterated"
+      ],
+      "recruitment_family": "voice_tier",
+      "existing_record_refs": [
+        "capability_record:voice.tier.obliterated"
+      ],
+      "missing_record_action": "keep_blocked"
+    },
+    {
+      "row_id": "capability.vocal_chain.intensity",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:vocal_chain.intensity",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Modulate speech intensity through the vocal chain while preserving intelligibility and programme ceilings."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "vocal_chain"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "vocal_chain",
+          "intent_binding": "capability_classification.vocal_chain",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:vocal_chain.intensity"
+      ],
+      "process_refs": [
+        "agents.hapax_daimonion.vocal_chain.VOCAL_CHAIN_RECORDS"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "midi:vocal_chain.intensity"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:vocal_chain",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "record:vocal_chain.intensity",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "record:vocal_chain.intensity",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.vocal_chain.dimension_bound",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "internal_observation",
+        "evidence_bound_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.vocal_chain",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "vocal_chain.intensity",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:midi_surface:vocal_chain.intensity",
+        "provenance_ref": "provenance:midi_surface:vocal_chain.intensity"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.vocal_chain.intensity",
+      "surface_id": "midi_surface:vocal_chain.intensity",
+      "display_name": "Vocal chain intensity dimension",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Modulate",
+      "semantic_description": "Modulate speech intensity through the vocal chain while preserving intelligibility and programme ceilings.",
+      "producer": "agents.hapax_daimonion.vocal_chain.VOCAL_CHAIN_RECORDS",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:vocal_chain"
+      ],
+      "concrete_interface": "midi:vocal_chain.intensity",
+      "availability_probe": {
+        "probe_id": "probe.vocal_chain.intensity",
+        "kind": "import_symbol",
+        "expected_state": "available",
+        "witness_ref": "record:vocal_chain.intensity",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.vocal_chain.dimension_bound"
+      ],
+      "recruitment_family": "vocal_chain",
+      "existing_record_refs": [
+        "capability_record:vocal_chain.intensity"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.vinyl_chain.granular_wash",
+      "semantic_version": 1,
+      "relatum_id": "midi_surface:vinyl_chain.granular_wash",
+      "kind": [
+        "Substrate",
+        "Affordance",
+        "Capability"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Modulate vinyl source into granular texture only inside private or explicitly unlocked programme contexts."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "studio",
+          "subdomain": "vinyl_chain"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "vinyl_chain",
+          "intent_binding": "capability_classification.vinyl_chain",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "express",
+      "effect_type": "modulate",
+      "realm": "local",
+      "medium": "auditory",
+      "submedium": "midi_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "midi_surface:vinyl_chain.granular_wash"
+      ],
+      "process_refs": [
+        "agents.hapax_daimonion.vinyl_chain.VINYL_CHAIN_RECORDS"
+      ],
+      "state_refs": [],
+      "substrate_refs": [
+        "substrate:midi_surface"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "midi:vinyl_chain.granular_wash"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:vinyl_chain",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "programme:monetization_opt_in:mode_d_granular_wash",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "programme:monetization_opt_in:mode_d_granular_wash",
+      "freshness_ttl_s": 60,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.vinyl_chain.programme_opt_in",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "third_party_unclear",
+      "content_risk": "tier_3_uncertain",
+      "monetization_risk": "medium",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.vinyl_chain",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "vinyl_chain.granular_wash",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": true,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:midi_surface:vinyl_chain.granular_wash",
+        "provenance_ref": "provenance:midi_surface:vinyl_chain.granular_wash"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.vinyl_chain.granular_wash",
+      "surface_id": "midi_surface:vinyl_chain.granular_wash",
+      "display_name": "Vinyl granular wash mode",
+      "surface_family": "midi_surface",
+      "gibson_verb": "Modulate",
+      "semantic_description": "Modulate vinyl source into granular texture only inside private or explicitly unlocked programme contexts.",
+      "producer": "agents.hapax_daimonion.vinyl_chain.VINYL_CHAIN_RECORDS",
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:audio_router"
+      ],
+      "concrete_interface": "midi:vinyl_chain.granular_wash",
+      "availability_probe": {
+        "probe_id": "probe.vinyl_chain.granular_wash",
+        "kind": "operator_gate",
+        "expected_state": "private_only",
+        "witness_ref": "programme:monetization_opt_in:mode_d_granular_wash",
+        "stale_after_s": 60,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": null,
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "third_party_unclear",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "private_only",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.vinyl_chain.programme_opt_in"
+      ],
+      "recruitment_family": "vinyl_chain",
+      "existing_record_refs": [
+        "capability_record:vinyl_source.granular_wash"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    }
+  ]
+}
