@@ -15,12 +15,40 @@ from shared.governance.publication_allowlist import (
     check,
     gated,
     load_contract,
+    state_kind_claim_policy,
 )
 
 
 def _write_contract(directory: Path, surface: str, **kwargs) -> None:
     payload = {"surface": surface, **kwargs}
     (directory / f"{surface}.yaml").write_text(yaml.dump(payload))
+
+
+def _grounding_gate(*, mode: str = "public_archive") -> dict:
+    return {
+        "schema_version": 1,
+        "public_private_mode": mode,
+        "gate_state": "pass",
+        "claim": {
+            "evidence_refs": ["source:example"],
+            "provenance": {"source_refs": ["chunk:example"]},
+            "freshness": {"status": "fresh"},
+            "rights_state": "operator_controlled",
+            "privacy_state": "public_safe",
+            "public_private_mode": mode,
+            "refusal_correction_path": {
+                "refusal_reason": None,
+                "correction_event_ref": None,
+                "artifact_ref": None,
+            },
+        },
+        "gate_result": {
+            "may_emit_claim": True,
+            "may_publish_live": mode == "public_live",
+            "may_publish_archive": mode == "public_archive",
+            "may_monetize": mode == "public_monetizable",
+        },
+    }
 
 
 # ── default DENY when no contract ──────────────────────────────────────────
@@ -36,10 +64,10 @@ def test_no_contract_denies(tmp_path: Path) -> None:
 
 
 def test_allowed_state_kind(tmp_path: Path) -> None:
-    _write_contract(tmp_path, "youtube-title", state_kinds=["chronicle.high_salience"])
+    _write_contract(tmp_path, "youtube-title", state_kinds=["working_mode"])
     result = check(
         "youtube-title",
-        "chronicle.high_salience",
+        "working_mode",
         {"a": 1},
         contracts_dir=tmp_path,
     )
@@ -48,10 +76,10 @@ def test_allowed_state_kind(tmp_path: Path) -> None:
 
 
 def test_wildcard_pattern_matches(tmp_path: Path) -> None:
-    _write_contract(tmp_path, "youtube-title", state_kinds=["chronicle.*"])
+    _write_contract(tmp_path, "youtube-title", state_kinds=["broadcast.*"])
     result = check(
         "youtube-title",
-        "chronicle.high_salience",
+        "broadcast.boundary",
         {"a": 1},
         contracts_dir=tmp_path,
     )
@@ -76,6 +104,167 @@ def test_empty_state_kinds_denies(tmp_path: Path) -> None:
     _write_contract(tmp_path, "youtube-community", state_kinds=[])
     result = check("youtube-community", "anything.at_all", {"a": 1}, contracts_dir=tmp_path)
     assert result.decision == "deny"
+
+
+# ── Grounding composition for claim-bearing publication ─────────────────────
+
+
+def test_state_kind_claim_policy_classifies_claim_and_non_claim_states() -> None:
+    assert state_kind_claim_policy("chronicle.high_salience") == "claim_bearing"
+    assert state_kind_claim_policy("weblog.entry") == "claim_bearing"
+    assert state_kind_claim_policy("publication.artifact") == "claim_bearing"
+    assert state_kind_claim_policy("broadcast.boundary") == "non_claim_bearing"
+    assert state_kind_claim_policy("broadcast.current_live_url") == "non_claim_bearing"
+
+
+def test_claim_bearing_state_kind_requires_grounding_gate(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "omg-lol-statuslog", state_kinds=["chronicle.high_salience"])
+    result = check(
+        "omg-lol-statuslog",
+        "chronicle.high_salience",
+        {"summary": "claim without evidence"},
+        contracts_dir=tmp_path,
+    )
+    assert result.decision == "deny"
+    assert "missing grounding gate result" in result.reason
+
+
+def test_claim_bearing_state_kind_allows_publishable_grounding_gate(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "omg-lol-statuslog", state_kinds=["chronicle.high_salience"])
+    result = check(
+        "omg-lol-statuslog",
+        "chronicle.high_salience",
+        {"summary": "grounded claim", "grounding_gate_result": _grounding_gate()},
+        contracts_dir=tmp_path,
+    )
+    assert result.decision == "allow"
+
+
+def test_claim_bearing_state_kind_rejects_empty_evidence_refs(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "omg-lol-statuslog", state_kinds=["chronicle.high_salience"])
+    gate = _grounding_gate()
+    gate["claim"]["evidence_refs"] = []
+    result = check(
+        "omg-lol-statuslog",
+        "chronicle.high_salience",
+        {"grounding_gate_result": gate},
+        contracts_dir=tmp_path,
+    )
+    assert result.decision == "deny"
+    assert "evidence_refs" in result.reason
+
+
+def test_claim_bearing_state_kind_rejects_empty_source_refs(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "omg-lol-statuslog", state_kinds=["chronicle.high_salience"])
+    gate = _grounding_gate()
+    gate["claim"]["provenance"]["source_refs"] = []
+    result = check(
+        "omg-lol-statuslog",
+        "chronicle.high_salience",
+        {"grounding_gate_result": gate},
+        contracts_dir=tmp_path,
+    )
+    assert result.decision == "deny"
+    assert "source_refs" in result.reason
+
+
+def test_claim_bearing_state_kind_rejects_private_or_dry_run_gate(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "omg-lol-statuslog", state_kinds=["chronicle.high_salience"])
+    result = check(
+        "omg-lol-statuslog",
+        "chronicle.high_salience",
+        {"grounding_gate_result": _grounding_gate(mode="dry_run")},
+        contracts_dir=tmp_path,
+    )
+    assert result.decision == "deny"
+    assert "cannot publish" in result.reason
+
+
+def test_claim_bearing_state_kind_rejects_unsafe_freshness_rights_or_privacy(
+    tmp_path: Path,
+) -> None:
+    _write_contract(tmp_path, "omg-lol-statuslog", state_kinds=["chronicle.high_salience"])
+    gate = _grounding_gate()
+    gate["claim"]["freshness"]["status"] = "stale"
+    assert (
+        check(
+            "omg-lol-statuslog",
+            "chronicle.high_salience",
+            {"grounding_gate_result": gate},
+            contracts_dir=tmp_path,
+        ).decision
+        == "deny"
+    )
+
+    gate = _grounding_gate()
+    gate["claim"]["rights_state"] = "third_party_uncleared"
+    assert (
+        check(
+            "omg-lol-statuslog",
+            "chronicle.high_salience",
+            {"grounding_gate_result": gate},
+            contracts_dir=tmp_path,
+        ).decision
+        == "deny"
+    )
+
+    gate = _grounding_gate()
+    gate["claim"]["privacy_state"] = "consent_required"
+    assert (
+        check(
+            "omg-lol-statuslog",
+            "chronicle.high_salience",
+            {"grounding_gate_result": gate},
+            contracts_dir=tmp_path,
+        ).decision
+        == "deny"
+    )
+
+
+def test_non_claim_bearing_publication_preserves_allowlist_only_behavior(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "channel-trailer", state_kinds=["broadcast.current_live_url"])
+    result = check(
+        "channel-trailer",
+        "broadcast.current_live_url",
+        {"broadcast_id": "vid-1"},
+        contracts_dir=tmp_path,
+    )
+    assert result.decision == "allow"
+
+
+def test_publication_surfaces_compose_with_claim_bearing_grounding(tmp_path: Path) -> None:
+    surface_state_pairs = (
+        ("omg-lol-statuslog", "chronicle.high_salience"),
+        ("omg-lol-weblog", "weblog.entry"),
+        ("omg-lol-pastebin", "chronicle.weekly_digest"),
+        ("bluesky-post", "chronicle.high_salience"),
+        ("mastodon-post", "chronicle.high_salience"),
+        ("discord-webhook", "chronicle.high_salience"),
+        ("arena-post", "chronicle.high_salience"),
+    )
+    for surface, state_kind in surface_state_pairs:
+        _write_contract(tmp_path, surface, state_kinds=[state_kind])
+        denied = check(surface, state_kind, {"summary": surface}, contracts_dir=tmp_path)
+        assert denied.decision == "deny", (surface, state_kind)
+
+        allowed = check(
+            surface,
+            state_kind,
+            {"summary": surface, "grounding_gate_result": _grounding_gate()},
+            contracts_dir=tmp_path,
+        )
+        assert allowed.decision == "allow", (surface, state_kind)
+
+
+def test_channel_metadata_remains_non_claim_bearing(tmp_path: Path) -> None:
+    _write_contract(tmp_path, "channel-trailer", state_kinds=["broadcast.current_live_url"])
+    result = check(
+        "channel-trailer",
+        "broadcast.current_live_url",
+        {"broadcast_id": "incoming-live-id"},
+        contracts_dir=tmp_path,
+    )
+    assert result.decision == "allow"
 
 
 # ── REDACT path ────────────────────────────────────────────────────────────

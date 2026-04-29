@@ -57,6 +57,7 @@ class WeblogDraft:
     content: str
     title: str
     approved: bool = False
+    grounding_gate_result: dict[str, Any] | None = None
 
 
 def derive_entry_slug(filename: str) -> str:
@@ -123,8 +124,16 @@ def parse_draft(path: Path) -> WeblogDraft:
                 break
 
     approved = bool(frontmatter.get("approved", False))
+    raw_grounding_gate = frontmatter.get("grounding_gate_result")
+    grounding_gate_result = raw_grounding_gate if isinstance(raw_grounding_gate, dict) else None
 
-    return WeblogDraft(slug=slug, content=body.lstrip("\n"), title=title, approved=approved)
+    return WeblogDraft(
+        slug=slug,
+        content=body.lstrip("\n"),
+        title=title,
+        approved=approved,
+        grounding_gate_result=grounding_gate_result,
+    )
 
 
 class WeblogPublisher:
@@ -154,10 +163,25 @@ class WeblogPublisher:
             _record("not-approved")
             return "not-approved"
 
+        # AUDIT-05: scan operator-edited weblog content before publication
+        # policy so legal-name leak refusals do not get masked by later
+        # allowlist holds.
+        try:
+            content = safe_render(draft.content, segment_id=draft.slug)
+        except OperatorNameLeak:
+            log.warning("omg-weblog: legal-name leak detected — DROPPING publish")
+            _record("legal-name-leak")
+            return "legal-name-leak"
+
         allow = allowlist_check(
             SURFACE,
             "weblog.entry",
-            {"title": draft.title, "slug": draft.slug, "content": draft.content},
+            {
+                "title": draft.title,
+                "slug": draft.slug,
+                "content": content,
+                "grounding_gate_result": draft.grounding_gate_result,
+            },
         )
         if allow.decision == "deny":
             log.warning("omg-weblog: allowlist denied (%s)", allow.reason)
@@ -173,16 +197,6 @@ class WeblogPublisher:
             log.warning("omg-weblog: client disabled — skipping publish")
             _record("client-disabled")
             return "client-disabled"
-
-        # AUDIT-05: scan operator-edited weblog content for legal-name
-        # leak before publishing. Operator drafts may contain inadvertent
-        # name mentions; this is the last guard before omg.lol egress.
-        try:
-            content = safe_render(draft.content, segment_id=draft.slug)
-        except OperatorNameLeak:
-            log.warning("omg-weblog: legal-name leak detected — DROPPING publish")
-            _record("legal-name-leak")
-            return "legal-name-leak"
 
         resp = self.client.set_entry(self.address, draft.slug, content=content)
         if resp is None:
@@ -248,22 +262,27 @@ def publish_artifact(  # type: ignore[no-untyped-def]
         _record("error")
         return "error"
 
-    verdict = allowlist_check(
-        SURFACE,
-        "weblog.entry",
-        {"title": artifact.title, "slug": artifact.slug, "content": content},
-    )
-    if verdict.decision == "deny":
-        log.warning("omg-weblog: allowlist denied artifact %s (%s)", artifact.slug, verdict.reason)
-        _record("denied")
-        return "denied"
-
     try:
         guarded = safe_render(content, segment_id=artifact.slug)
     except OperatorNameLeak:
         log.warning("omg-weblog: legal-name leak in artifact %s — DROPPING", artifact.slug)
         _record("legal_name_leak")
         return "error"
+
+    verdict = allowlist_check(
+        SURFACE,
+        "weblog.entry",
+        {
+            "title": artifact.title,
+            "slug": artifact.slug,
+            "content": guarded,
+            "grounding_gate_result": getattr(artifact, "grounding_gate_result", None),
+        },
+    )
+    if verdict.decision == "deny":
+        log.warning("omg-weblog: allowlist denied artifact %s (%s)", artifact.slug, verdict.reason)
+        _record("denied")
+        return "denied"
 
     try:
         resp = client.set_entry(address, artifact.slug, content=guarded)

@@ -494,7 +494,7 @@ class PastebinArtifactPublisher:
         allow = allowlist_check(
             SURFACE,
             self.CATEGORY_CHRONICLE,
-            {"summary": f"{slug}: {len(events)} events"},
+            {"summary": f"{slug}: {len(events)} events", "events": events},
         )
         if allow.decision == "deny":
             log.info("omg-pastebin: allowlist denied chronicle digest (%s)", allow.reason)
@@ -573,7 +573,7 @@ class PastebinArtifactPublisher:
         allow = allowlist_check(
             SURFACE,
             self.CATEGORY_PROGRAMME,
-            {"summary": f"{slug}: {match.get('title', '')}"},
+            {"summary": f"{slug}: {match.get('title', '')}", "programme": match},
         )
         if allow.decision == "deny":
             log.info("omg-pastebin: allowlist denied programme digest (%s)", allow.reason)
@@ -641,7 +641,7 @@ class PastebinArtifactPublisher:
         allow = allowlist_check(
             SURFACE,
             self.CATEGORY_PRECEDENT,
-            {"summary": f"{slug}: {match.get('short_name', '')}"},
+            {"summary": f"{slug}: {match.get('short_name', '')}", "precedent": match},
         )
         if allow.decision == "deny":
             log.info("omg-pastebin: allowlist denied precedent digest (%s)", allow.reason)
@@ -710,7 +710,7 @@ class PastebinArtifactPublisher:
         allow = allowlist_check(
             SURFACE,
             self.CATEGORY_RESEARCH,
-            {"summary": f"{slug}: {match.get('title', '')}"},
+            {"summary": f"{slug}: {match.get('title', '')}", "research": match},
         )
         if allow.decision == "deny":
             log.info("omg-pastebin: allowlist denied research digest (%s)", allow.reason)

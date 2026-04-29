@@ -14,6 +14,33 @@ from agents.omg_pastebin_publisher.publisher import (
 )
 
 
+def _grounding_gate() -> dict:
+    return {
+        "schema_version": 1,
+        "public_private_mode": "public_archive",
+        "gate_state": "pass",
+        "claim": {
+            "evidence_refs": ["precedent:axiom"],
+            "provenance": {"source_refs": ["precedent:record"]},
+            "freshness": {"status": "not_applicable"},
+            "rights_state": "operator_original",
+            "privacy_state": "public_safe",
+            "public_private_mode": "public_archive",
+            "refusal_correction_path": {
+                "refusal_reason": None,
+                "correction_event_ref": None,
+                "artifact_ref": None,
+            },
+        },
+        "gate_result": {
+            "may_emit_claim": True,
+            "may_publish_live": False,
+            "may_publish_archive": True,
+            "may_monetize": False,
+        },
+    }
+
+
 def _precedent(
     precedent_id: str = "sp-hsea-mg-001",
     short_name: str = "drafting-as-content",
@@ -29,6 +56,7 @@ def _precedent(
         "situation": "Some situation.",
         "decision": "Some decision.",
         "reasoning": "Some reasoning.",
+        "grounding_gate_result": _grounding_gate(),
     }
 
 

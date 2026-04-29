@@ -27,18 +27,64 @@ import functools
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 import yaml
 
 log = logging.getLogger(__name__)
 
 Decision = Literal["allow", "redact", "deny"]
+ClaimPolicy = Literal["claim_bearing", "non_claim_bearing"]
 
 _CONTRACTS_DIR = Path(__file__).parent.parent.parent / "axioms" / "contracts" / "publication"
+
+CLAIM_BEARING_STATE_KIND_PATTERNS: Final[tuple[str, ...]] = (
+    "axiom.precedent_operator_authority",
+    "chronicle.chapter_candidate",
+    "chronicle.high_salience",
+    "chronicle.weekly_digest",
+    "director.activity",
+    "director.activity_change",
+    "director.activity_transition",
+    "director.youtube_direction",
+    "programme.boundary",
+    "programme.completed_plan",
+    "programme.narrative_beat",
+    "programme.role",
+    "publication.*",
+    "research.corpus_excerpt",
+    "research_instrument.*",
+    "shorts.upload",
+    "weblog.entry",
+)
+NON_CLAIM_BEARING_STATE_KIND_PATTERNS: Final[tuple[str, ...]] = (
+    "aesthetic.frame_capture",
+    "broadcast.boundary",
+    "broadcast.current_live_url",
+    "broadcast.recent_vods",
+    "programme.thematic_groups",
+    "working_mode",
+)
+_GROUNDING_GATE_KEYS: Final[tuple[str, ...]] = (
+    "grounding_gate_result",
+    "grounding_commitment_gate",
+    "grounding_gate",
+)
+_PUBLICATION_MODE_TO_GATE_FLAG: Final[dict[str, str]] = {
+    "public_live": "may_publish_live",
+    "public_archive": "may_publish_archive",
+    "public_monetizable": "may_monetize",
+}
+_PUBLIC_SAFE_RIGHTS_STATES: Final[set[str]] = {
+    "operator_original",
+    "operator_controlled",
+    "third_party_attributed",
+}
+_PUBLIC_SAFE_PRIVACY_STATES: Final[set[str]] = {"aggregate_only", "public_safe"}
+_PUBLIC_SAFE_FRESHNESS_STATES: Final[set[str]] = {"fresh", "not_applicable"}
 
 
 @dataclass(frozen=True)
@@ -137,6 +183,135 @@ def _pattern_matches(pattern: str, value: str) -> bool:
     if pattern.endswith("*"):
         return value.startswith(pattern[:-1])
     return False
+
+
+def state_kind_claim_policy(state_kind: str) -> ClaimPolicy:
+    """Classify state kinds for grounding composition.
+
+    Non-claim operational routing states remain governed by the existing
+    surface allowlist/redaction policy. Claim-bearing states require a
+    grounding gate envelope before publication can leave private scratch
+    space.
+    """
+    if any(
+        _pattern_matches(pattern, state_kind) for pattern in NON_CLAIM_BEARING_STATE_KIND_PATTERNS
+    ):
+        return "non_claim_bearing"
+    if any(_pattern_matches(pattern, state_kind) for pattern in CLAIM_BEARING_STATE_KIND_PATTERNS):
+        return "claim_bearing"
+    return "non_claim_bearing"
+
+
+def _iter_payload_mappings(value: Any, *, depth: int = 0) -> Iterator[Mapping[str, Any]]:
+    """Yield dictionaries nested in common publication payload envelopes."""
+    if depth > 5:
+        return
+    if isinstance(value, Mapping):
+        yield value
+        for nested in value.values():
+            if isinstance(nested, Mapping):
+                yield from _iter_payload_mappings(nested, depth=depth + 1)
+            elif isinstance(nested, Sequence) and not isinstance(nested, str | bytes | bytearray):
+                for item in nested:
+                    if isinstance(item, Mapping):
+                        yield from _iter_payload_mappings(item, depth=depth + 1)
+
+
+def _looks_like_grounding_gate(value: Mapping[str, Any]) -> bool:
+    return (
+        "schema_version" in value
+        and isinstance(value.get("claim"), Mapping)
+        and isinstance(value.get("gate_result"), Mapping)
+        and "public_private_mode" in value
+    )
+
+
+def _grounding_gate_from_payload(payload: dict | str) -> Mapping[str, Any] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    for candidate in _iter_payload_mappings(payload):
+        for key in _GROUNDING_GATE_KEYS:
+            value = candidate.get(key)
+            if isinstance(value, Mapping):
+                return value
+        if _looks_like_grounding_gate(candidate):
+            return candidate
+    return None
+
+
+def _non_empty_string_refs(value: Any) -> bool:
+    return (
+        isinstance(value, Sequence)
+        and not isinstance(value, str | bytes | bytearray)
+        and bool(value)
+        and all(isinstance(item, str) and bool(item.strip()) for item in value)
+    )
+
+
+def _contains_required_keys(value: Mapping[str, Any], required: tuple[str, ...]) -> bool:
+    return all(key in value for key in required)
+
+
+def _grounding_denial_reason(state_kind: str, payload: dict | str) -> str | None:
+    if state_kind_claim_policy(state_kind) == "non_claim_bearing":
+        return None
+
+    gate = _grounding_gate_from_payload(payload)
+    if gate is None:
+        return (
+            f"claim-bearing state_kind '{state_kind}' missing grounding gate result; "
+            "hold/refusal required"
+        )
+
+    claim = gate.get("claim")
+    gate_result = gate.get("gate_result")
+    if not isinstance(claim, Mapping) or not isinstance(gate_result, Mapping):
+        return "grounding gate result missing claim or gate_result object"
+
+    provenance = claim.get("provenance")
+    freshness = claim.get("freshness")
+    refusal_correction_path = claim.get("refusal_correction_path")
+    if not isinstance(provenance, Mapping):
+        return "grounding gate claim missing provenance object"
+    if not isinstance(freshness, Mapping):
+        return "grounding gate claim missing freshness object"
+    if not isinstance(refusal_correction_path, Mapping):
+        return "grounding gate claim missing refusal/correction path"
+
+    if not _non_empty_string_refs(claim.get("evidence_refs")):
+        return "grounding gate claim evidence_refs missing or empty"
+    if not _non_empty_string_refs(provenance.get("source_refs")):
+        return "grounding gate provenance source_refs missing or empty"
+
+    mode = gate.get("public_private_mode")
+    claim_mode = claim.get("public_private_mode")
+    if mode not in _PUBLICATION_MODE_TO_GATE_FLAG:
+        return f"grounding gate public_private_mode '{mode}' cannot publish to public surface"
+    if claim_mode != mode:
+        return "grounding gate claim public_private_mode does not match gate result"
+
+    if gate.get("gate_state") != "pass":
+        return f"grounding gate_state '{gate.get('gate_state')}' is not publishable"
+    if gate_result.get("may_emit_claim") is not True:
+        return "grounding gate does not allow claim emission"
+    publish_flag = _PUBLICATION_MODE_TO_GATE_FLAG[str(mode)]
+    if gate_result.get(publish_flag) is not True:
+        return f"grounding gate does not allow {publish_flag}"
+
+    if freshness.get("status") not in _PUBLIC_SAFE_FRESHNESS_STATES:
+        return f"grounding gate freshness '{freshness.get('status')}' is not publishable"
+    if claim.get("rights_state") not in _PUBLIC_SAFE_RIGHTS_STATES:
+        return f"grounding gate rights_state '{claim.get('rights_state')}' is not publishable"
+    if claim.get("privacy_state") not in _PUBLIC_SAFE_PRIVACY_STATES:
+        return f"grounding gate privacy_state '{claim.get('privacy_state')}' is not publishable"
+
+    if not _contains_required_keys(
+        refusal_correction_path,
+        ("refusal_reason", "correction_event_ref", "artifact_ref"),
+    ):
+        return "grounding gate refusal/correction path incomplete"
+
+    return None
 
 
 # ── Redaction transform registry (AUDIT-22 Phase A + B + B-2) ───────────
@@ -295,6 +470,11 @@ def check(
             payload=payload,
             reason=(f"state_kind '{state_kind}' not in allowed {list(contract.state_kinds)}"),
         )
+
+    grounding_reason = _grounding_denial_reason(state_kind, payload)
+    if grounding_reason is not None:
+        _record(surface, "deny")
+        return AllowlistResult(decision="deny", payload=payload, reason=grounding_reason)
 
     redacted, changed = _apply_redactions(payload, contract.redactions)
     if changed:

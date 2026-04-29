@@ -33,6 +33,34 @@ def _chronicle_event(
         "salience": salience,
         "summary": summary,
         "stance": "nominal",
+        "grounding_gate_result": _grounding_gate(),
+    }
+
+
+def _grounding_gate() -> dict:
+    return {
+        "schema_version": 1,
+        "public_private_mode": "public_archive",
+        "gate_state": "pass",
+        "claim": {
+            "evidence_refs": ["chronicle:event"],
+            "provenance": {"source_refs": ["chronicle:source"]},
+            "freshness": {"status": "fresh"},
+            "rights_state": "operator_controlled",
+            "privacy_state": "public_safe",
+            "public_private_mode": "public_archive",
+            "refusal_correction_path": {
+                "refusal_reason": None,
+                "correction_event_ref": None,
+                "artifact_ref": None,
+            },
+        },
+        "gate_result": {
+            "may_emit_claim": True,
+            "may_publish_live": False,
+            "may_publish_archive": True,
+            "may_monetize": False,
+        },
     }
 
 
