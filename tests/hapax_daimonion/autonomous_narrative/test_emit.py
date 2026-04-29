@@ -20,6 +20,7 @@ def test_emit_writes_impingement_and_chronicle(tmp_path: Path) -> None:
         "Vinyl side B started.",
         programme_id="prog-1",
         operator_referent="Oudepode",
+        impulse_id="impulse-001",
         impingement_path=p,
         now=1234.0,
     )
@@ -33,9 +34,11 @@ def test_emit_writes_impingement_and_chronicle(tmp_path: Path) -> None:
     assert impingement["content"]["narrative"] == "Vinyl side B started."
     assert impingement["content"]["programme_id"] == "prog-1"
     assert impingement["content"]["operator_referent"] == "Oudepode"
+    assert impingement["content"]["impulse_id"] == "impulse-001"
     assert chronicle["source"] == "self_authored_narrative"
     assert chronicle["event_type"] == "narrative.emitted"
     assert chronicle["payload"]["narrative"] == "Vinyl side B started."
+    assert chronicle["payload"]["impulse_id"] == "impulse-001"
 
 
 def test_emit_appends_not_overwrites(tmp_path: Path) -> None:
@@ -85,6 +88,7 @@ def test_emit_handles_missing_optional_args(tmp_path: Path) -> None:
     assert impingement["content"]["narrative"] == "minimal"
     assert impingement["content"]["programme_id"] is None
     assert impingement["content"]["operator_referent"] is None
+    assert impingement["content"]["impulse_id"] is None
 
 
 def test_emit_partial_success_when_chronicle_record_fails(tmp_path: Path, monkeypatch) -> None:

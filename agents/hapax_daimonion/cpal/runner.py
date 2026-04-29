@@ -39,6 +39,11 @@ from agents.hapax_daimonion.cpal.shm_publisher import publish_cpal_state
 from agents.hapax_daimonion.cpal.signal_cache import SignalCache
 from agents.hapax_daimonion.cpal.tier_composer import TierComposer
 from agents.hapax_daimonion.cpal.types import ConversationalRegion, CorrectionTier, GainUpdate
+from agents.hapax_daimonion.voice_output_witness import (
+    record_drop,
+    record_playback_result,
+    record_tts_synthesis,
+)
 from shared.voice_register import VoiceRegister
 
 log = logging.getLogger(__name__)
@@ -735,24 +740,70 @@ class CpalRunner:
         source = getattr(impingement, "source", "")
         if source == "autonomous_narrative" and self._daemon is not None:
             tts = getattr(self._daemon, "tts", None)
-            narrative = getattr(impingement, "content", {}).get("narrative") or effect.narrative
-            if tts is not None and narrative:
+            content = getattr(impingement, "content", {})
+            narrative = content.get("narrative") if isinstance(content, dict) else None
+            impulse_id = content.get("impulse_id") if isinstance(content, dict) else None
+            impulse_id = str(impulse_id) if impulse_id else None
+            narrative = narrative or effect.narrative
+
+            # Resolve broadcast destination explicitly — autonomous narrative
+            # is always livestream-bound, even when synthesis later fails.
+            register = self._register_bridge.current_register()
+            destination = classify_and_record(impingement, voice_register=register)
+            destination_target = resolve_target(destination)
+            destination_role = resolve_role(destination) or "Broadcast"
+
+            if tts is None:
+                record_drop(
+                    reason="tts_manager_missing",
+                    source=source,
+                    destination=destination.value,
+                    target=destination_target,
+                    media_role=destination_role,
+                    text=narrative or "",
+                    impulse_id=impulse_id,
+                )
+            elif not narrative:
+                record_drop(
+                    reason="autonomous_narrative_text_missing",
+                    source=source,
+                    destination=destination.value,
+                    target=destination_target,
+                    media_role=destination_role,
+                    impulse_id=impulse_id,
+                )
+            else:
                 from functools import partial
 
                 from agents.hapax_daimonion.pw_audio_output import play_pcm
 
-                # Resolve broadcast destination explicitly — autonomous
-                # narrative is always livestream-bound.
-                register = self._register_bridge.current_register()
-                destination = classify_and_record(impingement, voice_register=register)
-                destination_target = resolve_target(destination)
-                destination_role = resolve_role(destination) or "Broadcast"
-
                 try:
                     loop = asyncio.get_running_loop()
                     pcm = await loop.run_in_executor(None, tts.synthesize, narrative, "proactive")
-                    if pcm:
-                        await loop.run_in_executor(
+                    if not pcm:
+                        record_tts_synthesis(
+                            status="empty",
+                            text=narrative,
+                            pcm=b"",
+                            impulse_id=impulse_id,
+                        )
+                        record_drop(
+                            reason="tts_empty_pcm",
+                            source=source,
+                            destination=destination.value,
+                            target=destination_target,
+                            media_role=destination_role,
+                            text=narrative,
+                            impulse_id=impulse_id,
+                        )
+                    else:
+                        record_tts_synthesis(
+                            status="completed",
+                            text=narrative,
+                            pcm=pcm,
+                            impulse_id=impulse_id,
+                        )
+                        playback_result = await loop.run_in_executor(
                             None,
                             partial(
                                 play_pcm,
@@ -763,11 +814,42 @@ class CpalRunner:
                                 destination_role,
                             ),
                         )
-                        log.info(
-                            "Autonomous narrative spoken: %s",
-                            narrative[:60],
+                        record_playback_result(
+                            text=narrative,
+                            playback_result=playback_result,
+                            destination=destination.value,
+                            target=destination_target,
+                            media_role=destination_role,
+                            impulse_id=impulse_id,
                         )
-                except Exception:
+                        if playback_result.completed:
+                            log.info(
+                                "Autonomous narrative spoken: %s",
+                                narrative[:60],
+                            )
+                        else:
+                            log.warning(
+                                "Autonomous narrative playback failed: status=%s target=%s role=%s",
+                                playback_result.status,
+                                destination_target,
+                                destination_role,
+                            )
+                except Exception as exc:
+                    record_tts_synthesis(
+                        status="failed",
+                        text=narrative,
+                        error=str(exc),
+                        impulse_id=impulse_id,
+                    )
+                    record_drop(
+                        reason="autonomous_narrative_tts_or_playback_exception",
+                        source=source,
+                        destination=destination.value,
+                        target=destination_target,
+                        media_role=destination_role,
+                        text=narrative,
+                        impulse_id=impulse_id,
+                    )
                     log.warning(
                         "Autonomous narrative TTS failed",
                         exc_info=True,
@@ -848,3 +930,12 @@ class CpalRunner:
                     log.debug("Spontaneous speech failed", exc_info=True)
                 finally:
                     self._last_speech_end = time.monotonic()
+            else:
+                record_drop(
+                    reason="pipeline_unavailable",
+                    source=source,
+                    destination=destination.value,
+                    target=destination_target,
+                    media_role=destination_role,
+                    text=effect.narrative,
+                )

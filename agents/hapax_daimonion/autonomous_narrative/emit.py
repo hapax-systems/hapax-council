@@ -82,6 +82,7 @@ def emit_narrative(
     *,
     programme_id: str | None = None,
     operator_referent: str | None = None,
+    impulse_id: str | None = None,
     impingement_path: Path | None = None,
     now: float | None = None,
 ) -> EmitResult:
@@ -106,6 +107,7 @@ def emit_narrative(
             "narrative": text,
             "programme_id": programme_id,
             "operator_referent": operator_referent,
+            "impulse_id": impulse_id,
         },
         "intent_family": "narrative.autonomous_speech",
     }
@@ -117,6 +119,7 @@ def emit_narrative(
         "payload": {
             "narrative": text,
             "programme_id": programme_id,
+            "impulse_id": impulse_id,
             "impingement_id": impingement_id,
         },
     }
@@ -147,6 +150,7 @@ def emit_narrative(
             payload={
                 "narrative": text,
                 "programme_id": programme_id,
+                "impulse_id": impulse_id,
                 "impingement_id": impingement_id,
                 "salience": 0.6,
             },

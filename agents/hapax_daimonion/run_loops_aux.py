@@ -341,12 +341,29 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
             return
 
         now = time.time()
+        impulse_id = _narration_impulse_id_for_dispatch(imp, candidate)
         emit_result = emit.emit_narrative(
             narrative,
             programme_id=programme_id,
             operator_referent=referent,
+            impulse_id=impulse_id,
             now=now,
         )
+        try:
+            from agents.hapax_daimonion.voice_output_witness import (
+                record_composed_autonomous_narrative,
+            )
+
+            record_composed_autonomous_narrative(
+                text=narrative,
+                impingement=imp,
+                candidate=candidate,
+                emit_status="emitted" if emit_result else "emit_failed",
+                impulse_id=impulse_id,
+                now=now,
+            )
+        except Exception:
+            log.debug("voice-output witness compose update failed", exc_info=True)
         if emit_result:
             partial_success = bool(getattr(emit_result, "partial_success", False))
             emit.record_metric("partial_success" if partial_success else "allow")
@@ -386,6 +403,115 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
             )
     except Exception:
         log.warning("Autonomous narration dispatch failed", exc_info=True)
+
+
+def _is_narration_drive_impingement(imp: object) -> bool:
+    """True when the endogenous drive explicitly asks to recruit narration."""
+    content = getattr(imp, "content", {}) or {}
+    return (
+        getattr(imp, "source", "") == "endogenous.narrative_drive"
+        and isinstance(content, dict)
+        and content.get("drive") == "narration"
+    )
+
+
+def _narration_drive_fallback_candidate(imp: object) -> Any:
+    """Build the narration capability candidate implied by a narration drive.
+
+    The narrative drive exists to emit a semantic recruitment cue for
+    ``narration.autonomous_first_system``. If embedding retrieval misses that
+    affordance, use the typed drive as the witness that the narration capability
+    should be considered, then let the normal compose -> emit path own speech.
+    """
+    strength = getattr(imp, "strength", 0.3)
+    try:
+        combined = float(strength)
+    except (TypeError, ValueError):
+        combined = 0.3
+    combined = min(1.0, max(0.3, combined))
+    from agents.hapax_daimonion.voice_output_witness import build_narration_impulse
+
+    impulse = build_narration_impulse(
+        imp,
+        fallback_dispatched=True,
+        duplicate_prevented=False,
+    )
+    return type(
+        "NarrationDriveCandidate",
+        (),
+        {
+            "capability_name": "narration.autonomous_first_system",
+            "combined": combined,
+            "similarity": combined,
+            "payload": {
+                "source": "endogenous.narrative_drive",
+                "drive": "narration",
+                "capability_contract_evidence": "typed_narration_drive",
+                "impulse_id": impulse["impulse_id"],
+                "content_summary": impulse["content_summary"],
+                "evidence_refs": impulse["evidence_refs"],
+                "action_tendency": impulse["action_tendency"],
+                "speech_act_candidate": impulse["speech_act_candidate"],
+                "strength_posterior": impulse["strength_posterior"],
+                "role_context": impulse["role_context"],
+                "inhibition_policy": impulse["inhibition_policy"],
+                "wcs_snapshot_ref": impulse["wcs_snapshot_ref"],
+                "learning_policy": impulse["learning_policy"],
+            },
+        },
+    )()
+
+
+def _narration_impulse_id_for_dispatch(imp: object, candidate: object) -> str | None:
+    payload = getattr(candidate, "payload", {}) or {}
+    if isinstance(payload, dict) and payload.get("impulse_id"):
+        return str(payload["impulse_id"])
+    if not _is_narration_drive_impingement(imp):
+        return None
+    from agents.hapax_daimonion.voice_output_witness import narration_impulse_id
+
+    return narration_impulse_id(imp)
+
+
+def _dispatch_narration_drive_fallback_if_needed(
+    daemon: object, imp: object, candidates: list[object]
+) -> bool:
+    """Dispatch explicit narration drives when vector recruitment misses them."""
+    if not _is_narration_drive_impingement(imp):
+        return False
+    recruited = any(
+        getattr(c, "capability_name", "") == "narration.autonomous_first_system"
+        and float(getattr(c, "combined", 0.0)) >= 0.3
+        for c in candidates
+    )
+    if recruited:
+        try:
+            from agents.hapax_daimonion.voice_output_witness import record_narration_drive
+
+            record_narration_drive(
+                imp,
+                fallback_dispatched=False,
+                duplicate_prevented=True,
+                terminal_reason="normal_recruitment_already_selected",
+            )
+        except Exception:
+            log.debug("voice-output witness drive update failed", exc_info=True)
+        return False
+
+    candidate = _narration_drive_fallback_candidate(imp)
+    try:
+        from agents.hapax_daimonion.voice_output_witness import record_narration_drive
+
+        record_narration_drive(
+            imp,
+            fallback_dispatched=True,
+            duplicate_prevented=False,
+            terminal_reason="fallback_recruited_autonomous_narration",
+        )
+    except Exception:
+        log.debug("voice-output witness drive update failed", exc_info=True)
+    _dispatch_autonomous_narration(daemon, imp, candidate)
+    return True
 
 
 def _programme_id_from_context(context) -> str | None:
@@ -650,6 +776,8 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 results = daemon._discovery_handler.search(intent)
                                 if results:
                                     daemon._discovery_handler.propose(results)
+
+                    _dispatch_narration_drive_fallback_if_needed(daemon, imp, candidates)
 
                     # Cross-modal coordination: distribute fragment to recruited
                     # non-speech capabilities. CPAL owns the auditory modality, so

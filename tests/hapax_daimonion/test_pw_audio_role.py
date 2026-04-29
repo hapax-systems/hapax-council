@@ -20,7 +20,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_daimonion.pw_audio_output import PwAudioOutput, play_pcm
+from agents.hapax_daimonion.pw_audio_output import (
+    PwAudioOutput,
+    _playback_timeout_s,
+    play_pcm,
+)
 
 
 class TestMediaRoleOnPersistentSubprocess:
@@ -103,13 +107,39 @@ class TestMediaRoleOnOneShotPlayback:
 
     def test_media_role_assistant_in_one_shot_argv(self) -> None:
         with patch("subprocess.run") as mock_run:
-            play_pcm(b"\x00" * 100)
+            mock_run.return_value.returncode = 0
+            result = play_pcm(b"\x00" * 100)
 
         cmd = mock_run.call_args[0][0]
         assert "pw-cat" in cmd
         assert "--media-role" in cmd
         idx = cmd.index("--media-role")
         assert cmd[idx + 1] == "Assistant"
+        assert result.completed is True
+
+    def test_one_shot_timeout_scales_with_audio_duration(self) -> None:
+        """Long speech must not be cut by the one-shot pw-cat watchdog."""
+        pcm = b"\x00" * (24000 * 2 * 45)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            result = play_pcm(pcm, rate=24000, channels=1)
+
+        assert mock_run.call_args.kwargs["timeout"] == _playback_timeout_s(
+            pcm,
+            rate=24000,
+            channels=1,
+        )
+        assert mock_run.call_args.kwargs["timeout"] > 45.0
+        assert result.status == "completed"
+
+    def test_one_shot_nonzero_exit_reports_failed(self) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 7
+            result = play_pcm(b"\x00" * 100)
+
+        assert result.status == "failed"
+        assert result.returncode == 7
 
 
 import time
