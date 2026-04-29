@@ -24,9 +24,10 @@ python-version = "3.12"
 # pyright 'basic' mode equivalent — pyrefly defaults are roughly basic;
 # strict reports are disabled below via [errors].
 
-# Skip the interpreter probe in CI: setup-uv handles the venv, and querying
-# the interpreter just to populate site-package-path costs a few hundred ms
-# per invocation.
+# Keep interpreter probing enabled so local and CI checks resolve imports
+# consistently when a venv/site-packages is present. The CI typecheck fast path
+# installs only pyrefly and intentionally does not restore a pyrefly analysis
+# cache.
 skip-interpreter-query = false
 
 # Disable specific error categories, mapping the 12 pyright reports that

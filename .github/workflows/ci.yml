@@ -128,27 +128,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Install system deps (cairo, gobject)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      # PR2 of CI/CD speedup cascade (docs/research/2026-04-26-cicd-speedup.md
-      # §2 #1): pyrefly replaces pyright. Pyrefly is ~15-18x faster on
-      # benchmark codebases. Cache directory + key updated to pyrefly-*;
-      # pyrightconfig.json kept in the hash key so a coordinated migration
-      # is still keyed off both configs (pyrefly.toml is the active one).
-      - name: Cache pyrefly analysis
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pyrefly
-          key: pyrefly-${{ runner.os }}-${{ hashFiles('pyrefly.toml', 'pyrightconfig.json', 'uv.lock', 'pyproject.toml') }}
-          restore-keys: |
-            pyrefly-${{ runner.os }}-
-      - run: uv sync --extra ci
-      - run: uv run pyrefly check
+      # Keep the typecheck path independent of the full CI environment.
+      # Pyrefly does not need the cairo/gobject runtime deps or uv sync, and
+      # the previous analysis-cache restore did not materially shorten this
+      # check.
+      - run: uv run --no-project --with pyrefly==0.62.0 pyrefly check
 
   test:
     runs-on: ubuntu-latest
