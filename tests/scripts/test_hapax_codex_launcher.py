@@ -597,7 +597,7 @@ esac
     assert not foot_args.exists()
 
 
-def test_codex_send_foot_pastes_then_submits_after_focus(tmp_path: Path) -> None:
+def test_codex_send_foot_targets_window_shortcuts_without_focus(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     env["HAPAX_CODEX_SEND_PASTE_DELAY"] = "0"
     env["HAPAX_CODEX_SEND_SUBMIT_DELAY"] = "0"
@@ -615,9 +615,12 @@ case "$1" in
     printf '%s\\n' '[{{"class":"hapax-codex-cx-blue","address":"0xabc"}}]'
     ;;
   activewindow)
-    printf '%s\\n' '{{"address":"0xabc"}}'
+    printf '%s\\n' '{{"address":"0xdef"}}'
     ;;
   dispatch)
+    if [ "$2" = "sendshortcut" ]; then
+      printf '%s\\n' ok
+    fi
     ;;
 esac
 """
@@ -674,11 +677,98 @@ printf '%s\\n' "$*" >> {wtype_log}
     )
 
     assert result.returncode == 0, result.stderr
-    assert "dispatch focuswindow address:0xabc" in hyprctl_log.read_text()
+    hyprctl_text = hyprctl_log.read_text()
+    assert "dispatch sendshortcut CTRL,U,address:0xabc" in hyprctl_text
+    assert "dispatch sendshortcut CTRL SHIFT,V,address:0xabc" in hyprctl_text
+    assert "dispatch sendshortcut ,Return,address:0xabc" in hyprctl_text
+    assert "dispatch focuswindow" not in hyprctl_text
     copy_text = copy_log.read_text()
     assert "Proceed with the current task." in copy_text
     assert "OLD CLIP" in copy_text
+    assert not wtype_log.exists()
+
+
+def test_codex_send_foot_falls_back_to_focus_path_when_shortcut_unavailable(
+    tmp_path: Path,
+) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    env["HAPAX_CODEX_SEND_PASTE_DELAY"] = "0"
+    env["HAPAX_CODEX_SEND_SUBMIT_DELAY"] = "0"
+    env["HAPAX_CODEX_SEND_RESTORE_DELAY"] = "0"
+    env["HAPAX_CODEX_SEND_RETURN_HOLD_MS"] = "0"
+    env["HAPAX_CODEX_SEND_AFTER_SUBMIT_DELAY"] = "0"
+
+    hyprctl_log = tmp_path / "hyprctl.log"
+    fake_hyprctl = tmp_path / "bin" / "hyprctl"
+    fake_hyprctl.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {hyprctl_log}
+case "$1" in
+  clients)
+    printf '%s\\n' '[{{"class":"hapax-codex-cx-blue","address":"0xabc","at":[10,20],"size":[200,100]}}]'
+    ;;
+  activewindow)
+    printf '%s\\n' '{{"address":"0xabc"}}'
+    ;;
+  dispatch)
+    if [ "$2" = "sendshortcut" ]; then
+      printf '%s\\n' 'invalid args'
+    fi
+    ;;
+esac
+"""
+    )
+    fake_hyprctl.chmod(0o755)
+
+    fake_wl_copy = tmp_path / "bin" / "wl-copy"
+    fake_wl_copy.write_text("#!/usr/bin/env bash\ncat >/dev/null\n")
+    fake_wl_copy.chmod(0o755)
+
+    fake_wl_paste = tmp_path / "bin" / "wl-paste"
+    fake_wl_paste.write_text(
+        """#!/usr/bin/env bash
+case "$1" in
+  --list-types)
+    printf '%s\n' 'text/plain'
+    ;;
+  --no-newline)
+    printf '%s' 'OLD CLIP'
+    ;;
+esac
+"""
+    )
+    fake_wl_paste.chmod(0o755)
+
+    wtype_log = tmp_path / "wtype.log"
+    fake_wtype = tmp_path / "bin" / "wtype"
+    fake_wtype.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {wtype_log}
+"""
+    )
+    fake_wtype.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(SENDER),
+            "--session",
+            "cx-blue",
+            "--",
+            "Proceed with the current task.",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    hyprctl_text = hyprctl_log.read_text()
+    assert "dispatch sendshortcut CTRL,U,address:0xabc" in hyprctl_text
+    assert "dispatch movecursor 110 70" in hyprctl_text
+    assert "dispatch focuswindow address:0xabc" in hyprctl_text
     wtype_lines = wtype_log.read_text().splitlines()
+    assert "-M ctrl -k u -m ctrl" in wtype_lines
     assert "-M ctrl -M shift -k v -m shift -m ctrl" in wtype_lines
     assert "-P Return -s 0 -p Return" in wtype_lines
 
@@ -726,8 +816,113 @@ esac
     assert tmux_message.read_text() == "Repair the PR and report status."
     tmux_text = tmux_log.read_text()
     assert "has-session -t hapax-codex-cx-amber" in tmux_text
-    assert "paste-buffer -b hapax-codex-send -t hapax-codex-cx-amber" in tmux_text
+    assert "send-keys -t hapax-codex-cx-amber C-u" in tmux_text
+    assert "paste-buffer -b hapax-codex-send-cx-amber-" in tmux_text
+    assert "delete-buffer -b hapax-codex-send-cx-amber-" in tmux_text
     assert "send-keys -t hapax-codex-cx-amber Enter" in tmux_text
+
+
+def test_codex_send_tmux_waits_for_required_ack(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    env["HAPAX_CODEX_SEND_SUBMIT_DELAY"] = "0"
+    env["HAPAX_CODEX_SEND_ACK_TIMEOUT"] = "2"
+
+    ack_file = tmp_path / "ack.txt"
+    tmux_log = tmp_path / "tmux.log"
+    tmux_message = tmp_path / "tmux-message.txt"
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+case "$1" in
+  has-session)
+    exit 0
+    ;;
+  load-buffer)
+    file="${{@: -1}}"
+    cat "$file" > {tmux_message}
+    ;;
+  send-keys)
+    if [ "${{@: -1}}" = "Enter" ]; then
+      printf '%s\\n' "$HAPAX_CODEX_SEND_ACK_TOKEN" > "$HAPAX_CODEX_SEND_ACK_FILE"
+    fi
+    ;;
+esac
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(SENDER),
+            "--session",
+            "cx-amber",
+            "--transport",
+            "tmux",
+            "--require-ack",
+            "--ack-file",
+            str(ack_file),
+            "--ack-token",
+            "token-123",
+            "--json",
+            "--",
+            "Repair the PR and report status.",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert ack_file.read_text().strip() == "token-123"
+    assert "ACK REQUIRED" in tmux_message.read_text()
+    assert '"ack_required":1' in result.stdout
+
+
+def test_codex_send_requires_tmux_for_ack_by_default(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        """#!/usr/bin/env bash
+if [ "$1" = "has-session" ]; then
+  exit 1
+fi
+exit 0
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+    fake_hyprctl = tmp_path / "bin" / "hyprctl"
+    fake_hyprctl.write_text(
+        """#!/usr/bin/env bash
+case "$1" in
+  clients)
+    printf '%s\n' '[{"class":"hapax-codex-cx-blue","address":"0xabc"}]'
+    ;;
+esac
+"""
+    )
+    fake_hyprctl.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(SENDER),
+            "--session",
+            "cx-blue",
+            "--require-ack",
+            "--",
+            "Proceed with the current task.",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 13
+    assert "needs a tmux-backed session" in result.stderr
 
 
 def test_codex_send_auto_prefers_tmux_over_visible_foot(tmp_path: Path) -> None:

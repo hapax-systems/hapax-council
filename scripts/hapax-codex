@@ -679,14 +679,15 @@ First actions:
 5. Read ~/.cache/hapax/relay/$SESSION.yaml and ~/.cache/hapax/relay/$SLOT.yaml when present, then inspect current relay/path claims before edits.
 6. Before claims or edits, write a relay/preflight note with branch, head commit, dirty count, Codex version, MCP startup warnings, and the exact evidence commands you intend to rely on.
 7. When not actively producing (blocked, waiting on CI/MCP/tools, or idle), check parent/user/relay updates every $HAPAX_IDLE_UPDATE_SECONDS seconds and write a concise relay/status update if the wait continues. Ignore timestamp-only changes such as checked_at/updated when deciding whether there is substantive new work.
-8. Keep work scoped to the task and report changed files, tests, health snapshots, command outputs or artifact paths, and blockers before exit.
+8. For headless worker lanes, Obsidian is the operator-visible plane: keep ~/Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/codex-session-health.md, relay YAML, active claim, and PR state accurate. Screen visibility is required for cx-red and protected cx-violet only.
+9. Keep work scoped to the task and report changed files, tests, health snapshots, command outputs or artifact paths, and blockers before exit.
 
 Coordination rules:
 
 - Single operator only.
 - Use pass and child MCP wrappers for credentials; do not print secret values.
 - Use scripts/hapax-codex for child Codex sessions; do not introduce a parallel Claude launcher.
-- Use scripts/hapax-codex-send for parent-to-child visible-session instructions; it prefers the tmux-backed channel so instructions submit without Wayland paste/Return races.
+- Use scripts/hapax-codex-send --require-ack for load-bearing parent-to-child instructions; it prefers the tmux-backed channel and verifies receipt with an ACK.
 - Maintain Obsidian cc-task and relay discipline.
 - Treat implemented features that remain dormant, unshipped, or off by default as baseline defects unless a concrete external blocker is documented; prefer fixing the blocker and shipping.
 - Do not claim a persistent watch timer unless you are actively running a loop; after a final response, the session is idle, not watching.
