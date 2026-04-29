@@ -1,6 +1,7 @@
 [Unit]
 Description=Hapax USB xHCI bandwidth-wedge surgical watchdog
 Documentation=file:///usr/local/bin/hapax-usb-bandwidth-watchdog
+Documentation=file:///home/hapax/projects/hapax-council/docs/runbooks/usb-s4-l12-topology-hardening.md
 After=systemd-udevd.service
 
 [Service]
@@ -15,6 +16,7 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/sys/bus/usb/drivers/usb
+MemoryMax=64M
 
 [Install]
 WantedBy=multi-user.target

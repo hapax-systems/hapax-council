@@ -2,6 +2,10 @@
 Description=ALSA MIDI Port Routing (MCP → Hardware)
 After=sound.target
 ConditionPathExists=/proc/asound/card0
+# Legacy optional route: the current host has no ~/.local/bin/midi-route.
+# Skip cleanly until a maintained router is reintroduced instead of failing
+# every boot/replug cycle.
+ConditionPathExists=%h/.local/bin/midi-route
 
 [Service]
 Type=oneshot
