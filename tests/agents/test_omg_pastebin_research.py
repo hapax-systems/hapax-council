@@ -14,6 +14,33 @@ from agents.omg_pastebin_publisher.publisher import (
 )
 
 
+def _grounding_gate() -> dict:
+    return {
+        "schema_version": 1,
+        "public_private_mode": "public_archive",
+        "gate_state": "pass",
+        "claim": {
+            "evidence_refs": ["research:corpus"],
+            "provenance": {"source_refs": ["research:note"]},
+            "freshness": {"status": "fresh"},
+            "rights_state": "operator_original",
+            "privacy_state": "public_safe",
+            "public_private_mode": "public_archive",
+            "refusal_correction_path": {
+                "refusal_reason": None,
+                "correction_event_ref": None,
+                "artifact_ref": None,
+            },
+        },
+        "gate_result": {
+            "may_emit_claim": True,
+            "may_publish_live": False,
+            "may_publish_archive": True,
+            "may_monetize": False,
+        },
+    }
+
+
 def _research(
     research_id: str = "perception-fusion-2026-04",
     title: str = "Perception fusion notes",
@@ -26,6 +53,7 @@ def _research(
         "publish": publish,
         "body": body,
         "extracted_date": "2026-04-20",
+        "grounding_gate_result": _grounding_gate(),
     }
 
 

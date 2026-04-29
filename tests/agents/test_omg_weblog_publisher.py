@@ -15,6 +15,33 @@ from agents.omg_weblog_publisher.publisher import (
 )
 
 
+def _grounding_gate() -> dict:
+    return {
+        "schema_version": 1,
+        "public_private_mode": "public_archive",
+        "gate_state": "pass",
+        "claim": {
+            "evidence_refs": ["weblog:draft"],
+            "provenance": {"source_refs": ["weblog:source"]},
+            "freshness": {"status": "not_applicable"},
+            "rights_state": "operator_original",
+            "privacy_state": "public_safe",
+            "public_private_mode": "public_archive",
+            "refusal_correction_path": {
+                "refusal_reason": None,
+                "correction_event_ref": None,
+                "artifact_ref": None,
+            },
+        },
+        "gate_result": {
+            "may_emit_claim": True,
+            "may_publish_live": False,
+            "may_publish_archive": True,
+            "may_monetize": False,
+        },
+    }
+
+
 class TestDeriveEntrySlug:
     def test_iso_date_only(self) -> None:
         assert derive_entry_slug("2026-04-24.md") == "2026-04-24"
@@ -72,6 +99,7 @@ class TestPublisher:
             content="# Test\n\nBody.",
             title="Test",
             approved=True,
+            grounding_gate_result=_grounding_gate(),
         )
 
     def test_publish_calls_set_entry(self) -> None:
@@ -158,6 +186,7 @@ class TestApprovalGate:
             content="body",
             title="Test",
             approved=True,
+            grounding_gate_result=_grounding_gate(),
         )
         client = self._client()
         publisher = WeblogPublisher(client=client)
@@ -223,12 +252,16 @@ class _FakeArtifact:
         abstract: str = "",
         body_md: str = "",
         attribution_block: str = "",
+        grounding_gate_result: dict | None = None,
     ) -> None:
         self.slug = slug
         self.title = title
         self.abstract = abstract
         self.body_md = body_md
         self.attribution_block = attribution_block
+        self.grounding_gate_result = (
+            _grounding_gate() if grounding_gate_result is None else grounding_gate_result
+        )
 
 
 class TestPublishArtifact:

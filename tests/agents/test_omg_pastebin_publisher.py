@@ -15,10 +15,43 @@ from agents.omg_pastebin_publisher.publisher import (
 )
 
 
+def _grounding_gate() -> dict:
+    return {
+        "schema_version": 1,
+        "public_private_mode": "public_archive",
+        "gate_state": "pass",
+        "claim": {
+            "evidence_refs": ["pastebin:chronicle"],
+            "provenance": {"source_refs": ["chronicle:events"]},
+            "freshness": {"status": "fresh"},
+            "rights_state": "operator_controlled",
+            "privacy_state": "public_safe",
+            "public_private_mode": "public_archive",
+            "refusal_correction_path": {
+                "refusal_reason": None,
+                "correction_event_ref": None,
+                "artifact_ref": None,
+            },
+        },
+        "gate_result": {
+            "may_emit_claim": True,
+            "may_publish_live": False,
+            "may_publish_archive": True,
+            "may_monetize": False,
+        },
+    }
+
+
 def _event(
     ts: str, *, salience: float = 0.8, summary: str = "something", source: str = "dir"
 ) -> dict:
-    return {"ts": ts, "salience": salience, "summary": summary, "source": source}
+    return {
+        "ts": ts,
+        "salience": salience,
+        "summary": summary,
+        "source": source,
+        "grounding_gate_result": _grounding_gate(),
+    }
 
 
 class TestBuildChronicleSlug:

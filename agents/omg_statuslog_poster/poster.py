@@ -168,7 +168,11 @@ class StatuslogPoster:
         allow = allowlist_check(
             SURFACE,
             "chronicle.high_salience",
-            {"summary": event.get("summary", ""), "source": event.get("source", "")},
+            {
+                "summary": event.get("summary", ""),
+                "source": event.get("source", ""),
+                "event": event,
+            },
         )
         if allow.decision == "deny":
             log.info("omg-statuslog: allowlist denied (%s)", allow.reason)
