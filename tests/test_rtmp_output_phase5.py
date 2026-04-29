@@ -27,6 +27,12 @@ def gst():
 
 
 class TestRtmpOutputBinConstruction:
+    def test_aac_fallback_caps_match_encoder_sink_template(self) -> None:
+        from agents.studio_compositor.rtmp_output import _aac_input_caps_string
+
+        assert "format=S16LE" in _aac_input_caps_string("voaacenc")
+        assert "format=F32LE" in _aac_input_caps_string("avenc_aac")
+
     def test_build_with_real_elements_if_available(self, gst) -> None:
         from agents.studio_compositor.rtmp_output import RtmpOutputBin
 

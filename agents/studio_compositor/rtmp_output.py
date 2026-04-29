@@ -32,6 +32,12 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+def _aac_input_caps_string(encoder_factory: str) -> str:
+    """Return raw audio caps accepted by the selected AAC encoder."""
+    audio_format = "F32LE" if encoder_factory == "avenc_aac" else "S16LE"
+    return f"audio/x-raw,rate=48000,channels=2,format={audio_format}"
+
+
 class RtmpOutputBin:
     """Detachable RTMP encoder bin for the studio compositor."""
 
@@ -239,10 +245,6 @@ class RtmpOutputBin:
             audio_convert = Gst.ElementFactory.make("audioconvert", "rtmp_audio_convert")
             audio_resample = Gst.ElementFactory.make("audioresample", "rtmp_audio_resample")
             audio_caps = Gst.ElementFactory.make("capsfilter", "rtmp_audio_caps")
-            audio_caps.set_property(
-                "caps",
-                Gst.Caps.from_string("audio/x-raw,rate=48000,channels=2,format=S16LE"),
-            )
 
             # Finding #4 continued: second queue in front of voaacenc so
             # the encoder runs on its own thread, not the audioresample/
@@ -256,13 +258,19 @@ class RtmpOutputBin:
             audio_encoder_queue.set_property("max-size-time", 500 * Gst.MSECOND)
             audio_encoder_queue.set_property("leaky", 2)  # downstream
 
+            audio_encoder_factory = "voaacenc"
             audio_encoder = Gst.ElementFactory.make("voaacenc", "rtmp_voaacenc")
             if audio_encoder is None:
                 log.warning("rtmp bin: voaacenc unavailable, trying avenc_aac")
+                audio_encoder_factory = "avenc_aac"
                 audio_encoder = Gst.ElementFactory.make("avenc_aac", "rtmp_voaacenc")
             if audio_encoder is None:
                 log.error("rtmp bin: no AAC encoder available")
                 return False
+            audio_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(_aac_input_caps_string(audio_encoder_factory)),
+            )
             if hasattr(audio_encoder.props, "bitrate"):
                 audio_encoder.set_property("bitrate", 128000)
 
@@ -656,8 +664,11 @@ class MobileRtmpOutputBin:
             audio_encoder_queue = Gst.ElementFactory.make(
                 "queue", "mobile_rtmp_audio_encoder_queue"
             )
+            audio_encoder_factory = "voaacenc"
             audio_encoder = Gst.ElementFactory.make("voaacenc", "mobile_rtmp_voaacenc")
             if audio_encoder is None:
+                log.warning("mobile RTMP bin: voaacenc unavailable, trying avenc_aac")
+                audio_encoder_factory = "avenc_aac"
                 audio_encoder = Gst.ElementFactory.make("avenc_aac", "mobile_rtmp_voaacenc")
             aac_parse = Gst.ElementFactory.make("aacparse", "mobile_rtmp_aacparse")
             mux = Gst.ElementFactory.make("flvmux", "mobile_rtmp_flvmux")
@@ -688,7 +699,7 @@ class MobileRtmpOutputBin:
             audio_encoder_queue.set_property("leaky", 2)
             audio_caps.set_property(
                 "caps",
-                Gst.Caps.from_string("audio/x-raw,rate=48000,channels=2,format=S16LE"),
+                Gst.Caps.from_string(_aac_input_caps_string(audio_encoder_factory)),
             )
             if hasattr(audio_encoder.props, "bitrate"):
                 audio_encoder.set_property("bitrate", 128000)
