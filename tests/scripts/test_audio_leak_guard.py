@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "audio-leak-guard.sh"
+YETI_TARGET = "alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
 
 
 def _write_wireplumber_config(
@@ -116,6 +117,58 @@ context.objects = [
     return conf_dir
 
 
+def _write_private_monitor_bridge(
+    conf_dir: Path,
+    *,
+    target: str = YETI_TARGET,
+    include_dont_fallback: bool = True,
+) -> None:
+    dont_fallback = "node.dont-fallback = true" if include_dont_fallback else ""
+    conf_dir.joinpath("hapax-private-monitor-bridge.conf").write_text(
+        f"""
+context.modules = [
+  {{ name = libpipewire-module-loopback
+    args = {{
+      capture.props = {{
+        node.name = "hapax-private-monitor-capture"
+        stream.capture.sink = true
+        target.object = "hapax-private"
+      }}
+      playback.props = {{
+        node.name = "hapax-private-playback"
+        target.object = "{target}"
+        {dont_fallback}
+        node.dont-reconnect = true
+        node.dont-move = true
+        node.linger = true
+        state.restore = false
+      }}
+    }}
+  }}
+  {{ name = libpipewire-module-loopback
+    args = {{
+      capture.props = {{
+        node.name = "hapax-notification-private-monitor-capture"
+        stream.capture.sink = true
+        target.object = "hapax-notification-private"
+      }}
+      playback.props = {{
+        node.name = "hapax-notification-private-playback"
+        target.object = "{target}"
+        node.dont-fallback = true
+        node.dont-reconnect = true
+        node.dont-move = true
+        node.linger = true
+        state.restore = false
+      }}
+    }}
+  }}
+]
+""",
+        encoding="utf-8",
+    )
+
+
 def _run_guard(
     conf_dir: Path,
     tmp_path: Path,
@@ -201,4 +254,46 @@ def test_fails_when_notification_sink_targets_default_broadcast_path(tmp_path: P
     assert (
         "FAIL hapax-notification-private static target is broadcast/default path" in result.stdout
     )
+    assert "LEAK RISK DETECTED" in result.stdout
+
+
+def test_allows_explicit_yeti_private_monitor_bridge(tmp_path: Path) -> None:
+    conf_dir = _write_wireplumber_config(tmp_path)
+    pipewire_conf_dir = _write_pipewire_config(tmp_path)
+    _write_private_monitor_bridge(pipewire_conf_dir)
+
+    result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK  hapax-private-playback static target is Blue Yeti headphone" in result.stdout
+    assert (
+        "OK  hapax-notification-private-playback static target is Blue Yeti headphone"
+        in result.stdout
+    )
+
+
+def test_fails_when_explicit_private_monitor_bridge_targets_l12(tmp_path: Path) -> None:
+    conf_dir = _write_wireplumber_config(tmp_path)
+    pipewire_conf_dir = _write_pipewire_config(tmp_path)
+    _write_private_monitor_bridge(
+        pipewire_conf_dir,
+        target="alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40",
+    )
+
+    result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
+
+    assert result.returncode == 1
+    assert "FAIL hapax-private-playback static target is broadcast/default path" in result.stdout
+    assert "LEAK RISK DETECTED" in result.stdout
+
+
+def test_fails_when_explicit_private_monitor_bridge_can_fallback(tmp_path: Path) -> None:
+    conf_dir = _write_wireplumber_config(tmp_path)
+    pipewire_conf_dir = _write_pipewire_config(tmp_path)
+    _write_private_monitor_bridge(pipewire_conf_dir, include_dont_fallback=False)
+
+    result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
+
+    assert result.returncode == 1
+    assert "FAIL hapax-private-playback missing fail-closed property" in result.stdout
     assert "LEAK RISK DETECTED" in result.stdout

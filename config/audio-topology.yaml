@@ -39,6 +39,19 @@ nodes:
     params:
       l12_return_pair: RL RR
 
+  - id: yeti-headphone-output
+    kind: alsa_sink
+    pipewire_name: alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo
+    description: Blue Yeti headphone monitor, off-L-12 private endpoint
+    hw: front:14
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      audit_classification: external-hardware-optional
+      private_monitor_endpoint: true
+      forbidden_target_family: l12-broadcast
+
   # Stable fan-out and fail-closed sinks.
   - id: livestream-tap
     kind: tap
@@ -79,6 +92,78 @@ nodes:
     params:
       fail_closed: true
       forbidden_target_family: l12-broadcast
+
+  - id: private-monitor-capture
+    kind: filter_chain
+    pipewire_name: hapax-private-monitor-capture
+    description: Capture side for private assistant monitor bridge
+    target_object: hapax-private
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      stream.capture.sink: true
+      state.restore: false
+      stream.dont-remix: true
+      private_monitor_bridge: true
+      audit_classification: private-monitor-hardware-dependent
+
+  - id: private-monitor-output
+    kind: loopback
+    pipewire_name: hapax-private-playback
+    description: Private assistant monitor bridge to Blue Yeti headphone
+    target_object: alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      capture_source: hapax-private
+      stream.capture.sink: true
+      node.dont-fallback: true
+      node.dont-reconnect: true
+      node.dont-move: true
+      node.linger: true
+      state.restore: false
+      stream.dont-remix: true
+      fail_closed_on_target_absent: true
+      private_monitor_bridge: true
+      audit_classification: private-monitor-hardware-dependent
+
+  - id: notification-private-monitor-capture
+    kind: filter_chain
+    pipewire_name: hapax-notification-private-monitor-capture
+    description: Capture side for private notification monitor bridge
+    target_object: hapax-notification-private
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      stream.capture.sink: true
+      state.restore: false
+      stream.dont-remix: true
+      private_monitor_bridge: true
+      audit_classification: private-monitor-hardware-dependent
+
+  - id: notification-private-monitor-output
+    kind: loopback
+    pipewire_name: hapax-notification-private-playback
+    description: Private notification monitor bridge to Blue Yeti headphone
+    target_object: alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      capture_source: hapax-notification-private
+      stream.capture.sink: true
+      node.dont-fallback: true
+      node.dont-reconnect: true
+      node.dont-move: true
+      node.linger: true
+      state.restore: false
+      stream.dont-remix: true
+      fail_closed_on_target_absent: true
+      private_monitor_bridge: true
+      audit_classification: private-monitor-hardware-dependent
 
   # L-12 capture into the livestream. Only AUX1/3/4/5 are bound; raw
   # vinyl, PC return, and MASTER channels stay unbound.
@@ -353,6 +438,18 @@ edges:
 
   - source: tts-broadcast-playback
     target: livestream-tap
+
+  - source: private-sink
+    target: private-monitor-capture
+
+  - source: private-monitor-capture
+    target: private-monitor-output
+
+  - source: notification-private-sink
+    target: notification-private-monitor-capture
+
+  - source: notification-private-monitor-capture
+    target: notification-private-monitor-output
 
   # Expected only when the M8 hardware source is present. When absent,
   # live PipeWire can expose an auto-link fallback; audit classifies that
