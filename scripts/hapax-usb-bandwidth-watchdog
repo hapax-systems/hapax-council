@@ -37,7 +37,9 @@ rebind_device() {
 
 log "starting — watching for xHCI bandwidth storms"
 
-journalctl -k -f --no-pager --since now 2>/dev/null | \
+# Keep this on dmesg rather than journalctl: journalctl maps large journal
+# files and makes systemd account hundreds of MB to this tiny watchdog.
+dmesg --follow --decode 2>/dev/null | \
 while read -r line; do
   # Extract usb path like "usb 1-2" or "usb 1-3.2"
   if [[ "$line" =~ usb[[:space:]]+([0-9]+-[0-9.]+):.*[Nn]ot[[:space:]]+enough[[:space:]]+bandwidth ]]; then

@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""Witness and lightly repair the known-good Hapax USB topology."""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+S4_SERIAL = "fedcba9876543220"
+S4_EXPECTED_PATH = "pci-0000:71:00.0-usb-0:1.5"
+S4_SINK = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
+S4_SOURCE = "alsa_input.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-input"
+
+L12_SERIAL = "8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF"
+L12_EXPECTED_PATH = "pci-0000:71:00.0-usb-0:1.1.2.2"
+L12_SINK = (
+    "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
+)
+L12_SOURCE = (
+    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
+)
+
+CALDIGIT_CONTROLLER = "pci-0000:71:00.0"
+STATUS_PATH = Path("/dev/shm/hapax-usb/topology-status.json")
+
+
+def run(args: list[str], check: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, text=True, capture_output=True, check=check)
+
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def parse_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(str(value), 0)
+    except ValueError:
+        try:
+            return int(str(value))
+        except ValueError:
+            return None
+
+
+def udev_props_for_path(sys_path: Path) -> dict[str, str]:
+    proc = run(["udevadm", "info", "-q", "property", "-p", str(sys_path)])
+    return parse_props(proc.stdout) if proc.returncode == 0 else {}
+
+
+def udev_props_for_node(node: str) -> dict[str, str]:
+    proc = run(["udevadm", "info", "-q", "property", "-n", node])
+    return parse_props(proc.stdout) if proc.returncode == 0 else {}
+
+
+def parse_props(text: str) -> dict[str, str]:
+    props: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            props[key] = value
+    return props
+
+
+def command_stdout(args: list[str]) -> str:
+    proc = run(args)
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def find_usb_device(serial: str, product: str | None = None) -> dict[str, str]:
+    for entry in sorted(Path("/sys/bus/usb/devices").glob("*")):
+        if not (entry / "serial").exists():
+            continue
+        if read_text(entry / "serial") != serial:
+            continue
+        if product and read_text(entry / "product") != product:
+            continue
+        props = udev_props_for_path(entry)
+        return {
+            "device": entry.name,
+            "path": props.get("ID_PATH", ""),
+            "power_control": read_text(entry / "power" / "control"),
+        }
+    return {"device": "", "path": "", "power_control": ""}
+
+
+def s4_block_policy() -> dict[str, str]:
+    for node in sorted(glob.glob(f"/dev/disk/by-id/*{S4_SERIAL}*")):
+        props = udev_props_for_node(node)
+        if props.get("ID_SERIAL_SHORT") != S4_SERIAL:
+            continue
+        return {
+            "node": node,
+            "udisks_ignore": props.get("UDISKS_IGNORE", ""),
+            "udisks_hide": props.get("UDISKS_PRESENTATION_HIDE", ""),
+            "modemmanager_ignore": props.get("ID_MM_DEVICE_IGNORE", ""),
+        }
+    return {"node": "", "udisks_ignore": "", "udisks_hide": "", "modemmanager_ignore": ""}
+
+
+def s4_net_policy() -> dict[str, str]:
+    for iface_path in sorted(Path("/sys/class/net").glob("*")):
+        props = udev_props_for_path(iface_path)
+        if props.get("ID_SERIAL_SHORT") != S4_SERIAL:
+            continue
+        iface = iface_path.name
+        return {
+            "interface": iface,
+            "nm_unmanaged": props.get("NM_UNMANAGED", ""),
+            "modemmanager_ignore": props.get("ID_MM_DEVICE_IGNORE", ""),
+            "nmcli_state": nmcli_state(iface),
+        }
+    return {"interface": "", "nm_unmanaged": "", "modemmanager_ignore": "", "nmcli_state": ""}
+
+
+def nmcli_state(interface: str) -> str:
+    proc = run(["nmcli", "-t", "-f", "DEVICE,STATE", "device", "status"])
+    if proc.returncode != 0:
+        return ""
+    for line in proc.stdout.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 2 and parts[0] == interface:
+            return parts[1]
+    return ""
+
+
+def list_pactl(kind: str) -> set[str]:
+    names: set[str] = set()
+    for line in command_stdout(["pactl", "list", "short", kind]).splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            names.add(parts[1])
+    return names
+
+
+def get_default(kind: str) -> str:
+    proc = run(["pactl", f"get-default-{kind}"])
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def set_default(kind: str, name: str) -> bool:
+    return run(["pactl", f"set-default-{kind}", name]).returncode == 0
+
+
+def start_user_unit(unit: str) -> bool:
+    active = run(["systemctl", "--user", "is-active", "--quiet", unit])
+    if active.returncode == 0:
+        return True
+    return run(["systemctl", "--user", "start", unit]).returncode == 0
+
+
+def check_cameras() -> list[dict[str, str]]:
+    cameras: list[dict[str, str]] = []
+    for node in sorted(glob.glob("/dev/v4l/by-id/usb-046d*video-index0")):
+        props = udev_props_for_node(node)
+        path = props.get("ID_PATH", "")
+        cameras.append(
+            {
+                "node": node,
+                "devname": props.get("DEVNAME", ""),
+                "serial": props.get("ID_SERIAL_SHORT", ""),
+                "model": props.get("ID_MODEL", ""),
+                "path": path,
+                "on_caldigit_audio_controller": str(path.startswith(CALDIGIT_CONTROLLER)).lower(),
+            }
+        )
+    return cameras
+
+
+def live_snapshot() -> dict[str, Any]:
+    return {
+        "kernel": {
+            "usbfs_memory_mb": read_text(Path("/sys/module/usbcore/parameters/usbfs_memory_mb")),
+            "uvcvideo_quirks": read_text(Path("/sys/module/uvcvideo/parameters/quirks")),
+        },
+        "s4": {
+            **find_usb_device(S4_SERIAL, "S-4"),
+            "block": s4_block_policy(),
+            "net": s4_net_policy(),
+        },
+        "l12": {
+            **find_usb_device(L12_SERIAL, "L-12"),
+            "default_sink": get_default("sink"),
+            "default_source": get_default("source"),
+        },
+        "sinks": sorted(list_pactl("sinks")),
+        "sources": sorted(list_pactl("sources")),
+        "alsa_playback": command_stdout(["aplay", "-l"]),
+        "alsa_capture": command_stdout(["arecord", "-l"]),
+        "midi_clients": command_stdout(["aconnect", "-l"]),
+        "amidi_ports": command_stdout(["amidi", "-l"]),
+        "cameras": check_cameras(),
+        "repairs": [],
+    }
+
+
+def validate(snapshot: dict[str, Any], repair: bool = False) -> dict[str, Any]:
+    issues: list[str] = []
+    repairs = list(snapshot.get("repairs", []))
+    kernel = snapshot.get("kernel", {})
+    s4 = snapshot.get("s4", {})
+    l12 = snapshot.get("l12", {})
+    sinks = set(snapshot.get("sinks", []))
+    sources = set(snapshot.get("sources", []))
+
+    if parse_int(kernel.get("usbfs_memory_mb")) != 128:
+        issues.append(f"kernel_usbfs_memory_mb_drift:{kernel.get('usbfs_memory_mb', '')}")
+    if parse_int(kernel.get("uvcvideo_quirks")) != 0x100:
+        issues.append(f"kernel_uvcvideo_quirks_drift:{kernel.get('uvcvideo_quirks', '')}")
+
+    if not s4.get("device"):
+        issues.append("s4_usb_missing")
+    elif s4.get("path") != S4_EXPECTED_PATH:
+        issues.append(f"s4_path_drift:{s4.get('path', '')}")
+    if s4.get("power_control") != "on":
+        issues.append(f"s4_power_control_drift:{s4.get('power_control', '')}")
+
+    block = s4.get("block", {})
+    if block.get("udisks_ignore") != "1":
+        issues.append("s4_udisks_ignore_missing")
+    if block.get("modemmanager_ignore") != "1":
+        issues.append("s4_block_modemmanager_ignore_missing")
+
+    net = s4.get("net", {})
+    if net.get("nm_unmanaged") != "1":
+        issues.append("s4_networkmanager_unmanaged_missing")
+    if net.get("modemmanager_ignore") != "1":
+        issues.append("s4_net_modemmanager_ignore_missing")
+    nmcli_state_value = net.get("nmcli_state", "")
+    if nmcli_state_value and nmcli_state_value != "unmanaged":
+        issues.append(f"s4_nmcli_state_drift:{nmcli_state_value}")
+
+    if not l12.get("device"):
+        issues.append("l12_usb_missing")
+    elif l12.get("path") != L12_EXPECTED_PATH:
+        issues.append(f"l12_path_drift:{l12.get('path', '')}")
+
+    default_sink = l12.get("default_sink", "")
+    default_source = l12.get("default_source", "")
+    if L12_SINK not in sinks:
+        issues.append("l12_sink_missing")
+    elif default_sink != L12_SINK:
+        if repair and set_default("sink", L12_SINK):
+            repairs.append("l12_default_sink_restored")
+            l12["default_sink"] = L12_SINK
+        else:
+            issues.append(f"l12_default_sink_drift:{default_sink}")
+
+    if L12_SOURCE not in sources:
+        issues.append("l12_source_missing")
+    elif default_source != L12_SOURCE:
+        if repair and set_default("source", L12_SOURCE):
+            repairs.append("l12_default_source_restored")
+            l12["default_source"] = L12_SOURCE
+        else:
+            issues.append(f"l12_default_source_drift:{default_source}")
+
+    if S4_SINK not in sinks:
+        issues.append("s4_sink_missing")
+    if S4_SOURCE not in sources:
+        issues.append("s4_source_missing")
+    if "S-4" not in str(snapshot.get("alsa_playback", "")):
+        issues.append("s4_alsa_playback_missing")
+    if "S-4" not in str(snapshot.get("alsa_capture", "")):
+        issues.append("s4_alsa_capture_missing")
+    if "S-4" not in str(snapshot.get("midi_clients", "")):
+        issues.append("s4_midi_client_missing")
+    if "S-4" not in str(snapshot.get("amidi_ports", "")):
+        issues.append("s4_amidi_port_missing")
+
+    for camera in snapshot.get("cameras", []):
+        if camera.get("on_caldigit_audio_controller") == "true":
+            issues.append(f"camera_on_caldigit:{camera.get('serial', '')}:{camera.get('path', '')}")
+
+    if repair:
+        if start_user_unit("hapax-audio-router.service"):
+            repairs.append("hapax_audio_router_active")
+        if start_user_unit("hapax-usb-router.service"):
+            repairs.append("hapax_usb_router_active")
+
+    snapshot["l12"] = l12
+    snapshot["issues"] = issues
+    snapshot["repairs"] = repairs
+    snapshot["ok"] = not issues
+    return snapshot
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repair", action="store_true")
+    parser.add_argument("--fixture", type=Path)
+    parser.add_argument("--status-path", type=Path, default=STATUS_PATH)
+    args = parser.parse_args()
+
+    if args.fixture:
+        snapshot = json.loads(args.fixture.read_text(encoding="utf-8"))
+        repair = False
+    else:
+        snapshot = live_snapshot()
+        repair = args.repair
+
+    status = validate(snapshot, repair=repair)
+    args.status_path.parent.mkdir(parents=True, exist_ok=True)
+    args.status_path.write_text(
+        json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    if status["ok"]:
+        print(
+            "ok "
+            f"s4={status['s4'].get('device', '')} "
+            f"l12={status['l12'].get('device', '')} "
+            f"cameras_off_caldigit={len(status.get('cameras', []))} "
+            f"repairs={','.join(status.get('repairs', [])) or 'none'}"
+        )
+    else:
+        print(json.dumps(status, sort_keys=True))
+    return 0 if status["ok"] else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
