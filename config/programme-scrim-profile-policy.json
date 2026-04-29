@@ -1,0 +1,581 @@
+{
+  "schema_version": 1,
+  "policy_id": "programme_scrim_profile_policy:2026-04-29",
+  "schema_ref": "schemas/programme-scrim-profile-policy.schema.json",
+  "generated_at": "2026-04-29T21:07:29Z",
+  "content_programme_format_schema_ref": "schemas/content-programme-format.schema.json",
+  "scrim_state_schema_ref": "schemas/scrim-state-envelope.schema.json",
+  "soft_prior_only": {
+    "policy_grants_public_claim_authority": false,
+    "policy_grants_live_control": false,
+    "policy_can_override_wcs_blockers": false,
+    "wcs_decision_required": true,
+    "director_decision_required": true,
+    "scheduler_hint_only": true
+  },
+  "wcs_blocker_policy": {
+    "blocked_context_returns_profile": false,
+    "blocked_reasons_exposed": true,
+    "unavailable_profile_reasons_required": true,
+    "blocked_fallback_mode": "neutral_hold",
+    "blocker_states": [
+      "missing_evidence_ref",
+      "missing_grounding_gate",
+      "grounding_gate_failed",
+      "source_stale",
+      "rights_blocked",
+      "privacy_blocked",
+      "consent_blocked",
+      "public_event_missing",
+      "world_surface_blocked",
+      "health_failed",
+      "monetization_blocked",
+      "monetization_readiness_missing",
+      "conversion_held",
+      "operator_review_required",
+      "unknown_state"
+    ]
+  },
+  "targets": [
+    {
+      "target_id": "tier_list",
+      "target_kind": "format",
+      "display_name": "Tier List",
+      "covered_format_ids": ["tier_list"],
+      "covered_postures": [],
+      "grounding_intent": "Compare evidence-bound objects without turning rank order into hidden expertise.",
+      "profile_priors": [
+        {
+          "profile_id": "clarity_peak",
+          "permeability_mode": "semipermeable_membrane",
+          "weight": 0.7,
+          "priority": 80,
+          "density": 0.28,
+          "refraction": 0.12,
+          "motion_rate": 0.12,
+          "depth_bias": 0.38,
+          "focus_region_kinds": ["criteria_table", "rank_trace", "source_metadata"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.55,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.35
+          },
+          "rationale": "A clear scrim can emphasize criteria and trace without claiming ranking authority."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "ranking",
+      "target_kind": "format",
+      "display_name": "Ranking",
+      "covered_format_ids": ["ranking", "comparison"],
+      "covered_postures": [],
+      "grounding_intent": "Keep rank movement tied to visible evidence deltas and uncertainty.",
+      "profile_priors": [
+        {
+          "profile_id": "clarity_peak",
+          "permeability_mode": "ionised_glow",
+          "weight": 0.66,
+          "priority": 78,
+          "density": 0.26,
+          "refraction": 0.14,
+          "motion_rate": 0.16,
+          "depth_bias": 0.4,
+          "focus_region_kinds": ["rank_trace", "criteria_table", "source_metadata"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.56,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.36
+          },
+          "rationale": "Ionised glow can mark rank transitions while remaining subordinate to evidence."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "bracket",
+      "target_kind": "format",
+      "display_name": "Bracket",
+      "covered_format_ids": ["bracket"],
+      "covered_postures": [],
+      "grounding_intent": "Present matchup progression as an evidence game, not a verdict engine.",
+      "profile_priors": [
+        {
+          "profile_id": "moire_crackle",
+          "permeability_mode": "semipermeable_membrane",
+          "weight": 0.62,
+          "priority": 76,
+          "density": 0.3,
+          "refraction": 0.16,
+          "motion_rate": 0.18,
+          "depth_bias": 0.36,
+          "focus_region_kinds": ["criteria_table", "rank_trace", "object_focus"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.54,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.34
+          },
+          "rationale": "Crackle texture can separate bracket regions without hiding source uncertainty."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "react_commentary",
+      "target_kind": "format",
+      "display_name": "React Commentary",
+      "covered_format_ids": ["react_commentary"],
+      "covered_postures": [],
+      "grounding_intent": "Hold commentary near source metadata and rights posture.",
+      "profile_priors": [
+        {
+          "profile_id": "warm_haze",
+          "permeability_mode": "solute_suspension",
+          "weight": 0.58,
+          "priority": 70,
+          "density": 0.22,
+          "refraction": 0.1,
+          "motion_rate": 0.1,
+          "depth_bias": 0.32,
+          "focus_region_kinds": ["source_metadata", "object_focus"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.58,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.3
+          },
+          "rationale": "Warm haze signals commentary context while keeping rights/source labels legible."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "watch_along",
+      "target_kind": "format",
+      "display_name": "Watch Along",
+      "covered_format_ids": ["watch_along"],
+      "covered_postures": [],
+      "grounding_intent": "Keep attention timing visible without rebroadcasting or implying rights clearance.",
+      "profile_priors": [
+        {
+          "profile_id": "rain_streak",
+          "permeability_mode": "semipermeable_membrane",
+          "weight": 0.56,
+          "priority": 68,
+          "density": 0.2,
+          "refraction": 0.12,
+          "motion_rate": 0.16,
+          "depth_bias": 0.28,
+          "focus_region_kinds": ["timeline", "source_metadata", "object_focus"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.6,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.32
+          },
+          "rationale": "A light timing scrim can mark attention without becoming a visualizer."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "review",
+      "target_kind": "format",
+      "display_name": "Review",
+      "covered_format_ids": ["review"],
+      "covered_postures": [],
+      "grounding_intent": "Treat review claims as bounded observations with visible evidence and rights limits.",
+      "profile_priors": [
+        {
+          "profile_id": "gauzy_quiet",
+          "permeability_mode": "semipermeable_membrane",
+          "weight": 0.6,
+          "priority": 72,
+          "density": 0.24,
+          "refraction": 0.1,
+          "motion_rate": 0.08,
+          "depth_bias": 0.34,
+          "focus_region_kinds": ["criteria_table", "object_focus", "source_metadata"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.6,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.28
+          },
+          "rationale": "Quiet gauze keeps the object visible while foregrounding criteria."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "explainer",
+      "target_kind": "format",
+      "display_name": "Explainer",
+      "covered_format_ids": ["explainer"],
+      "covered_postures": [],
+      "grounding_intent": "Make source and uncertainty frames visible before explanatory synthesis.",
+      "profile_priors": [
+        {
+          "profile_id": "gauzy_quiet",
+          "permeability_mode": "solute_suspension",
+          "weight": 0.64,
+          "priority": 74,
+          "density": 0.22,
+          "refraction": 0.08,
+          "motion_rate": 0.08,
+          "depth_bias": 0.3,
+          "focus_region_kinds": ["question_frame", "source_metadata", "object_focus"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.62,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.28
+          },
+          "rationale": "Soft suspension helps frame the question without asserting expert closure."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "rundown",
+      "target_kind": "format",
+      "display_name": "Rundown",
+      "covered_format_ids": ["rundown"],
+      "covered_postures": [],
+      "grounding_intent": "Mark sequence and source freshness without converting sequence into truth.",
+      "profile_priors": [
+        {
+          "profile_id": "rain_streak",
+          "permeability_mode": "solute_suspension",
+          "weight": 0.5,
+          "priority": 62,
+          "density": 0.18,
+          "refraction": 0.08,
+          "motion_rate": 0.14,
+          "depth_bias": 0.24,
+          "focus_region_kinds": ["timeline", "source_metadata"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.64,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.3
+          },
+          "rationale": "A low-density temporal scrim supports rundown scanability."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "what_is_this",
+      "target_kind": "format",
+      "display_name": "What Is This",
+      "covered_format_ids": ["what_is_this"],
+      "covered_postures": [],
+      "grounding_intent": "Keep classification provisional and object-focused until evidence resolves it.",
+      "profile_priors": [
+        {
+          "profile_id": "dissolving",
+          "permeability_mode": "semipermeable_membrane",
+          "weight": 0.57,
+          "priority": 66,
+          "density": 0.2,
+          "refraction": 0.18,
+          "motion_rate": 0.1,
+          "depth_bias": 0.26,
+          "focus_region_kinds": ["object_focus", "question_frame", "source_metadata"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.6,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.26
+          },
+          "rationale": "Dissolving edges reinforce uncertainty around object identification."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "refusal_breakdown",
+      "target_kind": "format",
+      "display_name": "Refusal Breakdown",
+      "covered_format_ids": ["refusal_breakdown"],
+      "covered_postures": [],
+      "grounding_intent": "Make refusal reason and correction paths legible without leaking private detail.",
+      "profile_priors": [
+        {
+          "profile_id": "dissolving",
+          "permeability_mode": "solute_suspension",
+          "weight": 0.68,
+          "priority": 82,
+          "density": 0.24,
+          "refraction": 0.16,
+          "motion_rate": 0.08,
+          "depth_bias": 0.3,
+          "focus_region_kinds": ["refusal_reason", "correction_boundary", "source_metadata"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.58,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.26
+          },
+          "rationale": "Refusal scrim should dim assertions while keeping the reason boundary readable."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "evidence_audit",
+      "target_kind": "format",
+      "display_name": "Evidence Audit",
+      "covered_format_ids": ["evidence_audit"],
+      "covered_postures": [],
+      "grounding_intent": "Show the audit trail before any claim-bearing summary.",
+      "profile_priors": [
+        {
+          "profile_id": "clarity_peak",
+          "permeability_mode": "semipermeable_membrane",
+          "weight": 0.76,
+          "priority": 88,
+          "density": 0.3,
+          "refraction": 0.1,
+          "motion_rate": 0.06,
+          "depth_bias": 0.42,
+          "focus_region_kinds": ["source_metadata", "criteria_table", "correction_boundary"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.6,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.24
+          },
+          "rationale": "Evidence audit needs maximum labels and minimum motion."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "failure_autopsy",
+      "target_kind": "programme_posture",
+      "display_name": "Failure Autopsy",
+      "covered_format_ids": [],
+      "covered_postures": ["failure_autopsy"],
+      "grounding_intent": "Treat failure analysis as bounded trace review and correction boundary work.",
+      "profile_priors": [
+        {
+          "profile_id": "moire_crackle",
+          "permeability_mode": "solute_suspension",
+          "weight": 0.63,
+          "priority": 75,
+          "density": 0.28,
+          "refraction": 0.14,
+          "motion_rate": 0.08,
+          "depth_bias": 0.32,
+          "focus_region_kinds": ["correction_boundary", "source_metadata", "timeline"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.58,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.26
+          },
+          "rationale": "Fine crackle can mark failure seams without dramatizing them."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "listening",
+      "target_kind": "programme_posture",
+      "display_name": "Listening",
+      "covered_format_ids": [],
+      "covered_postures": ["listening"],
+      "grounding_intent": "Hold a quiet evidence-gathering state without forcing claims.",
+      "profile_priors": [
+        {
+          "profile_id": "gauzy_quiet",
+          "permeability_mode": "solute_suspension",
+          "weight": 0.7,
+          "priority": 80,
+          "density": 0.16,
+          "refraction": 0.06,
+          "motion_rate": 0.04,
+          "depth_bias": 0.2,
+          "focus_region_kinds": ["listening_field", "source_metadata"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.66,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.2
+          },
+          "rationale": "Listening is mostly negative space and should not become music visualization."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "hothouse",
+      "target_kind": "programme_posture",
+      "display_name": "Hothouse",
+      "covered_format_ids": [],
+      "covered_postures": ["hothouse"],
+      "grounding_intent": "Support live idea cultivation while refusing hidden expertise or public certainty.",
+      "profile_priors": [
+        {
+          "profile_id": "warm_haze",
+          "permeability_mode": "ionised_glow",
+          "weight": 0.52,
+          "priority": 58,
+          "density": 0.26,
+          "refraction": 0.2,
+          "motion_rate": 0.2,
+          "depth_bias": 0.34,
+          "focus_region_kinds": ["question_frame", "object_focus", "source_metadata"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.54,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.4
+          },
+          "rationale": "Hothouse can be warmer and more active, but still cannot overpower labels."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    },
+    {
+      "target_id": "ritual_boundary",
+      "target_kind": "programme_posture",
+      "display_name": "Ritual Boundary",
+      "covered_format_ids": [],
+      "covered_postures": ["ritual_boundary"],
+      "grounding_intent": "Mark openings, closings, and refusal/correction boundaries without claiming content status.",
+      "profile_priors": [
+        {
+          "profile_id": "ritual_open",
+          "permeability_mode": "semipermeable_membrane",
+          "weight": 0.6,
+          "priority": 70,
+          "density": 0.24,
+          "refraction": 0.12,
+          "motion_rate": 0.12,
+          "depth_bias": 0.28,
+          "focus_region_kinds": ["ritual_boundary_marker", "conversion_held_state"],
+          "legibility_constraints": {
+            "oq02_minimum_translucency": 0.58,
+            "oq02_label_required": true,
+            "anti_visualizer_required": true,
+            "audio_reactive_visualizer_allowed": false,
+            "preserve_operator_foreground": true,
+            "max_motion_rate": 0.3
+          },
+          "rationale": "Ritual markers can signal a boundary while remaining semipermeable."
+        }
+      ],
+      "blocked_exposure": {
+        "scheduler_field": "unavailable_profile_reasons",
+        "runner_field": "blocked_reasons",
+        "include_blocked_reasons": true,
+        "include_unavailable_profile_reasons": true
+      }
+    }
+  ]
+}
