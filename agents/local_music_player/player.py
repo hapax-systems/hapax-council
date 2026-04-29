@@ -43,6 +43,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from shared.music_repo import DEFAULT_REPO_PATH, LocalMusicRepo
 from shared.music_sources import (
@@ -215,6 +216,10 @@ def _build_url_pipeline(url: str, *, sink: str) -> tuple[list[str], list[str], l
     return yt, ffmpeg, pw
 
 
+def _spawn_process(cmd: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(cmd, **kwargs)  # noqa: S603 — fixed argv built above
+
+
 # ── Daemon ──────────────────────────────────────────────────────────────────
 
 
@@ -312,16 +317,16 @@ class LocalMusicPlayer:
                     sink,
                     track_path,
                 )
-                self._current_yt = subprocess.Popen(  # noqa: S603 — fixed argv
+                self._current_yt = _spawn_process(
                     yt_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
                 )
-                self._current_ffmpeg = subprocess.Popen(  # noqa: S603
+                self._current_ffmpeg = _spawn_process(
                     ffmpeg_cmd,
                     stdin=self._current_yt.stdout,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                 )
-                self._current_proc = subprocess.Popen(  # noqa: S603
+                self._current_proc = _spawn_process(
                     pw_cmd,
                     stdin=self._current_ffmpeg.stdout,
                     stderr=subprocess.DEVNULL,
@@ -334,9 +339,7 @@ class LocalMusicPlayer:
             else:
                 cmd = _build_local_pwcat(track_path, sink=sink)
                 log.info("playing local file via pw-cat (sink=%s): %s", sink, track_path)
-                self._current_proc = subprocess.Popen(  # noqa: S603
-                    cmd, stderr=subprocess.DEVNULL
-                )
+                self._current_proc = _spawn_process(cmd, stderr=subprocess.DEVNULL)
         except FileNotFoundError as exc:
             log.warning("playback tool missing (%s); skipping", exc)
             self._kill_current()
