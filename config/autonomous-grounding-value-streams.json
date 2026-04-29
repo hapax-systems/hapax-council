@@ -1,0 +1,954 @@
+{
+  "schema_version": 1,
+  "registry_id": "autonomous_grounding_value_streams",
+  "declared_at": "2026-04-29T03:00:44Z",
+  "producer": "cx-amber",
+  "global_policy": {
+    "single_operator_only": true,
+    "recurring_operator_labor_allowed": false,
+    "allowed_operator_actions": ["bootstrap", "legal_attestation"],
+    "supporter_perks_allowed": false,
+    "supporter_identity_persistence_allowed": false,
+    "public_claims_require_evidence_owner": true,
+    "unknown_rights_blocks_public_claim": true,
+    "forbidden_revenue_shapes": [
+      "patreon_perk_ladder",
+      "github_sponsors_funding_file",
+      "stripe_payment_links",
+      "discord_community_business",
+      "consulting_as_service",
+      "paid_subscriber_access_model",
+      "supporter_request_queue",
+      "sponsor_ad_read_obligation"
+    ]
+  },
+  "streams": [
+    {
+      "stream_id": "livestream_public_aperture",
+      "category": "live_aperture",
+      "automation_class": "GUARDED",
+      "n1_value_claim": "The live aperture monetizes a truthful public view of the single-operator lab attempting to stay grounded.",
+      "evidence_owner": {
+        "owner_id": "ResearchVehiclePublicEvent and MonetizationReadiness",
+        "evidence_refs": [
+          "LivestreamEgressState",
+          "BroadcastAudioSafety",
+          "ResearchVehiclePublicEvent",
+          "MonetizationReadiness"
+        ],
+        "proof_required": "Public-live truth, broadcast audio safety, rights provenance, metadata suitability, and platform posture must be current."
+      },
+      "revenue_path": {
+        "money_forms": [
+          "YouTube Partner Program ads",
+          "Premium revenue share",
+          "aggregate platform fan funding",
+          "sponsor-safe live demo packet"
+        ],
+        "route_policy": "Platform-native monetization is allowed only when safe_to_monetize and public_claim_allowed are true."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "livestream-egress-state-resolver",
+          "state": "complete",
+          "reason": "Public-live truth exists as a resolver."
+        },
+        {
+          "prerequisite_id": "broadcast-audio-safety-ssot",
+          "state": "complete",
+          "reason": "Broadcast audio safety has a contract but still needs live evidence consumers."
+        },
+        {
+          "prerequisite_id": "monetization-readiness-ledger",
+          "state": "blocked",
+          "reason": "Revenue-safe posture still needs a canonical ledger."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This is a public research aperture when egress evidence allows it.",
+          "This segment is evidence-bearing when public-event rows exist."
+        ],
+        "forbidden_claims": [
+          "Public-live when egress evidence is missing.",
+          "Monetizable when rights or audio safety are unknown.",
+          "Supporter-controlled programming or access."
+        ],
+        "claim_gate_refs": [
+          "LivestreamEgressState.public_claim_allowed",
+          "BroadcastAudioSafety.audio_safe_for_broadcast",
+          "MonetizationReadiness.safe_to_monetize"
+        ],
+        "missing_evidence_behavior": "block_public_claim"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "Face-obscure and privacy egress must pass before public-live claims.",
+        "rights_floor": "Only owned, cleared, or metadata-only media may be monetized.",
+        "consent_posture": "Fan funding stores aggregate amount, type, and time only.",
+        "fail_closed_reasons": ["missing_egress_evidence", "audio_unsafe", "rights_unknown", "privacy_blocked"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["bootstrap", "legal_attestation"],
+        "bootstrap_required": true,
+        "legal_attestation_required": false,
+        "boundary_note": "The operator may connect platform credentials or attest to policy identity; Hapax must prepare and run the rest."
+      },
+      "status": "guarded",
+      "next_packet": {
+        "task_id": "youtube-captions-cuepoints-sections-shorts-reconcile",
+        "task_note": "closed/youtube-captions-cuepoints-sections-shorts-reconcile.md",
+        "state": "closed",
+        "reason": "The YouTube metadata, cuepoint, caption, section, and Shorts reconcile packet is complete; follow-on aperture work should consume its closed evidence before stronger public claims."
+      },
+      "guardrails": [
+        "No public-live claim without egress evidence.",
+        "No caption, cuepoint, Shorts, or monetization claim without fresh producer evidence.",
+        "No supporter identity or comment persistence."
+      ],
+      "train_position": {
+        "wsjf": 9.0,
+        "priority": "p1",
+        "blocks": ["support-surface-registry", "payment-aggregator-v2-support-normalizer"]
+      },
+      "refusal_conversions": []
+    },
+    {
+      "stream_id": "vod_archive_replay_shorts_chapters",
+      "category": "archive_replay",
+      "automation_class": "AUTO",
+      "n1_value_claim": "Replay objects turn the lab's dated grounding attempts into inspectable, reusable, and sellable evidence.",
+      "evidence_owner": {
+        "owner_id": "ArchiveReplayRef",
+        "evidence_refs": ["ResearchVehiclePublicEvent", "ArchiveReplayRef", "chapter_ref", "frame_ref"],
+        "proof_required": "Every replay artifact needs event, frame, chapter, rights, salience, and condition references."
+      },
+      "revenue_path": {
+        "money_forms": [
+          "VOD ad revenue",
+          "annotated replay packs",
+          "Shorts where media is owned or cleared",
+          "institutional demo packets"
+        ],
+        "route_policy": "Archive and Shorts routes stay blocked until replay refs and rights scans prove the slice is safe."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "ResearchVehiclePublicEvent",
+          "state": "complete",
+          "reason": "Public events provide the root object for replay."
+        },
+        {
+          "prerequisite_id": "archive-replay-public-event-link-adapter",
+          "state": "required",
+          "reason": "Replay refs still need link adapters from public event rows."
+        },
+        {
+          "prerequisite_id": "rights-safe-media-reference-gate",
+          "state": "required",
+          "reason": "Shorts and replay packs must prove owned or cleared media."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This replay is tied to a dated public event.",
+          "This clip is a grounding incident or refusal artifact when evidence refs exist."
+        ],
+        "forbidden_claims": [
+          "Rights-safe without provenance.",
+          "Archive-complete without replay refs.",
+          "Viral clip value as a substitute for grounding value."
+        ],
+        "claim_gate_refs": ["ArchiveReplayRef", "rights-safe-media-reference-gate"],
+        "missing_evidence_behavior": "downgrade_to_dry_run"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "No raw private frames or consent-required media in replay products.",
+        "rights_floor": "Owned, cleared, public-domain, compatible Creative Commons, or metadata-only slices.",
+        "consent_posture": "Third-party identity is not retained beyond public event evidence required for attribution.",
+        "fail_closed_reasons": ["missing_archive_ref", "rights_unknown", "private_frame", "consent_blocked"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["bootstrap"],
+        "bootstrap_required": false,
+        "legal_attestation_required": false,
+        "boundary_note": "Replay selection, packaging, and publication must run from event and archive evidence without manual clipping obligations."
+      },
+      "status": "blocked",
+      "next_packet": {
+        "task_id": "archive-replay-public-event-link-adapter",
+        "task_note": "active/archive-replay-public-event-link-adapter.md",
+        "state": "offered",
+        "reason": "This adapter is the first concrete bridge from public events to replayable artifacts."
+      },
+      "guardrails": [
+        "No rights-risky music, image, or video slices.",
+        "No generic viral clipping.",
+        "Every artifact includes event, frame, chapter, condition, and rights references."
+      ],
+      "train_position": {
+        "wsjf": 8.3,
+        "priority": "p2",
+        "blocks": ["replay-demo-residency-kit", "aesthetic-condition-editions-ledger"]
+      },
+      "refusal_conversions": []
+    },
+    {
+      "stream_id": "cross_surface_publication_bus",
+      "category": "publication_bus",
+      "automation_class": "AUTO",
+      "n1_value_claim": "A single public event object lets the weird lab surface appear across platforms without each surface inventing truth.",
+      "evidence_owner": {
+        "owner_id": "SurfacePolicy",
+        "evidence_refs": ["ResearchVehiclePublicEvent", "SurfacePolicy", "publish_log", "cursor_owner"],
+        "proof_required": "Each surface needs action, cadence, rate limit, redaction, credential state, cursor owner, failure label, and metric evidence."
+      },
+      "revenue_path": {
+        "money_forms": [
+          "discovery",
+          "trust evidence",
+          "owned web continuity",
+          "sponsor and grant evidence",
+          "citation graph"
+        ],
+        "route_policy": "Fanout is value-enabling, not a community or customer-service surface."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "cross-surface-event-contract",
+          "state": "required",
+          "reason": "Surfaces need a common event contract."
+        },
+        {
+          "prerequisite_id": "surface-specific adapters",
+          "state": "dry_run",
+          "reason": "Adapters must distinguish real, dry-run, stale, and unwired surfaces."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This surface consumed a specific public event.",
+          "This surface is dry-run, stale, private, or public according to SurfacePolicy."
+        ],
+        "forbidden_claims": [
+          "Surface availability without credential and cursor evidence.",
+          "Discord community or two-way support promises.",
+          "Random internal file scraping."
+        ],
+        "claim_gate_refs": ["ResearchVehiclePublicEvent.surface_policy", "publish_log"],
+        "missing_evidence_behavior": "downgrade_to_dry_run"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "Fanout may consume only public-event objects after redaction.",
+        "rights_floor": "Surface posts inherit the event rights class and attribution refs.",
+        "consent_posture": "Publication bus is one-way and aggregate; no per-person audience state.",
+        "fail_closed_reasons": ["missing_surface_policy", "credential_missing", "redaction_unknown", "cursor_conflict"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["bootstrap"],
+        "bootstrap_required": true,
+        "legal_attestation_required": false,
+        "boundary_note": "The operator may provide credentials; Hapax owns idempotency, cursoring, dry-run, and failure handling."
+      },
+      "status": "offered",
+      "next_packet": {
+        "task_id": "cross-surface-event-contract",
+        "task_note": "active/cross-surface-event-contract.md",
+        "state": "offered",
+        "reason": "This contract is the shared public-event shape downstream adapters should consume."
+      },
+      "guardrails": [
+        "No surface may infer public-live state on its own.",
+        "Discord remains publication-bus only.",
+        "Every fanout attempt records credential, cursor, and dry-run state."
+      ],
+      "train_position": {
+        "wsjf": 8.7,
+        "priority": "p2",
+        "blocks": ["publication-artifact-public-event-adapter"]
+      },
+      "refusal_conversions": []
+    },
+    {
+      "stream_id": "direct_no_perk_support_rails",
+      "category": "support_rail",
+      "automation_class": "AUTO",
+      "n1_value_claim": "Support monetizes the instrument's continued operation without buying access to the operator.",
+      "evidence_owner": {
+        "owner_id": "support-surface-registry",
+        "evidence_refs": ["support surface registry", "payment aggregator v2", "MonetizationReadiness"],
+        "proof_required": "Each support rail must declare copy, credential state, aggregate-only receipt handling, and safe_to_monetize gating."
+      },
+      "revenue_path": {
+        "money_forms": ["Liberapay", "Lightning", "Nostr zaps", "guarded Ko-fi tips", "aggregate YouTube fan funding"],
+        "route_policy": "Support prompts are no-perk, aggregate-only, and fail closed unless monetization readiness permits them."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "support-surface-registry",
+          "state": "required",
+          "reason": "Support rails need an allowlist and copy posture."
+        },
+        {
+          "prerequisite_id": "payment-aggregator-v2-support-normalizer",
+          "state": "blocked",
+          "reason": "Aggregator depends on this registry and the support registry."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "Support keeps compute, archive storage, rights-safe production, and publication plumbing running."
+        ],
+        "forbidden_claims": [
+          "Support buys access, requests, advice, priority, shoutouts, deliverables, or control.",
+          "Supporter identity or leaderboard state."
+        ],
+        "claim_gate_refs": ["MonetizationReadiness.safe_to_monetize", "support-surface-registry"],
+        "missing_evidence_behavior": "block_public_claim"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "Aggregate payment metrics only.",
+        "rights_floor": "Support copy may not attach to uncleared media or false public claims.",
+        "consent_posture": "No supporter list, leaderboard, comments, requests, or personalized treatment.",
+        "fail_closed_reasons": ["unsafe_to_monetize", "supporter_identity_required", "perk_language_detected"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["bootstrap"],
+        "bootstrap_required": true,
+        "legal_attestation_required": false,
+        "boundary_note": "The operator may create accounts; Hapax handles prompts, aggregation, and refusal of perk-shaped support."
+      },
+      "status": "offered",
+      "next_packet": {
+        "task_id": "support-surface-registry",
+        "task_note": "active/support-surface-registry.md",
+        "state": "offered",
+        "reason": "This task is directly blocked by the value stream registry and normalizes allowed support rails."
+      },
+      "guardrails": [
+        "No donor, subscriber, guarantee, promise, request, client, or private access language.",
+        "No supporter list or leaderboard.",
+        "Support prompts fail closed without monetization readiness."
+      ],
+      "train_position": {
+        "wsjf": 8.7,
+        "priority": "p1",
+        "blocks": ["payment-aggregator-v2-support-normalizer", "public-offer-page-generator-no-perk"]
+      },
+      "refusal_conversions": [
+        {
+          "generic_form": "Patreon",
+          "decision": "refused",
+          "buildable_conversion": "No-perk public support page with Liberapay and Lightning rails."
+        },
+        {
+          "generic_form": "GitHub Sponsors funding file",
+          "decision": "refused",
+          "buildable_conversion": "Support rails and license-request routing without in-repo FUNDING.yml."
+        }
+      ]
+    },
+    {
+      "stream_id": "commercial_license_agent_payment_rail",
+      "category": "commercial_license",
+      "automation_class": "GUARDED",
+      "n1_value_claim": "Commercial interest can pay for artifacts and exceptions without turning Hapax into SaaS or sales work.",
+      "evidence_owner": {
+        "owner_id": "license-request-price-class-router",
+        "evidence_refs": ["license matrix", "LICENSE-REQUEST parser", "x402 receive endpoint"],
+        "proof_required": "Every paid commercial path needs license class, price class, artifact reference, and receive-only payment contract evidence."
+      },
+      "revenue_path": {
+        "money_forms": ["PolyForm Strict commercial exceptions", "LICENSE-REQUEST intake", "x402 receive-only endpoint"],
+        "route_policy": "Commercial payment is self-serve or receive-only; no CRM, hosted account portal, or outbound payment flow."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "license-request-price-class-router",
+          "state": "blocked",
+          "reason": "Needs license classes and artifact price classes."
+        },
+        {
+          "prerequisite_id": "x402-spec-current-research",
+          "state": "required",
+          "reason": "Receive endpoint implementation depends on current x402 semantics."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "Commercial-use requests can be routed through declared license classes.",
+          "Paid access applies only to named self-serve artifacts."
+        ],
+        "forbidden_claims": [
+          "Hosted SaaS availability.",
+          "Customer account management.",
+          "Outbound payments or Stripe/KYC rail."
+        ],
+        "claim_gate_refs": ["license matrix", "x402 receive contract"],
+        "missing_evidence_behavior": "private_only"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "License requests are business artifacts, not personal relationship records.",
+        "rights_floor": "Only artifacts with declared license and provenance may be sold.",
+        "consent_posture": "No client relationship state beyond the request artifact and legal correspondence.",
+        "fail_closed_reasons": ["missing_license_class", "artifact_rights_unknown", "payment_contract_unknown"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["bootstrap", "legal_attestation"],
+        "bootstrap_required": true,
+        "legal_attestation_required": true,
+        "boundary_note": "The operator may attest to license/legal identity; Hapax must avoid sales calls and account management."
+      },
+      "status": "guarded",
+      "next_packet": {
+        "task_id": "license-request-price-class-router",
+        "task_note": "active/license-request-price-class-router.md",
+        "state": "blocked",
+        "reason": "This downstream router turns commercial interest into daemon-tractable license classes."
+      },
+      "guardrails": [
+        "No hosted SaaS.",
+        "No account portal or customer success loop.",
+        "No Stripe/KYC rail."
+      ],
+      "train_position": {
+        "wsjf": 8.3,
+        "priority": "p2",
+        "blocks": ["x402-receive-endpoint-implementation"]
+      },
+      "refusal_conversions": [
+        {
+          "generic_form": "Stripe Payment Links",
+          "decision": "refused",
+          "buildable_conversion": "Lightning, Liberapay, or x402 receive-only routes."
+        }
+      ]
+    },
+    {
+      "stream_id": "product_tool_ip_artifact_packs",
+      "category": "artifact_product",
+      "automation_class": "AUTO",
+      "n1_value_claim": "Reusable parts of the lab can become artifacts without generalizing Hapax into a multi-user product.",
+      "evidence_owner": {
+        "owner_id": "artifact-catalog-release-workflow",
+        "evidence_refs": ["artifact catalog", "license metadata", "scrubbed fixtures", "release workflow"],
+        "proof_required": "Each product pack needs license metadata, scrubbed examples, tests, docs, and a self-serve release path."
+      },
+      "revenue_path": {
+        "money_forms": ["paid self-hosted kits", "commercial-use licenses", "template bundles", "paid docs", "dataset cards"],
+        "route_policy": "Artifacts are sold or licensed as files, packages, or docs; no service obligations follow."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "artifact-catalog-release-workflow",
+          "state": "blocked",
+          "reason": "Release packaging needs a canonical catalog workflow."
+        },
+        {
+          "prerequisite_id": "research-corpus-anonymization-rights-ledger",
+          "state": "complete",
+          "reason": "The rights ledger task has closed and can now unblock scrubbed release planning."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This artifact is a reusable pattern from the single-operator lab.",
+          "Commercial use follows the declared license class."
+        ],
+        "forbidden_claims": [
+          "Hapax for teams.",
+          "Hosted SaaS or tenant-ready product.",
+          "Customer success or custom implementation."
+        ],
+        "claim_gate_refs": ["artifact catalog", "license metadata", "scrubbed fixture ledger"],
+        "missing_evidence_behavior": "block_public_claim"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "No private vault, profile, or employer data in fixtures.",
+        "rights_floor": "Only code/docs/assets with declared licenses and provenance.",
+        "consent_posture": "No third-party PII or person-state examples.",
+        "fail_closed_reasons": ["fixture_not_scrubbed", "license_unknown", "third_party_pii"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["bootstrap"],
+        "bootstrap_required": false,
+        "legal_attestation_required": false,
+        "boundary_note": "Artifact packaging and release should be workflow-driven; no post-sale support loop is permitted."
+      },
+      "status": "blocked",
+      "next_packet": {
+        "task_id": "artifact-catalog-release-workflow",
+        "task_note": "active/artifact-catalog-release-workflow.md",
+        "state": "blocked",
+        "reason": "This packet supplies the catalog and release workflow for artifact products."
+      },
+      "guardrails": [
+        "No auth retrofit.",
+        "No tenant abstraction.",
+        "No customer success loop.",
+        "No unsanitized examples."
+      ],
+      "train_position": {
+        "wsjf": 8.7,
+        "priority": "p1",
+        "blocks": ["replay-card-marketplace-publisher", "itch-pwyw-phase-2-5-release-workflow"]
+      },
+      "refusal_conversions": []
+    },
+    {
+      "stream_id": "research_artifacts_datasets_papers_identifiers",
+      "category": "research_artifact",
+      "automation_class": "GUARDED",
+      "n1_value_claim": "The lab's traces can become formal n=1 research artifacts, datasets, identifiers, and papers.",
+      "evidence_owner": {
+        "owner_id": "research-corpus-anonymization-rights-ledger",
+        "evidence_refs": ["rights ledger", "identifier graph", "dataset cards", "n1 methodology dossier"],
+        "proof_required": "Every corpus or paper artifact needs anonymization, rights, identifier, scope, and n=1 limitation evidence."
+      },
+      "revenue_path": {
+        "money_forms": ["grants", "fellowships", "dataset citations", "compute credits", "paid artifact bundles"],
+        "route_policy": "Research artifacts may support formal applications or sales only after privacy, rights, and n=1 scope pass."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "research-corpus-anonymization-rights-ledger",
+          "state": "complete",
+          "reason": "The rights ledger task has closed and provides the gate for research artifacts."
+        },
+        {
+          "prerequisite_id": "n1-methodology-dossier",
+          "state": "required",
+          "reason": "Public positioning needs a rigorous n=1 methodology frame."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This is n=1 or SCED evidence within a declared scope.",
+          "This dataset card describes a sanitized Hapax artifact."
+        ],
+        "forbidden_claims": [
+          "General population claims from n=1 evidence.",
+          "False institutional affiliation.",
+          "Private vault or employer-data disclosure."
+        ],
+        "claim_gate_refs": ["rights ledger", "n1 methodology dossier", "identifier graph"],
+        "missing_evidence_behavior": "block_public_claim"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "Private vault, employer data, and third-party PII are excluded by default.",
+        "rights_floor": "Datasets require explicit rights class and license posture.",
+        "consent_posture": "Person-identified content requires active consent or is excluded.",
+        "fail_closed_reasons": ["anonymization_missing", "rights_unknown", "scope_overclaim", "third_party_pii"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["legal_attestation"],
+        "bootstrap_required": false,
+        "legal_attestation_required": true,
+        "boundary_note": "The operator may legally attest to submissions; Hapax prepares evidence packets and scope language."
+      },
+      "status": "guarded",
+      "next_packet": {
+        "task_id": "research-corpus-anonymization-rights-ledger",
+        "task_note": "closed/research-corpus-anonymization-rights-ledger.md",
+        "state": "closed",
+        "reason": "This closed task is the privacy and rights gate for datasets, papers, grants, and demos."
+      },
+      "guardrails": [
+        "No overclaiming beyond n=1 or SCED.",
+        "No private vault leakage.",
+        "No employer data.",
+        "No false institutional affiliation."
+      ],
+      "train_position": {
+        "wsjf": 9.3,
+        "priority": "p1",
+        "blocks": ["grant-opportunity-scout-attestation-queue", "artifact-catalog-release-workflow"]
+      },
+      "refusal_conversions": []
+    },
+    {
+      "stream_id": "grants_fellowships_credits_institutional_patronage",
+      "category": "institutional_grant",
+      "automation_class": "LEGAL_ATTEST",
+      "n1_value_claim": "Institutional money can fund the rare instrument if Hapax prepares evidence and isolates legal attestation.",
+      "evidence_owner": {
+        "owner_id": "grant-opportunity-scout-attestation-queue",
+        "evidence_refs": ["opportunity scout", "eligibility memo", "application packet", "attestation queue"],
+        "proof_required": "Each opportunity needs current eligibility, deadline, submission feasibility, attachments, budget, and attestation boundary."
+      },
+      "revenue_path": {
+        "money_forms": ["safety fellowships", "OSS credits", "AI governance grants", "research residencies", "compute credits"],
+        "route_policy": "Hapax prepares and submits where lawful; human action is limited to explicit legal attestation."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "grant-opportunity-scout-attestation-queue",
+          "state": "required",
+          "reason": "Need a daemon-readable opportunity and attestation queue."
+        },
+        {
+          "prerequisite_id": "research-corpus-anonymization-rights-ledger",
+          "state": "complete",
+          "reason": "The closed rights ledger provides the evidence gate for applications."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This opportunity packet is prepared for legal attestation.",
+          "This application evidence comes from declared public or sanitized artifacts."
+        ],
+        "forbidden_claims": [
+          "Submitted when a human legal attestation is still pending.",
+          "Affiliation, eligibility, or deadline claims without current official source evidence."
+        ],
+        "claim_gate_refs": ["opportunity scout", "eligibility memo", "attestation queue"],
+        "missing_evidence_behavior": "emit_refusal_artifact"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "Application attachments must be public, sanitized, or explicitly attested.",
+        "rights_floor": "No rights-unsafe screenshots, recordings, or datasets in applications.",
+        "consent_posture": "No third-party person facts beyond public source references.",
+        "fail_closed_reasons": ["official_source_stale", "attestation_required", "attachment_unsafe"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["legal_attestation"],
+        "bootstrap_required": false,
+        "legal_attestation_required": true,
+        "boundary_note": "If a portal or law requires the operator, Hapax prepares everything and queues only that attestation act."
+      },
+      "status": "offered",
+      "next_packet": {
+        "task_id": "grant-opportunity-scout-attestation-queue",
+        "task_note": "active/grant-opportunity-scout-attestation-queue.md",
+        "state": "offered",
+        "reason": "This packet turns opportunity scouting into automated packet prep and attestation isolation."
+      },
+      "guardrails": [
+        "No fake institution.",
+        "No manual opportunity chasing.",
+        "No portal-heavy process unless Playwright or mail automation is proven."
+      ],
+      "train_position": {
+        "wsjf": 9.0,
+        "priority": "p1",
+        "blocks": ["operator-action-cred-watch-auto-prep-bundle"]
+      },
+      "refusal_conversions": []
+    },
+    {
+      "stream_id": "aesthetic_media_condition_editions",
+      "category": "aesthetic_edition",
+      "automation_class": "GUARDED",
+      "n1_value_claim": "Runtime visual and archive states become scarce editions because they are tied to conditions, claims, and provenance.",
+      "evidence_owner": {
+        "owner_id": "aesthetic-condition-editions-ledger",
+        "evidence_refs": ["condition_id", "frame_ref", "rights_class", "provenance_token", "public_event"],
+        "proof_required": "Each edition needs timestamp, condition, rights class, provenance token, frame ref, and public-event link."
+      },
+      "revenue_path": {
+        "money_forms": ["condition editions", "prints", "loops", "VJ packs", "zines", "screening packets"],
+        "route_policy": "Editions are permitted only when frame, rights, condition, and public-event evidence are complete."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "aesthetic-condition-editions-ledger",
+          "state": "blocked",
+          "reason": "Edition rows need public event, frame, and provenance refs."
+        },
+        {
+          "prerequisite_id": "archive-replay-public-event-link-adapter",
+          "state": "required",
+          "reason": "Edition provenance needs replayable public-event links."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This edition came from a named condition and public event.",
+          "This loop or still has declared provenance and rights."
+        ],
+        "forbidden_claims": [
+          "Raw private frames.",
+          "Album-cover or third-party merch without explicit rights.",
+          "Aesthetic value detached from evidence state."
+        ],
+        "claim_gate_refs": ["aesthetic-condition-editions-ledger", "rights provenance manifest"],
+        "missing_evidence_behavior": "block_public_claim"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "No raw private camera frames or consent-required material.",
+        "rights_floor": "Only operator-owned, licensed, or generated frames with manifest provenance.",
+        "consent_posture": "Person-identifiable media is excluded unless a consent contract explicitly permits it.",
+        "fail_closed_reasons": ["raw_private_frame", "rights_unknown", "provenance_missing", "consent_blocked"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["bootstrap", "legal_attestation"],
+        "bootstrap_required": false,
+        "legal_attestation_required": false,
+        "boundary_note": "Edition selection, manifests, and packaging must be generated from event and provenance evidence."
+      },
+      "status": "blocked",
+      "next_packet": {
+        "task_id": "aesthetic-condition-editions-ledger",
+        "task_note": "active/aesthetic-condition-editions-ledger.md",
+        "state": "blocked",
+        "reason": "This ledger is the direct blocker for condition-bound aesthetic products."
+      },
+      "guardrails": [
+        "No raw private frames.",
+        "No unlicensed third-party media.",
+        "Every edition carries condition, rights, provenance, and event refs."
+      ],
+      "train_position": {
+        "wsjf": 7.7,
+        "priority": "p2",
+        "blocks": ["condition-edition-marketplace-publisher"]
+      },
+      "refusal_conversions": []
+    },
+    {
+      "stream_id": "studio_operator_adjacent_value",
+      "category": "studio_adjacent",
+      "automation_class": "BOOTSTRAP",
+      "n1_value_claim": "The operator's studio conditions are valuable inputs when Hapax selects, transforms, gates, narrates, and proves them.",
+      "evidence_owner": {
+        "owner_id": "strategic-artifact-lane-reconfirm-and-split",
+        "evidence_refs": ["music provenance", "studio state", "public event", "rights manifest"],
+        "proof_required": "Studio-adjacent output needs operator-owned source conditions, rights proof, and an autonomous packaging path."
+      },
+      "revenue_path": {
+        "money_forms": ["rights-safe process highlights", "music provenance cards", "studio-state documentaries", "demo reels"],
+        "route_policy": "Hapax may package and route operator-adjacent evidence but may not create recurring music-commerce work."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "music-provenance-phase7-followthrough",
+          "state": "required",
+          "reason": "Music and studio claims need provenance."
+        },
+        {
+          "prerequisite_id": "strategic-artifact-lane-reconfirm-and-split",
+          "state": "blocked",
+          "reason": "The artifact lane needs reconfirmation before packaging."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This is an operator-controlled studio condition.",
+          "This artifact was selected or transformed by Hapax from declared source conditions."
+        ],
+        "forbidden_claims": [
+          "Raw third-party music as revenue substrate.",
+          "Operator manual maintenance as a hidden requirement.",
+          "Creative output promises."
+        ],
+        "claim_gate_refs": ["music provenance", "studio event provenance", "artifact lane"],
+        "missing_evidence_behavior": "private_only"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "Operator-adjacent does not mean public by default.",
+        "rights_floor": "Operator-owned or explicitly licensed studio material only.",
+        "consent_posture": "No non-operator person content without consent.",
+        "fail_closed_reasons": ["source_not_operator_controlled", "rights_unknown", "operator_privacy_blocked"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["bootstrap"],
+        "bootstrap_required": true,
+        "legal_attestation_required": false,
+        "boundary_note": "The operator can bootstrap source accounts or hardware; Hapax owns metadata, routing, and packaging."
+      },
+      "status": "guarded",
+      "next_packet": {
+        "task_id": "strategic-artifact-lane-reconfirm-and-split",
+        "task_note": "active/strategic-artifact-lane-reconfirm-and-split.md",
+        "state": "blocked",
+        "reason": "This packet decides which studio-adjacent artifact lanes remain worth implementing."
+      },
+      "guardrails": [
+        "Operator music remains a separate creative practice.",
+        "No raw third-party music broadcast as a revenue substrate.",
+        "No manual music-commerce maintenance loop."
+      ],
+      "train_position": {
+        "wsjf": 3.8,
+        "priority": "p4",
+        "blocks": ["re-splay-polyend-downstream-design"]
+      },
+      "refusal_conversions": []
+    },
+    {
+      "stream_id": "consulting_by_artifact",
+      "category": "artifact_product",
+      "automation_class": "AUTO",
+      "n1_value_claim": "The system's methods can be bought as self-serve artifacts without creating a client service business.",
+      "evidence_owner": {
+        "owner_id": "conversion-broker",
+        "evidence_refs": ["audit kit", "methodology report", "rubric", "example output", "license class"],
+        "proof_required": "Every consulting-shaped offer must resolve to a static artifact, license, and self-serve delivery path."
+      },
+      "revenue_path": {
+        "money_forms": ["audit kits", "methodology reports", "architecture review templates", "scoring rubrics", "licensed checklists"],
+        "route_policy": "Expertise is packaged into artifacts; discovery calls, revisions, retainers, and custom deliverables are refused."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "conversion-broker",
+          "state": "blocked",
+          "reason": "Conversion broker must classify service-shaped interest into artifact routes."
+        },
+        {
+          "prerequisite_id": "artifact-catalog-release-workflow",
+          "state": "blocked",
+          "reason": "Artifact delivery depends on catalog and release workflow."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This artifact helps a buyer apply a Hapax method without access to the operator.",
+          "This checklist or rubric is licensed as a static artifact."
+        ],
+        "forbidden_claims": [
+          "Consulting availability.",
+          "Discovery calls, revisions, retainers, or custom deliverable cycles.",
+          "Client accounts or private access."
+        ],
+        "claim_gate_refs": ["conversion-broker", "artifact catalog", "license matrix"],
+        "missing_evidence_behavior": "emit_refusal_artifact"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "Artifacts must be scrubbed and generic enough not to leak operator private state.",
+        "rights_floor": "All examples need license and provenance.",
+        "consent_posture": "No buyer-specific or person-specific state is stored.",
+        "fail_closed_reasons": ["custom_service_required", "artifact_not_packaged", "example_not_scrubbed"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": ["bootstrap"],
+        "bootstrap_required": false,
+        "legal_attestation_required": false,
+        "boundary_note": "Any request requiring calls, scoping, or revisions is converted to a refusal artifact."
+      },
+      "status": "offered",
+      "next_packet": {
+        "task_id": "conversion-broker",
+        "task_note": "active/conversion-broker.md",
+        "state": "blocked",
+        "reason": "The broker is the routing point for service-shaped demand into artifact products or refusals."
+      },
+      "guardrails": [
+        "No calendars.",
+        "No discovery calls.",
+        "No client accounts.",
+        "No retainers.",
+        "No custom deliverable cycle."
+      ],
+      "train_position": {
+        "wsjf": 8.7,
+        "priority": "p1",
+        "blocks": ["artifact-catalog-release-workflow"]
+      },
+      "refusal_conversions": [
+        {
+          "generic_form": "Consulting service",
+          "decision": "converted",
+          "buildable_conversion": "Self-serve audit kit, methodology report, architecture template, rubric, or licensed checklist."
+        }
+      ]
+    },
+    {
+      "stream_id": "refusal_conversions",
+      "category": "refusal_conversion",
+      "automation_class": "REFUSAL_ARTIFACT",
+      "n1_value_claim": "Forbidden generic revenue forms are still valuable when preserved as explicit refusals and converted into Hapax-shaped artifacts.",
+      "evidence_owner": {
+        "owner_id": "refusal-annex-publish-fanout-closeout",
+        "evidence_refs": ["refusal brief", "surface policy", "conversion target", "publication log"],
+        "proof_required": "Each refusal conversion needs a named generic form, decision, buildable conversion, and safe publication path."
+      },
+      "revenue_path": {
+        "money_forms": ["refusal artifacts", "grant demo evidence", "support prompt evidence", "artifact catalog input"],
+        "route_policy": "Refusals create public discipline and artifact candidates; they never reopen forbidden revenue shapes."
+      },
+      "prerequisites": [
+        {
+          "prerequisite_id": "refusal-annex-publish-fanout-closeout",
+          "state": "required",
+          "reason": "The refusal annex is the publication path for refusal artifacts."
+        },
+        {
+          "prerequisite_id": "refused-lifecycle-refusal-brief-integration",
+          "state": "complete",
+          "reason": "Refusal lifecycle already exists as a pattern."
+        }
+      ],
+      "public_claim_policy": {
+        "allowed_claims": [
+          "This generic form was refused and converted.",
+          "This artifact is the buildable Hapax-shaped version of a forbidden surface."
+        ],
+        "forbidden_claims": [
+          "The generic form is available.",
+          "Refusal is a temporary blocker awaiting manual operator labor.",
+          "A forbidden surface can be used privately to bypass the policy."
+        ],
+        "claim_gate_refs": ["refusal brief", "surface policy", "publication log"],
+        "missing_evidence_behavior": "emit_refusal_artifact"
+      },
+      "privacy_rights_posture": {
+        "privacy_floor": "Refusal artifacts may not expose private requests or person-state.",
+        "rights_floor": "Refusals cite only public or internal policy facts safe to publish.",
+        "consent_posture": "No third-party request identity or supporter identity is retained.",
+        "fail_closed_reasons": ["private_request_detail", "unsafe_policy_source", "conversion_missing"]
+      },
+      "operator_boundary": {
+        "recurring_operator_labor_allowed": false,
+        "allowed_operator_actions": [],
+        "bootstrap_required": false,
+        "legal_attestation_required": false,
+        "boundary_note": "Refusal conversion is fully automated or preserved as a static refusal artifact."
+      },
+      "status": "refusal_artifact",
+      "next_packet": {
+        "task_id": "refusal-annex-publish-fanout-closeout",
+        "task_note": "active/refusal-annex-publish-fanout-closeout.md",
+        "state": "offered",
+        "reason": "The refusal annex publishes converted refusals without reopening forbidden surfaces."
+      },
+      "guardrails": [
+        "Build the Hapax-shaped artifact, not the forbidden generic surface.",
+        "No manual operator workaround.",
+        "No hidden private use of refused revenue forms."
+      ],
+      "train_position": {
+        "wsjf": 6.8,
+        "priority": "p2",
+        "blocks": ["conversion-broker"]
+      },
+      "refusal_conversions": [
+        {
+          "generic_form": "Discord community subscriptions",
+          "decision": "refused",
+          "buildable_conversion": "One-way publication webhook under SurfacePolicy."
+        },
+        {
+          "generic_form": "Paid subscriber access model",
+          "decision": "refused",
+          "buildable_conversion": "One-way public newsletter or RSS only when automated and aggregate-only."
+        },
+        {
+          "generic_form": "Sponsor ad reads",
+          "decision": "guarded",
+          "buildable_conversion": "Non-deliverable research-instrument support copy with legal attestation only."
+        }
+      ]
+    }
+  ]
+}
