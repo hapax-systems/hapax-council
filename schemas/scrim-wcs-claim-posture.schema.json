@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/scrim-wcs-claim-posture.schema.json",
+  "title": "ScrimWCSClaimPostureFixtureSet",
+  "description": "Fixture contract for projecting WCS/evidence/health state into bounded scrim visual posture without granting truth, rights, safety, public status, or monetization status.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "families",
+    "fail_closed_policy",
+    "fixtures"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "pattern": "^scrim_wcs_claim_posture:fixtures:[0-9-]+$"},
+    "schema_ref": {"type": "string", "const": "schemas/scrim-wcs-claim-posture.schema.json"},
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "families": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fixture_family"},
+      "minItems": 10,
+      "maxItems": 10,
+      "uniqueItems": true
+    },
+    "fail_closed_policy": {"$ref": "#/$defs/fail_closed_policy"},
+    "fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fixture"},
+      "minItems": 10
+    }
+  },
+  "x-required_fixture_families": [
+    "fresh_public_safe",
+    "stale",
+    "missing_witness",
+    "private_only",
+    "blocked_media",
+    "audio_blocked",
+    "refusal",
+    "correction",
+    "conversion_ready",
+    "conversion_held"
+  ],
+  "x-required_blocker_families": [
+    "rights",
+    "privacy_consent",
+    "monetization",
+    "egress",
+    "audio",
+    "public_event"
+  ],
+  "x-no_grant_policy": {
+    "scrim_grants_truth": false,
+    "scrim_grants_rights": false,
+    "scrim_grants_safety": false,
+    "scrim_grants_public_status": false,
+    "scrim_grants_monetization_status": false,
+    "scrim_grants_live_control": false,
+    "conversion_cue_is_truth_signal": false,
+    "engagement_trend_revenue_spectacle_are_truth_signals": false,
+    "blocked_media_hidden_under_spectacle": false
+  },
+  "$defs": {
+    "fixture_family": {
+      "type": "string",
+      "enum": [
+        "fresh_public_safe",
+        "stale",
+        "missing_witness",
+        "private_only",
+        "blocked_media",
+        "audio_blocked",
+        "refusal",
+        "correction",
+        "conversion_ready",
+        "conversion_held"
+      ]
+    },
+    "authority_ceiling": {
+      "type": "string",
+      "enum": [
+        "no_claim",
+        "internal_only",
+        "speculative",
+        "evidence_bound",
+        "posterior_bound",
+        "public_gate_required"
+      ]
+    },
+    "rights_state": {
+      "type": "string",
+      "enum": [
+        "public_clear",
+        "private_only",
+        "aggregate_only",
+        "blocked",
+        "missing",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "privacy_state": {
+      "type": "string",
+      "enum": [
+        "public_safe",
+        "private_only",
+        "dry_run",
+        "archive_only",
+        "blocked",
+        "unknown"
+      ]
+    },
+    "freshness_state": {
+      "type": "string",
+      "enum": ["fresh", "stale", "missing", "unknown", "not_applicable"]
+    },
+    "conversion_cue": {"type": "string", "enum": ["none", "ready", "held"]},
+    "bounded_posture": {
+      "type": "string",
+      "enum": [
+        "local_clarity",
+        "hold",
+        "dry_run",
+        "suppress_public_cue",
+        "neutralize_blocked_media",
+        "operator_reason",
+        "refusal_artifact",
+        "correction_boundary",
+        "conversion_cue",
+        "conversion_held"
+      ]
+    },
+    "visibility_treatment": {
+      "type": "string",
+      "enum": [
+        "bounded_local_clarity",
+        "neutral_hold",
+        "dry_run_badge",
+        "public_cue_suppressed",
+        "neutralized_metadata_first",
+        "operator_reason_visible",
+        "refusal_artifact_visible",
+        "correction_boundary_visible",
+        "conversion_cue_visible",
+        "conversion_held_visible"
+      ]
+    },
+    "blocker_family": {
+      "type": "string",
+      "enum": [
+        "evidence",
+        "freshness",
+        "health",
+        "missing_witness",
+        "rights",
+        "privacy_consent",
+        "monetization",
+        "egress",
+        "audio",
+        "public_event"
+      ]
+    },
+    "media_visibility": {
+      "type": "string",
+      "enum": [
+        "not_applicable",
+        "active",
+        "neutralized_metadata_first",
+        "suppressed_public_cue"
+      ]
+    },
+    "ref_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "nullable_nonnegative_int": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "pressure": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "default": 0.0
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scrim_grants_truth",
+        "scrim_grants_rights",
+        "scrim_grants_safety",
+        "scrim_grants_public_status",
+        "scrim_grants_monetization_status",
+        "conversion_cue_is_truth_signal",
+        "engagement_trend_revenue_spectacle_are_truth_signals",
+        "blocked_media_hidden_under_spectacle"
+      ],
+      "properties": {
+        "scrim_grants_truth": {"type": "boolean", "const": false},
+        "scrim_grants_rights": {"type": "boolean", "const": false},
+        "scrim_grants_safety": {"type": "boolean", "const": false},
+        "scrim_grants_public_status": {"type": "boolean", "const": false},
+        "scrim_grants_monetization_status": {"type": "boolean", "const": false},
+        "conversion_cue_is_truth_signal": {"type": "boolean", "const": false},
+        "engagement_trend_revenue_spectacle_are_truth_signals": {
+          "type": "boolean",
+          "const": false
+        },
+        "blocked_media_hidden_under_spectacle": {"type": "boolean", "const": false}
+      }
+    },
+    "wcs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wcs_snapshot_ref",
+        "capability_refs",
+        "evidence_refs",
+        "grounding_gate_refs",
+        "public_event_refs",
+        "authority_ceiling",
+        "public_claim_allowed",
+        "rights_state",
+        "privacy_state",
+        "egress_public",
+        "monetization_allowed",
+        "blocked_reasons"
+      ],
+      "properties": {
+        "wcs_snapshot_ref": {"type": "string", "minLength": 1},
+        "capability_refs": {"$ref": "#/$defs/ref_list"},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "grounding_gate_refs": {"$ref": "#/$defs/ref_list"},
+        "public_event_refs": {"$ref": "#/$defs/ref_list"},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "public_claim_allowed": {"type": "boolean"},
+        "rights_state": {"$ref": "#/$defs/rights_state"},
+        "privacy_state": {"$ref": "#/$defs/privacy_state"},
+        "egress_public": {"type": "boolean"},
+        "monetization_allowed": {"type": "boolean"},
+        "blocked_reasons": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_refs",
+        "source_refs",
+        "witness_refs",
+        "freshness_state",
+        "confidence",
+        "observed_age_s",
+        "ttl_s"
+      ],
+      "properties": {
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "source_refs": {"$ref": "#/$defs/ref_list"},
+        "witness_refs": {"$ref": "#/$defs/ref_list"},
+        "freshness_state": {"$ref": "#/$defs/freshness_state"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "observed_age_s": {"$ref": "#/$defs/nullable_nonnegative_int"},
+        "ttl_s": {"$ref": "#/$defs/nullable_nonnegative_int"}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "posture",
+        "visibility_treatment",
+        "public_claim_allowed",
+        "blocker_families",
+        "media_visibility"
+      ],
+      "properties": {
+        "posture": {"$ref": "#/$defs/bounded_posture"},
+        "visibility_treatment": {"$ref": "#/$defs/visibility_treatment"},
+        "public_claim_allowed": {"type": "boolean"},
+        "blocker_families": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/blocker_family"},
+          "uniqueItems": true
+        },
+        "media_visibility": {"$ref": "#/$defs/media_visibility"}
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "family",
+        "scrim_fixture_family",
+        "health_surface_id",
+        "contains_media_surface",
+        "conversion_cue",
+        "wcs",
+        "evidence",
+        "expected"
+      ],
+      "properties": {
+        "fixture_id": {"type": "string", "minLength": 1},
+        "family": {"$ref": "#/$defs/fixture_family"},
+        "scrim_fixture_family": {"type": "string", "minLength": 1},
+        "health_surface_id": {"type": "string", "minLength": 1},
+        "contains_media_surface": {"type": "boolean"},
+        "conversion_cue": {"$ref": "#/$defs/conversion_cue"},
+        "engagement_pressure": {"$ref": "#/$defs/pressure"},
+        "trend_pressure": {"$ref": "#/$defs/pressure"},
+        "revenue_pressure": {"$ref": "#/$defs/pressure"},
+        "spectacle_intensity_requested": {"$ref": "#/$defs/pressure"},
+        "wcs": {"$ref": "#/$defs/wcs"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "expected": {"$ref": "#/$defs/expected"}
+      }
+    }
+  }
+}

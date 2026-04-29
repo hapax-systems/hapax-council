@@ -1,0 +1,434 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "scrim_wcs_claim_posture:fixtures:2026-04-29",
+  "schema_ref": "schemas/scrim-wcs-claim-posture.schema.json",
+  "generated_from": [
+    "config/scrim-state-envelope-fixtures.json",
+    "config/world-surface-health-fixtures.json",
+    "vault-spec:2026-04-29-scrim-programme-director-behavior-contract.md",
+    "vault-spec:2026-04-29-world-surface-health-no-false-grounding.md"
+  ],
+  "declared_at": "2026-04-29T23:18:00Z",
+  "producer": "cx-amber",
+  "families": [
+    "fresh_public_safe",
+    "stale",
+    "missing_witness",
+    "private_only",
+    "blocked_media",
+    "audio_blocked",
+    "refusal",
+    "correction",
+    "conversion_ready",
+    "conversion_held"
+  ],
+  "fail_closed_policy": {
+    "scrim_grants_truth": false,
+    "scrim_grants_rights": false,
+    "scrim_grants_safety": false,
+    "scrim_grants_public_status": false,
+    "scrim_grants_monetization_status": false,
+    "conversion_cue_is_truth_signal": false,
+    "engagement_trend_revenue_spectacle_are_truth_signals": false,
+    "blocked_media_hidden_under_spectacle": false
+  },
+  "fixtures": [
+    {
+      "fixture_id": "fresh_public_safe",
+      "family": "fresh_public_safe",
+      "scrim_fixture_family": "fresh_public_safe",
+      "health_surface_id": "audio.broadcast_voice.health",
+      "contains_media_surface": false,
+      "conversion_cue": "none",
+      "engagement_pressure": 0.8,
+      "trend_pressure": 0.7,
+      "revenue_pressure": 0.4,
+      "spectacle_intensity_requested": 0.42,
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:public_safe:20260429",
+        "capability_refs": ["audio.broadcast_voice"],
+        "evidence_refs": ["evidence:audio.broadcast_voice:route_witness"],
+        "grounding_gate_refs": ["gate:world-surface-grounding:passed"],
+        "public_event_refs": ["public-event:studio.broadcast.session"],
+        "authority_ceiling": "public_gate_required",
+        "public_claim_allowed": true,
+        "rights_state": "public_clear",
+        "privacy_state": "public_safe",
+        "egress_public": true,
+        "monetization_allowed": false,
+        "blocked_reasons": []
+      },
+      "evidence": {
+        "evidence_refs": ["evidence:audio.broadcast_voice:route_witness"],
+        "source_refs": ["source:operator_owned_archive_segments"],
+        "witness_refs": ["witness:audio.broadcast_voice:world"],
+        "freshness_state": "fresh",
+        "confidence": 0.86,
+        "observed_age_s": 9,
+        "ttl_s": 60
+      },
+      "expected": {
+        "posture": "local_clarity",
+        "visibility_treatment": "bounded_local_clarity",
+        "public_claim_allowed": true,
+        "blocker_families": [],
+        "media_visibility": "not_applicable"
+      }
+    },
+    {
+      "fixture_id": "stale_archive",
+      "family": "stale",
+      "scrim_fixture_family": "stale",
+      "health_surface_id": "archive.session-replay.stale",
+      "contains_media_surface": false,
+      "conversion_cue": "none",
+      "spectacle_intensity_requested": 0.9,
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:stale:20260429",
+        "capability_refs": ["archive.replay_sidecar"],
+        "evidence_refs": ["evidence:archive.session-replay:old-mtime"],
+        "grounding_gate_refs": ["gate:archive:stale-source-refused"],
+        "public_event_refs": ["public-event:archive:held"],
+        "authority_ceiling": "evidence_bound",
+        "public_claim_allowed": false,
+        "rights_state": "public_clear",
+        "privacy_state": "public_safe",
+        "egress_public": true,
+        "monetization_allowed": false,
+        "blocked_reasons": ["source_stale"]
+      },
+      "evidence": {
+        "evidence_refs": ["evidence:archive.session-replay:old-mtime"],
+        "source_refs": ["source:operator_owned_archive_segments"],
+        "witness_refs": ["witness:archive.session-replay:old-mtime"],
+        "freshness_state": "stale",
+        "confidence": 0.95,
+        "observed_age_s": 420,
+        "ttl_s": 60
+      },
+      "expected": {
+        "posture": "hold",
+        "visibility_treatment": "neutral_hold",
+        "public_claim_allowed": false,
+        "blocker_families": ["freshness", "health", "rights"],
+        "media_visibility": "not_applicable"
+      }
+    },
+    {
+      "fixture_id": "missing_witness_dry_run",
+      "family": "missing_witness",
+      "scrim_fixture_family": "dry_run",
+      "health_surface_id": "provider.tool-soundcloud.missing",
+      "contains_media_surface": false,
+      "conversion_cue": "none",
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:missing-provider:20260429",
+        "capability_refs": ["provider.tool_soundcloud"],
+        "evidence_refs": [],
+        "grounding_gate_refs": [],
+        "public_event_refs": [],
+        "authority_ceiling": "no_claim",
+        "public_claim_allowed": false,
+        "rights_state": "public_clear",
+        "privacy_state": "public_safe",
+        "egress_public": false,
+        "monetization_allowed": false,
+        "blocked_reasons": ["missing_surface_witness"]
+      },
+      "evidence": {
+        "evidence_refs": [],
+        "source_refs": [],
+        "witness_refs": [],
+        "freshness_state": "missing",
+        "confidence": 0.9,
+        "observed_age_s": null,
+        "ttl_s": null
+      },
+      "expected": {
+        "posture": "dry_run",
+        "visibility_treatment": "dry_run_badge",
+        "public_claim_allowed": false,
+        "blocker_families": [
+          "evidence",
+          "freshness",
+          "health",
+          "missing_witness",
+          "rights",
+          "privacy_consent"
+        ],
+        "media_visibility": "not_applicable"
+      }
+    },
+    {
+      "fixture_id": "private_monitor_private_only",
+      "family": "private_only",
+      "scrim_fixture_family": "private_only",
+      "health_surface_id": "audio.private-monitor.private-only",
+      "contains_media_surface": false,
+      "conversion_cue": "none",
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:private_only:20260429",
+        "capability_refs": ["audio.private_monitor"],
+        "evidence_refs": ["evidence:audio.private-monitor:exact-device"],
+        "grounding_gate_refs": [],
+        "public_event_refs": [],
+        "authority_ceiling": "internal_only",
+        "public_claim_allowed": false,
+        "rights_state": "private_only",
+        "privacy_state": "private_only",
+        "egress_public": false,
+        "monetization_allowed": false,
+        "blocked_reasons": ["private_only_surface"]
+      },
+      "evidence": {
+        "evidence_refs": ["evidence:audio.private-monitor:exact-device"],
+        "source_refs": ["source:private_monitor_route"],
+        "witness_refs": ["witness:audio.private-monitor:private"],
+        "freshness_state": "fresh",
+        "confidence": 0.84,
+        "observed_age_s": 8,
+        "ttl_s": 60
+      },
+      "expected": {
+        "posture": "suppress_public_cue",
+        "visibility_treatment": "public_cue_suppressed",
+        "public_claim_allowed": false,
+        "blocker_families": ["health", "privacy_consent"],
+        "media_visibility": "not_applicable"
+      }
+    },
+    {
+      "fixture_id": "rights_blocked_media",
+      "family": "blocked_media",
+      "scrim_fixture_family": "rights_blocked",
+      "health_surface_id": "visual.scene-render.health",
+      "contains_media_surface": true,
+      "conversion_cue": "none",
+      "spectacle_intensity_requested": 1.0,
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:rights-blocked-media:20260429",
+        "capability_refs": ["visual.media_surface"],
+        "evidence_refs": ["evidence:media:metadata-only"],
+        "grounding_gate_refs": ["gate:rights:blocked"],
+        "public_event_refs": ["public-event:metadata-only"],
+        "authority_ceiling": "evidence_bound",
+        "public_claim_allowed": false,
+        "rights_state": "blocked",
+        "privacy_state": "public_safe",
+        "egress_public": true,
+        "monetization_allowed": false,
+        "blocked_reasons": ["rights_blocked"]
+      },
+      "evidence": {
+        "evidence_refs": ["evidence:media:metadata-only"],
+        "source_refs": ["source:external_media_metadata"],
+        "witness_refs": ["witness:visual.scene-render:frame"],
+        "freshness_state": "fresh",
+        "confidence": 0.76,
+        "observed_age_s": 11,
+        "ttl_s": 60
+      },
+      "expected": {
+        "posture": "neutralize_blocked_media",
+        "visibility_treatment": "neutralized_metadata_first",
+        "public_claim_allowed": false,
+        "blocker_families": ["evidence", "health", "rights"],
+        "media_visibility": "neutralized_metadata_first"
+      }
+    },
+    {
+      "fixture_id": "audio_public_blocked",
+      "family": "audio_blocked",
+      "scrim_fixture_family": "health_failed",
+      "health_surface_id": "audio.no-private-leak.health",
+      "contains_media_surface": false,
+      "conversion_cue": "none",
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:audio-leak-risk:20260429",
+        "capability_refs": ["audio.no_private_leak"],
+        "evidence_refs": ["evidence:audio.no-private-leak:failed"],
+        "grounding_gate_refs": [],
+        "public_event_refs": [],
+        "authority_ceiling": "no_claim",
+        "public_claim_allowed": false,
+        "rights_state": "public_clear",
+        "privacy_state": "public_safe",
+        "egress_public": false,
+        "monetization_allowed": false,
+        "blocked_reasons": ["private_route_leak_risk"]
+      },
+      "evidence": {
+        "evidence_refs": ["evidence:audio.no-private-leak:failed"],
+        "source_refs": ["source:pipewire-route-check"],
+        "witness_refs": ["witness:audio.no-private-leak:failed"],
+        "freshness_state": "fresh",
+        "confidence": 0.91,
+        "observed_age_s": 6,
+        "ttl_s": 60
+      },
+      "expected": {
+        "posture": "operator_reason",
+        "visibility_treatment": "operator_reason_visible",
+        "public_claim_allowed": false,
+        "blocker_families": ["evidence", "health", "privacy_consent", "egress", "public_event", "audio"],
+        "media_visibility": "not_applicable"
+      }
+    },
+    {
+      "fixture_id": "refusal_success",
+      "family": "refusal",
+      "scrim_fixture_family": "refusal",
+      "health_surface_id": "refusal.public-claim-correction.blocked",
+      "contains_media_surface": false,
+      "conversion_cue": "none",
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:refusal:20260429",
+        "capability_refs": ["governance.refusal"],
+        "evidence_refs": ["evidence:refusal:unsupported-claim"],
+        "grounding_gate_refs": ["gate:unsupported-claim:refused"],
+        "public_event_refs": [],
+        "authority_ceiling": "no_claim",
+        "public_claim_allowed": false,
+        "rights_state": "public_clear",
+        "privacy_state": "public_safe",
+        "egress_public": true,
+        "monetization_allowed": false,
+        "blocked_reasons": ["unsupported_claim"]
+      },
+      "evidence": {
+        "evidence_refs": ["evidence:refusal:unsupported-claim"],
+        "source_refs": ["source:claim-request"],
+        "witness_refs": ["witness:refusal.public-claim-correction:policy"],
+        "freshness_state": "fresh",
+        "confidence": 0.88,
+        "observed_age_s": 4,
+        "ttl_s": 60
+      },
+      "expected": {
+        "posture": "refusal_artifact",
+        "visibility_treatment": "refusal_artifact_visible",
+        "public_claim_allowed": false,
+        "blocker_families": ["evidence", "health", "privacy_consent", "public_event"],
+        "media_visibility": "not_applicable"
+      }
+    },
+    {
+      "fixture_id": "correction_boundary",
+      "family": "correction",
+      "scrim_fixture_family": "correction",
+      "health_surface_id": "refusal.public-claim-correction.blocked",
+      "contains_media_surface": false,
+      "conversion_cue": "none",
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:correction:20260429",
+        "capability_refs": ["governance.correction"],
+        "evidence_refs": ["evidence:correction:claim-boundary"],
+        "grounding_gate_refs": ["gate:claim-correction:applied"],
+        "public_event_refs": [],
+        "authority_ceiling": "no_claim",
+        "public_claim_allowed": false,
+        "rights_state": "public_clear",
+        "privacy_state": "public_safe",
+        "egress_public": true,
+        "monetization_allowed": false,
+        "blocked_reasons": ["correction_boundary"]
+      },
+      "evidence": {
+        "evidence_refs": ["evidence:correction:claim-boundary"],
+        "source_refs": ["source:claim-correction"],
+        "witness_refs": ["witness:refusal.public-claim-correction:policy"],
+        "freshness_state": "fresh",
+        "confidence": 0.88,
+        "observed_age_s": 4,
+        "ttl_s": 60
+      },
+      "expected": {
+        "posture": "correction_boundary",
+        "visibility_treatment": "correction_boundary_visible",
+        "public_claim_allowed": false,
+        "blocker_families": ["evidence", "health", "privacy_consent", "public_event"],
+        "media_visibility": "not_applicable"
+      }
+    },
+    {
+      "fixture_id": "conversion_ready_not_truth",
+      "family": "conversion_ready",
+      "scrim_fixture_family": "conversion_ready",
+      "health_surface_id": "audio.broadcast_voice.health",
+      "contains_media_surface": false,
+      "conversion_cue": "ready",
+      "engagement_pressure": 1.0,
+      "trend_pressure": 1.0,
+      "revenue_pressure": 1.0,
+      "spectacle_intensity_requested": 1.0,
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:conversion-ready:20260429",
+        "capability_refs": ["public.research_vehicle_apertures"],
+        "evidence_refs": ["evidence:conversion:archive-card-ready"],
+        "grounding_gate_refs": ["gate:conversion:claim-bounded"],
+        "public_event_refs": ["public-event:archive-card-ready"],
+        "authority_ceiling": "public_gate_required",
+        "public_claim_allowed": true,
+        "rights_state": "public_clear",
+        "privacy_state": "public_safe",
+        "egress_public": true,
+        "monetization_allowed": true,
+        "blocked_reasons": []
+      },
+      "evidence": {
+        "evidence_refs": ["evidence:conversion:archive-card-ready"],
+        "source_refs": ["source:operator_owned_archive_segments"],
+        "witness_refs": ["witness:audio.broadcast_voice:world"],
+        "freshness_state": "fresh",
+        "confidence": 0.9,
+        "observed_age_s": 9,
+        "ttl_s": 60
+      },
+      "expected": {
+        "posture": "conversion_cue",
+        "visibility_treatment": "conversion_cue_visible",
+        "public_claim_allowed": true,
+        "blocker_families": [],
+        "media_visibility": "not_applicable"
+      }
+    },
+    {
+      "fixture_id": "conversion_held_monetization",
+      "family": "conversion_held",
+      "scrim_fixture_family": "monetization_held",
+      "health_surface_id": "public-event.stream.dry-run",
+      "contains_media_surface": false,
+      "conversion_cue": "held",
+      "wcs": {
+        "wcs_snapshot_ref": "wcs-snapshot:conversion-held:20260429",
+        "capability_refs": ["public.research_vehicle_apertures"],
+        "evidence_refs": ["evidence:conversion:held"],
+        "grounding_gate_refs": ["gate:conversion:held"],
+        "public_event_refs": [],
+        "authority_ceiling": "internal_only",
+        "public_claim_allowed": false,
+        "rights_state": "public_clear",
+        "privacy_state": "public_safe",
+        "egress_public": false,
+        "monetization_allowed": false,
+        "blocked_reasons": ["monetization_readiness_missing", "public_event_missing"]
+      },
+      "evidence": {
+        "evidence_refs": ["evidence:conversion:held"],
+        "source_refs": ["source:programme-run-envelope"],
+        "witness_refs": ["witness:public-event.stream:dry-run"],
+        "freshness_state": "fresh",
+        "confidence": 0.7,
+        "observed_age_s": 14,
+        "ttl_s": 60
+      },
+      "expected": {
+        "posture": "conversion_held",
+        "visibility_treatment": "conversion_held_visible",
+        "public_claim_allowed": false,
+        "blocker_families": ["evidence", "health", "egress", "public_event", "monetization"],
+        "media_visibility": "not_applicable"
+      }
+    }
+  ]
+}
