@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/content-candidate-discovery-daemon.schema.json",
+  "title": "ContentCandidateDiscoveryDaemonPolicy",
+  "description": "Policy and deployment contract for the content candidate discovery producer.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "daemon_id",
+    "enabled",
+    "declared_at",
+    "producer",
+    "cadence",
+    "paths",
+    "global_policy",
+    "source_class_modes",
+    "hard_block_reasons",
+    "downstream_contract"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "daemon_id": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+    "enabled": {"type": "boolean", "const": true},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "cadence": {
+      "type": "object",
+      "required": ["mode", "interval_seconds", "idle_update_seconds"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"type": "string", "const": "systemd_timer"},
+        "interval_seconds": {"type": "integer", "minimum": 1},
+        "idle_update_seconds": {"type": "integer", "minimum": 1}
+      }
+    },
+    "paths": {
+      "type": "object",
+      "required": [
+        "source_observations_jsonl",
+        "candidate_jsonl",
+        "audit_jsonl",
+        "health_json"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_observations_jsonl": {"type": "string", "minLength": 1},
+        "candidate_jsonl": {"type": "string", "minLength": 1},
+        "audit_jsonl": {"type": "string", "minLength": 1},
+        "health_json": {"type": "string", "minLength": 1}
+      }
+    },
+    "global_policy": {
+      "type": "object",
+      "required": [
+        "single_operator_only",
+        "schedules_programmes_directly",
+        "creates_supporter_request_queue",
+        "trend_as_truth_allowed",
+        "missing_freshness_blocks_public_claim",
+        "private_dry_run_default"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "single_operator_only": {"type": "boolean", "const": true},
+        "schedules_programmes_directly": {"type": "boolean", "const": false},
+        "creates_supporter_request_queue": {"type": "boolean", "const": false},
+        "trend_as_truth_allowed": {"type": "boolean", "const": false},
+        "missing_freshness_blocks_public_claim": {"type": "boolean", "const": true},
+        "private_dry_run_default": {"type": "boolean", "const": true}
+      }
+    },
+    "source_class_modes": {
+      "type": "object",
+      "required": [
+        "local_state",
+        "owned_media",
+        "platform_native_state",
+        "trend_sources",
+        "curated_watchlists",
+        "public_web_references",
+        "ambient_aggregate_audience",
+        "internal_anomalies"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "local_state": {"$ref": "#/$defs/public_modes"},
+        "owned_media": {"$ref": "#/$defs/public_modes"},
+        "platform_native_state": {"$ref": "#/$defs/public_modes"},
+        "trend_sources": {"$ref": "#/$defs/public_modes"},
+        "curated_watchlists": {"$ref": "#/$defs/public_modes"},
+        "public_web_references": {"$ref": "#/$defs/public_modes"},
+        "ambient_aggregate_audience": {"$ref": "#/$defs/public_modes"},
+        "internal_anomalies": {"$ref": "#/$defs/public_modes"}
+      }
+    },
+    "hard_block_reasons": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "downstream_contract": {
+      "type": "object",
+      "required": [
+        "emits",
+        "never_schedules_programmes",
+        "candidate_output_contract",
+        "input_registry_contract",
+        "trend_gate_contract",
+        "blocks"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "emits": {"type": "string", "const": "ContentOpportunity candidates"},
+        "never_schedules_programmes": {"type": "boolean", "const": true},
+        "candidate_output_contract": {"type": "string", "minLength": 1},
+        "input_registry_contract": {"type": "string", "minLength": 1},
+        "trend_gate_contract": {"type": "string", "minLength": 1},
+        "blocks": {
+          "type": "array",
+          "contains": {"const": "content-programme-scheduler-policy"},
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "public_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "public_modes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/public_mode"},
+      "uniqueItems": true
+    }
+  }
+}
