@@ -21,12 +21,10 @@ Environment=RUST_LOG=info
 # captures the full stack, unblocking the DynamicPipeline
 # param_order / WGSL struct drift root-cause investigation.
 Environment=RUST_BACKTRACE=1
-# Phase 4b: run the reverie visual surface fully headless. Frames
-# still flow to /dev/shm/hapax-visual/frame.jpg (Tauri VisualSurface
-# reads this via the HTTP frame server on :8053) and to
-# /dev/shm/hapax-sources/reverie.rgba (studio compositor
-# ShmRgbaReader reads this). No winit window is created — reverie
-# no longer spawns as a standalone surface outside Logos.
+# Phase 4b: run the reverie visual surface fully headless. Frames flow to
+# /dev/shm/hapax-sources/reverie.rgba for the studio compositor. The old
+# Tauri/WebKit frame-server preview is decommissioned and is not a production
+# consumer.
 Environment=HAPAX_IMAGINATION_HEADLESS=1
 # 2026-04-26 visual-quality remediation Tier-A item 9: shader render
 # target 640x360 → 960x540 (1.5× per axis = 2.25× shader cost). Composited

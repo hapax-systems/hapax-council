@@ -1,6 +1,10 @@
-# Hapax Logos + Imagination build orchestration.
+# Hapax Imagination production build orchestration.
 # Production builds use an isolated CARGO_TARGET_DIR to prevent
 # stomping dev builds (which use the default ./target/).
+#
+# The Tauri/WebKit hapax-logos runtime is decommissioned as a production
+# surface. Its build target remains explicit for local inspection only; the
+# default production build/install path handles hapax-imagination only.
 
 set dotenv-load := false
 
@@ -13,10 +17,10 @@ export CARGO_TARGET_DIR := prod_target
 
 # ── Info ──────────────────────────────────────────────────────────
 
-# Show version of installed binaries
+# Show version of installed production binaries
 version:
     @{{bin_dir}}/hapax-imagination --version 2>/dev/null || echo "hapax-imagination: not installed"
-    @strings {{bin_dir}}/hapax-logos 2>/dev/null | grep -oP 'VERGEN_GIT_SHA.\K[a-f0-9]{9}' | head -1 | xargs -I{} echo "hapax-logos {}" || echo "hapax-logos: version unknown"
+    @echo "hapax-logos: production runtime decommissioned"
 
 # ── Build ─────────────────────────────────────────────────────────
 
@@ -29,16 +33,17 @@ frontend:
 imagination:
     cargo build --release -p hapax-imagination
 
-# Build logos binary with bundled frontend
+# Build Tauri logos binary with bundled frontend.
+# Dev-only: not part of production install/rebuild.
 logos: frontend
     cargo build --release -p hapax-logos --features tauri/custom-protocol
 
-# Build everything
-build: imagination logos
+# Build production binaries
+build: imagination
 
 # ── Install ───────────────────────────────────────────────────────
 
-# Pre-flight checks
+# Pre-flight checks for production binary install
 check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -48,35 +53,31 @@ check:
     if [ "$SHA" != "$MAIN_SHA" ]; then
         echo "WARNING: HEAD (${SHA:0:8}) != origin/main (${MAIN_SHA:0:8})"
     fi
-    LOGOS="{{prod_target}}/release/hapax-logos"
     IMAG="{{prod_target}}/release/hapax-imagination"
-    [ -f "$LOGOS" ] || { echo "ERROR: $LOGOS not found — run 'just build' first"; exit 1; }
     [ -f "$IMAG" ] || { echo "ERROR: $IMAG not found — run 'just build' first"; exit 1; }
     echo "OK: $(git log --oneline -1)"
 
-# Build, check, and install with rollback backup
-install: build check
+# Production install alias
+install: install-imagination
+
+# Build, check, and install hapax-imagination with rollback backup
+install-imagination: build check
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGOS_SRC="{{prod_target}}/release/hapax-logos"
     IMAG_SRC="{{prod_target}}/release/hapax-imagination"
-    LOGOS_DST="{{bin_dir}}/hapax-logos"
     IMAG_DST="{{bin_dir}}/hapax-imagination"
 
-    # Backup current binaries
-    [ -f "$LOGOS_DST" ] && cp "$LOGOS_DST" "$LOGOS_DST.prev"
+    # Backup current binary
     [ -f "$IMAG_DST" ] && cp "$IMAG_DST" "$IMAG_DST.prev"
 
-    # Install binaries — DO NOT restart services.
+    # Install binary — DO NOT restart services.
     # Restarting imagination opens a new window on the operator's workspace.
     # The operator restarts services manually when ready (mod+Q or systemctl).
     # Use rename trick to handle "text file busy" (can't overwrite running binary).
     cp "$IMAG_SRC" "$IMAG_DST.new" && mv -f "$IMAG_DST.new" "$IMAG_DST"
-    cp "$LOGOS_SRC" "$LOGOS_DST.new" && mv -f "$LOGOS_DST.new" "$LOGOS_DST"
 
-    echo "Installed (not restarted — restart manually when ready)."
+    echo "Installed hapax-imagination (not restarted - restart manually when ready)."
     echo "  systemctl --user restart hapax-imagination.service"
-    echo "  or: mod+Q to relaunch Logos + Imagination together"
     $IMAG_DST --version 2>/dev/null || true
 
 # ── Rollback ──────────────────────────────────────────────────────
@@ -85,12 +86,9 @@ install: build check
 rollback:
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGOS="{{bin_dir}}/hapax-logos"
     IMAG="{{bin_dir}}/hapax-imagination"
-    [ -f "$LOGOS.prev" ] || { echo "No logos backup found"; exit 1; }
     [ -f "$IMAG.prev" ] || { echo "No imagination backup found"; exit 1; }
     systemctl --user stop hapax-imagination.service 2>/dev/null || true
-    mv "$LOGOS.prev" "$LOGOS"
     mv "$IMAG.prev" "$IMAG"
     systemctl --user start hapax-imagination.service 2>/dev/null || true
     echo "Rolled back."

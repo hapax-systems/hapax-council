@@ -1,9 +1,11 @@
 # Stream Deck control surface manifest (task #140, Phase 1).
 #
 # 15 keys for a StreamDeck Mini (3×5). Each slot maps a physical key to a
-# command-registry dispatch forwarded to the Tauri WebSocket relay at
-# `ws://127.0.0.1:8052/ws/commands`. Phase 2 will wire the real `streamdeck`
-# python library; this manifest is the source of truth either way.
+# logical command-registry dispatch. Runtime dispatch goes through the central
+# Logos control surface (`logos-api` on :8051, compositor UDS, or another
+# explicit local handler), not the retired Tauri WebSocket relay. Phase 2 will
+# wire the real `streamdeck` python library; this manifest is the source of
+# truth either way.
 #
 # `slot` is 0-indexed, left-to-right then top-to-bottom. `icon` is advisory
 # for Phase 2 (key image rendering) and currently unused. `label` is

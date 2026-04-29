@@ -1,22 +1,13 @@
 #!/usr/bin/env bash
-# Reload all Logos/Reverie/API services after a new build lands.
-# Triggered by hapax-build-reload.path (watches binaries + sentinel).
+# Reload Logos API and imagination after a new production build lands.
+# Kept as a manual helper; the hapax-build-reload.path unit that previously
+# called this automatically is decommissioned with the Tauri/WebKit runtime.
 #
 # Rules:
 #   - logos-api: ALWAYS restart (Python code changes with every merge)
 #   - hapax-imagination: restart only if its binary mtime is newer than the
 #     running service — Python-only commits don't change the Rust binary
 #     and shouldn't force a restart.
-#   - hapax-logos: same mtime-gated rule, AND only if already running
-#     (don't spawn unsolicited windows).
-#
-# Prior to the mtime guard, every merged PR caused the path unit's sentinel
-# to fire → both Tauri binaries restarted even on Python-only commits.
-# That churn (observed 2026-04-17: ~14+ restarts in one afternoon of
-# Python-only PR merges) was the symptom that triggered this fix.
-#
-# The path unit debounces (TriggerLimitIntervalSec=5), so rapid successive
-# builds only trigger one reload cycle.
 set -euo pipefail
 
 LOG_TAG="hapax-build-reload"
@@ -82,24 +73,9 @@ else
     log "hapax-imagination not running — skipping"
 fi
 
-# hapax-logos — Rust Tauri binary. Same mtime gate + only-if-running rule.
-if systemctl --user is-active hapax-logos.service &>/dev/null; then
-    if _binary_newer_than_service hapax-logos; then
-        log "restarting hapax-logos (binary newer than service)"
-        systemctl --user restart hapax-logos.service
-        RESTARTED+=("logos")
-    else
-        log "hapax-logos binary unchanged — skipping restart"
-        SKIPPED+=("logos")
-    fi
-elif systemctl --user is-enabled hapax-logos.service &>/dev/null; then
-    log "starting hapax-logos (was enabled but dead)"
-    systemctl --user start hapax-logos.service
-    RESTARTED+=("logos(started)")
-fi
-
 # Report
-SHA=$( (strings "$HOME/.local/bin/hapax-logos" 2>/dev/null | grep -oP 'VERGEN_GIT_SHA.\K[a-f0-9]{9}' | head -1) || echo "unknown")
+SHA=$("$HOME/.local/bin/hapax-imagination" --version 2>/dev/null | grep -oE '[a-f0-9]{9,40}' | head -1 || true)
+SHA="${SHA:-unknown}"
 SUMMARY="restarted=${RESTARTED[*]:-none} skipped=${SKIPPED[*]:-none} @ ${SHA}"
 log "reload complete: $SUMMARY"
 ntfy "Build reloaded" "$SUMMARY" "default" "arrows_counterclockwise"

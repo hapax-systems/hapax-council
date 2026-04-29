@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Rebuild hapax-logos and hapax-imagination binaries if main has advanced.
+# Rebuild the hapax-imagination binary if main has advanced.
 # Intended to run via systemd timer (hapax-rebuild-logos.timer, every 5 min).
 # Only rebuilds when the commit SHA on origin/main differs from the last build.
+# The timer name is retained for compatibility; the Tauri/WebKit hapax-logos
+# runtime is decommissioned and is not built, installed, or restarted here.
 #
 # Builds run in an isolated scratch worktree under $STATE_DIR/worktree so the
 # primary alpha/beta worktrees are never mutated mid-session. The scratch
@@ -61,8 +63,8 @@ if [ "$CURRENT_SHA" = "$LAST_SHA" ]; then
     exit 0  # no change
 fi
 
-logger -t "$LOG_TAG" "main advanced: ${LAST_SHA:0:8} → ${CURRENT_SHA:0:8} — rebuilding"
-ntfy "Logos rebuild starting" "${LAST_SHA:0:8} → ${CURRENT_SHA:0:8}" "low" "hammer_and_wrench"
+logger -t "$LOG_TAG" "main advanced: ${LAST_SHA:0:8} -> ${CURRENT_SHA:0:8} - rebuilding imagination"
+ntfy "Imagination rebuild starting" "${LAST_SHA:0:8} -> ${CURRENT_SHA:0:8}" "low" "hammer_and_wrench"
 
 # Sync the scratch build worktree to origin/main. On first run, create it.
 # Subsequent runs reset it to origin/main, preserving untracked node_modules
@@ -93,33 +95,29 @@ fi
 
 # Build and install via justfile (isolated CARGO_TARGET_DIR, rollback backup)
 cd "$BUILD_WORKTREE/hapax-logos"
-if just install 2>"$STATE_DIR/build.log"; then
+if just install-imagination 2>"$STATE_DIR/build.log"; then
     echo "$CURRENT_SHA" > "$SHA_FILE"
-    # Touch sentinel so hapax-build-reload.path fires even if only Python changed
-    # (binaries won't change for Python-only commits, path unit needs a trigger)
-    touch "$STATE_DIR/reload-sentinel"
     VERSION=$(just version 2>/dev/null | head -1)
-    logger -t "$LOG_TAG" "rebuild complete — $VERSION"
-    ntfy "Logos rebuild complete" "${CURRENT_SHA:0:8} — $VERSION" "default" "white_check_mark"
+    logger -t "$LOG_TAG" "rebuild complete - $VERSION"
+    ntfy "Imagination rebuild complete" "${CURRENT_SHA:0:8} - $VERSION" "default" "white_check_mark"
 else
-    logger -t "$LOG_TAG" "build failed — see $STATE_DIR/build.log"
-    ntfy "Logos rebuild FAILED" "See ~/.cache/hapax/rebuild/build.log" "high" "x"
+    logger -t "$LOG_TAG" "build failed - see $STATE_DIR/build.log"
+    ntfy "Imagination rebuild FAILED" "See ~/.cache/hapax/rebuild/build.log" "high" "x"
 fi
 
 # Auto-restart stale services (binary newer than running process)
-for svc in hapax-imagination hapax-logos; do
-    if systemctl --user is-active "$svc" &>/dev/null; then
-        svc_start=$(systemctl --user show "$svc" --property=ActiveEnterTimestamp --value 2>/dev/null)
-        if [[ -n "$svc_start" ]]; then
-            svc_epoch=$(date -d "$svc_start" +%s 2>/dev/null || echo 0)
-            bin_epoch=$(stat -c %Y "$HOME/.local/bin/$svc" 2>/dev/null || echo 0)
-            if [[ "$bin_epoch" -gt "$svc_epoch" ]]; then
-                logger -t "$LOG_TAG" "auto-restarting $svc (binary newer by $((bin_epoch - svc_epoch))s)"
-                systemctl --user restart "$svc"
-            fi
+svc=hapax-imagination
+if systemctl --user is-active "$svc" &>/dev/null; then
+    svc_start=$(systemctl --user show "$svc" --property=ActiveEnterTimestamp --value 2>/dev/null)
+    if [[ -n "$svc_start" ]]; then
+        svc_epoch=$(date -d "$svc_start" +%s 2>/dev/null || echo 0)
+        bin_epoch=$(stat -c %Y "$HOME/.local/bin/$svc" 2>/dev/null || echo 0)
+        if [[ "$bin_epoch" -gt "$svc_epoch" ]]; then
+            logger -t "$LOG_TAG" "auto-restarting $svc (binary newer by $((bin_epoch - svc_epoch))s)"
+            systemctl --user restart "$svc"
         fi
     fi
-done
+fi
 
 # Run freshness check and alert on staleness
 FRESHNESS_SCRIPT="$(dirname "$0")/freshness-check.sh"

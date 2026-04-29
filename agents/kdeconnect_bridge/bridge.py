@@ -2,7 +2,7 @@
 
 Polls KDEConnect for inbound text messages, parses them via
 ``grammar.parse``, throttles, dispatches ``command`` results to the
-Tauri command-relay WebSocket, appends ``sidechat`` results to the
+central Logos control dispatcher, appends ``sidechat`` results to the
 compositor side-channel JSONL, and ACKs back to the phone.
 
 The module is deliberately structured so all external surfaces
@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from shared.logos_control_dispatch import DEFAULT_LOGOS_API_BASE_URL, dispatch_logos_control
 from shared.operator_sidechat import (
     SIDECHAT_PATH,
 )
@@ -36,7 +37,7 @@ from .grammar import Parsed, parse
 
 log = logging.getLogger(__name__)
 
-DEFAULT_RELAY_URL = "ws://127.0.0.1:8052/ws/commands"
+DEFAULT_CONTROL_BASE_URL = DEFAULT_LOGOS_API_BASE_URL
 DEFAULT_SIDECHAT_PATH = SIDECHAT_PATH
 DEFAULT_WINDOW_S = 0.250
 DEFAULT_BURST = 4
@@ -107,18 +108,30 @@ def append_sidechat(
     _append_operator_sidechat(text, ts=ts, role="operator", path=path)
 
 
+async def logos_control_dispatcher(
+    command: str,
+    args: dict[str, Any],
+    *,
+    base_url: str = DEFAULT_CONTROL_BASE_URL,
+    request: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> None:
+    """Dispatch one parsed phone command through central Logos control."""
+
+    await dispatch_logos_control(command, args, base_url=base_url, request=request)
+
+
 async def websocket_dispatcher(
     command: str,
     args: dict[str, Any],
     *,
-    url: str = DEFAULT_RELAY_URL,
+    url: str,
     connect: Callable[[str], Any] | None = None,
 ) -> None:
-    """Post a single ``execute`` message to the Tauri command-relay WS.
+    """Post one explicit legacy WebSocket ``execute`` message.
 
-    Parallels ``agents.streamdeck_adapter.adapter.websocket_dispatcher``
-    — one-shot connect-send-close per press. The relay owns auth and
-    retries; the bridge stays crash-simple.
+    This helper has no production default URL. Runtime callers use
+    :func:`logos_control_dispatcher`; tests may still inject ``connect`` for
+    protocol-level coverage.
     """
     if connect is None:
         import websockets  # lazy import so tests do not need the dep
@@ -257,7 +270,7 @@ async def run_bridge(
     if dispatcher is None:
 
         async def _default_dispatcher(command: str, args: dict[str, Any]) -> None:
-            await websocket_dispatcher(command, args)
+            await logos_control_dispatcher(command, args)
 
         dispatcher = _default_dispatcher
 

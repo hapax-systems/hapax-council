@@ -1,5 +1,5 @@
 [Unit]
-Description=Rebuild Hapax Logos/Reverie binaries (5 min check)
+Description=Rebuild Hapax Imagination production binary (5 min check)
 
 [Timer]
 OnBootSec=2min

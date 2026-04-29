@@ -1,25 +1,20 @@
-"""Hapax Logos directive bridge.
+"""Retired Hapax Logos directive bridge.
 
-Agents POST directives here; the Tauri app watches the shm file and executes them.
-This is the agent-side entry point for all UI manipulation.
+The Tauri/WebKit app that consumed these directives is decommissioned as a
+production runtime. The route remains only to fail closed with replacement
+guidance for old callers.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import time
-from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/logos", tags=["logos"])
-
-DIRECTIVE_DIR = Path("/dev/shm/hapax-logos")
-DIRECTIVE_FILE = DIRECTIVE_DIR / "directives.jsonl"
 
 
 class UiDirective(BaseModel):
@@ -98,17 +93,26 @@ class UiDirective(BaseModel):
 
 @router.post("/directive")
 async def post_directive(directive: UiDirective) -> dict[str, object]:
-    """Accept a UI directive from an agent and write it to shm for the Tauri app."""
-    DIRECTIVE_DIR.mkdir(parents=True, exist_ok=True)
-
-    record = directive.model_dump(exclude_none=True)
-    record["_timestamp"] = time.time()
-
-    with open(DIRECTIVE_FILE, "a") as f:
-        f.write(json.dumps(record) + "\n")
-
-    _log.info("Directive from %s: %s", directive.source or "unknown", list(record.keys()))
-    return {"status": "accepted", "fields": list(record.keys())}
+    """Reject retired Tauri UI directives with replacement paths."""
+    record = directive.model_dump(exclude_none=True, exclude_defaults=True)
+    fields = sorted(record.keys())
+    _log.warning(
+        "Rejected retired Logos directive from %s: %s",
+        directive.source or "unknown",
+        fields,
+    )
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "status": "decommissioned",
+            "fields": fields,
+            "replacement": {
+                "control": "shared.logos_control_dispatch via logos-api :8051 or compositor UDS",
+                "frames": "studio-compositor snapshots, OBS/V4L2 /dev/video42, or HLS",
+                "operator": "Obsidian relay/task notes, Stream Deck/KDEConnect central dispatch, or systemctl",
+            },
+        },
+    )
 
 
 @router.get("/directive/schema")
