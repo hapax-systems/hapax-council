@@ -1,0 +1,42 @@
+name: Pytest Benchmarks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  governance-benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --extra ci
+      - name: Run governance pytest benchmarks
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: |
+          uv run pytest tests/test_governance_benchmarks.py \
+            --benchmark-only \
+            --benchmark-sort=mean \
+            --benchmark-json=/tmp/governance-pytest-benchmarks.json \
+            --durations=25 \
+            -q
+      - name: Upload benchmark JSON
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: governance-pytest-benchmarks
+          path: /tmp/governance-pytest-benchmarks.json
+          if-no-files-found: error
+          retention-days: 30
