@@ -1,0 +1,764 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/content-programme-run-envelope.schema.json",
+  "title": "ContentProgrammeRunEnvelopeFixtures",
+  "description": "Fixture-backed contract for autonomous content programme run envelopes. Public/live and monetizable states fail closed unless WCS, evidence, witnesses, rights, public-event readiness, and monetization grounding are present.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "required_fixture_cases",
+    "public_live_negative_fixture_cases",
+    "run_envelope_required_fields",
+    "fail_closed_policy",
+    "runs"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/content-programme-run-envelope.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "required_fixture_cases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fixture_case"},
+      "uniqueItems": true,
+      "minItems": 8
+    },
+    "public_live_negative_fixture_cases": {
+      "type": "array",
+      "items": {"type": "string", "const": "public_live_negative_missing_public_event"},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "run_envelope_required_fields": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/run_envelope_field"},
+      "uniqueItems": true,
+      "minItems": 18
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "public_live_without_grounding_question_allowed",
+        "public_live_without_witnesses_allowed",
+        "public_live_without_rights_allowed",
+        "public_live_without_public_event_readiness_allowed",
+        "public_archive_without_evidence_allowed",
+        "monetization_without_monetization_evidence_allowed",
+        "revenue_can_override_grounding"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "public_live_without_grounding_question_allowed": {"type": "boolean", "const": false},
+        "public_live_without_witnesses_allowed": {"type": "boolean", "const": false},
+        "public_live_without_rights_allowed": {"type": "boolean", "const": false},
+        "public_live_without_public_event_readiness_allowed": {"type": "boolean", "const": false},
+        "public_archive_without_evidence_allowed": {"type": "boolean", "const": false},
+        "monetization_without_monetization_evidence_allowed": {"type": "boolean", "const": false},
+        "revenue_can_override_grounding": {"type": "boolean", "const": false}
+      }
+    },
+    "runs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/content_programme_run_envelope"},
+      "minItems": 8
+    }
+  },
+  "x-required_fixture_cases": [
+    "private_run",
+    "dry_run",
+    "public_archive_run",
+    "public_live_run",
+    "monetization_blocked_run",
+    "refusal_run",
+    "correction_run",
+    "conversion_held_run"
+  ],
+  "x-public_live_negative_fixture_cases": ["public_live_negative_missing_public_event"],
+  "x-run_envelope_required_fields": [
+    "schema_version",
+    "run_id",
+    "programme_id",
+    "format_id",
+    "opportunity",
+    "selected_at",
+    "requested_mode",
+    "effective_mode",
+    "final_status",
+    "grounding_question",
+    "subject",
+    "wcs_snapshot",
+    "evidence_obligations",
+    "claim_shape",
+    "director",
+    "blockers",
+    "outcomes",
+    "conversion_posture",
+    "operator_labor_policy",
+    "fixture_case"
+  ],
+  "$defs": {
+    "content_programme_run_envelope": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "run_id",
+        "programme_id",
+        "format_id",
+        "opportunity",
+        "selected_at",
+        "requested_mode",
+        "effective_mode",
+        "final_status",
+        "grounding_question",
+        "subject",
+        "wcs_snapshot",
+        "evidence_obligations",
+        "claim_shape",
+        "director",
+        "blockers",
+        "outcomes",
+        "conversion_posture",
+        "operator_labor_policy",
+        "fixture_case"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "run_id": {"type": "string", "pattern": "^cpre:[a-z0-9_.:-]+$"},
+        "programme_id": {"type": "string", "minLength": 1},
+        "format_id": {"$ref": "#/$defs/format_id"},
+        "opportunity": {"$ref": "#/$defs/opportunity_ref"},
+        "selected_at": {"type": "string", "format": "date-time"},
+        "requested_mode": {"$ref": "#/$defs/public_private_mode"},
+        "effective_mode": {"$ref": "#/$defs/public_private_mode"},
+        "final_status": {"$ref": "#/$defs/run_final_status"},
+        "grounding_question": {"$ref": "#/$defs/grounding_question"},
+        "subject": {"$ref": "#/$defs/run_subject"},
+        "wcs_snapshot": {"$ref": "#/$defs/wcs_snapshot"},
+        "evidence_obligations": {"$ref": "#/$defs/evidence_obligations"},
+        "claim_shape": {"$ref": "#/$defs/claim_shape"},
+        "director": {"$ref": "#/$defs/director_refs"},
+        "blockers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/blocked_reason"},
+          "uniqueItems": true
+        },
+        "outcomes": {"$ref": "#/$defs/outcome_posture"},
+        "conversion_posture": {"$ref": "#/$defs/conversion_posture"},
+        "operator_labor_policy": {"$ref": "#/$defs/operator_labor_policy"},
+        "fixture_case": {"$ref": "#/$defs/fixture_case"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "effective_mode": {
+                "enum": ["public_archive", "public_live", "public_monetizable"]
+              }
+            },
+            "required": ["effective_mode"]
+          },
+          "then": {
+            "properties": {
+              "grounding_question": {
+                "properties": {
+                  "state": {"const": "present"},
+                  "text": {"type": "string", "minLength": 1},
+                  "source_ref": {"type": "string", "minLength": 1}
+                }
+              },
+              "wcs_snapshot": {
+                "properties": {
+                  "health_state": {"const": "healthy"},
+                  "public_event_ready": {"const": true},
+                  "rights_state": {"enum": ["operator_original", "cleared"]},
+                  "privacy_state": {"const": "public_safe"}
+                }
+              },
+              "evidence_obligations": {
+                "properties": {
+                  "source_refs": {"minItems": 1},
+                  "evidence_envelope_refs": {"minItems": 1},
+                  "witness_refs": {"minItems": 1},
+                  "rights_refs": {"minItems": 1},
+                  "public_event_readiness_refs": {"minItems": 1},
+                  "grounding_gate_refs": {"minItems": 1},
+                  "missing_obligations": {"maxItems": 0}
+                }
+              },
+              "claim_shape": {
+                "properties": {
+                  "authority_ceiling": {"const": "evidence_bound"},
+                  "public_claim_allowed": {"const": true}
+                }
+              },
+              "blockers": {"maxItems": 0},
+              "outcomes": {
+                "properties": {
+                  "public_event_refs": {"minItems": 1},
+                  "boundary_event_refs": {"minItems": 1},
+                  "outcome_envelope_refs": {"minItems": 1}
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"effective_mode": {"const": "public_monetizable"}},
+            "required": ["effective_mode"]
+          },
+          "then": {
+            "properties": {
+              "evidence_obligations": {
+                "properties": {"monetization_evidence_refs": {"minItems": 1}}
+              },
+              "conversion_posture": {
+                "properties": {"monetization_state": {"const": "ready"}}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "grounding_question": {
+                "properties": {"state": {"const": "missing"}},
+                "required": ["state"]
+              }
+            },
+            "required": ["grounding_question"]
+          },
+          "then": {
+            "properties": {
+              "effective_mode": {"const": "dry_run"},
+              "final_status": {"enum": ["blocked", "refused"]},
+              "blockers": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"fixture_case": {"const": "public_live_negative_missing_public_event"}},
+            "required": ["fixture_case"]
+          },
+          "then": {
+            "properties": {
+              "requested_mode": {"const": "public_live"},
+              "effective_mode": {"const": "dry_run"},
+              "final_status": {"const": "refused"},
+              "blockers": {"contains": {"const": "public_event_readiness_missing"}},
+              "evidence_obligations": {
+                "properties": {
+                  "public_event_readiness_refs": {"maxItems": 0},
+                  "missing_obligations": {
+                    "contains": {"const": "public_event_readiness"}
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"fixture_case": {"const": "monetization_blocked_run"}},
+            "required": ["fixture_case"]
+          },
+          "then": {
+            "properties": {
+              "requested_mode": {"const": "public_monetizable"},
+              "effective_mode": {"const": "public_archive"},
+              "conversion_posture": {
+                "properties": {
+                  "monetization_state": {"const": "blocked"},
+                  "blocked_routes": {"contains": {"const": "monetization"}},
+                  "monetization_evidence_refs": {"maxItems": 0}
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"fixture_case": {"const": "refusal_run"}},
+            "required": ["fixture_case"]
+          },
+          "then": {
+            "properties": {
+              "effective_mode": {"const": "dry_run"},
+              "final_status": {"const": "refused"},
+              "outcomes": {
+                "properties": {"refusal_or_correction_refs": {"minItems": 1}}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"fixture_case": {"const": "correction_run"}},
+            "required": ["fixture_case"]
+          },
+          "then": {
+            "properties": {
+              "final_status": {"const": "corrected"},
+              "outcomes": {
+                "properties": {"refusal_or_correction_refs": {"minItems": 1}}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"fixture_case": {"const": "conversion_held_run"}},
+            "required": ["fixture_case"]
+          },
+          "then": {
+            "properties": {
+              "final_status": {"const": "conversion_held"},
+              "conversion_posture": {
+                "properties": {
+                  "conversion_state": {"const": "held"},
+                  "held_routes": {"minItems": 1}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "opportunity_ref": {
+      "type": "object",
+      "required": [
+        "opportunity_id",
+        "decision_ref",
+        "reward_vector_ref",
+        "posterior_refs",
+        "selected_by"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "opportunity_id": {"type": "string", "minLength": 1},
+        "decision_ref": {"type": "string", "minLength": 1},
+        "reward_vector_ref": {"type": "string", "minLength": 1},
+        "posterior_refs": {"$ref": "#/$defs/ref_array"},
+        "selected_by": {"type": "string", "enum": ["bayesian_model", "scheduler_dry_run"]}
+      }
+    },
+    "grounding_question": {
+      "type": "object",
+      "required": ["state", "text", "source_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"type": "string", "enum": ["present", "missing"]},
+        "text": {"type": ["string", "null"]},
+        "source_ref": {"type": ["string", "null"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "present"}}, "required": ["state"]},
+          "then": {
+            "properties": {
+              "text": {"type": "string", "minLength": 1},
+              "source_ref": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "missing"}}, "required": ["state"]},
+          "then": {"properties": {"text": {"type": "null"}, "source_ref": {"type": "null"}}}
+        }
+      ]
+    },
+    "run_subject": {
+      "type": "object",
+      "required": ["label", "input_source_refs", "time_window"],
+      "additionalProperties": false,
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "input_source_refs": {"$ref": "#/$defs/non_empty_ref_array"},
+        "time_window": {
+          "type": "object",
+          "required": ["starts_at", "ends_at"],
+          "additionalProperties": false,
+          "properties": {
+            "starts_at": {"type": ["string", "null"], "format": "date-time"},
+            "ends_at": {"type": ["string", "null"], "format": "date-time"}
+          }
+        }
+      }
+    },
+    "wcs_snapshot": {
+      "type": "object",
+      "required": [
+        "snapshot_ref",
+        "health_state",
+        "required_surface_refs",
+        "available_surface_refs",
+        "missing_surface_refs",
+        "public_event_ready",
+        "rights_state",
+        "privacy_state",
+        "monetization_grounding_state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "snapshot_ref": {"type": "string", "minLength": 1},
+        "health_state": {
+          "type": "string",
+          "enum": ["healthy", "degraded", "blocked", "stale", "missing", "private_only", "dry_run"]
+        },
+        "required_surface_refs": {"$ref": "#/$defs/non_empty_ref_array"},
+        "available_surface_refs": {"$ref": "#/$defs/ref_array"},
+        "missing_surface_refs": {"$ref": "#/$defs/ref_array"},
+        "public_event_ready": {"type": "boolean"},
+        "rights_state": {
+          "type": "string",
+          "enum": ["operator_original", "cleared", "platform_embed_only", "blocked", "unknown"]
+        },
+        "privacy_state": {
+          "type": "string",
+          "enum": ["operator_private", "public_safe", "aggregate_only", "blocked", "unknown"]
+        },
+        "monetization_grounding_state": {
+          "type": "string",
+          "enum": ["not_requested", "ready", "blocked", "unknown"]
+        }
+      }
+    },
+    "evidence_obligations": {
+      "type": "object",
+      "required": [
+        "required_evidence_classes",
+        "required_witness_classes",
+        "source_refs",
+        "evidence_envelope_refs",
+        "witness_refs",
+        "rights_refs",
+        "public_event_readiness_refs",
+        "grounding_gate_refs",
+        "monetization_evidence_refs",
+        "missing_obligations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "required_evidence_classes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidence_class"},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "required_witness_classes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/witness_class"},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "source_refs": {"$ref": "#/$defs/ref_array"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/ref_array"},
+        "witness_refs": {"$ref": "#/$defs/ref_array"},
+        "rights_refs": {"$ref": "#/$defs/ref_array"},
+        "public_event_readiness_refs": {"$ref": "#/$defs/ref_array"},
+        "grounding_gate_refs": {"$ref": "#/$defs/ref_array"},
+        "monetization_evidence_refs": {"$ref": "#/$defs/ref_array"},
+        "missing_obligations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/missing_obligation"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "claim_shape": {
+      "type": "object",
+      "required": [
+        "claim_kind",
+        "authority_ceiling",
+        "allowed_claim_verbs",
+        "forbidden_claim_verbs",
+        "confidence_policy",
+        "uncertainty_language",
+        "scope_limit",
+        "public_claim_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_kind": {
+          "type": "string",
+          "enum": [
+            "observation",
+            "classification",
+            "ranking",
+            "comparison",
+            "explanation",
+            "refusal",
+            "correction",
+            "metadata"
+          ]
+        },
+        "authority_ceiling": {
+          "type": "string",
+          "enum": ["evidence_bound", "speculative", "internal_only", "no_claim"]
+        },
+        "allowed_claim_verbs": {"$ref": "#/$defs/non_empty_ref_array"},
+        "forbidden_claim_verbs": {"$ref": "#/$defs/ref_array"},
+        "confidence_policy": {
+          "type": "string",
+          "enum": ["posterior_required", "qualitative_required", "none_allowed_for_refusal_only"]
+        },
+        "uncertainty_language": {"type": "string", "minLength": 1},
+        "scope_limit": {"type": "string", "minLength": 1},
+        "public_claim_allowed": {"type": "boolean"}
+      }
+    },
+    "director_refs": {
+      "type": "object",
+      "required": ["director_snapshot_ref", "director_move_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "director_snapshot_ref": {"type": ["string", "null"]},
+        "director_move_refs": {"$ref": "#/$defs/ref_array"}
+      }
+    },
+    "outcome_posture": {
+      "type": "object",
+      "required": [
+        "outcome_envelope_refs",
+        "boundary_event_refs",
+        "public_event_refs",
+        "archive_refs",
+        "refusal_or_correction_refs",
+        "final_outcome_summary",
+        "learning_update_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "outcome_envelope_refs": {"$ref": "#/$defs/ref_array"},
+        "boundary_event_refs": {"$ref": "#/$defs/ref_array"},
+        "public_event_refs": {"$ref": "#/$defs/ref_array"},
+        "archive_refs": {"$ref": "#/$defs/ref_array"},
+        "refusal_or_correction_refs": {"$ref": "#/$defs/ref_array"},
+        "final_outcome_summary": {"type": "string", "minLength": 1},
+        "learning_update_allowed": {"type": "boolean"}
+      }
+    },
+    "conversion_posture": {
+      "type": "object",
+      "required": [
+        "conversion_state",
+        "allowed_routes",
+        "held_routes",
+        "blocked_routes",
+        "monetization_state",
+        "monetization_evidence_refs",
+        "support_or_grant_refs",
+        "revenue_can_override_grounding"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "conversion_state": {
+          "type": "string",
+          "enum": ["not_requested", "candidate", "held", "blocked", "linked", "emitted"]
+        },
+        "allowed_routes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/conversion_route"},
+          "uniqueItems": true
+        },
+        "held_routes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/conversion_route"},
+          "uniqueItems": true
+        },
+        "blocked_routes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/conversion_route"},
+          "uniqueItems": true
+        },
+        "monetization_state": {
+          "type": "string",
+          "enum": ["not_requested", "ready", "blocked", "unknown"]
+        },
+        "monetization_evidence_refs": {"$ref": "#/$defs/ref_array"},
+        "support_or_grant_refs": {"$ref": "#/$defs/ref_array"},
+        "revenue_can_override_grounding": {"type": "boolean", "const": false}
+      }
+    },
+    "operator_labor_policy": {
+      "type": "object",
+      "required": [
+        "single_operator_only",
+        "recurring_operator_nomination_required",
+        "manual_calendar_required",
+        "supporter_request_queue_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "single_operator_only": {"type": "boolean", "const": true},
+        "recurring_operator_nomination_required": {"type": "boolean", "const": false},
+        "manual_calendar_required": {"type": "boolean", "const": false},
+        "supporter_request_queue_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_archive", "public_live", "public_monetizable"]
+    },
+    "run_final_status": {
+      "type": "string",
+      "enum": ["completed", "blocked", "refused", "corrected", "conversion_held"]
+    },
+    "fixture_case": {
+      "type": "string",
+      "enum": [
+        "private_run",
+        "dry_run",
+        "public_archive_run",
+        "public_live_run",
+        "public_live_negative_missing_public_event",
+        "monetization_blocked_run",
+        "refusal_run",
+        "correction_run",
+        "conversion_held_run"
+      ]
+    },
+    "format_id": {
+      "type": "string",
+      "enum": [
+        "tier_list",
+        "react_commentary",
+        "ranking",
+        "comparison",
+        "review",
+        "watch_along",
+        "explainer",
+        "rundown",
+        "debate",
+        "bracket",
+        "what_is_this",
+        "refusal_breakdown",
+        "evidence_audit"
+      ]
+    },
+    "evidence_class": {
+      "type": "string",
+      "enum": [
+        "source_ref",
+        "criteria",
+        "comparison_trace",
+        "rights_provenance",
+        "privacy_review",
+        "grounding_gate",
+        "public_event_readiness",
+        "archive_sidecar",
+        "monetization_readiness"
+      ]
+    },
+    "witness_class": {
+      "type": "string",
+      "enum": [
+        "wcs_snapshot",
+        "source_observation",
+        "claim_gate",
+        "rights_gate",
+        "public_event_gate",
+        "archive_witness",
+        "monetization_witness"
+      ]
+    },
+    "missing_obligation": {
+      "type": "string",
+      "enum": [
+        "grounding_question",
+        "source_ref",
+        "evidence_envelope",
+        "witness",
+        "rights",
+        "privacy",
+        "public_event_readiness",
+        "monetization_evidence"
+      ]
+    },
+    "blocked_reason": {
+      "type": "string",
+      "enum": [
+        "private_mode",
+        "dry_run_mode",
+        "missing_grounding_question",
+        "missing_evidence_ref",
+        "witness_missing",
+        "rights_blocked",
+        "privacy_blocked",
+        "public_event_readiness_missing",
+        "monetization_readiness_missing",
+        "world_surface_blocked",
+        "operator_review_required"
+      ]
+    },
+    "conversion_route": {
+      "type": "string",
+      "enum": [
+        "archive_replay",
+        "chapter",
+        "live_cuepoint",
+        "shorts",
+        "metadata",
+        "refusal_artifact",
+        "correction_artifact",
+        "support_prompt",
+        "grant_packet",
+        "monetization"
+      ]
+    },
+    "run_envelope_field": {
+      "type": "string",
+      "enum": [
+        "schema_version",
+        "run_id",
+        "programme_id",
+        "format_id",
+        "opportunity",
+        "selected_at",
+        "requested_mode",
+        "effective_mode",
+        "final_status",
+        "grounding_question",
+        "subject",
+        "wcs_snapshot",
+        "evidence_obligations",
+        "claim_shape",
+        "director",
+        "blockers",
+        "outcomes",
+        "conversion_posture",
+        "operator_labor_policy",
+        "fixture_case"
+      ]
+    },
+    "ref_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true
+    },
+    "non_empty_ref_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    }
+  }
+}
