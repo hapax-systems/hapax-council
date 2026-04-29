@@ -8,6 +8,7 @@ vulture cannot see. Do not use this as a baseline for ordinary dead code.
 
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
 from shared.audio_topology_inspector import check_l12_forward_invariant
+from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
 from shared.content_programme_feedback_ledger import (
     append_feedback_event,
     audience_outcome_is_aggregate_only,
@@ -164,3 +165,12 @@ WorldCapabilityRegistry.require
 WorldCapabilityRegistry.records_for_domain
 WorldCapabilityRegistry.records_for_surface_ref
 WorldCapabilityRegistry.blocked_reason_codes
+
+# Audio WCS fixture helpers are the public contract for downstream semantic
+# router, marker-probe, audio-health, and director route tasks. Pydantic invokes
+# validators dynamically; downstream tasks consume read helpers after this
+# schema/fixture contract lands.
+AudioSurfaceFixture._route_destination_matches_row
+AudioWorldSurfaceFixtureSet._validate_contract_coverage
+AudioWorldSurfaceFixtureSet.require_surface
+AudioWorldSurfaceFixtureSet.rows_for_witness

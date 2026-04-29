@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/audio-world-surface-fixtures.schema.json",
+  "title": "AudioWorldSurfaceFixtures",
+  "description": "Fixture-backed contract rows for audio World Capability Surface route results, health states, and witness classes. Fixtures are not runtime route evidence.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "health_states",
+    "witness_classes",
+    "route_result_required_fields",
+    "audio_surface_rows",
+    "health_state_fixtures",
+    "fail_closed_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {"type": "string", "const": "schemas/audio-world-surface-fixtures.schema.json"},
+    "generated_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true
+    },
+    "declared_at": {"type": "string", "minLength": 1},
+    "producer": {"type": "string", "minLength": 1},
+    "health_states": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/audio_health_state"},
+      "uniqueItems": true,
+      "minItems": 8
+    },
+    "witness_classes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/witness_class"},
+      "minItems": 3
+    },
+    "route_result_required_fields": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/route_result_field"},
+      "uniqueItems": true,
+      "minItems": 7
+    },
+    "audio_surface_rows": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/audio_surface_row"},
+      "minItems": 10
+    },
+    "health_state_fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/health_state_fixture"},
+      "minItems": 8
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "fixtures_are_runtime_truth",
+        "raw_high_level_targets_are_implementation_truth",
+        "missing_witness_allows_public_claim",
+        "private_audio_may_fallback_to_public",
+        "no_leak_can_be_inferred_from_route_name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "fixtures_are_runtime_truth": {"type": "boolean", "const": false},
+        "raw_high_level_targets_are_implementation_truth": {"type": "boolean", "const": false},
+        "missing_witness_allows_public_claim": {"type": "boolean", "const": false},
+        "private_audio_may_fallback_to_public": {"type": "boolean", "const": false},
+        "no_leak_can_be_inferred_from_route_name": {"type": "boolean", "const": false}
+      }
+    }
+  },
+  "x-required_audio_surface_ids": [
+    "audio.broadcast_voice",
+    "audio.private_assistant_monitor",
+    "audio.private_notification_monitor",
+    "audio.programme_audio",
+    "audio.stt_captions",
+    "audio.l12_capture",
+    "audio.yeti_monitor",
+    "audio.broadcast_egress",
+    "audio.broadcast_health",
+    "audio.no_private_leak"
+  ],
+  "x-required_health_states": [
+    "safe",
+    "quiet_off_air",
+    "degraded",
+    "unsafe",
+    "broken",
+    "blocked_absent",
+    "stale",
+    "unknown"
+  ],
+  "x-route_result_required_fields": [
+    "semantic_destination",
+    "concrete_target_binding",
+    "privacy_posture",
+    "fallback_policy",
+    "witness_class",
+    "freshness",
+    "failure_reason"
+  ],
+  "$defs": {
+    "audio_health_state": {
+      "type": "string",
+      "enum": [
+        "safe",
+        "quiet_off_air",
+        "degraded",
+        "unsafe",
+        "broken",
+        "blocked_absent",
+        "stale",
+        "unknown"
+      ]
+    },
+    "route_result_field": {
+      "type": "string",
+      "enum": [
+        "semantic_destination",
+        "concrete_target_binding",
+        "privacy_posture",
+        "fallback_policy",
+        "witness_class",
+        "freshness",
+        "failure_reason"
+      ]
+    },
+    "witness_class_id": {
+      "type": "string",
+      "enum": [
+        "public_audio_witness",
+        "private_audio_witness",
+        "no_leak_audio_witness",
+        "route_binding_witness",
+        "freshness_witness",
+        "health_witness"
+      ]
+    },
+    "witness_class": {
+      "type": "object",
+      "required": [
+        "witness_class",
+        "privacy_scope",
+        "required_evidence_classes",
+        "raw_target_assumptions_allowed",
+        "description"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "witness_class": {"$ref": "#/$defs/witness_class_id"},
+        "privacy_scope": {
+          "type": "string",
+          "enum": ["public", "private", "no_leak", "route", "freshness", "health"]
+        },
+        "required_evidence_classes": {"$ref": "#/$defs/non_empty_string_array"},
+        "raw_target_assumptions_allowed": {"type": "boolean", "const": false},
+        "description": {"type": "string", "minLength": 1}
+      }
+    },
+    "audio_surface_row": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "surface_id",
+        "label",
+        "world_capability_ref",
+        "semantic_destination",
+        "surface_role",
+        "grounding_status",
+        "health_state",
+        "route_result",
+        "public_claim_allowed",
+        "blocked_reasons",
+        "notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "surface_id": {"type": "string", "pattern": "^audio\\.[a-z][a-z0-9_]*$"},
+        "label": {"type": "string", "minLength": 1},
+        "world_capability_ref": {"type": "string", "pattern": "^audio\\.[a-z][a-z0-9_]*$"},
+        "semantic_destination": {
+          "type": "string",
+          "enum": [
+            "broadcast_public",
+            "private_assistant",
+            "private_notification",
+            "programme_audio",
+            "caption_source",
+            "l12_capture",
+            "yeti_monitor",
+            "broadcast_egress",
+            "broadcast_health",
+            "no_private_leak"
+          ]
+        },
+        "surface_role": {
+          "type": "string",
+          "enum": ["expression", "observation", "health", "governance_witness"]
+        },
+        "grounding_status": {
+          "type": "string",
+          "enum": ["non_grounding_private", "grounding_candidate", "public_claim_bearing"]
+        },
+        "health_state": {"$ref": "#/$defs/audio_health_state"},
+        "route_result": {"$ref": "#/$defs/route_result"},
+        "public_claim_allowed": {"type": "boolean", "const": false},
+        "blocked_reasons": {"$ref": "#/$defs/non_empty_string_array"},
+        "notes": {"type": "string"}
+      }
+    },
+    "route_result": {
+      "type": "object",
+      "required": [
+        "semantic_destination",
+        "concrete_target_binding",
+        "privacy_posture",
+        "fallback_policy",
+        "witness_class",
+        "freshness",
+        "failure_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "semantic_destination": {
+          "type": "string",
+          "enum": [
+            "broadcast_public",
+            "private_assistant",
+            "private_notification",
+            "programme_audio",
+            "caption_source",
+            "l12_capture",
+            "yeti_monitor",
+            "broadcast_egress",
+            "broadcast_health",
+            "no_private_leak"
+          ]
+        },
+        "concrete_target_binding": {"$ref": "#/$defs/concrete_target_binding"},
+        "privacy_posture": {
+          "type": "string",
+          "enum": [
+            "public_candidate",
+            "private_only",
+            "no_leak",
+            "internal_health",
+            "archive_only",
+            "dry_run"
+          ]
+        },
+        "fallback_policy": {"$ref": "#/$defs/fallback_policy"},
+        "witness_class": {"$ref": "#/$defs/witness_class_id"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "failure_reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "concrete_target_binding": {
+      "type": "object",
+      "required": [
+        "binding_id",
+        "media_role",
+        "target_ref",
+        "route_id",
+        "substrate_ref",
+        "concrete_interface",
+        "raw_high_level_target_assumption",
+        "implementation_truth_source_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "binding_id": {"type": "string", "minLength": 1},
+        "media_role": {"type": ["string", "null"]},
+        "target_ref": {"type": "string", "minLength": 1},
+        "route_id": {"type": "string", "minLength": 1},
+        "substrate_ref": {"type": "string", "minLength": 1},
+        "concrete_interface": {"type": "string", "minLength": 1},
+        "raw_high_level_target_assumption": {"type": "boolean", "const": false},
+        "implementation_truth_source_refs": {"$ref": "#/$defs/non_empty_string_array"}
+      }
+    },
+    "fallback_policy": {
+      "type": "object",
+      "required": [
+        "mode",
+        "reason_code",
+        "prohibited_fallback_refs",
+        "operator_visible_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "block_public_speech",
+            "blocked_absent_silence",
+            "private_only",
+            "archive_only",
+            "dry_run",
+            "unsafe_block",
+            "degraded_status",
+            "stale_block",
+            "no_op"
+          ]
+        },
+        "reason_code": {"type": "string", "minLength": 1},
+        "prohibited_fallback_refs": {"$ref": "#/$defs/string_array"},
+        "operator_visible_reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["state", "ttl_s", "checked_at", "evidence_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["fresh", "stale", "unknown", "blocked_absent"]
+        },
+        "ttl_s": {"type": ["integer", "null"], "minimum": 0},
+        "checked_at": {"type": ["string", "null"]},
+        "evidence_ref": {"type": ["string", "null"]}
+      }
+    },
+    "health_state_fixture": {
+      "type": "object",
+      "required": [
+        "state",
+        "public_live_allowed",
+        "public_claim_allowed_without_runtime_witness",
+        "meaning",
+        "failure_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"$ref": "#/$defs/audio_health_state"},
+        "public_live_allowed": {"type": "boolean", "const": false},
+        "public_claim_allowed_without_runtime_witness": {"type": "boolean", "const": false},
+        "meaning": {"type": "string", "minLength": 1},
+        "failure_reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "non_empty_string_array": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    }
+  }
+}
