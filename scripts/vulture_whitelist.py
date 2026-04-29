@@ -32,6 +32,22 @@ from shared.grounding_provider_router import (
     validate_eval_suite,
     validate_provider_registry,
 )
+from shared.tier_ranking_bracket_engine import (
+    BracketMatchRecord,
+    BracketRecord,
+    CandidateSetRecord,
+    EvidenceAnchor,
+    FinalDecisionRecord,
+    InconsistencyRecord,
+    PairwiseComparisonRecord,
+    RankRecord,
+    ReversalRecord,
+    TieBreakRecord,
+    UncertaintyRecord,
+    build_run_store_events,
+    can_feed_grounding_evaluator,
+    emit_deterministic_boundaries,
+)
 from shared.trend_current_event_gate import evaluate_candidate, validate_policy
 
 # FastAPI registers this route by decorator; vulture does not follow APIRouter.
@@ -87,3 +103,22 @@ audience_outcome_is_aggregate_only
 posterior_update_is_evidence_bound
 event_allows_public_truth_claim
 build_feedback_fixture
+
+# Tier/ranking/bracket engine helpers are the public contract for downstream
+# content runners, evaluator adapters, and run-store projections. This contract
+# lands before those consumers, and Pydantic invokes validators dynamically.
+EvidenceAnchor
+UncertaintyRecord
+CandidateSetRecord.validate_candidate_set
+UncertaintyRecord.validate_uncertainty
+PairwiseComparisonRecord.validate_comparison
+TieBreakRecord.validate_tie_break
+RankRecord.validate_rank
+BracketMatchRecord.validate_match
+BracketRecord.validate_bracket
+ReversalRecord.validate_reversal
+InconsistencyRecord.validate_inconsistency
+FinalDecisionRecord.validate_decision
+can_feed_grounding_evaluator
+emit_deterministic_boundaries
+build_run_store_events

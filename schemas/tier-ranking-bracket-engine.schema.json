@@ -1,0 +1,442 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/tier-ranking-bracket-engine.schema.json",
+  "title": "TierRankingBracketDecision",
+  "description": "Criteria-bounded tier list, ranking, and bracket decision contract for autonomous content programme runs.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "decision_id",
+    "run_id",
+    "programme_id",
+    "format_id",
+    "selected_at",
+    "candidate_set",
+    "comparisons",
+    "ranks",
+    "tiers",
+    "tie_breaks",
+    "reversals",
+    "inconsistencies",
+    "evaluator_refs",
+    "run_store_refs",
+    "evidence_refs",
+    "evidence_envelope_refs",
+    "wcs_refs",
+    "uncertainty_ref",
+    "requested_public_private_mode",
+    "public_private_mode",
+    "output_eligibility",
+    "public_claim_allowed",
+    "no_expert_verdict_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "decision_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "programme_id": {"type": "string", "minLength": 1},
+    "format_id": {"$ref": "#/$defs/ranking_format"},
+    "selected_at": {"type": "string", "format": "date-time"},
+    "candidate_set": {"$ref": "#/$defs/candidate_set"},
+    "comparisons": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/pairwise_comparison"}},
+    "ranks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/rank_record"}},
+    "tiers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/tier_record"}},
+    "tie_breaks": {"type": "array", "items": {"$ref": "#/$defs/tie_break_record"}},
+    "bracket": {"anyOf": [{"$ref": "#/$defs/bracket_record"}, {"type": "null"}]},
+    "reversals": {"type": "array", "items": {"$ref": "#/$defs/reversal_record"}},
+    "inconsistencies": {"type": "array", "items": {"$ref": "#/$defs/inconsistency_record"}},
+    "evaluator_refs": {"$ref": "#/$defs/ref_list"},
+    "run_store_refs": {"$ref": "#/$defs/ref_list"},
+    "evidence_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+    "evidence_envelope_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+    "wcs_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+    "uncertainty_ref": {"type": "string", "minLength": 1},
+    "requested_public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+    "public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+    "output_eligibility": {"$ref": "#/$defs/output_eligibility"},
+    "public_claim_allowed": {"type": "boolean"},
+    "no_expert_verdict_policy": {"$ref": "#/$defs/no_expert_verdict_policy"}
+  },
+  "$defs": {
+    "ranking_format": {"type": "string", "enum": ["tier_list", "ranking", "bracket"]},
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "output_eligibility": {"type": "string", "enum": ["private", "dry_run", "public_ready", "held", "blocked"]},
+    "comparison_outcome": {"type": "string", "enum": ["left", "right", "tie", "incomparable", "refused"]},
+    "decision_state": {"type": "string", "enum": ["candidate", "accepted", "refused", "reversed", "superseded"]},
+    "tie_break_method": {
+      "type": "string",
+      "enum": [
+        "criterion_priority",
+        "evidence_freshness",
+        "uncertainty_lower_bound",
+        "stable_id_order",
+        "refusal_boundary",
+        "no_tiebreak"
+      ]
+    },
+    "uncertainty_state": {"type": "string", "enum": ["low", "medium", "high", "unknown"]},
+    "inconsistency_kind": {
+      "type": "string",
+      "enum": [
+        "cycle",
+        "criterion_conflict",
+        "evidence_conflict",
+        "tie_break_conflict",
+        "reversal_required",
+        "missing_evidence"
+      ]
+    },
+    "inconsistency_resolution_state": {
+      "type": "string",
+      "enum": ["open", "refused", "resolved_by_tiebreak", "resolved_by_reversal"]
+    },
+    "boundary_surface": {"type": "string", "enum": ["chapter", "shorts", "replay_card", "dataset", "zine"]},
+    "ref_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "nonempty_ref_list": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "candidate": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "label",
+        "source_refs",
+        "evidence_refs",
+        "evidence_envelope_refs",
+        "wcs_refs",
+        "rights_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "source_refs": {"$ref": "#/$defs/ref_list"},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/ref_list"},
+        "rights_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "criterion": {
+      "type": "object",
+      "required": [
+        "criterion_id",
+        "label",
+        "description",
+        "direction",
+        "weight",
+        "scope_limit",
+        "evidence_refs",
+        "wcs_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "criterion_id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "direction": {"type": "string", "enum": ["higher_better", "lower_better", "categorical", "evidence_bound"]},
+        "weight": {"type": "number", "minimum": 0},
+        "scope_limit": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/nonempty_ref_list"}
+      }
+    },
+    "candidate_set": {
+      "type": "object",
+      "required": ["candidate_set_id", "title", "scope_limit", "candidates", "criteria", "evidence_refs", "wcs_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "candidate_set_id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "scope_limit": {"type": "string", "minLength": 1},
+        "candidates": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/candidate"}},
+        "criteria": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/criterion"}},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/nonempty_ref_list"}
+      }
+    },
+    "pairwise_comparison": {
+      "type": "object",
+      "required": [
+        "comparison_id",
+        "left_candidate_id",
+        "right_candidate_id",
+        "criterion_ids",
+        "outcome",
+        "rationale",
+        "evidence_refs",
+        "evidence_envelope_refs",
+        "wcs_refs",
+        "uncertainty_ref",
+        "state",
+        "criteria_bounded",
+        "expert_verdict_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "comparison_id": {"type": "string", "minLength": 1},
+        "left_candidate_id": {"type": "string", "minLength": 1},
+        "right_candidate_id": {"type": "string", "minLength": 1},
+        "criterion_ids": {"$ref": "#/$defs/nonempty_ref_list"},
+        "outcome": {"$ref": "#/$defs/comparison_outcome"},
+        "rationale": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "uncertainty_ref": {"type": "string", "minLength": 1},
+        "state": {"$ref": "#/$defs/decision_state"},
+        "criteria_bounded": {"type": "boolean", "const": true},
+        "expert_verdict_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "tie_break_record": {
+      "type": "object",
+      "required": [
+        "tie_break_id",
+        "applies_to_rank_ids",
+        "method",
+        "criterion_priority",
+        "rationale",
+        "evidence_refs",
+        "evidence_envelope_refs",
+        "wcs_refs",
+        "uncertainty_ref",
+        "state",
+        "expert_verdict_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "tie_break_id": {"type": "string", "minLength": 1},
+        "applies_to_rank_ids": {"$ref": "#/$defs/nonempty_ref_list"},
+        "method": {"$ref": "#/$defs/tie_break_method"},
+        "criterion_priority": {"$ref": "#/$defs/ref_list"},
+        "rationale": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/ref_list"},
+        "uncertainty_ref": {"type": "string", "minLength": 1},
+        "state": {"$ref": "#/$defs/decision_state"},
+        "expert_verdict_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "rank_record": {
+      "type": "object",
+      "required": [
+        "rank_id",
+        "candidate_id",
+        "ordinal",
+        "tier_id",
+        "comparison_refs",
+        "criterion_ids",
+        "evidence_refs",
+        "evidence_envelope_refs",
+        "wcs_refs",
+        "uncertainty_ref",
+        "scope_limit",
+        "public_claim_allowed",
+        "criteria_bounded",
+        "expert_verdict_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rank_id": {"type": "string", "minLength": 1},
+        "candidate_id": {"type": "string", "minLength": 1},
+        "ordinal": {"type": "integer", "minimum": 1},
+        "tier_id": {"type": "string", "minLength": 1},
+        "comparison_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "criterion_ids": {"$ref": "#/$defs/nonempty_ref_list"},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "uncertainty_ref": {"type": "string", "minLength": 1},
+        "tie_break_ref": {"type": ["string", "null"], "minLength": 1},
+        "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "scope_limit": {"type": "string", "minLength": 1},
+        "public_claim_allowed": {"type": "boolean"},
+        "criteria_bounded": {"type": "boolean", "const": true},
+        "expert_verdict_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "tier_record": {
+      "type": "object",
+      "required": ["tier_id", "label", "ordinal", "rank_refs", "criteria_summary", "evidence_refs", "wcs_refs", "uncertainty_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "tier_id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "ordinal": {"type": "integer", "minimum": 1},
+        "rank_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "criteria_summary": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "uncertainty_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "bracket_match": {
+      "type": "object",
+      "required": [
+        "match_id",
+        "round_index",
+        "match_index",
+        "left_candidate_id",
+        "right_candidate_id",
+        "comparison_ref",
+        "outcome",
+        "winner_candidate_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "match_id": {"type": "string", "minLength": 1},
+        "round_index": {"type": "integer", "minimum": 1},
+        "match_index": {"type": "integer", "minimum": 1},
+        "left_candidate_id": {"type": "string", "minLength": 1},
+        "right_candidate_id": {"type": "string", "minLength": 1},
+        "comparison_ref": {"type": "string", "minLength": 1},
+        "outcome": {"$ref": "#/$defs/comparison_outcome"},
+        "winner_candidate_id": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "bracket_round": {
+      "type": "object",
+      "required": ["round_id", "round_index", "match_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "round_id": {"type": "string", "minLength": 1},
+        "round_index": {"type": "integer", "minimum": 1},
+        "match_refs": {"$ref": "#/$defs/nonempty_ref_list"}
+      }
+    },
+    "bracket_record": {
+      "type": "object",
+      "required": [
+        "bracket_id",
+        "candidate_set_id",
+        "rounds",
+        "matches",
+        "champion_candidate_id",
+        "evidence_refs",
+        "wcs_refs",
+        "inconsistency_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "bracket_id": {"type": "string", "minLength": 1},
+        "candidate_set_id": {"type": "string", "minLength": 1},
+        "rounds": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/bracket_round"}},
+        "matches": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/bracket_match"}},
+        "champion_candidate_id": {"type": ["string", "null"], "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "inconsistency_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "reversal_record": {
+      "type": "object",
+      "required": [
+        "reversal_id",
+        "reversed_at",
+        "previous_decision_ref",
+        "new_decision_ref",
+        "reason",
+        "evidence_refs",
+        "evidence_envelope_refs",
+        "wcs_refs",
+        "uncertainty_ref",
+        "boundary_required",
+        "public_correction_required",
+        "expert_verdict_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "reversal_id": {"type": "string", "minLength": 1},
+        "reversed_at": {"type": "string", "format": "date-time"},
+        "previous_decision_ref": {"type": "string", "minLength": 1},
+        "new_decision_ref": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "uncertainty_ref": {"type": "string", "minLength": 1},
+        "boundary_required": {"type": "boolean", "const": true},
+        "public_correction_required": {"type": "boolean", "const": true},
+        "expert_verdict_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "inconsistency_record": {
+      "type": "object",
+      "required": [
+        "inconsistency_id",
+        "kind",
+        "detected_at",
+        "comparison_refs",
+        "rank_refs",
+        "criterion_ids",
+        "explanation",
+        "evidence_refs",
+        "wcs_refs",
+        "resolution_state",
+        "resolution_ref"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "inconsistency_id": {"type": "string", "minLength": 1},
+        "kind": {"$ref": "#/$defs/inconsistency_kind"},
+        "detected_at": {"type": "string", "format": "date-time"},
+        "comparison_refs": {"$ref": "#/$defs/ref_list"},
+        "rank_refs": {"$ref": "#/$defs/ref_list"},
+        "criterion_ids": {"$ref": "#/$defs/ref_list"},
+        "explanation": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "wcs_refs": {"$ref": "#/$defs/nonempty_ref_list"},
+        "resolution_state": {"$ref": "#/$defs/inconsistency_resolution_state"},
+        "resolution_ref": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "no_expert_verdict_policy": {
+      "type": "object",
+      "required": [
+        "criteria_bounded_outputs_only",
+        "evidence_label_required",
+        "authoritative_verdict_allowed",
+        "domain_truth_adjudication_allowed",
+        "engagement_metric_source_allowed",
+        "public_claim_requires_effective_public_mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "criteria_bounded_outputs_only": {"type": "boolean", "const": true},
+        "evidence_label_required": {"type": "boolean", "const": true},
+        "authoritative_verdict_allowed": {"type": "boolean", "const": false},
+        "domain_truth_adjudication_allowed": {"type": "boolean", "const": false},
+        "engagement_metric_source_allowed": {"type": "boolean", "const": false},
+        "public_claim_requires_effective_public_mode": {"type": "boolean", "const": true}
+      }
+    }
+  },
+  "x-boundary_surfaces": ["chapter", "shorts", "replay_card", "dataset", "zine"],
+  "x-run_store_event_projection": [
+    "evidence_attached",
+    "boundary_emitted",
+    "claim_recorded",
+    "correction_made",
+    "conversion_held",
+    "completed",
+    "blocked"
+  ],
+  "x-grounding_evaluator_integration": {
+    "score_as_attempt_quality_only": true,
+    "expert_verdict_allowed": false,
+    "engagement_metric_source_allowed": false
+  }
+}

@@ -256,8 +256,8 @@
       "next_packet": {
         "task_id": "cross-surface-event-contract",
         "task_note": "closed/cross-surface-event-contract.md",
-        "state": "offered",
-        "reason": "This contract is the shared public-event shape downstream adapters should consume."
+        "state": "closed",
+        "reason": "This contract is now closed evidence; downstream adapters should consume the shared public-event shape."
       },
       "guardrails": [
         "No surface may infer public-live state on its own.",
