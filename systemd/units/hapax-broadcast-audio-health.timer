@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Hapax broadcast audio safety truth
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=hapax-broadcast-audio-health.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

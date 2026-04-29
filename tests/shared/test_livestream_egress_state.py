@@ -28,6 +28,7 @@ def _paths(root: Path) -> LivestreamEgressPaths:
         broadcast_events=root / "broadcast-events.jsonl",
         stream_mode=root / "stream-mode",
         working_mode=root / "working-mode",
+        broadcast_audio_health=root / "audio-safe-for-broadcast.json",
         consent_state=root / "consent-state.txt",
         perception_state=root / "perception-state.json",
         monetization_flagged_root=root / "monetization-flagged",
@@ -39,6 +40,37 @@ def _write(path: Path, content: str, *, now: float, age_s: float = 0.0) -> None:
     path.write_text(content, encoding="utf-8")
     mtime = now - age_s
     os.utime(path, (mtime, mtime))
+
+
+def _audio_health_payload(*, safe: bool = True) -> dict:
+    reasons = []
+    if not safe:
+        reasons.append(
+            {
+                "code": "loudness_out_of_band",
+                "severity": "blocking",
+                "owner": "shared/audio_loudness.py",
+                "message": "broadcast loudness is outside target band",
+                "evidence_refs": ["loudness"],
+            }
+        )
+    return {
+        "audio_safe_for_broadcast": {
+            "safe": safe,
+            "status": "safe" if safe else "unsafe",
+            "checked_at": "2026-04-28T23:00:00Z",
+            "freshness_s": 0.0,
+            "blocking_reasons": reasons,
+            "warnings": [],
+            "evidence": {
+                "loudness": {
+                    "integrated_lufs_i": -14.0 if safe else -20.0,
+                    "true_peak_dbtp": -1.0,
+                }
+            },
+            "owners": {"health_consumer": "livestream-health-group"},
+        }
+    }
 
 
 def _write_good_fixture(paths: LivestreamEgressPaths, *, now: float) -> None:
@@ -67,6 +99,7 @@ def _write_good_fixture(paths: LivestreamEgressPaths, *, now: float) -> None:
     _write(paths.working_mode, "fortress", now=now)
     _write(paths.consent_state, "allowed", now=now)
     _write(paths.perception_state, json.dumps({"audio_energy_rms": 0.01}), now=now)
+    _write(paths.broadcast_audio_health, json.dumps(_audio_health_payload()), now=now)
     _write(paths.youtube_video_id, "video-123", now=now)
     _write(
         paths.youtube_ingest_proof,
@@ -184,11 +217,11 @@ def test_face_obscure_disabled_blocks_privacy_floor(tmp_path: Path) -> None:
     assert state.operator_action == "restore face-obscure/privacy floor before public egress"
 
 
-def test_silent_audio_blocks_public_claim(tmp_path: Path) -> None:
+def test_unsafe_audio_safe_for_broadcast_blocks_public_claim(tmp_path: Path) -> None:
     now = time.time()
     paths = _paths(tmp_path)
     _write_good_fixture(paths, now=now)
-    _write(paths.perception_state, json.dumps({"audio_energy_rms": 0.0}), now=now)
+    _write(paths.broadcast_audio_health, json.dumps(_audio_health_payload(safe=False)), now=now)
 
     state = resolve_livestream_egress_state(
         paths=paths,
@@ -200,6 +233,8 @@ def test_silent_audio_blocks_public_claim(tmp_path: Path) -> None:
     assert state.audio_floor is FloorState.BLOCKED
     assert state.public_claim_allowed is False
     assert state.operator_action == "restore broadcast audio floor before public egress"
+    audio = next(item for item in state.evidence if item.source == "audio_floor")
+    assert audio.observed["audio_safe_for_broadcast"]["safe"] is False
 
 
 def test_missing_youtube_ingest_proof_fails_closed(tmp_path: Path) -> None:

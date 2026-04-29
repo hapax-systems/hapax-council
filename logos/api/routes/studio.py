@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -394,6 +394,7 @@ async def compositor_live():
         pass
 
     egress = _resolve_egress_state_json()
+    audio_safe = _resolve_audio_safe_for_broadcast_json()
     return {
         "state": data.get("state", "unknown"),
         "cameras": data.get("cameras", {}),
@@ -411,6 +412,7 @@ async def compositor_live():
         "egress_state": egress.get("state", "offline"),
         "public_claim_allowed": egress.get("public_claim_allowed", False),
         "livestream_egress": egress,
+        "audio_safe_for_broadcast": audio_safe.get("audio_safe_for_broadcast"),
         "timestamp": data.get("timestamp", 0),
     }
 
@@ -422,6 +424,12 @@ async def studio_egress_state():
     Public live claims must use this resolver, not a single transport boolean.
     """
     return _resolve_egress_state_json()
+
+
+@router.get("/studio/audio/safe-for-broadcast")
+async def studio_audio_safe_for_broadcast():
+    """Canonical broadcast audio safety state."""
+    return _resolve_audio_safe_for_broadcast_json()
 
 
 def _resolve_egress_state_json() -> dict[str, object]:
@@ -452,6 +460,36 @@ def _resolve_egress_state_json() -> dict[str, object]:
             ],
             "last_transition": None,
             "operator_action": "inspect logos-api egress resolver failure",
+        }
+
+
+def _resolve_audio_safe_for_broadcast_json() -> dict[str, object]:
+    try:
+        from shared.broadcast_audio_health import read_broadcast_audio_health_state
+
+        return {
+            "audio_safe_for_broadcast": read_broadcast_audio_health_state().model_dump(mode="json")
+        }
+    except Exception as exc:
+        return {
+            "audio_safe_for_broadcast": {
+                "safe": False,
+                "status": "unknown",
+                "checked_at": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                "freshness_s": 0.0,
+                "blocking_reasons": [
+                    {
+                        "code": "audio_safe_for_broadcast_api_failed",
+                        "severity": "blocking",
+                        "owner": "logos/api/routes/studio.py",
+                        "message": f"audio safety state resolver failed: {exc}",
+                        "evidence_refs": ["api"],
+                    }
+                ],
+                "warnings": [],
+                "evidence": {"api": {"status": "fail"}},
+                "owners": {"health_consumer": "livestream-health-group"},
+            }
         }
 
 

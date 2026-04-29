@@ -21,6 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.broadcast_audio_health import DEFAULT_STATE_PATH, read_broadcast_audio_health_state
 from shared.face_obscure_policy import FaceObscurePolicy, resolve_policy
 from shared.stream_mode import StreamMode
 from shared.working_mode import WorkingMode
@@ -88,6 +89,7 @@ class LivestreamEgressPaths:
     broadcast_events: Path = Path("/dev/shm/hapax-broadcast/events.jsonl")
     stream_mode: Path = Path.home() / ".cache" / "hapax" / "stream-mode"
     working_mode: Path = Path.home() / ".cache" / "hapax" / "working-mode"
+    broadcast_audio_health: Path = DEFAULT_STATE_PATH
     consent_state: Path = Path("/dev/shm/hapax-compositor/consent-state.txt")
     perception_state: Path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
     monetization_flagged_root: Path = Path.home() / "hapax-state" / "monetization-flagged"
@@ -101,6 +103,7 @@ class LivestreamEgressThresholds:
     hls_archive_max_age_s: float = 300.0
     perception_max_age_s: float = 15.0
     min_audio_energy_rms: float = 0.0001
+    audio_health_max_age_s: float = 30.0
     youtube_ingest_proof_max_age_s: float = 90.0
     broadcast_event_max_age_s: float = 12 * 3600.0
     monetization_window_s: float = 24 * 3600.0
@@ -289,29 +292,24 @@ def resolve_livestream_egress_state(
         },
     )
 
-    perception_data, perception_age, _ = _read_json_file(p.perception_state, current)
-    audio_energy = (
-        _safe_float(perception_data.get("audio_energy_rms"))
-        if isinstance(perception_data, dict)
-        else 0.0
+    audio_health = read_broadcast_audio_health_state(
+        p.broadcast_audio_health,
+        now=current,
+        max_age_s=t.audio_health_max_age_s,
     )
-    audio_floor = (
-        FloorState.SATISFIED
-        if perception_age is not None
-        and perception_age <= t.perception_max_age_s
-        and audio_energy >= t.min_audio_energy_rms
-        else FloorState.BLOCKED
-    )
+    audio_floor = FloorState.SATISFIED if audio_health.safe else FloorState.BLOCKED
     _append(
         evidence,
         "audio_floor",
         EvidenceStatus.PASS if audio_floor is FloorState.SATISFIED else EvidenceStatus.FAIL,
-        "broadcast audio floor has recent nonzero energy"
+        "audio_safe_for_broadcast is true"
         if audio_floor is FloorState.SATISFIED
-        else "broadcast audio floor is missing, stale, or silent",
-        observed={"audio_energy_rms": audio_energy},
-        age_s=perception_age,
-        stale=perception_age is None or perception_age > t.perception_max_age_s,
+        else "audio_safe_for_broadcast is false, missing, stale, or malformed",
+        observed={
+            "audio_safe_for_broadcast": audio_health.model_dump(mode="json"),
+        },
+        age_s=audio_health.freshness_s,
+        stale=audio_health.status == "unknown",
     )
 
     video_id = _read_text(p.youtube_video_id).strip()

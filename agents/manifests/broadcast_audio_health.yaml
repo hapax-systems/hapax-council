@@ -1,0 +1,90 @@
+id: broadcast_audio_health
+name: Broadcast Audio Health
+version: 1.0.0
+category: observability
+reports_to: operator
+peers:
+  - health_monitor
+  - studio_compositor
+  - audio_safety
+depends_on:
+  - health_monitor
+purpose: Publish the canonical audio_safe_for_broadcast state for livestream egress and public readiness.
+inputs:
+  - config/audio-topology.yaml
+  - scripts/hapax-audio-topology verify/tts-broadcast-check/l12-forward-check
+  - scripts/audio-leak-guard.sh
+  - scripts/audio-measure.sh
+  - pw-link egress binding
+  - hapax-audio-safety state
+  - systemd user service state
+outputs:
+  - /dev/shm/hapax-broadcast/audio-safe-for-broadcast.json
+  - Logos studio audio-safety API payload
+capabilities:
+  - audio_health
+  - livestream_readiness
+  - broadcast_safety
+schedule:
+  type: timer
+  systemd_unit: hapax-broadcast-audio-health.timer
+  interval: 30s
+model: null
+autonomy: full
+decision_scope: Aggregates existing audio safety evidence and publishes fail-closed readiness state; never mutates routing.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications:
+      - ex-alert-004
+      - ex-routine-007
+    role: enforcer
+  - axiom_id: interpersonal_transparency
+    implications:
+      - it-attribution-001
+    role: subject
+raci:
+  - task: broadcast_audio_safety_truth
+    role: responsible
+  - task: livestream_health_group
+    role: consulted
+health_group: livestream
+service_tier: 1
+metrics_source: /dev/shm/hapax-broadcast/audio-safe-for-broadcast.json
+short_description: Broadcast audio truth producer
+cli:
+  command: uv run python -m agents.broadcast_audio_health
+  module: agents.broadcast_audio_health
+  flags:
+    - flag: --print
+      description: Print the published audio_safe_for_broadcast envelope
+    - flag: --loudness-duration
+      description: Seconds to sample the broadcast-normalized monitor
+      flag_type: value
+      default: "5"
+      metavar: SECONDS
+    - flag: --fail-on-unsafe
+      description: Return non-zero when the resolved state is not safe
+timer_display:
+  schedule_label: Every 30 s
+  purpose: Keep broadcast audio safety evidence fresh for public egress decisions
+manual_section:
+  title: Broadcast Audio Health
+  order: 35
+  content:
+    - "The producer writes /dev/shm/hapax-broadcast/audio-safe-for-broadcast.json."
+    - "It consumes existing topology, leak guard, loudness, egress binding, runtime safety, and service checks."
+    - "```"
+    - "uv run python -m agents.broadcast_audio_health --print"
+    - "```"
+pipeline_role: integrator
+pipeline_layer: output
+pipeline_state:
+  path: /dev/shm/hapax-broadcast/audio-safe-for-broadcast.json
+  metrics:
+    - safe
+    - status
+    - freshness_s
+  stale_threshold: 30.0
+gates:
+  - audio_safe_for_broadcast

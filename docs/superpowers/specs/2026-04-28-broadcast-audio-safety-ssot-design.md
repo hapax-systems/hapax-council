@@ -262,6 +262,20 @@ Semantics:
 - Health consumers should embed this object under the livestream health
   `audio` component and should derive `audio_floor` from `safe`.
 
+## Implementation Binding
+
+The live producer is `agents.broadcast_audio_health`, scheduled by
+`hapax-broadcast-audio-health.timer` every 30 seconds. It writes the canonical
+envelope to `/dev/shm/hapax-broadcast/audio-safe-for-broadcast.json`.
+
+Logos exposes the same object at `GET /api/studio/audio/safe-for-broadcast`,
+and `shared.livestream_egress_state` derives `audio_floor` from
+`audio_safe_for_broadcast.safe` rather than raw perception energy.
+
+Runtime safety comes from `hapax-audio-safety.service`, which publishes
+`/dev/shm/hapax-audio-safety/state.json` with `status` and `breach_active`.
+Missing, stale, malformed, non-`clear`, or breached runtime state is unsafe.
+
 ## Blocking Conditions
 
 The health producer must set `safe=false` when any of these is true:
