@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/scrim-state-envelope.schema.json",
+  "title": "ScrimStateEnvelope",
+  "description": "Typed WCS-backed expression envelope for the nebulous scrim. It stages visual atmosphere without granting public claim authority or live control.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "state_id",
+    "generated_at",
+    "expires_at",
+    "ttl_s",
+    "mode",
+    "programme_id",
+    "run_id",
+    "format_id",
+    "condition_id",
+    "profile_id",
+    "permeability_mode",
+    "density",
+    "refraction",
+    "tint_family",
+    "texture_family",
+    "motion_rate",
+    "breath_rate",
+    "depth_bias",
+    "focus_regions",
+    "gesture_queue",
+    "public_private_mode",
+    "evidence_status",
+    "health_state",
+    "claim_posture",
+    "blocked_reasons",
+    "source_refs",
+    "director_move_refs",
+    "boundary_event_refs",
+    "wcs_snapshot_ref",
+    "health_ref",
+    "fallback_mode",
+    "public_claim_allowed",
+    "public_claim_basis_refs",
+    "separation_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "state_id": {"type": "string", "pattern": "^scrim_state:[a-z0-9_:-]+$"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "ttl_s": {"type": "integer", "minimum": 1, "maximum": 120},
+    "mode": {
+      "type": "string",
+      "enum": ["active", "private_only", "dry_run", "fallback", "suppressed"]
+    },
+    "programme_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "format_id": {"type": "string", "minLength": 1},
+    "condition_id": {"type": ["string", "null"]},
+    "profile_id": {"$ref": "#/$defs/scrim_profile"},
+    "permeability_mode": {"$ref": "#/$defs/permeability_mode"},
+    "density": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "refraction": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "tint_family": {"type": "string", "minLength": 1},
+    "texture_family": {"type": "string", "minLength": 1},
+    "motion_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "breath_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "depth_bias": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "focus_regions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/focus_region"},
+      "maxItems": 8
+    },
+    "gesture_queue": {
+      "description": "Bounded visual gestures, not imperative calls into a live compositor.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/scrim_gesture"},
+      "maxItems": 8
+    },
+    "public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+    "evidence_status": {"$ref": "#/$defs/evidence_status"},
+    "health_state": {"$ref": "#/$defs/world_surface_health_state"},
+    "claim_posture": {"$ref": "#/$defs/claim_posture"},
+    "blocked_reasons": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/blocked_reason"},
+      "uniqueItems": true
+    },
+    "source_refs": {"$ref": "#/$defs/ref_list"},
+    "director_move_refs": {"$ref": "#/$defs/ref_list"},
+    "boundary_event_refs": {"$ref": "#/$defs/ref_list"},
+    "wcs_snapshot_ref": {"type": "string", "minLength": 1},
+    "health_ref": {"type": "string", "minLength": 1},
+    "fallback_mode": {"$ref": "#/$defs/fallback_mode"},
+    "public_claim_allowed": {"type": "boolean"},
+    "public_claim_basis_refs": {"$ref": "#/$defs/ref_list"},
+    "separation_policy": {"$ref": "#/$defs/separation_policy"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"evidence_status": {"enum": ["stale", "missing", "unknown"]}},
+        "required": ["evidence_status"]
+      },
+      "then": {
+        "properties": {
+          "fallback_mode": {"enum": ["neutral_hold", "minimum_density"]},
+          "public_claim_allowed": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"health_state": {"enum": ["stale", "missing", "unknown"]}},
+        "required": ["health_state"]
+      },
+      "then": {
+        "properties": {
+          "fallback_mode": {"enum": ["neutral_hold", "minimum_density"]},
+          "public_claim_allowed": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"claim_posture": {"enum": [
+          "uncertain",
+          "blocked",
+          "private_only",
+          "dry_run",
+          "refusal",
+          "correction",
+          "conversion_held"
+        ]}},
+        "required": ["claim_posture"]
+      },
+      "then": {"properties": {"public_claim_allowed": {"const": false}}}
+    },
+    {
+      "if": {
+        "properties": {"public_private_mode": {"enum": ["private", "dry_run"]}},
+        "required": ["public_private_mode"]
+      },
+      "then": {"properties": {"public_claim_allowed": {"const": false}}}
+    },
+    {
+      "if": {
+        "properties": {"fallback_mode": {"enum": [
+          "minimum_density",
+          "neutral_hold",
+          "suppress_public_cue",
+          "dry_run_badge",
+          "operator_reason",
+          "panic_clear_operator_only"
+        ]}},
+        "required": ["fallback_mode"]
+      },
+      "then": {"properties": {"public_claim_allowed": {"const": false}}}
+    }
+  ],
+  "x-fixture_families": [
+    "fresh_public_safe",
+    "stale",
+    "private_only",
+    "dry_run",
+    "rights_blocked",
+    "consent_privacy_blocked",
+    "monetization_held",
+    "refusal",
+    "correction",
+    "conversion_ready",
+    "health_failed",
+    "expired"
+  ],
+  "x-fail_closed_fallback_modes": ["neutral_hold", "minimum_density"],
+  "x-public_claim_policy": {
+    "scrim_grants_public_claim_authority": false,
+    "public_claim_allowed_is_inherited_from_wcs": true,
+    "public_claim_scope_expansion_allowed": false,
+    "missing_or_stale_state_fails_closed": true
+  },
+  "$defs": {
+    "ref_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "scrim_profile": {
+      "type": "string",
+      "enum": [
+        "gauzy_quiet",
+        "warm_haze",
+        "moire_crackle",
+        "clarity_peak",
+        "dissolving",
+        "ritual_open",
+        "rain_streak"
+      ]
+    },
+    "permeability_mode": {
+      "type": "string",
+      "enum": ["semipermeable_membrane", "solute_suspension", "ionised_glow"]
+    },
+    "claim_posture": {
+      "type": "string",
+      "enum": [
+        "fresh",
+        "uncertain",
+        "blocked",
+        "private_only",
+        "dry_run",
+        "refusal",
+        "correction",
+        "conversion_ready",
+        "conversion_held"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "evidence_status": {
+      "type": "string",
+      "enum": ["fresh", "stale", "missing", "unknown", "blocked", "private_only", "dry_run"]
+    },
+    "world_surface_health_state": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "degraded",
+        "blocked",
+        "unsafe",
+        "stale",
+        "missing",
+        "unknown",
+        "private_only",
+        "dry_run",
+        "quiet_off_air",
+        "candidate"
+      ]
+    },
+    "blocked_reason": {
+      "type": "string",
+      "enum": [
+        "private_mode",
+        "dry_run_mode",
+        "missing_evidence_ref",
+        "missing_wcs_snapshot",
+        "stale_wcs_snapshot",
+        "source_stale",
+        "rights_blocked",
+        "privacy_blocked",
+        "consent_blocked",
+        "egress_blocked",
+        "monetization_blocked",
+        "monetization_readiness_missing",
+        "public_event_missing",
+        "health_failed",
+        "world_surface_blocked",
+        "operator_review_required",
+        "refusal_boundary",
+        "correction_boundary",
+        "conversion_held",
+        "envelope_expired",
+        "unknown_state"
+      ]
+    },
+    "fallback_mode": {
+      "type": "string",
+      "enum": [
+        "none",
+        "minimum_density",
+        "neutral_hold",
+        "suppress_public_cue",
+        "dry_run_badge",
+        "operator_reason",
+        "panic_clear_operator_only"
+      ]
+    },
+    "focus_region": {
+      "type": "object",
+      "required": ["region_id", "kind", "bounds", "source_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "region_id": {"type": "string", "minLength": 1},
+        "kind": {
+          "type": "string",
+          "enum": ["programme", "director_focus", "boundary", "health", "conversion", "none"]
+        },
+        "bounds": {"$ref": "#/$defs/normalized_bounds"},
+        "source_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    },
+    "normalized_bounds": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "width": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "height": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+      }
+    },
+    "scrim_gesture": {
+      "type": "object",
+      "required": [
+        "gesture_id",
+        "gesture_type",
+        "created_at",
+        "ttl_s",
+        "intensity",
+        "target_region_refs",
+        "source_move_refs",
+        "fallback_behavior"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "gesture_id": {"type": "string", "pattern": "^scrim_gesture:[a-z0-9_:-]+$"},
+        "gesture_type": {
+          "type": "string",
+          "enum": [
+            "soften",
+            "thicken",
+            "thin",
+            "shimmer",
+            "ripple",
+            "clear_window",
+            "mark_boundary",
+            "conversion_glow",
+            "refusal_dim",
+            "correction_glint",
+            "neutral_hold"
+          ]
+        },
+        "created_at": {"type": "string", "format": "date-time"},
+        "ttl_s": {"type": "integer", "minimum": 1, "maximum": 30},
+        "intensity": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "target_region_refs": {"$ref": "#/$defs/ref_list"},
+        "source_move_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "fallback_behavior": {
+          "type": "string",
+          "enum": [
+            "no_op",
+            "neutral_hold",
+            "minimum_density",
+            "suppress_public_cue",
+            "dry_run_badge"
+          ]
+        }
+      }
+    },
+    "separation_policy": {
+      "type": "object",
+      "required": [
+        "single_operator_only",
+        "scrim_grants_public_claim_authority",
+        "scrim_grants_live_control",
+        "public_claim_allowed_inherited_from_wcs",
+        "public_claim_scope_expansion_allowed",
+        "missing_or_stale_state_fails_closed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "single_operator_only": {"type": "boolean", "const": true},
+        "scrim_grants_public_claim_authority": {"type": "boolean", "const": false},
+        "scrim_grants_live_control": {"type": "boolean", "const": false},
+        "public_claim_allowed_inherited_from_wcs": {"type": "boolean", "const": true},
+        "public_claim_scope_expansion_allowed": {"type": "boolean", "const": false},
+        "missing_or_stale_state_fails_closed": {"type": "boolean", "const": true}
+      }
+    }
+  }
+}
