@@ -301,9 +301,10 @@ def test_voice_output_silent_failure_blocks(tmp_path: Path) -> None:
                 "media_role": "Broadcast",
                 "route_present": True,
             },
-            "last_playback": {
+            "last_drop": {
                 "status": "dropped",
                 "completed": False,
+                "reason": "pipeline_unavailable",
                 "pcm_duration_s": None,
             },
         },
@@ -322,6 +323,57 @@ def test_voice_output_silent_failure_blocks(tmp_path: Path) -> None:
     assert witness["route_present"] is True
     assert witness["playback_present"] is False
     assert witness["silent_failure"] is True
+    assert witness["last_drop"]["reason"] == "pipeline_unavailable"
+
+
+def test_voice_output_preserves_playback_evidence_after_drop_record(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.voice_output_witness,
+        {
+            "version": 1,
+            "updated_at": "2027-01-15T08:00:00Z",
+            "freshness_s": 0.0,
+            "status": "drive_seen",
+            "downstream_route_status": {
+                "destination": "livestream",
+                "target": "hapax-livestream",
+                "media_role": "Broadcast",
+                "route_present": True,
+            },
+            "last_playback": {
+                "status": "completed",
+                "completed": True,
+                "pcm_duration_s": 1.5,
+            },
+            "last_successful_playback": {
+                "status": "completed",
+                "completed": True,
+                "pcm_duration_s": 1.5,
+            },
+            "last_drop": {
+                "status": "dropped",
+                "completed": False,
+                "reason": "pipeline_unavailable",
+            },
+        },
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is True
+    witness = health.evidence["voice_output_witness"]
+    assert witness["route_present"] is True
+    assert witness["playback_present"] is True
+    assert witness["silent_failure"] is False
+    assert witness["last_drop"]["reason"] == "pipeline_unavailable"
+    assert witness["last_successful_playback"]["completed"] is True
 
 
 def test_loudness_failure_blocks(tmp_path: Path) -> None:

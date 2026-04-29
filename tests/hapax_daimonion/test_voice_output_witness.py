@@ -120,8 +120,52 @@ def test_drop_records_blocker_reason(tmp_path: Path) -> None:
 
     assert witness.status == "drop_recorded"
     assert witness.blocker_drop_reason == "pipeline_unavailable"
+    assert witness.last_playback is None
+    assert witness.last_drop is not None
+    assert witness.last_drop["completed"] is False
+    assert witness.last_drop["reason"] == "pipeline_unavailable"
+
+
+def test_drop_does_not_overwrite_prior_completed_playback(tmp_path: Path) -> None:
+    path = tmp_path / "voice-output-witness.json"
+    playback = SimpleNamespace(
+        status="completed",
+        completed=True,
+        returncode=0,
+        duration_s=1.5,
+        timeout_s=7.0,
+        error=None,
+    )
+
+    record_playback_result(
+        text="A completed narration.",
+        playback_result=playback,
+        destination="livestream",
+        target="hapax-livestream",
+        media_role="Broadcast",
+        impulse_id="impulse-voice-2",
+        path=path,
+        now=NOW,
+    )
+    witness = record_drop(
+        reason="pipeline_unavailable",
+        source="exploration.affordance_pipeline",
+        destination="livestream",
+        target="hapax-livestream",
+        media_role="Broadcast",
+        text="Non-autonomous side channel.",
+        path=path,
+        now=NOW + 1,
+    )
+
+    assert witness.status == "drop_recorded"
     assert witness.last_playback is not None
-    assert witness.last_playback["completed"] is False
+    assert witness.last_playback["completed"] is True
+    assert witness.last_successful_playback is not None
+    assert witness.last_successful_playback["completed"] is True
+    assert witness.last_drop is not None
+    assert witness.last_drop["source"] == "exploration.affordance_pipeline"
+    assert witness.last_drop["completed"] is False
 
 
 def test_inhibited_impulse_terminal_state_is_witnessed(tmp_path: Path) -> None:
