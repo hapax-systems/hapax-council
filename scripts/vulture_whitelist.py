@@ -52,6 +52,12 @@ from shared.grounding_provider_router import (
     validate_provider_registry,
 )
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
+from shared.semantic_recruitment import (
+    SemanticDescription,
+    SemanticRecruitmentFixtureSet,
+    SemanticRecruitmentRow,
+    SplitMergeDecision,
+)
 from shared.support_surface_registry import (
     AggregateReceiptPolicy,
     NoPerkSupportDoctrine,
@@ -200,6 +206,18 @@ WorldCapabilityRegistry.require
 WorldCapabilityRegistry.records_for_domain
 WorldCapabilityRegistry.records_for_surface_ref
 WorldCapabilityRegistry.blocked_reason_codes
+
+# Semantic recruitment row helpers are the public contract for the downstream
+# classification registry sweep and WCS adapters. Pydantic invokes validators
+# dynamically; downstream tasks consume projection helpers after this schema
+# contract lands.
+SemanticDescription._validate_basic_level_affordance_text
+SemanticRecruitmentRow._validate_row_contract
+SplitMergeDecision._validate_decision_shape
+SemanticRecruitmentFixtureSet._validate_fixture_contract
+SemanticRecruitmentFixtureSet.require_row
+SemanticRecruitmentFixtureSet.qdrant_payloads_for_single_indexing
+SemanticRecruitmentFixtureSet.qdrant_payloads_for_batch_indexing
 
 # Audio WCS fixture helpers are the public contract for downstream semantic
 # router, marker-probe, audio-health, and director route tasks. Pydantic invokes

@@ -1,0 +1,910 @@
+{
+  "$defs": {
+    "AliasMigration": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "minLength": 1,
+          "title": "Alias",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/MigrationState"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "alias",
+        "state",
+        "reason"
+      ],
+      "title": "AliasMigration",
+      "type": "object"
+    },
+    "AuthorityCeiling": {
+      "enum": [
+        "no_claim",
+        "internal_only",
+        "speculative",
+        "evidence_bound",
+        "posterior_bound",
+        "public_gate_required"
+      ],
+      "title": "AuthorityCeiling",
+      "type": "string"
+    },
+    "CapabilityProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_name": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+          "title": "Capability Name",
+          "type": "string"
+        },
+        "daemon": {
+          "minLength": 1,
+          "title": "Daemon",
+          "type": "string"
+        },
+        "requires_gpu": {
+          "default": false,
+          "title": "Requires Gpu",
+          "type": "boolean"
+        },
+        "requires_network": {
+          "default": false,
+          "title": "Requires Network",
+          "type": "boolean"
+        },
+        "latency_class": {
+          "$ref": "#/$defs/LatencyClass",
+          "default": "fast"
+        },
+        "persistence": {
+          "default": "none",
+          "title": "Persistence",
+          "type": "string"
+        },
+        "priority_floor": {
+          "default": false,
+          "title": "Priority Floor",
+          "type": "boolean"
+        },
+        "public_capable": {
+          "default": false,
+          "title": "Public Capable",
+          "type": "boolean"
+        },
+        "rights_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rights Ref"
+        },
+        "provenance_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provenance Ref"
+        }
+      },
+      "required": [
+        "capability_name",
+        "daemon"
+      ],
+      "title": "CapabilityProjection",
+      "type": "object"
+    },
+    "ClaimType": {
+      "enum": [
+        "no_claim",
+        "internal_observation",
+        "private_action",
+        "evidence_bound_claim",
+        "public_claim"
+      ],
+      "title": "ClaimType",
+      "type": "string"
+    },
+    "ConsentLabel": {
+      "enum": [
+        "none",
+        "operator_self",
+        "person_adjacent",
+        "identifiable_person",
+        "public_broadcast"
+      ],
+      "title": "ConsentLabel",
+      "type": "string"
+    },
+    "ContentRisk": {
+      "enum": [
+        "unknown",
+        "tier_0_owned",
+        "tier_1_platform_cleared",
+        "tier_2_provenance_known",
+        "tier_3_uncertain",
+        "tier_4_risky"
+      ],
+      "title": "ContentRisk",
+      "type": "string"
+    },
+    "Direction": {
+      "enum": [
+        "observe",
+        "express",
+        "act",
+        "route",
+        "recall",
+        "communicate",
+        "regulate"
+      ],
+      "title": "Direction",
+      "type": "string"
+    },
+    "DispatchContract": {
+      "additionalProperties": false,
+      "properties": {
+        "intent_family": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intent Family"
+        },
+        "route_by_family_only": {
+          "default": false,
+          "title": "Route By Family Only",
+          "type": "boolean"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "title": "DispatchContract",
+      "type": "object"
+    },
+    "DomainTag": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "minLength": 1,
+          "title": "Domain",
+          "type": "string"
+        },
+        "subdomain": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subdomain"
+        }
+      },
+      "required": [
+        "domain"
+      ],
+      "title": "DomainTag",
+      "type": "object"
+    },
+    "EffectType": {
+      "enum": [
+        "sense",
+        "express",
+        "recall",
+        "act",
+        "communicate",
+        "regulate",
+        "compose",
+        "modulate"
+      ],
+      "title": "EffectType",
+      "type": "string"
+    },
+    "FamilyTag": {
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "minLength": 1,
+          "title": "Family",
+          "type": "string"
+        },
+        "intent_binding": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intent Binding"
+        },
+        "dispatch_required": {
+          "default": false,
+          "title": "Dispatch Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "family"
+      ],
+      "title": "FamilyTag",
+      "type": "object"
+    },
+    "LatencyClass": {
+      "enum": [
+        "realtime",
+        "fast",
+        "slow",
+        "async"
+      ],
+      "title": "LatencyClass",
+      "type": "string"
+    },
+    "LifecycleState": {
+      "enum": [
+        "candidate",
+        "active",
+        "stale",
+        "blocked",
+        "degraded",
+        "decommissioned",
+        "superseded",
+        "catalog_only"
+      ],
+      "title": "LifecycleState",
+      "type": "string"
+    },
+    "Medium": {
+      "enum": [
+        "visual",
+        "auditory",
+        "textual",
+        "haptic",
+        "notification",
+        "control",
+        "data"
+      ],
+      "title": "Medium",
+      "type": "string"
+    },
+    "MigrationState": {
+      "enum": [
+        "alias",
+        "renamed",
+        "superseded",
+        "decommissioned"
+      ],
+      "title": "MigrationState",
+      "type": "string"
+    },
+    "MonetizationRisk": {
+      "enum": [
+        "unknown",
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "MonetizationRisk",
+      "type": "string"
+    },
+    "OutcomeLearningPolicy": {
+      "enum": [
+        "disabled",
+        "private_witness_required",
+        "public_witness_required"
+      ],
+      "title": "OutcomeLearningPolicy",
+      "type": "string"
+    },
+    "PrivacyLabel": {
+      "enum": [
+        "private",
+        "operator_visible",
+        "person_adjacent",
+        "public_safe",
+        "public_broadcast"
+      ],
+      "title": "PrivacyLabel",
+      "type": "string"
+    },
+    "Realm": {
+      "enum": [
+        "local",
+        "remote",
+        "hybrid"
+      ],
+      "title": "Realm",
+      "type": "string"
+    },
+    "RelationPredicate": {
+      "enum": [
+        "realizes",
+        "in_domain",
+        "in_family",
+        "implemented_by",
+        "observes",
+        "emits",
+        "modulates",
+        "composes_into",
+        "requires",
+        "vetoes",
+        "biases",
+        "provides_evidence_for",
+        "claims_about",
+        "witnesses",
+        "decommissions",
+        "supersedes"
+      ],
+      "title": "RelationPredicate",
+      "type": "string"
+    },
+    "RightsLabel": {
+      "enum": [
+        "unknown",
+        "operator_owned",
+        "platform_cleared",
+        "permissioned",
+        "third_party_unclear",
+        "blocked"
+      ],
+      "title": "RightsLabel",
+      "type": "string"
+    },
+    "SemanticDescription": {
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "const": "L2",
+          "default": "L2",
+          "title": "Level",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "SemanticDescription",
+      "type": "object"
+    },
+    "SemanticKind": {
+      "enum": [
+        "Entity",
+        "Process",
+        "State",
+        "Event",
+        "Signal",
+        "Capability",
+        "Affordance",
+        "Substrate",
+        "Representation",
+        "Constraint"
+      ],
+      "title": "SemanticKind",
+      "type": "string"
+    },
+    "SemanticLevel": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+        "L4"
+      ],
+      "title": "SemanticLevel",
+      "type": "string"
+    },
+    "SemanticRecruitmentRow": {
+      "additionalProperties": false,
+      "description": "Canonical WCS/classification row for semantic recruitment discipline.",
+      "properties": {
+        "row_id": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+          "title": "Row Id",
+          "type": "string"
+        },
+        "semantic_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Semantic Version",
+          "type": "integer"
+        },
+        "relatum_id": {
+          "minLength": 1,
+          "title": "Relatum Id",
+          "type": "string"
+        },
+        "kind": {
+          "items": {
+            "$ref": "#/$defs/SemanticKind"
+          },
+          "minItems": 1,
+          "title": "Kind",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "abstraction_level": {
+          "$ref": "#/$defs/SemanticLevel"
+        },
+        "recruitable": {
+          "title": "Recruitable",
+          "type": "boolean"
+        },
+        "catalog_only": {
+          "default": false,
+          "title": "Catalog Only",
+          "type": "boolean"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/LifecycleState"
+        },
+        "core_substrate_instance": {
+          "default": false,
+          "title": "Core Substrate Instance",
+          "type": "boolean"
+        },
+        "semantic_descriptions": {
+          "items": {
+            "$ref": "#/$defs/SemanticDescription"
+          },
+          "minItems": 1,
+          "title": "Semantic Descriptions",
+          "type": "array"
+        },
+        "domain_tags": {
+          "items": {
+            "$ref": "#/$defs/DomainTag"
+          },
+          "minItems": 1,
+          "title": "Domain Tags",
+          "type": "array"
+        },
+        "family_tags": {
+          "items": {
+            "$ref": "#/$defs/FamilyTag"
+          },
+          "minItems": 1,
+          "title": "Family Tags",
+          "type": "array"
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "effect_type": {
+          "$ref": "#/$defs/EffectType"
+        },
+        "realm": {
+          "$ref": "#/$defs/Realm"
+        },
+        "medium": {
+          "$ref": "#/$defs/Medium"
+        },
+        "submedium": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submedium"
+        },
+        "latency": {
+          "$ref": "#/$defs/LatencyClass"
+        },
+        "underlying_entity_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Underlying Entity Refs",
+          "type": "array"
+        },
+        "process_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Process Refs",
+          "type": "array"
+        },
+        "state_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "State Refs",
+          "type": "array"
+        },
+        "substrate_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Substrate Refs",
+          "type": "array"
+        },
+        "provider_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider Refs",
+          "type": "array"
+        },
+        "concrete_interfaces": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Concrete Interfaces",
+          "type": "array"
+        },
+        "relations": {
+          "items": {
+            "$ref": "#/$defs/SemanticRelation"
+          },
+          "minItems": 1,
+          "title": "Relations",
+          "type": "array"
+        },
+        "availability_predicate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Availability Predicate"
+        },
+        "freshness_ttl_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Freshness Ttl S"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "witness_contract_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Witness Contract Id"
+        },
+        "authority_ceiling": {
+          "$ref": "#/$defs/AuthorityCeiling"
+        },
+        "claim_types_allowed": {
+          "items": {
+            "$ref": "#/$defs/ClaimType"
+          },
+          "title": "Claim Types Allowed",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "privacy_label": {
+          "$ref": "#/$defs/PrivacyLabel"
+        },
+        "consent_label": {
+          "$ref": "#/$defs/ConsentLabel"
+        },
+        "required_clearance": {
+          "$ref": "#/$defs/ConsentLabel"
+        },
+        "rights_label": {
+          "$ref": "#/$defs/RightsLabel"
+        },
+        "content_risk": {
+          "$ref": "#/$defs/ContentRisk"
+        },
+        "monetization_risk": {
+          "$ref": "#/$defs/MonetizationRisk"
+        },
+        "governance_risk_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Governance Risk Reasons",
+          "type": "array"
+        },
+        "dispatch_contract": {
+          "$ref": "#/$defs/DispatchContract"
+        },
+        "outcome_learning_policy": {
+          "$ref": "#/$defs/OutcomeLearningPolicy"
+        },
+        "projection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapabilityProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aliases": {
+          "items": {
+            "$ref": "#/$defs/AliasMigration"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "supersedes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supersedes",
+          "type": "array"
+        },
+        "replacement_row_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Replacement Row Id"
+        },
+        "blocked_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocked Reason"
+        }
+      },
+      "required": [
+        "row_id",
+        "relatum_id",
+        "kind",
+        "abstraction_level",
+        "recruitable",
+        "lifecycle",
+        "semantic_descriptions",
+        "domain_tags",
+        "family_tags",
+        "direction",
+        "effect_type",
+        "realm",
+        "medium",
+        "latency",
+        "relations",
+        "witness_contract_id",
+        "authority_ceiling",
+        "claim_types_allowed",
+        "privacy_label",
+        "consent_label",
+        "required_clearance",
+        "rights_label",
+        "content_risk",
+        "monetization_risk",
+        "outcome_learning_policy",
+        "projection",
+        "aliases"
+      ],
+      "title": "SemanticRecruitmentRow",
+      "type": "object"
+    },
+    "SemanticRelation": {
+      "additionalProperties": false,
+      "properties": {
+        "predicate": {
+          "$ref": "#/$defs/RelationPredicate"
+        },
+        "target_ref": {
+          "minLength": 1,
+          "title": "Target Ref",
+          "type": "string"
+        },
+        "evidence_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Ref"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": -1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        }
+      },
+      "required": [
+        "predicate",
+        "target_ref"
+      ],
+      "title": "SemanticRelation",
+      "type": "object"
+    },
+    "SplitMergeDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "decision_id": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/SplitMergeDecisionKind"
+        },
+        "row_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Row Ids",
+          "type": "array"
+        },
+        "canonical_row_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canonical Row Id"
+        },
+        "dimensions": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Dimensions",
+          "type": "array"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_id",
+        "decision",
+        "row_ids",
+        "dimensions",
+        "reason"
+      ],
+      "title": "SplitMergeDecision",
+      "type": "object"
+    },
+    "SplitMergeDecisionKind": {
+      "enum": [
+        "split",
+        "merge"
+      ],
+      "title": "SplitMergeDecisionKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Schema discipline for canonical WCS semantic recruitment rows and projection fixtures.",
+  "properties": {
+    "$schema": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "$Schema"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "generated_from": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Generated From",
+      "type": "array"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/SemanticRecruitmentRow"
+      },
+      "minItems": 1,
+      "title": "Rows",
+      "type": "array"
+    },
+    "split_merge_decisions": {
+      "items": {
+        "$ref": "#/$defs/SplitMergeDecision"
+      },
+      "title": "Split Merge Decisions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "generated_from",
+    "rows"
+  ],
+  "title": "SemanticRecruitmentFixtureSet",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/semantic-recruitment-row.schema.json"
+}
