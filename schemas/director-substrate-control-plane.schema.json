@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/director-substrate-control-plane.schema.json",
+  "title": "DirectorControlMove",
+  "description": "Schema seed for an evidence-bearing director move over typed livestream substrates, lanes, controls, cuepoints, and claim bindings.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "decision_id",
+    "emitted_at",
+    "director_tier",
+    "condition_id",
+    "programme_id",
+    "verb",
+    "target",
+    "vocabulary",
+    "evidence",
+    "freshness",
+    "execution_state",
+    "fallback",
+    "public_claim_allowed",
+    "audit_event"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version for director control moves."
+    },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$",
+      "description": "Stable event id for this director move."
+    },
+    "emitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp for this move."
+    },
+    "director_tier": {
+      "type": "string",
+      "enum": ["narrative", "structural", "programme", "operator_control", "adapter"],
+      "description": "Origin tier for the decision."
+    },
+    "condition_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Research condition id or 'none'."
+    },
+    "programme_id": {
+      "type": ["string", "null"],
+      "description": "Active programme id, when available."
+    },
+    "verb": {
+      "$ref": "#/$defs/director_verb"
+    },
+    "target": {
+      "type": "object",
+      "required": ["target_type", "target_id", "display_name", "source_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "target_type": {
+          "type": "string",
+          "enum": [
+            "substrate",
+            "spectacle_lane",
+            "ward",
+            "camera",
+            "re_splay_device",
+            "private_control",
+            "cuepoint",
+            "claim_binding",
+            "programme",
+            "egress_status"
+          ]
+        },
+        "target_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.:-]*$"
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^(substrate|lane|ward|camera|device|control|cuepoint|claim|programme|egress):[A-Za-z0-9_.:-]+$"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "vocabulary": {
+      "type": "object",
+      "required": ["terms", "source_refs", "generated_from"],
+      "additionalProperties": false,
+      "properties": {
+        "terms": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "generated_from": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "content_substrate",
+              "spectacle_lane",
+              "ward_registry",
+              "camera_status",
+              "re_splay_probe",
+              "private_control",
+              "cuepoint_event",
+              "claim_binding",
+              "programme_store",
+              "egress_state"
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["source_type", "ref", "status", "observed_at", "age_s", "ttl_s", "detail"],
+        "additionalProperties": false,
+        "properties": {
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "content_substrate",
+              "spectacle_lane",
+              "ward_registry",
+              "camera_status",
+              "re_splay_probe",
+              "private_control",
+              "cuepoint_event",
+              "claim_binding",
+              "egress_state",
+              "audio_safety",
+              "programme_store",
+              "public_event"
+            ]
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "$ref": "#/$defs/evidence_status"
+          },
+          "observed_at": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "age_s": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
+          "ttl_s": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["state", "checked_at", "blocking_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/evidence_status"
+        },
+        "checked_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "blocking_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "execution_state": {
+      "type": "string",
+      "enum": ["applied", "no_op", "dry_run", "fallback", "blocked", "operator_reason"],
+      "description": "What actually happened after evidence and policy filtering."
+    },
+    "fallback": {
+      "type": "object",
+      "required": ["mode", "reason", "operator_facing"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "no_op",
+            "dry_run",
+            "fallback",
+            "operator_reason",
+            "hold_last_safe",
+            "suppress",
+            "private_only",
+            "degraded_status",
+            "kill_switch"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operator_facing": {
+          "type": "boolean"
+        }
+      }
+    },
+    "public_claim_allowed": {
+      "type": "boolean",
+      "description": "Whether public surfaces may claim this move as live/available."
+    },
+    "audit_event": {
+      "type": "object",
+      "required": ["event_type", "payload_ref", "health_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "director.move.foreground",
+            "director.move.background",
+            "director.move.hold",
+            "director.move.suppress",
+            "director.move.transition",
+            "director.move.crossfade",
+            "director.move.intensify",
+            "director.move.stabilize",
+            "director.move.route_attention",
+            "director.move.mark_boundary"
+          ]
+        },
+        "payload_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "health_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "public_event_ref": {
+      "type": ["string", "null"],
+      "description": "Optional ResearchVehiclePublicEvent ref when a public aperture consumes the move."
+    }
+  },
+  "$defs": {
+    "director_verb": {
+      "type": "string",
+      "enum": [
+        "foreground",
+        "background",
+        "hold",
+        "suppress",
+        "transition",
+        "crossfade",
+        "intensify",
+        "stabilize",
+        "route_attention",
+        "mark_boundary"
+      ]
+    },
+    "evidence_status": {
+      "type": "string",
+      "enum": ["fresh", "stale", "missing", "unknown", "not_applicable"]
+    }
+  }
+}
