@@ -891,7 +891,14 @@ esac
     assert "send-keys -t hapax-codex-cx-amber C-u" in tmux_text
     assert "paste-buffer -b hapax-codex-send-cx-amber-" in tmux_text
     assert "delete-buffer -b hapax-codex-send-cx-amber-" in tmux_text
-    assert "send-keys -t hapax-codex-cx-amber Enter" in tmux_text
+    assert "send-keys -t hapax-codex-cx-amber C-m" in tmux_text
+
+
+def test_codex_send_tmux_default_submit_delay_allows_paste_settle() -> None:
+    sender = SENDER.read_text()
+
+    assert "HAPAX_CODEX_SEND_SUBMIT_DELAY:-1.10" in sender
+    assert "HAPAX_CODEX_SEND_SUBMIT_DELAY:-0.35" not in sender
 
 
 def test_codex_send_tmux_waits_for_required_ack(tmp_path: Path) -> None:
@@ -915,7 +922,7 @@ case "$1" in
     cat "$file" > {tmux_message}
     ;;
   send-keys)
-    if [ "${{@: -1}}" = "Enter" ]; then
+    if [ "${{@: -1}}" = "C-m" ]; then
       printf '%s\\n' "$HAPAX_CODEX_SEND_ACK_TOKEN" > "$HAPAX_CODEX_SEND_ACK_FILE"
     fi
     ;;
@@ -950,6 +957,124 @@ esac
     assert ack_file.read_text().strip() == "token-123"
     assert "ACK REQUIRED" in tmux_message.read_text()
     assert '"ack_required":1' in result.stdout
+
+
+def test_codex_send_tmux_retries_submit_until_required_ack(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    env["HAPAX_CODEX_SEND_SUBMIT_DELAY"] = "0"
+    env["HAPAX_CODEX_SEND_ACK_TIMEOUT"] = "2"
+    env["HAPAX_CODEX_SEND_ACK_NUDGE_SECONDS"] = "0"
+    env["HAPAX_CODEX_SEND_ACK_NUDGE_LIMIT"] = "1"
+
+    ack_file = tmp_path / "ack.txt"
+    c_m_count = tmp_path / "cm-count.txt"
+    tmux_log = tmp_path / "tmux.log"
+    tmux_message = tmp_path / "tmux-message.txt"
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+case "$1" in
+  has-session)
+    exit 0
+    ;;
+  load-buffer)
+    file="${{@: -1}}"
+    cat "$file" > {tmux_message}
+    ;;
+  send-keys)
+    if [ "${{@: -1}}" = "C-m" ]; then
+      count=0
+      if [ -f {c_m_count} ]; then
+        count="$(cat {c_m_count})"
+      fi
+      count=$((count + 1))
+      printf '%s\\n' "$count" > {c_m_count}
+      if [ "$count" -ge 2 ]; then
+        printf '%s\\n' "$HAPAX_CODEX_SEND_ACK_TOKEN" > "$HAPAX_CODEX_SEND_ACK_FILE"
+      fi
+    fi
+    ;;
+esac
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(SENDER),
+            "--session",
+            "cx-amber",
+            "--transport",
+            "tmux",
+            "--require-ack",
+            "--ack-file",
+            str(ack_file),
+            "--ack-token",
+            "token-123",
+            "--json",
+            "--",
+            "Repair the PR and report status.",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert ack_file.read_text().strip() == "token-123"
+    assert c_m_count.read_text().strip() == "2"
+    assert tmux_log.read_text().count("send-keys -t hapax-codex-cx-amber C-m") == 2
+
+
+def test_codex_send_tmux_refuses_ack_gated_message_when_pane_is_busy(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+
+    tmux_log = tmp_path / "tmux.log"
+    tmux_message = tmp_path / "tmux-message.txt"
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+case "$1" in
+  has-session)
+    exit 0
+    ;;
+  capture-pane)
+    printf '%s\\n' 'Working (42s - esc to interrupt)'
+    ;;
+  load-buffer)
+    file="${{@: -1}}"
+    cat "$file" > {tmux_message}
+    ;;
+esac
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(SENDER),
+            "--session",
+            "cx-amber",
+            "--transport",
+            "tmux",
+            "--require-ack",
+            "--ack-timeout",
+            "1",
+            "--",
+            "Repair the PR and report status.",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 14
+    assert "appears busy" in result.stderr
+    assert not tmux_message.exists()
 
 
 def test_codex_send_requires_tmux_for_ack_by_default(tmp_path: Path) -> None:
