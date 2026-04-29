@@ -1,0 +1,361 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/wcs-witness-probe-runtime.schema.json",
+  "title": "WCSWitnessProbeRuntime",
+  "type": "object",
+  "additionalProperties": false,
+  "x-required_witness_classes": [
+    "read_only",
+    "command_result",
+    "public_egress",
+    "archive_ref",
+    "audio_video_state"
+  ],
+  "x-required_probe_states": [
+    "selected",
+    "commanded",
+    "observed",
+    "witnessed",
+    "blocked",
+    "stale",
+    "failed"
+  ],
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "witness_class_interfaces",
+    "states",
+    "probes",
+    "fail_closed_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "fixture_set_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_ref": {
+      "const": "schemas/wcs-witness-probe-runtime.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "not": {
+          "pattern": "^/home/"
+        }
+      }
+    },
+    "declared_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "witness_class_interfaces": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "$ref": "#/$defs/witness_class_interface"
+      }
+    },
+    "states": {
+      "type": "array",
+      "minItems": 7,
+      "items": {
+        "$ref": "#/$defs/probe_state"
+      }
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/probe_record"
+      }
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_or_commanded_is_public_truth",
+        "missing_witness_allows_public_claim",
+        "stale_witness_allows_public_claim",
+        "probes_are_expert_truth_oracle"
+      ],
+      "properties": {
+        "selected_or_commanded_is_public_truth": {
+          "const": false
+        },
+        "missing_witness_allows_public_claim": {
+          "const": false
+        },
+        "stale_witness_allows_public_claim": {
+          "const": false
+        },
+        "probes_are_expert_truth_oracle": {
+          "const": false
+        }
+      }
+    }
+  },
+  "$defs": {
+    "witness_class_id": {
+      "type": "string",
+      "enum": [
+        "read_only",
+        "command_result",
+        "public_egress",
+        "archive_ref",
+        "audio_video_state"
+      ]
+    },
+    "probe_state": {
+      "type": "string",
+      "enum": [
+        "selected",
+        "commanded",
+        "observed",
+        "witnessed",
+        "blocked",
+        "stale",
+        "failed"
+      ]
+    },
+    "witness_class_interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "witness_class",
+        "certifies",
+        "required_evidence_fields",
+        "source_ref_required",
+        "is_truth_oracle"
+      ],
+      "properties": {
+        "witness_class": {
+          "$ref": "#/$defs/witness_class_id"
+        },
+        "certifies": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_evidence_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "source_ref_required": {
+          "const": true
+        },
+        "is_truth_oracle": {
+          "const": false
+        }
+      }
+    },
+    "probe_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "probe_id",
+        "surface_id",
+        "capability_id",
+        "witness_class",
+        "state",
+        "checked_at",
+        "selected_ref",
+        "command_ref",
+        "witness_ref",
+        "source_refs",
+        "freshness_window_s",
+        "confidence",
+        "failure_reason",
+        "blocked_reasons",
+        "required_for_public_claim",
+        "required_witness_classes",
+        "command_result_success",
+        "selected_at",
+        "commanded_at",
+        "observed_at",
+        "witnessed_at",
+        "certifies_declared_obligation_only"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "probe_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "surface_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capability_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "witness_class": {
+          "$ref": "#/$defs/witness_class_id"
+        },
+        "state": {
+          "$ref": "#/$defs/probe_state"
+        },
+        "checked_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "selected_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "witness_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "freshness_window_s": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "failure_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blocked_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required_for_public_claim": {
+          "type": "boolean"
+        },
+        "required_witness_classes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/witness_class_id"
+          }
+        },
+        "command_result_success": {
+          "type": "boolean"
+        },
+        "selected_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "commanded_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "observed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "witnessed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "certifies_declared_obligation_only": {
+          "const": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "witnessed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "witness_ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "witnessed_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "failure_reason": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "blocked",
+                  "stale",
+                  "failed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "failure_reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blocked_reasons": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
