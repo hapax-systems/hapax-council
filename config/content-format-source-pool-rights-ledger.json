@@ -1,0 +1,865 @@
+{
+  "schema_version": 1,
+  "ledger_id": "content_format_source_pool_rights_ledger:2026-04-29",
+  "declared_at": "2026-04-29T04:30:00Z",
+  "producer": "cx-amber",
+  "global_policy": {
+    "single_operator_only": true,
+    "unknown_rights_fail_closed": true,
+    "third_party_av_non_autonomous_public_default": true,
+    "explicit_clearance_required_for_third_party_av_public": true,
+    "rights_pass_prior_required": true,
+    "source_prior_required": true,
+    "wcs_substrate_refs_required": true,
+    "evidence_refs_required": true,
+    "absolute_local_paths_allowed": false
+  },
+  "rights_class_definitions": [
+    {
+      "rights_class": "owned",
+      "meaning": "The Operator created, controls, or can otherwise publish the source without third-party media clearance.",
+      "default_public_mode": "public_archive",
+      "autonomous_public_allowed_by_default": true,
+      "monetization_allowed_by_default": true,
+      "required_evidence": ["operator_controlled_source_ref", "privacy_public_safe_ref", "provenance_ref"]
+    },
+    {
+      "rights_class": "public_domain",
+      "meaning": "The source has source-specific public-domain evidence and attribution/provenance captured.",
+      "default_public_mode": "public_archive",
+      "autonomous_public_allowed_by_default": true,
+      "monetization_allowed_by_default": true,
+      "required_evidence": ["public_domain_basis_ref", "source_url", "date_checked", "attribution_ref"]
+    },
+    {
+      "rights_class": "cc_compatible",
+      "meaning": "The source license is Creative Commons or otherwise compatible with the intended public use and attribution is captured.",
+      "default_public_mode": "public_archive",
+      "autonomous_public_allowed_by_default": true,
+      "monetization_allowed_by_default": false,
+      "required_evidence": ["license_ref", "attribution_ref", "sharealike_or_noncommercial_constraint_ref"]
+    },
+    {
+      "rights_class": "licensed",
+      "meaning": "The source has an explicit license or permission grant whose allowed surfaces are machine-readable.",
+      "default_public_mode": "dry_run",
+      "autonomous_public_allowed_by_default": false,
+      "monetization_allowed_by_default": false,
+      "required_evidence": ["license_contract_ref", "surface_scope_ref", "operator_legal_attestation_ref"]
+    },
+    {
+      "rights_class": "platform_embed_only",
+      "meaning": "The source may be referenced through platform metadata or embeds, but Hapax cannot autonomously rebroadcast or cache the media.",
+      "default_public_mode": "dry_run",
+      "autonomous_public_allowed_by_default": false,
+      "monetization_allowed_by_default": false,
+      "required_evidence": ["platform_terms_ref", "source_url", "metadata_only_ref"]
+    },
+    {
+      "rights_class": "fair_use_candidate",
+      "meaning": "The source might support a later human/legal fair-use theory, but the autonomous system treats it as private or link-along only.",
+      "default_public_mode": "dry_run",
+      "autonomous_public_allowed_by_default": false,
+      "monetization_allowed_by_default": false,
+      "required_evidence": ["fair_use_analysis_required", "operator_legal_attestation_ref", "refusal_fallback_ref"]
+    },
+    {
+      "rights_class": "forbidden",
+      "meaning": "The source must not be used for public content; only refusal or internal audit artifacts may refer to the blocked shape.",
+      "default_public_mode": "private",
+      "autonomous_public_allowed_by_default": false,
+      "monetization_allowed_by_default": false,
+      "required_evidence": ["blocked_reason_ref", "refusal_artifact_ref"]
+    },
+    {
+      "rights_class": "unknown",
+      "meaning": "The source lacks enough rights evidence; unknown means unavailable for public and monetized use.",
+      "default_public_mode": "private",
+      "autonomous_public_allowed_by_default": false,
+      "monetization_allowed_by_default": false,
+      "required_evidence": ["rights_research_required", "date_checked", "hold_reason_ref"]
+    }
+  ],
+  "source_posture_definitions": [
+    {
+      "posture": "link_along",
+      "meaning": "The programme may link, cite, or synchronize commentary with a source while keeping the source media outside Hapax output.",
+      "allowed_public_modes": ["private", "dry_run", "public_archive"]
+    },
+    {
+      "posture": "metadata_first",
+      "meaning": "The programme may use titles, creators, dates, citations, thumbnails only when separately cleared, and platform metadata without rebroadcasting media.",
+      "allowed_public_modes": ["private", "dry_run", "public_archive"]
+    },
+    {
+      "posture": "owned_cleared",
+      "meaning": "The programme may use owned, public-domain, CC-compatible, or explicitly licensed media inside declared public surfaces after privacy and egress gates pass.",
+      "allowed_public_modes": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    {
+      "posture": "archive_only",
+      "meaning": "The source may support VOD, replay, dataset, card, or artifact evidence but not live public claims by default.",
+      "allowed_public_modes": ["private", "dry_run", "public_archive"]
+    },
+    {
+      "posture": "refusal_artifact",
+      "meaning": "The blocked source shape may be converted into a safe refusal, correction, or failure artifact without laundering the blocked media.",
+      "allowed_public_modes": ["private", "dry_run", "public_archive"]
+    }
+  ],
+  "source_pool": [
+    {
+      "source_id": "operator_owned_archive_segments",
+      "source_class": "owned_media",
+      "title": "Operator-owned archive sidecars and replay segments",
+      "source_url": "local:archive/vod-sidecars",
+      "creator": "The Operator",
+      "rightsholder": "The Operator",
+      "platform": "local_archive",
+      "rights_class": "owned",
+      "license": "operator_controlled_unpublished_until_artifact_release",
+      "permission": "operator_owned_or_operator_generated",
+      "acquisition_method": "local_archive_sidecar_scan",
+      "capture_method": "studio_compositor_archive_or_generated_sidecar",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "av",
+        "third_party_av": false,
+        "explicitly_cleared_for_autonomous_public": true,
+        "clearance_evidence_refs": ["content-opportunity-input-source-registry:owned_media", "livestream-substrate-registry:video.hls_archive"]
+      },
+      "eligibility": {
+        "private_allowed": true,
+        "dry_run_allowed": true,
+        "public_live_allowed": true,
+        "public_archive_allowed": true,
+        "public_monetizable_allowed": true,
+        "autonomous_public_allowed": true,
+        "link_along_allowed": false,
+        "metadata_first_allowed": true,
+        "archive_only_allowed": true,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"],
+        "block_reasons": []
+      },
+      "postures": ["owned_cleared", "archive_only", "metadata_first"],
+      "wcs_substrate_refs": ["video.hls_archive", "archive.vod_sidecar", "public.youtube_metadata"],
+      "evidence_refs": [
+        "closed:content-opportunity-input-source-registry.md",
+        "closed:livestream-substrate-registry.md",
+        "repo:docs/superpowers/specs/2026-04-29-bayesian-content-opportunity-model-design.md"
+      ],
+      "provenance_requirements": ["archive_sidecar_ref", "capture_timestamp", "privacy_scan_ref", "egress_or_archive_ref"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 8, "beta": 3, "mean": 0.73, "evidence_refs": ["content_opportunity_input_source_registry.owned_media"]},
+        "rights_pass_prior": {"alpha": 18, "beta": 2, "mean": 0.9, "evidence_refs": ["research_corpus_export_ledger.rights_posture.operator_controlled"]},
+        "provenance_strength_prior": {"alpha": 9, "beta": 2, "mean": 0.82, "evidence_refs": ["livestream_substrate_registry.archive_sidecar"]},
+        "risk_prior": {"alpha": 2, "beta": 10, "mean": 0.17, "evidence_refs": ["content_programme_format.rights_posture.owned_or_cleared_only"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    {
+      "source_id": "aesthetic_library_cleared_assets",
+      "source_class": "owned_media",
+      "title": "Aesthetic library assets with manifest and notices",
+      "source_url": "repo:assets/aesthetic-library/_manifest.yaml",
+      "creator": "Upstream creators named in provenance manifests",
+      "rightsholder": "Upstream rightsholders named in provenance manifests",
+      "platform": "hapax_assets_cdn",
+      "rights_class": "cc_compatible",
+      "license": "BSD-3-Clause and CC-BY-SA-4.0 per asset provenance",
+      "permission": "redistribution_allowed_with_attribution_and_license_constraints",
+      "acquisition_method": "sha_pinned_manifest_and_provenance",
+      "capture_method": "asset_manifest_reference_only",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "image",
+        "third_party_av": false,
+        "explicitly_cleared_for_autonomous_public": true,
+        "clearance_evidence_refs": ["repo:assets/aesthetic-library/_NOTICES.md", "repo:assets/aesthetic-library/_manifest.yaml"]
+      },
+      "eligibility": {
+        "private_allowed": true,
+        "dry_run_allowed": true,
+        "public_live_allowed": true,
+        "public_archive_allowed": true,
+        "public_monetizable_allowed": false,
+        "autonomous_public_allowed": true,
+        "link_along_allowed": false,
+        "metadata_first_allowed": true,
+        "archive_only_allowed": true,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["private", "dry_run", "public_live", "public_archive"],
+        "block_reasons": ["monetization_license_constraint"]
+      },
+      "postures": ["owned_cleared", "metadata_first", "archive_only"],
+      "wcs_substrate_refs": ["asset.cdn_asset", "asset.provenance_manifest", "lane.homage"],
+      "evidence_refs": [
+        "repo:CLAUDE.md#aesthetic-library--cdn",
+        "repo:assets/aesthetic-library/_manifest.yaml",
+        "repo:assets/aesthetic-library/_NOTICES.md"
+      ],
+      "provenance_requirements": ["manifest_sha256", "provenance_yaml", "notices_entry", "license_surface_scope"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 7, "beta": 3, "mean": 0.7, "evidence_refs": ["aesthetic_library.manifest_integrity"]},
+        "rights_pass_prior": {"alpha": 12, "beta": 3, "mean": 0.8, "evidence_refs": ["aesthetic_library.provenance_gate"]},
+        "provenance_strength_prior": {"alpha": 12, "beta": 2, "mean": 0.86, "evidence_refs": ["scripts.verify-aesthetic-library"]},
+        "risk_prior": {"alpha": 3, "beta": 9, "mean": 0.25, "evidence_refs": ["license_constraints.cc_by_sa"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    {
+      "source_id": "research_corpus_export_rows",
+      "source_class": "local_state",
+      "title": "Research corpus export ledger rows",
+      "source_url": "repo:config/research-corpus-export-ledger.yaml",
+      "creator": "The Operator and Hapax work-state agents",
+      "rightsholder": "The Operator",
+      "platform": "local_research_corpus",
+      "rights_class": "owned",
+      "license": "CC-BY-NC-ND-4.0 for derived public snapshots; raw vault remains private",
+      "permission": "ledger_declared_export_status_only",
+      "acquisition_method": "ledger_row_read",
+      "capture_method": "metadata_only_export_or_anonymized_snapshot",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "dataset",
+        "third_party_av": false,
+        "explicitly_cleared_for_autonomous_public": true,
+        "clearance_evidence_refs": ["config:research-corpus-export-ledger.yaml"]
+      },
+      "eligibility": {
+        "private_allowed": true,
+        "dry_run_allowed": true,
+        "public_live_allowed": false,
+        "public_archive_allowed": true,
+        "public_monetizable_allowed": false,
+        "autonomous_public_allowed": true,
+        "link_along_allowed": false,
+        "metadata_first_allowed": true,
+        "archive_only_allowed": true,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["private", "dry_run", "public_archive"],
+        "block_reasons": ["raw_vault_body_private", "noncommercial_research_license"]
+      },
+      "postures": ["metadata_first", "archive_only", "refusal_artifact"],
+      "wcs_substrate_refs": ["file.archive_manifest", "obsidian.research_spec", "archive.refusal_artifact"],
+      "evidence_refs": [
+        "closed:research-corpus-anonymization-rights-ledger.md",
+        "repo:config/research-corpus-export-ledger.yaml"
+      ],
+      "provenance_requirements": ["field_status_ref", "redaction_filter_ref", "release_gate_ref", "bootstrap_attestation_ref"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 8, "beta": 4, "mean": 0.67, "evidence_refs": ["research_corpus_export_ledger.machine_consumers"]},
+        "rights_pass_prior": {"alpha": 10, "beta": 3, "mean": 0.77, "evidence_refs": ["research_corpus_export_ledger.rights_posture"]},
+        "provenance_strength_prior": {"alpha": 10, "beta": 3, "mean": 0.77, "evidence_refs": ["research_corpus_export_ledger.redaction_filter_catalog"]},
+        "risk_prior": {"alpha": 4, "beta": 8, "mean": 0.33, "evidence_refs": ["research_corpus_export_ledger.forbidden_exports"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    {
+      "source_id": "youtube_platform_metadata",
+      "source_class": "platform_native_state",
+      "title": "YouTube platform metadata and aggregate state",
+      "source_url": "platform:youtube:metadata",
+      "creator": "YouTube platform and channel metadata producers",
+      "rightsholder": "Source-specific YouTube creators and platform metadata owners",
+      "platform": "youtube",
+      "rights_class": "platform_embed_only",
+      "license": "platform_terms_metadata_and_embed_only",
+      "permission": "metadata_reference_without_media_rebroadcast",
+      "acquisition_method": "platform_api_or_public_metadata_read",
+      "capture_method": "metadata_snapshot_with_retrieved_at",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "metadata",
+        "third_party_av": false,
+        "explicitly_cleared_for_autonomous_public": false,
+        "clearance_evidence_refs": []
+      },
+      "eligibility": {
+        "private_allowed": true,
+        "dry_run_allowed": true,
+        "public_live_allowed": false,
+        "public_archive_allowed": true,
+        "public_monetizable_allowed": false,
+        "autonomous_public_allowed": true,
+        "link_along_allowed": true,
+        "metadata_first_allowed": true,
+        "archive_only_allowed": false,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["private", "dry_run", "public_archive"],
+        "block_reasons": ["media_rebroadcast_blocked", "platform_terms_scope"]
+      },
+      "postures": ["metadata_first", "link_along", "refusal_artifact"],
+      "wcs_substrate_refs": ["public.youtube_metadata", "public.youtube_chapter", "public.youtube_cuepoint"],
+      "evidence_refs": [
+        "closed:content-opportunity-input-source-registry.md",
+        "closed:youtube-captions-cuepoints-sections-shorts-reconcile.md",
+        "repo:docs/superpowers/specs/2026-04-29-trend-current-event-constraint-gate-design.md"
+      ],
+      "provenance_requirements": ["platform_endpoint_ref", "retrieved_at", "quota_state_ref", "aggregate_only_ref"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 5, "beta": 5, "mean": 0.5, "evidence_refs": ["content_opportunity_input_source_registry.platform_native_state"]},
+        "rights_pass_prior": {"alpha": 5, "beta": 5, "mean": 0.5, "evidence_refs": ["platform_embed_only_policy"]},
+        "provenance_strength_prior": {"alpha": 6, "beta": 4, "mean": 0.6, "evidence_refs": ["youtube_surface_reconcile.metadata_policy"]},
+        "risk_prior": {"alpha": 5, "beta": 6, "mean": 0.45, "evidence_refs": ["platform_terms_scope"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    {
+      "source_id": "third_party_av_link_along_pool",
+      "source_class": "curated_watchlists",
+      "title": "Third-party audio/video link-along candidates",
+      "source_url": "source_pool:third-party-av-link-along",
+      "creator": "Source-specific third-party creators",
+      "rightsholder": "Source-specific third-party rightsholders",
+      "platform": "external_media_platforms",
+      "rights_class": "platform_embed_only",
+      "license": "not_cleared_for_rebroadcast",
+      "permission": "link_along_or_metadata_only",
+      "acquisition_method": "curated_watchlist_or_public_url",
+      "capture_method": "no_media_capture; URL and metadata only",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "av",
+        "third_party_av": true,
+        "explicitly_cleared_for_autonomous_public": false,
+        "clearance_evidence_refs": []
+      },
+      "eligibility": {
+        "private_allowed": true,
+        "dry_run_allowed": true,
+        "public_live_allowed": false,
+        "public_archive_allowed": false,
+        "public_monetizable_allowed": false,
+        "autonomous_public_allowed": false,
+        "link_along_allowed": true,
+        "metadata_first_allowed": true,
+        "archive_only_allowed": false,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["private", "dry_run"],
+        "block_reasons": ["third_party_av_uncleared", "rebroadcast_forbidden", "shorts_forbidden"]
+      },
+      "postures": ["link_along", "metadata_first", "refusal_artifact"],
+      "wcs_substrate_refs": ["tool.web_search_openai", "browser_surface", "public.youtube_metadata"],
+      "evidence_refs": [
+        "repo:docs/superpowers/specs/2026-04-29-autonomous-content-programming-format-registry-design.md",
+        "repo:docs/superpowers/specs/2026-04-29-content-opportunity-input-source-registry-design.md"
+      ],
+      "provenance_requirements": ["source_url", "creator", "rightsholder_or_unknown", "date_checked", "no_capture_attestation"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 4, "beta": 6, "mean": 0.4, "evidence_refs": ["curated_watchlists.link_along"]},
+        "rights_pass_prior": {"alpha": 1, "beta": 7, "mean": 0.13, "evidence_refs": ["third_party_av_uncleared_default"]},
+        "provenance_strength_prior": {"alpha": 4, "beta": 5, "mean": 0.44, "evidence_refs": ["metadata_only_url_capture"]},
+        "risk_prior": {"alpha": 8, "beta": 2, "mean": 0.8, "evidence_refs": ["third_party_av_rebroadcast_risk"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    {
+      "source_id": "public_domain_reference_assets",
+      "source_class": "public_web_references",
+      "title": "Public-domain reference assets with source-specific evidence",
+      "source_url": "source_pool:public-domain-candidates",
+      "creator": "Source-specific creator declared per candidate",
+      "rightsholder": "No known copyright holder or public-domain rightsholder basis declared per candidate",
+      "platform": "official_public_archive_or_rightsholder_source",
+      "rights_class": "public_domain",
+      "license": "public_domain_basis_required_per_asset",
+      "permission": "public_domain_use_after_source_specific_evidence",
+      "acquisition_method": "official_archive_or_rightsholder_manifest",
+      "capture_method": "metadata_or_asset_ref_with_public_domain_basis",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "mixed",
+        "third_party_av": false,
+        "explicitly_cleared_for_autonomous_public": true,
+        "clearance_evidence_refs": ["public_domain_basis_ref_required_per_asset"]
+      },
+      "eligibility": {
+        "private_allowed": true,
+        "dry_run_allowed": true,
+        "public_live_allowed": true,
+        "public_archive_allowed": true,
+        "public_monetizable_allowed": true,
+        "autonomous_public_allowed": true,
+        "link_along_allowed": true,
+        "metadata_first_allowed": true,
+        "archive_only_allowed": true,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"],
+        "block_reasons": []
+      },
+      "postures": ["owned_cleared", "metadata_first", "archive_only", "link_along"],
+      "wcs_substrate_refs": ["asset.local_visual_pool", "asset.provenance_manifest", "archive.vod_sidecar"],
+      "evidence_refs": [
+        "repo:docs/superpowers/specs/2026-04-29-semantic-substrate-registry-generalization.md",
+        "repo:docs/superpowers/specs/2026-04-29-autonomous-content-programming-format-registry-design.md"
+      ],
+      "provenance_requirements": ["public_domain_basis", "source_url", "creator_or_institution", "date_checked", "attribution_policy"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 6, "beta": 4, "mean": 0.6, "evidence_refs": ["public_web_references.primary_source_policy"]},
+        "rights_pass_prior": {"alpha": 9, "beta": 3, "mean": 0.75, "evidence_refs": ["public_domain_basis_required"]},
+        "provenance_strength_prior": {"alpha": 7, "beta": 3, "mean": 0.7, "evidence_refs": ["source_specific_archive_evidence"]},
+        "risk_prior": {"alpha": 3, "beta": 9, "mean": 0.25, "evidence_refs": ["public_domain_false_positive_risk"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    {
+      "source_id": "licensed_review_copy_or_partner_asset",
+      "source_class": "curated_watchlists",
+      "title": "Licensed review copy or partner asset placeholder",
+      "source_url": "source_pool:licensed-asset-attestation-required",
+      "creator": "License-specific creator",
+      "rightsholder": "License-specific rightsholder",
+      "platform": "license_specific",
+      "rights_class": "licensed",
+      "license": "explicit_license_required_before_public_use",
+      "permission": "hold_until_surface_scope_and_attestation_exist",
+      "acquisition_method": "license_contract_or_permission_record",
+      "capture_method": "license_scoped_asset_reference_only",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "mixed",
+        "third_party_av": true,
+        "explicitly_cleared_for_autonomous_public": false,
+        "clearance_evidence_refs": []
+      },
+      "eligibility": {
+        "private_allowed": true,
+        "dry_run_allowed": true,
+        "public_live_allowed": false,
+        "public_archive_allowed": false,
+        "public_monetizable_allowed": false,
+        "autonomous_public_allowed": false,
+        "link_along_allowed": true,
+        "metadata_first_allowed": true,
+        "archive_only_allowed": false,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["private", "dry_run"],
+        "block_reasons": ["license_scope_missing", "third_party_av_uncleared", "legal_attestation_required"]
+      },
+      "postures": ["metadata_first", "link_along", "refusal_artifact"],
+      "wcs_substrate_refs": ["asset.provenance_manifest", "rights_manifest", "public.youtube_metadata"],
+      "evidence_refs": [
+        "repo:docs/superpowers/specs/2026-04-29-autonomous-content-programming-format-registry-design.md",
+        "closed:research-corpus-anonymization-rights-ledger.md"
+      ],
+      "provenance_requirements": ["license_contract_ref", "surface_scope_ref", "rightsholder", "operator_legal_attestation_ref"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 3, "beta": 5, "mean": 0.38, "evidence_refs": ["licensed_placeholder"]},
+        "rights_pass_prior": {"alpha": 2, "beta": 6, "mean": 0.25, "evidence_refs": ["license_scope_missing"]},
+        "provenance_strength_prior": {"alpha": 3, "beta": 6, "mean": 0.33, "evidence_refs": ["attestation_required"]},
+        "risk_prior": {"alpha": 7, "beta": 3, "mean": 0.7, "evidence_refs": ["license_scope_unknown_risk"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    {
+      "source_id": "fair_use_candidate_commentary_refs",
+      "source_class": "public_web_references",
+      "title": "Fair-use candidate commentary references",
+      "source_url": "source_pool:fair-use-candidate-reference",
+      "creator": "Source-specific creator",
+      "rightsholder": "Source-specific rightsholder",
+      "platform": "external_reference",
+      "rights_class": "fair_use_candidate",
+      "license": "not_licensed; fair_use_analysis_required",
+      "permission": "private_or_link_along_until_legal_attestation",
+      "acquisition_method": "public_reference_or_citation",
+      "capture_method": "metadata_and_short_quote_policy_only",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "av",
+        "third_party_av": true,
+        "explicitly_cleared_for_autonomous_public": false,
+        "clearance_evidence_refs": []
+      },
+      "eligibility": {
+        "private_allowed": true,
+        "dry_run_allowed": true,
+        "public_live_allowed": false,
+        "public_archive_allowed": false,
+        "public_monetizable_allowed": false,
+        "autonomous_public_allowed": false,
+        "link_along_allowed": true,
+        "metadata_first_allowed": true,
+        "archive_only_allowed": false,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["private", "dry_run"],
+        "block_reasons": ["fair_use_not_autonomous", "third_party_av_uncleared", "legal_attestation_required"]
+      },
+      "postures": ["link_along", "metadata_first", "refusal_artifact"],
+      "wcs_substrate_refs": ["tool.web_search_openai", "browser_surface", "archive.refusal_artifact"],
+      "evidence_refs": [
+        "repo:docs/superpowers/specs/2026-04-29-autonomous-content-programming-format-registry-design.md",
+        "repo:docs/superpowers/specs/2026-04-29-bayesian-content-opportunity-model-design.md"
+      ],
+      "provenance_requirements": ["citation_ref", "minimal_quote_policy_ref", "no_media_capture_attestation", "legal_attestation_ref_for_public_use"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 3, "beta": 6, "mean": 0.33, "evidence_refs": ["public_web_references.fair_use_candidate"]},
+        "rights_pass_prior": {"alpha": 1, "beta": 8, "mean": 0.11, "evidence_refs": ["fair_use_candidate_not_autonomous"]},
+        "provenance_strength_prior": {"alpha": 4, "beta": 6, "mean": 0.4, "evidence_refs": ["citation_only_provenance"]},
+        "risk_prior": {"alpha": 8, "beta": 2, "mean": 0.8, "evidence_refs": ["fair_use_publication_risk"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    {
+      "source_id": "forbidden_uncleared_media_cache",
+      "source_class": "internal_anomalies",
+      "title": "Forbidden uncleared media cache or rip shape",
+      "source_url": "blocked:uncleared-download-or-rip",
+      "creator": "Unknown or third-party creator",
+      "rightsholder": "Unknown or third-party rightsholder",
+      "platform": "blocked_media_cache",
+      "rights_class": "forbidden",
+      "license": "none",
+      "permission": "blocked",
+      "acquisition_method": "must_not_acquire",
+      "capture_method": "must_not_capture",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "av",
+        "third_party_av": true,
+        "explicitly_cleared_for_autonomous_public": false,
+        "clearance_evidence_refs": []
+      },
+      "eligibility": {
+        "private_allowed": false,
+        "dry_run_allowed": true,
+        "public_live_allowed": false,
+        "public_archive_allowed": false,
+        "public_monetizable_allowed": false,
+        "autonomous_public_allowed": false,
+        "link_along_allowed": false,
+        "metadata_first_allowed": false,
+        "archive_only_allowed": false,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["dry_run"],
+        "block_reasons": ["forbidden_source_shape", "third_party_av_uncleared", "acquisition_forbidden"]
+      },
+      "postures": ["refusal_artifact"],
+      "wcs_substrate_refs": ["archive.refusal_artifact", "rights_manifest"],
+      "evidence_refs": [
+        "closed:research-corpus-anonymization-rights-ledger.md",
+        "repo:docs/superpowers/specs/2026-04-29-autonomous-content-programming-format-registry-design.md"
+      ],
+      "provenance_requirements": ["blocked_reason_ref", "refusal_artifact_ref", "no_capture_attestation"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 1, "beta": 9, "mean": 0.1, "evidence_refs": ["forbidden_source_shape"]},
+        "rights_pass_prior": {"alpha": 1, "beta": 12, "mean": 0.08, "evidence_refs": ["forbidden_rights_class"]},
+        "provenance_strength_prior": {"alpha": 2, "beta": 8, "mean": 0.2, "evidence_refs": ["blocked_reason_only"]},
+        "risk_prior": {"alpha": 10, "beta": 1, "mean": 0.91, "evidence_refs": ["third_party_uncleared_media_block"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    },
+    {
+      "source_id": "unknown_source_intake_hold",
+      "source_class": "public_web_references",
+      "title": "Unknown source intake hold",
+      "source_url": "source_pool:unknown-rights-hold",
+      "creator": "Unknown",
+      "rightsholder": "Unknown",
+      "platform": "unknown",
+      "rights_class": "unknown",
+      "license": "unknown",
+      "permission": "hold_for_rights_research",
+      "acquisition_method": "metadata_stub_only",
+      "capture_method": "no_media_capture",
+      "date_checked": "2026-04-29",
+      "media_profile": {
+        "media_kind": "mixed",
+        "third_party_av": false,
+        "explicitly_cleared_for_autonomous_public": false,
+        "clearance_evidence_refs": []
+      },
+      "eligibility": {
+        "private_allowed": true,
+        "dry_run_allowed": true,
+        "public_live_allowed": false,
+        "public_archive_allowed": false,
+        "public_monetizable_allowed": false,
+        "autonomous_public_allowed": false,
+        "link_along_allowed": false,
+        "metadata_first_allowed": true,
+        "archive_only_allowed": false,
+        "refusal_artifact_allowed": true,
+        "allowed_public_modes": ["private", "dry_run"],
+        "block_reasons": ["unknown_rights_fail_closed", "rights_research_required"]
+      },
+      "postures": ["metadata_first", "refusal_artifact"],
+      "wcs_substrate_refs": ["tool.web_search_openai", "rights_manifest"],
+      "evidence_refs": [
+        "repo:docs/superpowers/specs/2026-04-29-content-opportunity-input-source-registry-design.md",
+        "repo:docs/superpowers/specs/2026-04-29-trend-current-event-constraint-gate-design.md"
+      ],
+      "provenance_requirements": ["source_url_if_known", "date_checked", "rights_research_task_ref", "hold_reason_ref"],
+      "bayesian_priors": {
+        "source_prior": {"alpha": 2, "beta": 8, "mean": 0.2, "evidence_refs": ["unknown_source_hold"]},
+        "rights_pass_prior": {"alpha": 1, "beta": 9, "mean": 0.1, "evidence_refs": ["unknown_rights_fail_closed"]},
+        "provenance_strength_prior": {"alpha": 2, "beta": 7, "mean": 0.22, "evidence_refs": ["metadata_stub_only"]},
+        "risk_prior": {"alpha": 8, "beta": 3, "mean": 0.73, "evidence_refs": ["unknown_rights_risk"]},
+        "posterior_refs": ["content-opportunity-model.posterior_state.source_prior", "content-opportunity-model.posterior_state.rights_pass_probability"]
+      },
+      "downstream_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"]
+    }
+  ],
+  "format_policies": [
+    {
+      "format_id": "tier_list",
+      "allowed_source_postures": ["metadata_first", "owned_cleared", "archive_only", "refusal_artifact"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rights_class", "postures", "wcs_substrate_refs", "evidence_refs"]
+    },
+    {
+      "format_id": "react_commentary",
+      "allowed_source_postures": ["link_along", "metadata_first", "owned_cleared", "refusal_artifact"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rights_class", "media_profile", "eligibility", "evidence_refs"]
+    },
+    {
+      "format_id": "ranking",
+      "allowed_source_postures": ["metadata_first", "owned_cleared", "archive_only", "refusal_artifact"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rights_class", "postures", "wcs_substrate_refs", "evidence_refs"]
+    },
+    {
+      "format_id": "comparison",
+      "allowed_source_postures": ["metadata_first", "owned_cleared", "archive_only", "refusal_artifact"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rights_class", "postures", "wcs_substrate_refs", "evidence_refs"]
+    },
+    {
+      "format_id": "review",
+      "allowed_source_postures": ["metadata_first", "owned_cleared", "link_along", "refusal_artifact"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rightsholder", "permission", "eligibility", "bayesian_priors"]
+    },
+    {
+      "format_id": "watch_along",
+      "allowed_source_postures": ["link_along", "owned_cleared", "metadata_first", "refusal_artifact"],
+      "public_mode_ceiling": "dry_run",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "source_url", "media_profile", "eligibility", "block_reasons"]
+    },
+    {
+      "format_id": "explainer",
+      "allowed_source_postures": ["metadata_first", "owned_cleared", "archive_only", "refusal_artifact"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rights_class", "evidence_refs", "wcs_substrate_refs", "bayesian_priors"]
+    },
+    {
+      "format_id": "rundown",
+      "allowed_source_postures": ["metadata_first", "link_along", "refusal_artifact"],
+      "public_mode_ceiling": "dry_run",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "date_checked", "source_url", "evidence_refs", "eligibility"]
+    },
+    {
+      "format_id": "debate",
+      "allowed_source_postures": ["metadata_first", "archive_only", "refusal_artifact"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rights_class", "postures", "evidence_refs", "bayesian_priors"]
+    },
+    {
+      "format_id": "bracket",
+      "allowed_source_postures": ["metadata_first", "owned_cleared", "archive_only", "refusal_artifact"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rights_class", "postures", "wcs_substrate_refs", "evidence_refs"]
+    },
+    {
+      "format_id": "what_is_this",
+      "allowed_source_postures": ["owned_cleared", "metadata_first", "link_along", "refusal_artifact"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "media_profile", "eligibility", "evidence_refs", "bayesian_priors"]
+    },
+    {
+      "format_id": "refusal_breakdown",
+      "allowed_source_postures": ["refusal_artifact", "metadata_first", "link_along"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rights_class", "block_reasons", "refusal_artifact_allowed", "evidence_refs"]
+    },
+    {
+      "format_id": "evidence_audit",
+      "allowed_source_postures": ["metadata_first", "archive_only", "refusal_artifact", "owned_cleared"],
+      "public_mode_ceiling": "public_archive",
+      "third_party_av_default": "non_autonomous_public",
+      "autonomous_public_third_party_av_allowed": false,
+      "clearance_required_for_third_party_av_public": true,
+      "required_rights_for_public_modes": ["owned", "public_domain", "cc_compatible", "licensed"],
+      "blocked_rights_classes": ["fair_use_candidate", "forbidden", "unknown"],
+      "bayesian_inputs": {
+        "source_prior_ref": "source_pool[].bayesian_priors.source_prior",
+        "rights_pass_prior_ref": "source_pool[].bayesian_priors.rights_pass_prior",
+        "risk_prior_ref": "source_pool[].bayesian_priors.risk_prior"
+      },
+      "required_downstream_fields": ["source_id", "rights_class", "permission", "evidence_refs", "bayesian_priors"]
+    }
+  ],
+  "downstream_contract": {
+    "machine_consumers": ["scheduler", "run_store", "public_adapter", "conversion_broker", "monetization_ledger"],
+    "preserved_fields": [
+      "source_id",
+      "source_url",
+      "title",
+      "creator",
+      "rightsholder",
+      "platform",
+      "rights_class",
+      "license",
+      "permission",
+      "acquisition_method",
+      "capture_method",
+      "date_checked",
+      "media_profile",
+      "eligibility",
+      "postures",
+      "wcs_substrate_refs",
+      "evidence_refs",
+      "bayesian_priors"
+    ],
+    "public_gate_inputs": [
+      "rights_class",
+      "media_profile.third_party_av",
+      "media_profile.explicitly_cleared_for_autonomous_public",
+      "eligibility.autonomous_public_allowed",
+      "eligibility.allowed_public_modes",
+      "postures",
+      "provenance_requirements",
+      "evidence_refs"
+    ],
+    "bayesian_model_inputs": [
+      "bayesian_priors.source_prior",
+      "bayesian_priors.rights_pass_prior",
+      "bayesian_priors.provenance_strength_prior",
+      "bayesian_priors.risk_prior",
+      "format_policies[].bayesian_inputs"
+    ]
+  }
+}

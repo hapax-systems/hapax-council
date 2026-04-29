@@ -17,16 +17,20 @@ Slots with no cached frame surface contribute 0.
 from __future__ import annotations
 
 import struct
-import time
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
-import cairo
 import pytest
 
 from agents.studio_compositor.sierpinski_renderer import (
     VIDEO_ATTENTION_PATH,
     SierpinskiCairoSource,
 )
+
+if TYPE_CHECKING:
+    import cairo
+
+NOW = 1_776_000_000.0
 
 
 @pytest.fixture()
@@ -48,6 +52,11 @@ def _read_f32(path: Path) -> float:
     return struct.unpack("<f", data)[0]
 
 
+def _cached_frame_surface() -> cairo.ImageSurface:
+    """Return a cached-frame sentinel; attention logic only checks non-None."""
+    return cast("cairo.ImageSurface", object())
+
+
 def test_video_attention_default_is_zero(
     renderer: SierpinskiCairoSource, attention_path: Path
 ) -> None:
@@ -60,12 +69,12 @@ def test_video_attention_default_is_zero(
 def test_video_attention_active_slot(renderer: SierpinskiCairoSource, attention_path: Path) -> None:
     """Fresh frame loaded in active slot → equals active-slot opacity (0.9)."""
     # Simulate a cached frame surface with a fresh mtime.
-    fake_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 4, 4)
+    fake_surface = _cached_frame_surface()
     renderer._frame_surfaces[0] = fake_surface
-    renderer._frame_mtimes[0] = time.time()  # fresh
+    renderer._frame_mtimes[0] = NOW  # fresh
     renderer._active_slot = 0
 
-    renderer._publish_video_attention()
+    renderer._publish_video_attention(now=NOW)
     value = _read_f32(attention_path)
     # Active slot opacity is 0.9 (FEATURED_FALLBACK_OPACITY); freshness = 1.0.
     assert value == pytest.approx(0.9, abs=0.01)
@@ -75,8 +84,8 @@ def test_video_attention_featured_slot_maxes_out(
     renderer: SierpinskiCairoSource, attention_path: Path
 ) -> None:
     """Featured slot with fresh frame → ~1.0."""
-    fake_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 4, 4)
-    now = time.time()
+    fake_surface = _cached_frame_surface()
+    now = NOW
     renderer._frame_surfaces[0] = fake_surface
     renderer._frame_mtimes[0] = now
     renderer._active_slot = 0
@@ -85,7 +94,7 @@ def test_video_attention_featured_slot_maxes_out(
     renderer._featured_ts = now
     renderer._featured_level = 1.0
 
-    renderer._publish_video_attention()
+    renderer._publish_video_attention(now=now)
     value = _read_f32(attention_path)
     assert value == pytest.approx(1.0, abs=0.01)
 
@@ -94,12 +103,12 @@ def test_video_attention_decays_after_2s(
     renderer: SierpinskiCairoSource, attention_path: Path
 ) -> None:
     """Stale frame (mtime age > 2s) → freshness < 1.0 (exponential decay)."""
-    fake_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 4, 4)
+    fake_surface = _cached_frame_surface()
     renderer._frame_surfaces[0] = fake_surface
-    renderer._frame_mtimes[0] = time.time() - 4.0  # 4s old
+    renderer._frame_mtimes[0] = NOW - 4.0  # 4s old
     renderer._active_slot = 0
 
-    renderer._publish_video_attention()
+    renderer._publish_video_attention(now=NOW)
     value = _read_f32(attention_path)
     # age = 4s → 2s past cutoff → freshness = exp(-2/2) = 0.368
     # final = 0.9 * 0.368 ≈ 0.33
@@ -111,8 +120,8 @@ def test_video_attention_picks_max_across_slots(
     renderer: SierpinskiCairoSource, attention_path: Path
 ) -> None:
     """Max across all slots, not sum — one hot slot dominates."""
-    fake_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 4, 4)
-    now = time.time()
+    fake_surface = _cached_frame_surface()
+    now = NOW
     # slot 0: stale, idle
     renderer._frame_surfaces[0] = fake_surface
     renderer._frame_mtimes[0] = now - 10.0
@@ -121,7 +130,7 @@ def test_video_attention_picks_max_across_slots(
     renderer._frame_mtimes[1] = now
     renderer._active_slot = 1
 
-    renderer._publish_video_attention()
+    renderer._publish_video_attention(now=now)
     value = _read_f32(attention_path)
     # Slot 1 dominates: opacity 0.9 * freshness 1.0 = 0.9
     assert value == pytest.approx(0.9, abs=0.01)
