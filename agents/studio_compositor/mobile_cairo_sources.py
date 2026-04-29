@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import threading
 import time
 from dataclasses import dataclass
@@ -184,9 +183,9 @@ class MobileStanceIndicatorCairoSource(_MobileSourceBase):
         del canvas_w, canvas_h
         narrative = state.get("narrative") if isinstance(state.get("narrative"), dict) else {}
         stance = str(narrative.get("stance") or narrative.get("overall_stance") or "nominal")
-        pulse = 0.55 + 0.20 * (0.5 + 0.5 * math.sin(t * 2.0))
+        del t
         cr.save()
-        cr.set_source_rgba(0.32, 0.58, 0.56, pulse)
+        cr.set_source_rgba(0.32, 0.58, 0.56, 0.66)
         cr.rectangle(26, 42, 18, 84)
         cr.fill()
         cr.restore()

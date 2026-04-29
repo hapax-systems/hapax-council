@@ -972,41 +972,42 @@ class StudioCompositor:
     def _broadcast_mode_tick(self) -> bool:
         if not self._running:
             return False
-        mode = self._resolve_broadcast_mode()
+        mode = StudioCompositor._resolve_broadcast_mode(self)
         if mode == self._broadcast_mode:
             return True
         previous = self._broadcast_mode
-        self._set_broadcast_mode(mode)
-        self._sync_mobile_support_threads()
-        if self.pipeline is not None and self._any_livestream_attached():
-            ok, detail = self._apply_livestream_mode(activate=True, mode=mode)
+        StudioCompositor._set_broadcast_mode(self, mode)
+        StudioCompositor._sync_mobile_support_threads(self)
+        if self.pipeline is not None and StudioCompositor._any_livestream_attached(self):
+            ok, detail = StudioCompositor._apply_livestream_mode(self, activate=True, mode=mode)
             if not ok:
                 log.error("broadcast mode apply failed (%s -> %s): %s", previous, mode, detail)
         self._write_status("running")
         return True
 
     def _any_livestream_attached(self) -> bool:
-        rtmp_bin = getattr(self, "_rtmp_bin", None)
-        mobile_bin = getattr(self, "_mobile_rtmp_bin", None)
+        rtmp_bin = self.__dict__.get("_rtmp_bin")
+        mobile_bin = self.__dict__.get("_mobile_rtmp_bin")
         return bool(
             (rtmp_bin is not None and rtmp_bin.is_attached())
             or (mobile_bin is not None and mobile_bin.is_attached())
         )
 
     def _sync_mobile_support_threads(self) -> None:
-        if self._broadcast_mode in ("mobile", "dual"):
-            self._ensure_mobile_support_threads()
+        mobile_bin = self.__dict__.get("_mobile_rtmp_bin")
+        if mobile_bin is not None and self.__dict__.get("_broadcast_mode") in ("mobile", "dual"):
+            StudioCompositor._ensure_mobile_support_threads(self)
         else:
-            self._stop_mobile_support_threads()
+            StudioCompositor._stop_mobile_support_threads(self)
 
     def _ensure_mobile_support_threads(self) -> None:
         try:
-            if self._mobile_salience_router is None:
+            if self.__dict__.get("_mobile_salience_router") is None:
                 from agents.studio_compositor.mobile_salience_router import MobileSalienceRouter
 
                 self._mobile_salience_router = MobileSalienceRouter()
                 self._mobile_salience_router.start()
-            if self._mobile_cairo_runner is None:
+            if self.__dict__.get("_mobile_cairo_runner") is None:
                 from agents.studio_compositor.mobile_cairo_sources import MobileCairoRunner
 
                 self._mobile_cairo_runner = MobileCairoRunner()
@@ -1016,7 +1017,7 @@ class StudioCompositor:
 
     def _stop_mobile_support_threads(self) -> None:
         for attr in ("_mobile_cairo_runner", "_mobile_salience_router"):
-            worker = getattr(self, attr, None)
+            worker = self.__dict__.get(attr)
             if worker is None:
                 continue
             try:
@@ -1295,17 +1296,25 @@ class StudioCompositor:
 
         Phase 5 of the camera 24/7 resilience epic (closes A7).
         """
-        if self.pipeline is None:
+        rtmp_bin = self.__dict__.get("_rtmp_bin")
+        mobile_bin = self.__dict__.get("_mobile_rtmp_bin")
+        if rtmp_bin is None and mobile_bin is None:
+            return False, "rtmp bin not constructed"
+        if self.__dict__.get("pipeline") is None:
             return False, "composite pipeline not built"
 
-        mode = self._resolve_broadcast_mode()
-        self._set_broadcast_mode(mode)
-        self._sync_mobile_support_threads()
+        mode = StudioCompositor._resolve_broadcast_mode(self)
+        StudioCompositor._set_broadcast_mode(self, mode)
+        StudioCompositor._sync_mobile_support_threads(self)
 
         if activate:
-            if self._livestream_matches_mode(mode):
+            if StudioCompositor._livestream_matches_mode(self, mode):
                 return True, "already live"
-            ok, detail = self._apply_livestream_mode(activate=True, mode=mode)
+            ok, detail = StudioCompositor._apply_livestream_mode(
+                self,
+                activate=True,
+                mode=mode,
+            )
             if not ok:
                 return False, detail
             try:
@@ -1324,9 +1333,13 @@ class StudioCompositor:
                 log.exception("rtmp attach side-effects raised (non-fatal)")
             return True, f"livestream egress attached ({mode})"
         else:
-            if not self._any_livestream_attached():
+            if not StudioCompositor._any_livestream_attached(self):
                 return True, "already off"
-            ok, detail = self._apply_livestream_mode(activate=False, mode=mode)
+            ok, detail = StudioCompositor._apply_livestream_mode(
+                self,
+                activate=False,
+                mode=mode,
+            )
             try:
                 from shared.notify import send_notification
 
@@ -1345,19 +1358,20 @@ class StudioCompositor:
             return ok, detail
 
     def _livestream_matches_mode(self, mode: str) -> bool:
-        rtmp_bin = getattr(self, "_rtmp_bin", None)
-        mobile_bin = getattr(self, "_mobile_rtmp_bin", None)
+        rtmp_bin = self.__dict__.get("_rtmp_bin")
+        mobile_bin = self.__dict__.get("_mobile_rtmp_bin")
         desktop_attached = bool(rtmp_bin.is_attached()) if rtmp_bin is not None else False
         mobile_attached = bool(mobile_bin.is_attached()) if mobile_bin is not None else False
-        return desktop_attached == (mode in ("desktop", "dual")) and mobile_attached == (
-            mode in ("mobile", "dual")
-        )
+        desktop_desired = rtmp_bin is not None and mode in ("desktop", "dual")
+        mobile_desired = mobile_bin is not None and mode in ("mobile", "dual")
+        return desktop_attached == desktop_desired and mobile_attached == mobile_desired
 
     def _apply_livestream_mode(self, *, activate: bool, mode: str) -> tuple[bool, str]:
-        if self.pipeline is None:
+        pipeline = self.__dict__.get("pipeline")
+        if pipeline is None:
             return False, "composite pipeline not built"
-        rtmp_bin = getattr(self, "_rtmp_bin", None)
-        mobile_bin = getattr(self, "_mobile_rtmp_bin", None)
+        rtmp_bin = self.__dict__.get("_rtmp_bin")
+        mobile_bin = self.__dict__.get("_mobile_rtmp_bin")
         if rtmp_bin is None and mode in ("desktop", "dual"):
             return False, "desktop rtmp bin not constructed"
         if mobile_bin is None and mode in ("mobile", "dual"):
@@ -1365,40 +1379,40 @@ class StudioCompositor:
 
         if not activate:
             if rtmp_bin is not None and rtmp_bin.is_attached():
-                rtmp_bin.detach_and_teardown(self.pipeline)
+                rtmp_bin.detach_and_teardown(pipeline)
             if mobile_bin is not None and mobile_bin.is_attached():
-                mobile_bin.detach_and_teardown(self.pipeline)
-            self._publish_livestream_metrics(mode)
+                mobile_bin.detach_and_teardown(pipeline)
+            StudioCompositor._publish_livestream_metrics(self, mode)
             return True, "livestream egress detached"
 
         errors: list[str] = []
         if rtmp_bin is not None:
             should_attach_desktop = mode in ("desktop", "dual")
             if should_attach_desktop and not rtmp_bin.is_attached():
-                if not rtmp_bin.build_and_attach(self.pipeline):
+                if not rtmp_bin.build_and_attach(pipeline):
                     errors.append("desktop rtmp attach failed")
             elif not should_attach_desktop and rtmp_bin.is_attached():
-                rtmp_bin.detach_and_teardown(self.pipeline)
+                rtmp_bin.detach_and_teardown(pipeline)
 
         if mobile_bin is not None:
             should_attach_mobile = mode in ("mobile", "dual")
             if should_attach_mobile and not mobile_bin.is_attached():
-                if not mobile_bin.build_and_attach(self.pipeline):
+                if not mobile_bin.build_and_attach(pipeline):
                     errors.append("mobile rtmp attach failed")
             elif not should_attach_mobile and mobile_bin.is_attached():
-                mobile_bin.detach_and_teardown(self.pipeline)
+                mobile_bin.detach_and_teardown(pipeline)
 
         if errors:
             return False, "; ".join(errors)
-        self._publish_livestream_metrics(mode)
+        StudioCompositor._publish_livestream_metrics(self, mode)
         return True, f"livestream egress mode applied: {mode}"
 
     def _publish_livestream_metrics(self, mode: str) -> None:
         try:
             from . import metrics
 
-            rtmp_bin = getattr(self, "_rtmp_bin", None)
-            mobile_bin = getattr(self, "_mobile_rtmp_bin", None)
+            rtmp_bin = self.__dict__.get("_rtmp_bin")
+            mobile_bin = self.__dict__.get("_mobile_rtmp_bin")
             if metrics.RTMP_CONNECTED is not None:
                 metrics.RTMP_CONNECTED.labels(endpoint="youtube").set(
                     1 if rtmp_bin is not None and rtmp_bin.is_attached() else 0
