@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "daemon_id": "content_candidate_discovery_daemon_v1",
+  "enabled": true,
+  "declared_at": "2026-04-29T04:31:30Z",
+  "producer": "cx-red",
+  "cadence": {
+    "mode": "systemd_timer",
+    "interval_seconds": 300,
+    "idle_update_seconds": 270
+  },
+  "paths": {
+    "source_observations_jsonl": "/dev/shm/hapax-content-candidates/source-observations.jsonl",
+    "candidate_jsonl": "/dev/shm/hapax-content-candidates/opportunities.jsonl",
+    "audit_jsonl": "/dev/shm/hapax-content-candidates/audit.jsonl",
+    "health_json": "/dev/shm/hapax-content-candidates/health.json"
+  },
+  "global_policy": {
+    "single_operator_only": true,
+    "schedules_programmes_directly": false,
+    "creates_supporter_request_queue": false,
+    "trend_as_truth_allowed": false,
+    "missing_freshness_blocks_public_claim": true,
+    "private_dry_run_default": true
+  },
+  "source_class_modes": {
+    "local_state": ["private", "dry_run", "public_archive"],
+    "owned_media": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"],
+    "platform_native_state": ["private", "dry_run", "public_archive"],
+    "trend_sources": ["private", "dry_run", "public_archive"],
+    "curated_watchlists": ["private", "dry_run", "public_archive"],
+    "public_web_references": ["private", "dry_run", "public_archive"],
+    "ambient_aggregate_audience": ["private", "dry_run"],
+    "internal_anomalies": ["private", "dry_run"]
+  },
+  "hard_block_reasons": [
+    "supporter_controlled_programming_forbidden",
+    "per_person_request_queue_forbidden",
+    "trend_currentness_is_not_truth_warrant",
+    "uncleared_media_rebroadcast"
+  ],
+  "downstream_contract": {
+    "emits": "ContentOpportunity candidates",
+    "never_schedules_programmes": true,
+    "candidate_output_contract": "schemas/content-opportunity-model.schema.json#/properties/opportunity",
+    "input_registry_contract": "schemas/content-opportunity-input-source-registry.schema.json",
+    "trend_gate_contract": "schemas/trend-current-event-constraint-gate.schema.json",
+    "blocks": ["content-programme-scheduler-policy"]
+  }
+}

@@ -1,0 +1,18 @@
+[Unit]
+Description=Hapax content candidate discovery producer
+After=default.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/.local/bin/uv --directory /home/hapax/projects/hapax-council run python -m agents.content_candidate_discovery --once
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+MemoryMax=512M
+CPUQuota=50%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-content-candidate-discovery

@@ -585,6 +585,15 @@ case "$TERMINAL" in
       echo "hapax-codex: footclient/foot not found" >&2
       exit 10
     fi
+    TMUX_BIN="$(command -v tmux || true)"
+    if [ -z "$TMUX_BIN" ]; then
+      echo "hapax-codex: tmux not found; visible Codex sessions require tmux backing" >&2
+      exit 10
+    fi
+    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+      echo "hapax-codex: tmux session already exists: $TMUX_NAME" >&2
+      exit 11
+    fi
     FOOT_COLOR_THEME="$(foot_color_theme_for_current_mode)"
     ;;
 esac
@@ -677,7 +686,7 @@ Coordination rules:
 - Single operator only.
 - Use pass and child MCP wrappers for credentials; do not print secret values.
 - Use scripts/hapax-codex for child Codex sessions; do not introduce a parallel Claude launcher.
-- Use scripts/hapax-codex-send for parent-to-child visible-session instructions; it focuses the target and submits after paste so Enter is not lost.
+- Use scripts/hapax-codex-send for parent-to-child visible-session instructions; it prefers the tmux-backed channel so instructions submit without Wayland paste/Return races.
 - Maintain Obsidian cc-task and relay discipline.
 - Treat implemented features that remain dormant, unshipped, or off by default as baseline defects unless a concrete external blocker is documented; prefer fixing the blocker and shipping.
 - Do not claim a persistent watch timer unless you are actively running a loop; after a final response, the session is idle, not watching.
@@ -793,6 +802,9 @@ case "$TERMINAL" in
     printf '%s\n' "$TMUX_NAME"
     ;;
   foot)
+    if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
+      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    fi
     case "$(basename "$FOOT_BIN")" in
       footclient)
         "$FOOT_BIN" -E -N -H \
@@ -800,7 +812,7 @@ case "$TERMINAL" in
           --app-id "hapax-codex-$SESSION" \
           --title "$SESSION" \
           --working-directory "$WORKDIR" \
-          "$RUNNER"
+          "$TMUX_BIN" attach-session -t "$TMUX_NAME"
         move_foot_window_to_workspace "$SESSION" "$FOOT_TARGET_WORKSPACE"
         ;;
       *)
@@ -809,7 +821,7 @@ case "$TERMINAL" in
           --app-id "hapax-codex-$SESSION" \
           --title "$SESSION" \
           --working-directory "$WORKDIR" \
-          "$RUNNER" >/dev/null 2>&1
+          "$TMUX_BIN" attach-session -t "$TMUX_NAME" >/dev/null 2>&1
         move_foot_window_to_workspace "$SESSION" "$FOOT_TARGET_WORKSPACE"
         ;;
     esac
