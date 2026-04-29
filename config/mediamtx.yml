@@ -7,6 +7,11 @@
 rtmp: yes
 rtmpAddress: 127.0.0.1:1935
 
+# The compositor connects on first FLV push behind a sink-local queue. Keep a
+# longer read window so relay restarts do not flap during dynamic branch attach.
+readTimeout: 60s
+writeTimeout: 10s
+
 hls: no
 webrtc: no
 srt: no
@@ -27,3 +32,5 @@ paths:
       -c copy
       -f flv rtmp://a.rtmp.youtube.com/live2/${HAPAX_YOUTUBE_STREAM_KEY}
     runOnReadyRestart: yes
+  mobile:
+    source: publisher

@@ -34,12 +34,16 @@ class TestRtmpOutputBinConstruction:
         assert "format=S16LE" in _aac_input_caps_string("voaacenc")
         assert "format=F32LE" in _aac_input_caps_string("avenc_aac")
 
-    def test_rtmp_sinks_connect_on_first_buffer(self) -> None:
+    def test_rtmp_sinks_connect_on_first_buffer_behind_sink_queues(self) -> None:
         from agents.studio_compositor.rtmp_output import MobileRtmpOutputBin, RtmpOutputBin
 
         desktop_source = inspect.getsource(RtmpOutputBin.build_and_attach)
         mobile_source = inspect.getsource(MobileRtmpOutputBin.build_and_attach)
 
+        assert 'Gst.ElementFactory.make("queue", "rtmp_sink_queue")' in desktop_source
+        assert 'Gst.ElementFactory.make("queue", "mobile_rtmp_sink_queue")' in mobile_source
+        assert 'sink.set_property("async", False)' in desktop_source
+        assert 'sink.set_property("async", False)' in mobile_source
         assert 'sink.set_property("async-connect", False)' in desktop_source
         assert 'sink.set_property("async-connect", False)' in mobile_source
 
