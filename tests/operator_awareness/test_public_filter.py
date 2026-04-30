@@ -8,6 +8,7 @@ from agents.operator_awareness.public_filter import public_filter
 from agents.operator_awareness.state import (
     AwarenessState,
     HealthBlock,
+    MailBlock,
     MarketingOutreachBlock,
     RefusalEvent,
     StreamBlock,
@@ -55,11 +56,13 @@ class TestPublicFilter:
             stream=StreamBlock(public=True, live=True),
             health_system=HealthBlock(public=False, overall_status="critical"),
             marketing_outreach=MarketingOutreachBlock(public=False, pending_count=5),
+            mail=MailBlock(public=False, operational_alerts_total=3),
         )
         out = public_filter(state)
         assert out.stream.live is True  # public passes
         assert out.health_system.overall_status == "unknown"  # private redacted
         assert out.marketing_outreach.pending_count == 0  # private redacted
+        assert out.mail.operational_alerts_total == 0
 
     def test_returns_new_instance(self):
         state = AwarenessState(

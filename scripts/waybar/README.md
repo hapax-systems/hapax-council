@@ -42,6 +42,7 @@ the module list) to `~/.config/waybar/config.jsonc`.
 | `hapax-waybar-fleet` | `state.json:.hardware_fleet` | 30s | `awareness-waybar-fleet` |
 | `hapax-waybar-stream` | `state.json:.stream` | 1s | `awareness-waybar-stream` |
 | `hapax-waybar-oudepode` | `state.json:.music_soundcloud` | 30s | `awareness-waybar-oudepode` |
+| `hapax-waybar-operational-alerts` | `state.json:.mail` | 30s | `mail-monitor-operational-awareness-phase-2` |
 
 State-derived modules treat `mtime > 90s` on `state.json` as stale and
 emit `class:"stale"` rather than dummy zeroes — so the bar visibly

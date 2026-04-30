@@ -181,6 +181,39 @@ class GovernanceBlock(_Block):
     last_axiom_check_at: datetime | None = None
 
 
+MailOperationalAlertKind = Literal["tls_expiry", "dependabot", "dns"]
+
+
+class OperationalAlertsBlock(BaseModel):
+    """Seven-day active Category-D operational mail counters.
+
+    Category-D mail is parsed upstream by ``agents.mail_monitor`` and
+    reduced here to counters only. The block intentionally carries no
+    sender, subject, body, header, or Gmail message identifiers.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tls_expiry: int = Field(default=0, ge=0)
+    dependabot: int = Field(default=0, ge=0)
+    dns: int = Field(default=0, ge=0)
+
+
+class MailBlock(_Block):
+    """Mail-monitor awareness counters.
+
+    The mail monitor is full-auto plumbing: operator-facing awareness
+    surfaces may show counts and timestamps, but never message content
+    or in-band acknowledgement controls. Operational alerts age out in
+    the aggregator after seven days; no operator "clear" state exists.
+    """
+
+    operational_alerts: OperationalAlertsBlock = Field(default_factory=OperationalAlertsBlock)
+    operational_alerts_total: int = Field(default=0, ge=0)
+    last_operational_alert_at: datetime | None = None
+    last_operational_alert_kind: MailOperationalAlertKind | None = None
+
+
 class ProgrammeBlock(_Block):
     """Active content programme state."""
 
@@ -314,6 +347,7 @@ class AwarenessState(BaseModel):
     studio: StudioBlock = Field(default_factory=StudioBlock)
     cross_account: CrossAccountBlock = Field(default_factory=CrossAccountBlock)
     governance: GovernanceBlock = Field(default_factory=GovernanceBlock)
+    mail: MailBlock = Field(default_factory=MailBlock)
     content_programmes: ProgrammeBlock = Field(default_factory=ProgrammeBlock)
     hardware_fleet: FleetBlock = Field(default_factory=FleetBlock)
     time_sprint: SprintBlock = Field(default_factory=SprintBlock)
@@ -358,9 +392,12 @@ __all__ = [
     "FleetBlock",
     "GovernanceBlock",
     "HealthBlock",
+    "MailBlock",
+    "MailOperationalAlertKind",
     "MarketingOutreachBlock",
     "MonetizationBlock",
     "MusicBlock",
+    "OperationalAlertsBlock",
     "PaymentEvent",
     "ProgrammeBlock",
     "PublishingBlock",

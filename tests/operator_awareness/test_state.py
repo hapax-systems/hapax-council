@@ -12,8 +12,10 @@ from agents.operator_awareness.state import (
     FleetBlock,
     GovernanceBlock,
     HealthBlock,
+    MailBlock,
     MarketingOutreachBlock,
     MusicBlock,
+    OperationalAlertsBlock,
     ProgrammeBlock,
     PublishingBlock,
     RefusalEvent,
@@ -65,9 +67,9 @@ class TestAwarenessStateDefaults:
         assert isinstance(state.health_system, HealthBlock)
         assert state.refusals_recent == []
 
-    def test_all_13_blocks_have_typed_defaults(self):
+    def test_all_blocks_have_typed_defaults(self):
         state = AwarenessState(timestamp=_now())
-        # Each of the 13 declared categories is a typed sub-block.
+        # Each declared category is a typed sub-block.
         assert isinstance(state.marketing_outreach, MarketingOutreachBlock)
         assert isinstance(state.research_dispatches, ResearchDispatchBlock)
         assert isinstance(state.music_soundcloud, MusicBlock)
@@ -77,10 +79,10 @@ class TestAwarenessStateDefaults:
         assert isinstance(state.stream, StreamBlock)
         assert isinstance(state.cross_account, CrossAccountBlock)
         assert isinstance(state.governance, GovernanceBlock)
+        assert isinstance(state.mail, MailBlock)
         assert isinstance(state.content_programmes, ProgrammeBlock)
         assert isinstance(state.hardware_fleet, FleetBlock)
         assert isinstance(state.time_sprint, SprintBlock)
-        # 13th: refusals_recent is the list-of-events spine.
         assert state.refusals_recent == []
 
     def test_frozen(self):
@@ -110,6 +112,7 @@ class TestPublicFlag:
             StreamBlock,
             CrossAccountBlock,
             GovernanceBlock,
+            MailBlock,
             ProgrammeBlock,
             FleetBlock,
             SprintBlock,
@@ -153,6 +156,30 @@ class TestRefusalEvent:
         except (TypeError, ValueError):
             return
         raise AssertionError("RefusalEvent should be frozen")
+
+
+# ── MailBlock ─────────────────────────────────────────────────────
+
+
+class TestMailBlock:
+    def test_default_operational_alerts_are_empty_private(self):
+        block = MailBlock()
+        assert block.public is False
+        assert block.operational_alerts == OperationalAlertsBlock()
+        assert block.operational_alerts_total == 0
+        assert block.last_operational_alert_at is None
+        assert block.last_operational_alert_kind is None
+
+    def test_operational_alerts_are_typed_counters(self):
+        alerts = OperationalAlertsBlock(tls_expiry=1, dependabot=2, dns=3)
+        block = MailBlock(
+            operational_alerts=alerts,
+            operational_alerts_total=6,
+            last_operational_alert_kind="dependabot",
+        )
+        assert block.operational_alerts.dependabot == 2
+        assert block.operational_alerts_total == 6
+        assert block.last_operational_alert_kind == "dependabot"
 
 
 # ── State serialisation ──────────────────────────────────────────

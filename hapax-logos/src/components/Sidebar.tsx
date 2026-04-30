@@ -21,6 +21,7 @@ import { PrecedentPanel } from "./sidebar/PrecedentPanel";
 import { CbipPanel } from "./sidebar/CbipPanel";
 import { RefusalBriefPanel } from "./sidebar/RefusalBriefPanel";
 import { WorkstreamHygieneView } from "./sidebar/WorkstreamHygieneView";
+import { MailOperationalAlertsView } from "./sidebar/MailOperationalAlertsView";
 import { SidebarStrip } from "./sidebar/SidebarStrip";
 
 interface PanelEntry {
@@ -54,6 +55,7 @@ const panels: PanelEntry[] = [
   // Workstream hygiene — adjacent to refusals; both surface
   // session-state-of-the-substrate signals.
   { id: "workstream-hygiene", component: WorkstreamHygieneView, defaultOrder: 19 },
+  { id: "mail-operational-alerts", component: MailOperationalAlertsView, defaultOrder: 20 },
 ];
 
 export function Sidebar() {

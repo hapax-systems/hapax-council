@@ -3,12 +3,9 @@
 Parses TLS-expiry warnings (Let's Encrypt), GitHub Dependabot alerts,
 and Porkbun DNS / domain-renewal notices into structured operational
 events. Writes one JSONL row per event to
-``/dev/shm/hapax-mail-monitor/operational-events.jsonl``; the awareness
-aggregator consumes the file with a 7d age-out (separate cc-task).
-
-Phase 1 (this PR): per-sender parsers, JSONL event log, counter,
-chronicle hook. Awareness-state extension + waybar surface + orientation
-panel card are follow-up cc-tasks (delta lane).
+``/dev/shm/hapax-mail-monitor/operational-events.jsonl``; the
+operator-awareness aggregator consumes that file with a seven-day
+age-out and projects counters only onto the canonical awareness spine.
 
 Constitutional fit:
 - **Full-automation**: mail is parsed and surfaced as awareness counter
