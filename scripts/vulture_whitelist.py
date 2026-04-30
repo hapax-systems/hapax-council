@@ -140,6 +140,11 @@ from shared.scrim_wcs_claim_posture import (
     ScrimWCSClaimPostureProjection,
     WCSClaimReference,
 )
+from shared.self_grounding_envelope import (
+    SelfPresenceEnvelopeProjection,
+    build_envelope_projection,
+    render_compact_prompt_block,
+)
 from shared.self_presence import (
     Aperture,
     ApertureEvent,
@@ -602,3 +607,11 @@ ApertureRegistryFixtureSet.private_apertures
 ApertureRegistryFixtureSet.aperture_for_destination
 aperture_registry
 load_aperture_registry
+
+# Self-grounding envelope validators are invoked dynamically by Pydantic while
+# projecting runtime state into SelfPresenceEnvelopeProjection. The builder and
+# prompt block renderer are public contracts for downstream bridge governor,
+# prompt block, and emit consumers.
+SelfPresenceEnvelopeProjection._fail_closed_public_speech
+build_envelope_projection
+render_compact_prompt_block
