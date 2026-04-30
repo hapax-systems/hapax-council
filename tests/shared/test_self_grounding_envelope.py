@@ -160,6 +160,8 @@ def test_public_speech_all_gates_pass() -> None:
 
     assert proj.route_decision is RouteDecision.BROADCAST
     assert proj.programme_id == "prog:test-001"
+    assert proj.programme_authorized_at == "2026-04-30T16:00:00Z"
+    assert proj.programme_expires_at == "2026-04-30T17:00:00Z"
     assert AllowedOutcome.PUBLIC_SPEECH_ALLOWED in proj.allowed_outcomes
     assert AllowedOutcome.PRIVATE_ANSWER in proj.allowed_outcomes
     assert not proj.blockers
@@ -179,6 +181,26 @@ def test_missing_programme_blocks_public() -> None:
     assert proj.route_decision is RouteDecision.PRIVATE
     assert AllowedOutcome.PUBLIC_SPEECH_ALLOWED not in proj.allowed_outcomes
     assert "programme_authorization_missing" in proj.blockers
+
+
+def test_fresh_programme_without_timestamp_blocks_public() -> None:
+    """Fresh programme state without a witness timestamp cannot authorize public speech."""
+
+    inputs = EnvelopeInputs(
+        role=_public_role(),
+        aperture=_public_aperture(),
+        programme=ProgrammeSnapshot(
+            programme_id="prog:test-001",
+            authorization_state=ProgrammeAuthorizationState.FRESH,
+        ),
+        audio_safety=_safe_audio(),
+        egress=_witnessed_egress(),
+    )
+    proj = build_envelope_projection(inputs)
+
+    assert proj.route_decision is RouteDecision.PRIVATE
+    assert AllowedOutcome.PUBLIC_SPEECH_ALLOWED not in proj.allowed_outcomes
+    assert "programme_authorization_timestamp_missing" in proj.blockers
 
 
 def test_unsafe_audio_blocks_public() -> None:
@@ -380,6 +402,28 @@ def test_model_validator_rejects_public_speech_without_programme_id() -> None:
             role=_public_role(),
             aperture=_public_aperture(),
             route_decision=RouteDecision.BROADCAST,
+            programme_authorization=ProgrammeAuthorizationState.FRESH,
+            audio_safety=AudioSafetyState.SAFE,
+            livestream_egress_state=LivestreamEgressState.WITNESSED,
+            consent_privacy_ceiling=AuthorityCeiling.EVIDENCE_BOUND,
+            rights_provenance_ceiling=AuthorityCeiling.EVIDENCE_BOUND,
+            public_claim_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+            allowed_outcomes=(AllowedOutcome.PUBLIC_SPEECH_ALLOWED,),
+        )
+
+
+def test_model_validator_rejects_public_speech_without_programme_timestamp() -> None:
+    """Direct projections must also fail closed when authorization timing is absent."""
+
+    with pytest.raises(
+        Exception,
+        match="public_speech_allowed requires programme authorization timestamp",
+    ):
+        SelfPresenceEnvelopeProjection(
+            role=_public_role(),
+            aperture=_public_aperture(),
+            route_decision=RouteDecision.BROADCAST,
+            programme_id="prog:test-001",
             programme_authorization=ProgrammeAuthorizationState.FRESH,
             audio_safety=AudioSafetyState.SAFE,
             livestream_egress_state=LivestreamEgressState.WITNESSED,

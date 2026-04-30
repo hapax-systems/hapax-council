@@ -173,6 +173,8 @@ class SelfPresenceEnvelopeProjection(FrozenModel):
     route_decision: RouteDecision
     programme_id: str | None = None
     programme_authorization: ProgrammeAuthorizationState
+    programme_authorized_at: str | None = None
+    programme_expires_at: str | None = None
     audio_safety: AudioSafetyState
     livestream_egress_state: LivestreamEgressState
 
@@ -202,6 +204,8 @@ class SelfPresenceEnvelopeProjection(FrozenModel):
                 raise ValueError("public_speech_allowed requires fresh programme authorization")
             if not self.programme_id:
                 raise ValueError("public_speech_allowed requires programme_id")
+            if not self.programme_authorized_at:
+                raise ValueError("public_speech_allowed requires programme authorization timestamp")
             if self.audio_safety is not AudioSafetyState.SAFE:
                 raise ValueError("public_speech_allowed requires safe audio")
             if self.livestream_egress_state is not LivestreamEgressState.WITNESSED:
@@ -235,6 +239,10 @@ def _compute_blockers(inputs: EnvelopeInputs) -> tuple[str, ...]:
     if inputs.aperture.requires_programme_authorization:
         if inputs.programme.authorization_state is not ProgrammeAuthorizationState.FRESH:
             blockers.append(f"programme_authorization_{inputs.programme.authorization_state.value}")
+        elif not inputs.programme.programme_id:
+            blockers.append("programme_authorization_programme_id_missing")
+        elif not inputs.programme.authorized_at:
+            blockers.append("programme_authorization_timestamp_missing")
 
     if inputs.aperture.requires_audio_safety:
         if inputs.audio_safety.state is not AudioSafetyState.SAFE:
@@ -337,6 +345,8 @@ def build_envelope_projection(inputs: EnvelopeInputs) -> SelfPresenceEnvelopePro
         route_decision=route,
         programme_id=inputs.programme.programme_id,
         programme_authorization=inputs.programme.authorization_state,
+        programme_authorized_at=inputs.programme.authorized_at,
+        programme_expires_at=inputs.programme.expires_at,
         audio_safety=inputs.audio_safety.state,
         livestream_egress_state=inputs.egress.state,
         source_context_refs=inputs.source_context_refs,
