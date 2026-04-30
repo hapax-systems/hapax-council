@@ -5,35 +5,78 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from agents.hapax_daimonion.vocal_chain import VocalChainCapability
+from shared.audio_expression_surface import FxDeviceWitness
 from shared.voice_tier import VoiceTier
 
 
+def _ready_witness(**overrides: object) -> FxDeviceWitness:
+    data: dict[str, object] = {
+        "evil_pet_midi": True,
+        "evil_pet_sd_pack": True,
+        "evil_pet_firmware_verified": True,
+        "s4_midi": True,
+        "s4_audio": True,
+        "l12_route": True,
+        "evidence_refs": ("fx-device-witness:test",),
+    }
+    data.update(overrides)
+    return FxDeviceWitness.model_validate(data)
+
+
 class TestRouteSwitch:
-    def test_first_tier_triggers_switch(self) -> None:
+    def test_missing_fx_witness_holds_without_route_switch_or_midi(self) -> None:
         switcher = MagicMock()
         midi = MagicMock()
         chain = VocalChainCapability(midi_output=midi, route_switcher=switcher)
         chain.apply_tier(VoiceTier.BROADCAST_GHOST)
-        # BROADCAST_GHOST → EVIL_PET path. Switcher called once with Ryzen sink.
+        switcher.assert_not_called()
+        midi.send_cc.assert_not_called()
+
+    def test_first_tier_triggers_switch_when_fx_witness_passes(self) -> None:
+        switcher = MagicMock()
+        midi = MagicMock()
+        chain = VocalChainCapability(
+            midi_output=midi,
+            route_switcher=switcher,
+            fx_device_witness_provider=_ready_witness,
+        )
+        chain.apply_tier(VoiceTier.BROADCAST_GHOST)
+        # Passing Evil Pet + S-4 witness resolves public voice to the dual-FX path.
         assert switcher.call_count == 1
         assert "alsa_output.pci" in switcher.call_args.args[0]
 
     def test_same_path_skips_switch(self) -> None:
-        """BROADCAST_GHOST → MEMORY both map to EVIL_PET; no re-switch."""
+        """BROADCAST_GHOST → MEMORY both map to witnessed dual FX; no re-switch."""
         switcher = MagicMock()
         midi = MagicMock()
-        chain = VocalChainCapability(midi_output=midi, route_switcher=switcher)
+        chain = VocalChainCapability(
+            midi_output=midi,
+            route_switcher=switcher,
+            fx_device_witness_provider=_ready_witness,
+        )
         chain.apply_tier(VoiceTier.BROADCAST_GHOST)
         chain.apply_tier(VoiceTier.MEMORY)
-        # Both tiers → EVIL_PET; only one switch.
+        # Both tiers → BOTH; only one switch.
         assert switcher.call_count == 1
 
     def test_path_transition_triggers_switch(self) -> None:
-        """UNADORNED (DRY) → BROADCAST_GHOST (EVIL_PET) fires new switch."""
+        """S-4-only witness → Evil-Pet-only witness fires a new switch."""
+        witnesses = iter(
+            (
+                _ready_witness(
+                    evil_pet_midi=False, evil_pet_sd_pack=False, evil_pet_firmware_verified=False
+                ),
+                _ready_witness(s4_midi=False, s4_audio=False, l12_route=False),
+            )
+        )
         switcher = MagicMock()
         midi = MagicMock()
-        chain = VocalChainCapability(midi_output=midi, route_switcher=switcher)
-        chain.apply_tier(VoiceTier.UNADORNED)
+        chain = VocalChainCapability(
+            midi_output=midi,
+            route_switcher=switcher,
+            fx_device_witness_provider=lambda: next(witnesses),
+        )
+        chain.apply_tier(VoiceTier.RADIO)
         chain.apply_tier(VoiceTier.BROADCAST_GHOST)
         assert switcher.call_count == 2
 
@@ -51,7 +94,11 @@ class TestRouteSwitch:
         """Pactl failure logs + continues — doesn't block MIDI."""
         switcher = MagicMock(side_effect=RuntimeError("pactl missing"))
         midi = MagicMock()
-        chain = VocalChainCapability(midi_output=midi, route_switcher=switcher)
+        chain = VocalChainCapability(
+            midi_output=midi,
+            route_switcher=switcher,
+            fx_device_witness_provider=_ready_witness,
+        )
         # Must not raise.
         chain.apply_tier(VoiceTier.BROADCAST_GHOST)
         # Current path stays None so next tier re-attempts.
@@ -66,7 +113,7 @@ class TestRouteSwitch:
         switcher = MagicMock()
         midi = MagicMock()
         chain = VocalChainCapability(midi_output=midi, route_switcher=switcher)
-        # UNADORNED normally → DRY path. Override forces EVIL_PET.
+        # UNADORNED normally → safe wet baseline. Override still wins.
         chain.apply_tier(VoiceTier.UNADORNED, path_override=VoicePath.EVIL_PET)
         assert switcher.call_count == 1
         # Sink is the Evil Pet path's sink, not the DRY path's.

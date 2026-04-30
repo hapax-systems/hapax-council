@@ -128,7 +128,7 @@ class TestVocalChainApplyTier:
 
         midi = MagicMock()
         chain = VocalChainCapability(midi_output=midi)
-        chain.apply_tier(VoiceTier.BROADCAST_GHOST)
+        chain.apply_tier(VoiceTier.BROADCAST_GHOST, route_audio=False)
         # Each dim in the tier vector triggers a _send_dimension_cc call
         # which fires midi.send_cc; expect at least 9 calls.
         assert midi.send_cc.call_count >= 9
@@ -154,7 +154,7 @@ class TestVocalChainApplyTier:
         )
         chain.activate_dimension("vocal_chain.intensity", imp, 0.9)
         assert chain.get_dimension_level("vocal_chain.intensity") == pytest.approx(0.9)
-        chain.apply_tier(VoiceTier.UNADORNED)
+        chain.apply_tier(VoiceTier.UNADORNED, route_audio=False)
         # UNADORNED zeros every dim
         assert chain.get_dimension_level("vocal_chain.intensity") == 0.0
 
