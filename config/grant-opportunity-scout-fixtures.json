@@ -1,0 +1,559 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "grant_opportunity_scout_attestation_queue",
+  "schema_ref": "schemas/grant-opportunity-scout.schema.json",
+  "source_refs": [
+    "cc-task:grant-opportunity-scout-attestation-queue",
+    "plan:2026-04-29-autonomous-grounding-revenue-doubling-plan",
+    "config:conversion-target-readiness-threshold-matrix",
+    "cc-task:application-obligation-refusal-gate"
+  ],
+  "scout_sources": [
+    {
+      "source_id": "grants-gov",
+      "name": "Grants.gov search feed",
+      "url": "https://www.grants.gov/search-grants",
+      "cadence": "weekly",
+      "automation_mode": "site_watch",
+      "requires_manual_opportunity_chasing": false,
+      "source_refs": ["source:grant-search:grants-gov"]
+    },
+    {
+      "source_id": "openai-news",
+      "name": "OpenAI announcements",
+      "url": "https://openai.com/news/",
+      "cadence": "daily",
+      "automation_mode": "rss",
+      "requires_manual_opportunity_chasing": false,
+      "source_refs": ["source:grant-search:openai-news"]
+    },
+    {
+      "source_id": "nlnet-funding",
+      "name": "NLnet funding calls",
+      "url": "https://nlnet.nl/foundation/calls.html",
+      "cadence": "monthly",
+      "automation_mode": "site_watch",
+      "requires_manual_opportunity_chasing": false,
+      "source_refs": ["source:grant-search:nlnet"]
+    },
+    {
+      "source_id": "residency-index",
+      "name": "Residency and fellowship index",
+      "url": "https://www.transartists.org/en/deadlines",
+      "cadence": "weekly",
+      "automation_mode": "site_watch",
+      "requires_manual_opportunity_chasing": false,
+      "source_refs": ["source:grant-search:residency-index"]
+    }
+  ],
+  "fixtures": [
+    {
+      "fixture_id": "openai_fast_path_referenced_not_overwritten",
+      "opportunity": {
+        "opportunity_id": "openai-safety-fellowship-fast-packet",
+        "title": "OpenAI-style safety fellowship fast packet",
+        "kind": "fellowship",
+        "source_id": "openai-news",
+        "source_url": "https://openai.com/news/",
+        "discovered_at": "2026-04-30T05:05:00Z",
+        "deadline": "2026-05-03",
+        "eligibility": "Single-operator grounding research packet with explicit operator attestation.",
+        "amount_range": "unknown",
+        "obligations": [
+          {
+            "class_id": "legal_attestation",
+            "recurrence": "one_time",
+            "automation_fit": "operator_attestation",
+            "summary": "Operator explicitly attests identity and truth of submitted claims."
+          },
+          {
+            "class_id": "bootstrap_setup",
+            "recurrence": "one_time",
+            "automation_fit": "automated",
+            "summary": "One-time portal/account setup may be required."
+          }
+        ],
+        "required_attachments": [
+          {
+            "attachment_id": "n1-methodology-summary",
+            "description": "Private n=1 methodology summary prepared for application review.",
+            "evidence_refs": ["cc-task:n1-methodology-dossier"],
+            "operator_attestation_required": true
+          },
+          {
+            "attachment_id": "grounding-evidence-packet",
+            "description": "Private evidence packet with provenance and privacy labels.",
+            "evidence_refs": [
+              "config:conversion-target-readiness-threshold-matrix",
+              "cc-task:research-corpus-anonymization-rights-ledger"
+            ],
+            "operator_attestation_required": true
+          }
+        ],
+        "attestation": {
+          "required": true,
+          "explicit_operator_act_only": true,
+          "operator_action": "explicit_legal_attestation",
+          "attestation_ref": null,
+          "operator_visible_reason": "Submission cannot occur until the operator explicitly attests the packet."
+        },
+        "automation_feasibility": "operator_attestation",
+        "evidence_packet": {
+          "packet_id": "grant-evidence:openai-safety-fellowship-fast-packet",
+          "evidence_refs": [
+            "cc-task:openai-safety-fellowship-fast-packet",
+            "cc-task:n1-methodology-dossier",
+            "config:conversion-target-readiness-threshold-matrix"
+          ],
+          "n1_methodology_refs": ["cc-task:n1-methodology-dossier"],
+          "public_event_refs": [],
+          "research_output_refs": ["plan:2026-04-29-autonomous-grounding-revenue-doubling-plan"],
+          "corpus_ledger_refs": ["cc-task:research-corpus-anonymization-rights-ledger"],
+          "prior_application_outcome_refs": [],
+          "privacy_labeled": true,
+          "provenance_labeled": true,
+          "public_release_allowed": false,
+          "monetization_allowed": false
+        },
+        "lifecycle_state": "operator_attestation_required",
+        "urgent_fast_path_task_id": "openai-safety-fellowship-fast-packet",
+        "target_family": "grants_fellowships",
+        "readiness_state_ceiling": "private-evidence",
+        "public_release_allowed": false,
+        "monetization_allowed": false,
+        "institutional_public_claim_allowed": false
+      },
+      "expected_queue_state": "operator_attestation_required",
+      "expected_operator_actions": ["explicit_legal_attestation", "one_time_bootstrap"],
+      "expected_fast_path": true
+    },
+    {
+      "fixture_id": "compute_credit_private_evidence",
+      "opportunity": {
+        "opportunity_id": "compute-credit-bootstrap",
+        "title": "Compute credit with one-time setup",
+        "kind": "compute_credit",
+        "source_id": "grants-gov",
+        "source_url": "https://www.grants.gov/search-grants",
+        "discovered_at": "2026-04-30T05:05:00Z",
+        "deadline": null,
+        "eligibility": "Automation infrastructure evidence can support a private compute-credit packet.",
+        "amount_range": "credits-only",
+        "obligations": [
+          {
+            "class_id": "bootstrap_setup",
+            "recurrence": "one_time",
+            "automation_fit": "automated",
+            "summary": "One-time account and credential setup only."
+          }
+        ],
+        "required_attachments": [
+          {
+            "attachment_id": "infrastructure-evidence",
+            "description": "Private infrastructure and cost evidence packet.",
+            "evidence_refs": ["plan:2026-04-29-autonomous-grounding-revenue-doubling-plan"],
+            "operator_attestation_required": false
+          }
+        ],
+        "attestation": {
+          "required": false,
+          "explicit_operator_act_only": true,
+          "operator_action": "none",
+          "attestation_ref": null,
+          "operator_visible_reason": "No legal attestation required before private evidence preparation."
+        },
+        "automation_feasibility": "automated",
+        "evidence_packet": {
+          "packet_id": "grant-evidence:compute-credit-bootstrap",
+          "evidence_refs": ["plan:2026-04-29-autonomous-grounding-revenue-doubling-plan"],
+          "n1_methodology_refs": [],
+          "public_event_refs": [],
+          "research_output_refs": ["plan:2026-04-29-autonomous-grounding-revenue-doubling-plan"],
+          "corpus_ledger_refs": [],
+          "prior_application_outcome_refs": [],
+          "privacy_labeled": true,
+          "provenance_labeled": true,
+          "public_release_allowed": false,
+          "monetization_allowed": false
+        },
+        "lifecycle_state": "private_evidence",
+        "target_family": "grants_fellowships",
+        "readiness_state_ceiling": "private-evidence",
+        "public_release_allowed": false,
+        "monetization_allowed": false,
+        "institutional_public_claim_allowed": false
+      },
+      "expected_queue_state": "private_evidence",
+      "expected_operator_actions": ["one_time_bootstrap"]
+    },
+    {
+      "fixture_id": "residency_demo_attestation_guarded",
+      "opportunity": {
+        "opportunity_id": "residency-demo-review",
+        "title": "Residency packet with existing demo evidence",
+        "kind": "residency",
+        "source_id": "residency-index",
+        "source_url": "https://www.transartists.org/en/deadlines",
+        "discovered_at": "2026-04-30T05:05:00Z",
+        "deadline": "2026-06-01",
+        "eligibility": "Existing public-safe demo evidence may be reviewed after gates pass.",
+        "amount_range": "residency-support",
+        "obligations": [
+          {
+            "class_id": "public_demo",
+            "recurrence": "one_time",
+            "automation_fit": "automated",
+            "summary": "Attach a generated demo reel only if public readiness gates pass."
+          },
+          {
+            "class_id": "legal_attestation",
+            "recurrence": "one_time",
+            "automation_fit": "operator_attestation",
+            "summary": "Operator attests application claims."
+          }
+        ],
+        "required_attachments": [
+          {
+            "attachment_id": "demo-readiness-evidence",
+            "description": "Demo evidence remains private until public-event and readiness gates pass.",
+            "evidence_refs": [
+              "config:conversion-target-readiness-threshold-matrix",
+              "cc-task:replay-demo-residency-kit"
+            ],
+            "operator_attestation_required": true
+          }
+        ],
+        "attestation": {
+          "required": true,
+          "explicit_operator_act_only": true,
+          "operator_action": "explicit_legal_attestation",
+          "attestation_ref": null,
+          "operator_visible_reason": "Residency applications need explicit operator attestation."
+        },
+        "automation_feasibility": "operator_attestation",
+        "evidence_packet": {
+          "packet_id": "grant-evidence:residency-demo-review",
+          "evidence_refs": [
+            "config:conversion-target-readiness-threshold-matrix",
+            "cc-task:n1-methodology-dossier"
+          ],
+          "n1_methodology_refs": ["cc-task:n1-methodology-dossier"],
+          "public_event_refs": ["rvpe:demo-candidate-private"],
+          "research_output_refs": [],
+          "corpus_ledger_refs": ["cc-task:research-corpus-anonymization-rights-ledger"],
+          "prior_application_outcome_refs": [],
+          "privacy_labeled": true,
+          "provenance_labeled": true,
+          "public_release_allowed": false,
+          "monetization_allowed": false
+        },
+        "lifecycle_state": "operator_attestation_required",
+        "target_family": "grants_fellowships",
+        "readiness_state_ceiling": "private-evidence",
+        "public_release_allowed": false,
+        "monetization_allowed": false,
+        "institutional_public_claim_allowed": false
+      },
+      "expected_queue_state": "operator_attestation_required",
+      "expected_operator_actions": ["explicit_legal_attestation", "guarded_public_demo_review"]
+    },
+    {
+      "fixture_id": "fake_affiliation_refused",
+      "opportunity": {
+        "opportunity_id": "institution-only-program",
+        "title": "Institution-only program requiring false affiliation",
+        "kind": "grant",
+        "source_id": "grants-gov",
+        "source_url": "https://www.grants.gov/search-grants",
+        "discovered_at": "2026-04-30T05:05:00Z",
+        "deadline": null,
+        "eligibility": "Requires institutional affiliation the operator does not have.",
+        "amount_range": "unknown",
+        "requires_fake_affiliation": true,
+        "obligations": [
+          {
+            "class_id": "institution_requirement",
+            "recurrence": "one_time",
+            "automation_fit": "operator_attestation",
+            "summary": "Applicant must claim current institutional affiliation."
+          }
+        ],
+        "required_attachments": [
+          {
+            "attachment_id": "institution-letter",
+            "description": "Institutional affiliation letter would be required.",
+            "evidence_refs": [],
+            "operator_attestation_required": true
+          }
+        ],
+        "attestation": {
+          "required": false,
+          "explicit_operator_act_only": true,
+          "operator_action": "none",
+          "attestation_ref": null,
+          "operator_visible_reason": "False affiliation is refused before attestation."
+        },
+        "automation_feasibility": "operator_attestation",
+        "evidence_packet": {
+          "packet_id": "grant-evidence:institution-only-program",
+          "evidence_refs": ["refusal:fake-affiliation"],
+          "privacy_labeled": true,
+          "provenance_labeled": true,
+          "public_release_allowed": false,
+          "monetization_allowed": false
+        },
+        "lifecycle_state": "refused"
+      },
+      "expected_queue_state": "refused",
+      "expected_refusal_reasons": ["fake_affiliation"],
+      "expected_operator_actions": ["institution_requirement_review"]
+    },
+    {
+      "fixture_id": "recurring_reporting_refused",
+      "opportunity": {
+        "opportunity_id": "monthly-impact-reporting-grant",
+        "title": "Grant requiring recurring manual impact reports",
+        "kind": "grant",
+        "source_id": "grants-gov",
+        "source_url": "https://www.grants.gov/search-grants",
+        "discovered_at": "2026-04-30T05:05:00Z",
+        "deadline": null,
+        "eligibility": "Operator would need to submit monthly manual reports.",
+        "amount_range": "unknown",
+        "obligations": [
+          {
+            "class_id": "reporting",
+            "recurrence": "recurring",
+            "automation_fit": "manual",
+            "summary": "Monthly narrative reports must be manually prepared."
+          }
+        ],
+        "required_attachments": [
+          {
+            "attachment_id": "monthly-report-plan",
+            "description": "Recurring manual reporting plan.",
+            "evidence_refs": [],
+            "operator_attestation_required": false
+          }
+        ],
+        "attestation": {
+          "required": false,
+          "explicit_operator_act_only": true,
+          "operator_action": "none",
+          "attestation_ref": null,
+          "operator_visible_reason": "Recurring manual reporting is refused."
+        },
+        "automation_feasibility": "manual",
+        "evidence_packet": {
+          "packet_id": "grant-evidence:monthly-impact-reporting-grant",
+          "evidence_refs": ["refusal:recurring-reports"],
+          "privacy_labeled": true,
+          "provenance_labeled": true,
+          "public_release_allowed": false,
+          "monetization_allowed": false
+        },
+        "lifecycle_state": "refused"
+      },
+      "expected_queue_state": "refused",
+      "expected_refusal_reasons": ["recurring_reports"]
+    },
+    {
+      "fixture_id": "private_data_exposure_refused",
+      "opportunity": {
+        "opportunity_id": "raw-vault-data-program",
+        "title": "Program requiring raw private vault or sensor exports",
+        "kind": "fellowship",
+        "source_id": "nlnet-funding",
+        "source_url": "https://nlnet.nl/foundation/calls.html",
+        "discovered_at": "2026-04-30T05:05:00Z",
+        "deadline": null,
+        "eligibility": "Reviewer demands raw private data access.",
+        "amount_range": "unknown",
+        "obligations": [
+          {
+            "class_id": "private_data_exposure",
+            "recurrence": "one_time",
+            "automation_fit": "manual",
+            "summary": "Reviewer requires raw private data exposure."
+          }
+        ],
+        "required_attachments": [
+          {
+            "attachment_id": "raw-data-export",
+            "description": "Raw private data export.",
+            "evidence_refs": [],
+            "operator_attestation_required": false
+          }
+        ],
+        "attestation": {
+          "required": false,
+          "explicit_operator_act_only": true,
+          "operator_action": "none",
+          "attestation_ref": null,
+          "operator_visible_reason": "Private data exposure is refused."
+        },
+        "automation_feasibility": "manual",
+        "evidence_packet": {
+          "packet_id": "grant-evidence:raw-vault-data-program",
+          "evidence_refs": ["refusal:private-data-exposure"],
+          "privacy_labeled": true,
+          "provenance_labeled": true,
+          "public_release_allowed": false,
+          "monetization_allowed": false
+        },
+        "lifecycle_state": "refused"
+      },
+      "expected_queue_state": "refused",
+      "expected_refusal_reasons": ["private_data_exposure"]
+    },
+    {
+      "fixture_id": "custom_performance_refused",
+      "opportunity": {
+        "opportunity_id": "bespoke-demo-commission",
+        "title": "Residency asking for custom live performance on request",
+        "kind": "residency",
+        "source_id": "residency-index",
+        "source_url": "https://www.transartists.org/en/deadlines",
+        "discovered_at": "2026-04-30T05:05:00Z",
+        "deadline": null,
+        "eligibility": "Applicant must create custom performance deliverables.",
+        "amount_range": "unknown",
+        "obligations": [
+          {
+            "class_id": "custom_deliverable",
+            "recurrence": "unknown",
+            "automation_fit": "manual",
+            "summary": "Applicant must create a bespoke performance."
+          }
+        ],
+        "required_attachments": [
+          {
+            "attachment_id": "custom-performance-plan",
+            "description": "Manual custom performance plan.",
+            "evidence_refs": [],
+            "operator_attestation_required": false
+          }
+        ],
+        "attestation": {
+          "required": false,
+          "explicit_operator_act_only": true,
+          "operator_action": "none",
+          "attestation_ref": null,
+          "operator_visible_reason": "Custom performance labor is refused."
+        },
+        "automation_feasibility": "manual",
+        "evidence_packet": {
+          "packet_id": "grant-evidence:bespoke-demo-commission",
+          "evidence_refs": ["refusal:custom-performance"],
+          "privacy_labeled": true,
+          "provenance_labeled": true,
+          "public_release_allowed": false,
+          "monetization_allowed": false
+        },
+        "lifecycle_state": "refused"
+      },
+      "expected_queue_state": "refused",
+      "expected_refusal_reasons": ["custom_performance"]
+    },
+    {
+      "fixture_id": "community_service_refused",
+      "opportunity": {
+        "opportunity_id": "community-support-program",
+        "title": "Program requiring community office hours",
+        "kind": "institutional_support",
+        "source_id": "nlnet-funding",
+        "source_url": "https://nlnet.nl/foundation/calls.html",
+        "discovered_at": "2026-04-30T05:05:00Z",
+        "deadline": null,
+        "eligibility": "Award requires recurring office hours and community support.",
+        "amount_range": "unknown",
+        "obligations": [
+          {
+            "class_id": "community_client_service",
+            "recurrence": "recurring",
+            "automation_fit": "manual",
+            "summary": "Operator must provide recurring office hours."
+          }
+        ],
+        "required_attachments": [
+          {
+            "attachment_id": "community-service-plan",
+            "description": "Recurring community service plan.",
+            "evidence_refs": [],
+            "operator_attestation_required": false
+          }
+        ],
+        "attestation": {
+          "required": false,
+          "explicit_operator_act_only": true,
+          "operator_action": "none",
+          "attestation_ref": null,
+          "operator_visible_reason": "Community/client service obligations are refused."
+        },
+        "automation_feasibility": "manual",
+        "evidence_packet": {
+          "packet_id": "grant-evidence:community-support-program",
+          "evidence_refs": ["refusal:community-client-service"],
+          "privacy_labeled": true,
+          "provenance_labeled": true,
+          "public_release_allowed": false,
+          "monetization_allowed": false
+        },
+        "lifecycle_state": "refused"
+      },
+      "expected_queue_state": "refused",
+      "expected_refusal_reasons": ["customer_service_obligation"]
+    },
+    {
+      "fixture_id": "manual_opportunity_chasing_refused",
+      "opportunity": {
+        "opportunity_id": "manual-portal-hunt",
+        "title": "Manual portal hunt",
+        "kind": "grant",
+        "source_id": "grants-gov",
+        "source_url": "https://www.grants.gov/search-grants",
+        "discovered_at": "2026-04-30T05:05:00Z",
+        "deadline": null,
+        "eligibility": "Would require repeated manual portal searches.",
+        "amount_range": "unknown",
+        "requires_manual_opportunity_chasing": true,
+        "obligations": [
+          {
+            "class_id": "bootstrap_setup",
+            "recurrence": "one_time",
+            "automation_fit": "manual",
+            "summary": "Operator must repeatedly search portals and copy opportunities."
+          }
+        ],
+        "required_attachments": [
+          {
+            "attachment_id": "manual-search-log",
+            "description": "Manual opportunity search log.",
+            "evidence_refs": [],
+            "operator_attestation_required": false
+          }
+        ],
+        "attestation": {
+          "required": false,
+          "explicit_operator_act_only": true,
+          "operator_action": "none",
+          "attestation_ref": null,
+          "operator_visible_reason": "Manual opportunity chasing is refused."
+        },
+        "automation_feasibility": "manual",
+        "evidence_packet": {
+          "packet_id": "grant-evidence:manual-portal-hunt",
+          "evidence_refs": ["refusal:manual-opportunity-chasing"],
+          "privacy_labeled": true,
+          "provenance_labeled": true,
+          "public_release_allowed": false,
+          "monetization_allowed": false
+        },
+        "lifecycle_state": "refused"
+      },
+      "expected_queue_state": "refused",
+      "expected_refusal_reasons": ["manual_opportunity_chasing"],
+      "expected_operator_actions": ["one_time_bootstrap"]
+    }
+  ]
+}

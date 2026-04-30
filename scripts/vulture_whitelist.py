@@ -431,3 +431,9 @@ TemporalSpanRegistryFixtureSet.sidecars_by_kind
 # lands the fail-closed policy and fixture packet before those call sites.
 evaluate_application_obligation
 load_application_obligation_fixtures
+
+# Grant opportunity scout validators are invoked dynamically by Pydantic while
+# validating the private evidence / attestation queue fixture contract.
+OperatorAttestationRequirement._operator_action_matches_requiredness
+GrantOpportunityRecord._validate_private_evidence_contract
+GrantOpportunityFixtureSet._validate_source_coverage
