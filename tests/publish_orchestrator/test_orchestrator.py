@@ -38,6 +38,7 @@ def _make_orchestrator(state_root: Path, *, surface_registry: dict[str, str]) ->
     return Orchestrator(
         state_root=state_root,
         surface_registry=surface_registry,
+        public_event_path=state_root / "public-events.jsonl",
         registry=CollectorRegistry(),
     )
 
@@ -93,6 +94,19 @@ class TestSingleSurface:
         assert not (tmp_path / "publish/inbox/x.json").exists()
         assert (tmp_path / "publish/published/x.json").exists()
 
+        events = [
+            json.loads(line) for line in (tmp_path / "public-events.jsonl").read_text().splitlines()
+        ]
+        assert [event["event_type"] for event in events] == [
+            "publication.artifact",
+            "publication.artifact",
+            "publication.artifact",
+        ]
+        assert {event["source"]["substrate_id"] for event in events} == {"publication_artifact"}
+        surface_event = next(event for event in events if event["event_id"].endswith(":fake:ok"))
+        assert surface_event["surface_policy"]["dry_run_reason"] == ("surface_policy_denied:fake")
+        assert "Body." not in json.dumps(surface_event)
+
     def test_publisher_raises_logs_error(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
         fake_module.publish_artifact = mock.Mock(side_effect=RuntimeError("send failure"))
@@ -147,6 +161,14 @@ class TestSingleSurface:
         orch.run_once()
         assert not (tmp_path / "publish/inbox/z.json").exists()
         assert (tmp_path / "publish/published/z.json").exists()
+
+        events = [
+            json.loads(line) for line in (tmp_path / "public-events.jsonl").read_text().splitlines()
+        ]
+        event_ids = [event["event_id"] for event in events]
+        assert any(event_id.endswith(":fake:deferred") for event_id in event_ids)
+        assert any(event_id.endswith(":fake:ok") for event_id in event_ids)
+        assert len(event_ids) == len(set(event_ids))
 
     def test_changed_artifact_republishes_same_slug(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
