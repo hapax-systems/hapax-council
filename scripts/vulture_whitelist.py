@@ -8,6 +8,13 @@ vulture cannot see. Do not use this as a baseline for ordinary dead code.
 
 from agents.visual_pool.repository import VisualPoolSidecar
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
+from shared.aperture_registry import (
+    ApertureRegistryFixtureSet,
+    ApertureRegistryRecord,
+    TemporalSpanPolicy,
+    aperture_registry,
+    load_aperture_registry,
+)
 from shared.audio_topology_inspector import check_l12_forward_invariant
 from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
 from shared.capability_classification_inventory import (
@@ -578,3 +585,20 @@ SelfPresenceEnvelope._fail_closed_public_speech
 SelfPresenceFixtureSet._covers_required_contract
 load_self_presence_fixture_set
 fixture_set
+
+# Aperture registry validators are invoked dynamically by Pydantic while
+# validating the system-wide aperture registry fixture contract. The loader
+# and cached registry helper are public contracts for downstream route/claim
+# envelope, bridge governor, and prompt block consumers.
+TemporalSpanPolicy._max_gte_default
+ApertureRegistryRecord._fail_closed_public
+ApertureRegistryFixtureSet._validate_registry_contract
+ApertureRegistryFixtureSet.by_id
+ApertureRegistryFixtureSet.require
+ApertureRegistryFixtureSet.records_for_kind
+ApertureRegistryFixtureSet.records_for_exposure
+ApertureRegistryFixtureSet.public_apertures
+ApertureRegistryFixtureSet.private_apertures
+ApertureRegistryFixtureSet.aperture_for_destination
+aperture_registry
+load_aperture_registry

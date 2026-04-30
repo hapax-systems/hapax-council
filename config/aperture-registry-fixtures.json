@@ -1,0 +1,316 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "hapax-aperture-registry-v1",
+  "generated_from": [
+    "Documents/Personal/20-projects/hapax-research/specs/2026-04-30-hapax-unified-self-grounding-implementation-map.md",
+    "Documents/Personal/20-projects/hapax-research/specs/2026-04-30-hapax-unified-self-grounding-spine.md"
+  ],
+  "declared_at": "2026-04-30T16:10:00Z",
+  "fail_closed_policy": {
+    "unregistered_aperture_is_private": true,
+    "unregistered_aperture_blocks_public": true,
+    "missing_aperture_allows_broadcast": false
+  },
+  "records": [
+    {
+      "aperture_id": "aperture:private-assistant",
+      "kind": "private_assistant",
+      "family": "private_assistant",
+      "perspective": "Operator-addressed private answer. Blue Yeti wake, sidechat, default voice.",
+      "exposure_mode": "private",
+      "public_private_mode": "private",
+      "privacy_ceiling": "private_only",
+      "rights_ceiling": "private_only",
+      "public_claim_ceiling": "no_claim",
+      "witness_kinds": ["operator-private-chat", "private-playback"],
+      "temporal_span_policy": {
+        "default_ttl_s": 300,
+        "max_ttl_s": 3600,
+        "freshness_required": false
+      },
+      "egress_policy": {
+        "requires_programme_authorization": false,
+        "requires_audio_safety": false,
+        "requires_egress_witness": false,
+        "requires_public_event_ref": false
+      },
+      "destination_mapping": {
+        "destination_channel": "private",
+        "voice_output_destination": "hapax-private"
+      },
+      "surface_refs": ["sidechat:operator-private"],
+      "evidence_classes": ["private-context", "operator-addressed"],
+      "notes": "Default fail-closed destination for all voice output."
+    },
+    {
+      "aperture_id": "aperture:public-broadcast-voice",
+      "kind": "public_broadcast_voice",
+      "family": "public_broadcast",
+      "perspective": "Narration TTS routed to hapax-voice-fx-capture for livestream broadcast.",
+      "exposure_mode": "public_candidate",
+      "public_private_mode": "public_candidate",
+      "privacy_ceiling": "public_gate_required",
+      "rights_ceiling": "public_gate_required",
+      "public_claim_ceiling": "public_gate_required",
+      "witness_kinds": ["broadcast-audio-safe", "programme-authorization", "egress-frame"],
+      "temporal_span_policy": {
+        "default_ttl_s": 30,
+        "max_ttl_s": 120,
+        "freshness_required": true
+      },
+      "egress_policy": {
+        "requires_programme_authorization": true,
+        "requires_audio_safety": true,
+        "requires_egress_witness": true,
+        "requires_public_event_ref": false
+      },
+      "destination_mapping": {
+        "destination_channel": "livestream",
+        "voice_output_destination": "hapax-voice-fx-capture"
+      },
+      "surface_refs": ["route:semantic-broadcast", "surface:obs-broadcast"],
+      "evidence_classes": ["programme-authorization", "audio-safe-state", "broadcast-route"],
+      "notes": "Public broadcast voice. Requires bridge governor authorization before use."
+    },
+    {
+      "aperture_id": "aperture:private-sidechat",
+      "kind": "sidechat",
+      "family": "sidechat",
+      "perspective": "KDE Connect, ntfy, text sidechat. Explicitly non-public.",
+      "exposure_mode": "private",
+      "public_private_mode": "private",
+      "privacy_ceiling": "private_only",
+      "rights_ceiling": "private_only",
+      "public_claim_ceiling": "no_claim",
+      "witness_kinds": ["operator-sidechat", "ntfy-delivery"],
+      "temporal_span_policy": {
+        "default_ttl_s": 600,
+        "max_ttl_s": 3600,
+        "freshness_required": false
+      },
+      "egress_policy": {
+        "requires_programme_authorization": false,
+        "requires_audio_safety": false,
+        "requires_egress_witness": false,
+        "requires_public_event_ref": false
+      },
+      "destination_mapping": {
+        "destination_channel": "private",
+        "voice_output_destination": null
+      },
+      "surface_refs": ["sidechat:kde-connect", "sidechat:ntfy"],
+      "evidence_classes": ["private-intent", "sidechat-delivery"],
+      "notes": "Non-voice sidechat. Text-only delivery via ntfy or KDE Connect."
+    },
+    {
+      "aperture_id": "aperture:composed-livestream-frame",
+      "kind": "composed_livestream_frame",
+      "family": "composed_frame",
+      "perspective": "HOMAGE compositor output routed to OBS via v4l2loopback.",
+      "exposure_mode": "public_candidate",
+      "public_private_mode": "public_candidate",
+      "privacy_ceiling": "public_gate_required",
+      "rights_ceiling": "public_gate_required",
+      "public_claim_ceiling": "public_gate_required",
+      "witness_kinds": ["compositor-frame-nonblank", "hls-frame", "obs-v4l2"],
+      "temporal_span_policy": {
+        "default_ttl_s": 5,
+        "max_ttl_s": 30,
+        "freshness_required": true
+      },
+      "egress_policy": {
+        "requires_programme_authorization": true,
+        "requires_audio_safety": false,
+        "requires_egress_witness": true,
+        "requires_public_event_ref": false
+      },
+      "destination_mapping": {
+        "destination_channel": "livestream",
+        "voice_output_destination": null
+      },
+      "surface_refs": ["surface:obs-v4l2", "surface:hls"],
+      "evidence_classes": ["composed-frame", "egress-accepted", "temporal-span"],
+      "notes": "Visual compositor output. Distinct from raw cameras and archive replay."
+    },
+    {
+      "aperture_id": "aperture:raw-studio-camera",
+      "kind": "raw_studio_camera",
+      "family": "raw_camera",
+      "perspective": "Webcam, IR, PerceptualField. Never directly public.",
+      "exposure_mode": "private",
+      "public_private_mode": "private",
+      "privacy_ceiling": "private_only",
+      "rights_ceiling": "private_only",
+      "public_claim_ceiling": "no_claim",
+      "witness_kinds": ["camera-frame", "perception-backend"],
+      "temporal_span_policy": {
+        "default_ttl_s": 10,
+        "max_ttl_s": 60,
+        "freshness_required": true
+      },
+      "egress_policy": {
+        "requires_programme_authorization": false,
+        "requires_audio_safety": false,
+        "requires_egress_witness": false,
+        "requires_public_event_ref": false
+      },
+      "destination_mapping": {
+        "destination_channel": "private",
+        "voice_output_destination": null
+      },
+      "surface_refs": ["camera:webcam", "camera:ir", "camera:perceptual-field"],
+      "evidence_classes": ["raw-camera-frame", "perception-state"],
+      "notes": "Raw camera feeds. Private input only. Composed frame is the public output path."
+    },
+    {
+      "aperture_id": "aperture:archive-window",
+      "kind": "archive_window",
+      "family": "archive",
+      "perspective": "File replays, clipboard, vault. Last-observed only.",
+      "exposure_mode": "archive_only",
+      "public_private_mode": "archive",
+      "privacy_ceiling": "last_observed_only",
+      "rights_ceiling": "last_observed_only",
+      "public_claim_ceiling": "last_observed_only",
+      "witness_kinds": ["archive-segment", "vod-replay"],
+      "temporal_span_policy": {
+        "default_ttl_s": 86400,
+        "max_ttl_s": 604800,
+        "freshness_required": false
+      },
+      "egress_policy": {
+        "requires_programme_authorization": false,
+        "requires_audio_safety": false,
+        "requires_egress_witness": true,
+        "requires_public_event_ref": false
+      },
+      "destination_mapping": {
+        "destination_channel": "private",
+        "voice_output_destination": null
+      },
+      "surface_refs": ["archive:vod-segment", "archive:vault"],
+      "evidence_classes": ["archive-segment", "temporal-span"],
+      "notes": "Archive replay. Public claims require explicit age/window language."
+    },
+    {
+      "aperture_id": "aperture:caption-surface",
+      "kind": "caption_surface",
+      "family": "caption",
+      "perspective": "OBS caption overlay, live transcript.",
+      "exposure_mode": "public_candidate",
+      "public_private_mode": "public_candidate",
+      "privacy_ceiling": "public_gate_required",
+      "rights_ceiling": "public_gate_required",
+      "public_claim_ceiling": "evidence_bound",
+      "witness_kinds": ["caption-overlay", "live-transcript"],
+      "temporal_span_policy": {
+        "default_ttl_s": 10,
+        "max_ttl_s": 60,
+        "freshness_required": true
+      },
+      "egress_policy": {
+        "requires_programme_authorization": true,
+        "requires_audio_safety": false,
+        "requires_egress_witness": true,
+        "requires_public_event_ref": false
+      },
+      "destination_mapping": {
+        "destination_channel": "livestream",
+        "voice_output_destination": null
+      },
+      "surface_refs": ["surface:obs-caption-overlay"],
+      "evidence_classes": ["caption-text", "egress-accepted"],
+      "notes": "Caption surface on the livestream. Text-only, no audio."
+    },
+    {
+      "aperture_id": "aperture:public-event",
+      "kind": "public_event",
+      "family": "public_event",
+      "perspective": "Bluesky posts, YouTube metadata, Zenodo deposits.",
+      "exposure_mode": "public_candidate",
+      "public_private_mode": "public_candidate",
+      "privacy_ceiling": "public_gate_required",
+      "rights_ceiling": "public_gate_required",
+      "public_claim_ceiling": "public_gate_required",
+      "witness_kinds": ["public-event-delivery", "platform-confirmation"],
+      "temporal_span_policy": {
+        "default_ttl_s": 3600,
+        "max_ttl_s": 86400,
+        "freshness_required": false
+      },
+      "egress_policy": {
+        "requires_programme_authorization": true,
+        "requires_audio_safety": false,
+        "requires_egress_witness": true,
+        "requires_public_event_ref": true
+      },
+      "destination_mapping": {
+        "destination_channel": "livestream",
+        "voice_output_destination": null
+      },
+      "surface_refs": ["surface:bluesky", "surface:youtube", "surface:zenodo"],
+      "evidence_classes": ["public-event-ref", "platform-delivery-receipt"],
+      "notes": "Publication adapters. Each post is a public event with delivery receipt."
+    },
+    {
+      "aperture_id": "aperture:wcs-surface",
+      "kind": "wcs_row",
+      "family": "wcs_surface",
+      "perspective": "WCS health rows. Internal diagnostic state, not public by default.",
+      "exposure_mode": "synthetic_only",
+      "public_private_mode": "public_forbidden",
+      "privacy_ceiling": "diagnostic_only",
+      "rights_ceiling": "diagnostic_only",
+      "public_claim_ceiling": "no_claim",
+      "witness_kinds": ["wcs-health-probe", "diagnostic-row"],
+      "temporal_span_policy": {
+        "default_ttl_s": 60,
+        "max_ttl_s": 300,
+        "freshness_required": true
+      },
+      "egress_policy": {
+        "requires_programme_authorization": false,
+        "requires_audio_safety": false,
+        "requires_egress_witness": false,
+        "requires_public_event_ref": false
+      },
+      "destination_mapping": {
+        "destination_channel": "private",
+        "voice_output_destination": null
+      },
+      "surface_refs": ["wcs:health-row"],
+      "evidence_classes": ["synthetic", "diagnostic"],
+      "notes": "World Capability Surface rows. Diagnostic provenance blocks factual public claims."
+    },
+    {
+      "aperture_id": "aperture:private-notification",
+      "kind": "private_assistant",
+      "family": "private_assistant",
+      "perspective": "Notification queue routed to Yeti private monitor.",
+      "exposure_mode": "private",
+      "public_private_mode": "private",
+      "privacy_ceiling": "private_only",
+      "rights_ceiling": "private_only",
+      "public_claim_ceiling": "no_claim",
+      "witness_kinds": ["private-monitor-playback", "notification-delivery"],
+      "temporal_span_policy": {
+        "default_ttl_s": 120,
+        "max_ttl_s": 600,
+        "freshness_required": false
+      },
+      "egress_policy": {
+        "requires_programme_authorization": false,
+        "requires_audio_safety": false,
+        "requires_egress_witness": false,
+        "requires_public_event_ref": false
+      },
+      "destination_mapping": {
+        "destination_channel": "private",
+        "voice_output_destination": "hapax-private-notification-monitor"
+      },
+      "surface_refs": ["monitor:yeti-private"],
+      "evidence_classes": ["private-notification", "operator-addressed"],
+      "notes": "Voice notifications via private Yeti monitor. VoiceOutputDestination.PRIVATE_NOTIFICATION_MONITOR."
+    }
+  ]
+}
