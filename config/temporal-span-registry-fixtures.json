@@ -1,0 +1,703 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "temporal-span-registry-media-sidecar-foundation-20260430",
+  "schema_ref": "schemas/temporal-span-registry.schema.json",
+  "generated_from": [
+    "spec:2026-04-30-canonical-temporal-grounding-ontology",
+    "audit:2026-04-30-temporal-bands-perceptual-grounding-responsible-synthesis",
+    "shared:world-surface-health-fixtures"
+  ],
+  "declared_at": "2026-04-30T02:24:00Z",
+  "producer": "cx-amber",
+  "required_sidecar_kinds": [
+    "camera_jpeg",
+    "hls_segment",
+    "audio_window",
+    "scene_detection",
+    "ir_report",
+    "vad_transition",
+    "reverie_content",
+    "replay_span",
+    "context_state"
+  ],
+  "fail_closed_policy": {
+    "mtime_is_join_key": false,
+    "missing_span_refs_allow_claim_bearing_output": false,
+    "diagnostic_records_are_dropped_on_missing_span_refs": false,
+    "private_spans_can_ground_public_claims": false,
+    "rights_blocked_spans_can_ground_public_claims": false
+  },
+  "spans": [
+    {
+      "schema_version": 1,
+      "span_id": "span:archive.hls.segment00042",
+      "span_kind": "archive_segment_span",
+      "source_id": "archive:hls:2026-04-30:segment00042",
+      "source_kind": "hls_segment",
+      "producer": "studio_compositor",
+      "clock_domain": "hls_media_time_ns",
+      "observed_start_ns": 10000000000,
+      "observed_end_ns": 12000000000,
+      "ingested_at_ns": 12050000000,
+      "sequence_ids": ["hls-segment-00042"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": 2.0,
+      "validity_start_ns": 10000000000,
+      "validity_until_ns": 15000000000,
+      "source_span_refs": [
+        "span:audio.broadcast.window.0042",
+        "span:camera.main.frame.1024",
+        "span:scene.detector.window.0042",
+        "span:reverie.content.slot.0042"
+      ],
+      "source_refs": [
+        "hls:studio:segment00042",
+        "sidecar:hls:segment00042"
+      ],
+      "transform": "studio-compositor hls archive segment from aligned audio/video/context spans",
+      "privacy_label": "public_safe",
+      "rights_class": "public_clear",
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "artifact_path": "/archive/hls/2026-04-30/segment00042.ts",
+      "metadata": {
+        "playlist_ref": "hls:studio:index.m3u8",
+        "duration_s": 2.0,
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:camera.main.frame.1024",
+      "span_kind": "frame_exposure",
+      "source_id": "camera:main:frame1024",
+      "source_kind": "camera_jpeg",
+      "producer": "studio_compositor",
+      "clock_domain": "camera_exposure_clock_ns",
+      "observed_start_ns": 10500000000,
+      "observed_end_ns": 10533333333,
+      "ingested_at_ns": 10600000000,
+      "sequence_ids": ["camera-main-frame-1024"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": 0.033333333,
+      "validity_start_ns": 10500000000,
+      "validity_until_ns": 13500000000,
+      "source_span_refs": [],
+      "source_refs": [
+        "camera:main",
+        "frame:camera-main:1024"
+      ],
+      "transform": "camera exposure JPEG sidecar",
+      "privacy_label": "public_safe",
+      "rights_class": "public_clear",
+      "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "artifact_path": "/archive/camera/main/2026-04-30/frame1024.jpg",
+      "metadata": {
+        "width": 1920,
+        "height": 1080,
+        "face_obscure_ref": "privacy:face-obscure:public-safe",
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:audio.broadcast.window.0042",
+      "span_kind": "sample_window",
+      "source_id": "audio:broadcast:window0042",
+      "source_kind": "audio_window",
+      "producer": "hapax_daimonion",
+      "clock_domain": "audio_sample_clock_ns",
+      "observed_start_ns": 10000000000,
+      "observed_end_ns": 12000000000,
+      "ingested_at_ns": 12025000000,
+      "sequence_ids": ["audio-window-0042"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": 2.0,
+      "validity_start_ns": 10000000000,
+      "validity_until_ns": 13500000000,
+      "source_span_refs": [],
+      "source_refs": [
+        "audio:broadcast-master",
+        "vad:window0042"
+      ],
+      "transform": "broadcast audio analysis window",
+      "privacy_label": "public_safe",
+      "rights_class": "public_clear",
+      "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "artifact_path": "/archive/audio/2026-04-30/broadcast-window0042.flac",
+      "metadata": {
+        "sample_rate_hz": 48000,
+        "channels": 2,
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:scene.detector.window.0042",
+      "span_kind": "classification_window",
+      "source_id": "scene:detector:window0042",
+      "source_kind": "scene_detection",
+      "producer": "environmental_perception",
+      "clock_domain": "derived_span_ns",
+      "observed_start_ns": 9900000000,
+      "observed_end_ns": 12400000000,
+      "ingested_at_ns": 12450000000,
+      "sequence_ids": ["scene-window-0042"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": 2.5,
+      "validity_start_ns": 9900000000,
+      "validity_until_ns": 15400000000,
+      "source_span_refs": ["span:camera.main.frame.1024"],
+      "source_refs": [
+        "scene-detector:studio",
+        "frame:camera-main:1024"
+      ],
+      "transform": "scene detection window over camera frame exposure",
+      "privacy_label": "public_safe",
+      "rights_class": "public_clear",
+      "content_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "artifact_path": "/archive/scene/2026-04-30/window0042.json",
+      "metadata": {
+        "labels": ["desk", "monitor", "operator-obscured"],
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:ir.presence.window.0042",
+      "span_kind": "sample_window",
+      "source_id": "ir:presence:window0042",
+      "source_kind": "ir_report",
+      "producer": "hapax_daimonion",
+      "clock_domain": "monotonic_ns",
+      "observed_start_ns": 9500000000,
+      "observed_end_ns": 12500000000,
+      "ingested_at_ns": 12520000000,
+      "sequence_ids": ["ir-report-0042"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": 3.0,
+      "validity_start_ns": 9500000000,
+      "validity_until_ns": 14500000000,
+      "source_span_refs": [],
+      "source_refs": [
+        "ir:presence-sensor",
+        "health:ir-presence"
+      ],
+      "transform": "IR presence report window",
+      "privacy_label": "private_only",
+      "rights_class": "private_only",
+      "content_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "artifact_path": "/archive/ir/2026-04-30/presence-window0042.json",
+      "metadata": {
+        "presence_state": "present",
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:vad.transition.speech-start.0042",
+      "span_kind": "instant_event",
+      "source_id": "vad:transition:speech-start0042",
+      "source_kind": "vad_transition",
+      "producer": "hapax_daimonion",
+      "clock_domain": "audio_sample_clock_ns",
+      "observed_start_ns": 10900000000,
+      "observed_end_ns": 10900000000,
+      "ingested_at_ns": 10905000000,
+      "sequence_ids": ["vad-transition-0042"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": null,
+      "validity_start_ns": 10900000000,
+      "validity_until_ns": 13000000000,
+      "source_span_refs": ["span:audio.broadcast.window.0042"],
+      "source_refs": [
+        "vad:broadcast-master",
+        "audio:broadcast-master"
+      ],
+      "transform": "VAD state transition event derived from audio window",
+      "privacy_label": "public_safe",
+      "rights_class": "public_clear",
+      "content_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "artifact_path": "/archive/vad/2026-04-30/transition0042.json",
+      "metadata": {
+        "transition": "speech_start",
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:reverie.content.slot.0042",
+      "span_kind": "composition_span",
+      "source_id": "reverie:content:slot0042",
+      "source_kind": "reverie_content",
+      "producer": "reverie",
+      "clock_domain": "derived_span_ns",
+      "observed_start_ns": 10050000000,
+      "observed_end_ns": 11950000000,
+      "ingested_at_ns": 11980000000,
+      "sequence_ids": ["reverie-content-0042"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": 1.9,
+      "validity_start_ns": 10050000000,
+      "validity_until_ns": 15000000000,
+      "source_span_refs": [],
+      "source_refs": [
+        "reverie:content-layer",
+        "visual-chain:current"
+      ],
+      "transform": "Reverie content layer active interval",
+      "privacy_label": "public_safe",
+      "rights_class": "public_clear",
+      "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "artifact_path": "/archive/reverie/2026-04-30/content-slot0042.json",
+      "metadata": {
+        "material": "void",
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:replay.chapter.opening.0042",
+      "span_kind": "replay_span",
+      "source_id": "replay:chapter:opening0042",
+      "source_kind": "replay_span",
+      "producer": "archive_replay",
+      "clock_domain": "derived_span_ns",
+      "observed_start_ns": 9800000000,
+      "observed_end_ns": 12200000000,
+      "ingested_at_ns": 13000000000,
+      "sequence_ids": ["replay-chapter-0042"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": null,
+      "validity_start_ns": 9800000000,
+      "validity_until_ns": 20000000000,
+      "source_span_refs": [
+        "span:archive.hls.segment00042",
+        "span:audio.broadcast.window.0042",
+        "span:camera.main.frame.1024",
+        "span:scene.detector.window.0042"
+      ],
+      "source_refs": [
+        "replay:chapter-builder",
+        "archive:hls:segment00042"
+      ],
+      "transform": "replay chapter interval from archive media spans",
+      "privacy_label": "public_safe",
+      "rights_class": "public_clear",
+      "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "artifact_path": "/archive/replay/2026-04-30/chapter-opening0042.json",
+      "metadata": {
+        "chapter_title": "Temporal grounding fixture",
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:stimmung.context.0042",
+      "span_kind": "sample_window",
+      "source_id": "stimmung:context0042",
+      "source_kind": "stimmung_context",
+      "producer": "temporal_span_fixture",
+      "clock_domain": "derived_span_ns",
+      "observed_start_ns": 9000000000,
+      "observed_end_ns": 13000000000,
+      "ingested_at_ns": 13010000000,
+      "sequence_ids": ["stimmung-context-0042"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": 4.0,
+      "validity_start_ns": 9000000000,
+      "validity_until_ns": 16000000000,
+      "source_span_refs": [],
+      "source_refs": [
+        "stimmung:state",
+        "temporal:bands"
+      ],
+      "transform": "stimmung context window for replay alignment",
+      "privacy_label": "private_only",
+      "rights_class": "not_applicable",
+      "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "artifact_path": "/archive/context/2026-04-30/stimmung0042.json",
+      "metadata": {
+        "stance": "nominal",
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:director.context.0042",
+      "span_kind": "sample_window",
+      "source_id": "director:context0042",
+      "source_kind": "director_context",
+      "producer": "temporal_span_fixture",
+      "clock_domain": "derived_span_ns",
+      "observed_start_ns": 10000000000,
+      "observed_end_ns": 12000000000,
+      "ingested_at_ns": 12010000000,
+      "sequence_ids": ["director-context-0042"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": 2.0,
+      "validity_start_ns": 10000000000,
+      "validity_until_ns": 15000000000,
+      "source_span_refs": ["span:stimmung.context.0042"],
+      "source_refs": [
+        "director:intent",
+        "director:scrim-gesture"
+      ],
+      "transform": "director context interval for replay alignment",
+      "privacy_label": "private_only",
+      "rights_class": "not_applicable",
+      "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "artifact_path": "/archive/context/2026-04-30/director0042.json",
+      "metadata": {
+        "director_mode": "structural",
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    },
+    {
+      "schema_version": 1,
+      "span_id": "span:research.condition.fixture.0042",
+      "span_kind": "validity_span",
+      "source_id": "research:condition:temporal-fixture",
+      "source_kind": "research_condition",
+      "producer": "research_registry",
+      "clock_domain": "wall_clock_ns",
+      "observed_start_ns": 0,
+      "observed_end_ns": 20000000000,
+      "ingested_at_ns": 500000000,
+      "sequence_ids": ["research-condition-temporal-fixture"],
+      "capture_session_id": "capture-session:studio:2026-04-30",
+      "cadence_s": null,
+      "validity_start_ns": 0,
+      "validity_until_ns": 20000000000,
+      "source_span_refs": [],
+      "source_refs": [
+        "research-registry:condition-temporal-fixture"
+      ],
+      "transform": "research condition validity window",
+      "privacy_label": "private_only",
+      "rights_class": "not_applicable",
+      "content_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "artifact_path": "/archive/context/2026-04-30/research-condition.json",
+      "metadata": {
+        "condition_id": "condition:temporal-fixture",
+        "join_key": "temporal_span_overlap",
+        "clock_domain_mapping_ref": "clock-map:studio-session-2026-04-30"
+      }
+    }
+  ],
+  "sidecars": [
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:hls:segment00042",
+      "sidecar_kind": "hls_segment",
+      "span_ref": "span:archive.hls.segment00042",
+      "artifact_path": "/archive/hls/2026-04-30/segment00042.ts",
+      "producer": "studio_compositor",
+      "source_refs": ["hls:studio:segment00042"],
+      "produced_at_ns": 12050000000,
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diagnostic_only": false,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/hls/2026-04-30/segment00042.ts.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:camera:main:frame1024",
+      "sidecar_kind": "camera_jpeg",
+      "span_ref": "span:camera.main.frame.1024",
+      "artifact_path": "/archive/camera/main/2026-04-30/frame1024.jpg",
+      "producer": "studio_compositor",
+      "source_refs": ["camera:main"],
+      "produced_at_ns": 10600000000,
+      "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diagnostic_only": false,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/camera/main/2026-04-30/frame1024.jpg.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:audio:broadcast:window0042",
+      "sidecar_kind": "audio_window",
+      "span_ref": "span:audio.broadcast.window.0042",
+      "artifact_path": "/archive/audio/2026-04-30/broadcast-window0042.flac",
+      "producer": "hapax_daimonion",
+      "source_refs": ["audio:broadcast-master"],
+      "produced_at_ns": 12025000000,
+      "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "diagnostic_only": false,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/audio/2026-04-30/broadcast-window0042.flac.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:scene:window0042",
+      "sidecar_kind": "scene_detection",
+      "span_ref": "span:scene.detector.window.0042",
+      "artifact_path": "/archive/scene/2026-04-30/window0042.json",
+      "producer": "environmental_perception",
+      "source_refs": ["scene-detector:studio"],
+      "produced_at_ns": 12450000000,
+      "content_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "diagnostic_only": false,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/scene/2026-04-30/window0042.sidecar.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:ir:presence:window0042",
+      "sidecar_kind": "ir_report",
+      "span_ref": "span:ir.presence.window.0042",
+      "artifact_path": "/archive/ir/2026-04-30/presence-window0042.json",
+      "producer": "hapax_daimonion",
+      "source_refs": ["ir:presence-sensor"],
+      "produced_at_ns": 12520000000,
+      "content_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "diagnostic_only": true,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/ir/2026-04-30/presence-window0042.sidecar.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:vad:transition0042",
+      "sidecar_kind": "vad_transition",
+      "span_ref": "span:vad.transition.speech-start.0042",
+      "artifact_path": "/archive/vad/2026-04-30/transition0042.json",
+      "producer": "hapax_daimonion",
+      "source_refs": ["vad:broadcast-master"],
+      "produced_at_ns": 10905000000,
+      "content_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "diagnostic_only": false,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/vad/2026-04-30/transition0042.sidecar.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:reverie:content-slot0042",
+      "sidecar_kind": "reverie_content",
+      "span_ref": "span:reverie.content.slot.0042",
+      "artifact_path": "/archive/reverie/2026-04-30/content-slot0042.json",
+      "producer": "reverie",
+      "source_refs": ["reverie:content-layer"],
+      "produced_at_ns": 11980000000,
+      "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "diagnostic_only": false,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/reverie/2026-04-30/content-slot0042.sidecar.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:replay:chapter-opening0042",
+      "sidecar_kind": "replay_span",
+      "span_ref": "span:replay.chapter.opening.0042",
+      "artifact_path": "/archive/replay/2026-04-30/chapter-opening0042.json",
+      "producer": "archive_replay",
+      "source_refs": ["replay:chapter-builder"],
+      "produced_at_ns": 13000000000,
+      "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "diagnostic_only": false,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/replay/2026-04-30/chapter-opening0042.sidecar.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:context:stimmung0042",
+      "sidecar_kind": "context_state",
+      "span_ref": "span:stimmung.context.0042",
+      "artifact_path": "/archive/context/2026-04-30/stimmung0042.json",
+      "producer": "temporal_span_fixture",
+      "source_refs": ["stimmung:state"],
+      "produced_at_ns": 13010000000,
+      "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "diagnostic_only": true,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/context/2026-04-30/stimmung0042.sidecar.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:context:director0042",
+      "sidecar_kind": "context_state",
+      "span_ref": "span:director.context.0042",
+      "artifact_path": "/archive/context/2026-04-30/director0042.json",
+      "producer": "temporal_span_fixture",
+      "source_refs": ["director:intent"],
+      "produced_at_ns": 12010000000,
+      "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "diagnostic_only": true,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/context/2026-04-30/director0042.sidecar.json"}
+    },
+    {
+      "schema_version": 1,
+      "sidecar_id": "sidecar:context:research-condition",
+      "sidecar_kind": "context_state",
+      "span_ref": "span:research.condition.fixture.0042",
+      "artifact_path": "/archive/context/2026-04-30/research-condition.json",
+      "producer": "research_registry",
+      "source_refs": ["research-registry:condition-temporal-fixture"],
+      "produced_at_ns": 500000000,
+      "content_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "diagnostic_only": true,
+      "join_policy": "temporal_span_overlap",
+      "metadata": {"sidecar_path": "/archive/context/2026-04-30/research-condition.sidecar.json"}
+    }
+  ],
+  "alignment_fixture": {
+    "anchor_span_ref": "span:archive.hls.segment00042",
+    "required_source_kinds": [
+      "audio_window",
+      "camera_jpeg",
+      "scene_detection",
+      "ir_report",
+      "stimmung_context",
+      "director_context",
+      "research_condition"
+    ],
+    "expected_aligned_span_refs": [
+      "span:audio.broadcast.window.0042",
+      "span:camera.main.frame.1024",
+      "span:scene.detector.window.0042",
+      "span:ir.presence.window.0042",
+      "span:stimmung.context.0042",
+      "span:director.context.0042",
+      "span:research.condition.fixture.0042"
+    ],
+    "expected_missing_required_source_kinds": []
+  },
+  "claim_gate_fixtures": [
+    {
+      "output": {
+        "output_id": "media_output:replay.card.missing-caption",
+        "output_kind": "replay_card",
+        "claim_bearing": true,
+        "diagnostic_only": false,
+        "public_scope": "public_safe",
+        "span_refs": [
+          "span:archive.hls.segment00042",
+          "span:missing.caption.0042"
+        ],
+        "evidence_refs": ["evidence:replay-card:fixture"]
+      },
+      "expected": {
+        "output_id": "media_output:replay.card.missing-caption",
+        "allowed": false,
+        "status": "blocked_missing_span_refs",
+        "missing_span_refs": ["span:missing.caption.0042"],
+        "blocked_span_refs": [],
+        "diagnostic_preserved": false,
+        "reason_codes": ["missing_span_refs"]
+      }
+    },
+    {
+      "output": {
+        "output_id": "media_output:replay.card.empty-span-refs",
+        "output_kind": "replay_card",
+        "claim_bearing": true,
+        "diagnostic_only": false,
+        "public_scope": "public_safe",
+        "span_refs": [],
+        "evidence_refs": ["evidence:replay-card:fixture"]
+      },
+      "expected": {
+        "output_id": "media_output:replay.card.empty-span-refs",
+        "allowed": false,
+        "status": "blocked_no_span_refs",
+        "missing_span_refs": [],
+        "blocked_span_refs": [],
+        "diagnostic_preserved": false,
+        "reason_codes": ["empty_span_refs"]
+      }
+    },
+    {
+      "output": {
+        "output_id": "media_output:replay.card.public-forbidden",
+        "output_kind": "replay_card",
+        "claim_bearing": true,
+        "diagnostic_only": false,
+        "public_scope": "public_forbidden",
+        "span_refs": ["span:archive.hls.segment00042"],
+        "evidence_refs": ["evidence:replay-card:fixture"]
+      },
+      "expected": {
+        "output_id": "media_output:replay.card.public-forbidden",
+        "allowed": false,
+        "status": "blocked_public_scope",
+        "missing_span_refs": [],
+        "blocked_span_refs": [],
+        "diagnostic_preserved": false,
+        "reason_codes": ["public_scope_public_forbidden"]
+      }
+    },
+    {
+      "output": {
+        "output_id": "media_output:replay.card.private-scope",
+        "output_kind": "replay_card",
+        "claim_bearing": true,
+        "diagnostic_only": false,
+        "public_scope": "private",
+        "span_refs": ["span:archive.hls.segment00042"],
+        "evidence_refs": ["evidence:replay-card:fixture"]
+      },
+      "expected": {
+        "output_id": "media_output:replay.card.private-scope",
+        "allowed": false,
+        "status": "blocked_public_scope",
+        "missing_span_refs": [],
+        "blocked_span_refs": [],
+        "diagnostic_preserved": false,
+        "reason_codes": ["public_scope_private"]
+      }
+    },
+    {
+      "output": {
+        "output_id": "media_output:replay.card.private-ir",
+        "output_kind": "replay_card",
+        "claim_bearing": true,
+        "diagnostic_only": false,
+        "public_scope": "public_safe",
+        "span_refs": [
+          "span:archive.hls.segment00042",
+          "span:ir.presence.window.0042"
+        ],
+        "evidence_refs": ["evidence:replay-card:fixture"]
+      },
+      "expected": {
+        "output_id": "media_output:replay.card.private-ir",
+        "allowed": false,
+        "status": "blocked_private_or_rights",
+        "missing_span_refs": [],
+        "blocked_span_refs": ["span:ir.presence.window.0042"],
+        "diagnostic_preserved": false,
+        "reason_codes": ["private_or_rights_blocked_span_refs"]
+      }
+    },
+    {
+      "output": {
+        "output_id": "media_output:diagnostic.orphan-ir",
+        "output_kind": "diagnostic_report",
+        "claim_bearing": false,
+        "diagnostic_only": true,
+        "public_scope": "private",
+        "span_refs": ["span:missing.ir-diagnostic.0042"],
+        "evidence_refs": []
+      },
+      "expected": {
+        "output_id": "media_output:diagnostic.orphan-ir",
+        "allowed": false,
+        "status": "degraded_diagnostic",
+        "missing_span_refs": ["span:missing.ir-diagnostic.0042"],
+        "blocked_span_refs": [],
+        "diagnostic_preserved": true,
+        "reason_codes": ["diagnostic_missing_span_refs"]
+      }
+    }
+  ]
+}

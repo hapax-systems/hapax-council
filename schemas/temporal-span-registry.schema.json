@@ -1,0 +1,421 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/temporal-span-registry.schema.json",
+  "title": "TemporalSpanRegistryFixtures",
+  "description": "Source-qualified temporal span registry and media sidecar fixture contract for media/replay/perception alignment without file mtime joins.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "required_sidecar_kinds",
+    "fail_closed_policy",
+    "spans",
+    "sidecars",
+    "alignment_fixture",
+    "claim_gate_fixtures"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/temporal-span-registry.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "required_sidecar_kinds": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/sidecar_kind"},
+      "uniqueItems": true,
+      "minItems": 8
+    },
+    "fail_closed_policy": {"$ref": "#/$defs/fail_closed_policy"},
+    "spans": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/temporal_span"},
+      "minItems": 8
+    },
+    "sidecars": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/temporal_media_sidecar"},
+      "minItems": 8
+    },
+    "alignment_fixture": {"$ref": "#/$defs/alignment_fixture"},
+    "claim_gate_fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/claim_gate_fixture"},
+      "minItems": 1
+    }
+  },
+  "x-required_sidecar_kinds": [
+    "camera_jpeg",
+    "hls_segment",
+    "audio_window",
+    "scene_detection",
+    "ir_report",
+    "vad_transition",
+    "reverie_content",
+    "replay_span",
+    "context_state"
+  ],
+  "x-required_alignment_source_kinds": [
+    "audio_window",
+    "camera_jpeg",
+    "scene_detection",
+    "ir_report",
+    "stimmung_context",
+    "director_context",
+    "research_condition"
+  ],
+  "x-fail_closed_policy": {
+    "mtime_is_join_key": false,
+    "missing_span_refs_allow_claim_bearing_output": false,
+    "diagnostic_records_are_dropped_on_missing_span_refs": false,
+    "private_spans_can_ground_public_claims": false,
+    "rights_blocked_spans_can_ground_public_claims": false
+  },
+  "$defs": {
+    "span_ref": {"type": "string", "pattern": "^span:[a-z0-9_.:-]+$"},
+    "sidecar_ref": {"type": "string", "pattern": "^sidecar:[a-z0-9_.:-]+$"},
+    "sha256_ref": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "string_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "metadata": {
+      "type": "object",
+      "propertyNames": {"not": {"pattern": "[Mm][Tt][Ii][Mm][Ee]"}},
+      "additionalProperties": {"$ref": "#/$defs/json_value_without_mtime"}
+    },
+    "json_value_without_mtime": {
+      "anyOf": [
+        {
+          "type": "object",
+          "propertyNames": {"not": {"pattern": "[Mm][Tt][Ii][Mm][Ee]"}},
+          "additionalProperties": {"$ref": "#/$defs/json_value_without_mtime"}
+        },
+        {
+          "type": "array",
+          "items": {"$ref": "#/$defs/json_value_without_mtime"}
+        },
+        {"type": "string", "not": {"pattern": "[Mm][Tt][Ii][Mm][Ee]"}},
+        {"type": "number"},
+        {"type": "integer"},
+        {"type": "boolean"},
+        {"type": "null"}
+      ]
+    },
+    "temporal_span_kind": {
+      "type": "string",
+      "enum": [
+        "instant_event",
+        "sample_window",
+        "frame_exposure",
+        "classification_window",
+        "trajectory_span",
+        "composition_span",
+        "archive_segment_span",
+        "replay_span",
+        "validity_span",
+        "future_sensor_span"
+      ]
+    },
+    "temporal_source_kind": {
+      "type": "string",
+      "enum": [
+        "camera_jpeg",
+        "hls_segment",
+        "audio_window",
+        "scene_detection",
+        "ir_report",
+        "vad_transition",
+        "reverie_content",
+        "replay_span",
+        "stimmung_context",
+        "director_context",
+        "research_condition"
+      ]
+    },
+    "producer_kind": {
+      "type": "string",
+      "enum": [
+        "studio_compositor",
+        "hapax_daimonion",
+        "environmental_perception",
+        "reverie",
+        "archive_replay",
+        "research_registry",
+        "temporal_span_fixture"
+      ]
+    },
+    "clock_domain": {
+      "type": "string",
+      "enum": [
+        "monotonic_ns",
+        "wall_clock_ns",
+        "hls_media_time_ns",
+        "audio_sample_clock_ns",
+        "camera_exposure_clock_ns",
+        "derived_span_ns"
+      ]
+    },
+    "privacy_label": {
+      "type": "string",
+      "enum": ["public_safe", "private_only", "dry_run", "blocked", "unknown"]
+    },
+    "rights_class": {
+      "type": "string",
+      "enum": [
+        "public_clear",
+        "private_only",
+        "blocked",
+        "missing",
+        "not_applicable",
+        "unknown"
+      ]
+    },
+    "sidecar_kind": {
+      "type": "string",
+      "enum": [
+        "camera_jpeg",
+        "hls_segment",
+        "audio_window",
+        "scene_detection",
+        "ir_report",
+        "vad_transition",
+        "reverie_content",
+        "replay_span",
+        "context_state"
+      ]
+    },
+    "media_output_kind": {
+      "type": "string",
+      "enum": ["replay_card", "media_sidecar", "public_event_clip", "diagnostic_report"]
+    },
+    "span_claim_decision_status": {
+      "type": "string",
+      "enum": [
+        "allowed",
+        "blocked_no_span_refs",
+        "blocked_public_scope",
+        "blocked_missing_span_refs",
+        "blocked_private_or_rights",
+        "degraded_diagnostic"
+      ]
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "mtime_is_join_key",
+        "missing_span_refs_allow_claim_bearing_output",
+        "diagnostic_records_are_dropped_on_missing_span_refs",
+        "private_spans_can_ground_public_claims",
+        "rights_blocked_spans_can_ground_public_claims"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mtime_is_join_key": {"type": "boolean", "const": false},
+        "missing_span_refs_allow_claim_bearing_output": {
+          "type": "boolean",
+          "const": false
+        },
+        "diagnostic_records_are_dropped_on_missing_span_refs": {
+          "type": "boolean",
+          "const": false
+        },
+        "private_spans_can_ground_public_claims": {"type": "boolean", "const": false},
+        "rights_blocked_spans_can_ground_public_claims": {
+          "type": "boolean",
+          "const": false
+        }
+      }
+    },
+    "temporal_span": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "span_id",
+        "span_kind",
+        "source_id",
+        "source_kind",
+        "producer",
+        "clock_domain",
+        "observed_start_ns",
+        "observed_end_ns",
+        "ingested_at_ns",
+        "sequence_ids",
+        "capture_session_id",
+        "cadence_s",
+        "validity_start_ns",
+        "validity_until_ns",
+        "source_span_refs",
+        "source_refs",
+        "transform",
+        "privacy_label",
+        "rights_class",
+        "content_hash",
+        "artifact_path",
+        "metadata"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "span_id": {"$ref": "#/$defs/span_ref"},
+        "span_kind": {"$ref": "#/$defs/temporal_span_kind"},
+        "source_id": {"type": "string", "minLength": 1},
+        "source_kind": {"$ref": "#/$defs/temporal_source_kind"},
+        "producer": {"$ref": "#/$defs/producer_kind"},
+        "clock_domain": {"$ref": "#/$defs/clock_domain"},
+        "observed_start_ns": {"type": "integer", "minimum": 0},
+        "observed_end_ns": {"type": "integer", "minimum": 0},
+        "ingested_at_ns": {"type": "integer", "minimum": 0},
+        "sequence_ids": {"$ref": "#/$defs/string_list"},
+        "capture_session_id": {"type": "string", "minLength": 1},
+        "cadence_s": {"type": ["number", "null"], "minimum": 0.0},
+        "validity_start_ns": {"type": "integer", "minimum": 0},
+        "validity_until_ns": {"type": "integer", "minimum": 0},
+        "source_span_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/span_ref"},
+          "uniqueItems": true
+        },
+        "source_refs": {"$ref": "#/$defs/string_list"},
+        "transform": {"type": "string", "minLength": 1},
+        "privacy_label": {"$ref": "#/$defs/privacy_label"},
+        "rights_class": {"$ref": "#/$defs/rights_class"},
+        "content_hash": {"$ref": "#/$defs/sha256_ref"},
+        "artifact_path": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+        "metadata": {"$ref": "#/$defs/metadata"}
+      }
+    },
+    "temporal_media_sidecar": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "sidecar_id",
+        "sidecar_kind",
+        "span_ref",
+        "artifact_path",
+        "producer",
+        "source_refs",
+        "produced_at_ns",
+        "content_hash",
+        "diagnostic_only",
+        "join_policy",
+        "metadata"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "sidecar_id": {"$ref": "#/$defs/sidecar_ref"},
+        "sidecar_kind": {"$ref": "#/$defs/sidecar_kind"},
+        "span_ref": {"$ref": "#/$defs/span_ref"},
+        "artifact_path": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+        "producer": {"$ref": "#/$defs/producer_kind"},
+        "source_refs": {"$ref": "#/$defs/string_list"},
+        "produced_at_ns": {"type": "integer", "minimum": 0},
+        "content_hash": {"$ref": "#/$defs/sha256_ref"},
+        "diagnostic_only": {"type": "boolean"},
+        "join_policy": {"type": "string", "const": "temporal_span_overlap"},
+        "metadata": {"$ref": "#/$defs/metadata"}
+      }
+    },
+    "alignment_fixture": {
+      "type": "object",
+      "required": [
+        "anchor_span_ref",
+        "required_source_kinds",
+        "expected_aligned_span_refs",
+        "expected_missing_required_source_kinds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "anchor_span_ref": {"$ref": "#/$defs/span_ref"},
+        "required_source_kinds": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/temporal_source_kind"},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "expected_aligned_span_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/span_ref"},
+          "uniqueItems": true
+        },
+        "expected_missing_required_source_kinds": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/temporal_source_kind"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "claim_gate_fixture": {
+      "type": "object",
+      "required": ["output", "expected"],
+      "additionalProperties": false,
+      "properties": {
+        "output": {"$ref": "#/$defs/claim_bearing_media_output"},
+        "expected": {"$ref": "#/$defs/span_claim_gate_decision"}
+      }
+    },
+    "claim_bearing_media_output": {
+      "type": "object",
+      "required": [
+        "output_id",
+        "output_kind",
+        "claim_bearing",
+        "diagnostic_only",
+        "public_scope",
+        "span_refs",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "output_id": {"type": "string", "pattern": "^media_output:[a-z0-9_.:-]+$"},
+        "output_kind": {"$ref": "#/$defs/media_output_kind"},
+        "claim_bearing": {"type": "boolean"},
+        "diagnostic_only": {"type": "boolean"},
+        "public_scope": {
+          "type": "string",
+          "enum": ["private", "public_safe", "public_forbidden"]
+        },
+        "span_refs": {"type": "array", "items": {"$ref": "#/$defs/span_ref"}},
+        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "span_claim_gate_decision": {
+      "type": "object",
+      "required": [
+        "output_id",
+        "allowed",
+        "status",
+        "missing_span_refs",
+        "blocked_span_refs",
+        "diagnostic_preserved",
+        "reason_codes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "output_id": {"type": "string", "pattern": "^media_output:[a-z0-9_.:-]+$"},
+        "allowed": {"type": "boolean"},
+        "status": {"$ref": "#/$defs/span_claim_decision_status"},
+        "missing_span_refs": {"type": "array", "items": {"$ref": "#/$defs/span_ref"}},
+        "blocked_span_refs": {"type": "array", "items": {"$ref": "#/$defs/span_ref"}},
+        "diagnostic_preserved": {"type": "boolean"},
+        "reason_codes": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}
