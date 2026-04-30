@@ -12,6 +12,69 @@ fail() { ((FAIL++)); FAILURES+=("$1"); printf "  ✗ %s\n" "$1"; }
 warn() { ((WARN++)); WARNINGS+=("$1"); printf "  ~ %s\n" "$1"; }
 skip() { ((SKIP++)); printf "  - %s (skipped)\n" "$1"; }
 
+pipeline_pass_count() {
+    python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
+try:
+    plan = json.loads(path.read_text())
+except Exception:
+    print(0)
+    raise SystemExit
+
+passes = plan.get("passes")
+if isinstance(passes, list):
+    print(len(passes))
+    raise SystemExit
+
+targets = plan.get("targets")
+if isinstance(targets, dict):
+    main = targets.get("main")
+    if isinstance(main, dict) and isinstance(main.get("passes"), list):
+        print(len(main["passes"]))
+        raise SystemExit
+
+print(0)
+PY
+}
+
+pipeline_ghost_param_count() {
+    python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
+try:
+    plan = json.loads(path.read_text())
+except Exception:
+    print(0)
+    raise SystemExit
+
+passes = plan.get("passes")
+if not isinstance(passes, list):
+    targets = plan.get("targets")
+    if isinstance(targets, dict):
+        passes = []
+        for target in targets.values():
+            if isinstance(target, dict) and isinstance(target.get("passes"), list):
+                passes.extend(target["passes"])
+    else:
+        passes = []
+
+ghost_count = 0
+for item in passes:
+    if not isinstance(item, dict):
+        continue
+    for name in item.get("param_order", []):
+        if name in ("time", "width", "height"):
+            ghost_count += 1
+            print(f"  ghost: {item.get('node_id', '<unknown>')}.{name}")
+print(ghost_count)
+PY
+}
+
 # --- T1: Infrastructure ---
 echo "=== T1: Infrastructure ==="
 
@@ -53,12 +116,29 @@ fi
 echo "[GPU]"
 gpu_info=$(nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || echo "")
 if [[ -n "$gpu_info" ]]; then
-    used=$(echo "$gpu_info" | cut -d',' -f1 | tr -d ' ')
-    total=$(echo "$gpu_info" | cut -d',' -f2 | tr -d ' ')
-    util=$(echo "$gpu_info" | cut -d',' -f3 | tr -d ' ')
-    pct=$((used * 100 / total))
+    used=0
+    total=0
+    util=0
+    gpu_count=0
+    while IFS=',' read -r used_raw total_raw util_raw; do
+        used_raw=$(echo "$used_raw" | tr -d ' ')
+        total_raw=$(echo "$total_raw" | tr -d ' ')
+        util_raw=$(echo "$util_raw" | tr -d ' ')
+        [[ "$used_raw" =~ ^[0-9]+$ && "$total_raw" =~ ^[0-9]+$ && "$util_raw" =~ ^[0-9]+$ ]] || continue
+        ((used += used_raw))
+        ((total += total_raw))
+        ((util += util_raw))
+        ((gpu_count++))
+    done <<< "$gpu_info"
+    if [[ "$gpu_count" -eq 0 || "$total" -eq 0 ]]; then
+        fail "GPU: nvidia-smi returned unparsable output"
+        pct=100
+    else
+        pct=$((used * 100 / total))
+        util=$((util / gpu_count))
+    fi
     if [[ "$pct" -lt 90 ]]; then
-        pass "GPU: ${used}/${total} MiB (${pct}%), util ${util}%"
+        pass "GPU: ${used}/${total} MiB (${pct}%), avg util ${util}% across ${gpu_count} GPU(s)"
     else
         warn "GPU: ${used}/${total} MiB (${pct}%) — high usage"
     fi
@@ -187,7 +267,7 @@ if systemctl --user is-active hapax-imagination &>/dev/null; then
 
     # Check plan.json validity
     if [[ -f /dev/shm/hapax-imagination/pipeline/plan.json ]]; then
-        passes=$(python3 -c "import json; print(len(json.load(open('/dev/shm/hapax-imagination/pipeline/plan.json'))['passes']))" 2>/dev/null || echo "0")
+        passes=$(pipeline_pass_count)
         if [[ "$passes" -gt 0 ]]; then
             pass "visual: plan.json valid ($passes passes)"
         else
@@ -213,13 +293,13 @@ fi
 echo "[Preset hot-reload]"
 if systemctl --user is-active hapax-imagination &>/dev/null; then
     # Record current preset pass count
-    before=$(python3 -c "import json; print(len(json.load(open('/dev/shm/hapax-imagination/pipeline/plan.json'))['passes']))" 2>/dev/null || echo "0")
+    before=$(pipeline_pass_count)
 
     # Activate a different preset
     result=$(curl -s -X POST "$API/studio/presets/clean/activate" 2>/dev/null)
     if echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('status')=='ok' else 1)" 2>/dev/null; then
         sleep 2
-        after=$(python3 -c "import json; print(len(json.load(open('/dev/shm/hapax-imagination/pipeline/plan.json'))['passes']))" 2>/dev/null || echo "0")
+        after=$(pipeline_pass_count)
         if [[ "$after" -gt 0 && "$after" != "$before" ]]; then
             pass "visual: hot-reload works (${before} -> ${after} passes)"
         elif [[ "$after" -gt 0 ]]; then
@@ -347,7 +427,11 @@ for unit in hapax-logos.service hapax-build-reload.path logos-dev.service; do
     fi
 done
 
-if pgrep -af 'hapax-logos|WebKitWebProcess|pnpm dev|vite' >/dev/null 2>&1; then
+retired_processes=$(pgrep -af 'hapax-logos|WebKitWebProcess|pnpm dev|vite' 2>/dev/null \
+    | grep -v 'earlyoom' \
+    | grep -v 'pgrep -af' \
+    | grep -v 'grep -v' || true)
+if [[ -n "$retired_processes" ]]; then
     fail "decommission: retired hapax-logos/WebKit/Vite process running"
 else
     pass "decommission: no retired hapax-logos/WebKit/Vite process"
@@ -385,17 +469,7 @@ echo "[Pipeline param correctness — 'animations frozen at t=0']"
 # Frustration: GLSL-compiled shaders had ghost u_time in Params → always 0.0.
 # Verify no ghost system uniforms in current pipeline param_order.
 if [[ -f /dev/shm/hapax-imagination/pipeline/plan.json ]]; then
-    ghosts=$(python3 -c "
-import json
-plan = json.load(open('/dev/shm/hapax-imagination/pipeline/plan.json'))
-ghost_count = 0
-for p in plan['passes']:
-    for name in p.get('param_order', []):
-        if name in ('time', 'width', 'height'):
-            ghost_count += 1
-            print(f'  ghost: {p[\"node_id\"]}.{name}')
-print(ghost_count)
-" 2>/dev/null | tail -1)
+    ghosts=$(pipeline_ghost_param_count 2>/dev/null | tail -1)
     ghosts=${ghosts:-0}
     if [[ "$ghosts" == "0" ]]; then
         pass "params: no ghost system uniforms in pipeline"
@@ -462,31 +536,27 @@ fi
 
 echo "[Systemd unit provenance — 'deployed units match repo']"
 # Verify key deployed units haven't drifted from repo source.
-units_ok=true
-for unit in hapax-imagination.service; do
-    repo_file=""
-    if [[ -f "systemd/units/$unit" ]]; then
-        repo_file="systemd/units/$unit"
-    elif [[ -f "systemd/$unit" ]]; then
-        repo_file="systemd/$unit"
-    fi
-    deployed="$HOME/.config/systemd/user/$unit"
-    if [[ -n "$repo_file" && -f "$deployed" ]]; then
-        if diff -q "$repo_file" "$deployed" &>/dev/null; then
-            pass "unit: $unit deployed matches repo"
-        else
-            fail "unit: $unit deployed DIFFERS from repo"
-            units_ok=false
-        fi
+unit=hapax-imagination.service
+repo_file=""
+if [[ -f "systemd/units/$unit" ]]; then
+    repo_file="systemd/units/$unit"
+elif [[ -f "systemd/$unit" ]]; then
+    repo_file="systemd/$unit"
+fi
+deployed="$HOME/.config/systemd/user/$unit"
+if [[ -n "$repo_file" && -f "$deployed" ]]; then
+    if diff -q "$repo_file" "$deployed" &>/dev/null; then
+        pass "unit: $unit deployed matches repo"
     else
-        warn "unit: $unit — repo or deployed file missing"
+        fail "unit: $unit deployed DIFFERS from repo"
     fi
-done
+else
+    warn "unit: $unit — repo or deployed file missing"
+fi
 
 for unit in hapax-logos.service hapax-build-reload.path logos-dev.service; do
     if [[ -e "systemd/units/$unit" ]]; then
         fail "unit: retired $unit still exists in repo units"
-        units_ok=false
     else
         pass "unit: retired $unit absent from repo units"
     fi
