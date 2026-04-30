@@ -6,8 +6,9 @@
 # verifies five invariants that, if violated, indicate the collection
 # is producing invalid data:
 #
-#   1. The active research condition is the expected baseline (default
-#      cond-phase-a-baseline-qwen-001).
+#   1. The active research condition is the expected condition when one is
+#      explicitly pinned. By default the check follows current.txt, so condition
+#      handoffs do not leave the daily timer falsely failed.
 #   2. No files listed in the active condition's frozen_files have
 #      mid-collection diffs applied (via check-frozen-files.py --probe).
 #   3. The stream-reactions Qdrant collection's point count is strictly
@@ -34,16 +35,17 @@
 #   scripts/lrr-phase-4-integrity-check.sh [--expected-condition COND]
 #                                           [--quiet]
 #
-# Default --expected-condition: cond-phase-a-baseline-qwen-001
+# Default --expected-condition: current active condition from current.txt.
+# Set HAPAX_LRR_EXPECTED_CONDITION or pass --expected-condition to pin a
+# particular condition during a collection window.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REGISTRY_DIR="${HOME}/hapax-state/research-registry"
 QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
 
-EXPECTED_CONDITION="cond-phase-a-baseline-qwen-001"
+EXPECTED_CONDITION="${HAPAX_LRR_EXPECTED_CONDITION:-}"
 QUIET=0
 
 while [[ $# -gt 0 ]]; do
@@ -89,6 +91,11 @@ CURRENT="$(tr -d '[:space:]' < "${REGISTRY_DIR}/current.txt")"
 if [[ -z "${CURRENT}" ]]; then
     fail "no active condition (current.txt empty); collection is not live"
     exit 2
+fi
+
+if [[ -z "${EXPECTED_CONDITION}" || "${EXPECTED_CONDITION}" == "current" ]]; then
+    EXPECTED_CONDITION="${CURRENT}"
+    log "no expected condition pinned; using active condition ${CURRENT}"
 fi
 
 if [[ "${CURRENT}" != "${EXPECTED_CONDITION}" ]]; then

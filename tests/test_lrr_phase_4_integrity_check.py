@@ -94,12 +94,29 @@ class TestConditionMismatch:
         registry.mkdir(parents=True)
         (registry / "current.txt").write_text("cond-other-001\n")
         _write_condition(registry, "cond-other-001")
-        result = _run(tmp_path, "--quiet")
+        result = _run(
+            tmp_path,
+            "--quiet",
+            "--expected-condition",
+            "cond-phase-a-baseline-qwen-001",
+        )
         assert result.returncode == 1
         assert (
             "active condition is cond-other-001, expected cond-phase-a-baseline-qwen-001"
             in result.stderr
         )
+
+    def test_default_expected_condition_tracks_current_condition(self, tmp_path: Path):
+        registry = tmp_path / "hapax-state" / "research-registry"
+        registry.mkdir(parents=True)
+        (registry / "current.txt").write_text("cond-other-001\n")
+        _write_condition(registry, "cond-other-001")
+        result = _run(tmp_path, "--quiet")
+        # Still non-zero because Qdrant is unreachable, but the default
+        # current-condition mode must not fail just because the active condition
+        # is no longer the original baseline arm.
+        assert result.returncode == 1
+        assert "active condition is cond-other-001, expected" not in result.stderr
 
     def test_custom_expected_condition_matches(self, tmp_path: Path):
         registry = tmp_path / "hapax-state" / "research-registry"
