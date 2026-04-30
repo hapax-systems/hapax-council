@@ -213,6 +213,13 @@ class TestSalienceRouter:
         assert result.tier == ModelTier.CAPABLE
         assert "escalation" in result.reason
 
+    def test_activation_to_tier_uses_thresholds(self):
+        router = self._make_router()
+        assert router._activation_to_tier(0.10) == ModelTier.LOCAL
+        assert router._activation_to_tier(0.50) == ModelTier.FAST
+        assert router._activation_to_tier(0.70) == ModelTier.STRONG
+        assert router._activation_to_tier(0.90) == ModelTier.CAPABLE
+
     def test_activation_logged(self):
         router = self._make_router()
         router.route("what's the voice latency looking like?")

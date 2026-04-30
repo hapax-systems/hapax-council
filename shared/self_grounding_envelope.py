@@ -171,6 +171,7 @@ class SelfPresenceEnvelopeProjection(FrozenModel):
 
     # Route decision
     route_decision: RouteDecision
+    programme_id: str | None = None
     programme_authorization: ProgrammeAuthorizationState
     audio_safety: AudioSafetyState
     livestream_egress_state: LivestreamEgressState
@@ -199,6 +200,8 @@ class SelfPresenceEnvelopeProjection(FrozenModel):
                 raise ValueError("public_speech_allowed requires broadcast route")
             if self.programme_authorization is not ProgrammeAuthorizationState.FRESH:
                 raise ValueError("public_speech_allowed requires fresh programme authorization")
+            if not self.programme_id:
+                raise ValueError("public_speech_allowed requires programme_id")
             if self.audio_safety is not AudioSafetyState.SAFE:
                 raise ValueError("public_speech_allowed requires safe audio")
             if self.livestream_egress_state is not LivestreamEgressState.WITNESSED:
@@ -332,6 +335,7 @@ def build_envelope_projection(inputs: EnvelopeInputs) -> SelfPresenceEnvelopePro
         role=inputs.role,
         aperture=inputs.aperture,
         route_decision=route,
+        programme_id=inputs.programme.programme_id,
         programme_authorization=inputs.programme.authorization_state,
         audio_safety=inputs.audio_safety.state,
         livestream_egress_state=inputs.egress.state,

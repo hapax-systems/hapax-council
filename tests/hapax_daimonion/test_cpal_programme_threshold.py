@@ -7,7 +7,7 @@ Verifies the soft-prior bias mechanism in
   - programme-supplied surface_threshold_prior overrides default
   - bias multiplier from speech_production capability bias
   - listening biases threshold up; tutorial biases threshold down
-  - salience-1.0 always surfaces (soft-prior-not-gate)
+  - salience-1.0 surfaces under programme priors but not active speech evidence
   - high-salience under listening still surfaces (grounding-expansion)
   - F5 short-circuit retired (regression pin)
   - bounded pending queue prevents memory growth
@@ -21,9 +21,14 @@ from agents.hapax_daimonion.capability import (
 )
 from agents.hapax_daimonion.cpal.impingement_adapter import (
     ALWAYS_SURFACE_AT,
+    CASUAL_ROLE_BASE_LIFT,
     DEFAULT_SURFACE_THRESHOLD,
+    DIALOG_ACTIVE_THRESHOLD_LIFT,
+    OPERATOR_SPEECH_THRESHOLD_LIFT,
     SPEECH_CAPABILITY_NAME,
     SURFACE_MULTIPLIER_MIN,
+    BufferSpeechState,
+    DialogState,
     ImpingementAdapter,
 )
 from shared.impingement import Impingement, ImpingementType
@@ -69,19 +74,21 @@ def _programme(
 
 
 class TestDefaults:
-    def test_no_programme_falls_through_to_default(self) -> None:
+    def test_no_programme_adds_casual_role_prior(self) -> None:
         adapter = ImpingementAdapter()
         eff = adapter.adapt(_imp(0.5))
-        assert eff.surface_threshold == DEFAULT_SURFACE_THRESHOLD
+        assert eff.surface_threshold == pytest_approx(
+            DEFAULT_SURFACE_THRESHOLD + CASUAL_ROLE_BASE_LIFT
+        )
 
-    def test_strength_below_default_does_not_surface(self) -> None:
-        adapter = ImpingementAdapter()
-        eff = adapter.adapt(_imp(0.5))
-        assert eff.should_surface is False
-
-    def test_strength_at_default_surfaces(self) -> None:
+    def test_strength_below_casual_threshold_does_not_surface(self) -> None:
         adapter = ImpingementAdapter()
         eff = adapter.adapt(_imp(DEFAULT_SURFACE_THRESHOLD))
+        assert eff.should_surface is False
+
+    def test_strength_at_casual_threshold_surfaces(self) -> None:
+        adapter = ImpingementAdapter()
+        eff = adapter.adapt(_imp(DEFAULT_SURFACE_THRESHOLD + CASUAL_ROLE_BASE_LIFT))
         assert eff.should_surface is True
 
 
@@ -151,6 +158,42 @@ class TestSoftPriorNotGate:
         eff = adapter.adapt(_imp(ALWAYS_SURFACE_AT))
         assert eff.should_surface is True
 
+    def test_operator_speech_evidence_dampens_salience_one(self) -> None:
+        adapter = ImpingementAdapter(
+            buffer_state_provider=lambda: BufferSpeechState(
+                speech_active=True,
+                in_cooldown=False,
+            )
+        )
+        eff = adapter.adapt(_imp(ALWAYS_SURFACE_AT))
+        assert eff.surface_threshold == pytest_approx(
+            DEFAULT_SURFACE_THRESHOLD + CASUAL_ROLE_BASE_LIFT + OPERATOR_SPEECH_THRESHOLD_LIFT
+        )
+        assert eff.should_surface is False
+
+    def test_safety_interrupt_still_surfaces_under_operator_speech(self) -> None:
+        adapter = ImpingementAdapter(
+            buffer_state_provider=lambda: BufferSpeechState(
+                speech_active=True,
+                in_cooldown=False,
+            )
+        )
+        eff = adapter.adapt(_imp(0.4, token="operator_distress"))
+        assert eff.should_surface is True
+
+    def test_recent_dialog_lifts_threshold_without_hard_gate(self) -> None:
+        adapter = ImpingementAdapter(
+            dialog_state_provider=lambda: DialogState(
+                seconds_since_last_response=0.0,
+                dialog_active=True,
+            )
+        )
+        eff = adapter.adapt(_imp(DEFAULT_SURFACE_THRESHOLD + CASUAL_ROLE_BASE_LIFT))
+        assert eff.surface_threshold == pytest_approx(
+            DEFAULT_SURFACE_THRESHOLD + CASUAL_ROLE_BASE_LIFT + DIALOG_ACTIVE_THRESHOLD_LIFT
+        )
+        assert eff.should_surface is False
+
     def test_critical_interrupt_surfaces_under_quieting(self) -> None:
         prog = _programme(role=ProgrammeRole.LISTENING, speech_pos_bias=2.0)
         adapter = ImpingementAdapter(programme_provider=lambda: prog)
@@ -207,12 +250,14 @@ class TestThresholdClamping:
 
 
 class TestProviderRobustness:
-    def test_provider_returning_none_falls_through(self) -> None:
+    def test_provider_returning_none_applies_casual_prior(self) -> None:
         adapter = ImpingementAdapter(programme_provider=lambda: None)
         eff = adapter.adapt(_imp(0.5))
-        assert eff.surface_threshold == DEFAULT_SURFACE_THRESHOLD
+        assert eff.surface_threshold == pytest_approx(
+            DEFAULT_SURFACE_THRESHOLD + CASUAL_ROLE_BASE_LIFT
+        )
 
-    def test_provider_raising_falls_through(self) -> None:
+    def test_provider_raising_falls_through_without_casual_prior(self) -> None:
         def boom() -> Programme | None:
             raise RuntimeError("provider broken")
 

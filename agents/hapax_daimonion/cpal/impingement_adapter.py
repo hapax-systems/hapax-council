@@ -35,6 +35,7 @@ from agents.hapax_daimonion.cpal.programme_context import (
 from agents.hapax_daimonion.cpal.types import GainUpdate
 
 log = logging.getLogger(__name__)
+_PROGRAMME_PROVIDER_FAILED = object()
 
 
 class BufferSpeechState(NamedTuple):
@@ -115,6 +116,10 @@ DIALOG_ACTIVE_WINDOW_S: float = 30.0  # seconds within which a response counts
 # compulsion → compulsive speech, rumination, operator fatigue."
 # The fix is a continuous suppression field, not a hard rule.
 CASUAL_ROLE_BASE_LIFT: float = 0.15
+# Evidence lifts can make strength=1.0 fail to surface when the operator is
+# speaking or dialog is active. This keeps ALWAYS_SURFACE_AT from becoming a
+# hard bypass while still bounding the posterior.
+SURFACE_THRESHOLD_POSTERIOR_MAX: float = 1.5
 SPEECH_CAPABILITY_NAME: str = "speech_production"
 
 
@@ -243,16 +248,20 @@ class ImpingementAdapter:
             operator is speaking or in post-TTS cooldown. This is
             additive evidence, not a gate: P(surfacing appropriate |
             operator_speaking) is lower, expressed as a higher threshold.
-          - threshold = base * multiplier + operator_lift, clamped to (0, 1].
+          - threshold = base * multiplier + evidence lifts, bounded above by
+            ``SURFACE_THRESHOLD_POSTERIOR_MAX``. Programme bias alone is
+            clamped to 1.0, but operator/dialog evidence may lift the posterior
+            above 1.0 so ``ALWAYS_SURFACE_AT`` remains a soft ceiling instead
+            of a hard bypass.
 
-        Returns ``DEFAULT_SURFACE_THRESHOLD`` when the provider returns
-        no programme or raises. The clamp on the multiplier guarantees
-        the bias is a true soft prior — even an extreme operator-
-        authored bias can't pin the threshold to 0 (always surface) or
-        infinity (never surface).
+        A provider returning ``None`` is evidence that no programme is active,
+        so the casual-role prior applies. A provider failure is not evidence of
+        casual role; it falls back to the base threshold and still composes any
+        independently available operator/dialog evidence.
         """
         programme = self._safe_active_programme()
-        if programme is None:
+        programme_provider_failed = programme is _PROGRAMME_PROVIDER_FAILED
+        if programme is None or programme_provider_failed:
             base_threshold = DEFAULT_SURFACE_THRESHOLD
         else:
             try:
@@ -260,10 +269,11 @@ class ImpingementAdapter:
                 base_threshold_raw = base if base is not None else DEFAULT_SURFACE_THRESHOLD
                 raw_mult = float(programme.bias_multiplier(SPEECH_CAPABILITY_NAME))
                 multiplier = min(SURFACE_MULTIPLIER_MAX, max(SURFACE_MULTIPLIER_MIN, raw_mult))
-                base_threshold = base_threshold_raw * multiplier
+                base_threshold = min(1.0, max(0.01, base_threshold_raw * multiplier))
             except Exception:
                 log.debug("programme threshold composition failed", exc_info=True)
                 base_threshold = DEFAULT_SURFACE_THRESHOLD
+                programme_provider_failed = True
 
         # Operator speech evidence: continuous downward suppression.
         # When the buffer reports speech_active or in_cooldown, the
@@ -303,14 +313,16 @@ class ImpingementAdapter:
         # is evidence that autonomous speech is less appropriate.
         # Per the conative impingement spec: continuous suppression
         # fields, role-conditioned priors, not hard speak/don't rules.
-        casual_lift = CASUAL_ROLE_BASE_LIFT if programme is None else 0.0
+        casual_lift = (
+            CASUAL_ROLE_BASE_LIFT if programme is None and not programme_provider_failed else 0.0
+        )
 
         threshold = base_threshold + operator_lift + dialog_lift + casual_lift
-        return min(1.0, max(0.01, threshold))
+        return min(SURFACE_THRESHOLD_POSTERIOR_MAX, max(0.01, threshold))
 
     def _safe_active_programme(self):
         try:
             return self._programme_provider()
         except Exception:
             log.debug("programme_provider raised", exc_info=True)
-            return None
+            return _PROGRAMME_PROVIDER_FAILED

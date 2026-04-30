@@ -139,6 +139,20 @@ class TestPosteriorMonotonicity:
             eng.contribute(_absent())
         assert eng.posterior < 0.5
 
+    def test_vad_speech_recovers_from_away_floor(self):
+        """Blue Yeti speech alone must recover presence from AWAY-floor posterior."""
+
+        eng = PresenceEngine(prior=0.002, enter_ticks=2)
+        speech = _seed_behaviors(vad_confidence=0.8)
+
+        for _ in range(3):
+            eng.contribute(speech)
+        assert eng.posterior > 0.9
+
+        # One more tick satisfies the hysteresis dwell and enters PRESENT.
+        eng.contribute(speech)
+        assert eng.state == "PRESENT"
+
 
 # ── Provides + name + tier surface ───────────────────────────────────
 

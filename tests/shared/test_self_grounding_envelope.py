@@ -159,6 +159,7 @@ def test_public_speech_all_gates_pass() -> None:
     proj = build_envelope_projection(inputs)
 
     assert proj.route_decision is RouteDecision.BROADCAST
+    assert proj.programme_id == "prog:test-001"
     assert AllowedOutcome.PUBLIC_SPEECH_ALLOWED in proj.allowed_outcomes
     assert AllowedOutcome.PRIVATE_ANSWER in proj.allowed_outcomes
     assert not proj.blockers
@@ -361,6 +362,24 @@ def test_model_validator_rejects_inconsistent_public_speech() -> None:
             role=_public_role(),
             aperture=_public_aperture(),
             route_decision=RouteDecision.PRIVATE,  # Inconsistent
+            programme_authorization=ProgrammeAuthorizationState.FRESH,
+            audio_safety=AudioSafetyState.SAFE,
+            livestream_egress_state=LivestreamEgressState.WITNESSED,
+            consent_privacy_ceiling=AuthorityCeiling.EVIDENCE_BOUND,
+            rights_provenance_ceiling=AuthorityCeiling.EVIDENCE_BOUND,
+            public_claim_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+            allowed_outcomes=(AllowedOutcome.PUBLIC_SPEECH_ALLOWED,),
+        )
+
+
+def test_model_validator_rejects_public_speech_without_programme_id() -> None:
+    """Fresh programme auth without a programme id cannot authorize public speech."""
+
+    with pytest.raises(Exception, match="public_speech_allowed requires programme_id"):
+        SelfPresenceEnvelopeProjection(
+            role=_public_role(),
+            aperture=_public_aperture(),
+            route_decision=RouteDecision.BROADCAST,
             programme_authorization=ProgrammeAuthorizationState.FRESH,
             audio_safety=AudioSafetyState.SAFE,
             livestream_egress_state=LivestreamEgressState.WITNESSED,
