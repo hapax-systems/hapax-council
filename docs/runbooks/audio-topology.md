@@ -190,7 +190,39 @@ pw-cat --record --target echo_cancel_capture --format s16 --rate 16000 --channel
     ffprobe -v error -show_format /tmp/aec-probe.wav
 ```
 
-## 7. Install + verify sequence
+## 7. Private Monitor Exact-Target Recovery
+
+Private assistant and notification audio must bind only to the exact private
+monitor endpoint. They must not fall through to the default sink, L-12,
+multimedia, voice-fx, or any public/broadcast route.
+
+Use the recovery command whenever the operator cannot hear private monitor
+audio or after PipeWire/private monitor hardware churn:
+
+```fish
+scripts/hapax-private-monitor-recover --install
+cat /dev/shm/hapax-audio/private-monitor-target.json
+scripts/audio-leak-guard.sh
+```
+
+Expected healthy state:
+
+- `private_monitor_state=ready`;
+- status JSON reports `surface_id: audio.yeti_monitor`;
+- status JSON reports `route_id: route:private.yeti_monitor`;
+- status JSON reports `fallback_policy: no_default_fallback`;
+- `scripts/audio-leak-guard.sh` reports no leak risk.
+
+If the exact target or bridge is missing, the command writes
+`state: blocked_absent` with an operator-visible reason. That state is the
+correct failure mode. Do not route private comms to a default sink or public
+route to "make it audible."
+
+The status JSON is intentionally sanitized. It uses semantic refs such as
+`audio.yeti_monitor` and `route:private.yeti_monitor`; do not paste raw
+PipeWire hardware identifiers into relay/task notes or chat.
+
+## 8. Install + verify sequence
 
 ```fish
 # 1. Drop echo-cancel config in place.
@@ -207,7 +239,7 @@ set -Ux HAPAX_AEC_ACTIVE 1
 systemctl --user restart hapax-daimonion.service
 ```
 
-## 8. Rollback
+## 9. Rollback
 
 ```fish
 rm ~/.config/pipewire/pipewire.conf.d/hapax-echo-cancel.conf
@@ -218,7 +250,7 @@ systemctl --user restart hapax-daimonion.service
 
 Daimonion falls back to the raw Yeti source (pre-AEC behavior).
 
-## 9. Rode Wireless Pro (task #133)
+## 10. Rode Wireless Pro (task #133)
 
 The Rode Wireless Pro is the operator's on-body lavalier. When present,
 it becomes the authoritative voice source; on disappear, daimonion

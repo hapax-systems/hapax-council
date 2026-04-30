@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Recover or report the exact private monitor target.
+
+The private monitor contract is intentionally narrower than "play this on
+whatever sink is available."  This command resolves the explicit private Yeti
+monitor target, installs the repo-managed fail-closed bridge when requested,
+and writes sanitized status evidence.  If the target or bridge is absent, the
+state is ``blocked_absent``; there is never a default-sink fallback.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal, TypedDict
+
+EXACT_PRIVATE_MONITOR_TARGET = (
+    "alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
+)
+BRIDGE_REPO_PATH = Path("config/pipewire/hapax-private-monitor-bridge.conf")
+DEFAULT_INSTALL_PATH = (
+    Path.home() / ".config" / "pipewire" / "pipewire.conf.d" / "hapax-private-monitor-bridge.conf"
+)
+DEFAULT_STATUS_PATH = Path("/dev/shm/hapax-audio/private-monitor-target.json")
+REQUIRED_BRIDGE_NODES = (
+    "hapax-private-monitor-capture",
+    "hapax-private-playback",
+    "hapax-notification-private-monitor-capture",
+    "hapax-notification-private-playback",
+)
+SANITIZED_TARGET_REF = "audio.yeti_monitor"
+ROUTE_REF = "route:private.yeti_monitor"
+
+
+class BridgeStatus(TypedDict):
+    installed: bool
+    matches_repo: bool
+    repaired: bool
+    requires_pipewire_reload: bool
+
+
+class PrivateMonitorStatus(TypedDict):
+    checked_at: str
+    surface_id: str
+    route_id: str
+    state: Literal["ready", "blocked_absent"]
+    reason_code: str
+    operator_visible_reason: str
+    exact_target_present: bool
+    bridge_nodes_present: bool
+    bridge: BridgeStatus
+    fallback_policy: str
+    target_ref: str
+    sanitized: bool
+
+
+def _load_dump(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        result = subprocess.run(
+            ["pw-dump"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        raw = result.stdout
+    else:
+        raw = path.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if not isinstance(data, list):
+        raise ValueError("pw-dump payload must be a list")
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _node_names(dump: list[dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for item in dump:
+        if item.get("type") != "PipeWire:Interface:Node":
+            continue
+        props = item.get("info", {}).get("props", {})
+        if not isinstance(props, dict):
+            continue
+        name = props.get("node.name")
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
+def _bridge_matches_repo(repo_bridge: Path, install_path: Path) -> bool:
+    return install_path.exists() and install_path.read_text(
+        encoding="utf-8"
+    ) == repo_bridge.read_text(encoding="utf-8")
+
+
+def _validate_repo_bridge(repo_bridge: Path) -> None:
+    text = repo_bridge.read_text(encoding="utf-8")
+    required = (
+        EXACT_PRIVATE_MONITOR_TARGET,
+        "node.dont-fallback = true",
+        "node.dont-reconnect = true",
+        "node.dont-move = true",
+        "node.linger = true",
+        "state.restore = false",
+        'target.object = "hapax-private"',
+        'target.object = "hapax-notification-private"',
+    )
+    missing = [needle for needle in required if needle not in text]
+    if missing:
+        raise ValueError(f"repo bridge is missing required fail-closed pin(s): {missing}")
+
+
+def _install_bridge(repo_bridge: Path, install_path: Path, *, install: bool) -> BridgeStatus:
+    installed_before = install_path.exists()
+    matches_before = _bridge_matches_repo(repo_bridge, install_path)
+    repaired = False
+    if install and not matches_before:
+        install_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = install_path.with_suffix(install_path.suffix + ".tmp")
+        shutil.copyfile(repo_bridge, tmp)
+        tmp.replace(install_path)
+        repaired = True
+    matches_after = _bridge_matches_repo(repo_bridge, install_path)
+    return {
+        "installed": install_path.exists(),
+        "matches_repo": matches_after,
+        "repaired": repaired,
+        "requires_pipewire_reload": repaired and installed_before,
+    }
+
+
+def _status(
+    *,
+    node_names: set[str],
+    bridge: BridgeStatus,
+) -> PrivateMonitorStatus:
+    checked_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    target_present = EXACT_PRIVATE_MONITOR_TARGET in node_names
+    bridge_nodes_present = all(name in node_names for name in REQUIRED_BRIDGE_NODES)
+    state: Literal["ready", "blocked_absent"]
+    reason_code: str
+    reason: str
+    if not target_present:
+        state = "blocked_absent"
+        reason_code = "exact_private_monitor_target_absent"
+        reason = "Exact private monitor target is absent; private monitor route remains silent."
+    elif not bridge["installed"]:
+        state = "blocked_absent"
+        reason_code = "private_monitor_bridge_not_installed"
+        reason = "Exact private monitor target is present, but the private bridge is not installed."
+    elif not bridge["matches_repo"]:
+        state = "blocked_absent"
+        reason_code = "private_monitor_bridge_drift"
+        reason = "Private monitor bridge differs from the repo fail-closed contract."
+    elif not bridge_nodes_present:
+        state = "blocked_absent"
+        reason_code = "private_monitor_bridge_not_loaded"
+        reason = "Private monitor bridge config is installed but its PipeWire nodes are not loaded."
+    else:
+        state = "ready"
+        reason_code = "exact_private_monitor_bound"
+        reason = "Exact private monitor target and fail-closed bridge are present."
+    return {
+        "checked_at": checked_at,
+        "surface_id": "audio.yeti_monitor",
+        "route_id": ROUTE_REF,
+        "state": state,
+        "reason_code": reason_code,
+        "operator_visible_reason": reason,
+        "exact_target_present": target_present,
+        "bridge_nodes_present": bridge_nodes_present,
+        "bridge": bridge,
+        "fallback_policy": "no_default_fallback",
+        "target_ref": SANITIZED_TARGET_REF,
+        "sanitized": True,
+    }
+
+
+def _write_status(path: Path, payload: PrivateMonitorStatus) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if EXACT_PRIVATE_MONITOR_TARGET in text or "alsa_output.usb-" in text:
+        raise ValueError("status payload is not sanitized")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _print_summary(status: PrivateMonitorStatus, status_path: Path) -> None:
+    print(f"private_monitor_state={status['state']}")
+    print(f"reason_code={status['reason_code']}")
+    print(f"route_id={status['route_id']}")
+    print(f"target_ref={status['target_ref']}")
+    print(f"fallback_policy={status['fallback_policy']}")
+    print(f"status_path={status_path}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    parser.add_argument("--install-path", type=Path, default=DEFAULT_INSTALL_PATH)
+    parser.add_argument("--status-path", type=Path, default=DEFAULT_STATUS_PATH)
+    parser.add_argument("--dump-file", type=Path, default=None)
+    parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Install/repair the repo-managed bridge config before writing status.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print sanitized JSON status instead of a short summary.",
+    )
+    args = parser.parse_args(argv)
+
+    repo_bridge = args.repo_root / BRIDGE_REPO_PATH
+    try:
+        _validate_repo_bridge(repo_bridge)
+        dump = _load_dump(args.dump_file)
+        bridge = _install_bridge(repo_bridge, args.install_path, install=args.install)
+        status = _status(node_names=_node_names(dump), bridge=bridge)
+        _write_status(args.status_path, status)
+    except Exception as exc:
+        print(f"private_monitor_state=error reason={type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(status, indent=2, sort_keys=True))
+    else:
+        _print_summary(status, args.status_path)
+    return 0 if status["state"] == "ready" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
