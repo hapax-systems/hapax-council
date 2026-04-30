@@ -133,6 +133,16 @@ from shared.scrim_wcs_claim_posture import (
     ScrimWCSClaimPostureProjection,
     WCSClaimReference,
 )
+from shared.self_presence import (
+    Aperture,
+    ApertureEvent,
+    ClaimBinding,
+    OntologyTermMapping,
+    SelfPresenceEnvelope,
+    SelfPresenceFixtureSet,
+    fixture_set,
+    load_self_presence_fixture_set,
+)
 from shared.semantic_recruitment import (
     SemanticDescription,
     SemanticRecruitmentFixtureSet,
@@ -555,3 +565,16 @@ load_format_wcs_requirement_matrix
 decide_format_wcs_readiness
 director_projection
 opportunity_gate_projection
+
+# Self-presence ontology validators are invoked dynamically by Pydantic while
+# validating the unified self-grounding fixture envelope contract. The loader
+# and fixture_set helper are public contracts for downstream aperture registry,
+# route/claim envelope, bridge governor, and deictic resolver tasks.
+OntologyTermMapping._requires_existing_vocab_targets
+Aperture._public_live_requires_evidence
+ClaimBinding._prompt_only_states_are_not_evidence
+ApertureEvent._success_requires_witness
+SelfPresenceEnvelope._fail_closed_public_speech
+SelfPresenceFixtureSet._covers_required_contract
+load_self_presence_fixture_set
+fixture_set

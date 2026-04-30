@@ -1,0 +1,422 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/self-presence-envelope.schema.json",
+  "title": "SelfPresenceEnvelopeFixtures",
+  "description": "Fixture-backed ontology contract for Hapax Unified self-grounding. Roles are offices/lenses, apertures are exposure boundaries, and prompt-only states never satisfy witnessed success.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "roles_are_offices_statement",
+    "prompt_only_non_witness_states",
+    "ontology_term_mappings",
+    "envelopes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {"type": "string", "const": "schemas/self-presence-envelope.schema.json"},
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "roles_are_offices_statement": {
+      "type": "string",
+      "const": "Roles are offices/lenses that define answerability and authority; they are not masks, personas, activities, or fictional selves."
+    },
+    "prompt_only_non_witness_states": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/prompt_only_non_witness_state"},
+      "uniqueItems": true,
+      "minItems": 6
+    },
+    "ontology_term_mappings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/ontology_term_mapping"},
+      "minItems": 6
+    },
+    "envelopes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/self_presence_envelope"},
+      "minItems": 6
+    }
+  },
+  "x-required_ontology_terms": [
+    "Aperture",
+    "RoleState",
+    "SelfPresenceEnvelope",
+    "ClaimBinding",
+    "ApertureEvent",
+    "ContinuityObligation"
+  ],
+  "x-required_fixture_cases": [
+    "private_answer",
+    "public_speech_candidate",
+    "livestream_referent",
+    "archive_only_referent",
+    "synthetic_only_provenance",
+    "blocked_route"
+  ],
+  "x-required_mapping_targets": ["wcs", "temporal", "chronicle", "role", "impingement"],
+  "x-prompt_only_non_witness_states": [
+    "selection",
+    "command_dispatch",
+    "prompt_text",
+    "render_state",
+    "inference",
+    "log_write"
+  ],
+  "$defs": {
+    "non_empty_string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "prompt_only_non_witness_state": {
+      "type": "string",
+      "enum": [
+        "selection",
+        "command_dispatch",
+        "prompt_text",
+        "render_state",
+        "inference",
+        "log_write"
+      ]
+    },
+    "aperture_kind": {
+      "type": "string",
+      "enum": [
+        "private_assistant",
+        "public_broadcast_voice",
+        "composed_livestream_frame",
+        "raw_studio_camera",
+        "archive_window",
+        "sidechat",
+        "caption_surface",
+        "public_event",
+        "wcs_row"
+      ]
+    },
+    "exposure_mode": {
+      "type": "string",
+      "enum": [
+        "private",
+        "public_candidate",
+        "public_live",
+        "archive_only",
+        "synthetic_only",
+        "blocked"
+      ]
+    },
+    "role_office": {
+      "type": "string",
+      "enum": [
+        "private_assistant",
+        "public_narrator",
+        "director",
+        "research_vehicle",
+        "publication_adapter",
+        "governance_refusal"
+      ]
+    },
+    "addressee_mode": {
+      "type": "string",
+      "enum": ["operator", "public_audience", "sidechat", "archive_reader", "system"]
+    },
+    "authority_ceiling": {
+      "type": "string",
+      "enum": [
+        "no_claim",
+        "private_only",
+        "diagnostic_only",
+        "last_observed_only",
+        "evidence_bound",
+        "public_gate_required"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": [
+        "private",
+        "public_candidate",
+        "public_safe",
+        "public_live",
+        "archive",
+        "public_forbidden"
+      ]
+    },
+    "temporal_band": {
+      "type": "string",
+      "enum": ["retention", "impression", "protention", "surprise"]
+    },
+    "event_kind": {
+      "type": "string",
+      "enum": [
+        "private_utterance",
+        "public_speech",
+        "public_surface_referent",
+        "tool_receipt",
+        "compositor_action",
+        "public_event",
+        "refusal"
+      ]
+    },
+    "event_success_state": {
+      "type": "string",
+      "enum": ["witnessed", "refuted", "expired", "blocked", "unknown"]
+    },
+    "allowed_outcome": {
+      "type": "string",
+      "enum": [
+        "private_answer",
+        "public_speech_allowed",
+        "public_action_proposal",
+        "dry_run",
+        "held",
+        "refusal",
+        "correction",
+        "no_claim",
+        "unknown"
+      ]
+    },
+    "ontology_term_mapping": {
+      "type": "object",
+      "required": ["term", "definition", "maps_to"],
+      "additionalProperties": false,
+      "properties": {
+        "term": {"type": "string", "enum": ["Aperture", "RoleState", "SelfPresenceEnvelope", "ClaimBinding", "ApertureEvent", "ContinuityObligation"]},
+        "definition": {"type": "string", "minLength": 1},
+        "maps_to": {
+          "type": "object",
+          "required": ["wcs", "temporal", "chronicle", "role", "impingement"],
+          "additionalProperties": false,
+          "properties": {
+            "wcs": {"$ref": "#/$defs/non_empty_string_array"},
+            "temporal": {"$ref": "#/$defs/non_empty_string_array"},
+            "chronicle": {"$ref": "#/$defs/non_empty_string_array"},
+            "role": {"$ref": "#/$defs/non_empty_string_array"},
+            "impingement": {"$ref": "#/$defs/non_empty_string_array"}
+          }
+        }
+      }
+    },
+    "role_state": {
+      "type": "object",
+      "required": [
+        "role_id",
+        "office",
+        "addressee_mode",
+        "answerability_refs",
+        "authority_scope",
+        "route_posture",
+        "roles_are_offices_not_masks"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "role_id": {"type": "string", "pattern": "^role:[a-z0-9_.:-]+$"},
+        "office": {"$ref": "#/$defs/role_office"},
+        "addressee_mode": {"$ref": "#/$defs/addressee_mode"},
+        "answerability_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "authority_scope": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/authority_ceiling"},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "route_posture": {"type": "string", "minLength": 1},
+        "roles_are_offices_not_masks": {"type": "boolean", "const": true}
+      }
+    },
+    "aperture": {
+      "type": "object",
+      "required": [
+        "aperture_id",
+        "kind",
+        "exposure_mode",
+        "public_private_mode",
+        "evidence_classes",
+        "surface_refs",
+        "claim_authority_ceiling"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "aperture_id": {"type": "string", "pattern": "^aperture:[a-z0-9_.:-]+$"},
+        "kind": {"$ref": "#/$defs/aperture_kind"},
+        "exposure_mode": {"$ref": "#/$defs/exposure_mode"},
+        "public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+        "evidence_classes": {"$ref": "#/$defs/non_empty_string_array"},
+        "surface_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "claim_authority_ceiling": {"$ref": "#/$defs/authority_ceiling"}
+      }
+    },
+    "claim_binding": {
+      "type": "object",
+      "required": [
+        "claim_id",
+        "representation_ref",
+        "evidence_envelope_refs",
+        "authority_ceiling",
+        "public_private_mode",
+        "temporal_band",
+        "witness_refs",
+        "support_states"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^claim:[a-z0-9_.:-]+$"},
+        "representation_ref": {"type": "string", "minLength": 1},
+        "evidence_envelope_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+        "temporal_band": {"$ref": "#/$defs/temporal_band"},
+        "witness_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "support_states": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "if": {
+        "properties": {"public_private_mode": {"const": "public_live"}}
+      },
+      "then": {
+        "properties": {
+          "authority_ceiling": {"const": "public_gate_required"},
+          "evidence_envelope_refs": {"minItems": 1},
+          "witness_refs": {"minItems": 1}
+        }
+      }
+    },
+    "aperture_event": {
+      "type": "object",
+      "required": [
+        "event_id",
+        "aperture_id",
+        "event_kind",
+        "temporal_span_ref",
+        "witness_refs",
+        "success_state",
+        "support_states"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {"type": "string", "pattern": "^aperture-event:[a-z0-9_.:-]+$"},
+        "aperture_id": {"type": "string", "pattern": "^aperture:[a-z0-9_.:-]+$"},
+        "event_kind": {"$ref": "#/$defs/event_kind"},
+        "temporal_span_ref": {"type": ["string", "null"], "pattern": "^span:[a-z0-9_.:-]+$"},
+        "witness_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "success_state": {"$ref": "#/$defs/event_success_state"},
+        "support_states": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "continuity_obligation": {
+      "type": "object",
+      "required": [
+        "obligation_id",
+        "obligation_kind",
+        "source_event_ref",
+        "status",
+        "visibility",
+        "resolution_policy"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "obligation_id": {"type": "string", "pattern": "^continuity:[a-z0-9_.:-]+$"},
+        "obligation_kind": {"type": "string", "minLength": 1},
+        "source_event_ref": {"type": "string", "pattern": "^aperture-event:[a-z0-9_.:-]+$"},
+        "status": {"type": "string", "enum": ["open", "resolved", "expired", "blocked"]},
+        "visibility": {"$ref": "#/$defs/public_private_mode"},
+        "resolution_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "self_presence_envelope": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "envelope_id",
+        "fixture_case",
+        "role_state",
+        "apertures",
+        "active_environment_refs",
+        "source_context_refs",
+        "private_risk_flags",
+        "route_decision",
+        "programme_authorization",
+        "audio_safety",
+        "livestream_egress_state",
+        "wcs_snapshot_refs",
+        "temporal_evidence_refs",
+        "multimodal_evidence_refs",
+        "speech_event_refs",
+        "chronicle_refs",
+        "triad_refs",
+        "claim_bindings",
+        "aperture_events",
+        "continuity_obligations",
+        "recruitment_context_refs",
+        "action_receipt_refs",
+        "consent_privacy_ceiling",
+        "rights_provenance_ceiling",
+        "public_claim_ceiling",
+        "blockers",
+        "allowed_outcomes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "envelope_id": {"type": "string", "pattern": "^self-presence:[a-z0-9_.:-]+$"},
+        "fixture_case": {"type": "string", "enum": ["private_answer", "public_speech_candidate", "livestream_referent", "archive_only_referent", "synthetic_only_provenance", "blocked_route"]},
+        "role_state": {"$ref": "#/$defs/role_state"},
+        "apertures": {"type": "array", "items": {"$ref": "#/$defs/aperture"}, "minItems": 1},
+        "active_environment_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "source_context_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "private_risk_flags": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "route_decision": {"type": "string", "enum": ["private", "broadcast", "held", "blocked", "archive_only"]},
+        "programme_authorization": {"type": "string", "enum": ["fresh", "missing", "expired", "not_required"]},
+        "audio_safety": {"type": "string", "enum": ["safe", "unsafe", "unknown", "not_applicable"]},
+        "livestream_egress_state": {"type": "string", "enum": ["witnessed", "not_witnessed", "not_applicable"]},
+        "wcs_snapshot_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "temporal_evidence_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "multimodal_evidence_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "speech_event_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "chronicle_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "triad_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "claim_bindings": {"type": "array", "items": {"$ref": "#/$defs/claim_binding"}},
+        "aperture_events": {"type": "array", "items": {"$ref": "#/$defs/aperture_event"}},
+        "continuity_obligations": {"type": "array", "items": {"$ref": "#/$defs/continuity_obligation"}},
+        "recruitment_context_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "action_receipt_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "consent_privacy_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "rights_provenance_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "public_claim_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "blockers": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "allowed_outcomes": {"type": "array", "items": {"$ref": "#/$defs/allowed_outcome"}, "uniqueItems": true, "minItems": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"allowed_outcomes": {"contains": {"const": "public_speech_allowed"}}}},
+          "then": {
+            "properties": {
+              "route_decision": {"const": "broadcast"},
+              "programme_authorization": {"const": "fresh"},
+              "audio_safety": {"const": "safe"},
+              "livestream_egress_state": {"const": "witnessed"},
+              "public_claim_ceiling": {"const": "public_gate_required"},
+              "speech_event_refs": {"minItems": 1},
+              "blockers": {"maxItems": 0}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

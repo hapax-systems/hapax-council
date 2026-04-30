@@ -1,0 +1,558 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "hapax-unified-self-grounding-ontology-v1",
+  "schema_ref": "schemas/self-presence-envelope.schema.json",
+  "generated_from": [
+    "Documents/Personal/20-projects/hapax-research/audits/2026-04-30-hapax-unified-self-grounding-discovery-synthesis.md",
+    "Documents/Personal/20-projects/hapax-research/specs/2026-04-30-hapax-unified-self-grounding-spine.md",
+    "Documents/Personal/20-projects/hapax-research/specs/2026-04-29-world-capability-surface-parent-spec.md",
+    "Documents/Personal/20-projects/hapax-research/specs/2026-04-29-first-principles-semantic-recruitment-formalization.md"
+  ],
+  "roles_are_offices_statement": "Roles are offices/lenses that define answerability and authority; they are not masks, personas, activities, or fictional selves.",
+  "prompt_only_non_witness_states": [
+    "selection",
+    "command_dispatch",
+    "prompt_text",
+    "render_state",
+    "inference",
+    "log_write"
+  ],
+  "ontology_term_mappings": [
+    {
+      "term": "Aperture",
+      "definition": "A boundary of perspective and exposure through which a claim, answer, action, or representation is situated.",
+      "maps_to": {
+        "wcs": ["WorldCapabilityRecord.surface_refs", "SemanticSubstrate.public_claim_policy"],
+        "temporal": ["TemporalEvidenceEnvelope.public_scope", "TemporalEvidenceEnvelope.span_refs"],
+        "chronicle": ["chronicle_refs", "speech_event_refs"],
+        "role": ["RoleState.addressee_mode", "RoleState.route_posture"],
+        "impingement": ["Impingement.intent_family", "recruitment_context_refs"]
+      }
+    },
+    {
+      "term": "RoleState",
+      "definition": "The active office or lens that determines answerability, route posture, authority, and addressee.",
+      "maps_to": {
+        "wcs": ["WorldCapabilityRecord.authority_ceiling", "WorldCapabilityRecord.public_private_posture"],
+        "temporal": ["TemporalEvidenceEnvelope.authority_ceiling", "TemporalEvidenceEnvelope.public_scope"],
+        "chronicle": ["chronicle.role_ref", "speech_event.role_ref"],
+        "role": ["RoleOffice", "AddresseeMode"],
+        "impingement": ["Impingement.source", "Impingement.intent_family"]
+      }
+    },
+    {
+      "term": "SelfPresenceEnvelope",
+      "definition": "Canonical per-turn or per-event projection over role, apertures, evidence, route, claim ceilings, and open obligations.",
+      "maps_to": {
+        "wcs": ["wcs_snapshot_refs", "public_claim_ceiling"],
+        "temporal": ["temporal_evidence_refs", "active_environment_refs"],
+        "chronicle": ["chronicle_refs", "triad_refs"],
+        "role": ["role_state", "source_context_refs"],
+        "impingement": ["recruitment_context_refs", "action_receipt_refs"]
+      }
+    },
+    {
+      "term": "ClaimBinding",
+      "definition": "A link between a representation or assertion and evidence refs, authority ceiling, public/private mode, temporal band, and witnesses.",
+      "maps_to": {
+        "wcs": ["public_claim_policy", "witness_requirements"],
+        "temporal": ["TemporalEvidenceEnvelope.temporal_band", "TemporalEvidenceEnvelope.authority_ceiling"],
+        "chronicle": ["chronicle.claim_ref", "speech_event_id"],
+        "role": ["RoleState.authority_scope", "RoleState.answerability_refs"],
+        "impingement": ["tool_receipt", "outcome_learning_policy"]
+      }
+    },
+    {
+      "term": "ApertureEvent",
+      "definition": "An append-only event keyed by aperture and temporal span; witnessed success is distinct from selection, command, render, log, and inference.",
+      "maps_to": {
+        "wcs": ["witness_refs", "outcome_learning_policy"],
+        "temporal": ["temporal_span_ref", "span_refs"],
+        "chronicle": ["speech_event_id", "public_event_ref"],
+        "role": ["RoleState.route_posture", "RoleState.addressee_mode"],
+        "impingement": ["Impingement.event_id", "action_receipt_refs"]
+      }
+    },
+    {
+      "term": "ContinuityObligation",
+      "definition": "An open observation, question, utterance, action, promise, correction, or unresolved outcome that must resolve, expire, or stay visible.",
+      "maps_to": {
+        "wcs": ["blocked_reasons", "fallback"],
+        "temporal": ["valid_until_wall", "must_verify_by"],
+        "chronicle": ["triad_refs", "chronicle_refs"],
+        "role": ["RoleState.answerability_refs", "RoleState.authority_scope"],
+        "impingement": ["recruitment_context_refs", "outcome_learning_policy"]
+      }
+    }
+  ],
+  "envelopes": [
+    {
+      "schema_version": 1,
+      "envelope_id": "self-presence:fixture.private-answer",
+      "fixture_case": "private_answer",
+      "role_state": {
+        "role_id": "role:private-assistant",
+        "office": "private_assistant",
+        "addressee_mode": "operator",
+        "answerability_refs": ["role-policy:single-operator", "aperture:private-assistant"],
+        "authority_scope": ["private_only"],
+        "route_posture": "private answer only",
+        "roles_are_offices_not_masks": true
+      },
+      "apertures": [
+        {
+          "aperture_id": "aperture:private-assistant",
+          "kind": "private_assistant",
+          "exposure_mode": "private",
+          "public_private_mode": "private",
+          "evidence_classes": ["private-context", "operator-addressed"],
+          "surface_refs": ["sidechat:operator-private"],
+          "claim_authority_ceiling": "private_only"
+        }
+      ],
+      "active_environment_refs": ["env:operator-workstation"],
+      "source_context_refs": ["source:private-chat-turn"],
+      "private_risk_flags": ["private-addressed"],
+      "route_decision": "private",
+      "programme_authorization": "not_required",
+      "audio_safety": "not_applicable",
+      "livestream_egress_state": "not_applicable",
+      "wcs_snapshot_refs": ["wcs:private-assistant-context"],
+      "temporal_evidence_refs": ["temporal-evidence:impression.private-turn"],
+      "multimodal_evidence_refs": ["evidence:operator-addressed-text"],
+      "speech_event_refs": [],
+      "chronicle_refs": ["chronicle:private-turn"],
+      "triad_refs": ["triad:operator-question"],
+      "claim_bindings": [
+        {
+          "claim_id": "claim:private-answer-scope",
+          "representation_ref": "answer:private",
+          "evidence_envelope_refs": ["temporal-evidence:impression.private-turn"],
+          "authority_ceiling": "private_only",
+          "public_private_mode": "private",
+          "temporal_band": "impression",
+          "witness_refs": ["witness:operator-private-chat"],
+          "support_states": ["private-context"]
+        }
+      ],
+      "aperture_events": [
+        {
+          "event_id": "aperture-event:private-answer.observed",
+          "aperture_id": "aperture:private-assistant",
+          "event_kind": "private_utterance",
+          "temporal_span_ref": "span:private-turn",
+          "witness_refs": ["witness:operator-private-chat"],
+          "success_state": "witnessed",
+          "support_states": ["private-context"]
+        }
+      ],
+      "continuity_obligations": [
+        {
+          "obligation_id": "continuity:private-answer-followup",
+          "obligation_kind": "operator-question",
+          "source_event_ref": "aperture-event:private-answer.observed",
+          "status": "open",
+          "visibility": "private",
+          "resolution_policy": "resolve in private answer or carry visibly as private-only uncertainty"
+        }
+      ],
+      "recruitment_context_refs": ["impingement:operator-private-question"],
+      "action_receipt_refs": [],
+      "consent_privacy_ceiling": "private_only",
+      "rights_provenance_ceiling": "private_only",
+      "public_claim_ceiling": "no_claim",
+      "blockers": [],
+      "allowed_outcomes": ["private_answer", "no_claim"]
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "self-presence:fixture.public-speech-candidate",
+      "fixture_case": "public_speech_candidate",
+      "role_state": {
+        "role_id": "role:public-narrator-candidate",
+        "office": "public_narrator",
+        "addressee_mode": "public_audience",
+        "answerability_refs": ["role-policy:public-claim-gate", "aperture:public-broadcast-voice"],
+        "authority_scope": ["public_gate_required"],
+        "route_posture": "candidate only until gates witness public route",
+        "roles_are_offices_not_masks": true
+      },
+      "apertures": [
+        {
+          "aperture_id": "aperture:public-broadcast-voice",
+          "kind": "public_broadcast_voice",
+          "exposure_mode": "public_candidate",
+          "public_private_mode": "public_candidate",
+          "evidence_classes": ["programme-authorization", "audio-safe-state", "broadcast-route"],
+          "surface_refs": ["route:semantic-broadcast"],
+          "claim_authority_ceiling": "public_gate_required"
+        }
+      ],
+      "active_environment_refs": ["env:livestream-programme"],
+      "source_context_refs": ["source:public-intent-candidate"],
+      "private_risk_flags": [],
+      "route_decision": "held",
+      "programme_authorization": "missing",
+      "audio_safety": "safe",
+      "livestream_egress_state": "not_witnessed",
+      "wcs_snapshot_refs": ["wcs:broadcast-audio-safe"],
+      "temporal_evidence_refs": ["temporal-evidence:impression.programme-window"],
+      "multimodal_evidence_refs": ["evidence:route-intent-public"],
+      "speech_event_refs": [],
+      "chronicle_refs": ["chronicle:public-speech-candidate"],
+      "triad_refs": [],
+      "claim_bindings": [
+        {
+          "claim_id": "claim:public-speech-candidate",
+          "representation_ref": "utterance:candidate",
+          "evidence_envelope_refs": ["temporal-evidence:impression.programme-window"],
+          "authority_ceiling": "public_gate_required",
+          "public_private_mode": "public_candidate",
+          "temporal_band": "impression",
+          "witness_refs": ["witness:broadcast-audio-safe"],
+          "support_states": ["gate-candidate"]
+        }
+      ],
+      "aperture_events": [
+        {
+          "event_id": "aperture-event:public-speech.selected",
+          "aperture_id": "aperture:public-broadcast-voice",
+          "event_kind": "public_speech",
+          "temporal_span_ref": "span:programme-candidate",
+          "witness_refs": ["witness:broadcast-audio-safe"],
+          "success_state": "unknown",
+          "support_states": ["selection", "prompt_text"]
+        }
+      ],
+      "continuity_obligations": [
+        {
+          "obligation_id": "continuity:public-speech-gate",
+          "obligation_kind": "public-route-authorization",
+          "source_event_ref": "aperture-event:public-speech.selected",
+          "status": "open",
+          "visibility": "public_candidate",
+          "resolution_policy": "require fresh programme authorization and public egress witness before speech"
+        }
+      ],
+      "recruitment_context_refs": ["impingement:public-narration-candidate"],
+      "action_receipt_refs": [],
+      "consent_privacy_ceiling": "public_gate_required",
+      "rights_provenance_ceiling": "public_gate_required",
+      "public_claim_ceiling": "public_gate_required",
+      "blockers": ["missing-programme-authorization", "missing-public-egress-witness"],
+      "allowed_outcomes": ["public_action_proposal", "held", "no_claim"]
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "self-presence:fixture.livestream-referent",
+      "fixture_case": "livestream_referent",
+      "role_state": {
+        "role_id": "role:research-vehicle",
+        "office": "research_vehicle",
+        "addressee_mode": "public_audience",
+        "answerability_refs": ["role-policy:research-vehicle", "aperture:composed-livestream-frame"],
+        "authority_scope": ["evidence_bound", "public_gate_required"],
+        "route_posture": "public-live referent requires composed-frame evidence",
+        "roles_are_offices_not_masks": true
+      },
+      "apertures": [
+        {
+          "aperture_id": "aperture:composed-livestream-frame",
+          "kind": "composed_livestream_frame",
+          "exposure_mode": "public_live",
+          "public_private_mode": "public_live",
+          "evidence_classes": ["composed-frame", "egress-accepted", "temporal-span"],
+          "surface_refs": ["surface:obs-v4l2", "surface:hls"],
+          "claim_authority_ceiling": "public_gate_required"
+        }
+      ],
+      "active_environment_refs": ["env:livestream"],
+      "source_context_refs": ["source:public-composed-frame"],
+      "private_risk_flags": [],
+      "route_decision": "broadcast",
+      "programme_authorization": "fresh",
+      "audio_safety": "safe",
+      "livestream_egress_state": "witnessed",
+      "wcs_snapshot_refs": ["wcs:composed-livestream-frame"],
+      "temporal_evidence_refs": ["temporal-evidence:impression.public-frame"],
+      "multimodal_evidence_refs": ["evidence:compositor-frame-nonblank"],
+      "speech_event_refs": ["speech-event:public-frame-reference"],
+      "chronicle_refs": ["chronicle:livestream-referent"],
+      "triad_refs": ["triad:public-referent"],
+      "claim_bindings": [
+        {
+          "claim_id": "claim:livestream-visible-referent",
+          "representation_ref": "referent:composed-frame",
+          "evidence_envelope_refs": ["temporal-evidence:impression.public-frame", "evidence:compositor-frame-nonblank"],
+          "authority_ceiling": "public_gate_required",
+          "public_private_mode": "public_live",
+          "temporal_band": "impression",
+          "witness_refs": ["witness:hls-frame", "witness:obs-v4l2"],
+          "support_states": ["witnessed-frame"]
+        }
+      ],
+      "aperture_events": [
+        {
+          "event_id": "aperture-event:livestream-frame.witnessed",
+          "aperture_id": "aperture:composed-livestream-frame",
+          "event_kind": "public_surface_referent",
+          "temporal_span_ref": "span:public-frame-current",
+          "witness_refs": ["witness:hls-frame", "witness:obs-v4l2"],
+          "success_state": "witnessed",
+          "support_states": ["witnessed-frame"]
+        }
+      ],
+      "continuity_obligations": [
+        {
+          "obligation_id": "continuity:livestream-referent-age",
+          "obligation_kind": "freshness-window",
+          "source_event_ref": "aperture-event:livestream-frame.witnessed",
+          "status": "open",
+          "visibility": "public_live",
+          "resolution_policy": "expire public-live referent when frame/wcs TTL expires"
+        }
+      ],
+      "recruitment_context_refs": ["impingement:public-frame-reference"],
+      "action_receipt_refs": ["receipt:egress-frame-observed"],
+      "consent_privacy_ceiling": "public_gate_required",
+      "rights_provenance_ceiling": "public_gate_required",
+      "public_claim_ceiling": "public_gate_required",
+      "blockers": [],
+      "allowed_outcomes": ["public_speech_allowed", "private_answer"]
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "self-presence:fixture.archive-only-referent",
+      "fixture_case": "archive_only_referent",
+      "role_state": {
+        "role_id": "role:archive-reader",
+        "office": "research_vehicle",
+        "addressee_mode": "archive_reader",
+        "answerability_refs": ["role-policy:archive-replay", "aperture:archive-window"],
+        "authority_scope": ["last_observed_only"],
+        "route_posture": "last-observed archive claim only",
+        "roles_are_offices_not_masks": true
+      },
+      "apertures": [
+        {
+          "aperture_id": "aperture:archive-window",
+          "kind": "archive_window",
+          "exposure_mode": "archive_only",
+          "public_private_mode": "archive",
+          "evidence_classes": ["archive-segment", "temporal-span"],
+          "surface_refs": ["archive:vod-segment"],
+          "claim_authority_ceiling": "last_observed_only"
+        }
+      ],
+      "active_environment_refs": ["env:archive-replay"],
+      "source_context_refs": ["source:vod-segment"],
+      "private_risk_flags": [],
+      "route_decision": "archive_only",
+      "programme_authorization": "not_required",
+      "audio_safety": "not_applicable",
+      "livestream_egress_state": "not_applicable",
+      "wcs_snapshot_refs": ["wcs:archive-window"],
+      "temporal_evidence_refs": ["temporal-evidence:retention.archive-segment"],
+      "multimodal_evidence_refs": ["evidence:archive-frame"],
+      "speech_event_refs": [],
+      "chronicle_refs": ["chronicle:archive-referent"],
+      "triad_refs": [],
+      "claim_bindings": [
+        {
+          "claim_id": "claim:archive-last-observed",
+          "representation_ref": "referent:archive-window",
+          "evidence_envelope_refs": ["temporal-evidence:retention.archive-segment"],
+          "authority_ceiling": "last_observed_only",
+          "public_private_mode": "archive",
+          "temporal_band": "retention",
+          "witness_refs": ["witness:archive-segment"],
+          "support_states": ["archive-segment"]
+        }
+      ],
+      "aperture_events": [
+        {
+          "event_id": "aperture-event:archive.segment-observed",
+          "aperture_id": "aperture:archive-window",
+          "event_kind": "public_surface_referent",
+          "temporal_span_ref": "span:archive-segment",
+          "witness_refs": ["witness:archive-segment"],
+          "success_state": "witnessed",
+          "support_states": ["archive-segment"]
+        }
+      ],
+      "continuity_obligations": [
+        {
+          "obligation_id": "continuity:archive-age-language",
+          "obligation_kind": "age-window-language",
+          "source_event_ref": "aperture-event:archive.segment-observed",
+          "status": "open",
+          "visibility": "archive",
+          "resolution_policy": "render as last-observed with explicit age/window language"
+        }
+      ],
+      "recruitment_context_refs": ["impingement:archive-referent"],
+      "action_receipt_refs": [],
+      "consent_privacy_ceiling": "last_observed_only",
+      "rights_provenance_ceiling": "last_observed_only",
+      "public_claim_ceiling": "last_observed_only",
+      "blockers": ["not-current-live"],
+      "allowed_outcomes": ["private_answer", "no_claim"]
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "self-presence:fixture.synthetic-only-provenance",
+      "fixture_case": "synthetic_only_provenance",
+      "role_state": {
+        "role_id": "role:director-diagnostic",
+        "office": "director",
+        "addressee_mode": "system",
+        "answerability_refs": ["role-policy:director-diagnostic", "aperture:wcs-row"],
+        "authority_scope": ["diagnostic_only"],
+        "route_posture": "diagnostic state only",
+        "roles_are_offices_not_masks": true
+      },
+      "apertures": [
+        {
+          "aperture_id": "aperture:wcs-row",
+          "kind": "wcs_row",
+          "exposure_mode": "synthetic_only",
+          "public_private_mode": "public_forbidden",
+          "evidence_classes": ["synthetic", "diagnostic"],
+          "surface_refs": ["wcs:director-synthetic-state"],
+          "claim_authority_ceiling": "diagnostic_only"
+        }
+      ],
+      "active_environment_refs": ["env:director-diagnostic"],
+      "source_context_refs": ["source:synthetic-director-state"],
+      "private_risk_flags": [],
+      "route_decision": "held",
+      "programme_authorization": "not_required",
+      "audio_safety": "not_applicable",
+      "livestream_egress_state": "not_applicable",
+      "wcs_snapshot_refs": ["wcs:director-synthetic-state"],
+      "temporal_evidence_refs": ["temporal-evidence:diagnostic.synthetic"],
+      "multimodal_evidence_refs": ["evidence:synthetic-only"],
+      "speech_event_refs": [],
+      "chronicle_refs": ["chronicle:director-diagnostic"],
+      "triad_refs": [],
+      "claim_bindings": [
+        {
+          "claim_id": "claim:synthetic-diagnostic-only",
+          "representation_ref": "state:director-synthetic",
+          "evidence_envelope_refs": ["temporal-evidence:diagnostic.synthetic"],
+          "authority_ceiling": "diagnostic_only",
+          "public_private_mode": "public_forbidden",
+          "temporal_band": "impression",
+          "witness_refs": ["witness:diagnostic-row"],
+          "support_states": ["render_state", "inference"]
+        }
+      ],
+      "aperture_events": [
+        {
+          "event_id": "aperture-event:synthetic.rendered",
+          "aperture_id": "aperture:wcs-row",
+          "event_kind": "compositor_action",
+          "temporal_span_ref": "span:synthetic-diagnostic",
+          "witness_refs": ["witness:diagnostic-row"],
+          "success_state": "unknown",
+          "support_states": ["render_state", "inference"]
+        }
+      ],
+      "continuity_obligations": [
+        {
+          "obligation_id": "continuity:synthetic-not-evidence",
+          "obligation_kind": "public-claim-suppression",
+          "source_event_ref": "aperture-event:synthetic.rendered",
+          "status": "open",
+          "visibility": "public_forbidden",
+          "resolution_policy": "keep diagnostic provenance visible and block factual public claim use"
+        }
+      ],
+      "recruitment_context_refs": ["impingement:director-synthetic"],
+      "action_receipt_refs": [],
+      "consent_privacy_ceiling": "diagnostic_only",
+      "rights_provenance_ceiling": "diagnostic_only",
+      "public_claim_ceiling": "no_claim",
+      "blockers": ["synthetic-only-provenance"],
+      "allowed_outcomes": ["dry_run", "no_claim"]
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "self-presence:fixture.blocked-route",
+      "fixture_case": "blocked_route",
+      "role_state": {
+        "role_id": "role:governance-refusal",
+        "office": "governance_refusal",
+        "addressee_mode": "operator",
+        "answerability_refs": ["role-policy:private-to-public-bridge", "aperture:sidechat"],
+        "authority_scope": ["no_claim", "private_only"],
+        "route_posture": "blocked until private-to-public bridge reauthorizes",
+        "roles_are_offices_not_masks": true
+      },
+      "apertures": [
+        {
+          "aperture_id": "aperture:sidechat",
+          "kind": "sidechat",
+          "exposure_mode": "blocked",
+          "public_private_mode": "private",
+          "evidence_classes": ["private-intent", "blocked-public-route"],
+          "surface_refs": ["sidechat:operator-private"],
+          "claim_authority_ceiling": "private_only"
+        }
+      ],
+      "active_environment_refs": ["env:operator-workstation"],
+      "source_context_refs": ["source:private-request-public-action"],
+      "private_risk_flags": ["private-source-context"],
+      "route_decision": "blocked",
+      "programme_authorization": "missing",
+      "audio_safety": "unknown",
+      "livestream_egress_state": "not_witnessed",
+      "wcs_snapshot_refs": ["wcs:blocked-public-route"],
+      "temporal_evidence_refs": ["temporal-evidence:impression.private-public-request"],
+      "multimodal_evidence_refs": ["evidence:private-source-context"],
+      "speech_event_refs": [],
+      "chronicle_refs": ["chronicle:blocked-route"],
+      "triad_refs": ["triad:public-action-request"],
+      "claim_bindings": [
+        {
+          "claim_id": "claim:blocked-public-route",
+          "representation_ref": "route:blocked",
+          "evidence_envelope_refs": ["temporal-evidence:impression.private-public-request"],
+          "authority_ceiling": "no_claim",
+          "public_private_mode": "private",
+          "temporal_band": "impression",
+          "witness_refs": ["witness:private-request"],
+          "support_states": ["command_dispatch", "prompt_text"]
+        }
+      ],
+      "aperture_events": [
+        {
+          "event_id": "aperture-event:route.commanded",
+          "aperture_id": "aperture:sidechat",
+          "event_kind": "refusal",
+          "temporal_span_ref": "span:private-public-request",
+          "witness_refs": ["witness:private-request"],
+          "success_state": "blocked",
+          "support_states": ["command_dispatch", "prompt_text"]
+        }
+      ],
+      "continuity_obligations": [
+        {
+          "obligation_id": "continuity:bridge-reauthorization",
+          "obligation_kind": "private-to-public-bridge",
+          "source_event_ref": "aperture-event:route.commanded",
+          "status": "blocked",
+          "visibility": "private",
+          "resolution_policy": "require typed bridge governor before any public route or claim"
+        }
+      ],
+      "recruitment_context_refs": ["impingement:private-public-action-request"],
+      "action_receipt_refs": [],
+      "consent_privacy_ceiling": "private_only",
+      "rights_provenance_ceiling": "private_only",
+      "public_claim_ceiling": "no_claim",
+      "blockers": ["private-risk-source-context", "missing-bridge-reauthorization", "missing-public-egress-witness"],
+      "allowed_outcomes": ["refusal", "held", "no_claim"]
+    }
+  ]
+}
