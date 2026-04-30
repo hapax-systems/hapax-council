@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/grant-opportunity-scout.schema.json",
+  "title": "Grant Opportunity Scout Attestation Queue Fixtures",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "fixture_set_id", "schema_ref", "source_refs", "scout_sources", "fixtures"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "const": "grant_opportunity_scout_attestation_queue"},
+    "schema_ref": {"type": "string", "const": "schemas/grant-opportunity-scout.schema.json"},
+    "source_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+    "scout_sources": {"type": "array", "items": {"$ref": "#/$defs/scout_source"}, "minItems": 1},
+    "fixtures": {"type": "array", "items": {"$ref": "#/$defs/fixture"}, "minItems": 6}
+  },
+  "$defs": {
+    "string_array": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "scout_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "name", "url", "cadence", "automation_mode", "requires_manual_opportunity_chasing", "source_refs"],
+      "properties": {
+        "source_id": {"type": "string", "pattern": "^[a-z0-9_.-]+$"},
+        "name": {"type": "string", "minLength": 1},
+        "url": {"type": "string", "minLength": 1},
+        "cadence": {"enum": ["daily", "weekly", "monthly", "deadline_window"]},
+        "automation_mode": {"enum": ["api", "rss", "site_watch", "mailbox_parser", "operator_seeded_once"]},
+        "requires_manual_opportunity_chasing": {"type": "boolean", "const": false},
+        "source_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "obligation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class_id", "recurrence", "automation_fit", "summary"],
+      "properties": {
+        "class_id": {
+          "enum": [
+            "legal_attestation",
+            "bootstrap_setup",
+            "reporting",
+            "public_demo",
+            "custom_deliverable",
+            "private_data_exposure",
+            "institution_requirement",
+            "community_client_service",
+            "recurring_manual_labor"
+          ]
+        },
+        "recurrence": {"enum": ["one_time", "recurring", "unknown"]},
+        "automation_fit": {"enum": ["automated", "operator_attestation", "manual", "unknown"]},
+        "summary": {"type": "string", "minLength": 1}
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attachment_id", "description", "evidence_refs", "operator_attestation_required"],
+      "properties": {
+        "attachment_id": {"type": "string", "pattern": "^[a-z0-9_.-]+$"},
+        "description": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "operator_attestation_required": {"type": "boolean"}
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "explicit_operator_act_only", "operator_action", "attestation_ref", "operator_visible_reason"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "explicit_operator_act_only": {"type": "boolean", "const": true},
+        "operator_action": {
+          "enum": [
+            "none",
+            "one_time_bootstrap",
+            "explicit_legal_attestation",
+            "guarded_public_demo_review",
+            "institution_requirement_review"
+          ]
+        },
+        "attestation_ref": {"type": ["string", "null"]},
+        "operator_visible_reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "evidence_packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packet_id", "evidence_refs", "privacy_labeled", "provenance_labeled", "public_release_allowed", "monetization_allowed"],
+      "properties": {
+        "packet_id": {"type": "string", "pattern": "^[a-z0-9_.:-]+$"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"},
+        "n1_methodology_refs": {"$ref": "#/$defs/string_array"},
+        "public_event_refs": {"$ref": "#/$defs/string_array"},
+        "research_output_refs": {"$ref": "#/$defs/string_array"},
+        "corpus_ledger_refs": {"$ref": "#/$defs/string_array"},
+        "prior_application_outcome_refs": {"$ref": "#/$defs/string_array"},
+        "privacy_labeled": {"type": "boolean", "const": true},
+        "provenance_labeled": {"type": "boolean", "const": true},
+        "public_release_allowed": {"type": "boolean", "const": false},
+        "monetization_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "opportunity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "opportunity_id",
+        "title",
+        "kind",
+        "source_id",
+        "source_url",
+        "discovered_at",
+        "deadline",
+        "eligibility",
+        "amount_range",
+        "obligations",
+        "required_attachments",
+        "attestation",
+        "automation_feasibility",
+        "evidence_packet",
+        "lifecycle_state"
+      ],
+      "properties": {
+        "opportunity_id": {"type": "string", "pattern": "^[a-z0-9_.-]+$"},
+        "title": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["grant", "fellowship", "compute_credit", "residency", "institutional_support"]},
+        "source_id": {"type": "string", "pattern": "^[a-z0-9_.-]+$"},
+        "source_url": {"type": "string", "minLength": 1},
+        "discovered_at": {"type": "string", "minLength": 1},
+        "deadline": {"type": ["string", "null"]},
+        "eligibility": {"type": "string", "minLength": 1},
+        "amount_range": {"type": "string", "minLength": 1},
+        "obligations": {"type": "array", "items": {"$ref": "#/$defs/obligation"}, "minItems": 1},
+        "required_attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}, "minItems": 1},
+        "attestation": {"$ref": "#/$defs/attestation"},
+        "automation_feasibility": {"enum": ["automated", "operator_attestation", "manual", "unknown"]},
+        "requires_fake_affiliation": {"type": "boolean"},
+        "requires_manual_opportunity_chasing": {"type": "boolean"},
+        "evidence_packet": {"$ref": "#/$defs/evidence_packet"},
+        "lifecycle_state": {
+          "enum": [
+            "discovered",
+            "private_evidence",
+            "operator_attestation_required",
+            "submitted",
+            "refused",
+            "won",
+            "lost",
+            "disbursed",
+            "follow_up_due"
+          ]
+        },
+        "urgent_fast_path_task_id": {"type": "string", "const": "openai-safety-fellowship-fast-packet"},
+        "target_family": {"type": "string", "const": "grants_fellowships"},
+        "readiness_state_ceiling": {"type": "string", "const": "private-evidence"},
+        "public_release_allowed": {"type": "boolean", "const": false},
+        "monetization_allowed": {"type": "boolean", "const": false},
+        "institutional_public_claim_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_id", "opportunity", "expected_queue_state"],
+      "properties": {
+        "fixture_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+        "opportunity": {"$ref": "#/$defs/opportunity"},
+        "expected_queue_state": {
+          "enum": [
+            "private_evidence",
+            "operator_attestation_required",
+            "submitted",
+            "refused",
+            "won",
+            "lost",
+            "disbursed",
+            "follow_up_due"
+          ]
+        },
+        "expected_refusal_reasons": {"$ref": "#/$defs/string_array"},
+        "expected_operator_actions": {"$ref": "#/$defs/string_array"},
+        "expected_fast_path": {"type": "boolean"}
+      }
+    }
+  }
+}
