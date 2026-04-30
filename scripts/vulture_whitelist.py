@@ -195,6 +195,10 @@ from shared.world_surface_health import (
     WorldSurfaceHealthFixtureSet,
     WorldSurfaceHealthRecord,
 )
+from shared.world_surface_health_control_adapter import (
+    ControlRouteHealth,
+    ControlRouteHealthFixtureSet,
+)
 from shared.world_surface_provider_tool_health import ProviderToolRouteHealth
 
 # FastAPI registers this route by decorator; vulture does not follow APIRouter.
@@ -360,6 +364,15 @@ WorldSurfaceHealthFixtureSet.rows_for_fixture_case
 # Provider/tool route health validators are invoked dynamically by Pydantic
 # while projecting model/search/MCP/publication/local routes into WCS rows.
 ProviderToolRouteHealth._validate_route_claim_authority
+
+# Control-surface route health validators are invoked dynamically by Pydantic
+# while projecting MIDI, desktop, private-device, and blocked-hardware rows into
+# WCS records. The action-readiness and lookup helpers are public contracts for
+# downstream director/control consumers; the production-only vulture gate does
+# not count focused tests as callsites.
+ControlRouteHealth._validate_control_route_contract
+ControlRouteHealth.satisfies_control_action_witness
+ControlRouteHealthFixtureSet.routes_by_id
 
 # Scrim WCS claim-posture models are validated by Pydantic and consumed by
 # downstream director/scrim adapters. The first slice publishes the contract and

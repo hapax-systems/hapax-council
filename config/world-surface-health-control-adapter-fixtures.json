@@ -1,0 +1,314 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "world-surface-health-control-adapter-fixtures-2026-04-30",
+  "schema_ref": "schemas/world-surface-health-control-adapter.schema.json",
+  "generated_from": [
+    "cc-task:world-surface-health-control-adapter",
+    "research-spec:2026-04-29-world-surface-health-no-false-grounding",
+    "research-spec:2026-04-29-director-world-surface-read-model",
+    "config:capability-classification-inventory"
+  ],
+  "declared_at": "2026-04-30T09:20:00Z",
+  "producer": "cc-task:world-surface-health-control-adapter",
+  "required_route_families": [
+    "midi_surface",
+    "desktop_control",
+    "companion_device",
+    "private_device_binding",
+    "blocked_hardware"
+  ],
+  "routes": [
+    {
+      "route_id": "control.midi.s4_clock_transport.mounted",
+      "display_name": "S-4 clock transport mounted route",
+      "classification_row_id": "capability.midi.s4_clock_transport",
+      "route_family": "midi_surface",
+      "status": "healthy",
+      "target_ref": "midi:torso_s4",
+      "expected_route_ref": "route:midi:torso_s4",
+      "observed_route_ref": "route:midi:torso_s4",
+      "target_state": "present",
+      "command_state": "accepted",
+      "command_refs": ["command:midi.s4_clock_transport:start"],
+      "readback_policy": "required",
+      "readback_refs": ["readback:midi.s4_clock_transport:clock_seen"],
+      "witness_refs": ["witness:midi.s4_clock_seen"],
+      "grounding_gate_refs": ["gate:control-health:midi-s4:checked"],
+      "evidence_envelope_refs": [
+        "repo:capability-classification-inventory",
+        "evidence-envelope:control.midi.s4_clock_transport:mounted"
+      ],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 10,
+        "observed_age_s": 2,
+        "source_ref": "witness:midi.s4_clock_seen",
+        "checked_at": "2026-04-30T09:20:00Z"
+      },
+      "confidence": 0.82,
+      "authority_ceiling": "evidence_bound",
+      "public_private_posture": "disabled",
+      "blocking_reasons": [],
+      "warnings": ["mounted_control_action_still_requires_downstream_outcome_audit"],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "route_health_not_public_authority",
+        "operator_visible_reason": "Mounted MIDI route health is action evidence only after readback, not public claim authority.",
+        "safe_state": "private_control_ready"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:control.midi.s4_clock_transport:clear"]
+      },
+      "owner": "world-surface-health-control-adapter",
+      "next_probe_due_at": "2026-04-30T09:20:10Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "healthy_witnessed"
+    },
+    {
+      "route_id": "control.midi.s4_clock_transport.absent",
+      "display_name": "S-4 clock transport absent target",
+      "classification_row_id": "capability.midi.s4_clock_transport",
+      "route_family": "midi_surface",
+      "status": "missing",
+      "target_ref": "midi:torso_s4",
+      "expected_route_ref": "route:midi:torso_s4",
+      "observed_route_ref": null,
+      "target_state": "absent",
+      "command_state": "not_attempted",
+      "command_refs": [],
+      "readback_policy": "required",
+      "readback_refs": [],
+      "witness_refs": [],
+      "grounding_gate_refs": [],
+      "evidence_envelope_refs": [
+        "repo:capability-classification-inventory",
+        "evidence-envelope:control.midi.s4_clock_transport:absent"
+      ],
+      "freshness": {
+        "state": "missing",
+        "ttl_s": null,
+        "observed_age_s": null,
+        "source_ref": null,
+        "checked_at": "2026-04-30T09:20:00Z"
+      },
+      "confidence": 0.08,
+      "authority_ceiling": "evidence_bound",
+      "public_private_posture": "blocked",
+      "blocking_reasons": ["target_absent", "readback_missing"],
+      "warnings": ["absent_hardware_is_visible_as_blocked_not_silent_success"],
+      "fallback": {
+        "mode": "no_op_explain",
+        "reason_code": "target_absent",
+        "operator_visible_reason": "S-4 target is absent; keep the route visible as a no-op.",
+        "safe_state": "no_op_operator_reason"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:control.midi.s4_clock_transport:clear"]
+      },
+      "owner": "world-surface-health-control-adapter",
+      "next_probe_due_at": "2026-04-30T09:21:00Z",
+      "witness_policy": "absent",
+      "fixture_case": "missing"
+    },
+    {
+      "route_id": "control.desktop.hyprland_focus.wrong_route",
+      "display_name": "Hyprland focus control wrong-route binding",
+      "classification_row_id": "capability.desktop.hyprland_focus",
+      "route_family": "desktop_control",
+      "status": "blocked",
+      "target_ref": "hyprctl:dispatch:focuswindow",
+      "expected_route_ref": "route:hyprctl:dispatch:focuswindow",
+      "observed_route_ref": "route:hyprctl:dispatch:workspace",
+      "target_state": "wrong_route",
+      "command_state": "rejected",
+      "command_refs": ["command:desktop.hyprland_focus:focus-window"],
+      "readback_policy": "blocked",
+      "readback_refs": [],
+      "witness_refs": ["witness:desktop.command_rejected"],
+      "grounding_gate_refs": [],
+      "evidence_envelope_refs": [
+        "repo:capability-classification-inventory",
+        "evidence-envelope:control.desktop.hyprland_focus:wrong-route"
+      ],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 5,
+        "observed_age_s": 1,
+        "source_ref": "witness:desktop.command_rejected",
+        "checked_at": "2026-04-30T09:20:00Z"
+      },
+      "confidence": 0.27,
+      "authority_ceiling": "internal_only",
+      "public_private_posture": "private_only",
+      "blocking_reasons": ["wrong_route_binding", "readback_blocked"],
+      "warnings": ["desktop_control_stays_private_and_reversible"],
+      "fallback": {
+        "mode": "no_op_explain",
+        "reason_code": "wrong_route_binding",
+        "operator_visible_reason": "Observed desktop command route does not match the expected focus-window target.",
+        "safe_state": "no_op_operator_reason"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:control.desktop.hyprland_focus:clear"]
+      },
+      "owner": "world-surface-health-control-adapter",
+      "next_probe_due_at": "2026-04-30T09:20:05Z",
+      "witness_policy": "fixture_only",
+      "fixture_case": "selected_only"
+    },
+    {
+      "route_id": "control.companion.phone_awareness.stale",
+      "display_name": "Phone awareness stale private binding",
+      "classification_row_id": "capability.companion.phone_awareness",
+      "route_family": "companion_device",
+      "status": "stale",
+      "target_ref": "kdeconnect:phone_awareness",
+      "expected_route_ref": "route:kdeconnect:phone_awareness",
+      "observed_route_ref": "route:kdeconnect:phone_awareness",
+      "target_state": "stale",
+      "command_state": "not_attempted",
+      "command_refs": [],
+      "readback_policy": "optional",
+      "readback_refs": [],
+      "witness_refs": ["state:phone_kde_connected"],
+      "grounding_gate_refs": [],
+      "evidence_envelope_refs": [
+        "repo:capability-classification-inventory",
+        "evidence-envelope:control.companion.phone_awareness:stale"
+      ],
+      "freshness": {
+        "state": "stale",
+        "ttl_s": 120,
+        "observed_age_s": 480,
+        "source_ref": "state:phone_kde_connected",
+        "checked_at": "2026-04-30T09:20:00Z"
+      },
+      "confidence": 0.31,
+      "authority_ceiling": "internal_only",
+      "public_private_posture": "private_only",
+      "blocking_reasons": ["stale_private_binding"],
+      "warnings": ["stale_companion_context_cannot_drive_action_success"],
+      "fallback": {
+        "mode": "degraded_status",
+        "reason_code": "stale_private_binding",
+        "operator_visible_reason": "Phone awareness is stale; keep it visible as degraded private context.",
+        "safe_state": "degraded_private_status"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:control.companion.phone_awareness:clear"]
+      },
+      "owner": "world-surface-health-control-adapter",
+      "next_probe_due_at": "2026-04-30T09:22:00Z",
+      "witness_policy": "fixture_only",
+      "fixture_case": "stale"
+    },
+    {
+      "route_id": "control.device.camera_overhead.private_binding",
+      "display_name": "Overhead camera private device binding",
+      "classification_row_id": "capability.device.camera_overhead_brio",
+      "route_family": "private_device_binding",
+      "status": "private_only",
+      "target_ref": "video4linux:overhead-brio",
+      "expected_route_ref": "route:video4linux:overhead-brio",
+      "observed_route_ref": "route:video4linux:overhead-brio",
+      "target_state": "private_only",
+      "command_state": "not_attempted",
+      "command_refs": [],
+      "readback_policy": "optional",
+      "readback_refs": ["device:video4linux:overhead-brio"],
+      "witness_refs": ["device:video4linux:overhead-brio"],
+      "grounding_gate_refs": [],
+      "evidence_envelope_refs": [
+        "repo:capability-classification-inventory",
+        "evidence-envelope:control.device.camera_overhead:private-binding"
+      ],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 10,
+        "observed_age_s": 3,
+        "source_ref": "device:video4linux:overhead-brio",
+        "checked_at": "2026-04-30T09:20:00Z"
+      },
+      "confidence": 0.56,
+      "authority_ceiling": "internal_only",
+      "public_private_posture": "private_only",
+      "blocking_reasons": ["private_device_binding"],
+      "warnings": ["private_device_binding_is_not_privacy_protection_or_public_claim"],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "private_device_binding",
+        "operator_visible_reason": "Camera hardware binding is private-only until separate privacy/public gates pass.",
+        "safe_state": "private_device_status"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:control.device.camera_overhead:clear"]
+      },
+      "owner": "world-surface-health-control-adapter",
+      "next_probe_due_at": "2026-04-30T09:20:10Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "private_only"
+    },
+    {
+      "route_id": "control.hardware.s4_firmware.noop",
+      "display_name": "S-4 firmware witness blocked no-op",
+      "classification_row_id": "capability.midi.s4_clock_transport",
+      "route_family": "blocked_hardware",
+      "status": "blocked",
+      "target_ref": "midi:torso_s4",
+      "expected_route_ref": "route:midi:torso_s4",
+      "observed_route_ref": null,
+      "target_state": "blocked",
+      "command_state": "no_op",
+      "command_refs": [],
+      "readback_policy": "blocked",
+      "readback_refs": [],
+      "witness_refs": [],
+      "grounding_gate_refs": [],
+      "evidence_envelope_refs": [
+        "repo:capability-classification-inventory",
+        "task:torso-s4-firmware-postinstall-witness-and-smoke",
+        "evidence-envelope:control.hardware.s4_firmware:noop"
+      ],
+      "freshness": {
+        "state": "unknown",
+        "ttl_s": null,
+        "observed_age_s": null,
+        "source_ref": null,
+        "checked_at": "2026-04-30T09:20:00Z"
+      },
+      "confidence": 0.12,
+      "authority_ceiling": "evidence_bound",
+      "public_private_posture": "blocked",
+      "blocking_reasons": ["firmware_witness_missing", "operator_smoke_required"],
+      "warnings": ["blocked_hardware_stays_visible_with_operator_reason"],
+      "fallback": {
+        "mode": "no_op_explain",
+        "reason_code": "firmware_witness_missing",
+        "operator_visible_reason": "S-4 firmware witness/smoke is not present, so control remains a visible no-op.",
+        "safe_state": "no_op_operator_reason"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:control.hardware.s4_firmware:clear"]
+      },
+      "owner": "world-surface-health-control-adapter",
+      "next_probe_due_at": "2026-04-30T09:30:00Z",
+      "witness_policy": "absent",
+      "fixture_case": "unknown"
+    }
+  ],
+  "fail_closed_policy": {
+    "target_absent_satisfies_action": false,
+    "wrong_route_satisfies_action": false,
+    "stale_binding_satisfies_action": false,
+    "no_op_satisfies_success": false,
+    "private_control_allows_public_claim": false,
+    "route_health_grants_public_claim": false,
+    "monetization_allowed_from_control_health": false
+  }
+}
