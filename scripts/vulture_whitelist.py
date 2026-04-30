@@ -122,6 +122,14 @@ from shared.support_surface_registry import (
     public_prompt_allowed,
     surfaces_by_decision,
 )
+from shared.temporal_span_registry import (
+    ClaimBearingMediaOutput,
+    SpanClaimGateDecision,
+    TemporalMediaSidecar,
+    TemporalSpan,
+    TemporalSpanAlignment,
+    TemporalSpanRegistryFixtureSet,
+)
 from shared.tier_ranking_bracket_engine import (
     BracketMatchRecord,
     BracketRecord,
@@ -403,3 +411,14 @@ build_seed_inventory
 # autonomous narration ledger validates open/closed semantic-outcome policy.
 IntendedOutcomeItem._open_or_closed_has_policy
 NarrationTriadEnvelope._validate_grounding_policy
+
+# Temporal span registry validators are invoked dynamically by Pydantic while
+# validating media/replay/perception fixture contracts. The sidecar grouping
+# helper is a public contract for downstream replay/media consumers.
+TemporalSpan._validate_temporal_bounds_and_authority
+TemporalMediaSidecar._validate_sidecar_join_policy
+TemporalSpanAlignment._validate_alignment_without_mtime
+ClaimBearingMediaOutput._validate_output_claim_shape
+SpanClaimGateDecision._validate_fail_closed_decision
+TemporalSpanRegistryFixtureSet._validate_registry_fixture_contract
+TemporalSpanRegistryFixtureSet.sidecars_by_kind
