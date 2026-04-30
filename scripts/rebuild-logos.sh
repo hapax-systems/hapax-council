@@ -97,7 +97,8 @@ fi
 cd "$BUILD_WORKTREE/hapax-logos"
 if just install-imagination 2>"$STATE_DIR/build.log"; then
     echo "$CURRENT_SHA" > "$SHA_FILE"
-    VERSION=$(just version 2>/dev/null | head -1)
+    VERSION_OUTPUT=$(just version 2>/dev/null || true)
+    VERSION="${VERSION_OUTPUT%%$'\n'*}"
     logger -t "$LOG_TAG" "rebuild complete - $VERSION"
     ntfy "Imagination rebuild complete" "${CURRENT_SHA:0:8} - $VERSION" "default" "white_check_mark"
 else
