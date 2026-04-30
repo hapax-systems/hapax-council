@@ -45,7 +45,7 @@ _ENGINE_STATE_TO_PRESENCE_STATE: dict[ClaimState, str] = {
 DEFAULT_SIGNAL_WEIGHTS: dict[str, tuple[float, float]] = {
     "operator_face": (0.90, 0.10),
     "keyboard_active": (0.85, 0.05),
-    "vad_speech": (0.60, 0.15),
+    "vad_speech": (0.85, 0.03),  # Raised from (0.60, 0.15): Blue Yeti speech = strong presence
     "speaker_is_operator": (0.95, 0.02),
     "watch_hr": (0.80, 0.30),
     "watch_connected": (0.70, 0.40),
