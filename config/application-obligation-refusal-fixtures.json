@@ -1,0 +1,237 @@
+{
+  "schema_version": 1,
+  "policy_id": "application_obligation_refusal_gate",
+  "source_refs": [
+    "cc-task:application-obligation-refusal-gate",
+    "plan:2026-04-29-autonomous-grounding-value-stream-map",
+    "plan:2026-04-29-next-high-value-direction-runtime-truth-conversion",
+    "config:conversion-target-readiness-threshold-matrix"
+  ],
+  "obligation_policies": [
+    {
+      "class_id": "legal_attestation",
+      "disposition": "allowed",
+      "operator_action": "explicit_legal_attestation",
+      "operator_visible_reason": "Legal attestation is allowed only as an explicit operator act, not recurring application labor."
+    },
+    {
+      "class_id": "bootstrap_setup",
+      "disposition": "allowed",
+      "operator_action": "one_time_bootstrap",
+      "operator_visible_reason": "One-time account, credential, identity, or setup work is allowed when it unlocks an automated path."
+    },
+    {
+      "class_id": "reporting",
+      "disposition": "guarded",
+      "operator_action": "none",
+      "operator_visible_reason": "Reporting is guarded and must be automated or one-time; recurring manual reports are refused."
+    },
+    {
+      "class_id": "public_demo",
+      "disposition": "guarded",
+      "operator_action": "guarded_public_demo_review",
+      "operator_visible_reason": "Public demos require rights, privacy, egress, and readiness gates; they do not authorize custom performance labor."
+    },
+    {
+      "class_id": "custom_deliverable",
+      "disposition": "refused",
+      "operator_action": "none",
+      "operator_visible_reason": "Custom deliverables or performances create bespoke service labor."
+    },
+    {
+      "class_id": "private_data_exposure",
+      "disposition": "refused",
+      "operator_action": "none",
+      "operator_visible_reason": "Private data exposure is refused."
+    },
+    {
+      "class_id": "institution_requirement",
+      "disposition": "guarded",
+      "operator_action": "institution_requirement_review",
+      "operator_visible_reason": "Institutional requirements are guarded; fake affiliation is refused."
+    },
+    {
+      "class_id": "community_client_service",
+      "disposition": "refused",
+      "operator_action": "none",
+      "operator_visible_reason": "Community, client, or customer service obligations are refused."
+    },
+    {
+      "class_id": "recurring_manual_labor",
+      "disposition": "refused",
+      "operator_action": "none",
+      "operator_visible_reason": "Recurring manual operator labor is refused."
+    }
+  ],
+  "fixtures": [
+    {
+      "fixture_id": "openai_style_attestation_allowed",
+      "opportunity": {
+        "opportunity_id": "openai-safety-fellowship-fast-packet",
+        "title": "OpenAI-style safety fellowship with explicit attestation",
+        "obligations": [
+          {
+            "class_id": "legal_attestation",
+            "recurrence": "one_time",
+            "automation_fit": "operator_attestation",
+            "summary": "Operator explicitly attests identity and truth of prepared packet."
+          },
+          {
+            "class_id": "bootstrap_setup",
+            "recurrence": "one_time",
+            "automation_fit": "automated",
+            "summary": "One-time portal/account setup unlocks a prepared submission."
+          }
+        ]
+      },
+      "expected_decision": "allowed",
+      "expected_operator_actions": ["explicit_legal_attestation", "one_time_bootstrap"]
+    },
+    {
+      "fixture_id": "residency_demo_guarded_not_custom_performance",
+      "opportunity": {
+        "opportunity_id": "residency-demo-review",
+        "title": "Residency application with public demo evidence",
+        "obligations": [
+          {
+            "class_id": "public_demo",
+            "recurrence": "one_time",
+            "automation_fit": "automated",
+            "summary": "Submit rights-safe public demo reel generated from existing public evidence."
+          },
+          {
+            "class_id": "legal_attestation",
+            "recurrence": "one_time",
+            "automation_fit": "operator_attestation",
+            "summary": "Operator attests application claims."
+          }
+        ]
+      },
+      "expected_decision": "guarded",
+      "expected_operator_actions": ["explicit_legal_attestation", "guarded_public_demo_review"]
+    },
+    {
+      "fixture_id": "compute_credit_bootstrap_allowed",
+      "opportunity": {
+        "opportunity_id": "compute-credit-bootstrap",
+        "title": "Compute credit with one-time identity setup",
+        "obligations": [
+          {
+            "class_id": "bootstrap_setup",
+            "recurrence": "one_time",
+            "automation_fit": "automated",
+            "summary": "Create or verify a one-time account and credential."
+          }
+        ]
+      },
+      "expected_decision": "allowed",
+      "expected_operator_actions": ["one_time_bootstrap"]
+    },
+    {
+      "fixture_id": "fake_affiliation_refused",
+      "opportunity": {
+        "opportunity_id": "institution-only-program",
+        "title": "Institution-only application that would require fake affiliation",
+        "requires_fake_affiliation": true,
+        "obligations": [
+          {
+            "class_id": "institution_requirement",
+            "recurrence": "one_time",
+            "automation_fit": "operator_attestation",
+            "summary": "Applicant must claim current institutional affiliation."
+          }
+        ]
+      },
+      "expected_decision": "refused",
+      "expected_refusal_reasons": ["fake_affiliation"],
+      "expected_operator_actions": ["institution_requirement_review"]
+    },
+    {
+      "fixture_id": "recurring_reporting_refused",
+      "opportunity": {
+        "opportunity_id": "monthly-impact-reporting-grant",
+        "title": "Grant requiring recurring manual impact reports",
+        "obligations": [
+          {
+            "class_id": "reporting",
+            "recurrence": "recurring",
+            "automation_fit": "manual",
+            "summary": "Monthly narrative reports must be manually prepared by the operator."
+          }
+        ]
+      },
+      "expected_decision": "refused",
+      "expected_refusal_reasons": ["recurring_reports"]
+    },
+    {
+      "fixture_id": "private_data_exposure_refused",
+      "opportunity": {
+        "opportunity_id": "raw-vault-data-program",
+        "title": "Application requiring raw private vault or sensor exports",
+        "obligations": [
+          {
+            "class_id": "private_data_exposure",
+            "recurrence": "one_time",
+            "automation_fit": "manual",
+            "summary": "Reviewer requires raw private data exposure."
+          }
+        ]
+      },
+      "expected_decision": "refused",
+      "expected_refusal_reasons": ["private_data_exposure"]
+    },
+    {
+      "fixture_id": "custom_performance_refused",
+      "opportunity": {
+        "opportunity_id": "bespoke-demo-commission",
+        "title": "Residency asks for custom live performance on request",
+        "obligations": [
+          {
+            "class_id": "custom_deliverable",
+            "recurrence": "unknown",
+            "automation_fit": "manual",
+            "summary": "Applicant must create a bespoke performance for the institution."
+          }
+        ]
+      },
+      "expected_decision": "refused",
+      "expected_refusal_reasons": ["custom_performance"]
+    },
+    {
+      "fixture_id": "customer_service_obligation_refused",
+      "opportunity": {
+        "opportunity_id": "community-support-program",
+        "title": "Support program requiring community office hours",
+        "obligations": [
+          {
+            "class_id": "community_client_service",
+            "recurrence": "recurring",
+            "automation_fit": "manual",
+            "summary": "Operator must provide recurring office hours or community support."
+          }
+        ]
+      },
+      "expected_decision": "refused",
+      "expected_refusal_reasons": ["customer_service_obligation"]
+    },
+    {
+      "fixture_id": "manual_opportunity_chasing_refused",
+      "opportunity": {
+        "opportunity_id": "manual-portal-hunt",
+        "title": "Opportunity source requires manual portal chasing",
+        "requires_manual_opportunity_chasing": true,
+        "obligations": [
+          {
+            "class_id": "bootstrap_setup",
+            "recurrence": "one_time",
+            "automation_fit": "manual",
+            "summary": "Operator must repeatedly search portals and copy opportunities."
+          }
+        ]
+      },
+      "expected_decision": "refused",
+      "expected_refusal_reasons": ["manual_opportunity_chasing"],
+      "expected_operator_actions": ["one_time_bootstrap"]
+    }
+  ]
+}
