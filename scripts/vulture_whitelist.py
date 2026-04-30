@@ -103,6 +103,7 @@ from shared.grounding_provider_router import (
     validate_eval_suite,
     validate_provider_registry,
 )
+from shared.livestream_health_group import LivestreamHealthEnvelope, LivestreamHealthGroup
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
 from shared.programme_revenue_braid_adapters import (
     BraidSnapshotRowRef,
@@ -224,6 +225,9 @@ DirectorControlMoveAuditRecord._validate_boundary_and_evidence
 TemporalEvidenceEnvelope._validate_temporal_authority
 TemporalShmPayloadFixture._validate_fixture_case
 TemporalBandEvidenceFixtureSet._validate_fixture_set
+LivestreamHealthGroup._non_healthy_groups_explain_themselves
+LivestreamHealthEnvelope._validate_group_set_and_claim_implications
+LivestreamHealthEnvelope.groups_by_id
 
 # Director intent models split real provenance from synthetic diagnostics via
 # Pydantic validators. The properties are consumed as public read helpers, but
