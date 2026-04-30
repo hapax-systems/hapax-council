@@ -1,0 +1,11 @@
+[Unit]
+Description=15-minute Gmail Pub/Sub outage fallback for mail-monitor
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/docs/specs/2026-04-25-mail-monitor.md
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+Unit=hapax-mail-monitor-fallback.service
+
+[Install]
+WantedBy=timers.target

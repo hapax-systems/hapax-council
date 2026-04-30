@@ -398,6 +398,7 @@ def process_history(
     pending_actions_path: Path = PENDING_ACTIONS_PATH,
     lock_path: Path = MAIL_MONITOR_LOCK_PATH,
     now: datetime | None = None,
+    record_last_push: bool = True,
 ) -> int:
     """Process Gmail history after a Pub/Sub notification.
 
@@ -415,6 +416,7 @@ def process_history(
             seen_set_path=seen_set_path,
             pending_actions_path=pending_actions_path,
             now=now,
+            record_last_push=record_last_push,
         )
 
 
@@ -428,6 +430,7 @@ def _process_history_unlocked(
     seen_set_path: Path,
     pending_actions_path: Path,
     now: datetime | None = None,
+    record_last_push: bool = True,
 ) -> int:
     """Process Gmail history after a Pub/Sub notification.
 
@@ -494,11 +497,12 @@ def _process_history_unlocked(
         path=cursor_path,
         last_push_at=processed_at,
     )
-    _persist_last_push(
-        str(notification_history_id),
-        path=last_push_path,
-        last_push_at=processed_at,
-    )
+    if record_last_push:
+        _persist_last_push(
+            str(notification_history_id),
+            path=last_push_path,
+            last_push_at=processed_at,
+        )
     return processed
 
 

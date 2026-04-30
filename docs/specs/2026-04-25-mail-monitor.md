@@ -52,9 +52,14 @@ outside that list is REFUSED — see §10.
 
 ## 1. Architecture
 
-Single daemon `agents/mail_monitor/runner.py`, systemd user unit
-`hapax-mail-monitor.service`, `Type=notify`, `WatchdogSec=60s`,
-`Restart=always`.
+Runtime implementation lives in `agents/mail_monitor/runner.py` and
+is invoked by two one-shot entrypoints: the `logos-api`
+`/webhook/gmail` route for Pub/Sub pushes, and
+`agents.mail_monitor.fallback` from
+`hapax-mail-monitor-fallback.timer` for outage recovery. There is no
+separate long-running mail-reader loop; all paths share the same
+label-scoped history processor, lock, cursor, seen-set, and dispatch
+code.
 
 **Single ingress path** (post-2026-04-26 amendment):
 
@@ -75,9 +80,14 @@ webhook-side machinery. The original BETA omg.lol-Mailhook ingress
 described in this spec's pre-amendment text is *not* implemented —
 see the amendment block at the top of this file.
 
-**Cron fallback:** every 15 minutes, the daemon checks
+**Cron fallback:** every 15 minutes,
+`hapax-mail-monitor-fallback.timer` runs
+`python -m agents.mail_monitor.fallback`. The one-shot runner checks
 `/dev/shm/mail-monitor/last-push.json`; if no push has arrived in 60
-minutes, it polls `users.history.list(startHistoryId=cursor)` once.
+minutes, it reads Gmail's current profile `historyId` and delegates
+once to `process_history()` so `users.history.list(startHistoryId=cursor)`
+remains label-scoped by Hapax label id. Fallback polls do not update
+`last-push.json`; that file remains the Pub/Sub push-health signal.
 Covers Pub/Sub regional outages without manufacturing constant API load.
 
 **State:**
@@ -396,7 +406,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-  participant T as hapax-mail-monitor-cron.timer
+  participant T as hapax-mail-monitor-fallback.timer
   participant R as runner
   participant G as Gmail
 
@@ -518,8 +528,8 @@ class RefusalFeedbackList(BaseModel):
 ```
 agents/mail_monitor/
 ├── __init__.py
-├── __main__.py                      # python -m agents.mail_monitor
 ├── runner.py                        # main loop + flock + dispatch
+├── fallback.py                      # 15-minute Pub/Sub outage fallback one-shot
 ├── oauth.py                         # first-consent CLI + refresh
 ├── filter_bootstrap.py              # idempotent filter create
 ├── label_bootstrap.py               # idempotent label create
@@ -544,7 +554,9 @@ logos/api/routes/
 └── awareness_mail.py                # GET endpoints
 
 systemd/units/
-├── hapax-mail-monitor.service
+├── hapax-mail-monitor-fallback.service
+├── hapax-mail-monitor-fallback.timer
+├── hapax-mail-monitor-watch-renewal.service
 └── hapax-mail-monitor-watch-renewal.timer
 
 shared/
