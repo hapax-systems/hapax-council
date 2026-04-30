@@ -12,8 +12,8 @@ API-side belief about the deposit.
 Extraction is deterministic regex-only — no LLM call. The (rare) case
 where regex fires but no plausible DOI is found surfaces as a
 refusal-brief log entry with ``kind=verify_extraction_failed`` so the
-operator can audit. Pending-actions correlation lands in a follow-up
-when ``mail-monitor-010`` ships the writer.
+operator can audit. The runner annotates correlated messages with
+``artefact_id`` when a pending-action record is available.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def extract_osf_id(body: str | None) -> str | None:
 def _find_artefact_manifest(artefact_id: str | None) -> Path | None:
     """Resolve the artefact id to its on-disk manifest, or ``None``.
 
-    The Hapax-side deposit writer (out of scope for this commit)
+    The Hapax-side deposit writer
     creates ``~/hapax-state/publications/queue/{artefact-id}/manifest.yaml``
     when it initiates a deposit. ``manifest.json`` is the JSON variant.
     """

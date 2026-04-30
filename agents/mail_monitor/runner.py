@@ -5,8 +5,7 @@ Spec: ``docs/specs/2026-04-25-mail-monitor.md`` §3 / §5.4.
 The runner is the post-classifier orchestrator. Given a fetched Gmail
 message dict, it:
 
-1. Classifies the message (rule-based; LLM fallback lands in a
-   follow-up commit).
+1. Classifies the message with deterministic label/correlation rules.
 2. Looks up the per-category processor.
 3. Invokes the processor.
 4. Audits each step.
@@ -36,6 +35,12 @@ from prometheus_client import Counter
 from agents.mail_monitor.audit import audit_call
 from agents.mail_monitor.auto_clicker import process_message as process_auto_accept
 from agents.mail_monitor.classifier import Category, classify
+from agents.mail_monitor.correlations import (
+    PENDING_ACTIONS_PATH,
+    find_pending_action,
+    sender_domain,
+    sender_email,
+)
 from agents.mail_monitor.processors.discard import process_discard
 from agents.mail_monitor.processors.operational import process_operational
 from agents.mail_monitor.processors.refusal_feedback import emit_refusal_feedback
@@ -249,6 +254,8 @@ def _enrich_message(
     raw: dict[str, Any],
     *,
     label_ids_by_name: dict[str, str],
+    pending_actions_path: Path = PENDING_ACTIONS_PATH,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     id_to_name = {label_id: name for name, label_id in label_ids_by_name.items()}
     label_names = [
@@ -261,6 +268,8 @@ def _enrich_message(
     enriched["label_names"] = label_names
     enriched["label_ids_by_name"] = hapax_label_ids_by_name
     enriched["sender"] = headers.get("from", "")
+    enriched["headers"] = headers
+    enriched["envelope_from"] = sender_email(headers.get("return-path") or headers.get("from"))
     enriched["subject"] = headers.get("subject", "")
     enriched["body_text"] = _body_text(payload)
     enriched["message_id_header"] = headers.get("message-id", "")
@@ -268,7 +277,48 @@ def _enrich_message(
         value for value in (headers.get("in-reply-to"), headers.get("references")) if value
     )
     enriched["replies_to_hapax_thread"] = "hapax" in refs.lower()
+    _enrich_pending_action_correlation(
+        enriched,
+        pending_actions_path=pending_actions_path,
+        now=now,
+    )
     return enriched
+
+
+def _enrich_pending_action_correlation(
+    enriched: dict[str, Any],
+    *,
+    pending_actions_path: Path,
+    now: datetime | None,
+) -> None:
+    """Attach bounded pending-action correlation fields to ``enriched``."""
+    domain = sender_domain(enriched.get("envelope_from") or enriched.get("sender"))
+    if domain is None:
+        enriched["outbound_correlation_hit"] = False
+        enriched["auto_accept_candidate"] = False
+        return
+    pending_record = find_pending_action(
+        domain,
+        path=pending_actions_path,
+        now=(now.timestamp() if now is not None else None),
+    )
+    if pending_record is None:
+        enriched["outbound_correlation_hit"] = False
+        enriched["auto_accept_candidate"] = False
+        return
+    enriched["outbound_correlation_hit"] = True
+    enriched["auto_accept_candidate"] = True
+    artefact_id = _artefact_id_from_pending_record(pending_record)
+    if artefact_id is not None:
+        enriched["artefact_id"] = artefact_id
+
+
+def _artefact_id_from_pending_record(record: dict[str, Any]) -> str | None:
+    for key in ("artefact_id", "artifact_id", "artefact", "artifact"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _message_ids_from_history_page(page: dict[str, Any]) -> list[str]:
@@ -345,6 +395,7 @@ def process_history(
     cursor_path: Path = HISTORY_CURSOR_PATH,
     last_push_path: Path = LAST_PUSH_PATH,
     seen_set_path: Path = SEEN_SET_PATH,
+    pending_actions_path: Path = PENDING_ACTIONS_PATH,
     lock_path: Path = MAIL_MONITOR_LOCK_PATH,
     now: datetime | None = None,
 ) -> int:
@@ -362,6 +413,7 @@ def process_history(
             cursor_path=cursor_path,
             last_push_path=last_push_path,
             seen_set_path=seen_set_path,
+            pending_actions_path=pending_actions_path,
             now=now,
         )
 
@@ -374,6 +426,7 @@ def _process_history_unlocked(
     cursor_path: Path,
     last_push_path: Path,
     seen_set_path: Path,
+    pending_actions_path: Path,
     now: datetime | None = None,
 ) -> int:
     """Process Gmail history after a Pub/Sub notification.
@@ -415,7 +468,12 @@ def _process_history_unlocked(
                     .get(userId="me", id=message_id, format="full")
                     .execute()
                 )
-                enriched = _enrich_message(raw, label_ids_by_name=label_ids_by_name)
+                enriched = _enrich_message(
+                    raw,
+                    label_ids_by_name=label_ids_by_name,
+                    pending_actions_path=pending_actions_path,
+                    now=processed_at,
+                )
                 digest = _message_dedup_digest(enriched)
                 if digest in seen_messages:
                     continue
@@ -446,15 +504,14 @@ def _process_history_unlocked(
 
 def register_processor(
     category: Category,
-    fn: Callable[[Any, dict[str, Any]], bool],  # noqa: ARG001 — future hook
+    fn: Callable[[Any, dict[str, Any]], bool],  # noqa: ARG001 — rejected API compatibility
 ) -> None:  # pragma: no cover
-    """Hook for mail-monitor-008/009/010/011 to register their processors.
+    """Reject dynamic processor registration.
 
-    Currently a no-op stub; the wired-in version lands when the
-    deferred-category processors arrive. Documented here so the surface
-    is reserved.
+    All six category processors are now wired statically in
+    ``dispatch_message`` so dispatch remains auditable and side effects
+    are easy to review.
     """
     raise NotImplementedError(
-        "register_processor is a placeholder; deferred-category processors "
-        "land in mail-monitor-008/009/010/011."
+        "register_processor is unsupported; mail-monitor processors are wired statically."
     )

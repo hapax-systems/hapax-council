@@ -63,6 +63,12 @@ def test_auto_accept_candidate_routes_to_category_a() -> None:
     assert source == "rule_sender"
 
 
+def test_outbound_correlation_hit_routes_to_category_a() -> None:
+    cat, source = classify({"outbound_correlation_hit": True})
+    assert cat is Category.A_ACCEPT
+    assert source == "rule_sender"
+
+
 # ── reply-driven cases ────────────────────────────────────────────────
 
 
