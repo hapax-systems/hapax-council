@@ -1,57 +1,33 @@
-"""DURF (Display Under Reflective Frame) — first full-frame HOMAGE ward.
+"""DURF coding-session HOMAGE ward.
 
-Phase 2 (operator directive 2026-04-24T23:55Z, "BE my term content AS it IS"):
-captures the LITERAL terminal content of running Claude-Code sessions via
-Hyprland window capture (grim) and composites them dynamically into
-1-4 panes based on the number of active sessions.
+DURF is the full-frame coding-session ward for the studio compositor. The
+default/public path is deliberately text-mode: discover Codex lanes from
+coordination state, capture bounded tmux buffers, redact before rendering,
+and publish a source-state/WCS row that says what was visible or suppressed.
 
-Auto-discovery: scan Hyprland clients, filter foot windows whose title
-matches a session-name regex (alpha|beta|delta|epsilon), capture each
-window's pixel region via ``grim -g``, load as Cairo ImageSurface,
-composite into per-pane geometry.
-
-Dynamic pane count:
-
-* 0 sessions → ward suppressed (alpha=0; substrate bleeds through)
-* 1 session  → full-frame 1920x1080
-* 2 sessions → side-by-side 960x1080 each
-* 3 sessions → 1 large left (960x1080) + 2 stacked right (960x540)
-* 4 sessions → 2x2 grid (960x540 each)
-
-Order (when present): delta TL → beta TR → alpha BL → epsilon BR per
-operator screenshot 2026-04-24T23:50Z.
-
-Design: ``docs/research/2026-04-24-durf-design.md``.
-
-L-12 disclosure: Wayland window-capture is a pixel-capture path.
-Mitigations:
-  - Restricted to Claude-Code-titled foot windows (single-target, not desktop)
-  - ``HAPAX_DURF_FORCE_ON`` env opt-in for inspection mode
-  - Production gate (``desk_active`` + bytes + NOT consent-safe) suppresses
-  - ``consent-safe`` egress mode hard-suppresses (poll AND render)
-  - Per-capture OCR redaction (AUDIT-01) drops PNGs whose text matches
-    high-confidence risk patterns (API keys, tokens, operator-home
-    paths). Bypass via ``HAPAX_DURF_RAW=1`` for explicit inspection.
-  - Operator manages on-screen content per existing terminal discipline
-
-Phase 3 follow-ups (deferred): reflection layer, foreground rotation,
-Bayesian-gate migration, per-region pixel masking (currently the
-redaction primitive suppresses the whole pane on detect).
+The older Hyprland/grim pixel-capture path is intentionally not used here.
+Public/default mode must not broadcast unbounded Wayland pixels when the
+bounded tmux text buffer is enough to show work traces.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .durf_redaction import RedactionAction, redact_terminal_capture
+import yaml
+
+from .durf_redaction import DURF_RAW_ENV, RISK_PATTERNS, RedactionAction
 from .homage.transitional_source import HomageTransitionalSource
+from .text_render import OUTLINE_OFFSETS_4, TextStyle, render_text
 
 if TYPE_CHECKING:
     import cairo
@@ -59,329 +35,790 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path(os.path.expanduser("~/projects/hapax-council/config/durf-panes.yaml"))
-DEFAULT_FONT_DESCRIPTION = "Px437 IBM VGA 8x16 16"
+DEFAULT_RELAY_DIR = Path(os.path.expanduser("~/.cache/hapax/relay"))
+DEFAULT_CLAIM_DIR = Path(os.path.expanduser("~/.cache/hapax"))
+DEFAULT_SESSION_HEALTH_PATH = Path(
+    os.path.expanduser(
+        "~/Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/codex-session-health.md"
+    )
+)
+DEFAULT_FONT_DESCRIPTION = "Px437 IBM VGA 8x16 15"
 
-_DESK_ACTIVE_PATH = Path(os.path.expanduser("~/.cache/hapax-daimonion/perception-state.json"))
 _CONSENT_SAFE_PATH = Path("/dev/shm/hapax-compositor/consent-state.txt")
-_CAPTURE_DIR = Path("/dev/shm/hapax-compositor/durf-captures")
 
-_POLL_INTERVAL_S = 0.5  # 2 Hz Hyprland scan + capture
-_ACTIVITY_WINDOW_S = 60.0
-_EXIT_HYSTERESIS_S = 30.0
+_POLL_INTERVAL_S = 0.5
+_DEFAULT_CAPTURE_LINES = 80
+_MAX_CAPTURE_LINES = 120
+_MAX_LINE_CHARS = 180
+_DEFAULT_STALE_AFTER_S = 20.0
+_DEFAULT_MAX_VISIBLE_PANES = 4
 
 _ENTER_RAMP_MS = 400.0
 _EXIT_RAMP_MS = 600.0
+_EXIT_HYSTERESIS_S = 4.0
+_FRONTED_ALPHA = 0.92
 
-# Slow stage-share cycle (operator directive 2026-04-25): prominent → recede
-# → repeat. NOT a pulse — long phases (~10s each) so it reads as breathing
-# rather than blinking. Phase 3 replaces with Hapax-driven dynamic.
-_CYCLE_FRONTED_ALPHA = 0.94
-_CYCLE_RECEDED_ALPHA = 0.40
-_CYCLE_FRONTED_S = 12.0  # prominent hold (viewer reads content)
-_CYCLE_RECEDED_S = 10.0  # receded hold (other wards take stage)
-_CYCLE_RAMP_S = 2.0  # cosine ease in/out between phases
-_CYCLE_PERIOD_S = _CYCLE_FRONTED_S + _CYCLE_RAMP_S + _CYCLE_RECEDED_S + _CYCLE_RAMP_S
+_LANE_ORDER = ("cx-red", "cx-green", "cx-blue", "cx-amber", "cx-cyan", "cx-violet")
+_DEFAULT_GLYPHS = {
+    "cx-red": "R-<>",
+    "cx-green": "G-//",
+    "cx-blue": "B-|/",
+    "cx-amber": "A-|\\",
+    "cx-cyan": "C-<>",
+    "cx-violet": "V-\\\\",
+}
 
-# Title-regex patterns the discovery routine matches against window titles.
-# Operator's foot terminal titles include "✳ alpha", "⠐ beta" etc.
-_SESSION_NAMES = ("alpha", "beta", "delta", "epsilon")
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_OPERATOR_HOME_PREFIX = "/" + "home" + "/" + "hapax" + "/"
+_LEGAL_FIRST = "Ryan"
+_LEGAL_MIDDLE = "Lee"
+_LEGAL_LAST = "Kleeberger"
 
-# Position-priority order for dynamic layout (delta first, then beta, alpha, epsilon)
-# matches operator screenshot 2026-04-24T23:50Z.
-_LAYOUT_ORDER = ("delta", "beta", "alpha", "epsilon")
-
-
-def _discover_session_windows() -> list[dict[str, Any]]:
-    """Run ``hyprctl clients -j`` and return windows matching session names.
-
-    Returns list of {role, address, x, y, w, h} dicts in _LAYOUT_ORDER.
-    """
-    try:
-        result = subprocess.run(
-            ["hyprctl", "clients", "-j"],
-            capture_output=True,
-            text=True,
-            timeout=1.0,
-        )
-        if result.returncode != 0:
-            return []
-        clients = json.loads(result.stdout)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, json.JSONDecodeError):
-        return []
-    discovered: dict[str, dict[str, Any]] = {}
-    for client in clients:
-        title = str(client.get("title", "")).lower()
-        for name in _SESSION_NAMES:
-            if name in title and name not in discovered:
-                at = client.get("at") or [0, 0]
-                size = client.get("size") or [0, 0]
-                discovered[name] = {
-                    "role": name,
-                    "address": client.get("address", ""),
-                    "x": int(at[0]),
-                    "y": int(at[1]),
-                    "w": int(size[0]),
-                    "h": int(size[1]),
-                }
-                break
-    # Return in layout-order, only roles that were discovered
-    return [discovered[role] for role in _LAYOUT_ORDER if role in discovered]
+_TEXT_RISK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = RISK_PATTERNS + (
+    ("dot_envrc", re.compile(r"(^|\s)(?:source\s+)?\.envrc\b|/\.envrc\b")),
+    ("pass_command", re.compile(r"\bpass\s+(?:show|edit|insert|grep|otp|generate)\b")),
+    (
+        "hapax_secrets_dump",
+        re.compile(r"\bhapax-secrets\s+(?:show|print|dump|env|export|cat)\b"),
+    ),
+    ("tilde_ssh_path", re.compile(r"(?:^|\s)~/.ssh/")),
+    ("legal_name_short", re.compile(_LEGAL_FIRST + r"\s+" + _LEGAL_LAST, re.IGNORECASE)),
+    (
+        "legal_name_full",
+        re.compile(
+            _LEGAL_FIRST + r"\s+" + _LEGAL_MIDDLE + r"\s+" + _LEGAL_LAST,
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "private_or_employer_data",
+        re.compile(r"\b(?:employer-confidential|work-confidential|private-third-party)\b"),
+    ),
+)
 
 
-def _grim_capture(geom: dict[str, Any], output_path: Path) -> bool:
-    """Capture window at ``geom`` to PNG. Returns True on success.
-
-    Atomic write via tmp+rename so the render thread never sees a
-    partially-written PNG. Without this, render thread reads of a
-    half-written file produce per-tick load failures, manifesting as
-    counter-clockwise pane blinking at the capture-rotation frequency
-    (~500ms cycle through 4 panes).
-
-    Service-context note: studio-compositor runs with WAYLAND_DISPLAY unset
-    (per ``gl-env.conf`` drop-in: GST pipeline is X11). grim requires
-    Wayland, so we inject WAYLAND_DISPLAY explicitly into the subprocess
-    env without affecting the parent process env.
-    """
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic: write to .tmp then os.replace into final path
-        tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-        spec = f"{geom['x']},{geom['y']} {geom['w']}x{geom['h']}"
-        env = os.environ.copy()
-        env.setdefault("WAYLAND_DISPLAY", "wayland-1")
-        env.setdefault("XDG_RUNTIME_DIR", "/run/user/1000")
-        result = subprocess.run(
-            ["grim", "-g", spec, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-            env=env,
-        )
-        if result.returncode != 0 or not tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-            return False
-        # AUDIT-01: redact-or-suppress before publishing PNG to render.
-        # Fail-closed: SUPPRESS *and* UNAVAILABLE both drop the capture.
-        # Stale published path is also removed so a previously-clean
-        # snapshot does not keep showing once content turns risky.
-        redaction = redact_terminal_capture(tmp_path)
-        if redaction.action != RedactionAction.CLEAN:
-            log.info(
-                "durf: capture suppressed by redaction (%s; %s)",
-                redaction.action.value,
-                redaction.detail,
-            )
-            tmp_path.unlink(missing_ok=True)
-            output_path.unlink(missing_ok=True)
-            return False
-        os.replace(tmp_path, output_path)
-        return True
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
+@dataclass(frozen=True)
+class CodexPaneConfig:
+    lane_id: str
+    tmux_target: str | None
+    glyph: str
+    enabled: bool = True
+    capture_lines: int = _DEFAULT_CAPTURE_LINES
+    stale_after_s: float = _DEFAULT_STALE_AFTER_S
 
 
-def _desk_active() -> bool:
-    """Read presence-state for desk_active signal (contact-mic derived)."""
-    try:
-        data = json.loads(_DESK_ACTIVE_PATH.read_text())
-        activity = str(data.get("desk_activity", "idle")).lower()
-        return activity in {"typing", "tapping", "drumming", "active"}
-    except Exception:
-        return False
+@dataclass(frozen=True)
+class CodexLane:
+    lane_id: str
+    glyph: str
+    tmux_target: str | None
+    enabled: bool
+    capture_lines: int
+    stale_after_s: float
+    relay_status: str | None = None
+    task_id: str | None = None
+    task_status: str | None = None
+    branch: str | None = None
+    pr: str | None = None
+    warnings: str | None = None
+    source_refs: tuple[str, ...] = ()
+    impingement_kind: str = "none"
+    volition_reason: str = "lane metadata only"
+    salience: int = 0
+
+    @property
+    def has_work_signal(self) -> bool:
+        return bool(self.task_id or self.pr or self.impingement_kind != "none")
+
+
+@dataclass(frozen=True)
+class TmuxCaptureResult:
+    ok: bool
+    lines: tuple[str, ...] = ()
+    reason: str | None = None
+    detail: str | None = None
+    command: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TextRedactionResult:
+    action: RedactionAction
+    lines: tuple[str, ...] = ()
+    matched_pattern: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class DURFPaneState:
+    lane_id: str
+    glyph: str
+    tmux_target: str | None
+    visible: bool
+    lines: tuple[str, ...] = ()
+    captured_at: float | None = None
+    redaction_state: str = "unavailable"
+    suppressed_reason: str | None = None
+    source_refs: tuple[str, ...] = ()
+    impingement_kind: str = "none"
+    volition_reason: str = "not selected"
+    public_claim_ceiling: str = "work_trace_visible"
+
+
+@dataclass(frozen=True)
+class DURFSourceSnapshot:
+    panes: tuple[DURFPaneState, ...]
+    captured_at: float
+    wcs_row: dict[str, Any] = field(default_factory=dict)
+
+
+def _iso_ts(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, UTC).isoformat().replace("+00:00", "Z")
 
 
 def _consent_safe_active() -> bool:
-    """Check consent-safe mode — if active, DURF must suppress."""
+    """Return whether consent-safe egress is active."""
     try:
-        return _CONSENT_SAFE_PATH.read_text().strip() == "safe"
-    except Exception:
+        return _CONSENT_SAFE_PATH.read_text(encoding="utf-8").strip() == "safe"
+    except OSError:
         return False
 
 
+def _unsafe_public_bypass_active() -> bool:
+    """Return whether a raw/unsafe capture bypass is active in public mode."""
+    if os.environ.get(DURF_RAW_ENV) == "1":
+        return True
+    return os.environ.get("HAPAX_DURF_PIXEL_CAPTURE_UNSAFE") == "1"
+
+
+def _bounded_line_count(value: int) -> int:
+    return max(1, min(value, _MAX_CAPTURE_LINES))
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def sanitize_terminal_lines(
+    raw_lines: list[str] | tuple[str, ...],
+    *,
+    max_lines: int = _DEFAULT_CAPTURE_LINES,
+    max_line_chars: int = _MAX_LINE_CHARS,
+) -> tuple[str, ...]:
+    """Strip escape/control bytes and return a bounded public line buffer."""
+    bounded = _bounded_line_count(max_lines)
+    result: list[str] = []
+    for raw in raw_lines[-bounded:]:
+        line = _CONTROL_RE.sub("", _strip_ansi(raw)).rstrip()
+        if len(line) > max_line_chars:
+            line = line[: max_line_chars - 3] + "..."
+        result.append(line)
+    return tuple(result)
+
+
+def redact_terminal_lines(lines: tuple[str, ...]) -> TextRedactionResult:
+    """Fail-closed redaction for tmux text before any render path sees it."""
+    if _unsafe_public_bypass_active():
+        return TextRedactionResult(
+            RedactionAction.SUPPRESS,
+            matched_pattern="unsafe_public_bypass",
+            detail="raw or pixel bypass active in public/default mode",
+        )
+    try:
+        sanitized = sanitize_terminal_lines(lines)
+    except Exception as exc:
+        return TextRedactionResult(
+            RedactionAction.UNAVAILABLE,
+            matched_pattern="redaction_unavailable",
+            detail=str(exc),
+        )
+    joined = "\n".join(sanitized)
+    for name, pattern in _TEXT_RISK_PATTERNS:
+        if pattern.search(joined):
+            return TextRedactionResult(
+                RedactionAction.SUPPRESS,
+                matched_pattern=name,
+                detail=f"matched {name}",
+            )
+    return TextRedactionResult(RedactionAction.CLEAN, lines=sanitized)
+
+
+def capture_tmux_text(
+    tmux_target: str,
+    *,
+    capture_lines: int = _DEFAULT_CAPTURE_LINES,
+    timeout_s: float = 1.0,
+) -> TmuxCaptureResult:
+    """Capture a bounded tmux pane buffer without ANSI escape sequences."""
+    bounded = _bounded_line_count(capture_lines)
+    cmd = (
+        "tmux",
+        "capture-pane",
+        "-p",
+        "-S",
+        f"-{bounded}",
+        "-t",
+        tmux_target,
+    )
+    try:
+        result = subprocess.run(
+            list(cmd),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return TmuxCaptureResult(False, reason="tmux_capture_timeout", command=cmd)
+    except FileNotFoundError:
+        return TmuxCaptureResult(False, reason="tmux_unavailable", command=cmd)
+    except OSError as exc:
+        return TmuxCaptureResult(
+            False,
+            reason="tmux_capture_error",
+            detail=str(exc),
+            command=cmd,
+        )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()[:200] or "tmux capture failed"
+        return TmuxCaptureResult(
+            False,
+            reason="tmux_target_missing",
+            detail=detail,
+            command=cmd,
+        )
+    lines = sanitize_terminal_lines(tuple(result.stdout.splitlines()), max_lines=bounded)
+    return TmuxCaptureResult(True, lines=lines, command=cmd)
+
+
+def is_pane_stale(pane: DURFPaneState, *, now: float, stale_after_s: float) -> bool:
+    if pane.captured_at is None:
+        return True
+    return now - pane.captured_at > stale_after_s
+
+
+def _read_yaml_mapping(path: Path) -> dict[str, Any]:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        log.debug("durf: failed to parse yaml %s", path, exc_info=True)
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _read_claims(claim_dir: Path) -> dict[str, tuple[str, str]]:
+    claims: dict[str, tuple[str, str]] = {}
+    for path in sorted(claim_dir.glob("cc-active-task-cx-*")):
+        lane_id = path.name.removeprefix("cc-active-task-")
+        if not lane_id.startswith("cx-"):
+            continue
+        try:
+            task_id = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if task_id:
+            claims[lane_id] = (task_id, str(path))
+    return claims
+
+
+def _parse_session_health(path: Path) -> dict[str, dict[str, str]]:
+    """Parse the Codex session-health markdown table into lane rows."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    rows: dict[str, dict[str, str]] = {}
+    headers: list[str] | None = None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("|") or "---" in stripped:
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if cells and cells[0] == "Session":
+            headers = cells
+            continue
+        if headers is None or len(cells) < len(headers):
+            continue
+        row = dict(zip(headers, cells, strict=False))
+        session = row.get("Session", "")
+        if session.startswith("cx-"):
+            rows[session] = row
+    return rows
+
+
+def _impingement_kind_for(*, relay_status: str | None, task_id: str | None, pr: str | None) -> str:
+    text = f"{relay_status or ''} {task_id or ''} {pr or ''}".lower()
+    if "review" in text:
+        return "review"
+    if "ci" in text or "check" in text:
+        return "ci"
+    if "merge" in text or "merged" in text:
+        return "merge"
+    if "block" in text or "hold" in text:
+        return "blocker"
+    if "checkpoint" in text or "resume" in text:
+        return "resume"
+    if pr and pr not in {"-", "null", "none"}:
+        return "pr"
+    if task_id:
+        return "claim"
+    return "none"
+
+
+def _salience_for(lane: CodexLane) -> int:
+    score = 0
+    if lane.task_id:
+        score += 50
+    if lane.pr and lane.pr not in {"-", "null", "none"}:
+        score += 25
+    if lane.impingement_kind in {"review", "ci", "blocker"}:
+        score += 20
+    if lane.impingement_kind == "merge":
+        score += 15
+    if lane.lane_id == "cx-red" and lane.impingement_kind != "none":
+        score += 10
+    if lane.warnings and lane.warnings != "-":
+        score -= 20
+    return score
+
+
+def _ordered_lane_ids(lane_ids: set[str]) -> list[str]:
+    ordered = [lane for lane in _LANE_ORDER if lane in lane_ids]
+    ordered.extend(sorted(lane_ids.difference(_LANE_ORDER)))
+    return ordered
+
+
+class CodexPaneRegistry:
+    """Discover Codex coding-session panes from current coordination state."""
+
+    def __init__(
+        self,
+        *,
+        config_path: Path = DEFAULT_CONFIG_PATH,
+        relay_dir: Path = DEFAULT_RELAY_DIR,
+        claim_dir: Path = DEFAULT_CLAIM_DIR,
+        session_health_path: Path = DEFAULT_SESSION_HEALTH_PATH,
+    ) -> None:
+        self.config_path = config_path
+        self.relay_dir = relay_dir
+        self.claim_dir = claim_dir
+        self.session_health_path = session_health_path
+
+    def _load_config(self) -> tuple[dict[str, CodexPaneConfig], int]:
+        data = _read_yaml_mapping(self.config_path)
+        defaults = data.get("defaults") if isinstance(data.get("defaults"), dict) else {}
+        default_capture_lines = int(defaults.get("capture_lines", _DEFAULT_CAPTURE_LINES))
+        max_visible = int(defaults.get("max_visible_panes", _DEFAULT_MAX_VISIBLE_PANES))
+        stale_after = float(defaults.get("stale_after_seconds", _DEFAULT_STALE_AFTER_S))
+        panes: dict[str, CodexPaneConfig] = {}
+        raw_panes_obj = data.get("panes")
+        raw_panes = raw_panes_obj if isinstance(raw_panes_obj, list) else []
+        for raw in raw_panes:
+            if not isinstance(raw, dict):
+                continue
+            lane_id = str(raw.get("lane") or raw.get("lane_id") or raw.get("role") or "").strip()
+            if not lane_id.startswith("cx-"):
+                continue
+            target = str(raw.get("tmux_target") or "").strip() or None
+            glyph = str(raw.get("glyph") or _DEFAULT_GLYPHS.get(lane_id, lane_id[-4:].upper()))
+            panes[lane_id] = CodexPaneConfig(
+                lane_id=lane_id,
+                tmux_target=target,
+                glyph=glyph,
+                enabled=bool(raw.get("enabled", True)),
+                capture_lines=int(raw.get("capture_lines", default_capture_lines)),
+                stale_after_s=float(raw.get("stale_after_seconds", stale_after)),
+            )
+        return panes, max(1, min(max_visible, _DEFAULT_MAX_VISIBLE_PANES))
+
+    def discover_lanes(self) -> tuple[list[CodexLane], int]:
+        panes, max_visible = self._load_config()
+        claims = _read_claims(self.claim_dir)
+        health = _parse_session_health(self.session_health_path)
+        relays: dict[str, tuple[dict[str, Any], str]] = {}
+        for relay_path in sorted(self.relay_dir.glob("cx-*.yaml")):
+            lane_id = relay_path.stem
+            if not lane_id.startswith("cx-"):
+                continue
+            relays[lane_id] = (_read_yaml_mapping(relay_path), str(relay_path))
+
+        lane_ids = set(panes) | set(claims) | set(health) | set(relays)
+        lanes: list[CodexLane] = []
+        for lane_id in _ordered_lane_ids(lane_ids):
+            config = panes.get(
+                lane_id,
+                CodexPaneConfig(
+                    lane_id=lane_id,
+                    tmux_target=None,
+                    glyph=_DEFAULT_GLYPHS.get(lane_id, lane_id[-4:].upper()),
+                    enabled=True,
+                ),
+            )
+            relay, relay_ref = relays.get(lane_id, ({}, ""))
+            claim_task, claim_ref = claims.get(lane_id, ("", ""))
+            health_row = health.get(lane_id, {})
+            relay_status = _string_or_none(relay.get("status"))
+            task_id = (
+                claim_task
+                or _string_or_none(relay.get("task_id"))
+                or _string_or_none(relay.get("current_claim"))
+                or _task_id_from_health(health_row.get("Task"))
+            )
+            task_status = _string_or_none(health_row.get("Task status")) or relay_status
+            branch = _string_or_none(relay.get("branch")) or _string_or_none(
+                health_row.get("Branch")
+            )
+            pr = _string_or_none(relay.get("current_pr")) or _string_or_none(health_row.get("PR"))
+            warnings = _string_or_none(health_row.get("Warnings"))
+            source_refs: list[str] = [str(self.config_path), str(self.session_health_path)]
+            if relay_ref:
+                source_refs.append(relay_ref)
+            if claim_ref:
+                source_refs.append(claim_ref)
+            impingement_kind = _impingement_kind_for(
+                relay_status=relay_status,
+                task_id=task_id,
+                pr=pr,
+            )
+            volition_reason = _volition_reason(
+                lane_id=lane_id,
+                task_id=task_id,
+                pr=pr,
+                impingement_kind=impingement_kind,
+                relay_status=relay_status,
+            )
+            lane = CodexLane(
+                lane_id=lane_id,
+                glyph=config.glyph,
+                tmux_target=config.tmux_target,
+                enabled=config.enabled,
+                capture_lines=config.capture_lines,
+                stale_after_s=config.stale_after_s,
+                relay_status=relay_status,
+                task_id=task_id,
+                task_status=task_status,
+                branch=branch,
+                pr=pr,
+                warnings=warnings,
+                source_refs=tuple(dict.fromkeys(source_refs)),
+                impingement_kind=impingement_kind,
+                volition_reason=volition_reason,
+            )
+            lanes.append(replace(lane, salience=_salience_for(lane)))
+        return lanes, max_visible
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text in {"", "-", "null", "None"}:
+        return None
+    return text
+
+
+def _task_id_from_health(value: str | None) -> str | None:
+    text = _string_or_none(value)
+    if text is None:
+        return None
+    em_dash_separator = " " + chr(8212) + " "
+    if em_dash_separator in text:
+        return text.split(em_dash_separator, 1)[0].strip()
+    if " - " in text:
+        return text.split(" - ", 1)[0].strip()
+    return text
+
+
+def _volition_reason(
+    *,
+    lane_id: str,
+    task_id: str | None,
+    pr: str | None,
+    impingement_kind: str,
+    relay_status: str | None,
+) -> str:
+    if pr:
+        return f"{lane_id} {impingement_kind} signal for PR {pr}"
+    if task_id:
+        return f"{lane_id} active task {task_id}"
+    if relay_status:
+        return f"{lane_id} relay status {relay_status}"
+    return f"{lane_id} metadata only"
+
+
+def _suppressed_lane(lane: CodexLane, reason: str, *, now: float) -> DURFPaneState:
+    return DURFPaneState(
+        lane_id=lane.lane_id,
+        glyph=lane.glyph,
+        tmux_target=lane.tmux_target,
+        visible=False,
+        captured_at=now,
+        redaction_state="suppressed",
+        suppressed_reason=reason,
+        source_refs=lane.source_refs,
+        impingement_kind=lane.impingement_kind,
+        volition_reason=lane.volition_reason,
+    )
+
+
+def _pane_state_from_capture(lane: CodexLane, *, now: float) -> DURFPaneState:
+    if not lane.enabled:
+        return _suppressed_lane(lane, "lane_disabled", now=now)
+    if not lane.has_work_signal:
+        return _suppressed_lane(lane, "lane_ineligible", now=now)
+    if not lane.tmux_target:
+        return _suppressed_lane(lane, "tmux_target_unconfigured", now=now)
+    capture = capture_tmux_text(lane.tmux_target, capture_lines=lane.capture_lines)
+    if not capture.ok:
+        return _suppressed_lane(lane, capture.reason or "tmux_capture_failed", now=now)
+    redaction = redact_terminal_lines(capture.lines)
+    if redaction.action is not RedactionAction.CLEAN:
+        return DURFPaneState(
+            lane_id=lane.lane_id,
+            glyph=lane.glyph,
+            tmux_target=lane.tmux_target,
+            visible=False,
+            captured_at=now,
+            redaction_state=redaction.action.value,
+            suppressed_reason=redaction.matched_pattern or "redaction_failed",
+            source_refs=lane.source_refs,
+            impingement_kind=lane.impingement_kind,
+            volition_reason=lane.volition_reason,
+        )
+    return DURFPaneState(
+        lane_id=lane.lane_id,
+        glyph=lane.glyph,
+        tmux_target=lane.tmux_target,
+        visible=bool(redaction.lines),
+        lines=redaction.lines,
+        captured_at=now,
+        redaction_state="clean",
+        suppressed_reason=None if redaction.lines else "empty_tmux_buffer",
+        source_refs=lane.source_refs,
+        impingement_kind=lane.impingement_kind,
+        volition_reason=lane.volition_reason,
+    )
+
+
+def build_wcs_row(
+    panes: tuple[DURFPaneState, ...],
+    *,
+    now: float,
+    egress_allowed: bool,
+    max_visible: int = _DEFAULT_MAX_VISIBLE_PANES,
+) -> dict[str, Any]:
+    visible = [pane for pane in panes if pane.visible]
+    suppressed = [pane for pane in panes if not pane.visible]
+    redaction_state = "clean"
+    if any(p.redaction_state == RedactionAction.UNAVAILABLE.value for p in panes):
+        redaction_state = "unavailable"
+    elif any(p.redaction_state == RedactionAction.SUPPRESS.value for p in panes):
+        redaction_state = "suppressed"
+    latest_ts = max((pane.captured_at or 0.0 for pane in panes), default=0.0) or None
+    source_refs: list[str] = []
+    for pane in panes:
+        source_refs.extend(pane.source_refs)
+    primary = visible[0] if visible else None
+    if not egress_allowed:
+        mode = "suppressed"
+    elif visible:
+        mode = "text_panes"
+    else:
+        mode = "metadata"
+    return {
+        "surface_id": "coding_sessions.durf",
+        "mode": mode,
+        "impingement_kind": primary.impingement_kind if primary else "none",
+        "volition_reason": primary.volition_reason if primary else "no eligible clean pane",
+        "visible_lanes": [pane.lane_id for pane in visible[:max_visible]],
+        "suppressed_lanes": [
+            {
+                "lane_id": pane.lane_id,
+                "reason": pane.suppressed_reason or "not_visible",
+                "redaction_state": pane.redaction_state,
+            }
+            for pane in suppressed
+        ],
+        "source_refs": sorted(set(source_refs)),
+        "freshness_ts": _iso_ts(latest_ts),
+        "public_claim_ceiling": "work_trace_visible",
+        "redaction_state": redaction_state,
+        "egress_allowed": egress_allowed and bool(visible),
+        "max_visible_panes": max_visible,
+        "updated_at": _iso_ts(now),
+    }
+
+
+def _select_lanes(
+    lanes: list[CodexLane], max_visible: int
+) -> tuple[list[CodexLane], list[CodexLane]]:
+    eligible = [lane for lane in lanes if lane.enabled and lane.has_work_signal]
+    ranked = sorted(
+        eligible,
+        key=lambda lane: (
+            -lane.salience,
+            _LANE_ORDER.index(lane.lane_id) if lane.lane_id in _LANE_ORDER else 99,
+        ),
+    )
+    return ranked[:max_visible], ranked[max_visible:]
+
+
+def _line_color(line: str) -> tuple[float, float, float, float]:
+    from .homage.rendering import active_package
+
+    pkg = active_package()
+    low = line.lower()
+    if "error" in low or "failed" in low or "traceback" in low:
+        color = pkg.palette.accent_red
+    elif "passed" in low or "success" in low or "green" in low:
+        color = pkg.palette.accent_green
+    elif "uv run" in low or "pytest" in low or "ruff" in low or "git " in low:
+        color = pkg.palette.accent_cyan
+    elif line.strip().startswith((">", "$")):
+        color = pkg.palette.bright
+    else:
+        color = pkg.palette.muted
+    return (color[0], color[1], color[2], 0.92)
+
+
 def _layout_for_count(n: int, canvas_w: int, canvas_h: int) -> list[tuple[int, int, int, int]]:
-    """Return list of (x, y, w, h) rects for ``n`` panes in layout order."""
     if n <= 0:
         return []
+    margin = 48
+    gap = 26
     if n == 1:
-        return [(0, 0, canvas_w, canvas_h)]
+        return [(margin, margin, canvas_w - margin * 2, canvas_h - margin * 2)]
     if n == 2:
-        # delta left, beta right
+        w = (canvas_w - margin * 2 - gap) // 2
         return [
-            (0, 0, canvas_w // 2, canvas_h),
-            (canvas_w // 2, 0, canvas_w // 2, canvas_h),
+            (margin, margin + 70, w, canvas_h - margin * 2 - 120),
+            (margin + w + gap, margin, w, canvas_h - margin * 2 - 80),
         ]
-    if n == 3:
-        # delta large-left, beta top-right, alpha bottom-right
-        return [
-            (0, 0, canvas_w // 2, canvas_h),
-            (canvas_w // 2, 0, canvas_w // 2, canvas_h // 2),
-            (canvas_w // 2, canvas_h // 2, canvas_w // 2, canvas_h // 2),
-        ]
-    # n >= 4 → 2x2: delta TL, beta TR, alpha BL, epsilon BR
-    half_w, half_h = canvas_w // 2, canvas_h // 2
-    return [
-        (0, 0, half_w, half_h),
-        (half_w, 0, half_w, half_h),
-        (0, half_h, half_w, half_h),
-        (half_w, half_h, half_w, half_h),
-    ]
+    foreground_w = int(canvas_w * 0.58)
+    left_w = canvas_w - foreground_w - margin * 2 - gap
+    foreground = (margin + left_w + gap, margin, foreground_w, canvas_h - margin * 2)
+    stack_count = min(n - 1, 3)
+    stack_h = (canvas_h - margin * 2 - gap * (stack_count - 1)) // stack_count
+    rects = [foreground]
+    for idx in range(stack_count):
+        rects.append((margin, margin + idx * (stack_h + gap), left_w, stack_h))
+    return rects[:n]
 
 
 class DURFCairoSource(HomageTransitionalSource):
-    """Full-frame HOMAGE ward — Hyprland window capture of named sessions.
-
-    Background thread polls Hyprland clients every 500ms, captures each
-    matching window's pixel region via grim into PNGs in /dev/shm, and
-    the render thread loads + composites them at 6Hz.
-    """
+    """Full-frame HOMAGE ward for bounded Codex tmux text panes."""
 
     def __init__(
         self,
         *,
         config_path: Path | None = None,
         font_description: str = DEFAULT_FONT_DESCRIPTION,
+        registry: CodexPaneRegistry | None = None,
+        start_thread: bool = True,
     ) -> None:
         super().__init__(source_id="durf")
         self._config_path = config_path or DEFAULT_CONFIG_PATH
         self._font_description = font_description
-        # Discovered sessions per tick
-        self._discovered: list[dict[str, Any]] = []
-        self._capture_paths: dict[str, Path] = {}
-        self._discovered_lock = threading.Lock()
-        # Gate state
+        self._registry = registry or CodexPaneRegistry(config_path=self._config_path)
+        self._snapshot = DURFSourceSnapshot(
+            panes=(),
+            captured_at=time.time(),
+            wcs_row=build_wcs_row((), now=time.time(), egress_allowed=False),
+        )
+        self._snapshot_lock = threading.Lock()
         self._gate_on_since: float | None = None
         self._gate_off_since: float | None = None
         self._current_alpha: float = 0.0
-        # Background polling thread
         self._stop_event = threading.Event()
-        self._poll_thread = threading.Thread(
-            target=self._poll_loop, name="durf-window-poll", daemon=True
-        )
-        self._poll_thread.start()
+        self._poll_thread: threading.Thread | None = None
+        if start_thread:
+            self._poll_thread = threading.Thread(
+                target=self._poll_loop,
+                name="durf-codex-text-poll",
+                daemon=True,
+            )
+            self._poll_thread.start()
 
     def _poll_loop(self) -> None:
-        """Background — Hyprland scan + grim capture per session.
-
-        AUDIT-01: refuses to capture when ``consent-state.txt = safe``
-        (defense in depth — the render gate already suppresses, but
-        the poll-time refusal also prevents pixel bytes from ever
-        landing in ``/dev/shm/hapax-compositor/durf-captures``).
-        """
         while not self._stop_event.is_set():
             try:
-                if _consent_safe_active():
-                    with self._discovered_lock:
-                        self._discovered = []
-                        self._capture_paths = {}
-                else:
-                    discovered = _discover_session_windows()
-                    paths: dict[str, Path] = {}
-                    for win in discovered:
-                        role = win["role"]
-                        out = _CAPTURE_DIR / f"{role}.png"
-                        if _grim_capture(win, out):
-                            paths[role] = out
-                    with self._discovered_lock:
-                        self._discovered = discovered
-                        self._capture_paths = paths
-            except Exception as e:
-                log.warning("durf: poll cycle failed: %s", e, exc_info=True)
+                self._poll_once()
+            except Exception as exc:
+                log.warning("durf: poll cycle failed: %s", exc, exc_info=True)
             self._stop_event.wait(_POLL_INTERVAL_S)
+
+    def _poll_once(self, *, now: float | None = None) -> DURFSourceSnapshot:
+        ts = time.time() if now is None else now
+        lanes, max_visible = self._registry.discover_lanes()
+        panes: list[DURFPaneState] = []
+        egress_allowed = True
+        if _consent_safe_active():
+            egress_allowed = False
+            panes = [_suppressed_lane(lane, "consent_safe", now=ts) for lane in lanes]
+        elif _unsafe_public_bypass_active():
+            egress_allowed = False
+            panes = [_suppressed_lane(lane, "unsafe_public_bypass", now=ts) for lane in lanes]
+        else:
+            selected, overflow = _select_lanes(lanes, max_visible)
+            panes.extend(_pane_state_from_capture(lane, now=ts) for lane in selected)
+            panes.extend(_suppressed_lane(lane, "not_selected", now=ts) for lane in overflow)
+            configured_ids = {lane.lane_id for lane in selected + overflow}
+            panes.extend(
+                _suppressed_lane(lane, "lane_ineligible", now=ts)
+                for lane in lanes
+                if lane.lane_id not in configured_ids
+            )
+        row = build_wcs_row(
+            tuple(panes), now=ts, egress_allowed=egress_allowed, max_visible=max_visible
+        )
+        snapshot = DURFSourceSnapshot(panes=tuple(panes), captured_at=ts, wcs_row=row)
+        with self._snapshot_lock:
+            self._snapshot = snapshot
+        return snapshot
 
     def stop(self) -> None:
         self._stop_event.set()
-
-    # ── Inclusion gate ───────────────────────────────────────────────
+        if self._poll_thread is not None:
+            self._poll_thread.join(timeout=1.0)
 
     def _gate_active(self) -> bool:
-        """Gate: NOT consent-safe AND (force-on OR desk_active) AND >=1 session.
-
-        HAPAX_DURF_FORCE_ON=1 bypasses desk_active for inspection.
-        Zero discovered sessions → suppressed (operator: "ward is irrelevant").
-        """
-        if _consent_safe_active():
+        if _consent_safe_active() or _unsafe_public_bypass_active():
             return False
-        with self._discovered_lock:
-            n = len(self._discovered)
-        if n == 0:
-            return False
-        if os.environ.get("HAPAX_DURF_FORCE_ON") == "1":
-            return True
-        return _desk_active()
+        with self._snapshot_lock:
+            return any(pane.visible for pane in self._snapshot.panes)
 
     def _compute_alpha(self, now: float) -> float:
-        """Gate + slow cycle.
-
-        Operator directive 2026-04-25: 'It does need modulation, just not
-        a pulse like that, it's too heavy handed and distracting' AND
-        'It can't be static like that — it too needs to sometimes get out
-        of the way at regular rates, not the only thing that matters.'
-
-        Cycle (26s period):
-          0 → 12 s : prominent  (alpha 0.94, viewer reads content)
-         12 → 14 s : ramp down  (0.94 → 0.40 cosine ease)
-         14 → 24 s : receded    (0.40, other wards take stage)
-         24 → 26 s : ramp up    (0.40 → 0.94 cosine ease)
-
-        When gate is False, the prominent ceiling is whatever the gate
-        brought us to (entering ramp), and after hysteresis we ease all
-        the way to 0. The cycle runs only inside the gate window.
-
-        Phase 3+ replaces the deterministic cycle with a Hapax-driven
-        dynamic from the ClaimEngine `valuable-development-activity`
-        posterior + a stage-share signal from the director loop.
-        """
         gate = self._gate_active()
         if not gate:
             if self._gate_off_since is None:
                 self._gate_off_since = now
-            if self._gate_on_since is not None and now - self._gate_off_since < _EXIT_HYSTERESIS_S:
-                return self._current_alpha
             self._gate_on_since = None
-            if now - (self._gate_off_since or now) < _EXIT_HYSTERESIS_S:
+            if now - self._gate_off_since < _EXIT_HYSTERESIS_S:
                 return self._current_alpha
             dt_ms = (now - self._gate_off_since - _EXIT_HYSTERESIS_S) * 1000.0
             factor = max(0.0, 1.0 - dt_ms / _EXIT_RAMP_MS)
             return self._current_alpha * factor
-
-        # Gate-on path
         self._gate_off_since = None
         if self._gate_on_since is None:
             self._gate_on_since = now
         gate_age = now - self._gate_on_since
-        # Initial enter-ramp before cycle takes over
         if gate_age < (_ENTER_RAMP_MS / 1000.0):
-            target = (gate_age * 1000.0 / _ENTER_RAMP_MS) * _CYCLE_FRONTED_ALPHA
-            return max(self._current_alpha, target)
-
-        # Slow cycle phases
-        cycle_t = (gate_age - _ENTER_RAMP_MS / 1000.0) % _CYCLE_PERIOD_S
-        if cycle_t < _CYCLE_FRONTED_S:
-            return _CYCLE_FRONTED_ALPHA
-        elif cycle_t < _CYCLE_FRONTED_S + _CYCLE_RAMP_S:
-            # cosine ease 0.94 → 0.40
-            ramp_t = (cycle_t - _CYCLE_FRONTED_S) / _CYCLE_RAMP_S
-            import math
-
-            ease = 0.5 - 0.5 * math.cos(math.pi * (1.0 - ramp_t))
-            return _CYCLE_RECEDED_ALPHA + (_CYCLE_FRONTED_ALPHA - _CYCLE_RECEDED_ALPHA) * (
-                1.0 - ease
-            )
-        elif cycle_t < _CYCLE_FRONTED_S + _CYCLE_RAMP_S + _CYCLE_RECEDED_S:
-            return _CYCLE_RECEDED_ALPHA
-        else:
-            # cosine ease 0.40 → 0.94
-            ramp_t = (cycle_t - _CYCLE_FRONTED_S - _CYCLE_RAMP_S - _CYCLE_RECEDED_S) / _CYCLE_RAMP_S
-            import math
-
-            ease = 0.5 - 0.5 * math.cos(math.pi * ramp_t)
-            return _CYCLE_RECEDED_ALPHA + (_CYCLE_FRONTED_ALPHA - _CYCLE_RECEDED_ALPHA) * ease
-
-    # ── CairoSource protocol ─────────────────────────────────────────
+            return max(self._current_alpha, (gate_age * 1000.0 / _ENTER_RAMP_MS) * _FRONTED_ALPHA)
+        return _FRONTED_ALPHA
 
     def state(self) -> dict[str, Any]:
         now = time.monotonic()
-        return {"alpha": self._compute_alpha(now), "now": now}
+        with self._snapshot_lock:
+            snapshot = self._snapshot
+        return {
+            "alpha": self._compute_alpha(now),
+            "now": now,
+            "panes": [pane.__dict__ for pane in snapshot.panes],
+            "wcs": snapshot.wcs_row,
+        }
 
     def render_content(
         self,
@@ -391,112 +828,93 @@ class DURFCairoSource(HomageTransitionalSource):
         t: float,
         state: dict[str, Any],
     ) -> None:
-
-        alpha = state.get("alpha", 0.0)
+        alpha = float(state.get("alpha", 0.0))
         self._current_alpha = alpha
         if alpha <= 0.001:
             return
+        with self._snapshot_lock:
+            panes = [pane for pane in self._snapshot.panes if pane.visible]
+        if not panes:
+            return
 
-        with self._discovered_lock:
-            discovered = list(self._discovered)
-            paths = dict(self._capture_paths)
-
-        n = len(discovered)
-        if n == 0:
-            return  # operator: "ward is irrelevant" with 0 sessions
-
-        # Atmospheric haze beneath panes
         cr.save()
-        cr.set_source_rgba(0.02, 0.02, 0.05, 0.85 * alpha)
+        cr.set_source_rgba(0.02, 0.02, 0.05, 0.82 * alpha)
         cr.rectangle(0, 0, canvas_w, canvas_h)
         cr.fill()
         cr.restore()
 
-        rects = _layout_for_count(n, canvas_w, canvas_h)
-        for win, rect in zip(discovered, rects, strict=False):
-            role = win["role"]
-            png_path = paths.get(role)
-            self._render_pane(cr, rect, role, png_path, alpha)
+        rects = _layout_for_count(len(panes), canvas_w, canvas_h)
+        for pane, rect in zip(panes, rects, strict=False):
+            self._render_text_pane(cr, rect, pane, alpha)
 
-    def _render_pane(
+    def _render_text_pane(
         self,
         cr: cairo.Context,
         rect: tuple[int, int, int, int],
-        role: str,
-        png_path: Path | None,
+        pane: DURFPaneState,
         alpha: float,
     ) -> None:
-        """Render one pane: PNG capture composited + BitchX header."""
-        import cairo as _cairo
+        from .homage.rendering import active_package
 
         x, y, w, h = rect
-        if png_path is None or not png_path.exists():
-            self._render_empty_pane(cr, x, y, w, h, role, alpha)
-            return
-
-        try:
-            img = _cairo.ImageSurface.create_from_png(str(png_path))
-        except Exception:
-            log.debug("durf: png load failed for %s", role, exc_info=True)
-            self._render_empty_pane(cr, x, y, w, h, role, alpha)
-            return
-
-        img_w = img.get_width()
-        img_h = img.get_height()
-        if img_w <= 0 or img_h <= 0:
-            return
-
-        # Scale-to-fit preserving aspect ratio
-        scale = min(w / img_w, h / img_h)
-        scaled_w = img_w * scale
-        scaled_h = img_h * scale
-        offset_x = x + (w - scaled_w) / 2
-        offset_y = y + (h - scaled_h) / 2
-
-        cr.save()
-        cr.translate(offset_x, offset_y)
-        cr.scale(scale, scale)
-        cr.set_source_surface(img, 0, 0)
-        cr.paint_with_alpha(alpha)
-        cr.restore()
-
-        # Crisp border
-        from .homage.rendering import active_package
-
-        pkg = active_package()
-        border = pkg.palette.bright
-        cr.save()
-        cr.set_line_width(2.0)
-        cr.set_source_rgba(border[0], border[1], border[2], alpha)
-        cr.rectangle(x, y, w, h)
-        cr.stroke()
-        cr.restore()
-
-    def _render_empty_pane(
-        self,
-        cr: cairo.Context,
-        x: int,
-        y: int,
-        w: int,
-        h: int,
-        role: str,
-        alpha: float,
-    ) -> None:
-        """Empty-pane placeholder when capture isn't available."""
-        from .homage.rendering import active_package
-
         pkg = active_package()
         bg = pkg.palette.background
+        muted = pkg.palette.muted
+        bright = pkg.palette.bright
+
         cr.save()
-        cr.set_source_rgba(bg[0], bg[1], bg[2], bg[3] * alpha)
+        cr.set_source_rgba(bg[0], bg[1], bg[2], min(bg[3], 0.88) * alpha)
         cr.rectangle(x, y, w, h)
         cr.fill()
-        cr.set_line_width(1.0)
-        muted = pkg.palette.muted
-        cr.set_source_rgba(muted[0], muted[1], muted[2], alpha)
+        cr.set_line_width(2.0)
+        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.65 * alpha)
         cr.rectangle(x, y, w, h)
         cr.stroke()
         cr.restore()
 
+        marker_style = TextStyle(
+            text=f">>> {pane.glyph}",
+            font_description=self._font_description,
+            color_rgba=(muted[0], muted[1], muted[2], 0.78 * alpha),
+            outline_color_rgba=(0.0, 0.0, 0.0, 0.86 * alpha),
+            outline_offsets=OUTLINE_OFFSETS_4,
+            max_width_px=max(1, w - 36),
+            wrap="char",
+        )
+        render_text(cr, marker_style, x + 18, y + 14)
 
-__all__ = ["DURFCairoSource"]
+        line_y = y + 48
+        line_h = 19
+        max_lines = max(1, int((h - 64) / line_h))
+        for line in pane.lines[-max_lines:]:
+            style = TextStyle(
+                text=line or " ",
+                font_description=self._font_description,
+                color_rgba=_line_color(line),
+                outline_color_rgba=(0.0, 0.0, 0.0, 0.80 * alpha),
+                outline_offsets=OUTLINE_OFFSETS_4,
+                max_width_px=max(1, w - 36),
+                wrap="char",
+                line_spacing=0.92,
+            )
+            render_text(cr, style, x + 18, line_y)
+            line_y += line_h
+            if line_y > y + h - line_h:
+                break
+
+
+__all__ = [
+    "CodexLane",
+    "CodexPaneConfig",
+    "CodexPaneRegistry",
+    "DURFCairoSource",
+    "DURFPaneState",
+    "DURFSourceSnapshot",
+    "TextRedactionResult",
+    "TmuxCaptureResult",
+    "build_wcs_row",
+    "capture_tmux_text",
+    "is_pane_stale",
+    "redact_terminal_lines",
+    "sanitize_terminal_lines",
+]
