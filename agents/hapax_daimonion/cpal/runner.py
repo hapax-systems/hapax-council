@@ -685,7 +685,11 @@ class CpalRunner:
                 # utterance IS the impingement that recruits the pipeline.
                 if not self._pipeline._running:
                     await self._pipeline.start()
-                await self._pipeline.process_utterance(utterance)
+                # Acquire speech lock: prevents autonomous narration and
+                # exploration surfacing from producing audio during a
+                # multi-sentence conversational response.
+                async with self._speech_lock:
+                    await self._pipeline.process_utterance(utterance)
 
                 # Record grounding outcome based on pipeline result (C: C1)
                 self._evaluator.gain_controller.record_grounding_outcome(success=True)
@@ -1007,6 +1011,9 @@ class CpalRunner:
                     if self._speech_lock.locked():
                         log.debug("Autonomous narrative deferred: speech lock held")
                         return
+                    if self._processing_utterance:
+                        log.debug("Autonomous narrative deferred: conversational response active")
+                        return
                     async with self._speech_lock:
                         loop = asyncio.get_running_loop()
                         pcm = await loop.run_in_executor(
@@ -1181,6 +1188,11 @@ class CpalRunner:
                 )
                 if self._speech_lock.locked():
                     log.debug("CPAL: exploration surfacing deferred: speech lock held")
+                    return
+                if self._processing_utterance:
+                    log.debug(
+                        "CPAL: exploration surfacing deferred: conversational response active"
+                    )
                     return
                 async with self._speech_lock:
                     try:
