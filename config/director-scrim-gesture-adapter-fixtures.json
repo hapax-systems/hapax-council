@@ -1,0 +1,923 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "director-scrim-gesture-adapter-20260430",
+  "schema_ref": "schemas/director-scrim-gesture-adapter.schema.json",
+  "generated_from": [
+    "spec:2026-04-29-scrim-programme-director-behavior-contract",
+    "spec:2026-04-29-director-substrate-control-plane-design",
+    "spec:2026-04-29-director-control-move-audit-log-design",
+    "spec:2026-04-29-director-world-surface-read-model"
+  ],
+  "declared_at": "2026-04-30T01:52:00Z",
+  "producer": "cx-amber",
+  "director_verbs": [
+    "foreground",
+    "background",
+    "hold",
+    "suppress",
+    "transition",
+    "crossfade",
+    "intensify",
+    "stabilize",
+    "route_attention",
+    "mark_boundary"
+  ],
+  "audit_outcomes": [
+    "accepted",
+    "rejected",
+    "fallback",
+    "stale",
+    "private_only",
+    "dry_run"
+  ],
+  "fail_closed_policy": {
+    "scrim_grants_truth": false,
+    "scrim_grants_rights": false,
+    "scrim_grants_safety": false,
+    "scrim_grants_public_status": false,
+    "scrim_grants_live_control": false,
+    "scrim_grants_monetization_status": false,
+    "scrim_public_claim_scope_expansion_allowed": false,
+    "blocked_targets_can_foreground": false,
+    "blocked_targets_can_intensify": false,
+    "blocked_targets_can_be_made_public": false
+  },
+  "fixtures": [
+    {
+      "fixture_id": "foreground_public_accepted",
+      "family": "foreground_public_accepted",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-foreground-public",
+        "emitted_at": "2026-04-30T01:52:01Z",
+        "director_tier": "programme",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "foreground",
+        "target": {
+          "target_type": "spectacle_lane",
+          "target_id": "lane.broadcast.audio",
+          "display_name": "Broadcast audio lane",
+          "source_refs": ["lane:broadcast.audio"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "capability-classification:audio_route.broadcast.master.normalized",
+          "wcs-health:audio_route.broadcast.master.normalized"
+        ],
+        "freshness": {
+          "state": "fresh",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": []
+        },
+        "execution_state": "applied",
+        "fallback": {
+          "mode": "hold_last_safe",
+          "reason": "Hold last safe if public route evidence expires.",
+          "operator_facing": false
+        },
+        "public_claim_allowed": true,
+        "audit_event": {
+          "event_type": "director.move.foreground",
+          "payload_ref": "director-control/dsm-20260430-foreground-public.json",
+          "health_ref": "health:scrim.visual.nominal"
+        },
+        "public_event_ref": "public-event:youtube-live.fixture"
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.audio.broadcast-master",
+        "source_refs": [
+          "capability-classification:audio_route.broadcast.master.normalized",
+          "wcs-health:audio_route.broadcast.master.normalized"
+        ],
+        "status": "public",
+        "evidence_status": "fresh",
+        "freshness_state": "fresh",
+        "fallback_mode": "hold_last_safe",
+        "public_claim_allowed": true,
+        "public_event_policy": "public_live_allowed",
+        "blocked_reasons": []
+      },
+      "scrim_state_ref": "scrim_state:director_adapter:foreground_public",
+      "health_ref": "health:scrim.visual.nominal",
+      "target_lane_ref": "lane:broadcast.audio",
+      "target_region_refs": ["region:programme.primary"],
+      "reason": "Fresh public-safe route can receive local clarity without new authority.",
+      "request_pierce": false,
+      "requested_intensity": 0.64,
+      "expected": {
+        "outcome": "accepted",
+        "execution": "gesture",
+        "gesture_type": "thin",
+        "gesture_effect": "thin",
+        "fallback_behavior": "neutral_hold",
+        "public_claim_allowed": true,
+        "reason_code": "accepted"
+      }
+    },
+    {
+      "fixture_id": "foreground_blocked_rejected",
+      "family": "foreground_blocked_rejected",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-foreground-blocked",
+        "emitted_at": "2026-04-30T01:52:02Z",
+        "director_tier": "programme",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "foreground",
+        "target": {
+          "target_type": "substrate",
+          "target_id": "surface.decommissioned.tauri",
+          "display_name": "Decommissioned Tauri frame server",
+          "source_refs": ["substrate:surface.decommissioned.tauri"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "decommission:tauri-logos.frame-server",
+          "capability-classification:blocked_decommissioned.tauri-frame-server"
+        ],
+        "freshness": {
+          "state": "not_applicable",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": ["decommissioned_runtime_path"]
+        },
+        "execution_state": "blocked",
+        "fallback": {
+          "mode": "kill_switch",
+          "reason": "Blocked visual runtime cannot be foregrounded.",
+          "operator_facing": true
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.foreground",
+          "payload_ref": "director-control/dsm-20260430-foreground-blocked.json",
+          "health_ref": "health:scrim.visual.blocked"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.decommissioned.tauri-frame",
+        "source_refs": [
+          "decommission:tauri-logos.frame-server",
+          "capability-classification:blocked_decommissioned.tauri-frame-server"
+        ],
+        "status": "blocked",
+        "evidence_status": "blocked",
+        "freshness_state": "not_applicable",
+        "fallback_mode": "kill_switch",
+        "public_claim_allowed": false,
+        "public_event_policy": "blocked",
+        "blocked_reasons": ["decommissioned_runtime_path"]
+      },
+      "scrim_state_ref": "scrim_state:director_adapter:foreground_blocked",
+      "health_ref": "health:scrim.visual.blocked",
+      "target_lane_ref": "lane:visual.decommissioned",
+      "target_region_refs": ["region:programme.primary"],
+      "reason": "Blocked target must remain visible as a rejected no-op.",
+      "request_pierce": false,
+      "requested_intensity": 0.72,
+      "expected": {
+        "outcome": "rejected",
+        "execution": "no_op",
+        "gesture_type": "neutral_hold",
+        "gesture_effect": "neutral_hold",
+        "fallback_behavior": "no_op",
+        "public_claim_allowed": false,
+        "reason_code": "blocked_target_cannot_be_prominent"
+      }
+    },
+    {
+      "fixture_id": "background_safe_accepted",
+      "family": "background_safe_accepted",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-background-safe",
+        "emitted_at": "2026-04-30T01:52:03Z",
+        "director_tier": "structural",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "background",
+        "target": {
+          "target_type": "spectacle_lane",
+          "target_id": "lane.reverie.substrate",
+          "display_name": "Reverie substrate lane",
+          "source_refs": ["lane:reverie.substrate"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "capability-classification:visual.reverie-substrate",
+          "wcs-health:visual.reverie-substrate"
+        ],
+        "freshness": {
+          "state": "fresh",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": []
+        },
+        "execution_state": "applied",
+        "fallback": {
+          "mode": "hold_last_safe",
+          "reason": "Backgrounding can hold last safe visual fabric.",
+          "operator_facing": false
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.background",
+          "payload_ref": "director-control/dsm-20260430-background-safe.json",
+          "health_ref": "health:scrim.visual.nominal"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.visual.reverie-background",
+        "source_refs": [
+          "capability-classification:visual.reverie-substrate",
+          "wcs-health:visual.reverie-substrate"
+        ],
+        "status": "mounted",
+        "evidence_status": "fresh",
+        "freshness_state": "fresh",
+        "fallback_mode": "hold_last_safe",
+        "public_claim_allowed": false,
+        "public_event_policy": "not_applicable",
+        "blocked_reasons": []
+      },
+      "scrim_state_ref": "scrim_state:director_adapter:background_safe",
+      "health_ref": "health:scrim.visual.nominal",
+      "target_lane_ref": "lane:reverie.substrate",
+      "target_region_refs": ["region:background.fabric"],
+      "reason": "Safe mounted substrate can be subordinated without public claims.",
+      "request_pierce": false,
+      "requested_intensity": 0.42,
+      "expected": {
+        "outcome": "accepted",
+        "execution": "gesture",
+        "gesture_type": "soften",
+        "gesture_effect": "soften",
+        "fallback_behavior": "neutral_hold",
+        "public_claim_allowed": false,
+        "reason_code": "accepted"
+      }
+    },
+    {
+      "fixture_id": "hold_silence_valid",
+      "family": "hold_silence_valid",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-hold-silence",
+        "emitted_at": "2026-04-30T01:52:04Z",
+        "director_tier": "narrative",
+        "condition_id": "condition:listening",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "hold",
+        "target": {
+          "target_type": "spectacle_lane",
+          "target_id": "lane.listening.quiet",
+          "display_name": "Listening quiet lane",
+          "source_refs": ["lane:listening.quiet"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "scrim-health:listening_quiet",
+          "wcs-health:visual.scrim.listening_quiet"
+        ],
+        "freshness": {
+          "state": "fresh",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": []
+        },
+        "execution_state": "applied",
+        "fallback": {
+          "mode": "hold_last_safe",
+          "reason": "Silence is valid listening posture when lane and reason are explicit.",
+          "operator_facing": false
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.hold",
+          "payload_ref": "director-control/dsm-20260430-hold-silence.json",
+          "health_ref": "health:scrim.visual.listening"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.scrim.listening-hold",
+        "source_refs": [
+          "scrim-health:listening_quiet",
+          "wcs-health:visual.scrim.listening_quiet"
+        ],
+        "status": "mounted",
+        "evidence_status": "fresh",
+        "freshness_state": "fresh",
+        "fallback_mode": "hold_last_safe",
+        "public_claim_allowed": false,
+        "public_event_policy": "not_applicable",
+        "blocked_reasons": []
+      },
+      "scrim_state_ref": "scrim_state:health:listening_quiet",
+      "health_ref": "health:scrim.visual.listening",
+      "target_lane_ref": "lane:listening.quiet",
+      "target_region_refs": ["region:whole_scrim"],
+      "reason": "Listening silence is intentional; keep fabric steady.",
+      "request_pierce": false,
+      "requested_intensity": 0.2,
+      "expected": {
+        "outcome": "accepted",
+        "execution": "gesture",
+        "gesture_type": "neutral_hold",
+        "gesture_effect": "neutral_hold",
+        "fallback_behavior": "neutral_hold",
+        "public_claim_allowed": false,
+        "reason_code": "accepted"
+      }
+    },
+    {
+      "fixture_id": "suppress_blocked_fallback",
+      "family": "suppress_blocked_fallback",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-suppress-blocked",
+        "emitted_at": "2026-04-30T01:52:05Z",
+        "director_tier": "programme",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "suppress",
+        "target": {
+          "target_type": "substrate",
+          "target_id": "surface.rights.blocked.media",
+          "display_name": "Rights blocked media surface",
+          "source_refs": ["substrate:surface.rights.blocked.media"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "rights:blocked.media.fixture",
+          "provenance:blocked.visual.fixture"
+        ],
+        "freshness": {
+          "state": "fresh",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": ["rights_blocked"]
+        },
+        "execution_state": "fallback",
+        "fallback": {
+          "mode": "suppress",
+          "reason": "Rights blocked media must be neutralized and audited.",
+          "operator_facing": true
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.suppress",
+          "payload_ref": "director-control/dsm-20260430-suppress-blocked.json",
+          "health_ref": "health:scrim.visual.blocked"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.visual.rights-blocked-suppress",
+        "source_refs": [
+          "rights:blocked.media.fixture",
+          "provenance:blocked.visual.fixture"
+        ],
+        "status": "blocked",
+        "evidence_status": "blocked",
+        "freshness_state": "fresh",
+        "fallback_mode": "suppress",
+        "public_claim_allowed": false,
+        "public_event_policy": "blocked",
+        "blocked_reasons": ["rights_blocked"]
+      },
+      "scrim_state_ref": "scrim_state:director_adapter:suppress_blocked",
+      "health_ref": "health:scrim.visual.blocked",
+      "target_lane_ref": "lane:visual.media",
+      "target_region_refs": ["region:media.surface"],
+      "reason": "Neutralize blocked media while keeping blocker audit visible.",
+      "request_pierce": false,
+      "requested_intensity": 0.58,
+      "expected": {
+        "outcome": "fallback",
+        "execution": "suppress",
+        "gesture_type": "refusal_dim",
+        "gesture_effect": "refusal_dim",
+        "fallback_behavior": "suppress_public_cue",
+        "public_claim_allowed": false,
+        "reason_code": "blocked_target_suppressed"
+      }
+    },
+    {
+      "fixture_id": "transition_stale_hold",
+      "family": "transition_stale_hold",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-transition-stale",
+        "emitted_at": "2026-04-30T01:52:06Z",
+        "director_tier": "structural",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "transition",
+        "target": {
+          "target_type": "spectacle_lane",
+          "target_id": "lane.vision.classification",
+          "display_name": "Vision classification lane",
+          "source_refs": ["lane:vision.classification"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "capability-classification:state_file.vision.classification-snapshot",
+          "wcs-health:state_file.vision.classification-snapshot"
+        ],
+        "freshness": {
+          "state": "stale",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": ["stale_source"]
+        },
+        "execution_state": "fallback",
+        "fallback": {
+          "mode": "hold_last_safe",
+          "reason": "Transition source is stale, so hold last safe posture.",
+          "operator_facing": true
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.transition",
+          "payload_ref": "director-control/dsm-20260430-transition-stale.json",
+          "health_ref": "health:scrim.visual.stale"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.state-file.vision-classification-stale",
+        "source_refs": [
+          "capability-classification:state_file.vision.classification-snapshot",
+          "wcs-health:state_file.vision.classification-snapshot"
+        ],
+        "status": "stale",
+        "evidence_status": "stale",
+        "freshness_state": "stale",
+        "fallback_mode": "hold_last_safe",
+        "public_claim_allowed": false,
+        "public_event_policy": "not_applicable",
+        "blocked_reasons": ["stale_source"]
+      },
+      "scrim_state_ref": "scrim_state:health:stale_state",
+      "health_ref": "health:scrim.visual.stale",
+      "target_lane_ref": "lane:vision.classification",
+      "target_region_refs": ["region:classification.summary"],
+      "reason": "Stale transition evidence becomes a bounded hold.",
+      "request_pierce": false,
+      "requested_intensity": 0.48,
+      "expected": {
+        "outcome": "stale",
+        "execution": "hold_last_safe",
+        "gesture_type": "neutral_hold",
+        "gesture_effect": "neutral_hold",
+        "fallback_behavior": "neutral_hold",
+        "public_claim_allowed": false,
+        "reason_code": "stale_evidence_hold_last_safe"
+      }
+    },
+    {
+      "fixture_id": "crossfade_degraded_fallback",
+      "family": "crossfade_degraded_fallback",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-crossfade-degraded",
+        "emitted_at": "2026-04-30T01:52:07Z",
+        "director_tier": "structural",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "crossfade",
+        "target": {
+          "target_type": "spectacle_lane",
+          "target_id": "lane.scrim.crossfade",
+          "display_name": "Scrim crossfade lane",
+          "source_refs": ["lane:scrim.crossfade"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "scrim-health:minimum_density_fallback",
+          "wcs-health:visual.scrim.minimum_density"
+        ],
+        "freshness": {
+          "state": "stale",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": ["crossfade_side_stale"]
+        },
+        "execution_state": "fallback",
+        "fallback": {
+          "mode": "degraded_status",
+          "reason": "One crossfade side is stale; reduce to minimum density hold.",
+          "operator_facing": true
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.crossfade",
+          "payload_ref": "director-control/dsm-20260430-crossfade-degraded.json",
+          "health_ref": "health:scrim.visual.minimum_density"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.scrim.crossfade-degraded",
+        "source_refs": [
+          "scrim-health:minimum_density_fallback",
+          "wcs-health:visual.scrim.minimum_density"
+        ],
+        "status": "stale",
+        "evidence_status": "stale",
+        "freshness_state": "stale",
+        "fallback_mode": "degraded_status",
+        "public_claim_allowed": false,
+        "public_event_policy": "not_applicable",
+        "blocked_reasons": ["crossfade_side_stale"]
+      },
+      "scrim_state_ref": "scrim_state:health:minimum_density_fallback",
+      "health_ref": "health:scrim.visual.minimum_density",
+      "target_lane_ref": "lane:scrim.crossfade",
+      "target_region_refs": ["region:whole_scrim"],
+      "reason": "Crossfade degrades to minimum-density hold when one side is stale.",
+      "request_pierce": false,
+      "requested_intensity": 0.5,
+      "expected": {
+        "outcome": "fallback",
+        "execution": "hold_last_safe",
+        "gesture_type": "neutral_hold",
+        "gesture_effect": "neutral_hold",
+        "fallback_behavior": "minimum_density",
+        "public_claim_allowed": false,
+        "reason_code": "crossfade_stale_side_hold_last_safe"
+      }
+    },
+    {
+      "fixture_id": "intensify_blocked_rejected",
+      "family": "intensify_blocked_rejected",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-intensify-blocked",
+        "emitted_at": "2026-04-30T01:52:08Z",
+        "director_tier": "programme",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "intensify",
+        "target": {
+          "target_type": "substrate",
+          "target_id": "surface.rights.blocked.media",
+          "display_name": "Rights blocked media surface",
+          "source_refs": ["substrate:surface.rights.blocked.media"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "rights:blocked.media.fixture",
+          "provenance:blocked.visual.fixture"
+        ],
+        "freshness": {
+          "state": "fresh",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": ["rights_blocked"]
+        },
+        "execution_state": "blocked",
+        "fallback": {
+          "mode": "suppress",
+          "reason": "Blocked target cannot be intensified.",
+          "operator_facing": true
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.intensify",
+          "payload_ref": "director-control/dsm-20260430-intensify-blocked.json",
+          "health_ref": "health:scrim.visual.blocked"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.visual.rights-blocked-intensify",
+        "source_refs": [
+          "rights:blocked.media.fixture",
+          "provenance:blocked.visual.fixture"
+        ],
+        "status": "blocked",
+        "evidence_status": "blocked",
+        "freshness_state": "fresh",
+        "fallback_mode": "suppress",
+        "public_claim_allowed": false,
+        "public_event_policy": "blocked",
+        "blocked_reasons": ["rights_blocked"]
+      },
+      "scrim_state_ref": "scrim_state:director_adapter:intensify_blocked",
+      "health_ref": "health:scrim.visual.blocked",
+      "target_lane_ref": "lane:visual.media",
+      "target_region_refs": ["region:media.surface"],
+      "reason": "Blocked target cannot become spectacle.",
+      "request_pierce": false,
+      "requested_intensity": 0.95,
+      "expected": {
+        "outcome": "rejected",
+        "execution": "no_op",
+        "gesture_type": "neutral_hold",
+        "gesture_effect": "neutral_hold",
+        "fallback_behavior": "no_op",
+        "public_claim_allowed": false,
+        "reason_code": "blocked_target_cannot_be_prominent"
+      }
+    },
+    {
+      "fixture_id": "stabilize_safe_accepted",
+      "family": "stabilize_safe_accepted",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-stabilize-safe",
+        "emitted_at": "2026-04-30T01:52:09Z",
+        "director_tier": "structural",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "stabilize",
+        "target": {
+          "target_type": "spectacle_lane",
+          "target_id": "lane.scrim.hothouse",
+          "display_name": "Hothouse scrim texture lane",
+          "source_refs": ["lane:scrim.hothouse"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "scrim-health:hothouse_high_texture",
+          "wcs-health:visual.scrim.hothouse"
+        ],
+        "freshness": {
+          "state": "fresh",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": []
+        },
+        "execution_state": "applied",
+        "fallback": {
+          "mode": "hold_last_safe",
+          "reason": "Stabilize known mounted scrim texture.",
+          "operator_facing": false
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.stabilize",
+          "payload_ref": "director-control/dsm-20260430-stabilize-safe.json",
+          "health_ref": "health:scrim.visual.hothouse"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.scrim.stabilize-hothouse",
+        "source_refs": [
+          "scrim-health:hothouse_high_texture",
+          "wcs-health:visual.scrim.hothouse"
+        ],
+        "status": "mounted",
+        "evidence_status": "fresh",
+        "freshness_state": "fresh",
+        "fallback_mode": "hold_last_safe",
+        "public_claim_allowed": false,
+        "public_event_policy": "not_applicable",
+        "blocked_reasons": []
+      },
+      "scrim_state_ref": "scrim_state:health:hothouse_high_texture",
+      "health_ref": "health:scrim.visual.hothouse",
+      "target_lane_ref": "lane:scrim.hothouse",
+      "target_region_refs": ["region:whole_scrim"],
+      "reason": "Lower turbulence while preserving safe scrim output.",
+      "request_pierce": false,
+      "requested_intensity": 0.38,
+      "expected": {
+        "outcome": "accepted",
+        "execution": "gesture",
+        "gesture_type": "soften",
+        "gesture_effect": "soften",
+        "fallback_behavior": "neutral_hold",
+        "public_claim_allowed": false,
+        "reason_code": "accepted"
+      }
+    },
+    {
+      "fixture_id": "route_attention_private_only",
+      "family": "route_attention_private_only",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-route-attention-private",
+        "emitted_at": "2026-04-30T01:52:10Z",
+        "director_tier": "operator_control",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "route_attention",
+        "target": {
+          "target_type": "private_control",
+          "target_id": "control.sidechat.operator",
+          "display_name": "Operator sidechat control",
+          "source_refs": ["control:sidechat.operator"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "capability-classification:runtime_service.programme.private-outcome-log",
+          "wcs-health:runtime_service.programme.private-outcome-log"
+        ],
+        "freshness": {
+          "state": "fresh",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": []
+        },
+        "execution_state": "applied",
+        "fallback": {
+          "mode": "private_only",
+          "reason": "Route attention is local/private only.",
+          "operator_facing": true
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.route_attention",
+          "payload_ref": "director-control/dsm-20260430-route-attention-private.json",
+          "health_ref": "health:scrim.visual.private"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.runtime-service.private-log",
+        "source_refs": [
+          "capability-classification:runtime_service.programme.private-outcome-log",
+          "wcs-health:runtime_service.programme.private-outcome-log"
+        ],
+        "status": "private",
+        "evidence_status": "private_only",
+        "freshness_state": "fresh",
+        "fallback_mode": "private_only",
+        "public_claim_allowed": false,
+        "public_event_policy": "not_applicable",
+        "blocked_reasons": []
+      },
+      "scrim_state_ref": "scrim_state:director_adapter:route_attention_private",
+      "health_ref": "health:scrim.visual.private",
+      "target_lane_ref": "lane:operator.private",
+      "target_region_refs": ["region:operator.private"],
+      "reason": "Private attention routing cannot leak as public clarity.",
+      "request_pierce": false,
+      "requested_intensity": 0.44,
+      "expected": {
+        "outcome": "private_only",
+        "execution": "dry_run",
+        "gesture_type": "neutral_hold",
+        "gesture_effect": "neutral_hold",
+        "fallback_behavior": "dry_run_badge",
+        "public_claim_allowed": false,
+        "reason_code": "private_only_target"
+      }
+    },
+    {
+      "fixture_id": "mark_boundary_dry_run",
+      "family": "mark_boundary_dry_run",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-mark-boundary-dry-run",
+        "emitted_at": "2026-04-30T01:52:11Z",
+        "director_tier": "programme",
+        "condition_id": "condition:scrim-adapter",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "mark_boundary",
+        "target": {
+          "target_type": "cuepoint",
+          "target_id": "cuepoint.youtube.dry-run",
+          "display_name": "YouTube cuepoint dry-run",
+          "source_refs": ["cuepoint:youtube.dry-run"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "capability-classification:publication_endpoint.youtube.live-cuepoint",
+          "public-event-gate:youtube.live-cuepoint.dry-run"
+        ],
+        "freshness": {
+          "state": "not_applicable",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": ["public_event_dry_run"]
+        },
+        "execution_state": "dry_run",
+        "fallback": {
+          "mode": "dry_run",
+          "reason": "Boundary is preserved as replay evidence only.",
+          "operator_facing": true
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.mark_boundary",
+          "payload_ref": "director-control/dsm-20260430-mark-boundary-dry-run.json",
+          "health_ref": "health:scrim.visual.boundary"
+        },
+        "public_event_ref": null
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.publication.youtube-dry-run",
+        "source_refs": [
+          "capability-classification:publication_endpoint.youtube.live-cuepoint",
+          "public-event-gate:youtube.live-cuepoint.dry-run"
+        ],
+        "status": "dry_run",
+        "evidence_status": "dry_run",
+        "freshness_state": "not_applicable",
+        "fallback_mode": "dry_run",
+        "public_claim_allowed": false,
+        "public_event_policy": "dry_run",
+        "blocked_reasons": []
+      },
+      "scrim_state_ref": "scrim_state:director_adapter:mark_boundary_dry_run",
+      "health_ref": "health:scrim.visual.boundary",
+      "target_lane_ref": "lane:programme.boundary",
+      "target_region_refs": ["region:boundary.programme"],
+      "reason": "Dry-run boundary pulse marks replay evidence without public event.",
+      "request_pierce": false,
+      "requested_intensity": 0.4,
+      "expected": {
+        "outcome": "dry_run",
+        "execution": "dry_run",
+        "gesture_type": "mark_boundary",
+        "gesture_effect": "mark_boundary",
+        "fallback_behavior": "dry_run_badge",
+        "public_claim_allowed": false,
+        "reason_code": "dry_run_only"
+      }
+    },
+    {
+      "fixture_id": "mark_boundary_pierce_accepted",
+      "family": "mark_boundary_pierce_accepted",
+      "director_move": {
+        "schema_version": 1,
+        "decision_id": "dsm-20260430-mark-boundary-pierce",
+        "emitted_at": "2026-04-30T01:52:12Z",
+        "director_tier": "programme",
+        "condition_id": "condition:ritual-boundary",
+        "programme_id": "programme_scrim_adapter_fixture",
+        "verb": "mark_boundary",
+        "target": {
+          "target_type": "programme",
+          "target_id": "programme.ritual.open",
+          "display_name": "Ritual programme open",
+          "source_refs": ["programme:ritual.open"]
+        },
+        "wcs_source_refs": [
+          "wcs:director-snapshot:fixture-20260430",
+          "programme-boundary:ritual.open.fixture",
+          "scrim-health:scrim_translucency_nominal"
+        ],
+        "freshness": {
+          "state": "fresh",
+          "checked_at": "2026-04-30T01:52:00Z",
+          "blocking_refs": []
+        },
+        "execution_state": "applied",
+        "fallback": {
+          "mode": "hold_last_safe",
+          "reason": "Ritual boundary can part briefly under pierce caps.",
+          "operator_facing": false
+        },
+        "public_claim_allowed": false,
+        "audit_event": {
+          "event_type": "director.move.mark_boundary",
+          "payload_ref": "director-control/dsm-20260430-mark-boundary-pierce.json",
+          "health_ref": "health:scrim.visual.boundary"
+        },
+        "public_event_ref": "programme-boundary:ritual.open.fixture"
+      },
+      "wcs": {
+        "wcs_snapshot_ref": "director-wcs-snapshot-fixture-20260430",
+        "move_id": "move.director.programme.ritual-boundary",
+        "source_refs": [
+          "programme-boundary:ritual.open.fixture",
+          "scrim-health:scrim_translucency_nominal"
+        ],
+        "status": "mounted",
+        "evidence_status": "fresh",
+        "freshness_state": "fresh",
+        "fallback_mode": "hold_last_safe",
+        "public_claim_allowed": false,
+        "public_event_policy": "not_applicable",
+        "blocked_reasons": []
+      },
+      "scrim_state_ref": "scrim_state:director_adapter:mark_boundary_pierce",
+      "health_ref": "health:scrim.visual.boundary",
+      "target_lane_ref": "lane:programme.boundary",
+      "target_region_refs": ["region:boundary.programme"],
+      "reason": "Rare ritual opening parting is audited and TTL capped.",
+      "request_pierce": true,
+      "requested_intensity": 0.5,
+      "expected": {
+        "outcome": "accepted",
+        "execution": "gesture",
+        "gesture_type": "mark_boundary",
+        "gesture_effect": "scrim.pierce",
+        "fallback_behavior": "neutral_hold",
+        "public_claim_allowed": false,
+        "reason_code": "accepted"
+      }
+    }
+  ]
+}
