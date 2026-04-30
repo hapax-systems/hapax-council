@@ -1,9 +1,9 @@
-"""Bluesky poster (ytb-010 Phase 2).
+"""Bluesky public-event poster.
 
-Tails ``/dev/shm/hapax-broadcast/events.jsonl`` and posts to Bluesky on
-each ``broadcast_rotated`` event via the ``atproto`` client. Uses the
-same JSONL-cursor + allowlist-gate + dry-run-default pattern as the
-Discord poster (Phase 1, ``discord_webhook.py``).
+Tails canonical ``ResearchVehiclePublicEvent`` JSONL records from
+``/dev/shm/hapax-public-events/events.jsonl`` and posts to Bluesky only when
+the event contract, Bluesky aperture policy, and publication allowlist all
+permit public fanout.
 
 ## Auth
 
@@ -19,9 +19,9 @@ Without either, daemon idles + logs ``no_credentials`` per event.
 
 ## Composition
 
-Reuses ``metadata_composer.compose_metadata(scope="cross_surface")``
-which produces ``bluesky_post`` (text only, ≤ 300 chars) already-
-policed by the redaction + framing layers.
+Reuses ``metadata_composer.compose_metadata(scope="cross_surface")`` with a
+canonical public-event trigger projection. The resulting ``bluesky_post`` is
+text only and capped at 300 chars.
 
 ## Rate limit
 
@@ -31,7 +31,7 @@ means ~2-3 posts/day in steady state.
 
 ## Embed
 
-Phase 2 ships text-only posts. A follow-up could add a
+This adapter ships text-only posts. A follow-up could add a
 ``AppBskyEmbedExternal.Main`` link card with the broadcast URL,
 title, and thumbnail; deferred to keep this PR tight.
 """
@@ -46,16 +46,24 @@ import signal as _signal
 import sys
 import threading
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, start_http_server
+from pydantic import ValidationError
 
+from shared.cross_surface_event_contract import decide_cross_surface_fanout
 from shared.governance.publication_allowlist import check as allowlist_check
+from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
 log = logging.getLogger(__name__)
 
 EVENT_PATH = Path(
-    os.environ.get("HAPAX_BROADCAST_EVENT_PATH", "/dev/shm/hapax-broadcast/events.jsonl")
+    os.environ.get(
+        "HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH",
+        "/dev/shm/hapax-public-events/events.jsonl",
+    )
 )
 DEFAULT_CURSOR_PATH = Path(
     os.environ.get(
@@ -63,17 +71,36 @@ DEFAULT_CURSOR_PATH = Path(
         str(Path.home() / ".cache/hapax/bluesky-post-cursor.txt"),
     )
 )
+DEFAULT_IDEMPOTENCY_PATH = Path(
+    os.environ.get(
+        "HAPAX_BLUESKY_IDEMPOTENCY_PATH",
+        str(Path.home() / ".cache/hapax/bluesky-post-event-ids.json"),
+    )
+)
 METRICS_PORT: int = int(os.environ.get("HAPAX_BLUESKY_METRICS_PORT", "9501"))
 DEFAULT_TICK_S: float = float(os.environ.get("HAPAX_BLUESKY_TICK_S", "30"))
 BLUESKY_TEXT_LIMIT = 300
 
 ALLOWLIST_SURFACE = "bluesky-post"
-ALLOWLIST_STATE_KIND = "broadcast.boundary"
-EVENT_TYPE = "broadcast_rotated"
+ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
+    {
+        "broadcast.boundary",
+        "chronicle.high_salience",
+        "shorts.upload",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _TailRecord:
+    byte_start: int
+    byte_after: int
+    event: ResearchVehiclePublicEvent | None
+    error: str | None = None
 
 
 class BlueskyPoster:
-    """Tail broadcast events; post to Bluesky per rotation."""
+    """Tail canonical public events; post to Bluesky when policy permits."""
 
     def __init__(
         self,
@@ -84,6 +111,7 @@ class BlueskyPoster:
         client_factory=None,
         event_path: Path = EVENT_PATH,
         cursor_path: Path = DEFAULT_CURSOR_PATH,
+        idempotency_path: Path = DEFAULT_IDEMPOTENCY_PATH,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
         dry_run: bool = False,
@@ -94,14 +122,16 @@ class BlueskyPoster:
         self._client_factory = client_factory
         self._event_path = event_path
         self._cursor_path = cursor_path
+        self._idempotency_path = idempotency_path
         self._tick_s = max(1.0, tick_s)
         self._dry_run = dry_run
         self._stop_evt = threading.Event()
         self._client = None  # built on first non-dry-run apply
+        self._processed_event_ids: set[str] | None = None
 
         self.posts_total = Counter(
             "hapax_broadcast_bluesky_posts_total",
-            "Bluesky posts attempted, broken down by outcome.",
+            "Bluesky posts attempted from ResearchVehiclePublicEvent records, broken down by outcome.",
             ["result"],
             registry=registry,
         )
@@ -109,17 +139,28 @@ class BlueskyPoster:
     # ── Public API ────────────────────────────────────────────────────
 
     def run_once(self) -> int:
-        cursor = self._read_cursor()
         handled = 0
-        for event, byte_after in self._tail_from(cursor):
-            if event.get("event_type") != EVENT_TYPE:
-                cursor = byte_after
+        for record in self._tail_from():
+            if record.event is None:
+                if record.error:
+                    log.warning(
+                        "skipping malformed public event at byte %d: %s",
+                        record.byte_start,
+                        record.error,
+                    )
+                self._write_cursor(record.byte_after)
+                continue
+            event = record.event
+            if event.event_type not in ALLOWED_PUBLIC_EVENT_TYPES:
+                self._write_cursor(record.byte_after)
+                continue
+            if self._event_already_processed(event.event_id):
+                self._write_cursor(record.byte_after)
                 continue
             self._apply(event)
-            cursor = byte_after
+            self._mark_event_processed(event.event_id)
+            self._write_cursor(record.byte_after)
             handled += 1
-        if handled:
-            self._write_cursor(cursor)
         return handled
 
     def run_forever(self) -> None:
@@ -163,37 +204,127 @@ class BlueskyPoster:
         except OSError:
             log.warning("cursor write failed at %s", self._cursor_path, exc_info=True)
 
-    def _tail_from(self, byte_offset: int) -> Iterator[tuple[dict, int]]:
-        if not self._event_path.exists():
+    def _tail_from(self) -> Iterator[_TailRecord]:
+        try:
+            size = self._event_path.stat().st_size
+        except OSError:
             return
+
+        byte_offset = self._read_cursor()
+        if byte_offset > size:
+            log.warning(
+                "public-event file shrank from cursor %d to %d bytes; restarting from 0",
+                byte_offset,
+                size,
+            )
+            byte_offset = 0
+            self._write_cursor(0)
+
         try:
             with self._event_path.open("rb") as fh:
                 fh.seek(byte_offset)
                 while True:
+                    byte_start = fh.tell()
                     line = fh.readline()
                     if not line:
                         return
                     new_offset = fh.tell()
                     text = line.decode("utf-8", errors="replace").strip()
                     if not text:
+                        yield _TailRecord(
+                            byte_start=byte_start,
+                            byte_after=new_offset,
+                            event=None,
+                        )
                         continue
                     try:
-                        event = json.loads(text)
+                        raw_event = json.loads(text)
                     except json.JSONDecodeError:
-                        log.warning("malformed event line at offset %d", byte_offset)
+                        yield _TailRecord(
+                            byte_start=byte_start,
+                            byte_after=new_offset,
+                            event=None,
+                            error="json_decode_error",
+                        )
                         continue
-                    yield event, new_offset
+                    if not isinstance(raw_event, dict):
+                        yield _TailRecord(
+                            byte_start=byte_start,
+                            byte_after=new_offset,
+                            event=None,
+                            error="json_not_object",
+                        )
+                        continue
+                    try:
+                        event = ResearchVehiclePublicEvent.model_validate(raw_event)
+                    except ValidationError as exc:
+                        yield _TailRecord(
+                            byte_start=byte_start,
+                            byte_after=new_offset,
+                            event=None,
+                            error=f"schema_validation_error:{exc.errors()[0]['type']}",
+                        )
+                        continue
+                    yield _TailRecord(byte_start=byte_start, byte_after=new_offset, event=event)
                     byte_offset = new_offset
         except OSError:
             log.warning("event file read failed at %s", self._event_path, exc_info=True)
 
+    def _event_already_processed(self, event_id: str) -> bool:
+        if self._processed_event_ids is None:
+            self._processed_event_ids = self._read_processed_event_ids()
+        return event_id in self._processed_event_ids
+
+    def _read_processed_event_ids(self) -> set[str]:
+        try:
+            raw = json.loads(self._idempotency_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return set()
+        if isinstance(raw, dict):
+            ids = raw.get("event_ids")
+        else:
+            ids = raw
+        if not isinstance(ids, list):
+            return set()
+        return {item for item in ids if isinstance(item, str) and item}
+
+    def _mark_event_processed(self, event_id: str) -> None:
+        if self._processed_event_ids is None:
+            self._processed_event_ids = self._read_processed_event_ids()
+        self._processed_event_ids.add(event_id)
+        try:
+            self._idempotency_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._idempotency_path.with_suffix(".tmp")
+            payload = {
+                "schema_version": 1,
+                "event_ids": sorted(self._processed_event_ids),
+            }
+            tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            tmp.replace(self._idempotency_path)
+        except OSError:
+            log.warning(
+                "idempotency write failed at %s",
+                self._idempotency_path,
+                exc_info=True,
+            )
+
     # ── Per-event apply ───────────────────────────────────────────────
 
-    def _apply(self, event: dict) -> None:
+    def _apply(self, event: ResearchVehiclePublicEvent) -> None:
+        fanout = decide_cross_surface_fanout(event, "bluesky", "publish")
+        if fanout.decision != "allow":
+            log.warning(
+                "bluesky public-event fanout blocked for %s: %s",
+                event.event_id,
+                ",".join(fanout.reasons),
+            )
+            self.posts_total.labels(result="denied").inc()
+            return
+
         verdict = allowlist_check(
             ALLOWLIST_SURFACE,
-            ALLOWLIST_STATE_KIND,
-            {"event": event},
+            event.event_type,
+            _allowlist_payload(event),
         )
         if verdict.decision == "deny":
             log.warning("allowlist DENY for bluesky post: %s", verdict.reason)
@@ -217,7 +348,7 @@ class BlueskyPoster:
         result = self._send_post(text)
         self.posts_total.labels(result=result).inc()
 
-    def _compose(self, event: dict) -> str:
+    def _compose(self, event: ResearchVehiclePublicEvent) -> str:
         if self._compose_fn is not None:
             return self._compose_fn(event)
         return _default_compose(event)
@@ -253,12 +384,119 @@ class BlueskyPoster:
 # ── Default helpers (composer + atproto client) ──────────────────────
 
 
-def _default_compose(event: dict) -> str:
+def _default_compose(event: ResearchVehiclePublicEvent) -> str:
     """Build post text by deferring to metadata_composer."""
     from agents.metadata_composer.composer import compose_metadata
 
-    composed = compose_metadata(triggering_event=event, scope="cross_surface")
-    return composed.bluesky_post or "hapax — broadcast rotation"
+    composed = compose_metadata(
+        triggering_event=_composer_trigger_from_public_event(event),
+        scope="cross_surface",
+    )
+    return composed.bluesky_post or _fallback_public_event_text(event)
+
+
+def _composer_trigger_from_public_event(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
+    """Project canonical public events into the metadata composer trigger shape."""
+
+    intent = _event_intent(event)
+    return {
+        "id": event.event_id,
+        "event_type": event.event_type,
+        "ts": event.occurred_at,
+        "payload": {
+            "intent_family": intent,
+            "salience": event.salience,
+            "broadcast_id": event.broadcast_id,
+            "public_url": event.public_url,
+            "source_event_id": event.event_id,
+        },
+    }
+
+
+def _event_intent(event: ResearchVehiclePublicEvent) -> str:
+    if event.event_type == "broadcast.boundary":
+        if event.chapter_ref is not None and event.chapter_ref.label:
+            return event.chapter_ref.label
+        return "broadcast boundary"
+    if event.event_type == "chronicle.high_salience":
+        if event.chapter_ref is not None and event.chapter_ref.label:
+            return event.chapter_ref.label
+        return "high-salience observation"
+    if event.event_type == "shorts.upload":
+        return "shorts upload"
+    return event.event_type
+
+
+def _fallback_public_event_text(event: ResearchVehiclePublicEvent) -> str:
+    return f"Hapax livestream: {_event_intent(event)}."
+
+
+def _allowlist_payload(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
+    payload: dict[str, Any] = {"event": event.model_dump(mode="json")}
+    if event.event_type in {"chronicle.high_salience", "shorts.upload"}:
+        payload["grounding_gate_result"] = _grounding_gate_from_public_event(event)
+    return payload
+
+
+def _grounding_gate_from_public_event(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
+    mode = _publication_mode(event)
+    source_refs = _dedupe(
+        [
+            event.source.evidence_ref,
+            *event.provenance.evidence_refs,
+            *event.provenance.citation_refs,
+            *event.attribution_refs,
+        ]
+    )
+    evidence_refs = _dedupe([event.source.evidence_ref, *event.provenance.evidence_refs])
+    publishable = mode in {"public_live", "public_archive", "public_monetizable"} and (
+        event.surface_policy.dry_run_reason is None
+    )
+    return {
+        "schema_version": 1,
+        "public_private_mode": mode,
+        "gate_state": "pass" if publishable else "hold",
+        "claim": {
+            "evidence_refs": evidence_refs,
+            "provenance": {"source_refs": source_refs},
+            "freshness": {"status": "fresh" if publishable else "stale"},
+            "rights_state": event.rights_class,
+            "privacy_state": event.privacy_class,
+            "public_private_mode": mode,
+            "refusal_correction_path": {
+                "refusal_reason": event.surface_policy.dry_run_reason,
+                "correction_event_ref": None,
+                "artifact_ref": None,
+            },
+        },
+        "gate_result": {
+            "may_emit_claim": publishable,
+            "may_publish_live": publishable and mode == "public_live",
+            "may_publish_archive": publishable and mode == "public_archive",
+            "may_monetize": publishable and mode == "public_monetizable",
+        },
+    }
+
+
+def _publication_mode(event: ResearchVehiclePublicEvent) -> str:
+    if event.surface_policy.claim_monetizable:
+        return "public_monetizable"
+    if event.surface_policy.claim_live:
+        return "public_live"
+    if event.surface_policy.claim_archive:
+        return "public_archive"
+    return "dry_run"
+
+
+def _dedupe(values: list[str | None]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _default_client_factory(handle: str, app_password: str):
@@ -360,7 +598,7 @@ def _compose_artifact_text(artifact) -> str:  # type: ignore[no-untyped-def]
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agents.cross_surface.bluesky_post",
-        description="Tail broadcast events and post to Bluesky.",
+        description="Tail canonical public events and post to Bluesky.",
     )
     parser.add_argument(
         "--dry-run",
