@@ -112,6 +112,7 @@ from shared.grounding_provider_router import (
 )
 from shared.livestream_health_group import LivestreamHealthEnvelope, LivestreamHealthGroup
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
+from shared.private_to_public_bridge import BridgeResult, evaluate_bridge
 from shared.programme_revenue_braid_adapters import (
     BraidSnapshotRowRef,
     ConversionReadinessBraidProjection,
@@ -615,3 +616,8 @@ load_aperture_registry
 SelfPresenceEnvelopeProjection._fail_closed_public_speech
 build_envelope_projection
 render_compact_prompt_block
+
+# Bridge governor validators are invoked dynamically by Pydantic.
+# The evaluator is the sole public path from private to public.
+BridgeResult._no_public_without_authorization
+evaluate_bridge
