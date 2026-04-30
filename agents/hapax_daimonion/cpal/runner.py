@@ -600,6 +600,11 @@ class CpalRunner:
 
             # T3: Full formulation via pipeline
             if self._pipeline is not None:
+                # Impingement-native: if the pipeline was stopped (e.g., by
+                # silence timeout closing the session), restart it. The
+                # utterance IS the impingement that recruits the pipeline.
+                if not self._pipeline._running:
+                    await self._pipeline.start()
                 await self._pipeline.process_utterance(utterance)
 
                 # Record grounding outcome based on pipeline result (C: C1)

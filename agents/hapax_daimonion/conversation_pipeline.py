@@ -434,12 +434,21 @@ class ConversationPipeline:
         log.info("Conversation pipeline started")
 
     async def stop(self) -> None:
-        """Stop the conversation pipeline."""
+        """Stop the conversation pipeline.
+
+        Impingement-native voice: the conversation buffer is NOT deactivated
+        here. The buffer's lifecycle is tied to the daemon (always-on), not
+        the session. Pipeline stop resets conversational state but does not
+        kill the listening path — operator speech continues flowing through
+        buffer → STT → salience router → recruitment.
+        """
         self._running = False
         self.state = ConvState.IDLE
 
+        # Buffer stays active — no deactivate(). Speaking gate is cleared
+        # so the buffer resumes normal capture immediately.
         if self.buffer:
-            self.buffer.deactivate()
+            self.buffer.set_speaking(False)
 
         self._close_audio_output()
         self._emit("conversation_end", turns=self.turn_count)
