@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/scrim-health-fixtures.schema.json",
+  "title": "ScrimHealthFixtures",
+  "description": "Typed OQ-02 scrim health fixture rows that adapt into ScrimStateEnvelopeRef and WorldSurfaceHealthRecord without granting claim authority.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "no_authority_policy",
+    "families",
+    "fixtures"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {"type": "string", "const": "schemas/scrim-health-fixtures.schema.json"},
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "no_authority_policy": {"$ref": "#/$defs/no_authority_policy"},
+    "families": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fixture_family"},
+      "uniqueItems": true,
+      "minItems": 9
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fixture"},
+      "minItems": 9
+    }
+  },
+  "x-required_fixture_families": [
+    "anti_recognition_upstream_obscure",
+    "scrim_translucency_nominal",
+    "anti_visualizer_structural_motion",
+    "pixel_sort_dominance_blocked",
+    "stale_state",
+    "minimum_density_fallback",
+    "hothouse_high_texture",
+    "listening_quiet",
+    "music_reactive_structural"
+  ],
+  "x-forbidden_audio_modulation_registers": [
+    "waveform",
+    "fft",
+    "spectrum_bars",
+    "beat_iconography"
+  ],
+  "x-no_authority_policy": {
+    "scrim_health_grants_truth": false,
+    "scrim_health_grants_rights": false,
+    "scrim_health_grants_safety": false,
+    "scrim_health_grants_public_status": false,
+    "scrim_health_grants_monetization_status": false,
+    "scrim_health_counts_as_privacy_protection": false,
+    "face_obscure_remains_upstream_privacy_protection": true,
+    "audio_reactivity_can_be_structural_only": true
+  },
+  "$defs": {
+    "fixture_family": {
+      "type": "string",
+      "enum": [
+        "anti_recognition_upstream_obscure",
+        "scrim_translucency_nominal",
+        "anti_visualizer_structural_motion",
+        "pixel_sort_dominance_blocked",
+        "stale_state",
+        "minimum_density_fallback",
+        "hothouse_high_texture",
+        "listening_quiet",
+        "music_reactive_structural"
+      ]
+    },
+    "no_authority_policy": {
+      "type": "object",
+      "required": [
+        "scrim_health_grants_truth",
+        "scrim_health_grants_rights",
+        "scrim_health_grants_safety",
+        "scrim_health_grants_public_status",
+        "scrim_health_grants_monetization_status",
+        "scrim_health_counts_as_privacy_protection",
+        "face_obscure_remains_upstream_privacy_protection",
+        "audio_reactivity_can_be_structural_only"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scrim_health_grants_truth": {"type": "boolean", "const": false},
+        "scrim_health_grants_rights": {"type": "boolean", "const": false},
+        "scrim_health_grants_safety": {"type": "boolean", "const": false},
+        "scrim_health_grants_public_status": {"type": "boolean", "const": false},
+        "scrim_health_grants_monetization_status": {"type": "boolean", "const": false},
+        "scrim_health_counts_as_privacy_protection": {"type": "boolean", "const": false},
+        "face_obscure_remains_upstream_privacy_protection": {"type": "boolean", "const": true},
+        "audio_reactivity_can_be_structural_only": {"type": "boolean", "const": true}
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "required": [
+        "family",
+        "description",
+        "profile_id",
+        "permeability_mode",
+        "texture_family",
+        "scrim_state",
+        "world_surface",
+        "invariants",
+        "expected",
+        "consumed_by"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "family": {"$ref": "#/$defs/fixture_family"},
+        "description": {"type": "string", "minLength": 1},
+        "profile_id": {"$ref": "#/$defs/scrim_profile"},
+        "permeability_mode": {"$ref": "#/$defs/permeability_mode"},
+        "texture_family": {"type": "string", "minLength": 1},
+        "scrim_state": {"$ref": "#/$defs/scrim_state_ref"},
+        "world_surface": {"$ref": "#/$defs/world_surface_ref"},
+        "invariants": {"$ref": "#/$defs/invariants"},
+        "expected": {"$ref": "#/$defs/expected"},
+        "consumed_by": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["ScrimStateEnvelope", "WorldSurfaceHealthRecord"]},
+          "uniqueItems": true,
+          "minItems": 2
+        }
+      }
+    },
+    "scrim_state_ref": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "state_id",
+        "public_private_mode",
+        "evidence_status",
+        "health_state",
+        "claim_posture",
+        "blocked_reasons",
+        "source_refs",
+        "director_move_refs",
+        "boundary_event_refs",
+        "wcs_snapshot_ref",
+        "health_ref",
+        "fallback_mode",
+        "public_claim_allowed",
+        "public_claim_basis_refs"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "state_id": {"type": "string", "pattern": "^scrim_state:[a-z0-9_:-]+$"},
+        "public_private_mode": {"type": "string"},
+        "evidence_status": {"type": "string"},
+        "health_state": {"type": "string"},
+        "claim_posture": {"type": "string"},
+        "blocked_reasons": {"type": "array", "items": {"type": "string"}},
+        "source_refs": {"type": "array", "items": {"type": "string"}},
+        "director_move_refs": {"type": "array", "items": {"type": "string"}},
+        "boundary_event_refs": {"type": "array", "items": {"type": "string"}},
+        "wcs_snapshot_ref": {"type": "string", "minLength": 1},
+        "health_ref": {"type": "string", "minLength": 1},
+        "fallback_mode": {"type": "string"},
+        "public_claim_allowed": {"type": "boolean", "const": false},
+        "public_claim_basis_refs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "world_surface_ref": {
+      "type": "object",
+      "required": [
+        "surface_id",
+        "surface_family",
+        "status",
+        "fixture_case",
+        "health_dimensions",
+        "freshness",
+        "confidence",
+        "authority_ceiling",
+        "privacy_state",
+        "rights_state",
+        "public_private_posture",
+        "witness_policy",
+        "blocking_reasons",
+        "warnings",
+        "fallback_mode",
+        "fallback_reason_code",
+        "fallback_operator_reason",
+        "fallback_safe_state",
+        "kill_switch_state",
+        "evidence_envelope_refs",
+        "witness_refs",
+        "source_refs",
+        "next_probe_due_at"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "surface_id": {"type": "string", "minLength": 1},
+        "surface_family": {"type": "string", "const": "visual"},
+        "status": {"type": "string"},
+        "fixture_case": {"type": "string"},
+        "health_dimensions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/health_dimension"},
+          "minItems": 1
+        },
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "authority_ceiling": {"type": "string", "const": "no_claim"},
+        "privacy_state": {"type": "string"},
+        "rights_state": {"type": "string"},
+        "public_private_posture": {"type": "string"},
+        "witness_policy": {"type": "string"},
+        "blocking_reasons": {"type": "array", "items": {"type": "string"}},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "fallback_mode": {"type": "string"},
+        "fallback_reason_code": {"type": "string", "minLength": 1},
+        "fallback_operator_reason": {"type": "string", "minLength": 1},
+        "fallback_safe_state": {"type": "string", "minLength": 1},
+        "kill_switch_state": {"type": "string"},
+        "evidence_envelope_refs": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "witness_refs": {"type": "array", "items": {"type": "string"}},
+        "source_refs": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "next_probe_due_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "health_dimension": {
+      "type": "object",
+      "required": ["dimension", "state", "required_for_claimable", "evidence_refs", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "dimension": {"type": "string"},
+        "state": {"type": "string"},
+        "required_for_claimable": {"type": "boolean"},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "note": {"type": "string", "minLength": 1}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["state", "ttl_s", "observed_age_s", "source_ref", "checked_at"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"type": "string"},
+        "ttl_s": {"type": ["integer", "null"], "minimum": 0},
+        "observed_age_s": {"type": ["integer", "null"], "minimum": 0},
+        "source_ref": {"type": ["string", "null"]},
+        "checked_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "invariants": {
+      "type": "object",
+      "required": [
+        "anti_recognition_passed",
+        "anti_recognition_similarity",
+        "face_obscure_upstream_ref",
+        "translucency_score",
+        "translucency_minimum",
+        "anti_visualizer_score",
+        "anti_visualizer_maximum",
+        "audio_reactive",
+        "audio_modulation_register",
+        "pixel_sort_dominance",
+        "pixel_sort_dominance_maximum",
+        "density",
+        "minimum_density",
+        "motion_rate",
+        "max_motion_rate",
+        "structural_texture_motion"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "anti_recognition_passed": {"type": "boolean"},
+        "anti_recognition_similarity": {"type": ["number", "null"], "minimum": -1.0, "maximum": 1.0},
+        "face_obscure_upstream_ref": {"type": ["string", "null"]},
+        "translucency_score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "translucency_minimum": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "anti_visualizer_score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "anti_visualizer_maximum": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "audio_reactive": {"type": "boolean"},
+        "audio_modulation_register": {"type": "string"},
+        "pixel_sort_dominance": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "pixel_sort_dominance_maximum": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "density": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "minimum_density": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "motion_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "max_motion_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "structural_texture_motion": {"type": "boolean"}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "required": [
+        "scrim_health_passed",
+        "public_confidence_cue_allowed",
+        "foreground_gestures_required",
+        "foreground_gesture_refs",
+        "minimum_density_fallback_required",
+        "scrim_counts_as_privacy_protection",
+        "face_obscure_upstream_required",
+        "public_claim_allowed",
+        "monetization_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scrim_health_passed": {"type": "boolean"},
+        "public_confidence_cue_allowed": {"type": "boolean"},
+        "foreground_gestures_required": {"type": "boolean"},
+        "foreground_gesture_refs": {"type": "array", "items": {"type": "string"}},
+        "minimum_density_fallback_required": {"type": "boolean"},
+        "scrim_counts_as_privacy_protection": {"type": "boolean", "const": false},
+        "face_obscure_upstream_required": {"type": "boolean"},
+        "public_claim_allowed": {"type": "boolean", "const": false},
+        "monetization_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "scrim_profile": {
+      "type": "string",
+      "enum": [
+        "gauzy_quiet",
+        "warm_haze",
+        "moire_crackle",
+        "clarity_peak",
+        "dissolving",
+        "ritual_open",
+        "rain_streak"
+      ]
+    },
+    "permeability_mode": {
+      "type": "string",
+      "enum": ["semipermeable_membrane", "solute_suspension", "ionised_glow"]
+    }
+  }
+}

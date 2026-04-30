@@ -83,6 +83,13 @@ from shared.grounding_provider_router import (
     validate_provider_registry,
 )
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
+from shared.scrim_health_fixtures import (
+    ScrimHealthExpectedOutcome,
+    ScrimHealthFixture,
+    ScrimHealthFixtureSet,
+    ScrimHealthWorldSurfaceRef,
+    ScrimInvariantScores,
+)
 from shared.scrim_wcs_claim_posture import (
     EvidenceReference,
     ScrimWCSClaimPostureProjection,
@@ -299,6 +306,16 @@ WorldSurfaceHealthFixtureSet.rows_for_fixture_case
 WCSClaimReference._public_claims_need_public_refs
 EvidenceReference._fresh_evidence_needs_refs_and_age
 ScrimWCSClaimPostureProjection._validate_no_claim_expansion
+
+# Scrim health fixture rows are validated by Pydantic while adapting OQ-02
+# invariant fixtures into ScrimStateEnvelope and WorldSurfaceHealthRecord refs.
+ScrimInvariantScores._validate_register_and_caps
+ScrimHealthWorldSurfaceRef._validate_no_public_claim_authority
+ScrimHealthExpectedOutcome._foreground_gestures_are_named_when_required
+ScrimHealthFixture._validate_fixture_contract
+ScrimHealthFixtureSet._validate_set_coverage
+ScrimHealthFixtureSet.world_surface_records
+ScrimHealthFixtureSet.scrim_state_refs
 
 # WCS witness probe runtime helpers are the public contract for downstream WCS
 # director snapshots, health blocker bus, and programme WCS snapshot tasks.
