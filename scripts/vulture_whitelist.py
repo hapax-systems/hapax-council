@@ -49,6 +49,12 @@ from shared.content_programme_run_store import (
     public_conversion_is_allowed,
     witnessed_outcome_allows_posterior_update,
 )
+from shared.conversion_target_readiness import (
+    ConversionTargetReadinessMatrix,
+    ConversionTargetThreshold,
+    evaluate_failure_fixture,
+    load_conversion_target_readiness_matrix,
+)
 from shared.director_control_audit import DirectorControlMoveAuditRecord
 from shared.director_intent import CompositionalImpingement, DirectorIntent
 from shared.director_vocabulary import DirectorVocabulary, SpectacleLaneState
@@ -176,6 +182,15 @@ event_allows_public_truth_claim
 build_feedback_event_from_run_envelope
 build_scheduler_policy_feedback
 build_feedback_fixture
+
+# Conversion target readiness helpers are the deterministic public contract for
+# downstream conversion broker, grant queue, monetization readiness, and N=1
+# dossier consumers. Pydantic invokes validators dynamically, and the first
+# matrix PR lands before those downstream consumers call the loader.
+ConversionTargetThreshold.validate_target_gate_contract
+ConversionTargetReadinessMatrix.validate_matrix_contract
+load_conversion_target_readiness_matrix
+evaluate_failure_fixture
 
 # Tier/ranking/bracket engine helpers are the public contract for downstream
 # content runners, evaluator adapters, and run-store projections. This contract
