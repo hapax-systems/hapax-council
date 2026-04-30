@@ -8,13 +8,13 @@
           "title": "Alias",
           "type": "string"
         },
+        "state": {
+          "$ref": "#/$defs/MigrationState"
+        },
         "reason": {
           "minLength": 1,
           "title": "Reason",
           "type": "string"
-        },
-        "state": {
-          "$ref": "#/$defs/MigrationState"
         }
       },
       "required": [
@@ -41,20 +41,20 @@
       "additionalProperties": false,
       "description": "Deterministic witness contract for one classification row.",
       "properties": {
-        "expected_state": {
-          "$ref": "#/$defs/AvailabilityState"
+        "probe_id": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+          "title": "Probe Id",
+          "type": "string"
         },
         "kind": {
           "$ref": "#/$defs/AvailabilityProbeKind"
         },
-        "notes": {
-          "default": "",
-          "title": "Notes",
-          "type": "string"
+        "expected_state": {
+          "$ref": "#/$defs/AvailabilityState"
         },
-        "probe_id": {
-          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
-          "title": "Probe Id",
+        "witness_ref": {
+          "minLength": 1,
+          "title": "Witness Ref",
           "type": "string"
         },
         "stale_after_s": {
@@ -70,9 +70,9 @@
           "default": null,
           "title": "Stale After S"
         },
-        "witness_ref": {
-          "minLength": 1,
-          "title": "Witness Ref",
+        "notes": {
+          "default": "",
+          "title": "Notes",
           "type": "string"
         }
       },
@@ -119,199 +119,21 @@
       "additionalProperties": false,
       "description": "A concrete system surface admitted through the semantic ontology.",
       "properties": {
-        "abstraction_level": {
-          "$ref": "#/$defs/SemanticLevel"
-        },
-        "aliases": {
-          "items": {
-            "$ref": "#/$defs/AliasMigration"
-          },
-          "title": "Aliases",
-          "type": "array"
-        },
-        "authority_ceiling": {
-          "$ref": "#/$defs/AuthorityCeiling"
-        },
-        "availability_predicate": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Availability Predicate"
-        },
-        "availability_probe": {
-          "$ref": "#/$defs/AvailabilityProbe"
-        },
-        "availability_state": {
-          "$ref": "#/$defs/AvailabilityState"
-        },
-        "blocked_reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Blocked Reason"
-        },
-        "can_acquire_sources": {
-          "default": false,
-          "title": "Can Acquire Sources",
-          "type": "boolean"
-        },
-        "catalog_only": {
-          "default": false,
-          "title": "Catalog Only",
-          "type": "boolean"
-        },
-        "claim_authority_ceiling": {
-          "$ref": "#/$defs/AuthorityCeiling"
-        },
-        "claim_types_allowed": {
-          "items": {
-            "$ref": "#/$defs/ClaimType"
-          },
-          "title": "Claim Types Allowed",
-          "type": "array",
-          "uniqueItems": true
-        },
-        "classification_id": {
-          "pattern": "^classification\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
-          "title": "Classification Id",
+        "row_id": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+          "title": "Row Id",
           "type": "string"
         },
-        "concrete_interface": {
+        "semantic_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Semantic Version",
+          "type": "integer"
+        },
+        "relatum_id": {
           "minLength": 1,
-          "title": "Concrete Interface",
+          "title": "Relatum Id",
           "type": "string"
-        },
-        "concrete_interfaces": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Concrete Interfaces",
-          "type": "array"
-        },
-        "consent_label": {
-          "$ref": "#/$defs/ConsentLabel"
-        },
-        "consent_policy": {
-          "$ref": "#/$defs/ConsentLabel"
-        },
-        "consumer_refs": {
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "title": "Consumer Refs",
-          "type": "array"
-        },
-        "content_risk": {
-          "$ref": "#/$defs/ContentRisk"
-        },
-        "core_substrate_instance": {
-          "default": false,
-          "title": "Core Substrate Instance",
-          "type": "boolean"
-        },
-        "degraded_reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Degraded Reason"
-        },
-        "direction": {
-          "$ref": "#/$defs/Direction"
-        },
-        "dispatch_contract": {
-          "$ref": "#/$defs/DispatchContract"
-        },
-        "display_name": {
-          "minLength": 1,
-          "title": "Display Name",
-          "type": "string"
-        },
-        "domain_tags": {
-          "items": {
-            "$ref": "#/$defs/DomainTag"
-          },
-          "minItems": 1,
-          "title": "Domain Tags",
-          "type": "array"
-        },
-        "effect_type": {
-          "$ref": "#/$defs/EffectType"
-        },
-        "evidence_ref": {
-          "minLength": 1,
-          "title": "Evidence Ref",
-          "type": "string"
-        },
-        "evidence_refs": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Evidence Refs",
-          "type": "array"
-        },
-        "existing_record_refs": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Existing Record Refs",
-          "type": "array"
-        },
-        "fallback_policy": {
-          "$ref": "#/$defs/FallbackPolicy"
-        },
-        "family_tags": {
-          "items": {
-            "$ref": "#/$defs/FamilyTag"
-          },
-          "minItems": 1,
-          "title": "Family Tags",
-          "type": "array"
-        },
-        "freshness_ttl_s": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Freshness Ttl S"
-        },
-        "gibson_verb": {
-          "minLength": 1,
-          "title": "Gibson Verb",
-          "type": "string"
-        },
-        "governance_risk_reasons": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Governance Risk Reasons",
-          "type": "array"
-        },
-        "kill_switch_behavior": {
-          "$ref": "#/$defs/KillSwitchBehavior"
         },
         "kind": {
           "items": {
@@ -322,117 +144,25 @@
           "type": "array",
           "uniqueItems": true
         },
-        "latency": {
-          "$ref": "#/$defs/LatencyClass"
-        },
-        "lifecycle": {
-          "$ref": "#/$defs/LifecycleState"
-        },
-        "medium": {
-          "$ref": "#/$defs/Medium"
-        },
-        "missing_record_action": {
-          "$ref": "#/$defs/MissingRecordAction"
-        },
-        "monetization_risk": {
-          "$ref": "#/$defs/MonetizationRisk"
-        },
-        "outcome_learning_policy": {
-          "$ref": "#/$defs/OutcomeLearningPolicy"
-        },
-        "privacy_class": {
-          "$ref": "#/$defs/PrivacyLabel"
-        },
-        "privacy_label": {
-          "$ref": "#/$defs/PrivacyLabel"
-        },
-        "process_refs": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Process Refs",
-          "type": "array"
-        },
-        "producer": {
-          "minLength": 1,
-          "title": "Producer",
-          "type": "string"
-        },
-        "projection": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CapabilityProjection"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "provider_refs": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Provider Refs",
-          "type": "array"
-        },
-        "public_claim_policy": {
-          "$ref": "#/$defs/PublicClaimPolicy"
-        },
-        "realm": {
-          "$ref": "#/$defs/Realm"
+        "abstraction_level": {
+          "$ref": "#/$defs/SemanticLevel"
         },
         "recruitable": {
           "title": "Recruitable",
           "type": "boolean"
         },
-        "recruitment_family": {
-          "minLength": 1,
-          "title": "Recruitment Family",
-          "type": "string"
+        "catalog_only": {
+          "default": false,
+          "title": "Catalog Only",
+          "type": "boolean"
         },
-        "relations": {
-          "items": {
-            "$ref": "#/$defs/SemanticRelation"
-          },
-          "minItems": 1,
-          "title": "Relations",
-          "type": "array"
+        "lifecycle": {
+          "$ref": "#/$defs/LifecycleState"
         },
-        "relatum_id": {
-          "minLength": 1,
-          "title": "Relatum Id",
-          "type": "string"
-        },
-        "replacement_row_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Replacement Row Id"
-        },
-        "required_clearance": {
-          "$ref": "#/$defs/ConsentLabel"
-        },
-        "rights_class": {
-          "$ref": "#/$defs/RightsLabel"
-        },
-        "rights_label": {
-          "$ref": "#/$defs/RightsLabel"
-        },
-        "row_id": {
-          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
-          "title": "Row Id",
-          "type": "string"
-        },
-        "semantic_description": {
-          "minLength": 1,
-          "title": "Semantic Description",
-          "type": "string"
+        "core_substrate_instance": {
+          "default": false,
+          "title": "Core Substrate Instance",
+          "type": "boolean"
         },
         "semantic_descriptions": {
           "items": {
@@ -442,30 +172,33 @@
           "title": "Semantic Descriptions",
           "type": "array"
         },
-        "semantic_version": {
-          "const": 1,
-          "default": 1,
-          "title": "Semantic Version",
-          "type": "integer"
-        },
-        "state_ref": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "State Ref"
-        },
-        "state_refs": {
+        "domain_tags": {
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/DomainTag"
           },
-          "title": "State Refs",
+          "minItems": 1,
+          "title": "Domain Tags",
           "type": "array"
+        },
+        "family_tags": {
+          "items": {
+            "$ref": "#/$defs/FamilyTag"
+          },
+          "minItems": 1,
+          "title": "Family Tags",
+          "type": "array"
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "effect_type": {
+          "$ref": "#/$defs/EffectType"
+        },
+        "realm": {
+          "$ref": "#/$defs/Realm"
+        },
+        "medium": {
+          "$ref": "#/$defs/Medium"
         },
         "submedium": {
           "anyOf": [
@@ -479,6 +212,30 @@
           "default": null,
           "title": "Submedium"
         },
+        "latency": {
+          "$ref": "#/$defs/LatencyClass"
+        },
+        "underlying_entity_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Underlying Entity Refs",
+          "type": "array"
+        },
+        "process_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Process Refs",
+          "type": "array"
+        },
+        "state_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "State Refs",
+          "type": "array"
+        },
         "substrate_refs": {
           "items": {
             "type": "string"
@@ -486,31 +243,57 @@
           "title": "Substrate Refs",
           "type": "array"
         },
-        "supersedes": {
+        "provider_refs": {
           "items": {
             "type": "string"
           },
-          "title": "Supersedes",
+          "title": "Provider Refs",
           "type": "array"
         },
-        "supplied_evidence_only": {
-          "default": false,
-          "title": "Supplied Evidence Only",
-          "type": "boolean"
-        },
-        "surface_family": {
-          "$ref": "#/$defs/SurfaceFamily"
-        },
-        "surface_id": {
-          "minLength": 1,
-          "title": "Surface Id",
-          "type": "string"
-        },
-        "underlying_entity_refs": {
+        "concrete_interfaces": {
           "items": {
             "type": "string"
           },
-          "title": "Underlying Entity Refs",
+          "title": "Concrete Interfaces",
+          "type": "array"
+        },
+        "relations": {
+          "items": {
+            "$ref": "#/$defs/SemanticRelation"
+          },
+          "minItems": 1,
+          "title": "Relations",
+          "type": "array"
+        },
+        "availability_predicate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Availability Predicate"
+        },
+        "freshness_ttl_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Freshness Ttl S"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
           "type": "array"
         },
         "witness_contract_id": {
@@ -524,6 +307,208 @@
           ],
           "title": "Witness Contract Id"
         },
+        "authority_ceiling": {
+          "$ref": "#/$defs/AuthorityCeiling"
+        },
+        "claim_types_allowed": {
+          "items": {
+            "$ref": "#/$defs/ClaimType"
+          },
+          "title": "Claim Types Allowed",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "privacy_label": {
+          "$ref": "#/$defs/PrivacyLabel"
+        },
+        "consent_label": {
+          "$ref": "#/$defs/ConsentLabel"
+        },
+        "required_clearance": {
+          "$ref": "#/$defs/ConsentLabel"
+        },
+        "rights_label": {
+          "$ref": "#/$defs/RightsLabel"
+        },
+        "content_risk": {
+          "$ref": "#/$defs/ContentRisk"
+        },
+        "monetization_risk": {
+          "$ref": "#/$defs/MonetizationRisk"
+        },
+        "governance_risk_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Governance Risk Reasons",
+          "type": "array"
+        },
+        "dispatch_contract": {
+          "$ref": "#/$defs/DispatchContract"
+        },
+        "outcome_learning_policy": {
+          "$ref": "#/$defs/OutcomeLearningPolicy"
+        },
+        "projection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapabilityProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aliases": {
+          "items": {
+            "$ref": "#/$defs/AliasMigration"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "supersedes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supersedes",
+          "type": "array"
+        },
+        "replacement_row_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Replacement Row Id"
+        },
+        "blocked_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocked Reason"
+        },
+        "classification_id": {
+          "pattern": "^classification\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+          "title": "Classification Id",
+          "type": "string"
+        },
+        "surface_id": {
+          "minLength": 1,
+          "title": "Surface Id",
+          "type": "string"
+        },
+        "display_name": {
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "surface_family": {
+          "$ref": "#/$defs/SurfaceFamily"
+        },
+        "gibson_verb": {
+          "minLength": 1,
+          "title": "Gibson Verb",
+          "type": "string"
+        },
+        "semantic_description": {
+          "minLength": 1,
+          "title": "Semantic Description",
+          "type": "string"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "consumer_refs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Consumer Refs",
+          "type": "array"
+        },
+        "concrete_interface": {
+          "minLength": 1,
+          "title": "Concrete Interface",
+          "type": "string"
+        },
+        "availability_probe": {
+          "$ref": "#/$defs/AvailabilityProbe"
+        },
+        "availability_state": {
+          "$ref": "#/$defs/AvailabilityState"
+        },
+        "state_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Ref"
+        },
+        "evidence_ref": {
+          "minLength": 1,
+          "title": "Evidence Ref",
+          "type": "string"
+        },
+        "privacy_class": {
+          "$ref": "#/$defs/PrivacyLabel"
+        },
+        "rights_class": {
+          "$ref": "#/$defs/RightsLabel"
+        },
+        "consent_policy": {
+          "$ref": "#/$defs/ConsentLabel"
+        },
+        "claim_authority_ceiling": {
+          "$ref": "#/$defs/AuthorityCeiling"
+        },
+        "can_acquire_sources": {
+          "default": false,
+          "title": "Can Acquire Sources",
+          "type": "boolean"
+        },
+        "supplied_evidence_only": {
+          "default": false,
+          "title": "Supplied Evidence Only",
+          "type": "boolean"
+        },
+        "public_claim_policy": {
+          "$ref": "#/$defs/PublicClaimPolicy"
+        },
+        "kill_switch_behavior": {
+          "$ref": "#/$defs/KillSwitchBehavior"
+        },
+        "fallback_policy": {
+          "$ref": "#/$defs/FallbackPolicy"
+        },
+        "degraded_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Degraded Reason"
+        },
         "witness_requirements": {
           "items": {
             "type": "string"
@@ -531,6 +516,21 @@
           "minItems": 1,
           "title": "Witness Requirements",
           "type": "array"
+        },
+        "recruitment_family": {
+          "minLength": 1,
+          "title": "Recruitment Family",
+          "type": "string"
+        },
+        "existing_record_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Existing Record Refs",
+          "type": "array"
+        },
+        "missing_record_action": {
+          "$ref": "#/$defs/MissingRecordAction"
         }
       },
       "required": [
@@ -601,6 +601,16 @@
           "title": "Daemon",
           "type": "string"
         },
+        "requires_gpu": {
+          "default": false,
+          "title": "Requires Gpu",
+          "type": "boolean"
+        },
+        "requires_network": {
+          "default": false,
+          "title": "Requires Network",
+          "type": "boolean"
+        },
         "latency_class": {
           "$ref": "#/$defs/LatencyClass",
           "default": "fast"
@@ -615,31 +625,9 @@
           "title": "Priority Floor",
           "type": "boolean"
         },
-        "provenance_ref": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provenance Ref"
-        },
         "public_capable": {
           "default": false,
           "title": "Public Capable",
-          "type": "boolean"
-        },
-        "requires_gpu": {
-          "default": false,
-          "title": "Requires Gpu",
-          "type": "boolean"
-        },
-        "requires_network": {
-          "default": false,
-          "title": "Requires Network",
           "type": "boolean"
         },
         "rights_ref": {
@@ -653,6 +641,18 @@
           ],
           "default": null,
           "title": "Rights Ref"
+        },
+        "provenance_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provenance Ref"
         }
       },
       "required": [
@@ -724,15 +724,15 @@
           "default": null,
           "title": "Intent Family"
         },
-        "notes": {
-          "default": "",
-          "title": "Notes",
-          "type": "string"
-        },
         "route_by_family_only": {
           "default": false,
           "title": "Route By Family Only",
           "type": "boolean"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
         }
       },
       "title": "DispatchContract",
@@ -793,11 +793,6 @@
     "FamilyTag": {
       "additionalProperties": false,
       "properties": {
-        "dispatch_required": {
-          "default": false,
-          "title": "Dispatch Required",
-          "type": "boolean"
-        },
         "family": {
           "minLength": 1,
           "title": "Family",
@@ -814,6 +809,11 @@
           ],
           "default": null,
           "title": "Intent Binding"
+        },
+        "dispatch_required": {
+          "default": false,
+          "title": "Dispatch Required",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1025,6 +1025,14 @@
     "SemanticRelation": {
       "additionalProperties": false,
       "properties": {
+        "predicate": {
+          "$ref": "#/$defs/RelationPredicate"
+        },
+        "target_ref": {
+          "minLength": 1,
+          "title": "Target Ref",
+          "type": "string"
+        },
         "evidence_ref": {
           "anyOf": [
             {
@@ -1036,14 +1044,6 @@
           ],
           "default": null,
           "title": "Evidence Ref"
-        },
-        "predicate": {
-          "$ref": "#/$defs/RelationPredicate"
-        },
-        "target_ref": {
-          "minLength": 1,
-          "title": "Target Ref",
-          "type": "string"
         },
         "weight": {
           "anyOf": [
@@ -1072,6 +1072,10 @@
         "affordance_record",
         "tool_schema",
         "mcp_tool",
+        "browser_surface",
+        "file",
+        "obsidian_note",
+        "command_output",
         "runtime_service",
         "state_file",
         "device",
@@ -1111,6 +1115,12 @@
       "default": null,
       "title": "$Schema"
     },
+    "schema_version": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
     "generated_from": {
       "items": {
         "type": "string"
@@ -1126,12 +1136,6 @@
       "minItems": 1,
       "title": "Rows",
       "type": "array"
-    },
-    "schema_version": {
-      "default": 1,
-      "minimum": 1,
-      "title": "Schema Version",
-      "type": "integer"
     }
   },
   "required": [
@@ -1139,5 +1143,6 @@
     "rows"
   ],
   "title": "CapabilityClassificationInventory",
-  "type": "object"
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

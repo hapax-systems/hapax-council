@@ -12,9 +12,9 @@
       "semantic_version": 1,
       "relatum_id": "affordance:env.weather_conditions",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -84,8 +84,8 @@
       "witness_contract_id": "witness.affordance.env_weather_conditions.imported",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -162,9 +162,9 @@
       "semantic_version": 1,
       "relatum_id": "affordance:cam.hero.overhead.hardware-active",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -311,9 +311,9 @@
       "semantic_version": 1,
       "relatum_id": "tool_schema:query_person_details",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -458,9 +458,9 @@
       "semantic_version": 1,
       "relatum_id": "tool_schema:query_object_motion",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -605,9 +605,9 @@
       "semantic_version": 1,
       "relatum_id": "tool_schema:query_scene_state",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -752,9 +752,9 @@
       "semantic_version": 1,
       "relatum_id": "mcp:context7.query_docs",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -824,8 +824,8 @@
       "witness_contract_id": "witness.mcp.context7.cited_result",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -898,13 +898,618 @@
       "missing_record_action": "adapt_existing_record"
     },
     {
+      "row_id": "capability.browser.playwright_state",
+      "semantic_version": 1,
+      "relatum_id": "browser_surface:playwright.current_page",
+      "kind": [
+        "Capability",
+        "Substrate",
+        "Affordance"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Observe current browser page state as source-conditioned evidence with URL, snapshot, freshness, and tool-error witnesses."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "knowledge",
+          "subdomain": "browser_state_read"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "browser_state_read",
+          "intent_binding": "capability_classification.browser_state_read",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "observe",
+      "effect_type": "sense",
+      "realm": "hybrid",
+      "medium": "textual",
+      "submedium": "browser_surface",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "browser_surface:playwright.current_page"
+      ],
+      "process_refs": [
+        "mcp.playwright.browser_snapshot"
+      ],
+      "state_refs": [
+        "browser_surface:playwright.current_page"
+      ],
+      "substrate_refs": [
+        "substrate:browser_surface"
+      ],
+      "provider_refs": [
+        "mcp.playwright.browser_snapshot"
+      ],
+      "concrete_interfaces": [
+        "mcp:playwright.browser_snapshot"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:browser_state_read",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "mcp:playwright.browser_snapshot.result",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "mcp:playwright.browser_snapshot.result",
+      "freshness_ttl_s": 300,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.browser.playwright_snapshot_cited",
+      "authority_ceiling": "public_gate_required",
+      "claim_types_allowed": [
+        "evidence_bound_claim",
+        "internal_observation",
+        "public_claim"
+      ],
+      "privacy_label": "public_safe",
+      "consent_label": "operator_self",
+      "required_clearance": "public_broadcast",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.browser_state_read",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "public_witness_required",
+      "projection": {
+        "capability_name": "browser.playwright_state",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": true,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": true,
+        "rights_ref": "rights:browser_surface:playwright.current_page",
+        "provenance_ref": "provenance:browser_surface:playwright.current_page"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.browser.playwright_state",
+      "surface_id": "browser_surface:playwright.current_page",
+      "display_name": "Playwright browser read state",
+      "surface_family": "browser_surface",
+      "gibson_verb": "Observe",
+      "semantic_description": "Observe current browser page state as source-conditioned evidence with URL, snapshot, freshness, and tool-error witnesses.",
+      "producer": "mcp.playwright.browser_snapshot",
+      "consumer_refs": [
+        "consumer:codex_research_context",
+        "consumer:wcs_browser_file_surface"
+      ],
+      "concrete_interface": "mcp:playwright.browser_snapshot",
+      "availability_probe": {
+        "probe_id": "probe.browser.playwright_state",
+        "kind": "remote_query",
+        "expected_state": "available",
+        "witness_ref": "mcp:playwright.browser_snapshot.result",
+        "stale_after_s": 300,
+        "notes": ""
+      },
+      "availability_state": "available",
+      "state_ref": "browser_surface:playwright.current_page",
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "public_safe",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "public_gate_required",
+      "can_acquire_sources": true,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "public_gate_required",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.browser.playwright_snapshot_cited"
+      ],
+      "recruitment_family": "browser_state_read",
+      "existing_record_refs": [
+        "mcp_tool:playwright.browser_snapshot"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.file.local_repo_read",
+      "semantic_version": 1,
+      "relatum_id": "file:local_repo_read",
+      "kind": [
+        "Capability",
+        "Substrate",
+        "Affordance"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall local repository files as supplied evidence only when path, hash, mtime, and privacy classification are captured."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "knowledge",
+          "subdomain": "local_file_read"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "local_file_read",
+          "intent_binding": "capability_classification.local_file_read",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "local",
+      "medium": "textual",
+      "submedium": "file",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "file:local_repo_read"
+      ],
+      "process_refs": [
+        "filesystem"
+      ],
+      "state_refs": [
+        "file:local_repo_read"
+      ],
+      "substrate_refs": [
+        "substrate:file"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "file:repo"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:local_file_read",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "file:repo:path_hash_mtime",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "file:repo:path_hash_mtime",
+      "freshness_ttl_s": 900,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.file.local_repo_path_hash_mtime",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.local_file_read",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "file.local_repo_read",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:file:local_repo_read",
+        "provenance_ref": "provenance:file:local_repo_read"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.file.local_repo_read",
+      "surface_id": "file:local_repo_read",
+      "display_name": "Local repository file read",
+      "surface_family": "file",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall local repository files as supplied evidence only when path, hash, mtime, and privacy classification are captured.",
+      "producer": "filesystem",
+      "consumer_refs": [
+        "consumer:codex_research_context",
+        "consumer:wcs_browser_file_surface"
+      ],
+      "concrete_interface": "file:repo",
+      "availability_probe": {
+        "probe_id": "probe.file.local_repo_read",
+        "kind": "state_mtime",
+        "expected_state": "private_only",
+        "witness_ref": "file:repo:path_hash_mtime",
+        "stale_after_s": 900,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": "file:local_repo_read",
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": true,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.file.local_repo_path_hash_mtime"
+      ],
+      "recruitment_family": "local_file_read",
+      "existing_record_refs": [
+        "wcs:file.obsidian_vault"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.obsidian.vault_note_read",
+      "semantic_version": 1,
+      "relatum_id": "obsidian_note:vault_note_read",
+      "kind": [
+        "Capability",
+        "Substrate",
+        "Affordance"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall Obsidian task and research notes as private supplied evidence with path, hash, mtime, and vault privacy witnesses."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "knowledge",
+          "subdomain": "obsidian_note_read"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "obsidian_note_read",
+          "intent_binding": "capability_classification.obsidian_note_read",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "local",
+      "medium": "textual",
+      "submedium": "obsidian_note",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "obsidian_note:vault_note_read"
+      ],
+      "process_refs": [
+        "obsidian_vault"
+      ],
+      "state_refs": [
+        "obsidian_note:vault_note_read"
+      ],
+      "substrate_refs": [
+        "substrate:obsidian_note"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "obsidian:vault_path"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:obsidian_note_read",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "obsidian:vault_path_hash_mtime",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "obsidian:vault_path_hash_mtime",
+      "freshness_ttl_s": 900,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.obsidian.vault_note_path_hash_mtime",
+      "authority_ceiling": "internal_only",
+      "claim_types_allowed": [
+        "internal_observation"
+      ],
+      "privacy_label": "private",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.obsidian_note_read",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "obsidian.vault_note_read",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:obsidian_note:vault_note_read",
+        "provenance_ref": "provenance:obsidian_note:vault_note_read"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.obsidian.vault_note_read",
+      "surface_id": "obsidian_note:vault_note_read",
+      "display_name": "Obsidian vault note read",
+      "surface_family": "obsidian_note",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall Obsidian task and research notes as private supplied evidence with path, hash, mtime, and vault privacy witnesses.",
+      "producer": "obsidian_vault",
+      "consumer_refs": [
+        "consumer:codex_research_context",
+        "consumer:wcs_browser_file_surface"
+      ],
+      "concrete_interface": "obsidian:vault_path",
+      "availability_probe": {
+        "probe_id": "probe.obsidian.vault_note_read",
+        "kind": "state_mtime",
+        "expected_state": "private_only",
+        "witness_ref": "obsidian:vault_path_hash_mtime",
+        "stale_after_s": 900,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": "obsidian_note:vault_note_read",
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "private",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "internal_only",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": true,
+      "public_claim_policy": "no_public_claim",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.obsidian.vault_note_path_hash_mtime"
+      ],
+      "recruitment_family": "obsidian_note_read",
+      "existing_record_refs": [
+        "wcs:file.obsidian_vault"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
+      "row_id": "capability.command.output_reference",
+      "semantic_version": 1,
+      "relatum_id": "command_output:local_command",
+      "kind": [
+        "Capability",
+        "Substrate",
+        "Affordance"
+      ],
+      "abstraction_level": "L2",
+      "recruitable": true,
+      "catalog_only": false,
+      "lifecycle": "active",
+      "core_substrate_instance": false,
+      "semantic_descriptions": [
+        {
+          "level": "L2",
+          "text": "Recall command output as execution evidence only when command, exit status, captured output reference, and replay hash are preserved."
+        }
+      ],
+      "domain_tags": [
+        {
+          "domain": "knowledge",
+          "subdomain": "command_output_reference"
+        }
+      ],
+      "family_tags": [
+        {
+          "family": "command_output_reference",
+          "intent_binding": "capability_classification.command_output_reference",
+          "dispatch_required": false
+        }
+      ],
+      "direction": "recall",
+      "effect_type": "recall",
+      "realm": "local",
+      "medium": "textual",
+      "submedium": "command_output",
+      "latency": "fast",
+      "underlying_entity_refs": [
+        "command_output:local_command"
+      ],
+      "process_refs": [
+        "codex.exec_command"
+      ],
+      "state_refs": [
+        "command_output:local_command"
+      ],
+      "substrate_refs": [
+        "substrate:command_output"
+      ],
+      "provider_refs": [],
+      "concrete_interfaces": [
+        "command:local_shell_output"
+      ],
+      "relations": [
+        {
+          "predicate": "realizes",
+          "target_ref": "affordance:command_output_reference",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        },
+        {
+          "predicate": "witnesses",
+          "target_ref": "command:output_ref_hash_exit_status",
+          "evidence_ref": "repo:capability-classification-inventory",
+          "weight": null
+        }
+      ],
+      "availability_predicate": "command:output_ref_hash_exit_status",
+      "freshness_ttl_s": null,
+      "evidence_refs": [
+        "repo:capability-classification-inventory"
+      ],
+      "witness_contract_id": "witness.command.output_ref_hash_exit_status",
+      "authority_ceiling": "evidence_bound",
+      "claim_types_allowed": [
+        "evidence_bound_claim",
+        "internal_observation"
+      ],
+      "privacy_label": "operator_visible",
+      "consent_label": "operator_self",
+      "required_clearance": "operator_self",
+      "rights_label": "operator_owned",
+      "content_risk": "tier_0_owned",
+      "monetization_risk": "none",
+      "governance_risk_reasons": [],
+      "dispatch_contract": {
+        "intent_family": "capability_classification.command_output_reference",
+        "route_by_family_only": false,
+        "notes": "Seed inventory row; downstream consumers still route through WCS."
+      },
+      "outcome_learning_policy": "private_witness_required",
+      "projection": {
+        "capability_name": "command.output_reference",
+        "daemon": "capability_classification_inventory",
+        "requires_gpu": false,
+        "requires_network": false,
+        "latency_class": "fast",
+        "persistence": "none",
+        "priority_floor": false,
+        "public_capable": false,
+        "rights_ref": "rights:command_output:local_command",
+        "provenance_ref": "provenance:command_output:local_command"
+      },
+      "aliases": [],
+      "supersedes": [],
+      "replacement_row_id": null,
+      "blocked_reason": null,
+      "classification_id": "classification.command.output_reference",
+      "surface_id": "command_output:local_command",
+      "display_name": "Local command output reference",
+      "surface_family": "command_output",
+      "gibson_verb": "Recall",
+      "semantic_description": "Recall command output as execution evidence only when command, exit status, captured output reference, and replay hash are preserved.",
+      "producer": "codex.exec_command",
+      "consumer_refs": [
+        "consumer:codex_research_context",
+        "consumer:wcs_browser_file_surface"
+      ],
+      "concrete_interface": "command:local_shell_output",
+      "availability_probe": {
+        "probe_id": "probe.command.output_reference",
+        "kind": "static_record",
+        "expected_state": "private_only",
+        "witness_ref": "command:output_ref_hash_exit_status",
+        "stale_after_s": null,
+        "notes": ""
+      },
+      "availability_state": "private_only",
+      "state_ref": "command_output:local_command",
+      "evidence_ref": "repo:capability-classification-inventory",
+      "privacy_class": "operator_visible",
+      "rights_class": "operator_owned",
+      "consent_policy": "operator_self",
+      "claim_authority_ceiling": "evidence_bound",
+      "can_acquire_sources": false,
+      "supplied_evidence_only": false,
+      "public_claim_policy": "evidence_bound_only",
+      "kill_switch_behavior": "degrade_status",
+      "fallback_policy": "fail_closed",
+      "degraded_reason": null,
+      "witness_requirements": [
+        "witness.command.output_ref_hash_exit_status"
+      ],
+      "recruitment_family": "command_output_reference",
+      "existing_record_refs": [
+        "wcs:browser.mcp_tool_read"
+      ],
+      "missing_record_action": "adapt_existing_record"
+    },
+    {
       "row_id": "capability.runtime.logos_api_health",
       "semantic_version": 1,
       "relatum_id": "service:logos-api",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -1050,8 +1655,8 @@
       "semantic_version": 1,
       "relatum_id": "shm:hapax-vision/classifications.json",
       "kind": [
-        "State",
         "Substrate",
+        "State",
         "Representation"
       ],
       "abstraction_level": "L2",
@@ -1191,9 +1796,9 @@
       "semantic_version": 1,
       "relatum_id": "device:camera.overhead_brio",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -1339,9 +1944,9 @@
       "semantic_version": 1,
       "relatum_id": "audio_route:l12.raw_hardware",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -1486,9 +2091,9 @@
       "semantic_version": 1,
       "relatum_id": "audio_route:broadcast.master.normalized",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -1636,9 +2241,9 @@
       "semantic_version": 1,
       "relatum_id": "audio_route:obs.broadcast_remap",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -1786,9 +2391,9 @@
       "semantic_version": 1,
       "relatum_id": "video_surface:studio_compositor.composed_frame",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -1936,9 +2541,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:s4.clock_transport",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -2006,8 +2611,8 @@
       "witness_contract_id": "witness.midi.s4_clock_seen",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -2085,9 +2690,9 @@
       "semantic_version": 1,
       "relatum_id": "desktop_control:hyprland.focus_window",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -2232,9 +2837,9 @@
       "semantic_version": 1,
       "relatum_id": "companion_device:phone.awareness",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -2380,9 +2985,9 @@
       "semantic_version": 1,
       "relatum_id": "local_api:logos.orientation",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -2528,9 +3133,9 @@
       "semantic_version": 1,
       "relatum_id": "docker_container:qdrant",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -2676,9 +3281,9 @@
       "semantic_version": 1,
       "relatum_id": "model_provider:litellm.supplied_evidence",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -2826,9 +3431,9 @@
       "semantic_version": 1,
       "relatum_id": "search_provider:tavily",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -2977,9 +3582,9 @@
       "semantic_version": 1,
       "relatum_id": "publication_endpoint:youtube.live",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -3129,9 +3734,9 @@
       "semantic_version": 1,
       "relatum_id": "archive_processor:video_processor",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -3277,9 +3882,9 @@
       "semantic_version": 1,
       "relatum_id": "storage_sync:backblaze.restic",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -3427,9 +4032,9 @@
       "semantic_version": 1,
       "relatum_id": "public_event:github.pull_request",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -3579,9 +4184,9 @@
       "semantic_version": 1,
       "relatum_id": "governance_surface:orcid.identity",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -3651,8 +4256,8 @@
       "witness_contract_id": "witness.governance.orcid_profile",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -3729,9 +4334,9 @@
       "semantic_version": 1,
       "relatum_id": "infrastructure:prometheus",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -3877,9 +4482,9 @@
       "semantic_version": 1,
       "relatum_id": "publication_endpoint:soundcloud",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": false,
@@ -4017,9 +4622,9 @@
       "semantic_version": 1,
       "relatum_id": "video_surface:tauri_logos.frame_server",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": false,
@@ -4156,9 +4761,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:voice_tier.unadorned",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -4226,8 +4831,8 @@
       "witness_contract_id": "witness.voice_tier.unadorned.intelligibility",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -4305,9 +4910,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:voice_tier.radio",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -4375,8 +4980,8 @@
       "witness_contract_id": "witness.voice_tier.radio.intelligibility",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -4454,9 +5059,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:voice_tier.broadcast_ghost",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -4524,8 +5129,8 @@
       "witness_contract_id": "witness.voice_tier.broadcast_ghost.intelligibility",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -4603,9 +5208,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:voice_tier.memory",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -4673,8 +5278,8 @@
       "witness_contract_id": "witness.voice_tier.memory.intelligibility",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -4752,9 +5357,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:voice_tier.underwater",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -4822,8 +5427,8 @@
       "witness_contract_id": "witness.voice_tier.underwater.intelligibility",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -4903,9 +5508,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:voice_tier.granular_wash",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -4973,8 +5578,8 @@
       "witness_contract_id": "witness.voice_tier.granular_wash.intelligibility",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -5054,9 +5659,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:voice_tier.obliterated",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": false,
@@ -5133,7 +5738,7 @@
       "content_risk": "tier_0_owned",
       "monetization_risk": "high",
       "governance_risk_reasons": [
-        "pure granular dissolution at 0.0 intelligibility floor; unbounded listener-abandonment + Content-ID risk — gated behind explicit excursion + 15 s duration cap"
+        "pure granular dissolution at 0.0 intelligibility floor; unbounded listener-abandonment + Content-ID risk \u2014 gated behind explicit excursion + 15 s duration cap"
       ],
       "dispatch_contract": {
         "intent_family": "capability_classification.voice_tier",
@@ -5178,7 +5783,7 @@
       "public_claim_policy": "no_public_claim",
       "kill_switch_behavior": "hard_block",
       "fallback_policy": "fail_closed",
-      "degraded_reason": "pure granular dissolution at 0.0 intelligibility floor; unbounded listener-abandonment + Content-ID risk — gated behind explicit excursion + 15 s duration cap",
+      "degraded_reason": "pure granular dissolution at 0.0 intelligibility floor; unbounded listener-abandonment + Content-ID risk \u2014 gated behind explicit excursion + 15 s duration cap",
       "witness_requirements": [
         "witness.not_recruitable.capability.voice_tier.obliterated"
       ],
@@ -5193,9 +5798,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:vocal_chain.intensity",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,
@@ -5263,8 +5868,8 @@
       "witness_contract_id": "witness.vocal_chain.dimension_bound",
       "authority_ceiling": "evidence_bound",
       "claim_types_allowed": [
-        "internal_observation",
-        "evidence_bound_claim"
+        "evidence_bound_claim",
+        "internal_observation"
       ],
       "privacy_label": "public_safe",
       "consent_label": "operator_self",
@@ -5342,9 +5947,9 @@
       "semantic_version": 1,
       "relatum_id": "midi_surface:vinyl_chain.granular_wash",
       "kind": [
+        "Capability",
         "Substrate",
-        "Affordance",
-        "Capability"
+        "Affordance"
       ],
       "abstraction_level": "L2",
       "recruitable": true,

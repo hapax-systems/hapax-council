@@ -153,6 +153,31 @@ def test_remote_provider_roles_distinguish_source_supplied_publication_and_sync(
     assert storage.public_claim_policy is PublicClaimPolicy.NO_PUBLIC_CLAIM
 
 
+def test_browser_file_vault_and_command_output_rows_are_explicit() -> None:
+    inventory = _inventory()
+    browser = inventory.require_row("capability.browser.playwright_state")
+    local_file = inventory.require_row("capability.file.local_repo_read")
+    vault = inventory.require_row("capability.obsidian.vault_note_read")
+    command = inventory.require_row("capability.command.output_reference")
+
+    assert browser.surface_family is SurfaceFamily.BROWSER_SURFACE
+    assert browser.can_acquire_sources
+    assert browser.public_claim_policy is PublicClaimPolicy.PUBLIC_GATE_REQUIRED
+    assert browser.witness_contract_id == "witness.browser.playwright_snapshot_cited"
+
+    assert local_file.surface_family is SurfaceFamily.FILE
+    assert local_file.supplied_evidence_only
+    assert local_file.public_claim_policy is PublicClaimPolicy.NO_PUBLIC_CLAIM
+
+    assert vault.surface_family is SurfaceFamily.OBSIDIAN_NOTE
+    assert vault.supplied_evidence_only
+    assert vault.privacy_class.value == "private"
+
+    assert command.surface_family is SurfaceFamily.COMMAND_OUTPUT
+    assert command.public_claim_policy is PublicClaimPolicy.EVIDENCE_BOUND_ONLY
+    assert command.witness_contract_id == "witness.command.output_ref_hash_exit_status"
+
+
 def test_stale_unavailable_and_decommissioned_rows_do_not_project() -> None:
     inventory = _inventory()
     stale = inventory.require_row("state.vision.classifications_stale")
