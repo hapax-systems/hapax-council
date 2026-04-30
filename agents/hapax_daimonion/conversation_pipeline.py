@@ -1701,8 +1701,11 @@ class ConversationPipeline:
         now = time.monotonic()
 
         # TTL scales with dynamic cooldown — echo can arrive late after
-        # long responses. Base 12s covers 5s cooldown + propagation.
-        _ECHO_TTL_S = 12.0
+        # long responses. 30s covers autonomous narrative: TTS synthesis
+        # (~3s) + playback (~6s) + 3s holdover + room echo propagation
+        # (~5s) + buffer accumulation (~8s). Previously 12s which missed
+        # autonomous narrative echoes arriving 20+ seconds after emission.
+        _ECHO_TTL_S = 30.0
 
         for ts, tts_text in self._recent_tts_texts:
             if now - ts > _ECHO_TTL_S:
@@ -1719,11 +1722,13 @@ class ConversationPipeline:
             if word_count >= 2 and norm in tts_text:
                 return True
 
-            # 3. High-confidence LCS match (≥3 words, ≥70% overlap)
+            # 3. LCS match — lowered from 0.70 to 0.50 because STT
+            # garbles autonomous narrative echoes significantly ("Hapax
+            # monitors divergence" → "IR sensor indicates a divergence").
             if word_count >= 3 and len(tts_words) >= 3:
                 lcs_len = _lcs_word_length(norm_words, tts_words)
                 shorter = min(word_count, len(tts_words))
-                if lcs_len / shorter >= 0.70:
+                if lcs_len / shorter >= 0.50:
                     return True
 
         return False
