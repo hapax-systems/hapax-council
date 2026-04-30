@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from agents.hapax_daimonion.voice_output_witness import (
     read_voice_output_witness,
     record_composed_autonomous_narrative,
+    record_destination_decision,
     record_drop,
     record_narration_drive,
     record_playback_result,
@@ -145,6 +146,37 @@ def test_drop_records_blocker_reason(tmp_path: Path) -> None:
     assert witness.last_drop is not None
     assert witness.last_drop["completed"] is False
     assert witness.last_drop["reason"] == "pipeline_unavailable"
+
+
+def test_destination_decision_is_recorded_before_playback(tmp_path: Path) -> None:
+    path = tmp_path / "voice-output-witness.json"
+
+    witness = record_destination_decision(
+        source="operator.microphone.blue_yeti",
+        destination="private",
+        route_accepted=True,
+        reason="private_assistant_monitor_bound",
+        safety_gate={
+            "context_default": "private_or_drop",
+            "explicit_broadcast_intent": False,
+        },
+        target="hapax-private",
+        media_role="Assistant",
+        text="Private response.",
+        impulse_id="impulse-private-1",
+        path=path,
+        now=NOW,
+    )
+
+    assert witness.status == "destination_decision_recorded"
+    assert witness.last_destination_decision is not None
+    assert witness.last_destination_decision["destination"] == "private"
+    assert witness.last_destination_decision["route_accepted"] is True
+    assert witness.last_destination_decision["safety_gate"]["context_default"] == (
+        "private_or_drop"
+    )
+    assert witness.downstream_route_status is not None
+    assert witness.downstream_route_status["target"] == "hapax-private"
 
 
 def test_drop_does_not_overwrite_prior_completed_playback(tmp_path: Path) -> None:

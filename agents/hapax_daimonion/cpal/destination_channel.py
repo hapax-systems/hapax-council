@@ -8,18 +8,21 @@ unless the exact private monitor route has fresh evidence.
 
 **Classification rules** (order matters — first match wins):
 
-1. Impingement ``source`` starts with ``"operator.sidechat"`` → PRIVATE.
-2. Impingement ``content["channel"] == "sidechat"`` → PRIVATE.
-3. Impingement ``content["kind"] == "debug"`` → PRIVATE.
-4. ``voice_register == TEXTMODE`` AND the impingement was sidechat-origin
+1. Operator/private-risk contexts → PRIVATE, even if malformed content carries
+   a public-looking token.
+2. Explicit public/broadcast intent → LIVESTREAM, still gated by fresh
+   programme authorization and ``audio_safe_for_broadcast.safe``.
+3. Impingement ``source`` starts with ``"operator.sidechat"`` → PRIVATE.
+4. Impingement ``content["channel"] == "sidechat"`` → PRIVATE.
+5. Impingement ``content["kind"] == "debug"`` → PRIVATE.
+6. ``voice_register == TEXTMODE`` AND the impingement was sidechat-origin
    (covered by 1/2 above; the register alone does not flip destination).
-5. Otherwise → LIVESTREAM.
+7. Otherwise → PRIVATE.
 
-The register gate (rule 4) is intentionally subordinate: TEXTMODE can
+The register gate (rule 6) is intentionally subordinate: TEXTMODE can
 be set by HOMAGE packages unrelated to sidechat (e.g., a BitchX lineage
-announcement); those still belong on the livestream. Only when TEXTMODE
-coincides with a sidechat-origin impingement do we route private — and
-rules 1/2 already catch that case.
+announcement), but register alone never authorizes broadcast. Broadcast
+still requires explicit intent plus the playback safety gates.
 
 **Feature flag**: ``HAPAX_TTS_DESTINATION_ROUTING_ACTIVE`` (default ``1``).
 The flag parser remains for dashboards and legacy controls, but it no longer
@@ -37,14 +40,23 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from shared.broadcast_audio_health import (
+    DEFAULT_STATE_PATH as DEFAULT_BROADCAST_AUDIO_HEALTH_PATH,
+)
+from shared.broadcast_audio_health import (
+    read_broadcast_audio_health_state,
+)
 from shared.voice_output_router import (
     DEFAULT_PRIVATE_MONITOR_STATUS_PATH,
     VoiceOutputDestination,
     VoiceRouteResult,
+    VoiceRouteState,
     media_role_for_route,
     resolve_voice_output_route,
     target_for_route,
@@ -60,6 +72,9 @@ DESTINATION_ROUTING_ENV: str = "HAPAX_TTS_DESTINATION_ROUTING_ACTIVE"
 DEFAULT_TARGET_ENV: str = "HAPAX_TTS_TARGET"
 """Legacy default target env var. Semantic routing no longer consumes it."""
 
+BROADCAST_AUTH_MAX_AGE_S: float = 120.0
+"""Maximum age for per-utterance public/broadcast voice authorization."""
+
 LIVESTREAM_SINK: str = "hapax-livestream"
 """Legacy livestream sink label retained for dashboards and compatibility."""
 
@@ -70,15 +85,41 @@ PRIVATE_SINK: str = "hapax-private"
 class DestinationChannel(StrEnum):
     """Where an utterance plays back.
 
-    ``LIVESTREAM`` — public broadcast path. Every utterance defaults
-    here unless classification explicitly diverts it.
+    ``LIVESTREAM`` — public broadcast candidate. It is never the default
+    playback path and must still pass programme/audio safety gates.
 
-    ``PRIVATE`` — operator-only path (sidechat replies, debug narration).
-    Operator is the audience, not the stream audience.
+    ``PRIVATE`` — operator-only path and fail-closed default. Operator is the
+    audience, not the stream audience.
     """
 
     LIVESTREAM = "livestream"
     PRIVATE = "private"
+
+
+@dataclass(frozen=True)
+class VoicePlaybackDecision:
+    """Fail-closed playback decision used before any TTS audio is emitted."""
+
+    destination: DestinationChannel
+    route: VoiceRouteResult
+    allowed: bool
+    reason_code: str
+    operator_visible_reason: str
+    safety_gate: dict[str, Any]
+
+    @property
+    def target(self) -> str | None:
+        if not self.allowed:
+            return None
+        return target_for_route(self.route)
+
+    @property
+    def media_role(self) -> str | None:
+        if self.allowed:
+            return media_role_for_route(self.route)
+        if self.route.target_binding is not None:
+            return self.route.target_binding.media_role
+        return None
 
 
 def is_routing_active() -> bool:
@@ -118,15 +159,17 @@ def classify_destination(
 ) -> DestinationChannel:
     """Decide which destination an impingement-origin utterance belongs on.
 
-    See module docstring for the rules. Defensive to malformed inputs —
-    anything that doesn't match an explicit private signal returns
-    ``LIVESTREAM`` (the safe default for broadcast).
+    See module docstring for the rules. Defensive to malformed inputs:
+    missing, malformed, operator-private, or ambiguous contexts now resolve
+    ``PRIVATE`` so they either bind the exact private monitor or drop. Public
+    broadcast is opt-in and still needs :func:`resolve_playback_decision` to
+    pass programme and audio-safety gates.
 
     Parameters
     ----------
     impingement
         The triggering impingement (or any object exposing ``source`` and
-        ``content``). ``None`` is tolerated and maps to ``LIVESTREAM``.
+        ``content``). ``None`` is tolerated and maps to ``PRIVATE``.
     voice_register
         Current HOMAGE voice register, if CPAL supplies one. Used only
         in combination with the sidechat rules; register alone never
@@ -137,12 +180,15 @@ def classify_destination(
     DestinationChannel
     """
     if impingement is None:
-        return DestinationChannel.LIVESTREAM
+        return DestinationChannel.PRIVATE
 
     source = getattr(impingement, "source", "") or ""
     content = _extract_content(impingement)
     channel = content.get("channel")
     kind = content.get("kind")
+
+    if _is_private_risk_context(source, content):
+        return DestinationChannel.PRIVATE
 
     # Rule 1: operator-sidechat provenance.
     if isinstance(source, str) and source.startswith("operator.sidechat"):
@@ -156,13 +202,140 @@ def classify_destination(
     if kind == "debug":
         return DestinationChannel.PRIVATE
 
+    if _has_explicit_broadcast_intent(content):
+        return DestinationChannel.LIVESTREAM
+
     # Rule 4: TEXTMODE alone does NOT route private (see module docstring).
     # It would only combine with sidechat provenance, which rules 1/2
     # already captured. This branch exists so adding a future sidechat
     # register signal remains a one-line change.
     _ = voice_register  # intentionally unused at the top level
 
-    return DestinationChannel.LIVESTREAM
+    return DestinationChannel.PRIVATE
+
+
+def resolve_playback_decision(
+    impingement: Any,
+    *,
+    voice_register: VoiceRegister | None = None,
+    private_monitor_status_path: Path = DEFAULT_PRIVATE_MONITOR_STATUS_PATH,
+    broadcast_audio_health_path: Path = DEFAULT_BROADCAST_AUDIO_HEALTH_PATH,
+    now: float | None = None,
+) -> VoicePlaybackDecision:
+    """Resolve an impingement-like utterance to an allowed or blocked route.
+
+    This is the hard-stop gate: default/private-risk contexts resolve private
+    or drop, while public broadcast requires all of:
+
+    * explicit public/broadcast intent on the utterance context,
+    * fresh programme authorization on the same context,
+    * fresh ``audio_safe_for_broadcast.safe == true``.
+    """
+
+    destination = classify_and_record(impingement, voice_register=voice_register)
+    route = resolve_route(
+        destination,
+        private_monitor_status_path=private_monitor_status_path,
+        now=now,
+    )
+    content = _extract_content(impingement)
+
+    if destination == DestinationChannel.PRIVATE:
+        if route.state == VoiceRouteState.BLOCKED:
+            return _blocked_decision(
+                destination=destination,
+                route=route,
+                reason_code=route.reason_code,
+                operator_visible_reason=route.operator_visible_reason,
+                safety_gate={
+                    "context_default": "private_or_drop",
+                    "explicit_broadcast_intent": False,
+                    "private_route_state": route.state.value,
+                    "private_route_reason_code": route.reason_code,
+                },
+            )
+        return VoicePlaybackDecision(
+            destination=destination,
+            route=route,
+            allowed=True,
+            reason_code=route.reason_code,
+            operator_visible_reason=route.operator_visible_reason,
+            safety_gate={
+                "context_default": "private_or_drop",
+                "explicit_broadcast_intent": False,
+                "private_route_state": route.state.value,
+                "private_route_reason_code": route.reason_code,
+            },
+        )
+
+    intent = _broadcast_intent_evidence(content)
+    programme_auth = _programme_authorization_evidence(content, now=now)
+    audio_health = read_broadcast_audio_health_state(
+        broadcast_audio_health_path,
+        now=now,
+    )
+    safety_gate = {
+        "context_default": "private_or_drop",
+        "explicit_broadcast_intent": intent["present"],
+        "broadcast_intent": intent,
+        "programme_authorization": programme_auth,
+        "audio_safe_for_broadcast": {
+            "safe": audio_health.safe,
+            "status": str(audio_health.status),
+            "freshness_s": audio_health.freshness_s,
+            "blocking_reason_codes": [
+                getattr(reason, "code", "unknown") for reason in audio_health.blocking_reasons
+            ],
+        },
+        "public_route_state": route.state.value,
+        "public_route_reason_code": route.reason_code,
+    }
+    if not intent["present"]:
+        return _blocked_decision(
+            destination=destination,
+            route=route,
+            reason_code="broadcast_intent_missing",
+            operator_visible_reason=(
+                "Broadcast voice requires explicit public/broadcast intent; default is private/drop."
+            ),
+            safety_gate=safety_gate,
+        )
+    if not programme_auth["authorized"]:
+        return _blocked_decision(
+            destination=destination,
+            route=route,
+            reason_code=programme_auth["reason_code"],
+            operator_visible_reason=(
+                "Broadcast voice requires fresh programme authorization; playback is blocked."
+            ),
+            safety_gate=safety_gate,
+        )
+    if not audio_health.safe:
+        return _blocked_decision(
+            destination=destination,
+            route=route,
+            reason_code="audio_safe_for_broadcast_false",
+            operator_visible_reason=(
+                "Broadcast voice requires audio_safe_for_broadcast.safe=true; playback is blocked."
+            ),
+            safety_gate=safety_gate,
+        )
+    if route.state == VoiceRouteState.BLOCKED:
+        return _blocked_decision(
+            destination=destination,
+            route=route,
+            reason_code=route.reason_code,
+            operator_visible_reason=route.operator_visible_reason,
+            safety_gate=safety_gate,
+        )
+    return VoicePlaybackDecision(
+        destination=destination,
+        route=route,
+        allowed=True,
+        reason_code="broadcast_voice_authorized",
+        operator_visible_reason="Broadcast voice authorization and audio safety gates passed.",
+        safety_gate=safety_gate,
+    )
 
 
 def resolve_target(destination: DestinationChannel) -> str | None:
@@ -238,6 +411,166 @@ def resolve_role(destination: DestinationChannel) -> str:
     return media_role_for_route(route) or (
         PRIVATE_MEDIA_ROLE if destination == DestinationChannel.PRIVATE else BROADCAST_MEDIA_ROLE
     )
+
+
+def _blocked_decision(
+    *,
+    destination: DestinationChannel,
+    route: VoiceRouteResult,
+    reason_code: str,
+    operator_visible_reason: str,
+    safety_gate: dict[str, Any],
+) -> VoicePlaybackDecision:
+    return VoicePlaybackDecision(
+        destination=destination,
+        route=route,
+        allowed=False,
+        reason_code=reason_code,
+        operator_visible_reason=operator_visible_reason,
+        safety_gate=safety_gate,
+    )
+
+
+def _has_explicit_broadcast_intent(content: dict[str, Any]) -> bool:
+    return _broadcast_intent_evidence(content)["present"]
+
+
+def _is_private_risk_context(source: object, content: dict[str, Any]) -> bool:
+    source_text = source if isinstance(source, str) else ""
+    if source_text.startswith(("operator.", "blue_yeti", "microphone.")):
+        return True
+    channel = content.get("channel")
+    if channel in {"sidechat", "private", "operator_private"}:
+        return True
+    input_device = content.get("input_device") or content.get("microphone")
+    if isinstance(input_device, str) and "yeti" in input_device.lower():
+        return True
+    return content.get("private") is True or content.get("operator_private") is True
+
+
+def _broadcast_intent_evidence(content: dict[str, Any]) -> dict[str, Any]:
+    candidates: tuple[object, ...] = (
+        content.get("voice_output_destination"),
+        content.get("destination"),
+        content.get("channel"),
+        content.get("route"),
+        content.get("intent"),
+    )
+    explicit_bool = (
+        content.get("public_broadcast_intent") is True or content.get("broadcast_intent") is True
+    )
+    explicit_token = any(
+        isinstance(value, str)
+        and value
+        in {
+            "broadcast",
+            "livestream",
+            "public",
+            "public_broadcast",
+            "public_broadcast_voice",
+        }
+        for value in candidates
+    )
+    nested = content.get("voice_output")
+    nested_token = False
+    if isinstance(nested, dict):
+        nested_token = (
+            any(
+                nested.get(key)
+                in {
+                    "broadcast",
+                    "livestream",
+                    "public",
+                    "public_broadcast",
+                    "public_broadcast_voice",
+                }
+                for key in ("destination", "intent", "route")
+            )
+            or nested.get("public_broadcast_intent") is True
+        )
+    return {
+        "present": bool(explicit_bool or explicit_token or nested_token),
+        "explicit_bool": explicit_bool,
+        "explicit_token": explicit_token,
+        "nested_token": nested_token,
+    }
+
+
+def _programme_authorization_evidence(
+    content: dict[str, Any],
+    *,
+    now: float | None,
+) -> dict[str, Any]:
+    auth = (
+        content.get("programme_authorization")
+        or content.get("broadcast_programme_authorization")
+        or content.get("broadcast_authorization")
+    )
+    if not isinstance(auth, dict):
+        return {
+            "authorized": False,
+            "reason_code": "programme_authorization_missing",
+            "age_s": None,
+        }
+    if not (
+        auth.get("authorized") is True
+        or auth.get("broadcast_voice_authorized") is True
+        or auth.get("public_broadcast_authorized") is True
+    ):
+        return {
+            "authorized": False,
+            "reason_code": "programme_authorization_not_granted",
+            "age_s": None,
+        }
+
+    ts = time_or_none(auth.get("authorized_at"))
+    if ts is None:
+        ts = time_or_none(auth.get("checked_at"))
+    expires_at = time_or_none(auth.get("expires_at")) or time_or_none(auth.get("fresh_until"))
+    current = _now(now)
+    if expires_at is not None and expires_at < current:
+        return {
+            "authorized": False,
+            "reason_code": "programme_authorization_expired",
+            "age_s": round(current - expires_at, 3),
+        }
+    if ts is None:
+        return {
+            "authorized": False,
+            "reason_code": "programme_authorization_timestamp_missing",
+            "age_s": None,
+        }
+    age = max(0.0, current - ts)
+    if age > BROADCAST_AUTH_MAX_AGE_S:
+        return {
+            "authorized": False,
+            "reason_code": "programme_authorization_stale",
+            "age_s": round(age, 3),
+        }
+    return {
+        "authorized": True,
+        "reason_code": "programme_authorization_fresh",
+        "age_s": round(age, 3),
+        "programme_id": auth.get("programme_id"),
+        "evidence_ref": auth.get("evidence_ref"),
+    }
+
+
+def time_or_none(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _now(now: float | None) -> float:
+    if now is not None:
+        return now
+    return datetime.now(tz=UTC).timestamp()
 
 
 class _DestinationCounter:
@@ -331,10 +664,12 @@ __all__ = [
     "PRIVATE_MEDIA_ROLE",
     "PRIVATE_SINK",
     "DestinationChannel",
+    "VoicePlaybackDecision",
     "classify_and_record",
     "classify_destination",
     "is_routing_active",
     "record_destination",
+    "resolve_playback_decision",
     "resolve_route",
     "resolve_role",
     "resolve_target",

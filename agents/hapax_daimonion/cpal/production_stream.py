@@ -80,17 +80,20 @@ class ProductionStream:
         }
         self._shm_writer(signal)
 
-    def produce_t1(self, *, pcm_data: bytes, destination_target: str | None = None) -> None:
+    def produce_t1(
+        self,
+        *,
+        pcm_data: bytes,
+        destination_target: str | None = None,
+        destination_role: str | None = None,
+        source: str = "cpal_production_t1",
+        text: str = "presynthesized_t1",
+    ) -> None:
         """Produce a T1 presynthesised backchannel.
 
-        ``destination_target`` (when supplied) overrides the audio
-        output's default sink for this utterance only. CPAL passes the
-        resolved sink name (``hapax-livestream`` / ``hapax-private``) from
-        ``destination_channel.resolve_target`` so sidechat-origin
-        acknowledgements land on the operator-private channel without
-        disturbing the livestream subprocess. Passing ``None`` preserves
-        legacy behavior — writes flow to the audio output's constructor
-        default.
+        Calls without a complete semantic route resolve private-or-drop and
+        publish voice-output witness before playback. The output constructor
+        default is never used as fallback.
         """
         self._producing = True
         self._current_tier = CorrectionTier.T1_PRESYNTHESIZED
@@ -100,7 +103,13 @@ class ProductionStream:
             if self._audio_output is not None:
                 if self._on_speaking_changed:
                     self._on_speaking_changed(True)
-                self._write_audio(pcm_data, destination_target=destination_target)
+                self._write_audio(
+                    pcm_data,
+                    destination_target=destination_target,
+                    destination_role=destination_role,
+                    source=source,
+                    text=text,
+                )
         finally:
             if self._on_speaking_changed:
                 self._on_speaking_changed(False)
@@ -115,13 +124,15 @@ class ProductionStream:
         text: str,
         pcm_data: bytes | None = None,
         destination_target: str | None = None,
+        destination_role: str | None = None,
     ) -> None:
         """Produce T2 lightweight response (echo/rephrase, discourse marker).
 
         If pcm_data is provided, plays it directly. Otherwise logs the text
         (caller is responsible for synthesis).
 
-        ``destination_target`` behaves identically to :meth:`produce_t1`.
+        ``destination_target`` and ``destination_role`` behave identically to
+        :meth:`produce_t1`.
         """
         self._producing = True
         self._current_tier = CorrectionTier.T2_LIGHTWEIGHT
@@ -129,7 +140,13 @@ class ProductionStream:
         _emit_hardm_emphasis("speaking")
         try:
             if pcm_data is not None and self._audio_output is not None:
-                self._write_audio(pcm_data, destination_target=destination_target)
+                self._write_audio(
+                    pcm_data,
+                    destination_target=destination_target,
+                    destination_role=destination_role,
+                    source="cpal_production_t2",
+                    text=text,
+                )
             log.info("T2 production: %s", text[:50])
         finally:
             if not self._interrupted:
@@ -137,28 +154,43 @@ class ProductionStream:
                 self._current_tier = None
             _emit_hardm_emphasis("quiescent")
 
-    def _write_audio(self, pcm_data: bytes, *, destination_target: str | None) -> None:
-        """Dispatch a PCM write to the audio output, honouring the per-call sink.
+    def _write_audio(
+        self,
+        pcm_data: bytes,
+        *,
+        destination_target: str | None,
+        destination_role: str | None,
+        source: str,
+        text: str,
+    ) -> None:
+        """Dispatch PCM only after a complete semantic route exists.
 
-        The CPAL audio output is ``PwAudioOutput`` in production, which
-        accepts ``target=`` as a keyword argument. Test doubles (MagicMock)
-        also accept any kwargs without raising, so passing ``target`` is
-        safe universally. If a caller wraps the audio output in a type
-        that doesn't accept ``target``, we fall back to a positional call
-        so legacy paths keep working.
+        If the caller does not pass a route, this method resolves the default
+        private-or-drop route and records the decision before playback. Partial
+        route metadata is dropped; there is no default-sink fallback.
         """
         audio = self._audio_output
         if audio is None:
             return
-        if destination_target is None:
-            audio.write(pcm_data)
+        if destination_target is None and destination_role is None:
+            resolved = _resolve_default_voice_route(source=source, text=text)
+            if resolved is None:
+                return
+            destination_target, destination_role = resolved
+        elif destination_target is None or destination_role is None:
+            _record_incomplete_route_drop(
+                source=source,
+                text=text,
+                destination_target=destination_target,
+                destination_role=destination_role,
+            )
             return
         try:
-            audio.write(pcm_data, target=destination_target)
+            audio.write(pcm_data, target=destination_target, media_role=destination_role)
         except TypeError:
             log.warning(
-                "audio output does not accept target=; dropping routed audio "
-                "instead of falling back to default sink",
+                "audio output does not accept semantic route kwargs; dropping routed audio "
+                "instead of using an implicit output route",
                 exc_info=True,
             )
 
@@ -194,3 +226,87 @@ class ProductionStream:
             tmp.rename(path)
         except Exception:
             pass
+
+
+def _resolve_default_voice_route(*, source: str, text: str) -> tuple[str, str] | None:
+    from agents.hapax_daimonion.cpal.destination_channel import resolve_playback_decision
+    from agents.hapax_daimonion.voice_output_witness import (
+        record_destination_decision,
+        record_drop,
+    )
+
+    decision = resolve_playback_decision(None)
+    target = decision.target
+    role = decision.media_role
+    record_destination_decision(
+        source=source,
+        destination=decision.destination.value,
+        route_accepted=decision.allowed,
+        reason=decision.reason_code,
+        safety_gate=decision.safety_gate,
+        target=target,
+        media_role=role,
+        text=text,
+        terminal_state="pending" if decision.allowed else "inhibited",
+    )
+    if not decision.allowed:
+        record_drop(
+            reason=decision.reason_code,
+            source=source,
+            destination=decision.destination.value,
+            target=target,
+            media_role=role,
+            text=text,
+            terminal_state="inhibited",
+        )
+        return None
+    if target is None or role is None:
+        record_drop(
+            reason="semantic_route_incomplete",
+            source=source,
+            destination=decision.destination.value,
+            target=target,
+            media_role=role,
+            text=text,
+            terminal_state="inhibited",
+        )
+        return None
+    return target, role
+
+
+def _record_incomplete_route_drop(
+    *,
+    source: str,
+    text: str,
+    destination_target: str | None,
+    destination_role: str | None,
+) -> None:
+    from agents.hapax_daimonion.voice_output_witness import (
+        record_destination_decision,
+        record_drop,
+    )
+
+    safety_gate = {
+        "context_default": "private_or_drop",
+        "semantic_route": "incomplete",
+    }
+    record_destination_decision(
+        source=source,
+        destination="unknown",
+        route_accepted=False,
+        reason="semantic_route_incomplete",
+        safety_gate=safety_gate,
+        target=destination_target,
+        media_role=destination_role,
+        text=text,
+        terminal_state="inhibited",
+    )
+    record_drop(
+        reason="semantic_route_incomplete",
+        source=source,
+        destination="unknown",
+        target=destination_target,
+        media_role=destination_role,
+        text=text,
+        terminal_state="inhibited",
+    )

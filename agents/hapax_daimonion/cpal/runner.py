@@ -20,8 +20,7 @@ import time
 from pathlib import Path
 
 from agents.hapax_daimonion.cpal.destination_channel import (
-    classify_and_record,
-    resolve_route,
+    resolve_playback_decision,
 )
 from agents.hapax_daimonion.cpal.evaluator import CpalEvaluator
 from agents.hapax_daimonion.cpal.formulation_stream import FormulationStream
@@ -39,11 +38,11 @@ from agents.hapax_daimonion.cpal.signal_cache import SignalCache
 from agents.hapax_daimonion.cpal.tier_composer import TierComposer
 from agents.hapax_daimonion.cpal.types import ConversationalRegion, CorrectionTier, GainUpdate
 from agents.hapax_daimonion.voice_output_witness import (
+    record_destination_decision,
     record_drop,
     record_playback_result,
     record_tts_synthesis,
 )
-from shared.voice_output_router import VoiceRouteState
 from shared.voice_register import VoiceRegister
 
 log = logging.getLogger(__name__)
@@ -380,6 +379,8 @@ class CpalRunner:
                 and not self._processing_utterance
                 and not self._production.is_producing
             ):
+                from functools import partial
+
                 from agents.hapax_daimonion.persona import session_end_message
                 from agents.hapax_daimonion.pw_audio_output import play_pcm
                 from agents.hapax_daimonion.session_events import close_session
@@ -388,13 +389,35 @@ class CpalRunner:
                 log.info("CPAL session timeout: %s", msg)
                 if d._conversation_pipeline and d._conversation_pipeline._audio_output:
                     try:
+                        decision = self._resolve_direct_pcm_decision(
+                            source="cpal_session_timeout_goodbye",
+                            text=msg,
+                        )
+                        if decision is None:
+                            await close_session(d, reason="silence_timeout")
+                            return
                         loop = asyncio.get_running_loop()
                         pcm = await loop.run_in_executor(
                             None, d.tts.synthesize, msg, "notification"
                         )
                         if pcm:
-                            await loop.run_in_executor(
-                                play_pcm, pcm, 24000, 1, None, "Notification"
+                            playback_result = await loop.run_in_executor(
+                                None,
+                                partial(
+                                    play_pcm,
+                                    pcm,
+                                    24000,
+                                    1,
+                                    decision.target,
+                                    decision.media_role,
+                                ),
+                            )
+                            record_playback_result(
+                                text=msg,
+                                playback_result=playback_result,
+                                destination=decision.destination.value,
+                                target=decision.target,
+                                media_role=decision.media_role,
                             )
                     except Exception:
                         log.debug("Goodbye TTS failed", exc_info=True)
@@ -569,13 +592,11 @@ class CpalRunner:
                 ack = self._signal_cache.select("acknowledgment")
                 if ack is not None:
                     _, pcm = ack
-                    if self._audio_output is not None:
-                        self._buffer.set_speaking(True)
-                        if self._echo_canceller:
-                            self._echo_canceller.feed_reference(pcm)
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, self._audio_output.write, pcm)
-                        self._buffer.set_speaking(False)
+                    await self._play_guarded_t1_pcm(
+                        pcm,
+                        source="cpal_t1_acknowledgement",
+                        text="acknowledgment",
+                    )
 
             # T3: Full formulation via pipeline
             if self._pipeline is not None:
@@ -712,6 +733,97 @@ class CpalRunner:
         except Exception:
             log.debug("CPAL state publish failed", exc_info=True)
 
+    def _resolve_direct_pcm_decision(
+        self,
+        *,
+        source: str,
+        text: str,
+        impulse_id: str | None = None,
+    ):
+        """Resolve direct PCM playback through the private-or-drop hard stop."""
+
+        decision = resolve_playback_decision(None)
+        destination = decision.destination
+        destination_target = decision.target
+        destination_role = decision.media_role
+        record_destination_decision(
+            source=source,
+            destination=destination.value,
+            route_accepted=decision.allowed,
+            reason=decision.reason_code,
+            safety_gate=decision.safety_gate,
+            target=destination_target,
+            media_role=destination_role,
+            text=text,
+            impulse_id=impulse_id,
+            terminal_state="pending" if decision.allowed else "inhibited",
+        )
+        if not decision.allowed:
+            record_drop(
+                reason=decision.reason_code,
+                source=source,
+                destination=destination.value,
+                target=destination_target,
+                media_role=destination_role,
+                text=text,
+                impulse_id=impulse_id,
+                terminal_state="inhibited",
+            )
+            return None
+        if destination_target is None or destination_role is None:
+            record_drop(
+                reason="semantic_route_incomplete",
+                source=source,
+                destination=destination.value,
+                target=destination_target,
+                media_role=destination_role,
+                text=text,
+                impulse_id=impulse_id,
+                terminal_state="inhibited",
+            )
+            return None
+        return decision
+
+    async def _play_guarded_t1_pcm(self, pcm: bytes, *, source: str, text: str) -> bool:
+        """Play a presynthesized T1 clip only after route witness accepts it."""
+
+        if self._audio_output is None:
+            return False
+        decision = self._resolve_direct_pcm_decision(source=source, text=text)
+        if decision is None:
+            return False
+        from functools import partial
+
+        self._buffer.set_speaking(True)
+        try:
+            if self._echo_canceller:
+                self._echo_canceller.feed_reference(pcm)
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.run_in_executor(
+                    None,
+                    partial(
+                        self._audio_output.write,
+                        pcm,
+                        target=decision.target,
+                        media_role=decision.media_role,
+                    ),
+                )
+            except TypeError:
+                record_drop(
+                    reason="audio_output_route_kwargs_unsupported",
+                    source=source,
+                    destination=decision.destination.value,
+                    target=decision.target,
+                    media_role=decision.media_role,
+                    text=text,
+                    terminal_state="inhibited",
+                )
+                return False
+        finally:
+            self._buffer.set_speaking(False)
+        return True
+
     async def process_impingement(self, impingement: object) -> None:
         """Process an impingement through the CPAL control loop.
 
@@ -727,16 +839,14 @@ class CpalRunner:
 
         # AUTONOMOUS-NARRATIVE BYPASS — fires regardless of effect.should_surface
         # because the autonomous narrative composer's emissions are designed to
-        # always reach broadcast (strength=0.6 doesn't trip the per-programme
-        # surface threshold but autonomous narration must speak anyway).
-        # Decouples livestream Hapax from operator-private conversation
-        # pipeline state per operator directive 2026-04-27: "livestream …
-        # should be independent of private comms". The autonomous narrative
-        # composer produces speech-ready first-person text; we synthesize
-        # and play it directly via daemon.tts + play_pcm with Broadcast role,
-        # bypassing ConversationPipeline.generate_spontaneous_speech (which
-        # gates on `_running` and would silently drop livestream narration
-        # whenever the operator hasn't spoken in 30s).
+        # request speech even when strength=0.6 doesn't trip the per-programme
+        # surface threshold. The route still fails closed below unless the
+        # broadcast authorization and audio safety gates pass.
+        # Decouples autonomous narration from operator-private conversation
+        # pipeline state without granting broadcast by default. The autonomous
+        # narrative composer produces speech-ready first-person text; we
+        # synthesize and play it directly via daemon.tts + play_pcm only after
+        # the resolved destination decision accepts the route.
         source = getattr(impingement, "source", "")
         if source == "autonomous_narrative" and self._daemon is not None:
             tts = getattr(self._daemon, "tts", None)
@@ -746,25 +856,36 @@ class CpalRunner:
             impulse_id = str(impulse_id) if impulse_id else None
             narrative = narrative or effect.narrative
 
-            # Resolve broadcast destination explicitly — autonomous narrative
-            # is always livestream-bound, even when synthesis later fails.
+            # Resolve the destination explicitly before synthesis/playback.
+            # Autonomous narration only reaches broadcast when the public gates pass.
             register = self._register_bridge.current_register()
-            destination = classify_and_record(impingement, voice_register=register)
-            route = resolve_route(destination)
-            destination_target = route.target_binding.target if route.target_binding else None
-            destination_role = (
-                route.target_binding.media_role if route.target_binding else None
-            ) or "Broadcast"
+            decision = resolve_playback_decision(impingement, voice_register=register)
+            destination = decision.destination
+            destination_target = decision.target
+            destination_role = decision.media_role
+            record_destination_decision(
+                source=source,
+                destination=destination.value,
+                route_accepted=decision.allowed,
+                reason=decision.reason_code,
+                safety_gate=decision.safety_gate,
+                target=destination_target,
+                media_role=destination_role,
+                text=narrative or "",
+                impulse_id=impulse_id,
+                terminal_state="pending" if decision.allowed else "inhibited",
+            )
 
-            if route.state == VoiceRouteState.BLOCKED:
+            if not decision.allowed:
                 record_drop(
-                    reason=route.reason_code,
+                    reason=decision.reason_code,
                     source=source,
                     destination=destination.value,
                     target=destination_target,
                     media_role=destination_role,
                     text=narrative or "",
                     impulse_id=impulse_id,
+                    terminal_state="inhibited",
                 )
             elif tts is None:
                 record_drop(
@@ -870,7 +991,7 @@ class CpalRunner:
             # Always return — autonomous narrative does not fall through to
             # the conversation pipeline path. If the bypass synthesis fails,
             # the impingement is dropped for this tick (next autonomous
-            # narrative will retry; never blocks broadcast).
+            # narrative will retry; never bypasses the route gate).
             return
 
         if effect.should_surface:
@@ -880,19 +1001,31 @@ class CpalRunner:
             # increments even when T3 ultimately fails. Classification
             # plus INFO log never touch narrative text — only source tag.
             register = self._register_bridge.current_register()
-            destination = classify_and_record(impingement, voice_register=register)
-            route = resolve_route(destination)
-            destination_target = route.target_binding.target if route.target_binding else None
-            destination_role = route.target_binding.media_role if route.target_binding else None
+            decision = resolve_playback_decision(impingement, voice_register=register)
+            destination = decision.destination
+            destination_target = decision.target
+            destination_role = decision.media_role
+            record_destination_decision(
+                source=source,
+                destination=destination.value,
+                route_accepted=decision.allowed,
+                reason=decision.reason_code,
+                safety_gate=decision.safety_gate,
+                target=destination_target,
+                media_role=destination_role,
+                text=effect.narrative,
+                terminal_state="pending" if decision.allowed else "inhibited",
+            )
 
-            if route.state == VoiceRouteState.BLOCKED:
+            if not decision.allowed:
                 record_drop(
-                    reason=route.reason_code,
+                    reason=decision.reason_code,
                     source=source,
                     destination=destination.value,
                     target=destination_target,
                     media_role=destination_role,
                     text=effect.narrative,
+                    terminal_state="inhibited",
                 )
                 return
 

@@ -28,6 +28,7 @@ WitnessStatus = Literal[
     "unknown",
     "drive_seen",
     "composed",
+    "destination_decision_recorded",
     "synthesis_completed",
     "synthesis_failed",
     "playback_completed",
@@ -49,6 +50,7 @@ class VoiceOutputWitness(BaseModel):
     last_narration_drive: dict[str, Any] | None = None
     last_narration_impulse: dict[str, Any] | None = None
     last_composed_autonomous_narrative: dict[str, Any] | None = None
+    last_destination_decision: dict[str, Any] | None = None
     last_tts_synthesis: dict[str, Any] | None = None
     last_playback: dict[str, Any] | None = None
     last_successful_playback: dict[str, Any] | None = None
@@ -185,6 +187,56 @@ def record_tts_synthesis(
         last_tts_synthesis=evidence,
         planned_utterance=_planned_utterance(text),
         blocker_drop_reason=None if status == "completed" else f"tts_{status}",
+        last_narration_impulse=impulse_update,
+    )
+
+
+def record_destination_decision(
+    *,
+    source: str,
+    destination: str,
+    route_accepted: bool,
+    reason: str,
+    safety_gate: dict[str, Any],
+    target: str | None = None,
+    media_role: str | None = None,
+    text: str | None = None,
+    impulse_id: str | None = None,
+    terminal_state: ImpulseTerminalState = "pending",
+    path: Path = WITNESS_PATH,
+    now: float | None = None,
+) -> VoiceOutputWitness:
+    """Record the destination/safety decision before any playback attempt."""
+
+    ts = _now(now)
+    route = _route_status(destination=destination, target=target, media_role=media_role)
+    decision = {
+        "ts": _iso(ts),
+        "impulse_id": impulse_id,
+        "source": source,
+        "destination": destination,
+        "route_accepted": route_accepted,
+        "reason": reason,
+        "target": target,
+        "media_role": media_role,
+        "terminal_state": terminal_state,
+        "safety_gate": safety_gate,
+    }
+    impulse_update = _impulse_update_for_state(
+        _load_existing_payload(path).get("last_narration_impulse"),
+        impulse_id=impulse_id,
+        terminal_state=terminal_state,
+        terminal_reason=reason,
+        now=ts,
+    )
+    return _merge_and_publish(
+        path,
+        now=ts,
+        status="destination_decision_recorded",
+        last_destination_decision=decision,
+        downstream_route_status=route,
+        planned_utterance=_planned_utterance(text) if text is not None else None,
+        blocker_drop_reason=None if route_accepted else reason,
         last_narration_impulse=impulse_update,
     )
 
@@ -495,6 +547,7 @@ __all__ = [
     "narration_impulse_id",
     "read_voice_output_witness",
     "record_composed_autonomous_narrative",
+    "record_destination_decision",
     "record_drop",
     "record_narration_drive",
     "record_playback_result",

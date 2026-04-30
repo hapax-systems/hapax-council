@@ -213,12 +213,11 @@ class ConversationPipeline:
         defaults"; CPAL passes the hint only when the register is not the
         ambient baseline.
 
-        ``destination_target`` is the resolved pw-cat sink name (e.g.
-        ``"hapax-private"``) for this single utterance. CPAL passes the
-        output of ``destination_channel.resolve_target`` here so sidechat
-        replies route to 24c RIGHT without affecting the pipeline's
-        default livestream subprocess. ``None`` preserves legacy routing
-        through the audio output's constructor target.
+        ``destination_target`` is the resolved pw-cat sink name for this
+        single utterance. CPAL passes the output of the fail-closed
+        destination decision here so routed utterances never fall through to
+        the audio output's constructor target. ``None`` means this method must
+        resolve private-or-drop before playback.
         """
         if not self._running or self.state == ConvState.SPEAKING:
             return
@@ -785,12 +784,15 @@ class ConversationPipeline:
             if pcm and self._audio_output:
                 if self.buffer:
                     self.buffer.set_speaking(True)
-                if self._echo_canceller:
-                    self._echo_canceller.feed_reference(pcm)
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._audio_output.write, pcm)
-                if self.buffer:
-                    self.buffer.set_speaking(False)
+                try:
+                    await self._play_guarded_pcm(
+                        pcm=pcm,
+                        text=routing.canned_response,
+                        source="conversation_canned_response",
+                    )
+                finally:
+                    if self.buffer:
+                        self.buffer.set_speaking(False)
             else:
                 await self._speak_sentence(routing.canned_response)
             self.messages.append({"role": "assistant", "content": routing.canned_response})
@@ -1338,10 +1340,11 @@ class ConversationPipeline:
             phrase, pcm = self._bridge_engine.select(ctx)
             if pcm and self._audio_output:
                 try:
-                    if self._echo_canceller:
-                        self._echo_canceller.feed_reference(pcm)
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(None, self._audio_output.write, pcm)
+                    await self._play_guarded_pcm(
+                        pcm=pcm,
+                        text=phrase or "tool bridge",
+                        source="conversation_tool_bridge",
+                    )
                 except Exception:
                     log.debug("Tool bridge playback failed", exc_info=True)
 
@@ -1480,14 +1483,81 @@ class ConversationPipeline:
         # the first TTS clause to get clipped.
         if pcm and self._audio_output:
             try:
-                if self._echo_canceller:
-                    self._echo_canceller.feed_reference(pcm)
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._audio_output.write, pcm)
+                await self._play_guarded_pcm(
+                    pcm=pcm,
+                    text=phrase,
+                    source="conversation_bridge",
+                )
             except Exception:
                 log.debug("Bridge playback failed", exc_info=True)
         elif phrase:
             await self._speak_sentence(phrase)
+
+    def _resolve_direct_playback_route(
+        self,
+        *,
+        source: str,
+        text: str,
+    ) -> tuple[bool, str | None, str | None]:
+        """Record and resolve a private-or-drop route for direct PCM playback."""
+
+        from agents.hapax_daimonion.cpal.destination_channel import (
+            resolve_playback_decision,
+        )
+        from agents.hapax_daimonion.voice_output_witness import (
+            record_destination_decision,
+            record_drop,
+        )
+
+        decision = resolve_playback_decision(None)
+        destination_target = decision.target
+        destination_role = decision.media_role
+        record_destination_decision(
+            source=source,
+            destination=decision.destination.value,
+            route_accepted=decision.allowed,
+            reason=decision.reason_code,
+            safety_gate=decision.safety_gate,
+            target=destination_target,
+            media_role=destination_role,
+            text=text,
+            terminal_state="pending" if decision.allowed else "inhibited",
+        )
+        if not decision.allowed:
+            record_drop(
+                reason=decision.reason_code,
+                source=source,
+                destination=decision.destination.value,
+                target=destination_target,
+                media_role=destination_role,
+                text=text,
+                terminal_state="inhibited",
+            )
+            return False, None, None
+        return True, destination_target, destination_role
+
+    async def _play_guarded_pcm(self, *, pcm: bytes, text: str, source: str) -> bool:
+        """Play presynthesized PCM only after destination witness accepts it."""
+
+        if not self._audio_output:
+            return False
+        allowed, destination_target, destination_role = self._resolve_direct_playback_route(
+            source=source,
+            text=text,
+        )
+        if not allowed:
+            return False
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            self._write_audio,
+            self._audio_output,
+            self._echo_canceller,
+            pcm,
+            destination_target,
+            destination_role,
+        )
+        return True
 
     # ── Salience Context ────────────────────────────────────────────────
 
@@ -1780,19 +1850,25 @@ class ConversationPipeline:
         from the LLM while audio plays.
 
         ``destination_target`` (optional) passes a per-utterance pw-cat
-        sink override down to :meth:`_write_audio`. Callers that don't
-        route destination-specifically (conversation turns, bridge
-        phrases, error messages) omit it and fall through to the audio
-        output's default sink.
+        sink override down to :meth:`_write_audio`. Callers that do not pass a
+        resolved route are forced through the private-or-drop destination
+        decision before synthesis/playback.
 
         ``destination_role`` (optional) passes a per-utterance pw-cat
         ``--media-role`` override. CPAL pairs this with
-        ``destination_target`` so livestream clips pick up the
-        ``Broadcast`` role (and its loopback chain) and private clips
-        pick up the ``Assistant`` role (and the legacy duck behavior).
+        ``destination_target`` so only authorized public clips pick up the
+        ``Broadcast`` role, while private clips pick up the ``Assistant`` role.
         """
         if not self._running:
             return
+
+        if destination_target is None and destination_role is None:
+            allowed, destination_target, destination_role = self._resolve_direct_playback_route(
+                source="conversation_pipeline",
+                text=text,
+            )
+            if not allowed:
+                return
 
         # Track for echo detection — store with timestamp for TTL pruning
         self._recent_tts_texts.append((time.monotonic(), text.lower().strip().rstrip(".,!?")))
@@ -1864,32 +1940,25 @@ class ConversationPipeline:
         Reference is fed BEFORE playback so the canceller has the expected
         signal queued when the echo arrives at the microphone (~5-20ms later).
 
-        ``destination_target`` overrides the audio output's default sink
-        for this write only. Used by the sidechat-reply path to route
-        private replies to ``hapax-private`` (24c RIGHT). Writes that do
-        not pass a target remain on the default livestream subprocess.
+        ``destination_target`` and ``destination_role`` are mandatory for
+        playback. Missing route metadata is treated as an unsafe default-sink
+        attempt and is dropped.
 
-        ``destination_role`` overrides the audio output's default
-        ``--media-role`` for this write only. Together with
-        ``destination_target`` this lets the caller route a single clip
-        through the wireplumber loopback that matches its
-        :class:`DestinationChannel` (``Broadcast`` for livestream,
-        ``Assistant`` for private). ``None`` keeps the audio output's
-        constructor default.
+        ``destination_role`` selects the WirePlumber loopback for the resolved
+        route. This method never intentionally writes to the constructor
+        default.
         """
         try:
+            if destination_target is None or destination_role is None:
+                log.warning("refusing PCM playback without a complete semantic route")
+                return
             if echo_canceller:
                 echo_canceller.feed_reference(pcm)
             else:
                 log.debug("_write_audio: echo_canceller is None!")
-            if destination_target is None and destination_role is None:
-                audio_output.write(pcm)
-                return
             kwargs: dict[str, str] = {}
-            if destination_target is not None:
-                kwargs["target"] = destination_target
-            if destination_role is not None:
-                kwargs["media_role"] = destination_role
+            kwargs["target"] = destination_target
+            kwargs["media_role"] = destination_role
             try:
                 audio_output.write(pcm, **kwargs)
             except TypeError:
@@ -1928,23 +1997,19 @@ class ConversationPipeline:
             log.debug("LLM prewarm failed (non-fatal)", exc_info=True)
 
     def _open_audio_output(self) -> None:
-        """Open PipeWire audio output for TTS playback.
-
-        Respects ``HAPAX_TTS_TARGET`` — if set, pw-cat routes the TTS stream
-        to that PipeWire node. The installed voice FX chain
-        (``config/pipewire/voice-fx-chain.conf``) provides a ready sink
-        named ``hapax-voice-fx-capture``. Unset or empty falls through to
-        the default sink (role-based wireplumber routing, unchanged).
-        """
+        """Open PipeWire audio output without trusting legacy default targets."""
         try:
             import os
 
             from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
 
-            target = os.environ.get("HAPAX_TTS_TARGET") or None
-            self._audio_output = PwAudioOutput(sample_rate=24000, channels=1, target=target)
-            if target:
-                log.info("TTS routing through PipeWire target: %s", target)
+            legacy_target = os.environ.get("HAPAX_TTS_TARGET") or None
+            self._audio_output = PwAudioOutput(sample_rate=24000, channels=1, target=None)
+            if legacy_target:
+                log.warning(
+                    "Ignoring legacy HAPAX_TTS_TARGET=%s; per-utterance semantic routing required",
+                    legacy_target,
+                )
         except Exception:
             log.exception("Failed to open audio output")
 

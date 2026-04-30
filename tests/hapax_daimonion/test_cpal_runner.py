@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agents.hapax_daimonion.cpal.destination_channel import DestinationChannel
 from agents.hapax_daimonion.cpal.runner import CpalRunner
-from shared.voice_output_router import VoiceRouteState
+from agents.hapax_daimonion.cpal.types import ConversationalRegion
 
 
 class TestCpalRunnerLifecycle:
@@ -78,6 +79,115 @@ class TestCpalRunnerLifecycle:
         runner._buffer.get_utterance.assert_called()
 
     @pytest.mark.asyncio
+    async def test_t1_acknowledgement_uses_destination_gate(self):
+        runner = self._make_runner()
+        runner._audio_output = MagicMock()
+        runner._pipeline = AsyncMock()
+        runner._signal_cache.select = MagicMock(return_value=("ack", b"\x00\x01"))
+        runner._last_speech_end = 0.0
+        decision = SimpleNamespace(
+            allowed=True,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_assistant_monitor_bound",
+            safety_gate={"context_default": "private_or_drop"},
+            target="hapax-private",
+            media_role="Assistant",
+        )
+
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=decision,
+            ),
+            patch(
+                "agents.hapax_daimonion.cpal.runner.ConversationalRegion.from_gain",
+                return_value=ConversationalRegion.ATTENTIVE,
+            ),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+        ):
+            await runner._process_utterance(b"\x00\x01")
+
+        runner._audio_output.write.assert_called_once_with(
+            b"\x00\x01",
+            target="hapax-private",
+            media_role="Assistant",
+        )
+
+    @pytest.mark.asyncio
+    async def test_t1_acknowledgement_drops_when_destination_blocked(self):
+        runner = self._make_runner()
+        runner._audio_output = MagicMock()
+        runner._pipeline = AsyncMock()
+        runner._signal_cache.select = MagicMock(return_value=("ack", b"\x00\x01"))
+        runner._last_speech_end = 0.0
+        blocked = SimpleNamespace(
+            allowed=False,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_monitor_status_missing",
+            safety_gate={"context_default": "private_or_drop"},
+            target=None,
+            media_role=None,
+        )
+
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=blocked,
+            ),
+            patch(
+                "agents.hapax_daimonion.cpal.runner.ConversationalRegion.from_gain",
+                return_value=ConversationalRegion.ATTENTIVE,
+            ),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+            patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop,
+        ):
+            await runner._process_utterance(b"\x00\x01")
+
+        runner._audio_output.write.assert_not_called()
+        assert record_drop.call_args_list[0].kwargs["reason"] == "private_monitor_status_missing"
+
+    @pytest.mark.asyncio
+    async def test_session_timeout_goodbye_uses_destination_gate(self):
+        runner = self._make_runner()
+        daemon = MagicMock()
+        daemon.session.is_active = True
+        daemon.session.is_timed_out = True
+        daemon.notifications.pending_count = 0
+        daemon._conversation_pipeline._audio_output = MagicMock()
+        daemon.tts.synthesize.return_value = b"\x00\x01"
+        runner._daemon = daemon
+        decision = SimpleNamespace(
+            allowed=True,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_assistant_monitor_bound",
+            safety_gate={"context_default": "private_or_drop"},
+            target="hapax-private",
+            media_role="Assistant",
+        )
+        playback = SimpleNamespace(
+            status="completed",
+            completed=True,
+            returncode=0,
+            duration_s=0.1,
+            timeout_s=5.0,
+            error=None,
+        )
+
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=decision,
+            ),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+            patch("agents.hapax_daimonion.pw_audio_output.play_pcm", return_value=playback) as play,
+            patch("agents.hapax_daimonion.cpal.runner.record_playback_result"),
+            patch("agents.hapax_daimonion.session_events.close_session", new=AsyncMock()),
+        ):
+            await runner._tick(0.1)
+
+        play.assert_called_once_with(b"\x00\x01", 24000, 1, "hapax-private", "Assistant")
+
+    @pytest.mark.asyncio
     async def test_process_impingement(self):
         runner = self._make_runner()
         imp = MagicMock()
@@ -90,7 +200,7 @@ class TestCpalRunnerLifecycle:
         assert runner.evaluator.gain_controller.gain > 0.0
 
     @pytest.mark.asyncio
-    async def test_inactive_pipeline_records_livestream_drop(self):
+    async def test_inactive_pipeline_records_private_drop(self):
         runner = self._make_runner()
         runner._pipeline = None
         runner._impingement_adapter.adapt = MagicMock(
@@ -104,13 +214,28 @@ class TestCpalRunnerLifecycle:
         imp = MagicMock()
         imp.source = "stimmung"
         imp.content = {"narrative": "Surface this narration."}
+        decision = SimpleNamespace(
+            allowed=True,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_assistant_monitor_bound",
+            safety_gate={"context_default": "private_or_drop"},
+            target="hapax-private",
+            media_role="Assistant",
+        )
 
-        with patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop:
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=decision,
+            ),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+            patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop,
+        ):
             await runner.process_impingement(imp)
 
         record_drop.assert_called_once()
         assert record_drop.call_args.kwargs["reason"] == "pipeline_unavailable"
-        assert record_drop.call_args.kwargs["destination"] == "livestream"
+        assert record_drop.call_args.kwargs["destination"] == "private"
 
     @pytest.mark.asyncio
     async def test_private_route_blocked_before_spontaneous_speech_pipeline(self):
@@ -127,14 +252,21 @@ class TestCpalRunnerLifecycle:
         imp = MagicMock()
         imp.source = "operator.sidechat"
         imp.content = {"channel": "sidechat", "narrative": "Private sidechat response."}
-        blocked_route = SimpleNamespace(
-            state=VoiceRouteState.BLOCKED,
+        blocked_decision = SimpleNamespace(
+            allowed=False,
+            destination=DestinationChannel.PRIVATE,
             reason_code="private_monitor_status_missing",
-            target_binding=SimpleNamespace(target=None, media_role=None),
+            safety_gate={"private_route_reason_code": "private_monitor_status_missing"},
+            target=None,
+            media_role=None,
         )
 
         with (
-            patch("agents.hapax_daimonion.cpal.runner.resolve_route", return_value=blocked_route),
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=blocked_decision,
+            ),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
             patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop,
         ):
             await runner.process_impingement(imp)
@@ -172,9 +304,22 @@ class TestCpalRunnerLifecycle:
             timeout_s=35.0,
             error="timeout",
         )
+        decision = SimpleNamespace(
+            allowed=True,
+            destination=DestinationChannel.LIVESTREAM,
+            reason_code="broadcast_voice_authorized",
+            safety_gate={"audio_safe_for_broadcast": {"safe": True}},
+            target="hapax-voice-fx-capture",
+            media_role="Broadcast",
+        )
 
         with (
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=decision,
+            ),
             patch("agents.hapax_daimonion.pw_audio_output.play_pcm", return_value=playback_result),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
             patch("agents.hapax_daimonion.cpal.runner.record_tts_synthesis"),
             patch("agents.hapax_daimonion.cpal.runner.record_playback_result") as record_playback,
             caplog.at_level("INFO", logger="agents.hapax_daimonion.cpal.runner"),

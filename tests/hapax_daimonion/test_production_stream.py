@@ -1,7 +1,9 @@
 """Tests for CPAL production stream."""
 
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+from agents.hapax_daimonion.cpal.destination_channel import DestinationChannel
 from agents.hapax_daimonion.cpal.production_stream import ProductionStream
 from agents.hapax_daimonion.cpal.types import CorrectionTier
 
@@ -27,11 +29,52 @@ class TestProductionStream:
         shm.assert_called_once()
         assert not ps.is_producing
 
-    def test_produce_t1_writes_audio(self):
+    def test_produce_t1_resolves_route_before_audio(self):
         ps, audio, _ = self._make_stream()
         pcm = b"\x00\x01" * 500
-        ps.produce_t1(pcm_data=pcm)
-        audio.write.assert_called_once_with(pcm)
+        decision = SimpleNamespace(
+            allowed=True,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_assistant_monitor_bound",
+            safety_gate={"context_default": "private_or_drop"},
+            target="hapax-private",
+            media_role="Assistant",
+        )
+
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.destination_channel.resolve_playback_decision",
+                return_value=decision,
+            ),
+            patch("agents.hapax_daimonion.voice_output_witness.record_destination_decision"),
+        ):
+            ps.produce_t1(pcm_data=pcm)
+
+        audio.write.assert_called_once_with(pcm, target="hapax-private", media_role="Assistant")
+
+    def test_produce_t1_drops_when_route_blocked(self):
+        ps, audio, _ = self._make_stream()
+        blocked = SimpleNamespace(
+            allowed=False,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_monitor_status_missing",
+            safety_gate={"context_default": "private_or_drop"},
+            target=None,
+            media_role=None,
+        )
+
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.destination_channel.resolve_playback_decision",
+                return_value=blocked,
+            ),
+            patch("agents.hapax_daimonion.voice_output_witness.record_destination_decision"),
+            patch("agents.hapax_daimonion.voice_output_witness.record_drop") as record_drop,
+        ):
+            ps.produce_t1(pcm_data=b"\x00\x01")
+
+        audio.write.assert_not_called()
+        assert record_drop.call_args.kwargs["reason"] == "private_monitor_status_missing"
 
     def test_routed_t1_drops_if_audio_output_rejects_target(self):
         class RejectingAudioOutput:
@@ -47,9 +90,13 @@ class TestProductionStream:
         ps = ProductionStream(audio_output=audio, shm_writer=MagicMock())
         pcm = b"\x00\x01" * 500
 
-        ps.produce_t1(pcm_data=pcm, destination_target="hapax-private")
+        ps.produce_t1(
+            pcm_data=pcm,
+            destination_target="hapax-private",
+            destination_role="Assistant",
+        )
 
-        assert audio.calls == [(pcm, {"target": "hapax-private"})]
+        assert audio.calls == [(pcm, {"target": "hapax-private", "media_role": "Assistant"})]
 
     def test_interrupt_stops_production(self):
         ps, _, _ = self._make_stream()
