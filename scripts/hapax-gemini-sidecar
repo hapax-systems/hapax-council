@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""Read-only Gemini CLI sidecar wrapper for Codex."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+READ_ONLY_GUARDRAILS = "\n".join(
+    [
+        "Read-only. No file edits. No PRs. No branch/worktree operations.",
+        "No deploy/restart. No secrets. No new auth/users/roles.",
+        "Separate evidence from inference. Gemini output is evidence/draft only;",
+        "Codex remains implementation owner.",
+    ]
+)
+
+MODE_TEMPLATES: dict[str, str] = {
+    "reviewer": (
+        "You are a read-only sidecar reviewer for Hapax. Review the supplied "
+        "plan/diff/spec for correctness risks, missing tests, architecture "
+        "violations, grounding mistakes, and Hapax axiom risks. Return only "
+        "findings ordered by severity, evidence, uncertainty, and concrete remediation."
+    ),
+    "currentness-scout": (
+        "Use current web sources, prioritizing official docs. Answer with dated facts, "
+        "URLs, and uncertainty. Distinguish product/subscription names, API model IDs, "
+        "CLI model selectors, quotas, and capacity errors."
+    ),
+    "large-context-summarizer": (
+        "Summarize only the supplied material. Do not invent paths, task states, or "
+        "prior decisions. Return key facts, unresolved conflicts, implementation "
+        "constraints, and source anchors."
+    ),
+    "aesthetic-researcher": (
+        "Research creative and aesthetic options for Hapax. Return options, tradeoffs, "
+        "examples, and what not to copy. Keep evidence distinct from taste judgments."
+    ),
+    "spec-drafter": (
+        "Draft a proposal only. Fit existing Hapax architecture: single operator, "
+        "Obsidian SSOT, uv, LiteLLM routes, relay claims, hooks, PR train, WCS and "
+        "no-false-grounding commitments. Do not bypass services or governance gates."
+    ),
+    "extraction": (
+        "Extract, normalize, or classify only the supplied material. Use bounded "
+        "structure, preserve uncertainty, and do not invent missing state."
+    ),
+}
+
+DEFAULT_MODEL = "gemini-3.1-pro-preview"
+AUTO_ROUTING_SENTINEL = "auto"
+FALLBACK_BY_MODE: dict[str, list[str]] = {
+    "reviewer": [
+        DEFAULT_MODEL,
+        AUTO_ROUTING_SENTINEL,
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+    ],
+    "currentness-scout": [
+        DEFAULT_MODEL,
+        AUTO_ROUTING_SENTINEL,
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+    ],
+    "large-context-summarizer": [
+        DEFAULT_MODEL,
+        AUTO_ROUTING_SENTINEL,
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+    ],
+    "aesthetic-researcher": [
+        DEFAULT_MODEL,
+        AUTO_ROUTING_SENTINEL,
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+    ],
+    "spec-drafter": [
+        DEFAULT_MODEL,
+        AUTO_ROUTING_SENTINEL,
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+    ],
+    "extraction": [
+        DEFAULT_MODEL,
+        AUTO_ROUTING_SENTINEL,
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-flash-preview",
+    ],
+}
+FALLBACK_MARKERS = (
+    "429",
+    "capacity",
+    "daily usage limit",
+    "does not exist",
+    "model not found",
+    "not available",
+    "quota",
+    "rate limit",
+    "resource_exhausted",
+    "too many requests",
+)
+
+
+def _cache_root() -> Path:
+    return (
+        Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+        / "hapax"
+        / "gemini-sidecar"
+    )
+
+
+def _timestamp() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _build_prompt(mode: str, prompt: str) -> str:
+    return "\n\n".join([READ_ONLY_GUARDRAILS, MODE_TEMPLATES[mode], prompt.strip()])
+
+
+def _model_attempts(mode: str, requested_model: str | None) -> list[str]:
+    if requested_model:
+        requested = requested_model.strip()
+        tail = [model for model in FALLBACK_BY_MODE[mode] if model != requested]
+        return [requested, *tail]
+    return list(FALLBACK_BY_MODE[mode])
+
+
+def _fallbackable(output: str) -> bool:
+    lowered = output.lower()
+    return any(marker in lowered for marker in FALLBACK_MARKERS)
+
+
+def _command(
+    gemini_bin: str,
+    *,
+    model: str,
+    output_format: str,
+    prompt: str,
+) -> list[str]:
+    cmd = [gemini_bin, "--approval-mode", "plan", "--output-format", output_format, "-p", prompt]
+    if model != AUTO_ROUTING_SENTINEL:
+        cmd[1:1] = ["--model", model]
+    return cmd
+
+
+def _metadata_path(path_arg: str | None) -> Path:
+    if path_arg:
+        return Path(path_arg).expanduser()
+    return _cache_root() / "metadata.jsonl"
+
+
+def _artifact_path(artifact_dir_arg: str | None, *, mode: str, model: str) -> Path:
+    root = Path(artifact_dir_arg).expanduser() if artifact_dir_arg else _cache_root() / "artifacts"
+    safe_model = model.replace("/", "_")
+    return root / f"{_timestamp()}-{mode}-{safe_model}.txt"
+
+
+def _append_metadata(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _write_artifact(path: Path, *, stdout: str, stderr: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "# stdout",
+                stdout,
+                "# stderr",
+                stderr,
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _prompt_from_args(args: argparse.Namespace) -> str:
+    if args.prompt and args.prompt_file:
+        raise SystemExit("--prompt and --prompt-file are mutually exclusive")
+    if args.prompt_file:
+        return Path(args.prompt_file).expanduser().read_text(encoding="utf-8")
+    if args.prompt:
+        return args.prompt
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    raise SystemExit("hapax-gemini-sidecar: provide --prompt, --prompt-file, or stdin")
+
+
+def _make_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Invoke Gemini CLI as a read-only Hapax sidecar.",
+        epilog="Gemini output is evidence/draft only; Codex owns implementation and train state.",
+    )
+    parser.add_argument("--mode", choices=sorted(MODE_TEMPLATES), default="reviewer")
+    parser.add_argument("--prompt")
+    parser.add_argument("--prompt-file")
+    parser.add_argument("--model", default=os.environ.get("HAPAX_GEMINI_SIDECAR_MODEL"))
+    parser.add_argument("--gemini-bin", default=os.environ.get("GEMINI_BIN", "gemini"))
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=float(os.environ.get("HAPAX_GEMINI_SIDECAR_TIMEOUT", "120")),
+    )
+    parser.add_argument("--output-format", choices=("text", "json", "stream-json"), default="text")
+    parser.add_argument("--metadata-log")
+    parser.add_argument("--artifact-dir")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print planned command/prompt as JSON without invoking Gemini.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _make_parser().parse_args(argv)
+    prompt = _build_prompt(args.mode, _prompt_from_args(args))
+    attempts = _model_attempts(args.mode, args.model)
+
+    if args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "command": _command(
+                        args.gemini_bin,
+                        model=attempts[0],
+                        output_format=args.output_format,
+                        prompt=prompt,
+                    ),
+                    "fallback_models": attempts,
+                    "mode": args.mode,
+                    "prompt": prompt,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    started = time.monotonic()
+    deadline = started + args.timeout
+    attempt_records: list[dict[str, Any]] = []
+    final_stdout = ""
+    final_stderr = ""
+    final_code = 1
+    final_model = attempts[-1]
+    env = os.environ.copy()
+    env.update(
+        {
+            "CI": "1",
+            "NO_UPDATE_NOTIFIER": "1",
+            "NPM_CONFIG_AUDIT": "false",
+            "NPM_CONFIG_FUND": "false",
+            "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        }
+    )
+
+    for model in attempts:
+        cmd = _command(
+            args.gemini_bin, model=model, output_format=args.output_format, prompt=prompt
+        )
+        remaining_timeout = deadline - time.monotonic()
+        if remaining_timeout <= 0:
+            final_stdout = ""
+            final_stderr = f"hapax-gemini-sidecar: timeout after {args.timeout:.1f}s\n"
+            final_code = 124
+            final_model = model
+            attempt_records.append({"model": model, "exit_code": final_code, "fallbackable": False})
+            break
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=remaining_timeout,
+                env=env,
+                check=False,
+            )
+            final_stdout = result.stdout
+            final_stderr = result.stderr
+            final_code = result.returncode
+        except OSError as exc:
+            final_stdout = ""
+            final_stderr = f"hapax-gemini-sidecar: failed to launch {args.gemini_bin}: {exc}\n"
+            final_code = 2
+        except subprocess.TimeoutExpired as exc:
+            final_stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+            final_stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            final_stderr = (
+                f"{final_stderr}\nhapax-gemini-sidecar: timeout after {args.timeout:.1f}s\n"
+            )
+            final_code = 124
+        final_model = model
+        combined = f"{final_stdout}\n{final_stderr}"
+        attempt_records.append(
+            {
+                "model": model,
+                "exit_code": final_code,
+                "fallbackable": final_code != 0 and _fallbackable(combined),
+            }
+        )
+        if final_code == 0 or not _fallbackable(combined):
+            break
+
+    artifact_path = _artifact_path(args.artifact_dir, mode=args.mode, model=final_model)
+    _write_artifact(artifact_path, stdout=final_stdout, stderr=final_stderr)
+    duration_ms = round((time.monotonic() - started) * 1000)
+    _append_metadata(
+        _metadata_path(args.metadata_log),
+        {
+            "artifact_path": str(artifact_path),
+            "attempts": attempt_records,
+            "duration_ms": duration_ms,
+            "exit_code": final_code,
+            "fallback_selected": final_model,
+            "mode": args.mode,
+            "model_requested": args.model or DEFAULT_MODEL,
+            "output_format": args.output_format,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "timeout_s": args.timeout,
+        },
+    )
+
+    sys.stdout.write(final_stdout)
+    sys.stderr.write(final_stderr)
+    return final_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
