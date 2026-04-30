@@ -49,11 +49,33 @@ class BufferSpeechState(NamedTuple):
     in_cooldown: bool
 
 
+class DialogState(NamedTuple):
+    """Snapshot of recent speech activity across all speech paths.
+
+    Evidence of active dialog (operator responses) suppresses autonomous
+    narration/exploration surfacing. This is NOT a hard gate — it raises
+    the surfacing threshold as Bayesian evidence that the operator is
+    engaged in conversation and narration would disrupt.
+
+    ``seconds_since_last_response``: seconds since the last conversational
+    response (operator spoke → Hapax responded). ``float('inf')`` if no
+    recent response. Smaller values = stronger evidence of active dialog.
+    """
+
+    seconds_since_last_response: float
+    dialog_active: bool  # True if a conversational response occurred within window
+
+
 def _null_buffer_state() -> BufferSpeechState:
     return BufferSpeechState(speech_active=False, in_cooldown=False)
 
 
+def _null_dialog_state() -> DialogState:
+    return DialogState(seconds_since_last_response=float("inf"), dialog_active=False)
+
+
 BufferStateProvider = Callable[[], BufferSpeechState]
+DialogStateProvider = Callable[[], DialogState]
 
 # Gain deltas by impingement source
 _GAIN_DELTAS: dict[str, float] = {
@@ -79,6 +101,13 @@ ALWAYS_SURFACE_AT: float = 1.0
 # signal, not a hard gate — it reduces P(surfacing | operator_speaking)
 # without setting it to zero.
 OPERATOR_SPEECH_THRESHOLD_LIFT: float = 0.4
+# Dialog-active evidence: when a conversational response was recently
+# produced (operator spoke → Hapax responded), narration/exploration
+# surfacing threshold rises by this amount. This is evidence that the
+# operator is engaged in conversation and autonomous speech would be
+# disruptive. Decays naturally as seconds_since_last_response increases.
+DIALOG_ACTIVE_THRESHOLD_LIFT: float = 0.3
+DIALOG_ACTIVE_WINDOW_S: float = 30.0  # seconds within which a response counts
 SPEECH_CAPABILITY_NAME: str = "speech_production"
 
 
@@ -122,9 +151,11 @@ class ImpingementAdapter:
         *,
         programme_provider: ProgrammeProvider = null_provider,
         buffer_state_provider: BufferStateProvider = _null_buffer_state,
+        dialog_state_provider: DialogStateProvider = _null_dialog_state,
     ) -> None:
         self._programme_provider = programme_provider
         self._buffer_state_provider = buffer_state_provider
+        self._dialog_state_provider = dialog_state_provider
 
     def adapt(self, impingement: object) -> ImpingementEffect:
         """Convert an impingement to a CPAL control loop effect.
@@ -241,7 +272,25 @@ class ImpingementAdapter:
         except Exception:
             pass  # fail open — no evidence is neutral, not a veto
 
-        threshold = base_threshold + operator_lift
+        # Dialog-active evidence: when Hapax recently produced a
+        # conversational response (operator spoke → Hapax answered),
+        # the surfacing threshold rises. This makes autonomous narration
+        # less likely during active dialog — evidence-based suppression,
+        # not a hard gate. The lift decays linearly over the window.
+        dialog_lift = 0.0
+        try:
+            dialog = self._dialog_state_provider()
+            if dialog.dialog_active:
+                # Linear decay: full lift at t=0, zero at t=DIALOG_ACTIVE_WINDOW_S
+                decay = max(
+                    0.0,
+                    1.0 - dialog.seconds_since_last_response / DIALOG_ACTIVE_WINDOW_S,
+                )
+                dialog_lift = DIALOG_ACTIVE_THRESHOLD_LIFT * decay
+        except Exception:
+            pass  # fail open
+
+        threshold = base_threshold + operator_lift + dialog_lift
         return min(1.0, max(0.01, threshold))
 
     def _safe_active_programme(self):

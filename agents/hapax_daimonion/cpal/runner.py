@@ -14,9 +14,12 @@ the T3 production capability.
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import logging
 import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 from agents.hapax_daimonion.cpal.destination_channel import (
@@ -48,6 +51,39 @@ from shared.voice_register import VoiceRegister
 log = logging.getLogger(__name__)
 
 TICK_INTERVAL_S = 0.15  # 150ms cognitive tick
+
+# --- Shared Speech Event Ring ---
+# Minimum viable aperture unification: a shared in-memory ring that all
+# speech paths (conversational, autonomous narration, exploration
+# surfacing) append to. Provides cross-path evidence of recent speech
+# activity without requiring the full SelfPresenceEnvelope.
+_SPEECH_EVENT_RING_MAXLEN = 20
+_DIALOG_ACTIVE_WINDOW_S = 30.0  # matches impingement_adapter.DIALOG_ACTIVE_WINDOW_S
+
+
+class SpeechEventKind(enum.Enum):
+    """Classification of speech events for cross-path awareness."""
+
+    RESPONSE = "response"  # conversational response to operator speech
+    NARRATION = "narration"  # autonomous narrative drive
+    EXPLORATION = "exploration"  # exploration surfacing
+
+
+@dataclass(frozen=True)
+class SpeechEvent:
+    """Record of a speech emission for cross-path awareness.
+
+    Lightweight surrogate for ApertureEvent from the Unified Self-Grounding
+    Spine spec. Provides enough evidence for cross-path dialog suppression
+    without the full ontology.
+    """
+
+    kind: SpeechEventKind
+    timestamp: float  # time.monotonic()
+    source_path: str  # e.g. "pipeline._process_utterance_inner", "autonomous_narrative"
+    text_preview: str = ""  # first 40 chars for debug/context
+
+
 _STIMMUNG_PATH = Path("/dev/shm/hapax-stimmung/state.json")
 _TPN_PATH = Path("/dev/shm/hapax-dmn/tpn_active")
 
@@ -136,7 +172,10 @@ class CpalRunner:
         # Operator speech evidence: buffer state provider lets the
         # adapter incorporate speech_active/in_cooldown as downward
         # evidence on the surfacing posterior.
-        from agents.hapax_daimonion.cpal.impingement_adapter import BufferSpeechState
+        from agents.hapax_daimonion.cpal.impingement_adapter import (
+            BufferSpeechState,
+            DialogState,
+        )
 
         def _buffer_state_provider() -> BufferSpeechState:
             return BufferSpeechState(
@@ -144,9 +183,25 @@ class CpalRunner:
                 in_cooldown=getattr(buffer, "in_cooldown", False),
             )
 
+        def _dialog_state_provider() -> DialogState:
+            """Evidence of recent conversational response activity."""
+            now = time.monotonic()
+            for evt in reversed(self._recent_speech_events):
+                if evt.kind == SpeechEventKind.RESPONSE:
+                    elapsed = now - evt.timestamp
+                    return DialogState(
+                        seconds_since_last_response=elapsed,
+                        dialog_active=elapsed < _DIALOG_ACTIVE_WINDOW_S,
+                    )
+            return DialogState(
+                seconds_since_last_response=float("inf"),
+                dialog_active=False,
+            )
+
         self._impingement_adapter = ImpingementAdapter(
             programme_provider=default_provider,
             buffer_state_provider=_buffer_state_provider,
+            dialog_state_provider=_dialog_state_provider,
         )
         self._tier_composer = TierComposer()
         self._signal_cache = SignalCache()
@@ -223,6 +278,11 @@ class CpalRunner:
         self._last_stimmung_check = 0.0
         self._queued_utterance: bytes | None = None
         self._last_speech_end: float = 0.0  # monotonic timestamp of last system speech end
+        # Shared speech event ring: minimum viable aperture unification.
+        # All speech paths (response, narration, exploration) append here
+        # so cross-path evidence is available. Replaces the split-hemisphere
+        # where conversational and narration paths had no awareness of each other.
+        self._recent_speech_events: deque[SpeechEvent] = deque(maxlen=_SPEECH_EVENT_RING_MAXLEN)
         # Speech mutex: prevents autonomous narration bypass and exploration
         # surfacing from producing concurrent audio streams. Both paths
         # acquire this lock before TTS synthesis. This is infrastructure
@@ -646,6 +706,13 @@ class CpalRunner:
             self._evaluator.gain_controller.record_grounding_outcome(success=False)
         finally:
             self._last_speech_end = time.monotonic()
+            self._recent_speech_events.append(
+                SpeechEvent(
+                    kind=SpeechEventKind.RESPONSE,
+                    timestamp=self._last_speech_end,
+                    source_path="pipeline._process_utterance_inner",
+                )
+            )
             self._processing_utterance = False
             self._production.mark_t3_end()
             self._formulation.reset()
@@ -998,6 +1065,14 @@ class CpalRunner:
                             )
                             if playback_result.completed:
                                 self._last_speech_end = time.monotonic()
+                                self._recent_speech_events.append(
+                                    SpeechEvent(
+                                        kind=SpeechEventKind.NARRATION,
+                                        timestamp=self._last_speech_end,
+                                        source_path="autonomous_narrative",
+                                        text_preview=narrative[:40],
+                                    )
+                                )
                                 log.info(
                                     "Autonomous narrative spoken: %s",
                                     narrative[:60],
@@ -1149,6 +1224,14 @@ class CpalRunner:
                         log.debug("Spontaneous speech failed", exc_info=True)
                     finally:
                         self._last_speech_end = time.monotonic()
+                        self._recent_speech_events.append(
+                            SpeechEvent(
+                                kind=SpeechEventKind.EXPLORATION,
+                                timestamp=self._last_speech_end,
+                                source_path="exploration_surfacing",
+                                text_preview=effect.narrative[:40],
+                            )
+                        )
             else:
                 record_drop(
                     reason="pipeline_unavailable",
