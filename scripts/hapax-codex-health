@@ -13,7 +13,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SESSIONS = ("cx-red", "cx-green", "cx-amber", "cx-blue", "cx-cyan", "cx-violet")
+DEFAULT_SESSIONS = (
+    "cx-red",
+    "cx-green",
+    "cx-amber",
+    "cx-blue",
+    "cx-cyan",
+    "cx-gold",
+    "cx-teal",
+    "cx-rose",
+    "cx-violet",
+)
 DEFAULT_OBSIDIAN_PATH = (
     Path.home()
     / "Documents"
@@ -30,6 +40,9 @@ ROLE_SUMMARY = {
     "cx-amber": "production worker lane",
     "cx-blue": "production worker lane",
     "cx-cyan": "production worker lane",
+    "cx-gold": "production worker lane",
+    "cx-teal": "production worker lane",
+    "cx-rose": "production worker lane",
 }
 SCREEN_REQUIRED = {"cx-red", "cx-violet"}
 
@@ -65,7 +78,9 @@ def _relay_summary(path: Path) -> dict[str, Any]:
         "task_id": _yaml_scalar(text, "task_id"),
         "current_claim": _yaml_scalar(text, "current_claim"),
         "current_pr": _yaml_scalar(text, "current_pr"),
-        "branch": _yaml_scalar(text, "branch") or _nested_yaml_scalar(text, "worktree", "branch"),
+        "branch": _yaml_scalar(text, "current_branch")
+        or _yaml_scalar(text, "branch")
+        or _nested_yaml_scalar(text, "worktree", "branch"),
         "why": _first_relay_note(text),
     }
 
@@ -168,6 +183,10 @@ def collect(sessions: list[str]) -> dict[str, Any]:
             warnings.append("worker_claim_without_tmux_control_plane")
         if claim and not relay.get("current_claim"):
             warnings.append("claim_file_without_relay_current_claim")
+        if claim and relay.get("current_claim") and claim != relay.get("current_claim"):
+            warnings.append("claim_file_relay_current_claim_mismatch")
+        if claim and relay.get("task_id") and claim != relay.get("task_id"):
+            warnings.append("claim_file_relay_task_id_mismatch")
         if session in protected:
             warnings.append("protected_do_not_relaunch_or_kill")
         lanes.append(
@@ -235,7 +254,9 @@ def render_obsidian(report: dict[str, Any]) -> str:
         title = task.get("title")
         if title:
             task_label = f"{task_label} — {title}"
-        status = lane.get("active_claim") and "claimed" or task.get("status") or relay.get("status")
+        status = task.get("status") or (
+            "claimed" if lane.get("active_claim") else relay.get("status")
+        )
         why = relay.get("why") or relay.get("status") or "-"
         warnings = ", ".join(lane["warnings"]) if lane["warnings"] else "-"
         lines.append(
