@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import subprocess
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +145,39 @@ def _run(
 
 def _witness(tmp_path: Path) -> dict[str, Any]:
     return json.loads((tmp_path / "witness.json").read_text(encoding="utf-8"))
+
+
+def _load_watchdog_module() -> types.ModuleType:
+    loader = importlib.machinery.SourceFileLoader(
+        "daimonion_quarantine_watchdog_under_test", str(SCRIPT)
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
+def test_command_runner_records_subprocess_timeout(monkeypatch) -> None:
+    module = _load_watchdog_module()
+
+    def _timeout(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            command,
+            kwargs["timeout"],
+            output=b"partial-out",
+            stderr=b"late stderr",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", _timeout)
+
+    result = module.CommandRunner().run(["systemctl", "--user", "stop", SERVICE], timeout_s=0.25)
+
+    assert result.returncode == 124
+    assert result.stdout == "partial-out"
+    assert "command timed out after 0.25 seconds" in result.stderr
+    assert "late stderr" in result.stderr
 
 
 def test_healthy_quarantine_reports_success_without_actions(tmp_path: Path) -> None:

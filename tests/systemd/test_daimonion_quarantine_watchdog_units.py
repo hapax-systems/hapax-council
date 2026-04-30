@@ -25,6 +25,7 @@ def test_daimonion_quarantine_watchdog_service_enforces_only_containment() -> No
     assert "Type=oneshot" in service
     assert "scripts/hapax-daimonion-quarantine-watchdog --enforce" in service
     assert "SuccessExitStatus=2" in service
+    assert "TimeoutStartSec=60s" in service
     assert "restart hapax-daimonion" not in service
     assert "unmask" not in service
     assert "unmute" not in service

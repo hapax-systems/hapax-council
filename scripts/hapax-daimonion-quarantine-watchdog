@@ -113,13 +113,21 @@ class CommandRunner:
                     )
             return CommandResult(127, "", f"fixture missing command: {command!r}")
 
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = _stream_text(exc.output)
+            stderr = _stream_text(exc.stderr)
+            timeout_line = f"command timed out after {timeout_s:g} seconds: {command!r}"
+            return CommandResult(
+                124, stdout, "\n".join(part for part in (timeout_line, stderr) if part)
+            )
         return CommandResult(result.returncode, result.stdout, result.stderr)
 
 
@@ -131,6 +139,14 @@ def _load_fixture_commands(fixture_path: Path | None) -> list[dict[str, Any]] | 
     if not isinstance(commands, list):
         raise ValueError("fixture must contain a commands list")
     return [entry for entry in commands if isinstance(entry, dict)]
+
+
+def _stream_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
 
 
 def _utc_now() -> datetime:
