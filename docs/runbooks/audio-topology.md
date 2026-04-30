@@ -205,6 +205,19 @@ cat /dev/shm/hapax-audio/private-monitor-target.json
 scripts/audio-leak-guard.sh
 ```
 
+In normal operation, the repo-managed user timer keeps this witness fresh:
+
+```fish
+systemctl --user status hapax-private-monitor-recover.timer
+systemctl --user status hapax-private-monitor-recover.service
+```
+
+The timer runs every 60 seconds and writes
+`/dev/shm/hapax-audio/private-monitor-target.json`, which is safely inside the
+semantic router's 300-second freshness window. `blocked_absent` is a successful
+witness publication: it means the exact private monitor path is unavailable and
+private voice must remain silent rather than fall back.
+
 Expected healthy state:
 
 - `private_monitor_state=ready`;

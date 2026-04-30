@@ -21,8 +21,7 @@ from pathlib import Path
 
 from agents.hapax_daimonion.cpal.destination_channel import (
     classify_and_record,
-    resolve_role,
-    resolve_target,
+    resolve_route,
 )
 from agents.hapax_daimonion.cpal.evaluator import CpalEvaluator
 from agents.hapax_daimonion.cpal.formulation_stream import FormulationStream
@@ -44,6 +43,7 @@ from agents.hapax_daimonion.voice_output_witness import (
     record_playback_result,
     record_tts_synthesis,
 )
+from shared.voice_output_router import VoiceRouteState
 from shared.voice_register import VoiceRegister
 
 log = logging.getLogger(__name__)
@@ -750,10 +750,23 @@ class CpalRunner:
             # is always livestream-bound, even when synthesis later fails.
             register = self._register_bridge.current_register()
             destination = classify_and_record(impingement, voice_register=register)
-            destination_target = resolve_target(destination)
-            destination_role = resolve_role(destination) or "Broadcast"
+            route = resolve_route(destination)
+            destination_target = route.target_binding.target if route.target_binding else None
+            destination_role = (
+                route.target_binding.media_role if route.target_binding else None
+            ) or "Broadcast"
 
-            if tts is None:
+            if route.state == VoiceRouteState.BLOCKED:
+                record_drop(
+                    reason=route.reason_code,
+                    source=source,
+                    destination=destination.value,
+                    target=destination_target,
+                    media_role=destination_role,
+                    text=narrative or "",
+                    impulse_id=impulse_id,
+                )
+            elif tts is None:
                 record_drop(
                     reason="tts_manager_missing",
                     source=source,
@@ -868,8 +881,20 @@ class CpalRunner:
             # plus INFO log never touch narrative text — only source tag.
             register = self._register_bridge.current_register()
             destination = classify_and_record(impingement, voice_register=register)
-            destination_target = resolve_target(destination)
-            destination_role = resolve_role(destination)
+            route = resolve_route(destination)
+            destination_target = route.target_binding.target if route.target_binding else None
+            destination_role = route.target_binding.media_role if route.target_binding else None
+
+            if route.state == VoiceRouteState.BLOCKED:
+                record_drop(
+                    reason=route.reason_code,
+                    source=source,
+                    destination=destination.value,
+                    target=destination_target,
+                    media_role=destination_role,
+                    text=effect.narrative,
+                )
+                return
 
             # T0 visual signal
             self._production.produce_t0(

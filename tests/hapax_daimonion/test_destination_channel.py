@@ -3,9 +3,9 @@
 Covers :mod:`agents.hapax_daimonion.cpal.destination_channel`:
 
 * Rule-matrix for classification (sidechat / debug / TEXTMODE / default).
-* Target resolution (routing active → split sinks; routing off → legacy).
+* Target resolution through the semantic no-default-fallback router.
 * Prometheus counter increments per classified utterance.
-* Feature flag ``HAPAX_TTS_DESTINATION_ROUTING_ACTIVE`` toggles routing.
+* Feature flag ``HAPAX_TTS_DESTINATION_ROUTING_ACTIVE`` parsing remains stable.
 
 Each test is self-contained (no shared conftest fixtures) and constructs
 impingement-like objects inline. The Pydantic ``Impingement`` model is
@@ -16,7 +16,9 @@ concern.
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -34,10 +36,33 @@ from agents.hapax_daimonion.cpal.destination_channel import (
     classify_destination,
     is_routing_active,
     resolve_role,
+    resolve_route,
     resolve_target,
 )
 from shared.impingement import Impingement, ImpingementType
+from shared.voice_output_router import VoiceRouteState
 from shared.voice_register import VoiceRegister
+
+
+def _write_private_status(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "bridge_nodes_present": True,
+                "exact_target_present": True,
+                "fallback_policy": "no_default_fallback",
+                "operator_visible_reason": (
+                    "Exact private monitor target and fail-closed bridge are present."
+                ),
+                "reason_code": "exact_private_monitor_bound",
+                "sanitized": True,
+                "state": "ready",
+                "target_ref": "audio.yeti_monitor",
+            }
+        ),
+        encoding="utf-8",
+    )
+
 
 # --- Classification rule matrix ---------------------------------------------
 
@@ -136,34 +161,51 @@ class TestClassification:
 
 
 class TestTargetResolution:
-    def test_livestream_uses_env_target_when_routing_active(self, monkeypatch):
+    def test_livestream_ignores_legacy_env_target_when_routing_active(self, monkeypatch):
         monkeypatch.setenv(DEFAULT_TARGET_ENV, "hapax-livestream")
         monkeypatch.delenv(DESTINATION_ROUTING_ENV, raising=False)
-        assert resolve_target(DestinationChannel.LIVESTREAM) == "hapax-livestream"
+        assert resolve_target(DestinationChannel.LIVESTREAM) == "hapax-voice-fx-capture"
 
-    def test_livestream_falls_back_to_canonical_sink(self, monkeypatch):
+    def test_livestream_binds_to_policy_target_without_env(self, monkeypatch):
         monkeypatch.delenv(DEFAULT_TARGET_ENV, raising=False)
         monkeypatch.delenv(DESTINATION_ROUTING_ENV, raising=False)
-        assert resolve_target(DestinationChannel.LIVESTREAM) == LIVESTREAM_SINK
+        assert resolve_target(DestinationChannel.LIVESTREAM) == "hapax-voice-fx-capture"
 
-    def test_private_always_targets_private_sink_when_active(self, monkeypatch):
+    def test_private_targets_private_sink_when_exact_monitor_ready(self, monkeypatch, tmp_path):
         monkeypatch.setenv(DEFAULT_TARGET_ENV, "hapax-livestream")
         monkeypatch.delenv(DESTINATION_ROUTING_ENV, raising=False)
-        assert resolve_target(DestinationChannel.PRIVATE) == PRIVATE_SINK
+        status_path = tmp_path / "private-monitor-target.json"
+        _write_private_status(status_path)
 
-    def test_flag_off_forces_everything_to_default(self, monkeypatch):
+        result = resolve_route(DestinationChannel.PRIVATE, private_monitor_status_path=status_path)
+
+        assert result.state is VoiceRouteState.ACCEPTED
+        assert result.target_binding is not None
+        assert result.target_binding.target == PRIVATE_SINK
+
+    def test_flag_off_does_not_fallback_routes_to_default(self, monkeypatch, tmp_path):
         monkeypatch.setenv(DESTINATION_ROUTING_ENV, "0")
         monkeypatch.setenv(DEFAULT_TARGET_ENV, "some-legacy-sink")
-        assert resolve_target(DestinationChannel.LIVESTREAM) == "some-legacy-sink"
-        # Private collapses to legacy target too — that's the whole point
-        # of the kill-switch.
-        assert resolve_target(DestinationChannel.PRIVATE) == "some-legacy-sink"
+        assert resolve_target(DestinationChannel.LIVESTREAM) == "hapax-voice-fx-capture"
+        result = resolve_route(
+            DestinationChannel.PRIVATE,
+            private_monitor_status_path=tmp_path / "missing.json",
+        )
+        assert result.state is VoiceRouteState.BLOCKED
+        assert result.target_binding is not None
+        assert result.target_binding.target is None
 
-    def test_flag_off_without_target_returns_none(self, monkeypatch):
+    def test_flag_off_without_target_returns_no_default_for_private(self, monkeypatch, tmp_path):
         monkeypatch.setenv(DESTINATION_ROUTING_ENV, "0")
         monkeypatch.delenv(DEFAULT_TARGET_ENV, raising=False)
-        assert resolve_target(DestinationChannel.LIVESTREAM) is None
-        assert resolve_target(DestinationChannel.PRIVATE) is None
+        assert resolve_target(DestinationChannel.LIVESTREAM) == "hapax-voice-fx-capture"
+        result = resolve_route(
+            DestinationChannel.PRIVATE,
+            private_monitor_status_path=tmp_path / "missing.json",
+        )
+        assert result.state is VoiceRouteState.BLOCKED
+        assert result.target_binding is not None
+        assert result.target_binding.target is None
 
     @pytest.mark.parametrize(
         "raw,expected_active",

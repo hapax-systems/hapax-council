@@ -1893,14 +1893,12 @@ class ConversationPipeline:
             try:
                 audio_output.write(pcm, **kwargs)
             except TypeError:
-                # Older audio-output shim that doesn't accept target= /
-                # media_role=; fall through to the default sink/role
-                # rather than dropping.
-                log.debug(
-                    "audio output lacks target=/media_role= kwargs; falling back to default sink",
+                # A semantic route was explicitly requested. If the output
+                # shim cannot honor it, dropping is safer than default audio.
+                log.warning(
+                    "audio output lacks target=/media_role= kwargs; dropping routed audio",
                     exc_info=True,
                 )
-                audio_output.write(pcm)
         except Exception:
             pass
 
