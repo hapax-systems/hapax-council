@@ -58,6 +58,10 @@ class SurfaceFamily(StrEnum):
     AFFORDANCE_RECORD = "affordance_record"
     TOOL_SCHEMA = "tool_schema"
     MCP_TOOL = "mcp_tool"
+    BROWSER_SURFACE = "browser_surface"
+    FILE = "file"
+    OBSIDIAN_NOTE = "obsidian_note"
+    COMMAND_OUTPUT = "command_output"
     RUNTIME_SERVICE = "runtime_service"
     STATE_FILE = "state_file"
     DEVICE = "device"
@@ -699,6 +703,137 @@ def build_seed_inventory() -> CapabilityClassificationInventory:
             existing_record_refs=["mcp_tool:context7.query_docs"],
             witness_contract_id="witness.mcp.context7.cited_result",
             projection_name="mcp.context7_docs",
+        ),
+        _row(
+            classification_id="classification.browser.playwright_state",
+            row_id="capability.browser.playwright_state",
+            surface_id="browser_surface:playwright.current_page",
+            display_name="Playwright browser read state",
+            surface_family=SurfaceFamily.BROWSER_SURFACE,
+            realm=Realm.HYBRID,
+            direction=Direction.OBSERVE,
+            effect_type=EffectType.SENSE,
+            medium=Medium.TEXTUAL,
+            semantic_description=(
+                "Observe current browser page state as source-conditioned evidence with URL, "
+                "snapshot, freshness, and tool-error witnesses."
+            ),
+            producer="mcp.playwright.browser_snapshot",
+            consumer_refs=["consumer:codex_research_context", "consumer:wcs_browser_file_surface"],
+            concrete_interface="mcp:playwright.browser_snapshot",
+            availability_probe=AvailabilityProbe(
+                probe_id="probe.browser.playwright_state",
+                kind=AvailabilityProbeKind.REMOTE_QUERY,
+                expected_state=AvailabilityState.AVAILABLE,
+                witness_ref="mcp:playwright.browser_snapshot.result",
+                stale_after_s=300,
+            ),
+            privacy_class=PrivacyLabel.PUBLIC_SAFE,
+            consent_policy=ConsentLabel.OPERATOR_SELF,
+            recruitment_family="browser_state_read",
+            public_claim_policy=PublicClaimPolicy.PUBLIC_GATE_REQUIRED,
+            can_acquire_sources=True,
+            existing_record_refs=["mcp_tool:playwright.browser_snapshot"],
+            witness_contract_id="witness.browser.playwright_snapshot_cited",
+            projection_name="browser.playwright_state",
+        ),
+        _row(
+            classification_id="classification.file.local_repo_read",
+            row_id="capability.file.local_repo_read",
+            surface_id="file:local_repo_read",
+            display_name="Local repository file read",
+            surface_family=SurfaceFamily.FILE,
+            realm=Realm.LOCAL,
+            direction=Direction.RECALL,
+            effect_type=EffectType.RECALL,
+            medium=Medium.TEXTUAL,
+            semantic_description=(
+                "Recall local repository files as supplied evidence only when path, hash, "
+                "mtime, and privacy classification are captured."
+            ),
+            producer="filesystem",
+            consumer_refs=["consumer:codex_research_context", "consumer:wcs_browser_file_surface"],
+            concrete_interface="file:repo",
+            availability_probe=AvailabilityProbe(
+                probe_id="probe.file.local_repo_read",
+                kind=AvailabilityProbeKind.STATE_MTIME,
+                expected_state=AvailabilityState.PRIVATE_ONLY,
+                witness_ref="file:repo:path_hash_mtime",
+                stale_after_s=900,
+            ),
+            privacy_class=PrivacyLabel.OPERATOR_VISIBLE,
+            consent_policy=ConsentLabel.OPERATOR_SELF,
+            recruitment_family="local_file_read",
+            public_claim_policy=PublicClaimPolicy.NO_PUBLIC_CLAIM,
+            supplied_evidence_only=True,
+            existing_record_refs=["wcs:file.obsidian_vault"],
+            witness_contract_id="witness.file.local_repo_path_hash_mtime",
+            projection_name="file.local_repo_read",
+        ),
+        _row(
+            classification_id="classification.obsidian.vault_note_read",
+            row_id="capability.obsidian.vault_note_read",
+            surface_id="obsidian_note:vault_note_read",
+            display_name="Obsidian vault note read",
+            surface_family=SurfaceFamily.OBSIDIAN_NOTE,
+            realm=Realm.LOCAL,
+            direction=Direction.RECALL,
+            effect_type=EffectType.RECALL,
+            medium=Medium.TEXTUAL,
+            semantic_description=(
+                "Recall Obsidian task and research notes as private supplied evidence with "
+                "path, hash, mtime, and vault privacy witnesses."
+            ),
+            producer="obsidian_vault",
+            consumer_refs=["consumer:codex_research_context", "consumer:wcs_browser_file_surface"],
+            concrete_interface="obsidian:vault_path",
+            availability_probe=AvailabilityProbe(
+                probe_id="probe.obsidian.vault_note_read",
+                kind=AvailabilityProbeKind.STATE_MTIME,
+                expected_state=AvailabilityState.PRIVATE_ONLY,
+                witness_ref="obsidian:vault_path_hash_mtime",
+                stale_after_s=900,
+            ),
+            privacy_class=PrivacyLabel.PRIVATE,
+            consent_policy=ConsentLabel.OPERATOR_SELF,
+            recruitment_family="obsidian_note_read",
+            public_claim_policy=PublicClaimPolicy.NO_PUBLIC_CLAIM,
+            supplied_evidence_only=True,
+            existing_record_refs=["wcs:file.obsidian_vault"],
+            witness_contract_id="witness.obsidian.vault_note_path_hash_mtime",
+            projection_name="obsidian.vault_note_read",
+        ),
+        _row(
+            classification_id="classification.command.output_reference",
+            row_id="capability.command.output_reference",
+            surface_id="command_output:local_command",
+            display_name="Local command output reference",
+            surface_family=SurfaceFamily.COMMAND_OUTPUT,
+            realm=Realm.LOCAL,
+            direction=Direction.RECALL,
+            effect_type=EffectType.RECALL,
+            medium=Medium.TEXTUAL,
+            semantic_description=(
+                "Recall command output as execution evidence only when command, exit status, "
+                "captured output reference, and replay hash are preserved."
+            ),
+            producer="codex.exec_command",
+            consumer_refs=["consumer:codex_research_context", "consumer:wcs_browser_file_surface"],
+            concrete_interface="command:local_shell_output",
+            availability_probe=AvailabilityProbe(
+                probe_id="probe.command.output_reference",
+                kind=AvailabilityProbeKind.STATIC_RECORD,
+                expected_state=AvailabilityState.PRIVATE_ONLY,
+                witness_ref="command:output_ref_hash_exit_status",
+                stale_after_s=None,
+            ),
+            privacy_class=PrivacyLabel.OPERATOR_VISIBLE,
+            consent_policy=ConsentLabel.OPERATOR_SELF,
+            recruitment_family="command_output_reference",
+            public_claim_policy=PublicClaimPolicy.EVIDENCE_BOUND_ONLY,
+            existing_record_refs=["wcs:browser.mcp_tool_read"],
+            witness_contract_id="witness.command.output_ref_hash_exit_status",
+            projection_name="command.output_reference",
         ),
         _row(
             classification_id="classification.runtime.logos_api_health",
@@ -1749,8 +1884,15 @@ def _row(
         [witness_contract_id] if witness_contract_id else [f"witness.not_recruitable.{row_id}"]
     )
     interface_refs = [concrete_interface]
-    state_refs = [surface_id] if surface_family is SurfaceFamily.STATE_FILE else []
-    if surface_family is SurfaceFamily.STATE_FILE:
+    state_surface_families = {
+        SurfaceFamily.STATE_FILE,
+        SurfaceFamily.FILE,
+        SurfaceFamily.OBSIDIAN_NOTE,
+        SurfaceFamily.COMMAND_OUTPUT,
+        SurfaceFamily.BROWSER_SURFACE,
+    }
+    state_refs = [surface_id] if surface_family in state_surface_families else []
+    if surface_family in state_surface_families:
         state_ref = surface_id
     else:
         state_ref = None
@@ -1910,6 +2052,10 @@ def _domain_for_family(family: SurfaceFamily) -> str:
         SurfaceFamily.MODEL_PROVIDER,
         SurfaceFamily.SEARCH_PROVIDER,
         SurfaceFamily.MCP_TOOL,
+        SurfaceFamily.BROWSER_SURFACE,
+        SurfaceFamily.FILE,
+        SurfaceFamily.OBSIDIAN_NOTE,
+        SurfaceFamily.COMMAND_OUTPUT,
     }:
         return "knowledge"
     if family in {

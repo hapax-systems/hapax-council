@@ -1,0 +1,432 @@
+{
+  "$defs": {
+    "PrivacyLabel": {
+      "enum": [
+        "private",
+        "operator_visible",
+        "person_adjacent",
+        "public_safe",
+        "public_broadcast"
+      ],
+      "title": "PrivacyLabel",
+      "type": "string"
+    },
+    "PublicScope": {
+      "enum": [
+        "public_safe",
+        "public_forbidden",
+        "private"
+      ],
+      "title": "PublicScope",
+      "type": "string"
+    },
+    "RightsLabel": {
+      "enum": [
+        "unknown",
+        "operator_owned",
+        "platform_cleared",
+        "permissioned",
+        "third_party_unclear",
+        "blocked"
+      ],
+      "title": "RightsLabel",
+      "type": "string"
+    },
+    "SourceAvailabilityState": {
+      "enum": [
+        "available",
+        "missing",
+        "stale",
+        "permission_blocked",
+        "private_only",
+        "tool_unavailable",
+        "malformed",
+        "blocked"
+      ],
+      "title": "SourceAvailabilityState",
+      "type": "string"
+    },
+    "SourceEvidenceKind": {
+      "enum": [
+        "source_read",
+        "freshness",
+        "tool_response",
+        "tool_error",
+        "citation",
+        "public_url",
+        "path_hash_mtime",
+        "command_exit_status",
+        "permission_witness"
+      ],
+      "title": "SourceEvidenceKind",
+      "type": "string"
+    },
+    "SourceSurfaceKind": {
+      "enum": [
+        "browser_state",
+        "mcp_tool",
+        "tool_schema",
+        "local_file",
+        "obsidian_vault",
+        "command_output",
+        "public_source"
+      ],
+      "title": "SourceSurfaceKind",
+      "type": "string"
+    },
+    "SourceSurfaceRecord": {
+      "additionalProperties": false,
+      "description": "One browser/MCP/file read surface and its claim ceiling.",
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "surface_id": {
+          "minLength": 1,
+          "title": "Surface Id",
+          "type": "string"
+        },
+        "display_name": {
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "surface_kind": {
+          "$ref": "#/$defs/SourceSurfaceKind"
+        },
+        "classification_row_id": {
+          "minLength": 1,
+          "title": "Classification Row Id",
+          "type": "string"
+        },
+        "wcs_capability_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wcs Capability Id"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "concrete_interface": {
+          "minLength": 1,
+          "title": "Concrete Interface",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "evidence_kinds": {
+          "items": {
+            "$ref": "#/$defs/SourceEvidenceKind"
+          },
+          "minItems": 1,
+          "title": "Evidence Kinds",
+          "type": "array"
+        },
+        "witness_probe_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Witness Probe Ids",
+          "type": "array"
+        },
+        "availability_state": {
+          "$ref": "#/$defs/SourceAvailabilityState"
+        },
+        "public_scope": {
+          "$ref": "#/$defs/PublicScope"
+        },
+        "privacy_label": {
+          "$ref": "#/$defs/PrivacyLabel"
+        },
+        "rights_label": {
+          "$ref": "#/$defs/RightsLabel"
+        },
+        "public_claim_requested": {
+          "default": false,
+          "title": "Public Claim Requested",
+          "type": "boolean"
+        },
+        "grounding_gate_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grounding Gate Ref"
+        },
+        "citation_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Citation Refs",
+          "type": "array"
+        },
+        "raw_hash_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Hash Ref"
+        },
+        "replay_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Replay Ref"
+        },
+        "blocked_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocked Reasons",
+          "type": "array"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "surface_id",
+        "display_name",
+        "surface_kind",
+        "classification_row_id",
+        "producer",
+        "concrete_interface",
+        "source_refs",
+        "evidence_kinds",
+        "witness_probe_ids",
+        "availability_state",
+        "public_scope",
+        "privacy_label",
+        "rights_label"
+      ],
+      "title": "SourceSurfaceRecord",
+      "type": "object"
+    },
+    "SourceWitnessKind": {
+      "enum": [
+        "source_read_happened",
+        "source_fresh_enough",
+        "tool_unavailable",
+        "file_path_not_found",
+        "permission_blocked"
+      ],
+      "title": "SourceWitnessKind",
+      "type": "string"
+    },
+    "SourceWitnessProbe": {
+      "additionalProperties": false,
+      "description": "Evidence that a source-read obligation was satisfied or failed.",
+      "properties": {
+        "probe_id": {
+          "pattern": "^probe\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+          "title": "Probe Id",
+          "type": "string"
+        },
+        "surface_id": {
+          "minLength": 1,
+          "title": "Surface Id",
+          "type": "string"
+        },
+        "witness_kind": {
+          "$ref": "#/$defs/SourceWitnessKind"
+        },
+        "result": {
+          "$ref": "#/$defs/SourceWitnessResult"
+        },
+        "observed_at": {
+          "title": "Observed At",
+          "type": "string"
+        },
+        "evidence_ref": {
+          "minLength": 1,
+          "title": "Evidence Ref",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "freshness_ttl_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Freshness Ttl S"
+        },
+        "blocked_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocked Reason"
+        }
+      },
+      "required": [
+        "probe_id",
+        "surface_id",
+        "witness_kind",
+        "result",
+        "observed_at",
+        "evidence_ref",
+        "source_refs"
+      ],
+      "title": "SourceWitnessProbe",
+      "type": "object"
+    },
+    "SourceWitnessResult": {
+      "enum": [
+        "satisfied",
+        "blocked"
+      ],
+      "title": "SourceWitnessResult",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Canonical fixture packet for browser/MCP/file WCS read surfaces.",
+  "properties": {
+    "$schema": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "$Schema"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "fixture_set_id": {
+      "title": "Fixture Set Id",
+      "type": "string"
+    },
+    "generated_from": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Generated From",
+      "type": "array"
+    },
+    "declared_at": {
+      "title": "Declared At",
+      "type": "string"
+    },
+    "witness_probes": {
+      "items": {
+        "$ref": "#/$defs/SourceWitnessProbe"
+      },
+      "minItems": 1,
+      "title": "Witness Probes",
+      "type": "array"
+    },
+    "surfaces": {
+      "items": {
+        "$ref": "#/$defs/SourceSurfaceRecord"
+      },
+      "minItems": 1,
+      "title": "Surfaces",
+      "type": "array"
+    },
+    "fail_closed_policy": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "title": "Fail Closed Policy",
+      "type": "object"
+    }
+  },
+  "required": [
+    "fixture_set_id",
+    "generated_from",
+    "declared_at",
+    "witness_probes",
+    "surfaces",
+    "fail_closed_policy"
+  ],
+  "title": "WCSBrowserMCPFileSurface",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-required_surface_kinds": [
+    "browser_state",
+    "command_output",
+    "local_file",
+    "mcp_tool",
+    "obsidian_vault",
+    "public_source",
+    "tool_schema"
+  ],
+  "x-required_availability_states": [
+    "available",
+    "missing",
+    "permission_blocked",
+    "private_only",
+    "stale",
+    "tool_unavailable"
+  ],
+  "x-required_witness_kinds": [
+    "file_path_not_found",
+    "source_fresh_enough",
+    "source_read_happened",
+    "tool_unavailable"
+  ]
+}

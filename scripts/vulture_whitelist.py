@@ -161,6 +161,16 @@ from shared.tier_ranking_bracket_engine import (
     emit_deterministic_boundaries,
 )
 from shared.trend_current_event_gate import evaluate_candidate, validate_policy
+from shared.wcs_browser_mcp_file_surface import (
+    SourceSurfaceRecord,
+    SourceWitnessProbe,
+    WCSBrowserMCPFileSurfaceFixtureSet,
+    evaluate_surface,
+    load_wcs_browser_mcp_file_surface_fixtures,
+)
+from shared.wcs_browser_mcp_file_surface import (
+    schema as wcs_browser_mcp_file_surface_schema,
+)
 from shared.wcs_witness_probe_runtime import WCSWitnessProbeFixtureSet, WitnessProbeRecord
 from shared.world_capability_surface import (
     EvidenceEnvelopeRequirements,
@@ -423,6 +433,19 @@ CapabilityClassificationInventory.wcs_projection_payloads
 capability_classification_rows_by_id
 validate_daimonion_tool_affordance_parity
 build_seed_inventory
+
+# Browser/MCP/file source-read helpers are the public contract for downstream
+# private dry-run loops and source-evidence WCS gates. Pydantic invokes
+# validators dynamically; downstream tasks consume the loader/evaluator after
+# this fixture contract lands.
+SourceWitnessProbe._validate_witness_result
+SourceSurfaceRecord._validate_surface_contract
+WCSBrowserMCPFileSurfaceFixtureSet._validate_fixture_set_contract
+WCSBrowserMCPFileSurfaceFixtureSet.require_surface
+WCSBrowserMCPFileSurfaceFixtureSet.evaluate_all
+evaluate_surface
+load_wcs_browser_mcp_file_surface_fixtures
+wcs_browser_mcp_file_surface_schema
 
 # Narration triad validators are invoked dynamically by Pydantic while the
 # autonomous narration ledger validates open/closed semantic-outcome policy.

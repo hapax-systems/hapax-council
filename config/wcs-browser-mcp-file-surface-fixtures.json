@@ -1,0 +1,536 @@
+{
+  "$schema": "../schemas/wcs-browser-mcp-file-surface.schema.json",
+  "schema_version": 1,
+  "fixture_set_id": "wcs-browser-mcp-file-surface-fixtures-v1",
+  "generated_from": [
+    "vault-task:wcs-browser-mcp-file-surface-slice",
+    "vault-spec:2026-04-29-semantic-substrate-registry-generalization",
+    "vault-spec:2026-04-29-capability-grounding-contract-envelope",
+    "repo:config/capability-classification-inventory.json",
+    "repo:config/world-capability-registry.json"
+  ],
+  "declared_at": "2026-04-30T06:10:00Z",
+  "witness_probes": [
+    {
+      "probe_id": "probe.browser.playwright.page_read",
+      "surface_id": "browser.playwright.current_page",
+      "witness_kind": "source_read_happened",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:01Z",
+      "evidence_ref": "mcp:playwright.browser_snapshot#result",
+      "source_refs": [
+        "classification:capability.browser.playwright_state",
+        "wcs:browser.mcp_tool_read",
+        "url:https://example.invalid/public-page"
+      ],
+      "freshness_ttl_s": null,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.browser.playwright.page_fresh",
+      "surface_id": "browser.playwright.current_page",
+      "witness_kind": "source_fresh_enough",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:01Z",
+      "evidence_ref": "freshness:browser.playwright.current_page#age=1s",
+      "source_refs": [
+        "mcp:playwright.browser_snapshot#result"
+      ],
+      "freshness_ttl_s": 300,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.mcp.context7.docs_read",
+      "surface_id": "mcp.context7.docs",
+      "witness_kind": "source_read_happened",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:02Z",
+      "evidence_ref": "mcp:context7.query_docs#result",
+      "source_refs": [
+        "classification:capability.mcp.context7_docs",
+        "mcp:context7.query_docs"
+      ],
+      "freshness_ttl_s": null,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.mcp.context7.docs_fresh",
+      "surface_id": "mcp.context7.docs",
+      "witness_kind": "source_fresh_enough",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:02Z",
+      "evidence_ref": "freshness:mcp.context7.docs#age=2s",
+      "source_refs": [
+        "mcp:context7.query_docs#result"
+      ],
+      "freshness_ttl_s": 1800,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.tool.scene_state.read",
+      "surface_id": "tool.query_scene_state.private",
+      "witness_kind": "source_read_happened",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:03Z",
+      "evidence_ref": "function_schema:query_scene_state#registered",
+      "source_refs": [
+        "classification:capability.tool.query_scene_state"
+      ],
+      "freshness_ttl_s": null,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.tool.scene_state.fresh",
+      "surface_id": "tool.query_scene_state.private",
+      "witness_kind": "source_fresh_enough",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:03Z",
+      "evidence_ref": "freshness:function_schema.query_scene_state#age=3s",
+      "source_refs": [
+        "function_schema:query_scene_state#registered"
+      ],
+      "freshness_ttl_s": 5,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.file.local_repo.not_found",
+      "surface_id": "file.local_repo.missing",
+      "witness_kind": "file_path_not_found",
+      "result": "blocked",
+      "observed_at": "2026-04-30T06:00:04Z",
+      "evidence_ref": "file:repo/missing-evidence.md#not_found",
+      "source_refs": [
+        "classification:capability.file.local_repo_read",
+        "wcs:file.obsidian_vault"
+      ],
+      "freshness_ttl_s": null,
+      "blocked_reason": "file_path_not_found"
+    },
+    {
+      "probe_id": "probe.obsidian.active_task.read",
+      "surface_id": "obsidian.active_task.private_note",
+      "witness_kind": "source_read_happened",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:05Z",
+      "evidence_ref": "obsidian:active_task#path_hash_mtime",
+      "source_refs": [
+        "classification:capability.obsidian.vault_note_read",
+        "wcs:file.obsidian_vault"
+      ],
+      "freshness_ttl_s": null,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.obsidian.active_task.fresh",
+      "surface_id": "obsidian.active_task.private_note",
+      "witness_kind": "source_fresh_enough",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:05Z",
+      "evidence_ref": "freshness:obsidian.active_task#age=5s",
+      "source_refs": [
+        "obsidian:active_task#path_hash_mtime"
+      ],
+      "freshness_ttl_s": 900,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.command.diff_check.read",
+      "surface_id": "command.git_diff_check.stale",
+      "witness_kind": "source_read_happened",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T05:40:00Z",
+      "evidence_ref": "command:git_diff_check#exit0",
+      "source_refs": [
+        "classification:capability.command.output_reference"
+      ],
+      "freshness_ttl_s": null,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.command.diff_check.stale",
+      "surface_id": "command.git_diff_check.stale",
+      "witness_kind": "source_fresh_enough",
+      "result": "blocked",
+      "observed_at": "2026-04-30T06:00:06Z",
+      "evidence_ref": "freshness:command.git_diff_check#age=1200s",
+      "source_refs": [
+        "command:git_diff_check#exit0"
+      ],
+      "freshness_ttl_s": 300,
+      "blocked_reason": "command_output_stale"
+    },
+    {
+      "probe_id": "probe.public_source.tavily.read",
+      "surface_id": "public_source.tavily.result",
+      "witness_kind": "source_read_happened",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:07Z",
+      "evidence_ref": "mcp:tavily.search#result",
+      "source_refs": [
+        "classification:capability.search.tavily_source_acquisition",
+        "url:https://example.invalid/source"
+      ],
+      "freshness_ttl_s": null,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.public_source.tavily.fresh",
+      "surface_id": "public_source.tavily.result",
+      "witness_kind": "source_fresh_enough",
+      "result": "satisfied",
+      "observed_at": "2026-04-30T06:00:07Z",
+      "evidence_ref": "freshness:public_source.tavily.result#age=7s",
+      "source_refs": [
+        "mcp:tavily.search#result"
+      ],
+      "freshness_ttl_s": 900,
+      "blocked_reason": null
+    },
+    {
+      "probe_id": "probe.mcp.context7.unavailable",
+      "surface_id": "mcp.context7.unavailable",
+      "witness_kind": "tool_unavailable",
+      "result": "blocked",
+      "observed_at": "2026-04-30T06:00:08Z",
+      "evidence_ref": "mcp:context7.query_docs#error",
+      "source_refs": [
+        "classification:capability.mcp.context7_docs"
+      ],
+      "freshness_ttl_s": null,
+      "blocked_reason": "tool_unavailable"
+    },
+    {
+      "probe_id": "probe.file.private.permission_blocked",
+      "surface_id": "file.private.permission_blocked",
+      "witness_kind": "permission_blocked",
+      "result": "blocked",
+      "observed_at": "2026-04-30T06:00:09Z",
+      "evidence_ref": "file:private/secret.md#permission_denied",
+      "source_refs": [
+        "classification:capability.file.local_repo_read"
+      ],
+      "freshness_ttl_s": null,
+      "blocked_reason": "source_permission_blocked"
+    }
+  ],
+  "surfaces": [
+    {
+      "schema_version": 1,
+      "surface_id": "browser.playwright.current_page",
+      "display_name": "Playwright current page read",
+      "surface_kind": "browser_state",
+      "classification_row_id": "capability.browser.playwright_state",
+      "wcs_capability_id": "browser.mcp_tool_read",
+      "producer": "mcp.playwright.browser_snapshot",
+      "concrete_interface": "mcp:playwright.browser_snapshot",
+      "source_refs": [
+        "mcp:playwright.browser_snapshot#result",
+        "url:https://example.invalid/public-page"
+      ],
+      "evidence_kinds": [
+        "source_read",
+        "freshness",
+        "public_url",
+        "citation"
+      ],
+      "witness_probe_ids": [
+        "probe.browser.playwright.page_read",
+        "probe.browser.playwright.page_fresh"
+      ],
+      "availability_state": "available",
+      "public_scope": "public_safe",
+      "privacy_label": "public_safe",
+      "rights_label": "permissioned",
+      "public_claim_requested": true,
+      "grounding_gate_ref": "gate:browser.playwright.current_page#pass",
+      "citation_refs": [
+        "citation:browser.playwright.current_page#1"
+      ],
+      "raw_hash_ref": "hash:browser.playwright.current_page",
+      "replay_ref": "replay:browser.playwright.current_page",
+      "blocked_reasons": [],
+      "notes": "A fresh browser read can support public claims only because source, citation, rights, and gate refs are present."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "mcp.context7.docs",
+      "display_name": "Context7 documentation result",
+      "surface_kind": "mcp_tool",
+      "classification_row_id": "capability.mcp.context7_docs",
+      "wcs_capability_id": "browser.mcp_tool_read",
+      "producer": "mcp.context7.query_docs",
+      "concrete_interface": "mcp:context7.query_docs",
+      "source_refs": [
+        "mcp:context7.query_docs#result"
+      ],
+      "evidence_kinds": [
+        "source_read",
+        "freshness",
+        "tool_response",
+        "citation"
+      ],
+      "witness_probe_ids": [
+        "probe.mcp.context7.docs_read",
+        "probe.mcp.context7.docs_fresh"
+      ],
+      "availability_state": "available",
+      "public_scope": "public_safe",
+      "privacy_label": "public_safe",
+      "rights_label": "permissioned",
+      "public_claim_requested": true,
+      "grounding_gate_ref": "gate:mcp.context7.docs#pass",
+      "citation_refs": [
+        "citation:mcp.context7.docs#1"
+      ],
+      "raw_hash_ref": "hash:mcp.context7.docs",
+      "replay_ref": "replay:mcp.context7.docs",
+      "blocked_reasons": [],
+      "notes": "Context7 is evidence-bound documentation evidence, not standalone public-claim authority."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "tool.query_scene_state.private",
+      "display_name": "Private scene-state tool schema",
+      "surface_kind": "tool_schema",
+      "classification_row_id": "capability.tool.query_scene_state",
+      "wcs_capability_id": "browser.mcp_tool_read",
+      "producer": "agents.hapax_daimonion.tools.TOOL_SCHEMAS",
+      "concrete_interface": "function_schema:query_scene_state",
+      "source_refs": [
+        "function_schema:query_scene_state#registered"
+      ],
+      "evidence_kinds": [
+        "source_read",
+        "freshness",
+        "tool_response"
+      ],
+      "witness_probe_ids": [
+        "probe.tool.scene_state.read",
+        "probe.tool.scene_state.fresh"
+      ],
+      "availability_state": "private_only",
+      "public_scope": "private",
+      "privacy_label": "operator_visible",
+      "rights_label": "operator_owned",
+      "public_claim_requested": true,
+      "grounding_gate_ref": null,
+      "citation_refs": [],
+      "raw_hash_ref": "hash:tool.query_scene_state.private",
+      "replay_ref": null,
+      "blocked_reasons": [
+        "private_tool_schema_only"
+      ],
+      "notes": "Tool registration can support private evidence that the tool exists; it cannot publish scene facts."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "file.local_repo.missing",
+      "display_name": "Missing local repository file",
+      "surface_kind": "local_file",
+      "classification_row_id": "capability.file.local_repo_read",
+      "wcs_capability_id": "file.obsidian_vault",
+      "producer": "filesystem",
+      "concrete_interface": "file:repo/missing-evidence.md",
+      "source_refs": [
+        "file:repo/missing-evidence.md"
+      ],
+      "evidence_kinds": [
+        "path_hash_mtime"
+      ],
+      "witness_probe_ids": [
+        "probe.file.local_repo.not_found"
+      ],
+      "availability_state": "missing",
+      "public_scope": "private",
+      "privacy_label": "operator_visible",
+      "rights_label": "operator_owned",
+      "public_claim_requested": false,
+      "grounding_gate_ref": null,
+      "citation_refs": [],
+      "raw_hash_ref": null,
+      "replay_ref": null,
+      "blocked_reasons": [
+        "file_path_not_found"
+      ],
+      "notes": "Missing paths stay diagnostic and fail closed."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "obsidian.active_task.private_note",
+      "display_name": "Private Obsidian task note",
+      "surface_kind": "obsidian_vault",
+      "classification_row_id": "capability.obsidian.vault_note_read",
+      "wcs_capability_id": "file.obsidian_vault",
+      "producer": "obsidian_vault",
+      "concrete_interface": "obsidian:active_task",
+      "source_refs": [
+        "obsidian:active_task#path_hash_mtime"
+      ],
+      "evidence_kinds": [
+        "source_read",
+        "freshness",
+        "path_hash_mtime"
+      ],
+      "witness_probe_ids": [
+        "probe.obsidian.active_task.read",
+        "probe.obsidian.active_task.fresh"
+      ],
+      "availability_state": "private_only",
+      "public_scope": "private",
+      "privacy_label": "private",
+      "rights_label": "operator_owned",
+      "public_claim_requested": true,
+      "grounding_gate_ref": "gate:obsidian.active_task.private_note#private_only",
+      "citation_refs": [],
+      "raw_hash_ref": "hash:obsidian.active_task.private_note",
+      "replay_ref": null,
+      "blocked_reasons": [
+        "vault_private_only"
+      ],
+      "notes": "Vault evidence can support private decisions, not public claims by default."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "command.git_diff_check.stale",
+      "display_name": "Stale git diff check output",
+      "surface_kind": "command_output",
+      "classification_row_id": "capability.command.output_reference",
+      "wcs_capability_id": "browser.mcp_tool_read",
+      "producer": "codex.exec_command",
+      "concrete_interface": "command:git diff --check",
+      "source_refs": [
+        "command:git_diff_check#exit0"
+      ],
+      "evidence_kinds": [
+        "source_read",
+        "command_exit_status"
+      ],
+      "witness_probe_ids": [
+        "probe.command.diff_check.read",
+        "probe.command.diff_check.stale"
+      ],
+      "availability_state": "stale",
+      "public_scope": "private",
+      "privacy_label": "operator_visible",
+      "rights_label": "operator_owned",
+      "public_claim_requested": false,
+      "grounding_gate_ref": null,
+      "citation_refs": [],
+      "raw_hash_ref": "hash:command.git_diff_check.stale",
+      "replay_ref": "replay:command.git_diff_check.stale",
+      "blocked_reasons": [
+        "command_output_stale"
+      ],
+      "notes": "A successful command remains stale when its freshness witness fails."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "public_source.tavily.result",
+      "display_name": "Tavily cited public source result",
+      "surface_kind": "public_source",
+      "classification_row_id": "capability.search.tavily_source_acquisition",
+      "wcs_capability_id": "browser.mcp_tool_read",
+      "producer": "mcp.tavily.search",
+      "concrete_interface": "mcp:tavily.search",
+      "source_refs": [
+        "mcp:tavily.search#result",
+        "url:https://example.invalid/source"
+      ],
+      "evidence_kinds": [
+        "source_read",
+        "freshness",
+        "public_url",
+        "citation"
+      ],
+      "witness_probe_ids": [
+        "probe.public_source.tavily.read",
+        "probe.public_source.tavily.fresh"
+      ],
+      "availability_state": "available",
+      "public_scope": "public_safe",
+      "privacy_label": "public_safe",
+      "rights_label": "permissioned",
+      "public_claim_requested": true,
+      "grounding_gate_ref": "gate:public_source.tavily.result#pass",
+      "citation_refs": [
+        "citation:public_source.tavily.result#1"
+      ],
+      "raw_hash_ref": "hash:public_source.tavily.result",
+      "replay_ref": "replay:public_source.tavily.result",
+      "blocked_reasons": [],
+      "notes": "Public source rows still require cited source acquisition and a grounding gate."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "mcp.context7.unavailable",
+      "display_name": "Unavailable Context7 tool result",
+      "surface_kind": "mcp_tool",
+      "classification_row_id": "capability.mcp.context7_docs",
+      "wcs_capability_id": "browser.mcp_tool_read",
+      "producer": "mcp.context7.query_docs",
+      "concrete_interface": "mcp:context7.query_docs",
+      "source_refs": [
+        "mcp:context7.query_docs#error"
+      ],
+      "evidence_kinds": [
+        "tool_error"
+      ],
+      "witness_probe_ids": [
+        "probe.mcp.context7.unavailable"
+      ],
+      "availability_state": "tool_unavailable",
+      "public_scope": "public_safe",
+      "privacy_label": "public_safe",
+      "rights_label": "permissioned",
+      "public_claim_requested": true,
+      "grounding_gate_ref": null,
+      "citation_refs": [],
+      "raw_hash_ref": null,
+      "replay_ref": null,
+      "blocked_reasons": [
+        "tool_unavailable"
+      ],
+      "notes": "Tool unavailable evidence emits a blocker rather than disappearing."
+    },
+    {
+      "schema_version": 1,
+      "surface_id": "file.private.permission_blocked",
+      "display_name": "Permission-blocked private file",
+      "surface_kind": "local_file",
+      "classification_row_id": "capability.file.local_repo_read",
+      "wcs_capability_id": "file.obsidian_vault",
+      "producer": "filesystem",
+      "concrete_interface": "file:private/secret.md",
+      "source_refs": [
+        "file:private/secret.md#permission_denied"
+      ],
+      "evidence_kinds": [
+        "path_hash_mtime",
+        "permission_witness"
+      ],
+      "witness_probe_ids": [
+        "probe.file.private.permission_blocked"
+      ],
+      "availability_state": "permission_blocked",
+      "public_scope": "private",
+      "privacy_label": "private",
+      "rights_label": "blocked",
+      "public_claim_requested": true,
+      "grounding_gate_ref": null,
+      "citation_refs": [],
+      "raw_hash_ref": null,
+      "replay_ref": null,
+      "blocked_reasons": [
+        "source_permission_blocked"
+      ],
+      "notes": "Permission-blocked files remain diagnostic only."
+    }
+  ],
+  "fail_closed_policy": {
+    "path_or_url_name_grants_public_claim": false,
+    "missing_source_read_allows_claim": false,
+    "stale_source_allows_claim": false,
+    "private_vault_surface_public_by_default": false,
+    "tool_success_is_truth": false
+  }
+}
