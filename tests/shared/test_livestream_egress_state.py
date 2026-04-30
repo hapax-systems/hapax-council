@@ -8,6 +8,12 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.content_source_provenance_egress import (
+    BroadcastManifestAsset,
+    EgressKillSwitchState,
+    EgressOffender,
+    build_broadcast_manifest,
+)
 from shared.livestream_egress_state import (
     EgressState,
     FloorState,
@@ -29,6 +35,8 @@ def _paths(root: Path) -> LivestreamEgressPaths:
         stream_mode=root / "stream-mode",
         working_mode=root / "working-mode",
         broadcast_audio_health=root / "audio-safe-for-broadcast.json",
+        broadcast_manifest=root / "broadcast-manifest.json",
+        egress_kill_switch=root / "egress-kill-switch.json",
         consent_state=root / "consent-state.txt",
         perception_state=root / "perception-state.json",
         monetization_flagged_root=root / "monetization-flagged",
@@ -73,6 +81,60 @@ def _audio_health_payload(*, safe: bool = True) -> dict:
     }
 
 
+def _write_manifest(
+    paths: LivestreamEgressPaths,
+    *,
+    now: float,
+    age_s: float = 0.0,
+    audio_assets: tuple[BroadcastManifestAsset, ...] | None = None,
+    visual_assets: tuple[BroadcastManifestAsset, ...] | None = None,
+) -> None:
+    manifest = build_broadcast_manifest(
+        audio_assets=audio_assets
+        if audio_assets is not None
+        else (
+            BroadcastManifestAsset(
+                token="music:hapax-pool:clear",
+                tier="tier_0_owned",
+                source="music-bed",
+                medium="audio",
+            ),
+        ),
+        visual_assets=visual_assets
+        if visual_assets is not None
+        else (
+            BroadcastManifestAsset(
+                token="visual:source:clear",
+                tier="tier_0_owned",
+                source="compositor:sierpinski",
+                medium="visual",
+            ),
+        ),
+        tick_id="tick-good",
+        ts=now - age_s,
+        max_content_risk="tier_1_platform_cleared",
+    )
+    _write(paths.broadcast_manifest, manifest.model_dump_json(), now=now, age_s=age_s)
+
+
+def _write_kill_switch(
+    paths: LivestreamEgressPaths,
+    *,
+    now: float,
+    age_s: float = 0.0,
+    active: bool = False,
+    offenders: tuple[EgressOffender, ...] = (),
+) -> None:
+    state = EgressKillSwitchState(
+        active=active,
+        updated_at=now - age_s,
+        audio_action="duck_to_negative_infinity" if active else "pass_through",
+        visual_action="crossfade_to_tier0_fallback_shader" if active else "pass_through",
+        offenders=offenders,
+    )
+    _write(paths.egress_kill_switch, state.model_dump_json(), now=now, age_s=age_s)
+
+
 def _write_good_fixture(paths: LivestreamEgressPaths, *, now: float) -> None:
     now_iso = datetime.fromtimestamp(now, tz=UTC).isoformat().replace("+00:00", "Z")
     _write(
@@ -101,6 +163,8 @@ def _write_good_fixture(paths: LivestreamEgressPaths, *, now: float) -> None:
     _write(paths.consent_state, "allowed", now=now)
     _write(paths.perception_state, json.dumps({"audio_energy_rms": 0.01}), now=now)
     _write(paths.broadcast_audio_health, json.dumps(_audio_health_payload()), now=now)
+    _write_manifest(paths, now=now)
+    _write_kill_switch(paths, now=now)
     _write(paths.youtube_video_id, "video-123", now=now)
     _write(
         paths.youtube_ingest_proof,
@@ -236,6 +300,225 @@ def test_unsafe_audio_safe_for_broadcast_blocks_public_claim(tmp_path: Path) -> 
     assert state.operator_action == "restore broadcast audio floor before public egress"
     audio = next(item for item in state.evidence if item.source == "audio_floor")
     assert audio.observed["audio_safe_for_broadcast"]["safe"] is False
+
+
+def test_clean_broadcast_manifest_is_non_blocking_evidence(tmp_path: Path) -> None:
+    now = time.time()
+    paths = _paths(tmp_path)
+    _write_good_fixture(paths, now=now)
+
+    state = resolve_livestream_egress_state(
+        paths=paths,
+        now=now,
+        http_probe=lambda _url, _timeout: 200,
+        env={},
+    )
+
+    evidence = next(item for item in state.evidence if item.source == "egress_provenance")
+    assert evidence.status == "pass"
+    assert evidence.observed["public_claim_allowed"] is True
+    assert evidence.observed["monetization_readiness"]["status"] == "pass"
+    assert "egress_provenance_manifest_missing" not in state.public_claim_blockers
+
+
+def test_missing_broadcast_manifest_blocks_public_claim_with_reason_code(
+    tmp_path: Path,
+) -> None:
+    now = time.time()
+    paths = _paths(tmp_path)
+    _write_good_fixture(paths, now=now)
+    paths.broadcast_manifest.unlink()
+
+    state = resolve_livestream_egress_state(
+        paths=paths,
+        now=now,
+        http_probe=lambda _url, _timeout: 200,
+        env={},
+    )
+
+    assert state.public_claim_allowed is False
+    assert state.public_ready is False
+    assert state.state is EgressState.PUBLIC_BLOCKED
+    assert state.monetization_risk == "unknown"
+    assert "egress_provenance_manifest_missing" in state.public_claim_blockers
+    evidence = next(item for item in state.evidence if item.source == "egress_provenance")
+    assert evidence.status == "fail"
+    assert evidence.observed["reason_codes"] == ["egress_provenance_manifest_missing"]
+    assert state.operator_action == (
+        "restore fresh broadcast provenance manifest and clear egress kill-switch"
+    )
+
+
+def test_stale_broadcast_manifest_blocks_public_claim(tmp_path: Path) -> None:
+    now = time.time()
+    paths = _paths(tmp_path)
+    _write_good_fixture(paths, now=now)
+    _write_manifest(paths, now=now, age_s=60.0)
+
+    state = resolve_livestream_egress_state(
+        paths=paths,
+        now=now,
+        http_probe=lambda _url, _timeout: 200,
+        env={},
+    )
+
+    assert state.public_claim_allowed is False
+    assert "egress_provenance_manifest_stale" in state.public_claim_blockers
+    evidence = next(item for item in state.evidence if item.source == "egress_provenance")
+    assert evidence.stale is True
+    assert evidence.observed["manifest"]["status"] == "stale"
+
+
+def test_malformed_broadcast_manifest_blocks_public_claim(tmp_path: Path) -> None:
+    now = time.time()
+    paths = _paths(tmp_path)
+    _write_good_fixture(paths, now=now)
+    _write(paths.broadcast_manifest, "{", now=now)
+
+    state = resolve_livestream_egress_state(
+        paths=paths,
+        now=now,
+        http_probe=lambda _url, _timeout: 200,
+        env={},
+    )
+
+    assert state.public_claim_allowed is False
+    assert "egress_provenance_manifest_malformed" in state.public_claim_blockers
+    evidence = next(item for item in state.evidence if item.source == "egress_provenance")
+    assert evidence.observed["manifest"]["status"] == "malformed"
+
+
+def test_missing_egress_kill_switch_blocks_public_claim_with_reason_code(
+    tmp_path: Path,
+) -> None:
+    now = time.time()
+    paths = _paths(tmp_path)
+    _write_good_fixture(paths, now=now)
+    paths.egress_kill_switch.unlink()
+
+    state = resolve_livestream_egress_state(
+        paths=paths,
+        now=now,
+        http_probe=lambda _url, _timeout: 200,
+        env={},
+    )
+
+    assert state.public_claim_allowed is False
+    assert "egress_kill_switch_missing" in state.public_claim_blockers
+    evidence = next(item for item in state.evidence if item.source == "egress_provenance")
+    assert evidence.observed["kill_switch"]["status"] == "missing"
+
+
+def test_stale_egress_kill_switch_blocks_public_claim(tmp_path: Path) -> None:
+    now = time.time()
+    paths = _paths(tmp_path)
+    _write_good_fixture(paths, now=now)
+    _write_kill_switch(paths, now=now, age_s=60.0)
+
+    state = resolve_livestream_egress_state(
+        paths=paths,
+        now=now,
+        http_probe=lambda _url, _timeout: 200,
+        env={},
+    )
+
+    assert state.public_claim_allowed is False
+    assert "egress_kill_switch_stale" in state.public_claim_blockers
+    evidence = next(item for item in state.evidence if item.source == "egress_provenance")
+    assert evidence.observed["kill_switch"]["state_age_s"] == 60.0
+
+
+def test_malformed_egress_kill_switch_blocks_public_claim(tmp_path: Path) -> None:
+    now = time.time()
+    paths = _paths(tmp_path)
+    _write_good_fixture(paths, now=now)
+    _write(paths.egress_kill_switch, "{", now=now)
+
+    state = resolve_livestream_egress_state(
+        paths=paths,
+        now=now,
+        http_probe=lambda _url, _timeout: 200,
+        env={},
+    )
+
+    assert state.public_claim_allowed is False
+    assert "egress_kill_switch_malformed" in state.public_claim_blockers
+    evidence = next(item for item in state.evidence if item.source == "egress_provenance")
+    assert evidence.observed["kill_switch"]["status"] == "malformed"
+
+
+def test_over_tier_broadcast_manifest_blocks_public_claim_and_monetization(
+    tmp_path: Path,
+) -> None:
+    now = time.time()
+    paths = _paths(tmp_path)
+    _write_good_fixture(paths, now=now)
+    _write_manifest(
+        paths,
+        now=now,
+        visual_assets=(
+            BroadcastManifestAsset(
+                token="visual:third-party:uncleared",
+                tier="tier_4_risky",
+                source="visual-pool-slot-0",
+                medium="visual",
+            ),
+        ),
+    )
+
+    state = resolve_livestream_egress_state(
+        paths=paths,
+        now=now,
+        http_probe=lambda _url, _timeout: 200,
+        env={},
+    )
+
+    assert state.public_claim_allowed is False
+    assert state.monetization_risk == "high"
+    assert "egress_provenance_over_tier" in state.public_claim_blockers
+    evidence = next(item for item in state.evidence if item.source == "egress_provenance")
+    offender = evidence.observed["offenders"][0]
+    assert offender["token"] == "visual:third-party:uncleared"
+    assert offender["risk_tier"] == "tier_4_risky"
+    assert offender["source"] == "visual-pool-slot-0"
+    assert offender["surface"] == "visual"
+    assert offender["fallback_action"] == "crossfade_to_tier0_fallback_shader"
+
+
+def test_active_egress_kill_switch_blocks_public_claim_with_recovery_fields(
+    tmp_path: Path,
+) -> None:
+    now = time.time()
+    paths = _paths(tmp_path)
+    _write_good_fixture(paths, now=now)
+    offender = EgressOffender(
+        token="visual:third-party:uncleared",
+        tier="tier_4_risky",
+        source="visual-pool-slot-0",
+        medium="visual",
+        reason="over_tier",
+    )
+    _write_kill_switch(paths, now=now, active=True, offenders=(offender,))
+
+    state = resolve_livestream_egress_state(
+        paths=paths,
+        now=now,
+        http_probe=lambda _url, _timeout: 200,
+        env={},
+    )
+
+    assert state.public_claim_allowed is False
+    assert "egress_kill_switch_active" in state.public_claim_blockers
+    kill = next(item for item in state.evidence if item.source == "egress.kill_switch_fired")
+    assert kill.status == "fail"
+    assert kill.observed["event_type"] == "egress.kill_switch_fired"
+    assert kill.observed["fallback_visual_token"] == "visual:fallback:tier0-wgpu-shader"
+    observed_offender = kill.observed["offenders"][0]
+    assert observed_offender["token"] == "visual:third-party:uncleared"
+    assert observed_offender["risk_tier"] == "tier_4_risky"
+    assert observed_offender["source"] == "visual-pool-slot-0"
+    assert observed_offender["surface"] == "visual"
+    assert observed_offender["recovery_instruction"]
 
 
 def test_missing_youtube_ingest_proof_fails_closed(tmp_path: Path) -> None:

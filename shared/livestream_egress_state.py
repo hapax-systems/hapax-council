@@ -22,6 +22,16 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.broadcast_audio_health import DEFAULT_STATE_PATH, read_broadcast_audio_health_state
+from shared.content_source_provenance_egress import (
+    DEFAULT_BROADCAST_MANIFEST_PATH,
+    DEFAULT_KILL_SWITCH_PATH,
+    BroadcastProvenanceManifest,
+    EgressKillSwitchState,
+    EgressManifestGate,
+    EgressOffender,
+    read_broadcast_manifest,
+    read_egress_kill_switch_state,
+)
 from shared.face_obscure_policy import FaceObscurePolicy, resolve_policy
 from shared.stream_mode import StreamMode
 from shared.working_mode import WorkingMode
@@ -73,6 +83,7 @@ class LivestreamEgressState(BaseModel):
     privacy_floor: FloorState
     audio_floor: FloorState
     evidence: list[LivestreamEgressEvidence]
+    public_claim_blockers: list[str] = Field(default_factory=list)
     last_transition: str | None
     operator_action: str
 
@@ -90,6 +101,8 @@ class LivestreamEgressPaths:
     stream_mode: Path = Path.home() / ".cache" / "hapax" / "stream-mode"
     working_mode: Path = Path.home() / ".cache" / "hapax" / "working-mode"
     broadcast_audio_health: Path = DEFAULT_STATE_PATH
+    broadcast_manifest: Path = DEFAULT_BROADCAST_MANIFEST_PATH
+    egress_kill_switch: Path = DEFAULT_KILL_SWITCH_PATH
     consent_state: Path = Path("/dev/shm/hapax-compositor/consent-state.txt")
     perception_state: Path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
     monetization_flagged_root: Path = Path.home() / "hapax-state" / "monetization-flagged"
@@ -104,6 +117,8 @@ class LivestreamEgressThresholds:
     perception_max_age_s: float = 15.0
     min_audio_energy_rms: float = 0.0001
     audio_health_max_age_s: float = 30.0
+    broadcast_manifest_max_age_s: float = 15.0
+    egress_kill_switch_max_age_s: float = 15.0
     youtube_ingest_proof_max_age_s: float = 90.0
     broadcast_event_max_age_s: float = 12 * 3600.0
     monetization_window_s: float = 24 * 3600.0
@@ -112,6 +127,23 @@ class LivestreamEgressThresholds:
 HttpProbe = Callable[[str, float], int | None]
 
 MEDIAMTX_HLS_URL = "http://127.0.0.1:8888/studio/index.m3u8"
+_EGRESS_PROVENANCE_RECOVERY = (
+    "replace or remove the blocked source, verify provenance/rights, then wait for a fresh "
+    "broadcast manifest and inactive kill-switch"
+)
+
+
+@dataclass(frozen=True)
+class _EgressProvenanceDecision:
+    public_claim_allowed: bool
+    status: EvidenceStatus
+    summary: str
+    reason_codes: tuple[str, ...]
+    observed: dict[str, Any]
+    age_s: float | None
+    stale: bool
+    monetization_risk: str
+    kill_switch_fired_observed: dict[str, Any] | None = None
 
 
 def resolve_livestream_egress_state(
@@ -312,6 +344,33 @@ def resolve_livestream_egress_state(
         stale=audio_health.status == "unknown",
     )
 
+    provenance = _resolve_egress_provenance(
+        manifest_path=p.broadcast_manifest,
+        kill_switch_path=p.egress_kill_switch,
+        now=current,
+        manifest_max_age_s=t.broadcast_manifest_max_age_s,
+        kill_switch_max_age_s=t.egress_kill_switch_max_age_s,
+    )
+    _append(
+        evidence,
+        "egress_provenance",
+        provenance.status,
+        provenance.summary,
+        observed=provenance.observed,
+        age_s=provenance.age_s,
+        stale=provenance.stale,
+    )
+    if provenance.kill_switch_fired_observed is not None:
+        _append(
+            evidence,
+            "egress.kill_switch_fired",
+            EvidenceStatus.FAIL,
+            "egress provenance kill-switch is active",
+            observed=provenance.kill_switch_fired_observed,
+            age_s=provenance.age_s,
+            stale=provenance.stale,
+        )
+
     video_id = _read_text(p.youtube_video_id).strip()
     video_id_present = bool(video_id)
     video_id_age = _path_age_s(p.youtube_video_id, current)
@@ -372,12 +431,16 @@ def resolve_livestream_egress_state(
         current,
         t.monetization_window_s,
     )
+    monetization_risk = _max_monetization_risk(monetization_risk, provenance.monetization_risk)
     _append(
         evidence,
         "monetization_risk",
         EvidenceStatus.PASS if monetization_risk in {"none", "low"} else EvidenceStatus.FAIL,
-        f"recent monetization risk is {monetization_risk}",
-        observed={"risk": monetization_risk},
+        f"recent/provenance monetization risk is {monetization_risk}",
+        observed={
+            "risk": monetization_risk,
+            "egress_provenance_risk": provenance.monetization_risk,
+        },
     )
 
     research_capture_ready = (
@@ -386,6 +449,7 @@ def resolve_livestream_egress_state(
     public_ready = (
         research_capture_ready
         and audio_floor is FloorState.SATISFIED
+        and provenance.public_claim_allowed
         and rtmp_attached
         and mediamtx_ok
         and stream_public
@@ -413,11 +477,300 @@ def resolve_livestream_egress_state(
         privacy_floor=privacy_floor,
         audio_floor=audio_floor,
         evidence=evidence,
+        public_claim_blockers=_public_claim_blockers(evidence),
         last_transition=_last_transition_iso(
             p, status_data if isinstance(status_data, dict) else {}
         ),
         operator_action=_operator_action(evidence, stream_public=stream_public),
     )
+
+
+def _resolve_egress_provenance(
+    *,
+    manifest_path: Path,
+    kill_switch_path: Path,
+    now: float,
+    manifest_max_age_s: float,
+    kill_switch_max_age_s: float,
+) -> _EgressProvenanceDecision:
+    reason_codes: list[str] = []
+    offenders: list[dict[str, Any]] = []
+    observed: dict[str, Any] = {
+        "manifest_path": str(manifest_path),
+        "kill_switch_path": str(kill_switch_path),
+        "reason_codes": reason_codes,
+        "recovery_instruction": _EGRESS_PROVENANCE_RECOVERY,
+    }
+    ages: list[float] = []
+
+    manifest = _read_manifest_for_egress(
+        manifest_path,
+        now=now,
+        max_age_s=manifest_max_age_s,
+        reason_codes=reason_codes,
+        observed=observed,
+        ages=ages,
+    )
+    if manifest is not None:
+        decision = EgressManifestGate().evaluate(manifest)
+        observed["manifest_gate"] = {
+            "kill_switch_fired": decision.kill_switch_fired,
+            "audio_action": decision.audio_action,
+            "visual_action": decision.visual_action,
+        }
+        for offender in decision.offenders:
+            reason_codes.append(_offender_reason_code(offender))
+            offenders.append(
+                _offender_observed(
+                    offender,
+                    audio_action=decision.audio_action,
+                    visual_action=decision.visual_action,
+                )
+            )
+
+    kill_state = _read_kill_switch_for_egress(
+        kill_switch_path,
+        now=now,
+        max_age_s=kill_switch_max_age_s,
+        reason_codes=reason_codes,
+        observed=observed,
+        ages=ages,
+    )
+    kill_switch_fired_observed: dict[str, Any] | None = None
+    if kill_state is not None and kill_state.active:
+        reason_codes.append("egress_kill_switch_active")
+        active_offenders = [
+            _offender_observed(
+                offender,
+                audio_action=kill_state.audio_action,
+                visual_action=kill_state.visual_action,
+            )
+            for offender in kill_state.offenders
+        ]
+        offenders.extend(active_offenders)
+        kill_switch_fired_observed = {
+            "event_type": "egress.kill_switch_fired",
+            "reason_codes": ["egress_kill_switch_active"],
+            "active": True,
+            "audio_action": kill_state.audio_action,
+            "visual_action": kill_state.visual_action,
+            "fallback_visual_token": kill_state.fallback_visual_token,
+            "fallback_action": _combined_fallback_action(
+                kill_state.audio_action,
+                kill_state.visual_action,
+            ),
+            "recovery_instruction": _EGRESS_PROVENANCE_RECOVERY,
+            "offenders": active_offenders,
+            "producer_states": {
+                key: value.model_dump(mode="json")
+                for key, value in kill_state.producer_states.items()
+            },
+        }
+
+    reason_codes = tuple(dict.fromkeys(reason_codes))
+    observed["reason_codes"] = list(reason_codes)
+    observed["offenders"] = _dedupe_offenders(offenders)
+    public_claim_allowed = not reason_codes
+    status = EvidenceStatus.PASS if public_claim_allowed else EvidenceStatus.FAIL
+    monetization_risk = _egress_provenance_monetization_risk(reason_codes)
+    observed["public_claim_allowed"] = public_claim_allowed
+    observed["health_input"] = {
+        "status": "pass" if public_claim_allowed else "fail",
+        "reason_codes": list(reason_codes),
+    }
+    observed["monetization_readiness"] = {
+        "status": "pass" if public_claim_allowed else "fail",
+        "risk": monetization_risk,
+        "reason_codes": list(reason_codes),
+    }
+    return _EgressProvenanceDecision(
+        public_claim_allowed=public_claim_allowed,
+        status=status,
+        summary="broadcast provenance manifest and kill-switch are fresh and clear"
+        if public_claim_allowed
+        else "broadcast provenance manifest or kill-switch blocks public claims",
+        reason_codes=reason_codes,
+        observed=observed,
+        age_s=max(ages) if ages else None,
+        stale=any(code.endswith("_stale") for code in reason_codes),
+        monetization_risk=monetization_risk,
+        kill_switch_fired_observed=kill_switch_fired_observed,
+    )
+
+
+def _read_manifest_for_egress(
+    path: Path,
+    *,
+    now: float,
+    max_age_s: float,
+    reason_codes: list[str],
+    observed: dict[str, Any],
+    ages: list[float],
+) -> BroadcastProvenanceManifest | None:
+    file_age = _path_age_s(path, now)
+    if file_age is not None:
+        ages.append(file_age)
+    try:
+        manifest = read_broadcast_manifest(path)
+    except Exception as exc:
+        reason_codes.append("egress_provenance_manifest_malformed")
+        observed["manifest"] = {
+            "status": "malformed",
+            "file_age_s": file_age,
+            "error": exc.__class__.__name__,
+        }
+        return None
+    if manifest is None:
+        reason_codes.append("egress_provenance_manifest_missing")
+        observed["manifest"] = {"status": "missing", "file_age_s": file_age}
+        return None
+
+    manifest_age = max(0.0, now - manifest.ts)
+    ages.append(manifest_age)
+    stale = file_age is None or file_age > max_age_s or manifest_age > max_age_s
+    if stale:
+        reason_codes.append("egress_provenance_manifest_stale")
+    observed["manifest"] = {
+        "status": "stale" if stale else "fresh",
+        "tick_id": manifest.tick_id,
+        "max_content_risk": manifest.max_content_risk,
+        "audio_asset_count": len(manifest.audio_assets),
+        "visual_asset_count": len(manifest.visual_assets),
+        "file_age_s": round(file_age, 3) if file_age is not None else None,
+        "manifest_age_s": round(manifest_age, 3),
+        "authority_ceiling": manifest.authority_ceiling.model_dump(mode="json"),
+    }
+    return manifest
+
+
+def _read_kill_switch_for_egress(
+    path: Path,
+    *,
+    now: float,
+    max_age_s: float,
+    reason_codes: list[str],
+    observed: dict[str, Any],
+    ages: list[float],
+) -> EgressKillSwitchState | None:
+    file_age = _path_age_s(path, now)
+    if file_age is not None:
+        ages.append(file_age)
+    try:
+        state = read_egress_kill_switch_state(path)
+    except Exception as exc:
+        reason_codes.append("egress_kill_switch_malformed")
+        observed["kill_switch"] = {
+            "status": "malformed",
+            "file_age_s": file_age,
+            "error": exc.__class__.__name__,
+        }
+        return None
+    if state is None:
+        reason_codes.append("egress_kill_switch_missing")
+        observed["kill_switch"] = {"status": "missing", "file_age_s": file_age}
+        return None
+
+    state_age = max(0.0, now - state.updated_at)
+    ages.append(state_age)
+    stale = file_age is None or file_age > max_age_s or state_age > max_age_s
+    if stale:
+        reason_codes.append("egress_kill_switch_stale")
+    observed["kill_switch"] = {
+        "status": "active" if state.active else "clear",
+        "active": state.active,
+        "audio_action": state.audio_action,
+        "visual_action": state.visual_action,
+        "fallback_visual_token": state.fallback_visual_token,
+        "file_age_s": round(file_age, 3) if file_age is not None else None,
+        "state_age_s": round(state_age, 3),
+        "producer_states": {
+            key: value.model_dump(mode="json") for key, value in state.producer_states.items()
+        },
+    }
+    return state
+
+
+def _offender_reason_code(offender: EgressOffender) -> str:
+    return {
+        "missing_token": "egress_provenance_missing_token",
+        "not_broadcast_safe": "egress_provenance_not_broadcast_safe",
+        "over_tier": "egress_provenance_over_tier",
+    }[offender.reason]
+
+
+def _offender_observed(
+    offender: EgressOffender,
+    *,
+    audio_action: str,
+    visual_action: str,
+) -> dict[str, Any]:
+    return {
+        "token": offender.token,
+        "risk_tier": offender.tier,
+        "source": offender.source,
+        "surface": offender.medium,
+        "reason": offender.reason,
+        "reason_code": _offender_reason_code(offender),
+        "fallback_action": visual_action if offender.medium == "visual" else audio_action,
+        "recovery_instruction": _EGRESS_PROVENANCE_RECOVERY,
+    }
+
+
+def _combined_fallback_action(audio_action: str, visual_action: str) -> str:
+    return f"audio:{audio_action};visual:{visual_action}"
+
+
+def _dedupe_offenders(offenders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[Any, ...]] = set()
+    deduped: list[dict[str, Any]] = []
+    for offender in offenders:
+        key = (
+            offender.get("token"),
+            offender.get("risk_tier"),
+            offender.get("source"),
+            offender.get("surface"),
+            offender.get("reason"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(offender)
+    return deduped
+
+
+def _egress_provenance_monetization_risk(reason_codes: tuple[str, ...]) -> str:
+    if not reason_codes:
+        return "none"
+    if any(
+        code
+        in {
+            "egress_kill_switch_active",
+            "egress_provenance_missing_token",
+            "egress_provenance_not_broadcast_safe",
+            "egress_provenance_over_tier",
+        }
+        for code in reason_codes
+    ):
+        return "high"
+    return "unknown"
+
+
+def _max_monetization_risk(left: str, right: str) -> str:
+    order = {"none": 0, "low": 1, "medium": 2, "high": 3, "unknown": 4}
+    return left if order.get(left, 0) >= order.get(right, 0) else right
+
+
+def _public_claim_blockers(evidence: list[LivestreamEgressEvidence]) -> list[str]:
+    blockers: list[str] = []
+    for item in evidence:
+        if item.status is EvidenceStatus.PASS:
+            continue
+        raw = item.observed.get("reason_codes")
+        if isinstance(raw, list):
+            blockers.extend(str(code) for code in raw)
+        elif isinstance(raw, str):
+            blockers.append(raw)
+    return list(dict.fromkeys(blockers))
 
 
 def _append(
@@ -668,6 +1021,10 @@ def _operator_action(
         ("hls_playlist", "restore local HLS playlist generation"),
         ("privacy_floor", "restore face-obscure/privacy floor before public egress"),
         ("audio_floor", "restore broadcast audio floor before public egress"),
+        (
+            "egress_provenance",
+            "restore fresh broadcast provenance manifest and clear egress kill-switch",
+        ),
         ("working_mode", "switch working mode to fortress before public egress"),
         ("stream_mode", "set stream mode to public_research only when ready"),
         ("rtmp_output", "activate the RTMP output bin"),
