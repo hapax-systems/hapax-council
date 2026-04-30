@@ -61,6 +61,7 @@ def _emit_caption_bridge_for_transcript(
     *,
     transcript: str,
     audio_bytes: bytes,
+    speaker: str | None = None,
     now_s: float | None = None,
     bridge_factory: Callable[[], object] | None = None,
 ) -> bool:
@@ -92,6 +93,7 @@ def _emit_caption_bridge_for_transcript(
                 audio_start_ts=audio_start_ts,
                 audio_duration_s=duration_s,
                 text=text,
+                speaker=speaker,
             )
         )
     except Exception:  # noqa: BLE001
@@ -718,7 +720,11 @@ class ConversationPipeline:
             except Exception:
                 pass
         self._emit("user_utterance", text=transcript, principal_id=_pid)
-        _emit_caption_bridge_for_transcript(transcript=transcript, audio_bytes=audio_bytes)
+        _emit_caption_bridge_for_transcript(
+            transcript=transcript,
+            audio_bytes=audio_bytes,
+            speaker=_pid,
+        )
 
         # Continuous-Loop Research Cadence §3.4 — write the most recent
         # transcript line to the STT-recent file so the compositor's

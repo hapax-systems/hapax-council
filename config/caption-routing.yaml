@@ -29,7 +29,6 @@ deny:
   []
 
 # Per-route fallback when a speaker is neither allow- nor deny-listed.
-# 'allow' favours visibility (caption appears) — fits the SEO + a11y
-# motivation for the captions track. Switch to 'deny' for events
-# where consent posture should be conservative.
-default: allow
+# Keep conservative in production: unknown principals are dropped until
+# their caption/public consent path is explicitly represented.
+default: deny
