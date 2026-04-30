@@ -180,6 +180,9 @@ DirectorVocabulary.for_content_runner
 
 # Pydantic invokes model validators dynamically during model validation.
 DirectorControlMoveAuditRecord._validate_boundary_and_evidence
+TemporalEvidenceEnvelope._validate_temporal_authority
+TemporalShmPayloadFixture._validate_fixture_case
+TemporalBandEvidenceFixtureSet._validate_fixture_set
 
 # Director intent models split real provenance from synthetic diagnostics via
 # Pydantic validators. The properties are consumed as public read helpers, but

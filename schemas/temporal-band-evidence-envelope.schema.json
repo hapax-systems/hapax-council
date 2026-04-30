@@ -1,0 +1,589 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/temporal-band-evidence-envelope.schema.json",
+  "title": "TemporalBandEvidenceEnvelopeFixtures",
+  "description": "Fixture-backed contract for TemporalEvidenceEnvelope rows over /dev/shm/hapax-temporal/bands.json. Raw XML, protention, stale retention, producer failures, synthetic authority, and expired posterior scores fail closed for factual public/director claims.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "temporal_bands",
+    "shm_fixture_cases",
+    "evidence_envelope_required_fields",
+    "fail_closed_policy",
+    "shm_payload_fixtures",
+    "envelopes",
+    "claim_support_fixtures"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/temporal-band-evidence-envelope.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "temporal_bands": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/temporal_band"},
+      "uniqueItems": true,
+      "minItems": 4
+    },
+    "shm_fixture_cases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/shm_fixture_case"},
+      "uniqueItems": true,
+      "minItems": 5
+    },
+    "evidence_envelope_required_fields": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/evidence_envelope_field"},
+      "uniqueItems": true,
+      "minItems": 30
+    },
+    "fail_closed_policy": {"$ref": "#/$defs/fail_closed_policy"},
+    "shm_payload_fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/shm_payload_fixture"},
+      "minItems": 5
+    },
+    "envelopes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/temporal_evidence_envelope"},
+      "minItems": 4
+    },
+    "claim_support_fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/claim_support_fixture"},
+      "minItems": 1
+    }
+  },
+  "x-required_temporal_bands": ["retention", "impression", "protention", "surprise"],
+  "x-required_shm_fixture_cases": ["fresh", "stale", "missing", "malformed", "empty"],
+  "x-fail_closed_policy": {
+    "raw_xml_alone_satisfies_public_or_director_claim": false,
+    "protention_satisfies_present_current_live_claim": false,
+    "stale_retention_satisfies_current_claim": false,
+    "stale_retention_without_age_window_language_satisfies_last_observed": false,
+    "producer_failure_satisfies_positive_world_state": false,
+    "expired_above_floor_posterior_satisfies_claim": false,
+    "synthetic_or_llm_inferred_authority_satisfies_factual_ground": false
+  },
+  "x-evidence_envelope_required_fields": [
+    "schema_version",
+    "envelope_id",
+    "source_id",
+    "claim_name",
+    "observed_at_wall",
+    "observed_at_mono",
+    "produced_at_wall",
+    "valid_from_wall",
+    "valid_until_wall",
+    "sample_window_s",
+    "ttl_s",
+    "age_s",
+    "temporal_band",
+    "evidence_role",
+    "authority",
+    "authority_ceiling",
+    "frame_source",
+    "freshness",
+    "public_scope",
+    "source_payload_state",
+    "source_refs",
+    "evidence_refs",
+    "witness_refs",
+    "span_refs",
+    "posterior",
+    "raw_xml_context_ref",
+    "missing_data_reason",
+    "language_obligations",
+    "expected_in_s",
+    "must_verify_by"
+  ],
+  "$defs": {
+    "temporal_evidence_ref": {
+      "type": "string",
+      "pattern": "^temporal-evidence:[a-z0-9_.:-]+$"
+    },
+    "claim_ref": {"type": "string", "pattern": "^claim:[a-z0-9_.:-]+$"},
+    "span_ref": {"type": "string", "pattern": "^span:[a-z0-9_.:-]+$"},
+    "string_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "nullable_string": {"type": ["string", "null"], "minLength": 1},
+    "temporal_band": {
+      "type": "string",
+      "enum": ["retention", "impression", "protention", "surprise"]
+    },
+    "evidence_role": {
+      "type": "string",
+      "enum": ["supports", "refutes", "context", "prediction", "absence", "producer_failure"]
+    },
+    "authority": {
+      "type": "string",
+      "enum": [
+        "raw_sensor",
+        "calibrated_claim",
+        "derived_claim",
+        "broadcast_self_evidence",
+        "llm_bound_frame",
+        "llm_inferred",
+        "synthetic"
+      ]
+    },
+    "authority_ceiling": {
+      "type": "string",
+      "enum": [
+        "no_claim",
+        "diagnostic_only",
+        "last_observed_only",
+        "anticipatory_only",
+        "fresh_impression_required",
+        "public_gate_required"
+      ]
+    },
+    "frame_source": {
+      "type": "string",
+      "enum": ["raw_sensor", "broadcast_frame", "llm_bound_frame", "none"]
+    },
+    "freshness": {
+      "type": "string",
+      "enum": ["fresh", "aging", "stale", "expired", "missing", "unknown"]
+    },
+    "public_scope": {
+      "type": "string",
+      "enum": ["private", "public_safe", "public_forbidden"]
+    },
+    "source_payload_state": {
+      "type": "string",
+      "enum": ["fresh", "stale", "missing", "malformed", "empty", "unknown"]
+    },
+    "fixture_case": {
+      "type": "string",
+      "enum": [
+        "fresh_impression_public",
+        "stale_retention",
+        "protention_expected",
+        "surprise_mismatch",
+        "raw_xml_only",
+        "producer_failure_missing",
+        "producer_failure_malformed",
+        "producer_failure_empty",
+        "expired_high_posterior"
+      ]
+    },
+    "shm_fixture_case": {
+      "type": "string",
+      "enum": ["fresh", "stale", "missing", "malformed", "empty"]
+    },
+    "claim_shape": {
+      "type": "string",
+      "enum": [
+        "present_current",
+        "public_live",
+        "last_observed",
+        "anticipatory",
+        "surprise_change",
+        "diagnostic"
+      ]
+    },
+    "claim_support_status": {
+      "type": "string",
+      "enum": [
+        "allowed",
+        "allowed_last_observed_only",
+        "allowed_anticipatory_only",
+        "allowed_surprise_only",
+        "blocked_raw_xml_only",
+        "blocked_public_scope",
+        "blocked_missing_span_refs",
+        "blocked_missing_witness_refs",
+        "blocked_protention_current_claim",
+        "blocked_temporal_band_mismatch",
+        "blocked_expired_or_stale_current_claim",
+        "blocked_stale_retention_requires_age_window",
+        "blocked_producer_failure",
+        "blocked_synthetic_authority",
+        "blocked_evidence_role"
+      ]
+    },
+    "rendered_claim_mode": {
+      "type": "string",
+      "enum": [
+        "present_current",
+        "public_live",
+        "last_observed_with_age_window",
+        "anticipatory",
+        "surprise_mismatch",
+        "diagnostic_only",
+        "none"
+      ]
+    },
+    "evidence_envelope_field": {
+      "type": "string",
+      "enum": [
+        "schema_version",
+        "envelope_id",
+        "source_id",
+        "claim_name",
+        "observed_at_wall",
+        "observed_at_mono",
+        "produced_at_wall",
+        "valid_from_wall",
+        "valid_until_wall",
+        "sample_window_s",
+        "ttl_s",
+        "age_s",
+        "temporal_band",
+        "evidence_role",
+        "authority",
+        "authority_ceiling",
+        "frame_source",
+        "freshness",
+        "public_scope",
+        "source_payload_state",
+        "source_refs",
+        "evidence_refs",
+        "witness_refs",
+        "span_refs",
+        "posterior",
+        "raw_xml_context_ref",
+        "missing_data_reason",
+        "language_obligations",
+        "expected_in_s",
+        "must_verify_by"
+      ]
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "raw_xml_alone_satisfies_public_or_director_claim",
+        "protention_satisfies_present_current_live_claim",
+        "stale_retention_satisfies_current_claim",
+        "stale_retention_without_age_window_language_satisfies_last_observed",
+        "producer_failure_satisfies_positive_world_state",
+        "expired_above_floor_posterior_satisfies_claim",
+        "synthetic_or_llm_inferred_authority_satisfies_factual_ground"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "raw_xml_alone_satisfies_public_or_director_claim": {"type": "boolean", "const": false},
+        "protention_satisfies_present_current_live_claim": {"type": "boolean", "const": false},
+        "stale_retention_satisfies_current_claim": {"type": "boolean", "const": false},
+        "stale_retention_without_age_window_language_satisfies_last_observed": {
+          "type": "boolean",
+          "const": false
+        },
+        "producer_failure_satisfies_positive_world_state": {"type": "boolean", "const": false},
+        "expired_above_floor_posterior_satisfies_claim": {"type": "boolean", "const": false},
+        "synthetic_or_llm_inferred_authority_satisfies_factual_ground": {
+          "type": "boolean",
+          "const": false
+        }
+      }
+    },
+    "shm_payload_fixture": {
+      "type": "object",
+      "required": [
+        "fixture_case",
+        "path",
+        "source_payload_state",
+        "payload_present",
+        "raw_xml_present",
+        "age_s",
+        "max_age_s",
+        "producer_failure",
+        "produces_envelope_refs",
+        "reason_codes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "fixture_case": {"$ref": "#/$defs/shm_fixture_case"},
+        "path": {"type": "string", "const": "/dev/shm/hapax-temporal/bands.json"},
+        "source_payload_state": {"$ref": "#/$defs/source_payload_state"},
+        "payload_present": {"type": "boolean"},
+        "raw_xml_present": {"type": "boolean"},
+        "age_s": {"type": ["number", "null"], "minimum": 0.0},
+        "max_age_s": {"type": "number", "minimum": 0.0},
+        "producer_failure": {"type": "boolean"},
+        "produces_envelope_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/temporal_evidence_ref"},
+          "uniqueItems": true
+        },
+        "reason_codes": {"$ref": "#/$defs/string_list"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"fixture_case": {"const": "fresh"}}, "required": ["fixture_case"]},
+          "then": {
+            "properties": {
+              "source_payload_state": {"const": "fresh"},
+              "payload_present": {"const": true},
+              "producer_failure": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"fixture_case": {"enum": ["missing", "malformed", "empty"]}},
+            "required": ["fixture_case"]
+          },
+          "then": {
+            "properties": {"producer_failure": {"const": true}},
+            "required": ["produces_envelope_refs"]
+          }
+        },
+        {
+          "if": {"properties": {"fixture_case": {"const": "stale"}}, "required": ["fixture_case"]},
+          "then": {
+            "properties": {
+              "source_payload_state": {"const": "stale"},
+              "payload_present": {"const": true}
+            }
+          }
+        }
+      ]
+    },
+    "temporal_evidence_envelope": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "envelope_id",
+        "source_id",
+        "claim_name",
+        "observed_at_wall",
+        "observed_at_mono",
+        "produced_at_wall",
+        "valid_from_wall",
+        "valid_until_wall",
+        "sample_window_s",
+        "ttl_s",
+        "age_s",
+        "temporal_band",
+        "evidence_role",
+        "authority",
+        "authority_ceiling",
+        "frame_source",
+        "freshness",
+        "public_scope",
+        "source_payload_state",
+        "source_refs",
+        "evidence_refs",
+        "witness_refs",
+        "span_refs",
+        "posterior",
+        "raw_xml_context_ref",
+        "missing_data_reason",
+        "language_obligations",
+        "expected_in_s",
+        "must_verify_by",
+        "fixture_case"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "envelope_id": {"$ref": "#/$defs/temporal_evidence_ref"},
+        "source_id": {"type": "string", "minLength": 1},
+        "claim_name": {"type": "string", "minLength": 1},
+        "observed_at_wall": {"type": "string", "format": "date-time"},
+        "observed_at_mono": {"type": "number", "minimum": 0.0},
+        "produced_at_wall": {"type": "string", "format": "date-time"},
+        "valid_from_wall": {"type": "string", "format": "date-time"},
+        "valid_until_wall": {"type": "string", "format": "date-time"},
+        "sample_window_s": {"type": "number", "minimum": 0.0},
+        "ttl_s": {"type": "number", "minimum": 0.0},
+        "age_s": {"type": "number", "minimum": 0.0},
+        "temporal_band": {"$ref": "#/$defs/temporal_band"},
+        "evidence_role": {"$ref": "#/$defs/evidence_role"},
+        "authority": {"$ref": "#/$defs/authority"},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "frame_source": {"$ref": "#/$defs/frame_source"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "public_scope": {"$ref": "#/$defs/public_scope"},
+        "source_payload_state": {"$ref": "#/$defs/source_payload_state"},
+        "source_refs": {"$ref": "#/$defs/string_list"},
+        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "witness_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "span_refs": {"type": "array", "items": {"$ref": "#/$defs/span_ref"}},
+        "posterior": {"type": ["number", "null"], "minimum": 0.0, "maximum": 1.0},
+        "raw_xml_context_ref": {"$ref": "#/$defs/nullable_string"},
+        "missing_data_reason": {"$ref": "#/$defs/nullable_string"},
+        "language_obligations": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "expected_in_s": {"type": ["number", "null"], "minimum": 0.0},
+        "must_verify_by": {"type": ["string", "null"], "format": "date-time"},
+        "fixture_case": {"$ref": "#/$defs/fixture_case"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"evidence_role": {"const": "producer_failure"}}, "required": ["evidence_role"]},
+          "then": {
+            "properties": {
+              "authority_ceiling": {"const": "no_claim"},
+              "source_payload_state": {"enum": ["missing", "malformed", "empty"]},
+              "witness_refs": {"maxItems": 0},
+              "span_refs": {"maxItems": 0}
+            },
+            "required": ["missing_data_reason"]
+          }
+        },
+        {
+          "if": {"properties": {"temporal_band": {"const": "protention"}}, "required": ["temporal_band"]},
+          "then": {
+            "properties": {
+              "evidence_role": {"const": "prediction"},
+              "authority_ceiling": {"const": "anticipatory_only"}
+            },
+            "required": ["expected_in_s", "must_verify_by"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "temporal_band": {"const": "impression"},
+              "freshness": {"const": "fresh"},
+              "public_scope": {"const": "public_safe"},
+              "evidence_role": {"const": "supports"}
+            },
+            "required": ["temporal_band", "freshness", "public_scope", "evidence_role"]
+          },
+          "then": {
+            "properties": {
+              "witness_refs": {"minItems": 1},
+              "span_refs": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authority": {"enum": ["synthetic", "llm_inferred"]}
+            },
+            "required": ["authority"]
+          },
+          "then": {
+            "properties": {
+              "authority_ceiling": {
+                "enum": ["no_claim", "diagnostic_only", "last_observed_only", "anticipatory_only"]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "claim_support_request": {
+      "type": "object",
+      "required": [
+        "claim_id",
+        "claim_name",
+        "claim_shape",
+        "public_or_director",
+        "now_wall",
+        "includes_age_window_language"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {"$ref": "#/$defs/claim_ref"},
+        "claim_name": {"type": "string", "minLength": 1},
+        "claim_shape": {"$ref": "#/$defs/claim_shape"},
+        "public_or_director": {"type": "boolean"},
+        "now_wall": {"type": "string", "format": "date-time"},
+        "includes_age_window_language": {"type": "boolean"}
+      }
+    },
+    "claim_support_decision": {
+      "type": "object",
+      "required": [
+        "claim_id",
+        "envelope_id",
+        "allowed",
+        "status",
+        "rendered_claim_mode",
+        "authority_ceiling",
+        "reason_codes",
+        "required_language"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {"$ref": "#/$defs/claim_ref"},
+        "envelope_id": {"$ref": "#/$defs/temporal_evidence_ref"},
+        "allowed": {"type": "boolean"},
+        "status": {"$ref": "#/$defs/claim_support_status"},
+        "rendered_claim_mode": {"$ref": "#/$defs/rendered_claim_mode"},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "reason_codes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "required_language": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"allowed": {"const": false}}, "required": ["allowed"]},
+          "then": {"properties": {"rendered_claim_mode": {"const": "none"}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "allowed_last_observed_only"}}, "required": ["status"]},
+          "then": {
+            "properties": {
+              "allowed": {"const": true},
+              "rendered_claim_mode": {"const": "last_observed_with_age_window"}
+            }
+          }
+        }
+      ]
+    },
+    "claim_support_fixture": {
+      "type": "object",
+      "required": ["fixture_case", "envelope_ref", "request", "expected"],
+      "additionalProperties": false,
+      "properties": {
+        "fixture_case": {"type": "string", "minLength": 1},
+        "envelope_ref": {"$ref": "#/$defs/temporal_evidence_ref"},
+        "request": {"$ref": "#/$defs/claim_support_request"},
+        "expected": {"$ref": "#/$defs/claim_support_decision"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "fixture_case": {
+                "enum": [
+                  "raw_xml_public_director_claim",
+                  "protention_current_claim",
+                  "retention_current_claim",
+                  "stale_retention_without_age_window",
+                  "producer_failure_positive_claim",
+                  "expired_high_posterior_current_claim"
+                ]
+              }
+            },
+            "required": ["fixture_case"]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "properties": {
+                  "allowed": {"const": false},
+                  "rendered_claim_mode": {"const": "none"}
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
