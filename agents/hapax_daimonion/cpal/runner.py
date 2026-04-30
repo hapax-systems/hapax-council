@@ -968,17 +968,26 @@ class CpalRunner:
                                 pcm=pcm,
                                 impulse_id=impulse_id,
                             )
-                            playback_result = await loop.run_in_executor(
-                                None,
-                                partial(
-                                    play_pcm,
-                                    pcm,
-                                    24000,
-                                    1,
-                                    destination_target,
-                                    destination_role,
-                                ),
-                            )
+                            # Speaking gate: suppress VAD during playback
+                            # to prevent the Yeti mic from capturing our
+                            # own TTS output as an "operator utterance."
+                            self._buffer.set_speaking(True)
+                            if self._echo_canceller:
+                                self._echo_canceller.feed_reference(pcm)
+                            try:
+                                playback_result = await loop.run_in_executor(
+                                    None,
+                                    partial(
+                                        play_pcm,
+                                        pcm,
+                                        24000,
+                                        1,
+                                        destination_target,
+                                        destination_role,
+                                    ),
+                                )
+                            finally:
+                                self._buffer.set_speaking(False)
                             record_playback_result(
                                 text=narrative,
                                 playback_result=playback_result,
