@@ -1,0 +1,447 @@
+{
+  "schema_version": 1,
+  "matrix_id": "conversion_target_readiness_threshold_matrix",
+  "declared_at": "2026-04-30T00:23:02Z",
+  "producer": "cx-blue",
+  "schema_ref": "schemas/conversion-target-readiness-threshold-matrix.schema.json",
+  "source_refs": [
+    "vault-spec:2026-04-29-braided-value-formal-model",
+    "cc-task:conversion-target-readiness-threshold-matrix",
+    "cc-task:conversion-broker",
+    "cc-task:monetization-readiness-ledger",
+    "cc-task:grant-opportunity-scout-attestation-queue",
+    "cc-task:n1-methodology-dossier",
+    "audit:2026-04-29-braided-value-independent-research-synthesis",
+    "audit:2026-04-29-value-braid-acceleration-full-fleet-reassessment"
+  ],
+  "readiness_states": [
+    "blocked",
+    "private-evidence",
+    "dry-run",
+    "public-archive",
+    "public-live",
+    "public-monetizable",
+    "refused"
+  ],
+  "minimum_evidence_chain": [
+    "WCS witness",
+    "programme run envelope",
+    "boundary/public-event refs",
+    "archive/frame/caption refs",
+    "rights/privacy/provenance refs",
+    "egress/kill-switch refs",
+    "target-family policy",
+    "monetization/support readiness where money-facing",
+    "no-hidden-operator-labor check"
+  ],
+  "anti_overclaim_policy": {
+    "engagement_can_upgrade": false,
+    "revenue_potential_can_upgrade": false,
+    "trend_can_upgrade": false,
+    "operator_desire_can_upgrade": false,
+    "selected_or_commanded_is_success": false,
+    "refusal_can_validate_refused_claim": false,
+    "notes": [
+      "Engagement, views, watch time, and audience response cannot upgrade truth, rights, privacy, provenance, egress, or monetization readiness.",
+      "Revenue potential, grant amount, platform trend, and operator desire are opportunity signals only.",
+      "Selected, recruited, commanded, or scheduled is not success without witnessed outcome evidence.",
+      "Refusal and correction events can raise governance learning value but cannot validate the refused or corrected public claim."
+    ]
+  },
+  "target_families": [
+    {
+      "target_family_id": "grants_fellowships",
+      "display_name": "Grants and fellowships",
+      "target_policy_ref": "policy:private-evidence-operator-attestation",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "private-evidence", "dry-run", "refused"],
+      "private_evidence_allowed": true,
+      "public_release_allowed": false,
+      "monetization_allowed": false,
+      "operator_attestation_required": true,
+      "gate_requirements": {
+        "wcs": {
+          "gate_ref": "WCSWitness.ref",
+          "required_for_states": ["private-evidence", "dry-run"],
+          "operator_visible_reason": "Grant evidence needs witnessed runtime truth before it can enter an application packet.",
+          "evidence_ref_examples": ["wcs:runtime-truth"]
+        },
+        "programme": {
+          "gate_ref": "ContentProgrammeRunEnvelope.ref",
+          "required_for_states": ["private-evidence", "dry-run"],
+          "operator_visible_reason": "Grant evidence needs a run envelope or dossier source before drafting.",
+          "evidence_ref_examples": ["programme:run-envelope"]
+        },
+        "public_event": {
+          "gate_ref": "ResearchVehiclePublicEvent.ref",
+          "required_for_states": ["public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Institutional public reuse needs public-event linkage; private evidence does not imply it.",
+          "evidence_ref_examples": ["rvpe:public-event"]
+        },
+        "archive": {
+          "gate_ref": "ArchiveFrameCaption.ref",
+          "required_for_states": ["public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Public grant reuse needs archive/frame/caption references.",
+          "evidence_ref_examples": ["archive:frame-caption"]
+        },
+        "rights": {
+          "gate_ref": "RightsLedger.cleared_ref",
+          "required_for_states": ["public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Rights clearance is required before public grant reuse.",
+          "evidence_ref_examples": ["rights:cleared"]
+        },
+        "privacy": {
+          "gate_ref": "PrivacyPosture.public_or_private_safe_ref",
+          "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Private application evidence must be privacy-labeled before reuse.",
+          "evidence_ref_examples": ["privacy:private-evidence-ok"]
+        },
+        "provenance": {
+          "gate_ref": "ContentSourceProvenance.ref",
+          "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Evidence source provenance is required before claims enter an application packet.",
+          "evidence_ref_examples": ["provenance:source-manifest"]
+        },
+        "egress": {
+          "gate_ref": "EgressManifestGate.ref",
+          "required_for_states": ["public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Public grant reuse needs egress proof; private evidence remains mode-labeled.",
+          "evidence_ref_examples": ["egress:manifest-pass"]
+        },
+        "monetization": {
+          "gate_ref": "MonetizationReadiness.ref",
+          "required_for_states": ["public-monetizable"],
+          "operator_visible_reason": "Grant evidence is not generic monetization readiness.",
+          "evidence_ref_examples": ["monetization:ready"]
+        },
+        "operator_attestation": {
+          "gate_ref": "OperatorAttestation.explicit_ref",
+          "required_for_states": ["private-evidence", "dry-run"],
+          "operator_visible_reason": "Grant and fellowship packets require explicit operator attestation.",
+          "evidence_ref_examples": ["operator-attestation:explicit"]
+        },
+        "no_hidden_operator_labor": {
+          "gate_ref": "NoHiddenOperatorLabor.ref",
+          "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "The opportunity must not create hidden recurring manual reporting or service labor.",
+          "evidence_ref_examples": ["labor:no-hidden-operator-labor"]
+        }
+      },
+      "downstream_consumers": ["grant-opportunity-scout-attestation-queue", "n1-methodology-dossier"],
+      "anti_overclaim_notes": [
+        "Application preparation may use truth-labeled private evidence without authorizing public release.",
+        "Deadline, award size, or operator desire cannot substitute for explicit attestation."
+      ]
+    },
+    {
+      "target_family_id": "youtube_vod_packaging",
+      "display_name": "YouTube/VOD packaging",
+      "target_policy_ref": "policy:public-video-package",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "dry-run", "public-archive", "public-live", "public-monetizable", "refused"],
+      "private_evidence_allowed": false,
+      "public_release_allowed": true,
+      "monetization_allowed": true,
+      "operator_attestation_required": false,
+      "gate_requirements": {
+        "wcs": {
+          "gate_ref": "WCSWitness.ref",
+          "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Video packaging needs witnessed runtime truth.",
+          "evidence_ref_examples": ["wcs:public-video"]
+        },
+        "programme": {
+          "gate_ref": "ContentProgrammeRunEnvelope.ref",
+          "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Video packaging needs a programme run envelope.",
+          "evidence_ref_examples": ["programme:vod-run"]
+        },
+        "public_event": {
+          "gate_ref": "ResearchVehiclePublicEvent.ref",
+          "required_for_states": ["public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Public VOD requires a public-event reference.",
+          "evidence_ref_examples": ["rvpe:vod"]
+        },
+        "archive": {
+          "gate_ref": "ArchiveFrameCaption.ref",
+          "required_for_states": ["public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Public VOD requires replay, frame, chapter, or caption refs.",
+          "evidence_ref_examples": ["archive:vod-sidecar"]
+        },
+        "rights": {
+          "gate_ref": "RightsLedger.cleared_ref",
+          "required_for_states": ["public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Public VOD is blocked until media rights are cleared.",
+          "evidence_ref_examples": ["rights:av-cleared"]
+        },
+        "privacy": {
+          "gate_ref": "PrivacyPosture.public_safe_ref",
+          "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Public VOD is blocked until privacy posture is public-safe.",
+          "evidence_ref_examples": ["privacy:public-safe"]
+        },
+        "provenance": {
+          "gate_ref": "ContentSourceProvenance.ref",
+          "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Public VOD is blocked without source provenance.",
+          "evidence_ref_examples": ["provenance:source-manifest"]
+        },
+        "egress": {
+          "gate_ref": "EgressManifestGate.ref",
+          "required_for_states": ["public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "Public VOD is blocked until egress manifest and kill-switch posture pass.",
+          "evidence_ref_examples": ["egress:manifest-pass"]
+        },
+        "monetization": {
+          "gate_ref": "MonetizationReadiness.safe_to_monetize",
+          "required_for_states": ["public-monetizable"],
+          "operator_visible_reason": "VOD monetization is blocked until monetization readiness passes.",
+          "evidence_ref_examples": ["monetization:public-video"]
+        },
+        "operator_attestation": {
+          "gate_ref": "OperatorAttestation.optional_public_copy_ref",
+          "required_for_states": [],
+          "operator_visible_reason": "No operator attestation can replace the public evidence chain.",
+          "evidence_ref_examples": ["operator-attestation:optional"]
+        },
+        "no_hidden_operator_labor": {
+          "gate_ref": "NoHiddenOperatorLabor.ref",
+          "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"],
+          "operator_visible_reason": "VOD packaging is blocked if it creates hidden manual editing or support labor.",
+          "evidence_ref_examples": ["labor:no-hidden-operator-labor"]
+        }
+      },
+      "downstream_consumers": ["conversion-broker", "youtube-content-programming-packaging-compiler"],
+      "anti_overclaim_notes": [
+        "Views, clips, or audience response cannot upgrade rights or egress readiness.",
+        "Public copy cannot exceed the weakest evidence envelope."
+      ]
+    },
+    {
+      "target_family_id": "replay_demo",
+      "display_name": "Replay demos",
+      "target_policy_ref": "policy:replay-demo",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "dry-run", "public-archive", "public-live", "public-monetizable", "refused"],
+      "private_evidence_allowed": false,
+      "public_release_allowed": true,
+      "monetization_allowed": true,
+      "operator_attestation_required": false,
+      "gate_requirements": {
+        "wcs": {"gate_ref": "WCSWitness.ref", "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"], "operator_visible_reason": "Replay demos need witnessed runtime truth.", "evidence_ref_examples": ["wcs:replay"]},
+        "programme": {"gate_ref": "ContentProgrammeRunEnvelope.ref", "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"], "operator_visible_reason": "Replay demos need a programme run envelope.", "evidence_ref_examples": ["programme:replay-run"]},
+        "public_event": {"gate_ref": "ResearchVehiclePublicEvent.ref", "required_for_states": ["public-archive", "public-live", "public-monetizable"], "operator_visible_reason": "Replay demos need public-event linkage before public use.", "evidence_ref_examples": ["rvpe:replay"]},
+        "archive": {"gate_ref": "ArchiveFrameCaption.ref", "required_for_states": ["public-archive", "public-live", "public-monetizable"], "operator_visible_reason": "Replay demos need archive/frame/caption refs.", "evidence_ref_examples": ["archive:replay-sidecar"]},
+        "rights": {"gate_ref": "RightsLedger.cleared_ref", "required_for_states": ["public-archive", "public-live", "public-monetizable"], "operator_visible_reason": "Replay demos are blocked until rights are cleared.", "evidence_ref_examples": ["rights:replay-cleared"]},
+        "privacy": {"gate_ref": "PrivacyPosture.public_safe_ref", "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"], "operator_visible_reason": "Replay demos are blocked until privacy posture is public-safe.", "evidence_ref_examples": ["privacy:public-safe"]},
+        "provenance": {"gate_ref": "ContentSourceProvenance.ref", "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"], "operator_visible_reason": "Replay demos are blocked without source provenance.", "evidence_ref_examples": ["provenance:replay-source"]},
+        "egress": {"gate_ref": "EgressManifestGate.ref", "required_for_states": ["public-archive", "public-live", "public-monetizable"], "operator_visible_reason": "Replay demos need egress proof before public use.", "evidence_ref_examples": ["egress:manifest-pass"]},
+        "monetization": {"gate_ref": "MonetizationReadiness.safe_to_monetize", "required_for_states": ["public-monetizable"], "operator_visible_reason": "Replay demo monetization is blocked until monetization readiness passes.", "evidence_ref_examples": ["monetization:replay"]},
+        "operator_attestation": {"gate_ref": "OperatorAttestation.optional_public_copy_ref", "required_for_states": [], "operator_visible_reason": "Operator desire cannot replace replay evidence.", "evidence_ref_examples": ["operator-attestation:optional"]},
+        "no_hidden_operator_labor": {"gate_ref": "NoHiddenOperatorLabor.ref", "required_for_states": ["dry-run", "public-archive", "public-live", "public-monetizable"], "operator_visible_reason": "Replay demos are blocked if they depend on hidden manual curation.", "evidence_ref_examples": ["labor:no-hidden-operator-labor"]}
+      },
+      "downstream_consumers": ["conversion-broker", "replay-demo-residency-kit"],
+      "anti_overclaim_notes": [
+        "A compelling replay cannot outrun WCS, archive, rights, or egress evidence.",
+        "Monetizable replay requires the monetization gate, not just replay quality."
+      ]
+    },
+    {
+      "target_family_id": "dataset_card",
+      "display_name": "Dataset cards",
+      "target_policy_ref": "policy:dataset-card",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "dry-run", "public-archive", "refused"],
+      "private_evidence_allowed": false,
+      "public_release_allowed": true,
+      "monetization_allowed": false,
+      "operator_attestation_required": false,
+      "gate_requirements": {
+        "wcs": {"gate_ref": "WCSWitness.ref", "required_for_states": ["dry-run", "public-archive"], "operator_visible_reason": "Dataset cards need witnessed data origin.", "evidence_ref_examples": ["wcs:dataset"]},
+        "programme": {"gate_ref": "ContentProgrammeRunEnvelope.ref", "required_for_states": ["dry-run", "public-archive"], "operator_visible_reason": "Dataset cards need a run or corpus envelope.", "evidence_ref_examples": ["programme:dataset-run"]},
+        "public_event": {"gate_ref": "ResearchVehiclePublicEvent.ref", "required_for_states": ["public-archive"], "operator_visible_reason": "Public dataset cards need public-event or corpus-release refs.", "evidence_ref_examples": ["rvpe:dataset"]},
+        "archive": {"gate_ref": "ArchiveFrameCaption.ref", "required_for_states": ["public-archive"], "operator_visible_reason": "Public dataset cards need archive and sample refs.", "evidence_ref_examples": ["archive:dataset-sample"]},
+        "rights": {"gate_ref": "RightsLedger.cleared_ref", "required_for_states": ["public-archive"], "operator_visible_reason": "Dataset cards are blocked until rights are cleared.", "evidence_ref_examples": ["rights:dataset-cleared"]},
+        "privacy": {"gate_ref": "PrivacyPosture.public_safe_ref", "required_for_states": ["dry-run", "public-archive"], "operator_visible_reason": "Dataset cards are blocked until privacy posture is public-safe.", "evidence_ref_examples": ["privacy:dataset-public-safe"]},
+        "provenance": {"gate_ref": "ContentSourceProvenance.ref", "required_for_states": ["dry-run", "public-archive"], "operator_visible_reason": "Dataset cards are blocked without source provenance.", "evidence_ref_examples": ["provenance:dataset-lineage"]},
+        "egress": {"gate_ref": "EgressManifestGate.ref", "required_for_states": ["public-archive"], "operator_visible_reason": "Public dataset cards need egress proof.", "evidence_ref_examples": ["egress:dataset-pass"]},
+        "monetization": {"gate_ref": "MonetizationReadiness.safe_to_monetize", "required_for_states": ["public-monetizable"], "operator_visible_reason": "Dataset cards do not become monetizable from dataset quality alone.", "evidence_ref_examples": ["monetization:dataset"]},
+        "operator_attestation": {"gate_ref": "OperatorAttestation.optional_dataset_ref", "required_for_states": [], "operator_visible_reason": "Operator desire cannot replace dataset provenance.", "evidence_ref_examples": ["operator-attestation:optional"]},
+        "no_hidden_operator_labor": {"gate_ref": "NoHiddenOperatorLabor.ref", "required_for_states": ["dry-run", "public-archive"], "operator_visible_reason": "Dataset cards are blocked if they require hidden manual upkeep.", "evidence_ref_examples": ["labor:no-hidden-operator-labor"]}
+      },
+      "downstream_consumers": ["n1-methodology-dossier", "research-corpus-anonymization-rights-ledger"],
+      "anti_overclaim_notes": [
+        "Dataset usefulness cannot substitute for privacy or provenance.",
+        "Dataset cards are public archive artifacts, not generic monetization readiness."
+      ]
+    },
+    {
+      "target_family_id": "artifact_edition_release",
+      "display_name": "Artifact and edition releases",
+      "target_policy_ref": "policy:artifact-edition-release",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "private-evidence", "dry-run", "public-archive", "public-monetizable", "refused"],
+      "private_evidence_allowed": true,
+      "public_release_allowed": true,
+      "monetization_allowed": true,
+      "operator_attestation_required": true,
+      "gate_requirements": {
+        "wcs": {"gate_ref": "WCSWitness.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Artifact releases need witnessed origin evidence.", "evidence_ref_examples": ["wcs:artifact"]},
+        "programme": {"gate_ref": "ContentProgrammeRunEnvelope.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Artifact releases need a run envelope or edition source.", "evidence_ref_examples": ["programme:artifact-run"]},
+        "public_event": {"gate_ref": "ResearchVehiclePublicEvent.ref", "required_for_states": ["public-archive", "public-monetizable"], "operator_visible_reason": "Public artifact release needs public-event linkage.", "evidence_ref_examples": ["rvpe:artifact"]},
+        "archive": {"gate_ref": "ArchiveFrameCaption.ref", "required_for_states": ["public-archive", "public-monetizable"], "operator_visible_reason": "Public artifact release needs archive/frame/caption refs.", "evidence_ref_examples": ["archive:artifact-sidecar"]},
+        "rights": {"gate_ref": "RightsLedger.cleared_ref", "required_for_states": ["public-archive", "public-monetizable"], "operator_visible_reason": "Artifact release is blocked until rights are cleared.", "evidence_ref_examples": ["rights:artifact-cleared"]},
+        "privacy": {"gate_ref": "PrivacyPosture.public_or_private_safe_ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Artifact release is blocked until privacy posture matches the release mode.", "evidence_ref_examples": ["privacy:artifact-safe"]},
+        "provenance": {"gate_ref": "ContentSourceProvenance.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Artifact release is blocked without source provenance.", "evidence_ref_examples": ["provenance:artifact-lineage"]},
+        "egress": {"gate_ref": "EgressManifestGate.ref", "required_for_states": ["public-archive", "public-monetizable"], "operator_visible_reason": "Artifact release is blocked until egress proof passes.", "evidence_ref_examples": ["egress:artifact-pass"]},
+        "monetization": {"gate_ref": "MonetizationReadiness.safe_to_monetize", "required_for_states": ["public-monetizable"], "operator_visible_reason": "Artifact sale is blocked until monetization readiness passes.", "evidence_ref_examples": ["monetization:artifact"]},
+        "operator_attestation": {"gate_ref": "OperatorAttestation.edition_release_ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Artifact release requires explicit operator approval.", "evidence_ref_examples": ["operator-attestation:artifact-release"]},
+        "no_hidden_operator_labor": {"gate_ref": "NoHiddenOperatorLabor.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Artifact release is blocked if fulfillment creates hidden operator labor.", "evidence_ref_examples": ["labor:no-hidden-operator-labor"]}
+      },
+      "downstream_consumers": ["conversion-broker", "artifact-catalog-release-workflow"],
+      "anti_overclaim_notes": [
+        "Edition scarcity or buyer interest cannot bypass rights, provenance, egress, or labor gates.",
+        "Private edition preparation does not authorize sale."
+      ]
+    },
+    {
+      "target_family_id": "support_prompt",
+      "display_name": "Support prompts",
+      "target_policy_ref": "policy:no-perk-support-prompt",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "dry-run", "public-live", "public-monetizable", "refused"],
+      "private_evidence_allowed": false,
+      "public_release_allowed": true,
+      "monetization_allowed": true,
+      "operator_attestation_required": false,
+      "gate_requirements": {
+        "wcs": {"gate_ref": "WCSWitness.ref", "required_for_states": ["dry-run", "public-live", "public-monetizable"], "operator_visible_reason": "Support prompts need current public truth evidence.", "evidence_ref_examples": ["wcs:support"]},
+        "programme": {"gate_ref": "ContentProgrammeRunEnvelope.ref", "required_for_states": ["dry-run", "public-live", "public-monetizable"], "operator_visible_reason": "Support prompts need a run or surface context.", "evidence_ref_examples": ["programme:support-context"]},
+        "public_event": {"gate_ref": "ResearchVehiclePublicEvent.ref", "required_for_states": ["public-live", "public-monetizable"], "operator_visible_reason": "Public support prompts need public-event linkage.", "evidence_ref_examples": ["rvpe:support"]},
+        "archive": {"gate_ref": "ArchiveFrameCaption.ref", "required_for_states": ["public-live", "public-monetizable"], "operator_visible_reason": "Public support prompts need inspectable archive or frame refs.", "evidence_ref_examples": ["archive:support-ref"]},
+        "rights": {"gate_ref": "RightsLedger.cleared_ref", "required_for_states": ["public-live", "public-monetizable"], "operator_visible_reason": "Support prompts are blocked until referenced media rights are cleared.", "evidence_ref_examples": ["rights:support-cleared"]},
+        "privacy": {"gate_ref": "PrivacyPosture.public_safe_ref", "required_for_states": ["dry-run", "public-live", "public-monetizable"], "operator_visible_reason": "Support prompts are blocked until privacy posture is public-safe.", "evidence_ref_examples": ["privacy:support-public-safe"]},
+        "provenance": {"gate_ref": "ContentSourceProvenance.ref", "required_for_states": ["dry-run", "public-live", "public-monetizable"], "operator_visible_reason": "Support prompts are blocked without source provenance.", "evidence_ref_examples": ["provenance:support-lineage"]},
+        "egress": {"gate_ref": "EgressManifestGate.ref", "required_for_states": ["public-live", "public-monetizable"], "operator_visible_reason": "Support prompts are blocked until egress proof passes.", "evidence_ref_examples": ["egress:support-pass"]},
+        "monetization": {"gate_ref": "MonetizationReadiness.safe_to_accept_support", "required_for_states": ["public-monetizable"], "operator_visible_reason": "Support prompts are blocked until monetization/support readiness passes.", "evidence_ref_examples": ["monetization:support"]},
+        "operator_attestation": {"gate_ref": "OperatorAttestation.optional_support_ref", "required_for_states": [], "operator_visible_reason": "Operator desire cannot replace no-perk support readiness.", "evidence_ref_examples": ["operator-attestation:optional"]},
+        "no_hidden_operator_labor": {"gate_ref": "NoHiddenOperatorLabor.ref", "required_for_states": ["dry-run", "public-live", "public-monetizable"], "operator_visible_reason": "Support prompts are blocked if support buys access, requests, priority, or service labor.", "evidence_ref_examples": ["labor:no-hidden-operator-labor"]}
+      },
+      "downstream_consumers": ["monetization-readiness-ledger", "support-surface-registry"],
+      "anti_overclaim_notes": [
+        "Support prompts must sell no access, request queue, community, priority, deliverable, or control.",
+        "Audience warmth cannot upgrade support readiness."
+      ]
+    },
+    {
+      "target_family_id": "residency",
+      "display_name": "Residencies and institutional demos",
+      "target_policy_ref": "policy:residency-application-demo",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "private-evidence", "dry-run", "public-archive", "refused"],
+      "private_evidence_allowed": true,
+      "public_release_allowed": true,
+      "monetization_allowed": false,
+      "operator_attestation_required": true,
+      "gate_requirements": {
+        "wcs": {"gate_ref": "WCSWitness.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive"], "operator_visible_reason": "Residency packets need witnessed runtime truth.", "evidence_ref_examples": ["wcs:residency"]},
+        "programme": {"gate_ref": "ContentProgrammeRunEnvelope.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive"], "operator_visible_reason": "Residency packets need run or dossier evidence.", "evidence_ref_examples": ["programme:residency-run"]},
+        "public_event": {"gate_ref": "ResearchVehiclePublicEvent.ref", "required_for_states": ["public-archive"], "operator_visible_reason": "Public residency demos need public-event linkage.", "evidence_ref_examples": ["rvpe:residency"]},
+        "archive": {"gate_ref": "ArchiveFrameCaption.ref", "required_for_states": ["public-archive"], "operator_visible_reason": "Public residency demos need archive/frame/caption refs.", "evidence_ref_examples": ["archive:residency"]},
+        "rights": {"gate_ref": "RightsLedger.cleared_ref", "required_for_states": ["public-archive"], "operator_visible_reason": "Residency public demos are blocked until rights are cleared.", "evidence_ref_examples": ["rights:residency-cleared"]},
+        "privacy": {"gate_ref": "PrivacyPosture.public_or_private_safe_ref", "required_for_states": ["private-evidence", "dry-run", "public-archive"], "operator_visible_reason": "Residency evidence must be privacy-labeled.", "evidence_ref_examples": ["privacy:residency-safe"]},
+        "provenance": {"gate_ref": "ContentSourceProvenance.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive"], "operator_visible_reason": "Residency packets are blocked without source provenance.", "evidence_ref_examples": ["provenance:residency-lineage"]},
+        "egress": {"gate_ref": "EgressManifestGate.ref", "required_for_states": ["public-archive"], "operator_visible_reason": "Public residency demos need egress proof.", "evidence_ref_examples": ["egress:residency-pass"]},
+        "monetization": {"gate_ref": "MonetizationReadiness.safe_to_monetize", "required_for_states": ["public-monetizable"], "operator_visible_reason": "Residency evidence is not monetization readiness.", "evidence_ref_examples": ["monetization:residency"]},
+        "operator_attestation": {"gate_ref": "OperatorAttestation.residency_ref", "required_for_states": ["private-evidence", "dry-run", "public-archive"], "operator_visible_reason": "Residency packets require explicit operator attestation where claims or obligations are made.", "evidence_ref_examples": ["operator-attestation:residency"]},
+        "no_hidden_operator_labor": {"gate_ref": "NoHiddenOperatorLabor.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive"], "operator_visible_reason": "Residency packets are blocked if they imply hidden service, performance, reporting, or community labor.", "evidence_ref_examples": ["labor:no-hidden-operator-labor"]}
+      },
+      "downstream_consumers": ["grant-opportunity-scout-attestation-queue", "replay-demo-residency-kit"],
+      "anti_overclaim_notes": [
+        "Institutional interest cannot imply public release readiness.",
+        "Residency obligations remain an explicit operator gate."
+      ]
+    },
+    {
+      "target_family_id": "licensing",
+      "display_name": "Licensing",
+      "target_policy_ref": "policy:licensing",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "private-evidence", "dry-run", "public-archive", "public-monetizable", "refused"],
+      "private_evidence_allowed": true,
+      "public_release_allowed": true,
+      "monetization_allowed": true,
+      "operator_attestation_required": true,
+      "gate_requirements": {
+        "wcs": {"gate_ref": "WCSWitness.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Licensing needs witnessed origin evidence.", "evidence_ref_examples": ["wcs:licensing"]},
+        "programme": {"gate_ref": "ContentProgrammeRunEnvelope.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Licensing needs run, corpus, or artifact source evidence.", "evidence_ref_examples": ["programme:licensing-run"]},
+        "public_event": {"gate_ref": "ResearchVehiclePublicEvent.ref", "required_for_states": ["public-archive", "public-monetizable"], "operator_visible_reason": "Public licensing offers need public-event linkage.", "evidence_ref_examples": ["rvpe:licensing"]},
+        "archive": {"gate_ref": "ArchiveFrameCaption.ref", "required_for_states": ["public-archive", "public-monetizable"], "operator_visible_reason": "Licensing needs archive/sample refs.", "evidence_ref_examples": ["archive:licensing-sample"]},
+        "rights": {"gate_ref": "RightsLedger.cleared_ref", "required_for_states": ["public-archive", "public-monetizable"], "operator_visible_reason": "Licensing is blocked until rights are cleared.", "evidence_ref_examples": ["rights:licensing-cleared"]},
+        "privacy": {"gate_ref": "PrivacyPosture.public_or_private_safe_ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Licensing is blocked until privacy posture matches the licensing mode.", "evidence_ref_examples": ["privacy:licensing-safe"]},
+        "provenance": {"gate_ref": "ContentSourceProvenance.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Licensing is blocked without source provenance.", "evidence_ref_examples": ["provenance:licensing-lineage"]},
+        "egress": {"gate_ref": "EgressManifestGate.ref", "required_for_states": ["public-archive", "public-monetizable"], "operator_visible_reason": "Public licensing is blocked until egress proof passes.", "evidence_ref_examples": ["egress:licensing-pass"]},
+        "monetization": {"gate_ref": "MonetizationReadiness.safe_to_monetize", "required_for_states": ["public-monetizable"], "operator_visible_reason": "Licensing is blocked until monetization readiness passes.", "evidence_ref_examples": ["monetization:licensing"]},
+        "operator_attestation": {"gate_ref": "OperatorAttestation.licensing_ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Licensing requires explicit operator approval.", "evidence_ref_examples": ["operator-attestation:licensing"]},
+        "no_hidden_operator_labor": {"gate_ref": "NoHiddenOperatorLabor.ref", "required_for_states": ["private-evidence", "dry-run", "public-archive", "public-monetizable"], "operator_visible_reason": "Licensing is blocked if it creates hidden client service or bespoke labor.", "evidence_ref_examples": ["labor:no-hidden-operator-labor"]}
+      },
+      "downstream_consumers": ["conversion-broker", "condition-edition-marketplace-publisher"],
+      "anti_overclaim_notes": [
+        "License interest cannot upgrade rights ownership or privacy posture.",
+        "Licensing offers require operator approval and no hidden service labor."
+      ]
+    }
+  ],
+  "failure_fixtures": [
+    {
+      "fixture_id": "high_money_missing_egress",
+      "target_family_id": "artifact_edition_release",
+      "requested_state": "public-monetizable",
+      "expected_state": "blocked",
+      "missing_gate_dimensions": ["egress"],
+      "high_monetary_value": true,
+      "input_signals": ["revenue_potential", "operator_desire"],
+      "operator_visible_reason": "High artifact value cannot bypass egress proof."
+    },
+    {
+      "fixture_id": "missing_rights_blocks_youtube",
+      "target_family_id": "youtube_vod_packaging",
+      "requested_state": "public-live",
+      "expected_state": "blocked",
+      "missing_gate_dimensions": ["rights"],
+      "high_monetary_value": true,
+      "input_signals": ["engagement", "trend", "revenue_potential"],
+      "operator_visible_reason": "YouTube packaging cannot go public without rights clearance."
+    },
+    {
+      "fixture_id": "missing_provenance_blocks_dataset",
+      "target_family_id": "dataset_card",
+      "requested_state": "public-archive",
+      "expected_state": "blocked",
+      "missing_gate_dimensions": ["provenance"],
+      "high_monetary_value": false,
+      "input_signals": ["trend"],
+      "operator_visible_reason": "Dataset cards cannot publish without source provenance."
+    },
+    {
+      "fixture_id": "private_only_source_blocks_support",
+      "target_family_id": "support_prompt",
+      "requested_state": "public-monetizable",
+      "expected_state": "blocked",
+      "missing_gate_dimensions": ["privacy", "public_event", "egress"],
+      "high_monetary_value": true,
+      "input_signals": ["engagement", "revenue_potential", "operator_desire"],
+      "operator_visible_reason": "Private-only source evidence cannot become a public support prompt."
+    },
+    {
+      "fixture_id": "operator_attestation_required_for_fellowship",
+      "target_family_id": "grants_fellowships",
+      "requested_state": "private-evidence",
+      "expected_state": "blocked",
+      "missing_gate_dimensions": ["operator_attestation"],
+      "high_monetary_value": true,
+      "input_signals": ["trend", "operator_desire", "revenue_potential"],
+      "operator_visible_reason": "Fellowship/application packets require explicit operator attestation."
+    }
+  ]
+}

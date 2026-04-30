@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/conversion-target-readiness-threshold-matrix.schema.json",
+  "title": "ConversionTargetReadinessThresholdMatrix",
+  "description": "Fail-closed target-family readiness thresholds for grants, public packaging, support, artifacts, residencies, and licensing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "matrix_id",
+    "declared_at",
+    "producer",
+    "schema_ref",
+    "source_refs",
+    "readiness_states",
+    "minimum_evidence_chain",
+    "anti_overclaim_policy",
+    "target_families",
+    "failure_fixtures"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "matrix_id": {"type": "string", "const": "conversion_target_readiness_threshold_matrix"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/conversion-target-readiness-threshold-matrix.schema.json"
+    },
+    "source_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "readiness_states": {
+      "type": "array",
+      "prefixItems": [
+        {"const": "blocked"},
+        {"const": "private-evidence"},
+        {"const": "dry-run"},
+        {"const": "public-archive"},
+        {"const": "public-live"},
+        {"const": "public-monetizable"},
+        {"const": "refused"}
+      ],
+      "minItems": 7,
+      "maxItems": 7
+    },
+    "minimum_evidence_chain": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 8,
+      "uniqueItems": true
+    },
+    "anti_overclaim_policy": {"$ref": "#/$defs/anti_overclaim_policy"},
+    "target_families": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/target_family"},
+      "minItems": 8
+    },
+    "failure_fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/failure_fixture"},
+      "minItems": 5
+    }
+  },
+  "x-required_target_family_ids": [
+    "grants_fellowships",
+    "youtube_vod_packaging",
+    "replay_demo",
+    "dataset_card",
+    "artifact_edition_release",
+    "support_prompt",
+    "residency",
+    "licensing"
+  ],
+  "x-required_gate_dimensions": [
+    "wcs",
+    "programme",
+    "public_event",
+    "archive",
+    "rights",
+    "privacy",
+    "provenance",
+    "egress",
+    "monetization",
+    "operator_attestation",
+    "no_hidden_operator_labor"
+  ],
+  "$defs": {
+    "readiness_state": {
+      "type": "string",
+      "enum": [
+        "blocked",
+        "private-evidence",
+        "dry-run",
+        "public-archive",
+        "public-live",
+        "public-monetizable",
+        "refused"
+      ]
+    },
+    "gate_dimension": {
+      "type": "string",
+      "enum": [
+        "wcs",
+        "programme",
+        "public_event",
+        "archive",
+        "rights",
+        "privacy",
+        "provenance",
+        "egress",
+        "monetization",
+        "operator_attestation",
+        "no_hidden_operator_labor"
+      ]
+    },
+    "target_family_id": {
+      "type": "string",
+      "enum": [
+        "grants_fellowships",
+        "youtube_vod_packaging",
+        "replay_demo",
+        "dataset_card",
+        "artifact_edition_release",
+        "support_prompt",
+        "residency",
+        "licensing"
+      ]
+    },
+    "anti_overclaim_signal": {
+      "type": "string",
+      "enum": [
+        "engagement",
+        "revenue_potential",
+        "trend",
+        "operator_desire"
+      ]
+    },
+    "anti_overclaim_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engagement_can_upgrade",
+        "revenue_potential_can_upgrade",
+        "trend_can_upgrade",
+        "operator_desire_can_upgrade",
+        "selected_or_commanded_is_success",
+        "refusal_can_validate_refused_claim",
+        "notes"
+      ],
+      "properties": {
+        "engagement_can_upgrade": {"type": "boolean", "const": false},
+        "revenue_potential_can_upgrade": {"type": "boolean", "const": false},
+        "trend_can_upgrade": {"type": "boolean", "const": false},
+        "operator_desire_can_upgrade": {"type": "boolean", "const": false},
+        "selected_or_commanded_is_success": {"type": "boolean", "const": false},
+        "refusal_can_validate_refused_claim": {"type": "boolean", "const": false},
+        "notes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 4
+        }
+      }
+    },
+    "gate_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_ref",
+        "required_for_states",
+        "operator_visible_reason",
+        "evidence_ref_examples"
+      ],
+      "properties": {
+        "gate_ref": {"type": "string", "minLength": 1},
+        "required_for_states": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/readiness_state"},
+          "uniqueItems": true
+        },
+        "operator_visible_reason": {"type": "string", "minLength": 1},
+        "evidence_ref_examples": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "gate_requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wcs",
+        "programme",
+        "public_event",
+        "archive",
+        "rights",
+        "privacy",
+        "provenance",
+        "egress",
+        "monetization",
+        "operator_attestation",
+        "no_hidden_operator_labor"
+      ],
+      "properties": {
+        "wcs": {"$ref": "#/$defs/gate_requirement"},
+        "programme": {"$ref": "#/$defs/gate_requirement"},
+        "public_event": {"$ref": "#/$defs/gate_requirement"},
+        "archive": {"$ref": "#/$defs/gate_requirement"},
+        "rights": {"$ref": "#/$defs/gate_requirement"},
+        "privacy": {"$ref": "#/$defs/gate_requirement"},
+        "provenance": {"$ref": "#/$defs/gate_requirement"},
+        "egress": {"$ref": "#/$defs/gate_requirement"},
+        "monetization": {"$ref": "#/$defs/gate_requirement"},
+        "operator_attestation": {"$ref": "#/$defs/gate_requirement"},
+        "no_hidden_operator_labor": {"$ref": "#/$defs/gate_requirement"}
+      }
+    },
+    "target_family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_family_id",
+        "display_name",
+        "target_policy_ref",
+        "default_state",
+        "allowed_states",
+        "private_evidence_allowed",
+        "public_release_allowed",
+        "monetization_allowed",
+        "operator_attestation_required",
+        "gate_requirements",
+        "downstream_consumers",
+        "anti_overclaim_notes"
+      ],
+      "properties": {
+        "target_family_id": {"$ref": "#/$defs/target_family_id"},
+        "display_name": {"type": "string", "minLength": 1},
+        "target_policy_ref": {"type": "string", "minLength": 1},
+        "default_state": {"type": "string", "const": "blocked"},
+        "allowed_states": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/readiness_state"},
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "private_evidence_allowed": {"type": "boolean"},
+        "public_release_allowed": {"type": "boolean"},
+        "monetization_allowed": {"type": "boolean"},
+        "operator_attestation_required": {"type": "boolean"},
+        "gate_requirements": {"$ref": "#/$defs/gate_requirements"},
+        "downstream_consumers": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "anti_overclaim_notes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 2
+        }
+      }
+    },
+    "failure_fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "target_family_id",
+        "requested_state",
+        "expected_state",
+        "missing_gate_dimensions",
+        "high_monetary_value",
+        "input_signals",
+        "operator_visible_reason"
+      ],
+      "properties": {
+        "fixture_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+        "target_family_id": {"$ref": "#/$defs/target_family_id"},
+        "requested_state": {"$ref": "#/$defs/readiness_state"},
+        "expected_state": {"type": "string", "enum": ["blocked", "refused"]},
+        "missing_gate_dimensions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/gate_dimension"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "high_monetary_value": {"type": "boolean"},
+        "input_signals": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/anti_overclaim_signal"},
+          "uniqueItems": true
+        },
+        "operator_visible_reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
