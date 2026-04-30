@@ -1045,6 +1045,16 @@ class CpalRunner:
                             # Speaking gate: suppress VAD during playback
                             # to prevent the Yeti mic from capturing our
                             # own TTS output as an "operator utterance."
+                            # Also register the narrative text with the
+                            # pipeline's echo history so _is_echo() can
+                            # reject mic-captured echoes of this TTS.
+                            if self._pipeline and hasattr(self._pipeline, "_recent_tts_texts"):
+                                self._pipeline._recent_tts_texts.append(
+                                    (
+                                        time.monotonic(),
+                                        narrative.lower().strip().rstrip(".,!?"),
+                                    )
+                                )
                             self._buffer.set_speaking(True)
                             if self._echo_canceller:
                                 self._echo_canceller.feed_reference(pcm)
