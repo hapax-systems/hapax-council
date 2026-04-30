@@ -1,0 +1,469 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "scrim-refusal-correction-boundary-gestures-20260430",
+  "schema_ref": "schemas/scrim-refusal-correction-boundary-gestures.schema.json",
+  "generated_from": [
+    "spec:2026-04-29-scrim-programme-director-behavior-contract",
+    "spec:2026-04-29-programme-world-surface-integration-plan",
+    "docs/superpowers/specs/2026-04-29-programme-boundary-event-surface-design.md",
+    "shared/content_programme_run_store.py",
+    "shared/scrim_wcs_claim_posture.py",
+    "shared/director_scrim_gesture_adapter.py"
+  ],
+  "declared_at": "2026-04-30T06:32:00Z",
+  "producer": "cx-amber",
+  "boundary_postures": [
+    "refusal",
+    "correction",
+    "uncertainty",
+    "stale_source",
+    "rights_blocked",
+    "privacy_blocked",
+    "monetization_held",
+    "public_event_held"
+  ],
+  "fail_closed_policy": {
+    "scrim_grants_truth": false,
+    "scrim_grants_rights": false,
+    "scrim_grants_safety": false,
+    "scrim_grants_public_status": false,
+    "scrim_grants_monetization_status": false,
+    "scrim_implies_public_fanout": false,
+    "aesthetic_emphasis_validates_blocked_claim": false,
+    "private_blocked_details_can_be_foregrounded": false
+  },
+  "fixtures": [
+    {
+      "fixture_id": "public_safe_refusal_success",
+      "family": "refusal",
+      "boundary_event": {
+        "schema_version": 1,
+        "boundary_id": "pbe:refusal-public-safe",
+        "emitted_at": "2026-04-30T06:32:01Z",
+        "programme_id": "programme:refusal-breakdown",
+        "run_id": "run:refusal-public-safe",
+        "format_id": "refusal_breakdown",
+        "sequence": 4,
+        "boundary_type": "refusal.issued",
+        "public_private_mode": "public_archive",
+        "summary": "Unsupported claim converted into a public-safe refusal artifact.",
+        "evidence_refs": ["evidence:format-refusal:unsupported-claim"],
+        "no_expert_system_gate": {
+          "gate_ref": "gate:no-expert-system:refusal-public-safe",
+          "gate_state": "refusal",
+          "claim_allowed": false,
+          "public_claim_allowed": false,
+          "infractions": []
+        },
+        "claim_shape": {
+          "claim_kind": "refusal",
+          "authority_ceiling": "evidence_bound",
+          "confidence_label": "none",
+          "uncertainty": "Claim refused; no answer asserted.",
+          "scope_limit": "Refusal artifact only."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "fallback_action": "archive_only",
+          "unavailable_reasons": []
+        },
+        "dry_run_unavailable_reasons": [],
+        "duplicate_key": "programme:run:refusal-public-safe:004"
+      },
+      "wcs_source_refs": ["wcs:boundary:refusal-public-safe", "scrim-wcs-posture:refusal"],
+      "source_refs": ["content-programme-run:run:refusal-public-safe"],
+      "run_store_ref": "content-programme-run-store:run:refusal-public-safe:boundary:004",
+      "audit_log_ref": "audit:scrim-boundary:refusal-public-safe",
+      "health_ref": "health:scrim.visual.nominal",
+      "target_region_refs": ["region:programme.primary"],
+      "requested_intensity": 0.52,
+      "expected": {
+        "posture": "refusal",
+        "visual_treatment": "foreground_public_safe_artifact",
+        "scrim_state_gesture_type": "refusal_dim",
+        "artifact_visibility": "foreground_public_safe",
+        "programme_output_success": true,
+        "public_safe_artifact": true,
+        "reason_code": "public_safe_refusal_artifact"
+      }
+    },
+    {
+      "fixture_id": "public_safe_correction_success",
+      "family": "correction",
+      "boundary_event": {
+        "schema_version": 1,
+        "boundary_id": "pbe:correction-public-safe",
+        "emitted_at": "2026-04-30T06:32:02Z",
+        "programme_id": "programme:evidence-audit",
+        "run_id": "run:correction-public-safe",
+        "format_id": "evidence_audit",
+        "sequence": 5,
+        "boundary_type": "correction.made",
+        "public_private_mode": "public_archive",
+        "summary": "Correction artifact replaces an earlier public-safe error.",
+        "evidence_refs": ["evidence:correction:source-ledger"],
+        "no_expert_system_gate": {
+          "gate_ref": "gate:no-expert-system:correction-public-safe",
+          "gate_state": "correction_required",
+          "claim_allowed": false,
+          "public_claim_allowed": false,
+          "infractions": []
+        },
+        "claim_shape": {
+          "claim_kind": "correction",
+          "authority_ceiling": "evidence_bound",
+          "confidence_label": "none",
+          "uncertainty": "Correction cites source ledger rather than new authority.",
+          "scope_limit": "Correction artifact only."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "fallback_action": "archive_only",
+          "unavailable_reasons": []
+        },
+        "dry_run_unavailable_reasons": [],
+        "duplicate_key": "programme:run:correction-public-safe:005"
+      },
+      "wcs_source_refs": ["wcs:boundary:correction-public-safe", "scrim-wcs-posture:correction"],
+      "source_refs": ["content-programme-run:run:correction-public-safe"],
+      "run_store_ref": "content-programme-run-store:run:correction-public-safe:boundary:005",
+      "audit_log_ref": "audit:scrim-boundary:correction-public-safe",
+      "health_ref": "health:scrim.visual.nominal",
+      "target_region_refs": ["region:programme.primary"],
+      "requested_intensity": 0.58,
+      "expected": {
+        "posture": "correction",
+        "visual_treatment": "foreground_public_safe_artifact",
+        "scrim_state_gesture_type": "correction_glint",
+        "artifact_visibility": "foreground_public_safe",
+        "programme_output_success": true,
+        "public_safe_artifact": true,
+        "reason_code": "public_safe_correction_artifact"
+      }
+    },
+    {
+      "fixture_id": "uncertainty_local_clarity",
+      "family": "uncertainty",
+      "boundary_event": {
+        "schema_version": 1,
+        "boundary_id": "pbe:uncertainty-local",
+        "emitted_at": "2026-04-30T06:32:03Z",
+        "programme_id": "programme:comparison",
+        "run_id": "run:uncertainty-local",
+        "format_id": "comparison",
+        "sequence": 6,
+        "boundary_type": "uncertainty.marked",
+        "public_private_mode": "public_archive",
+        "summary": "Boundary marks uncertainty without strengthening the claim.",
+        "evidence_refs": ["evidence:comparison:partial"],
+        "no_expert_system_gate": {
+          "gate_ref": "gate:no-expert-system:uncertainty-local",
+          "gate_state": "pass",
+          "claim_allowed": true,
+          "public_claim_allowed": true,
+          "infractions": []
+        },
+        "claim_shape": {
+          "claim_kind": "comparison",
+          "authority_ceiling": "speculative",
+          "confidence_label": "low",
+          "uncertainty": "Evidence is partial and marked as uncertain.",
+          "scope_limit": "Comparison remains bounded to cited evidence."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "fallback_action": "archive_only",
+          "unavailable_reasons": []
+        },
+        "dry_run_unavailable_reasons": [],
+        "duplicate_key": "programme:run:uncertainty-local:006"
+      },
+      "wcs_source_refs": ["wcs:boundary:uncertainty-local", "scrim-wcs-posture:uncertain"],
+      "source_refs": ["content-programme-run:run:uncertainty-local"],
+      "run_store_ref": "content-programme-run-store:run:uncertainty-local:boundary:006",
+      "audit_log_ref": "audit:scrim-boundary:uncertainty-local",
+      "health_ref": "health:scrim.visual.nominal",
+      "target_region_refs": ["region:programme.primary"],
+      "requested_intensity": 0.36,
+      "expected": {
+        "posture": "uncertainty",
+        "visual_treatment": "local_clarity_shift",
+        "scrim_state_gesture_type": "shimmer",
+        "artifact_visibility": "none",
+        "programme_output_success": false,
+        "public_safe_artifact": false,
+        "reason_code": "uncertainty"
+      }
+    },
+    {
+      "fixture_id": "stale_source_holds_last_safe",
+      "family": "stale_source",
+      "boundary_event": {
+        "schema_version": 1,
+        "boundary_id": "pbe:stale-source",
+        "emitted_at": "2026-04-30T06:32:04Z",
+        "programme_id": "programme:ranking",
+        "run_id": "run:stale-source",
+        "format_id": "ranking",
+        "sequence": 7,
+        "boundary_type": "uncertainty.marked",
+        "public_private_mode": "public_archive",
+        "summary": "Boundary holds because the source is stale.",
+        "evidence_refs": ["evidence:ranking:stale-source"],
+        "no_expert_system_gate": {
+          "gate_ref": "gate:no-expert-system:stale-source",
+          "gate_state": "dry_run",
+          "claim_allowed": false,
+          "public_claim_allowed": false,
+          "infractions": ["source_stale"]
+        },
+        "claim_shape": {
+          "claim_kind": "ranking",
+          "authority_ceiling": "speculative",
+          "confidence_label": "low",
+          "uncertainty": "Source has expired.",
+          "scope_limit": "Dry-run ranking only."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "fallback_action": "hold",
+          "unavailable_reasons": ["source_stale"]
+        },
+        "dry_run_unavailable_reasons": ["source_stale"],
+        "duplicate_key": "programme:run:stale-source:007"
+      },
+      "wcs_source_refs": ["wcs:boundary:stale-source", "scrim-wcs-posture:stale"],
+      "source_refs": ["content-programme-run:run:stale-source"],
+      "run_store_ref": "content-programme-run-store:run:stale-source:boundary:007",
+      "audit_log_ref": "audit:scrim-boundary:stale-source",
+      "health_ref": "health:scrim.visual.stale",
+      "target_region_refs": ["region:programme.primary"],
+      "requested_intensity": 0.61,
+      "expected": {
+        "posture": "stale_source",
+        "visual_treatment": "hold_last_safe",
+        "scrim_state_gesture_type": "neutral_hold",
+        "artifact_visibility": "operator_only",
+        "programme_output_success": false,
+        "public_safe_artifact": false,
+        "reason_code": "stale_source"
+      }
+    },
+    {
+      "fixture_id": "rights_blocked_metadata_first",
+      "family": "rights_blocked",
+      "boundary_event": {
+        "schema_version": 1,
+        "boundary_id": "pbe:rights-blocked",
+        "emitted_at": "2026-04-30T06:32:05Z",
+        "programme_id": "programme:react-commentary",
+        "run_id": "run:rights-blocked",
+        "format_id": "react_commentary",
+        "sequence": 8,
+        "boundary_type": "artifact.candidate",
+        "public_private_mode": "public_monetizable",
+        "summary": "Rights-blocked media cannot be public-foregrounded.",
+        "evidence_refs": ["evidence:rights:third-party-media"],
+        "no_expert_system_gate": {
+          "gate_ref": "gate:no-expert-system:rights-blocked",
+          "gate_state": "fail",
+          "claim_allowed": false,
+          "public_claim_allowed": false,
+          "infractions": ["rights_blocked"]
+        },
+        "claim_shape": {
+          "claim_kind": "observation",
+          "authority_ceiling": "internal_only",
+          "confidence_label": "none",
+          "uncertainty": "Rights provenance blocks public use.",
+          "scope_limit": "Metadata-only operator record."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "fallback_action": "deny",
+          "unavailable_reasons": ["rights_blocked"]
+        },
+        "dry_run_unavailable_reasons": ["rights_blocked"],
+        "duplicate_key": "programme:run:rights-blocked:008"
+      },
+      "wcs_source_refs": ["wcs:boundary:rights-blocked", "scrim-wcs-posture:rights-blocked"],
+      "source_refs": ["content-programme-run:run:rights-blocked"],
+      "run_store_ref": "content-programme-run-store:run:rights-blocked:boundary:008",
+      "audit_log_ref": "audit:scrim-boundary:rights-blocked",
+      "health_ref": "health:scrim.visual.rights-blocked",
+      "target_region_refs": ["region:programme.primary"],
+      "requested_intensity": 0.9,
+      "expected": {
+        "posture": "rights_blocked",
+        "visual_treatment": "neutralize_blocked_claim",
+        "scrim_state_gesture_type": "neutral_hold",
+        "artifact_visibility": "metadata_only",
+        "programme_output_success": false,
+        "public_safe_artifact": false,
+        "reason_code": "rights_blocked"
+      }
+    },
+    {
+      "fixture_id": "privacy_blocked_detail_suppressed",
+      "family": "privacy_blocked",
+      "boundary_event": {
+        "schema_version": 1,
+        "boundary_id": "pbe:privacy-blocked",
+        "emitted_at": "2026-04-30T06:32:06Z",
+        "programme_id": "programme:watch-along",
+        "run_id": "run:privacy-blocked",
+        "format_id": "watch_along",
+        "sequence": 9,
+        "boundary_type": "claim.made",
+        "public_private_mode": "private",
+        "summary": "Private source details are suppressed from the scrim.",
+        "evidence_refs": ["evidence:private-monitor:operator-only"],
+        "no_expert_system_gate": {
+          "gate_ref": "gate:no-expert-system:privacy-blocked",
+          "gate_state": "private_only",
+          "claim_allowed": false,
+          "public_claim_allowed": false,
+          "infractions": ["privacy_blocked"]
+        },
+        "claim_shape": {
+          "claim_kind": "observation",
+          "authority_ceiling": "internal_only",
+          "confidence_label": "none",
+          "uncertainty": "Private-only source detail.",
+          "scope_limit": "Operator-only diagnostic."
+        },
+        "public_event_mapping": {
+          "internal_only": true,
+          "fallback_action": "private_only",
+          "unavailable_reasons": ["privacy_blocked", "private_mode"]
+        },
+        "dry_run_unavailable_reasons": ["privacy_blocked", "private_mode"],
+        "duplicate_key": "programme:run:privacy-blocked:009"
+      },
+      "wcs_source_refs": ["wcs:boundary:privacy-blocked", "scrim-wcs-posture:private-only"],
+      "source_refs": ["content-programme-run:run:privacy-blocked"],
+      "run_store_ref": "content-programme-run-store:run:privacy-blocked:boundary:009",
+      "audit_log_ref": "audit:scrim-boundary:privacy-blocked",
+      "health_ref": "health:scrim.visual.private-only",
+      "target_region_refs": ["region:programme.primary"],
+      "requested_intensity": 0.48,
+      "expected": {
+        "posture": "privacy_blocked",
+        "visual_treatment": "suppress_private_detail",
+        "scrim_state_gesture_type": "neutral_hold",
+        "artifact_visibility": "suppressed_private",
+        "programme_output_success": false,
+        "public_safe_artifact": false,
+        "reason_code": "privacy_blocked"
+      }
+    },
+    {
+      "fixture_id": "monetization_held_boundary",
+      "family": "monetization_held",
+      "boundary_event": {
+        "schema_version": 1,
+        "boundary_id": "pbe:monetization-held",
+        "emitted_at": "2026-04-30T06:32:07Z",
+        "programme_id": "programme:review",
+        "run_id": "run:monetization-held",
+        "format_id": "review",
+        "sequence": 10,
+        "boundary_type": "artifact.candidate",
+        "public_private_mode": "public_monetizable",
+        "summary": "Public artifact can exist, but monetization is held.",
+        "evidence_refs": ["evidence:review:owned-archive"],
+        "no_expert_system_gate": {
+          "gate_ref": "gate:no-expert-system:monetization-held",
+          "gate_state": "dry_run",
+          "claim_allowed": false,
+          "public_claim_allowed": false,
+          "infractions": ["monetization_blocked"]
+        },
+        "claim_shape": {
+          "claim_kind": "metadata",
+          "authority_ceiling": "internal_only",
+          "confidence_label": "none",
+          "uncertainty": "Monetization readiness missing.",
+          "scope_limit": "Hold monetization status."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "fallback_action": "hold",
+          "unavailable_reasons": ["monetization_blocked"]
+        },
+        "dry_run_unavailable_reasons": ["monetization_blocked"],
+        "duplicate_key": "programme:run:monetization-held:010"
+      },
+      "wcs_source_refs": ["wcs:boundary:monetization-held", "scrim-wcs-posture:conversion-held"],
+      "source_refs": ["content-programme-run:run:monetization-held"],
+      "run_store_ref": "content-programme-run-store:run:monetization-held:boundary:010",
+      "audit_log_ref": "audit:scrim-boundary:monetization-held",
+      "health_ref": "health:scrim.visual.monetization-held",
+      "target_region_refs": ["region:programme.primary"],
+      "requested_intensity": 0.62,
+      "expected": {
+        "posture": "monetization_held",
+        "visual_treatment": "neutralize_blocked_claim",
+        "scrim_state_gesture_type": "neutral_hold",
+        "artifact_visibility": "operator_only",
+        "programme_output_success": false,
+        "public_safe_artifact": false,
+        "reason_code": "monetization_held"
+      }
+    },
+    {
+      "fixture_id": "public_event_held_boundary_pulse",
+      "family": "public_event_held",
+      "boundary_event": {
+        "schema_version": 1,
+        "boundary_id": "pbe:public-event-held",
+        "emitted_at": "2026-04-30T06:32:08Z",
+        "programme_id": "programme:rundown",
+        "run_id": "run:public-event-held",
+        "format_id": "rundown",
+        "sequence": 11,
+        "boundary_type": "programme.ended",
+        "public_private_mode": "public_live",
+        "summary": "Boundary can pulse locally while the public event mapping is held.",
+        "evidence_refs": ["evidence:rundown:boundary"],
+        "no_expert_system_gate": {
+          "gate_ref": "gate:no-expert-system:public-event-held",
+          "gate_state": "dry_run",
+          "claim_allowed": false,
+          "public_claim_allowed": false,
+          "infractions": ["research_vehicle_public_event_missing"]
+        },
+        "claim_shape": {
+          "claim_kind": "metadata",
+          "authority_ceiling": "internal_only",
+          "confidence_label": "none",
+          "uncertainty": "Research vehicle public event has not been linked.",
+          "scope_limit": "Local boundary marker only."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "fallback_action": "operator_review",
+          "unavailable_reasons": ["research_vehicle_public_event_missing"]
+        },
+        "dry_run_unavailable_reasons": ["research_vehicle_public_event_missing"],
+        "duplicate_key": "programme:run:public-event-held:011"
+      },
+      "wcs_source_refs": ["wcs:boundary:public-event-held", "scrim-wcs-posture:public-event-held"],
+      "source_refs": ["content-programme-run:run:public-event-held"],
+      "run_store_ref": "content-programme-run-store:run:public-event-held:boundary:011",
+      "audit_log_ref": "audit:scrim-boundary:public-event-held",
+      "health_ref": "health:scrim.visual.public-event-held",
+      "target_region_refs": ["region:programme.primary"],
+      "requested_intensity": 0.44,
+      "expected": {
+        "posture": "public_event_held",
+        "visual_treatment": "boundary_breath_pulse",
+        "scrim_state_gesture_type": "mark_boundary",
+        "artifact_visibility": "operator_only",
+        "programme_output_success": false,
+        "public_safe_artifact": false,
+        "reason_code": "public_event_held"
+      }
+    }
+  ]
+}
