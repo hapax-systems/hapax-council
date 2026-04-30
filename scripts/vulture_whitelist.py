@@ -58,6 +58,23 @@ from shared.conversion_target_readiness import (
 from shared.director_control_audit import DirectorControlMoveAuditRecord
 from shared.director_intent import CompositionalImpingement, DirectorIntent
 from shared.director_vocabulary import DirectorVocabulary, SpectacleLaneState
+from shared.director_world_surface_snapshot import (
+    ClaimPosture as DirectorWorldSurfaceClaimPosture,
+)
+from shared.director_world_surface_snapshot import (
+    DirectorWorldSurfaceMoveRow,
+    DirectorWorldSurfaceSnapshot,
+    DirectorWorldSurfaceSnapshotFixtureSet,
+)
+from shared.director_world_surface_snapshot import (
+    EvidenceObligation as DirectorWorldSurfaceEvidenceObligation,
+)
+from shared.director_world_surface_snapshot import (
+    Fallback as DirectorWorldSurfaceFallback,
+)
+from shared.director_world_surface_snapshot import (
+    Freshness as DirectorWorldSurfaceFreshness,
+)
 from shared.grounding_provider_router import (
     build_eval_artifact,
     build_privacy_egress_preflight,
@@ -290,6 +307,24 @@ ScrimWCSClaimPostureProjection._validate_no_claim_expansion
 WitnessProbeRecord._validate_state_evidence
 WCSWitnessProbeFixtureSet.require_probe
 WCSWitnessProbeFixtureSet.probes_for_surface
+
+# Director World Surface snapshot helpers are the public contract for downstream
+# prompt, vocabulary, programme, public-event, and move-normalizer tasks.
+# Pydantic invokes validators dynamically; downstream consumers call read
+# helpers after this schema/fixture contract lands.
+DirectorWorldSurfaceFreshness._fresh_sources_need_evidence
+DirectorWorldSurfaceEvidenceObligation._satisfied_obligations_need_evidence
+DirectorWorldSurfaceClaimPosture._validate_claim_posture_order
+DirectorWorldSurfaceFallback._fallback_target_requires_target
+DirectorWorldSurfaceMoveRow._validate_director_move_fail_closed
+DirectorWorldSurfaceSnapshot._validate_snapshot_move_buckets
+DirectorWorldSurfaceSnapshot.public_live_moves
+DirectorWorldSurfaceSnapshot.rows_for_status
+DirectorWorldSurfaceSnapshot.rows_for_surface_family
+DirectorWorldSurfaceSnapshot.prompt_projection_payloads
+DirectorWorldSurfaceSnapshotFixtureSet._validate_fixture_set_coverage
+DirectorWorldSurfaceSnapshotFixtureSet.rows_for_status
+DirectorWorldSurfaceSnapshotFixtureSet.rows_for_surface_family
 
 # Capability outcome envelope helpers are the public contract for downstream
 # affordance outcome adapters, dispatch audits, public-event adapters, and

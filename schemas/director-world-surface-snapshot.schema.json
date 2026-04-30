@@ -1,0 +1,743 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/director-world-surface-snapshot.schema.json",
+  "title": "DirectorWorldSurfaceSnapshotFixtures",
+  "description": "Fixture-backed DirectorWorldSurfaceSnapshot contract. Static prompt hints are visible as hints only and cannot satisfy availability or public/live claimability.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "declared_at",
+    "generated_from",
+    "producer",
+    "move_statuses",
+    "surface_families",
+    "director_move_row_required_fields",
+    "director_snapshot_required_fields",
+    "snapshots",
+    "fail_closed_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/director-world-surface-snapshot.schema.json"
+    },
+    "declared_at": {"type": "string", "minLength": 1},
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "producer": {"type": "string", "minLength": 1},
+    "move_statuses": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/move_status"},
+      "uniqueItems": true,
+      "minItems": 8
+    },
+    "surface_families": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/surface_family"},
+      "uniqueItems": true,
+      "minItems": 8
+    },
+    "director_move_row_required_fields": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/director_move_row_field"},
+      "uniqueItems": true,
+      "minItems": 31
+    },
+    "director_snapshot_required_fields": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/director_snapshot_field"},
+      "uniqueItems": true,
+      "minItems": 28
+    },
+    "snapshots": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/director_snapshot"},
+      "minItems": 1
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "static_prompt_hint_satisfies_availability",
+        "static_prompt_hint_satisfies_public_live",
+        "stale_surface_claims_public_live",
+        "private_surface_claims_public_live",
+        "dry_run_surface_claims_public_live",
+        "blocked_surface_executes_real_move",
+        "unavailable_surface_executes_real_move",
+        "blocked_hardware_uses_default_fallback",
+        "monetization_without_public_live",
+        "public_live_without_evidence_obligations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "static_prompt_hint_satisfies_availability": {"type": "boolean", "const": false},
+        "static_prompt_hint_satisfies_public_live": {"type": "boolean", "const": false},
+        "stale_surface_claims_public_live": {"type": "boolean", "const": false},
+        "private_surface_claims_public_live": {"type": "boolean", "const": false},
+        "dry_run_surface_claims_public_live": {"type": "boolean", "const": false},
+        "blocked_surface_executes_real_move": {"type": "boolean", "const": false},
+        "unavailable_surface_executes_real_move": {"type": "boolean", "const": false},
+        "blocked_hardware_uses_default_fallback": {"type": "boolean", "const": false},
+        "monetization_without_public_live": {"type": "boolean", "const": false},
+        "public_live_without_evidence_obligations": {"type": "boolean", "const": false}
+      }
+    }
+  },
+  "x-required_move_statuses": [
+    "mounted",
+    "public",
+    "private",
+    "dry_run",
+    "stale",
+    "blocked",
+    "unavailable",
+    "blocked_hardware_no_op"
+  ],
+  "x-required_surface_families": [
+    "tool_schema",
+    "runtime_service",
+    "state_file",
+    "device",
+    "audio_route",
+    "model_provider",
+    "publication_endpoint",
+    "blocked_decommissioned"
+  ],
+  "x-director_move_row_required_fields": [
+    "schema_version",
+    "move_id",
+    "surface_id",
+    "status",
+    "verb",
+    "target_type",
+    "target_id",
+    "display_name",
+    "source_refs",
+    "generated_from",
+    "intent_families",
+    "surface_family",
+    "surface_ids",
+    "route_refs",
+    "evidence_status",
+    "freshness",
+    "availability",
+    "privacy_class",
+    "rights_class",
+    "monetization_state",
+    "grounding_status",
+    "claim_authority_ceiling",
+    "claim_posture",
+    "public_claim_allowed",
+    "public_event_policy",
+    "evidence_obligations",
+    "required_witness_refs",
+    "missing_witness_refs",
+    "blocked_reasons",
+    "blocker_reason",
+    "fallback",
+    "outcome_policy_ref",
+    "director_control_move_template"
+  ],
+  "x-director_snapshot_required_fields": [
+    "schema_version",
+    "snapshot_id",
+    "generated_at",
+    "freshness_ttl_s",
+    "mode",
+    "programme_ref",
+    "condition_ref",
+    "egress_state_ref",
+    "audio_state_ref",
+    "rights_state_ref",
+    "privacy_state_ref",
+    "capability_refs",
+    "substrate_refs",
+    "route_refs",
+    "lane_refs",
+    "claim_refs",
+    "public_event_refs",
+    "available_moves",
+    "blocked_moves",
+    "dry_run_moves",
+    "private_only_moves",
+    "fallback_moves",
+    "eligible_programme_formats",
+    "opportunity_refs",
+    "evidence_obligations",
+    "refusal_or_correction_candidates",
+    "prompt_summary",
+    "audit_refs"
+  ],
+  "$defs": {
+    "move_status": {
+      "type": "string",
+      "enum": [
+        "mounted",
+        "public",
+        "private",
+        "dry_run",
+        "stale",
+        "blocked",
+        "unavailable",
+        "blocked_hardware_no_op"
+      ]
+    },
+    "snapshot_mode": {"type": "string", "enum": ["research", "rnd", "fortress"]},
+    "surface_family": {
+      "type": "string",
+      "enum": [
+        "tool_schema",
+        "runtime_service",
+        "state_file",
+        "device",
+        "audio_route",
+        "video_surface",
+        "midi_surface",
+        "desktop_control",
+        "model_provider",
+        "search_provider",
+        "publication_endpoint",
+        "public_event",
+        "archive_processor",
+        "blocked_decommissioned",
+        "static_prompt_hint"
+      ]
+    },
+    "generated_from": {
+      "type": "string",
+      "enum": [
+        "capability_classification_inventory",
+        "wcs_health_envelope",
+        "runtime_witness",
+        "director_vocabulary",
+        "programme_context",
+        "public_event_gate",
+        "static_prompt_hint",
+        "decommission_evidence"
+      ]
+    },
+    "evidence_status": {
+      "type": "string",
+      "enum": [
+        "fresh",
+        "stale",
+        "missing",
+        "unknown",
+        "blocked",
+        "private_only",
+        "dry_run",
+        "not_applicable"
+      ]
+    },
+    "freshness_state": {
+      "type": "string",
+      "enum": ["fresh", "stale", "missing", "unknown", "not_applicable"]
+    },
+    "privacy_class": {
+      "type": "string",
+      "enum": ["public_safe", "private_only", "dry_run", "blocked", "unknown"]
+    },
+    "rights_class": {
+      "type": "string",
+      "enum": [
+        "public_clear",
+        "private_only",
+        "blocked",
+        "missing",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "monetization_state": {"type": "string", "enum": ["allowed", "blocked", "not_applicable"]},
+    "grounding_status": {
+      "type": "string",
+      "enum": ["grounded", "blocked", "missing", "private_only", "dry_run", "not_applicable"]
+    },
+    "claim_authority_ceiling": {
+      "type": "string",
+      "enum": [
+        "no_claim",
+        "internal_only",
+        "private_only",
+        "dry_run",
+        "evidence_bound",
+        "public_gate_required"
+      ]
+    },
+    "public_event_policy": {
+      "type": "string",
+      "enum": [
+        "public_live_allowed",
+        "public_gate_required",
+        "archive_only",
+        "dry_run",
+        "blocked",
+        "not_applicable"
+      ]
+    },
+    "fallback_mode": {
+      "type": "string",
+      "enum": [
+        "no_op",
+        "dry_run",
+        "hold_last_safe",
+        "suppress",
+        "private_only",
+        "operator_reason",
+        "degraded_status",
+        "kill_switch",
+        "fallback_target"
+      ]
+    },
+    "target_type": {
+      "type": "string",
+      "enum": [
+        "audio_route",
+        "video_surface",
+        "control_surface",
+        "public_event",
+        "tool",
+        "model_route",
+        "hardware_device",
+        "archive",
+        "state_file",
+        "service",
+        "prompt_hint"
+      ]
+    },
+    "obligation_dimension": {
+      "type": "string",
+      "enum": [
+        "source_ref",
+        "freshness",
+        "route",
+        "witness",
+        "grounding_gate",
+        "rights",
+        "privacy",
+        "egress",
+        "public_event",
+        "hardware",
+        "outcome"
+      ]
+    },
+    "director_move_row_field": {
+      "type": "string",
+      "enum": [
+        "schema_version",
+        "move_id",
+        "surface_id",
+        "status",
+        "verb",
+        "target_type",
+        "target_id",
+        "display_name",
+        "source_refs",
+        "generated_from",
+        "intent_families",
+        "surface_family",
+        "surface_ids",
+        "route_refs",
+        "evidence_status",
+        "freshness",
+        "availability",
+        "privacy_class",
+        "rights_class",
+        "monetization_state",
+        "grounding_status",
+        "claim_authority_ceiling",
+        "claim_posture",
+        "public_claim_allowed",
+        "public_event_policy",
+        "evidence_obligations",
+        "required_witness_refs",
+        "missing_witness_refs",
+        "blocked_reasons",
+        "blocker_reason",
+        "fallback",
+        "outcome_policy_ref",
+        "director_control_move_template"
+      ]
+    },
+    "director_snapshot_field": {
+      "type": "string",
+      "enum": [
+        "schema_version",
+        "snapshot_id",
+        "generated_at",
+        "freshness_ttl_s",
+        "mode",
+        "programme_ref",
+        "condition_ref",
+        "egress_state_ref",
+        "audio_state_ref",
+        "rights_state_ref",
+        "privacy_state_ref",
+        "capability_refs",
+        "substrate_refs",
+        "route_refs",
+        "lane_refs",
+        "claim_refs",
+        "public_event_refs",
+        "available_moves",
+        "blocked_moves",
+        "dry_run_moves",
+        "private_only_moves",
+        "fallback_moves",
+        "eligible_programme_formats",
+        "opportunity_refs",
+        "evidence_obligations",
+        "refusal_or_correction_candidates",
+        "prompt_summary",
+        "audit_refs"
+      ]
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["state", "checked_at", "ttl_s", "observed_age_s", "source_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"$ref": "#/$defs/freshness_state"},
+        "checked_at": {"type": "string", "minLength": 1},
+        "ttl_s": {"type": ["integer", "null"], "minimum": 0},
+        "observed_age_s": {"type": ["integer", "null"], "minimum": 0},
+        "source_ref": {"type": ["string", "null"]}
+      }
+    },
+    "availability": {
+      "type": "object",
+      "required": [
+        "available_to_attempt",
+        "available_to_render",
+        "available_to_observe",
+        "available_to_claim_private",
+        "available_to_claim_public_live",
+        "available_to_archive",
+        "available_to_monetize",
+        "available_to_convert"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "available_to_attempt": {"type": "boolean"},
+        "available_to_render": {"type": "boolean"},
+        "available_to_observe": {"type": "boolean"},
+        "available_to_claim_private": {"type": "boolean"},
+        "available_to_claim_public_live": {"type": "boolean"},
+        "available_to_archive": {"type": "boolean"},
+        "available_to_monetize": {"type": "boolean"},
+        "available_to_convert": {"type": "boolean"}
+      }
+    },
+    "claim_posture": {
+      "type": "object",
+      "required": [
+        "authority_ceiling",
+        "public_claim_allowed",
+        "public_live_claim_allowed",
+        "private_claim_allowed",
+        "archive_claim_allowed",
+        "monetization_claim_allowed",
+        "claim_refs",
+        "blocker_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "authority_ceiling": {"$ref": "#/$defs/claim_authority_ceiling"},
+        "public_claim_allowed": {"type": "boolean"},
+        "public_live_claim_allowed": {"type": "boolean"},
+        "private_claim_allowed": {"type": "boolean"},
+        "archive_claim_allowed": {"type": "boolean"},
+        "monetization_claim_allowed": {"type": "boolean"},
+        "claim_refs": {"$ref": "#/$defs/string_array"},
+        "blocker_reasons": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "evidence_obligation": {
+      "type": "object",
+      "required": [
+        "obligation_id",
+        "dimension",
+        "required_for",
+        "evidence_refs",
+        "satisfied",
+        "missing_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "obligation_id": {"type": "string", "pattern": "^obligation\\.[a-z0-9_.-]+$"},
+        "dimension": {"$ref": "#/$defs/obligation_dimension"},
+        "required_for": {"$ref": "#/$defs/string_array"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"},
+        "satisfied": {"type": "boolean"},
+        "missing_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "required": ["mode", "reason_code", "no_op", "operator_visible_reason", "target_surface_id"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"$ref": "#/$defs/fallback_mode"},
+        "reason_code": {"type": "string", "minLength": 1},
+        "no_op": {"type": "boolean"},
+        "operator_visible_reason": {"type": "string", "minLength": 1},
+        "target_surface_id": {"type": ["string", "null"]}
+      }
+    },
+    "director_control_move_template": {
+      "type": "object",
+      "required": [
+        "verb",
+        "target",
+        "execution_state",
+        "public_claim_allowed",
+        "emits_capability_outcome_envelope"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "verb": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "minLength": 1},
+        "execution_state": {"type": "string", "minLength": 1},
+        "public_claim_allowed": {"type": "boolean"},
+        "emits_capability_outcome_envelope": {"type": "boolean", "const": true}
+      }
+    },
+    "move_row": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "move_id",
+        "surface_id",
+        "status",
+        "verb",
+        "target_type",
+        "target_id",
+        "display_name",
+        "source_refs",
+        "generated_from",
+        "intent_families",
+        "surface_family",
+        "surface_ids",
+        "route_refs",
+        "evidence_status",
+        "freshness",
+        "availability",
+        "privacy_class",
+        "rights_class",
+        "monetization_state",
+        "grounding_status",
+        "claim_authority_ceiling",
+        "claim_posture",
+        "public_claim_allowed",
+        "public_event_policy",
+        "evidence_obligations",
+        "required_witness_refs",
+        "missing_witness_refs",
+        "blocked_reasons",
+        "blocker_reason",
+        "fallback",
+        "outcome_policy_ref",
+        "director_control_move_template"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "move_id": {"type": "string", "pattern": "^move\\.[a-z0-9_.-]+$"},
+        "surface_id": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/move_status"},
+        "verb": {"type": "string", "minLength": 1},
+        "target_type": {"$ref": "#/$defs/target_type"},
+        "target_id": {"type": "string", "minLength": 1},
+        "display_name": {"type": "string", "minLength": 1},
+        "source_refs": {"$ref": "#/$defs/string_array"},
+        "generated_from": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/generated_from"},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "intent_families": {"$ref": "#/$defs/string_array"},
+        "surface_family": {"$ref": "#/$defs/surface_family"},
+        "surface_ids": {"$ref": "#/$defs/string_array"},
+        "route_refs": {"$ref": "#/$defs/string_array"},
+        "evidence_status": {"$ref": "#/$defs/evidence_status"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "availability": {"$ref": "#/$defs/availability"},
+        "privacy_class": {"$ref": "#/$defs/privacy_class"},
+        "rights_class": {"$ref": "#/$defs/rights_class"},
+        "monetization_state": {"$ref": "#/$defs/monetization_state"},
+        "grounding_status": {"$ref": "#/$defs/grounding_status"},
+        "claim_authority_ceiling": {"$ref": "#/$defs/claim_authority_ceiling"},
+        "claim_posture": {"$ref": "#/$defs/claim_posture"},
+        "public_claim_allowed": {"type": "boolean"},
+        "public_event_policy": {"$ref": "#/$defs/public_event_policy"},
+        "evidence_obligations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidence_obligation"},
+          "minItems": 1
+        },
+        "required_witness_refs": {"$ref": "#/$defs/string_array"},
+        "missing_witness_refs": {"$ref": "#/$defs/string_array"},
+        "blocked_reasons": {"$ref": "#/$defs/string_array"},
+        "blocker_reason": {"type": ["string", "null"]},
+        "fallback": {"$ref": "#/$defs/fallback"},
+        "outcome_policy_ref": {"type": "string", "minLength": 1},
+        "director_control_move_template": {"$ref": "#/$defs/director_control_move_template"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"generated_from": {"const": ["static_prompt_hint"]}}},
+          "then": {
+            "properties": {
+              "availability": {
+                "properties": {
+                  "available_to_attempt": {"const": false},
+                  "available_to_render": {"const": false},
+                  "available_to_observe": {"const": false},
+                  "available_to_claim_private": {"const": false},
+                  "available_to_claim_public_live": {"const": false},
+                  "available_to_archive": {"const": false},
+                  "available_to_monetize": {"const": false},
+                  "available_to_convert": {"const": false}
+                }
+              },
+              "public_claim_allowed": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"enum": ["stale", "blocked", "unavailable", "blocked_hardware_no_op"]}}},
+          "then": {
+            "properties": {
+              "public_claim_allowed": {"const": false},
+              "blocked_reasons": {"minItems": 1},
+              "blocker_reason": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"public_claim_allowed": {"const": true}}},
+          "then": {
+            "properties": {
+              "status": {"const": "public"},
+              "claim_authority_ceiling": {"const": "public_gate_required"},
+              "required_witness_refs": {"minItems": 1},
+              "missing_witness_refs": {"maxItems": 0},
+              "blocked_reasons": {"maxItems": 0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "blocked_hardware_no_op"}}},
+          "then": {
+            "properties": {
+              "target_type": {"const": "hardware_device"},
+              "fallback": {
+                "properties": {
+                  "mode": {"const": "operator_reason"},
+                  "no_op": {"const": true}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "prompt_summary": {
+      "type": "object",
+      "required": ["checked_at", "mode", "available", "dry_run", "blocked", "private_only", "prompt_hint_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "checked_at": {"type": "string", "minLength": 1},
+        "mode": {"$ref": "#/$defs/snapshot_mode"},
+        "available": {"$ref": "#/$defs/string_array"},
+        "dry_run": {"$ref": "#/$defs/string_array"},
+        "blocked": {"$ref": "#/$defs/string_array"},
+        "private_only": {"$ref": "#/$defs/string_array"},
+        "prompt_hint_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "director_snapshot": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "snapshot_id",
+        "generated_at",
+        "freshness_ttl_s",
+        "mode",
+        "programme_ref",
+        "condition_ref",
+        "egress_state_ref",
+        "audio_state_ref",
+        "rights_state_ref",
+        "privacy_state_ref",
+        "capability_refs",
+        "substrate_refs",
+        "route_refs",
+        "lane_refs",
+        "claim_refs",
+        "public_event_refs",
+        "available_moves",
+        "blocked_moves",
+        "dry_run_moves",
+        "private_only_moves",
+        "fallback_moves",
+        "eligible_programme_formats",
+        "opportunity_refs",
+        "evidence_obligations",
+        "refusal_or_correction_candidates",
+        "prompt_summary",
+        "audit_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "snapshot_id": {"type": "string", "pattern": "^director-wcs-snapshot-[a-z0-9-]+$"},
+        "generated_at": {"type": "string", "minLength": 1},
+        "freshness_ttl_s": {"type": "integer", "minimum": 0},
+        "mode": {"$ref": "#/$defs/snapshot_mode"},
+        "programme_ref": {"type": ["string", "null"]},
+        "condition_ref": {"type": ["string", "null"]},
+        "egress_state_ref": {"type": "string", "minLength": 1},
+        "audio_state_ref": {"type": "string", "minLength": 1},
+        "rights_state_ref": {"type": "string", "minLength": 1},
+        "privacy_state_ref": {"type": "string", "minLength": 1},
+        "capability_refs": {"$ref": "#/$defs/string_array"},
+        "substrate_refs": {"$ref": "#/$defs/string_array"},
+        "route_refs": {"$ref": "#/$defs/string_array"},
+        "lane_refs": {"$ref": "#/$defs/string_array"},
+        "claim_refs": {"$ref": "#/$defs/string_array"},
+        "public_event_refs": {"$ref": "#/$defs/string_array"},
+        "available_moves": {"type": "array", "items": {"$ref": "#/$defs/move_row"}},
+        "blocked_moves": {"type": "array", "items": {"$ref": "#/$defs/move_row"}},
+        "dry_run_moves": {"type": "array", "items": {"$ref": "#/$defs/move_row"}},
+        "private_only_moves": {"type": "array", "items": {"$ref": "#/$defs/move_row"}},
+        "fallback_moves": {"type": "array", "items": {"$ref": "#/$defs/move_row"}},
+        "eligible_programme_formats": {"$ref": "#/$defs/string_array"},
+        "opportunity_refs": {"$ref": "#/$defs/string_array"},
+        "evidence_obligations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidence_obligation"},
+          "minItems": 1
+        },
+        "refusal_or_correction_candidates": {"$ref": "#/$defs/string_array"},
+        "prompt_summary": {"$ref": "#/$defs/prompt_summary"},
+        "audit_refs": {"$ref": "#/$defs/string_array"}
+      }
+    }
+  }
+}
