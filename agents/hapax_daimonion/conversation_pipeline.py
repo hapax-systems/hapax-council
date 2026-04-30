@@ -767,11 +767,21 @@ class ConversationPipeline:
             self.messages.append({"role": "user", "content": transcript})
         self.turn_count += 1
 
-        # ── Model routing: intelligence-first ────────────────────────
-        # Always CAPABLE (claude-opus) except CANNED for pure phatic.
-        # The salience router still computes activation/novelty/concern
-        # signals — these are injected into the model's context (Batch 2)
-        # rather than used to select a tier.
+        # ── Model routing: grounding-native tiered routing ─────────
+        # Voice is classified as expression_only / non_grounding_reasoner
+        # per the capability grounding contract envelope (2026-04-29).
+        # The model_router's tiered routing (LOCAL → FAST → STRONG →
+        # CAPABLE) selects grounding-capable models by default. Governance
+        # overrides (consent, guest → CAPABLE) are enforced in the
+        # model_router's Layer 1, not here.
+        #
+        # Previous intelligence_first override (PR #1334, 2026-04-24)
+        # removed: it predated the grounding commitment framework and
+        # routed all voice to claude-opus, whose RLHF optimizes for
+        # fluent helpfulness rather than the evidence-citing, uncertainty-
+        # surfacing behavior that grounding-native models (Command-R)
+        # preserve. See: capability-grounding-contract-envelope.md §Model
+        # And Provider Policy, line 275.
         from agents.hapax_daimonion.model_router import TIER_ROUTES, ModelTier
 
         if self._salience_router is not None:
@@ -785,22 +795,15 @@ class ConversationPipeline:
                 has_tools=bool(self.tools),
                 desk_activity=self._desk_activity,
             )
-            # Keep CANNED for zero-latency phatic, upgrade everything else
-            if routing.tier != ModelTier.CANNED:
-                routing = routing.__class__(
-                    tier=ModelTier.CAPABLE,
-                    model=TIER_ROUTES[ModelTier.CAPABLE],
-                    reason=f"intelligence_first:{routing.reason}",
-                    canned_response="",
-                )
         else:
-            # No salience router — default to CAPABLE
+            # No salience router — default to FAST (grounding-capable
+            # cloud model) rather than CAPABLE (high-G, RLHF-optimized).
             from agents.hapax_daimonion.model_router import RoutingDecision
 
             routing = RoutingDecision(
-                tier=ModelTier.CAPABLE,
-                model=TIER_ROUTES[ModelTier.CAPABLE],
-                reason="intelligence_first:default",
+                tier=ModelTier.FAST,
+                model=TIER_ROUTES[ModelTier.FAST],
+                reason="no_salience_router:default",
                 canned_response="",
             )
 
@@ -853,10 +856,11 @@ class ConversationPipeline:
             self.state = ConvState.LISTENING
             return
 
-        # Intelligence is the LAST thing to shed under stimmung pressure.
-        # Stimmung state is fed into model context (Batch 3) instead of
-        # downgrading the model. Vision, perception cadence, workspace
-        # analysis get shed first.
+        # Stimmung state is fed into model context rather than influencing
+        # tier selection. The model_router handles tier assignment based on
+        # utterance complexity, conversation depth, and governance state.
+        # Vision, perception cadence, and workspace analysis shed under
+        # stimmung pressure before model tier changes.
         selected_model = routing.model or self.llm_model
         self._turn_model = selected_model
         self._turn_model_tier = routing.tier.name
