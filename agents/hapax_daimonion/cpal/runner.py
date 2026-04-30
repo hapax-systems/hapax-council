@@ -651,6 +651,7 @@ class CpalRunner:
         """
         self._processing_utterance = True
         self._production.mark_t3_start()
+        system_speech_observed = False
 
         try:
             # T0: Visual acknowledgment (instant)
@@ -672,10 +673,13 @@ class CpalRunner:
                 ack = self._signal_cache.select("acknowledgment")
                 if ack is not None:
                     _, pcm = ack
-                    await self._play_guarded_t1_pcm(
-                        pcm,
-                        source="cpal_t1_acknowledgement",
-                        text="acknowledgment",
+                    system_speech_observed = (
+                        await self._play_guarded_t1_pcm(
+                            pcm,
+                            source="cpal_t1_acknowledgement",
+                            text="acknowledgment",
+                        )
+                        or system_speech_observed
                     )
 
             # T3: Full formulation via pipeline
@@ -690,6 +694,7 @@ class CpalRunner:
                 # multi-sentence conversational response.
                 async with self._speech_lock:
                     await self._pipeline.process_utterance(utterance)
+                    system_speech_observed = True
 
                 # Record grounding outcome based on pipeline result (C: C1)
                 self._evaluator.gain_controller.record_grounding_outcome(success=True)
@@ -709,14 +714,15 @@ class CpalRunner:
             log.exception("CPAL: utterance processing failed")
             self._evaluator.gain_controller.record_grounding_outcome(success=False)
         finally:
-            self._last_speech_end = time.monotonic()
-            self._recent_speech_events.append(
-                SpeechEvent(
-                    kind=SpeechEventKind.RESPONSE,
-                    timestamp=self._last_speech_end,
-                    source_path="pipeline._process_utterance_inner",
+            if system_speech_observed:
+                self._last_speech_end = time.monotonic()
+                self._recent_speech_events.append(
+                    SpeechEvent(
+                        kind=SpeechEventKind.RESPONSE,
+                        timestamp=self._last_speech_end,
+                        source_path="pipeline._process_utterance_inner",
+                    )
                 )
-            )
             self._processing_utterance = False
             self._production.mark_t3_end()
             self._formulation.reset()

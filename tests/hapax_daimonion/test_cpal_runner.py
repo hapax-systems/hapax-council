@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agents.hapax_daimonion.cpal.destination_channel import DestinationChannel
-from agents.hapax_daimonion.cpal.runner import CpalRunner
+from agents.hapax_daimonion.cpal.runner import CpalRunner, SpeechEventKind
 from agents.hapax_daimonion.cpal.types import ConversationalRegion
 
 
@@ -145,6 +145,45 @@ class TestCpalRunnerLifecycle:
 
         runner._audio_output.write.assert_not_called()
         assert record_drop.call_args_list[0].kwargs["reason"] == "private_monitor_status_missing"
+
+    @pytest.mark.asyncio
+    async def test_missing_pipeline_does_not_record_response_speech_event(self):
+        runner = self._make_runner()
+        runner._pipeline = None
+        runner._signal_cache.select = MagicMock(return_value=None)
+        runner._last_speech_end = 0.0
+
+        await runner._process_utterance(b"\x00\x01")
+
+        assert runner._last_speech_end == 0.0
+        assert list(runner._recent_speech_events) == []
+
+    @pytest.mark.asyncio
+    async def test_pipeline_exception_does_not_record_response_speech_event(self):
+        runner = self._make_runner()
+        runner._signal_cache.select = MagicMock(return_value=None)
+        pipeline = AsyncMock()
+        pipeline._running = True
+        pipeline.process_utterance.side_effect = RuntimeError("boom")
+        runner._pipeline = pipeline
+
+        await runner._process_utterance(b"\x00\x01")
+
+        assert list(runner._recent_speech_events) == []
+
+    @pytest.mark.asyncio
+    async def test_successful_pipeline_records_response_speech_event(self):
+        runner = self._make_runner()
+        runner._signal_cache.select = MagicMock(return_value=None)
+        pipeline = AsyncMock()
+        pipeline._running = True
+        runner._pipeline = pipeline
+
+        await runner._process_utterance(b"\x00\x01")
+
+        assert runner._last_speech_end > 0.0
+        assert len(runner._recent_speech_events) == 1
+        assert runner._recent_speech_events[0].kind is SpeechEventKind.RESPONSE
 
     @pytest.mark.asyncio
     async def test_session_timeout_goodbye_uses_destination_gate(self):
