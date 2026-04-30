@@ -98,6 +98,7 @@
         }
       ],
       "witnessed_capability_outcomes": [],
+      "nested_programme_outcome_refs": [],
       "posterior_updates": [
         {
           "update_id": "posterior:selected:format-prior",
@@ -192,6 +193,7 @@
         }
       ],
       "witnessed_capability_outcomes": [],
+      "nested_programme_outcome_refs": [],
       "posterior_updates": [
         {
           "update_id": "posterior:rights:block",
@@ -316,6 +318,15 @@
           "posterior_update_allowed": true
         }
       ],
+      "nested_programme_outcome_refs": [
+        "nested:run_feedback_dry_run_20260429:observation",
+        "nested:run_feedback_dry_run_20260429:claim-gate",
+        "nested:run_feedback_dry_run_20260429:artifact",
+        "nested:run_feedback_dry_run_20260429:public-event",
+        "nested:run_feedback_dry_run_20260429:conversion",
+        "nested:run_feedback_dry_run_20260429:refusal",
+        "nested:run_feedback_dry_run_20260429:correction"
+      ],
       "posterior_updates": [
         {
           "update_id": "posterior:grounding:dry_run",
@@ -436,6 +447,15 @@
           "evidence_envelope_refs": ["ee:public_run"],
           "posterior_update_allowed": true
         }
+      ],
+      "nested_programme_outcome_refs": [
+        "nested:run_feedback_public_run_20260429:observation",
+        "nested:run_feedback_public_run_20260429:claim-gate",
+        "nested:run_feedback_public_run_20260429:artifact",
+        "nested:run_feedback_public_run_20260429:public-event",
+        "nested:run_feedback_public_run_20260429:conversion",
+        "nested:run_feedback_public_run_20260429:refusal",
+        "nested:run_feedback_public_run_20260429:correction"
       ],
       "posterior_updates": [
         {
@@ -566,6 +586,15 @@
           "posterior_update_allowed": true
         }
       ],
+      "nested_programme_outcome_refs": [
+        "nested:run_feedback_completed_20260429:observation",
+        "nested:run_feedback_completed_20260429:claim-gate",
+        "nested:run_feedback_completed_20260429:artifact",
+        "nested:run_feedback_completed_20260429:public-event",
+        "nested:run_feedback_completed_20260429:conversion",
+        "nested:run_feedback_completed_20260429:refusal",
+        "nested:run_feedback_completed_20260429:correction"
+      ],
       "posterior_updates": [
         {
           "update_id": "posterior:grounding:completed",
@@ -676,6 +705,7 @@
         }
       ],
       "witnessed_capability_outcomes": [],
+      "nested_programme_outcome_refs": [],
       "posterior_updates": [
         {
           "update_id": "posterior:safety:aborted",
@@ -780,6 +810,15 @@
         }
       ],
       "witnessed_capability_outcomes": [],
+      "nested_programme_outcome_refs": [
+        "nested:run_feedback_refused_20260429:observation",
+        "nested:run_feedback_refused_20260429:claim-gate",
+        "nested:run_feedback_refused_20260429:artifact",
+        "nested:run_feedback_refused_20260429:public-event",
+        "nested:run_feedback_refused_20260429:conversion",
+        "nested:run_feedback_refused_20260429:refusal",
+        "nested:run_feedback_refused_20260429:correction"
+      ],
       "posterior_updates": [
         {
           "update_id": "posterior:safety:refused",
@@ -892,6 +931,15 @@
           "posterior_update_allowed": true
         }
       ],
+      "nested_programme_outcome_refs": [
+        "nested:run_feedback_corrected_20260429:observation",
+        "nested:run_feedback_corrected_20260429:claim-gate",
+        "nested:run_feedback_corrected_20260429:artifact",
+        "nested:run_feedback_corrected_20260429:public-event",
+        "nested:run_feedback_corrected_20260429:conversion",
+        "nested:run_feedback_corrected_20260429:refusal",
+        "nested:run_feedback_corrected_20260429:correction"
+      ],
       "posterior_updates": [
         {
           "update_id": "posterior:grounding:corrected",
@@ -994,6 +1042,15 @@
           "posterior_update_allowed": false
         }
       ],
+      "nested_programme_outcome_refs": [
+        "nested:run_feedback_private_only_20260429:observation",
+        "nested:run_feedback_private_only_20260429:claim-gate",
+        "nested:run_feedback_private_only_20260429:artifact",
+        "nested:run_feedback_private_only_20260429:public-event",
+        "nested:run_feedback_private_only_20260429:conversion",
+        "nested:run_feedback_private_only_20260429:refusal",
+        "nested:run_feedback_private_only_20260429:correction"
+      ],
       "posterior_updates": [
         {
           "update_id": "posterior:safety:private_only",
@@ -1061,6 +1118,7 @@
       "revenue_proxies",
       "safety_metrics",
       "witnessed_capability_outcomes",
+      "nested_programme_outcome_refs",
       "posterior_updates",
       "exploration",
       "separation_policy"

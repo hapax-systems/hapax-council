@@ -58,6 +58,7 @@ Required fields:
 | `revenue_proxies` | Aggregate-only revenue/support observations and readiness proxies. |
 | `safety_metrics` | Refusal, correction, privacy, rights, egress, witness, and unsupported-claim counts. |
 | `witnessed_capability_outcomes` | Witnessed `CapabilityOutcomeEnvelope` refs, separate from selected/commanded states. |
+| `nested_programme_outcome_refs` | Run-envelope nested outcome refs consumed for observation, claim/gate, artifact, public-event, conversion, refusal, and correction stage learning. |
 | `posterior_updates` | Evidence-bound posterior update proposals. |
 | `exploration` | Exploration regret, novelty distance, and budget refs. |
 | `separation_policy` | Machine-readable anti-substitution rules. |
@@ -220,8 +221,9 @@ Downstream consumers:
 - `metrics_dashboard`
 
 Consumers must preserve event ids, run refs, evaluator refs, witnessed outcome
-refs, aggregate-only audience/revenue policy, posterior update family, evidence
-refs, blocked reasons, exploration signals, and separation policy. They must
+refs, nested programme outcome refs, aggregate-only audience/revenue policy,
+posterior update family, evidence refs, blocked reasons, exploration signals,
+and separation policy. They must
 not infer truth from engagement, revenue, selected state, command acceptance,
 or public-looking artifacts.
 
@@ -325,6 +327,15 @@ or public-looking artifacts.
       "evidence_envelope_refs": ["ee:evidence_audit"],
       "posterior_update_allowed": true
     }
+  ],
+  "nested_programme_outcome_refs": [
+    "nested:run_public_archive_evidence_audit_20260429:observation",
+    "nested:run_public_archive_evidence_audit_20260429:claim-gate",
+    "nested:run_public_archive_evidence_audit_20260429:artifact",
+    "nested:run_public_archive_evidence_audit_20260429:public-event",
+    "nested:run_public_archive_evidence_audit_20260429:conversion",
+    "nested:run_public_archive_evidence_audit_20260429:refusal",
+    "nested:run_public_archive_evidence_audit_20260429:correction"
   ],
   "posterior_updates": [
     {

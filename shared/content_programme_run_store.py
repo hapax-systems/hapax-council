@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 type PublicPrivateMode = Literal[
     "private",
@@ -109,6 +109,27 @@ type ConversionType = Literal[
     "monetization",
 ]
 type ConversionState = Literal["candidate", "held", "blocked", "linked", "emitted"]
+type NestedProgrammeOutcomeKind = Literal[
+    "observation",
+    "claim_gate",
+    "artifact",
+    "public_event",
+    "conversion",
+    "refusal",
+    "correction",
+]
+type NestedProgrammeOutcomeState = Literal[
+    "verified",
+    "accepted",
+    "emitted",
+    "linked",
+    "held",
+    "blocked",
+    "refused",
+    "corrected",
+    "missing",
+    "not_applicable",
+]
 type AdapterName = Literal[
     "public_event",
     "scheduler",
@@ -205,6 +226,15 @@ ADAPTER_EXPOSURES: tuple[AdapterName, ...] = (
     "archive",
     "youtube",
     "metrics",
+)
+REQUIRED_NESTED_PROGRAMME_OUTCOME_KINDS: tuple[NestedProgrammeOutcomeKind, ...] = (
+    "observation",
+    "claim_gate",
+    "artifact",
+    "public_event",
+    "conversion",
+    "refusal",
+    "correction",
 )
 
 
@@ -349,6 +379,54 @@ class ConversionCandidate(RunStoreModel):
     unavailable_reasons: tuple[UnavailableReason, ...] = Field(default_factory=tuple)
 
 
+class NestedProgrammeOutcome(RunStoreModel):
+    outcome_id: str
+    kind: NestedProgrammeOutcomeKind
+    state: NestedProgrammeOutcomeState
+    parent_outcome_refs: tuple[str, ...] = Field(default_factory=tuple)
+    capability_outcome_refs: tuple[str, ...] = Field(default_factory=tuple)
+    evidence_envelope_refs: tuple[str, ...] = Field(default_factory=tuple)
+    witness_refs: tuple[str, ...] = Field(default_factory=tuple)
+    boundary_event_refs: tuple[str, ...] = Field(default_factory=tuple)
+    public_event_refs: tuple[str, ...] = Field(default_factory=tuple)
+    conversion_candidate_refs: tuple[str, ...] = Field(default_factory=tuple)
+    refusal_or_correction_refs: tuple[str, ...] = Field(default_factory=tuple)
+    blocked_reasons: tuple[UnavailableReason, ...] = Field(default_factory=tuple)
+    learning_update_allowed: bool = False
+    claim_posterior_update_allowed: bool = False
+    public_conversion_success: bool = False
+    validates_refused_claim: Literal[False] = False
+
+    @model_validator(mode="after")
+    def _validate_nested_outcome_semantics(self) -> Self:
+        if self.kind == "observation" and self.state == "verified":
+            if not self.evidence_envelope_refs or not self.witness_refs:
+                raise ValueError("verified observation outcome requires evidence and witness refs")
+        if self.kind == "claim_gate" and self.claim_posterior_update_allowed:
+            if self.state != "accepted" or not self.evidence_envelope_refs:
+                raise ValueError("claim posterior updates require an accepted evidence-backed gate")
+        if self.kind == "public_event" and self.state in {"accepted", "linked", "emitted"}:
+            if not self.public_event_refs:
+                raise ValueError("accepted public-event outcome requires public_event_refs")
+        if self.kind == "conversion" and self.public_conversion_success:
+            if self.state not in {"linked", "emitted"}:
+                raise ValueError("public conversion success requires linked or emitted state")
+            if not self.public_event_refs:
+                raise ValueError("public conversion success requires accepted public-event refs")
+            if self.blocked_reasons:
+                raise ValueError("public conversion success cannot carry blockers")
+        if self.kind in {"refusal", "correction"}:
+            if self.claim_posterior_update_allowed:
+                raise ValueError("refusal/correction outcomes cannot validate refused claims")
+            if self.public_conversion_success:
+                raise ValueError("refusal/correction outcomes are not public conversion success")
+            if self.state in {"refused", "corrected", "emitted"} and not (
+                self.refusal_or_correction_refs
+            ):
+                raise ValueError("refusal/correction outcome requires refusal_or_correction_refs")
+        return self
+
+
 class AdapterExposure(RunStoreModel):
     adapters: tuple[AdapterName, ...] = ADAPTER_EXPOSURES
     ref: str
@@ -425,12 +503,19 @@ class ContentProgrammeRunEnvelope(RunStoreModel):
     corrections: tuple[StateRef, ...] = Field(default_factory=tuple)
     scores: tuple[ScoreRef, ...] = Field(default_factory=tuple)
     conversion_candidates: tuple[ConversionCandidate, ...] = Field(default_factory=tuple)
+    nested_outcomes: tuple[NestedProgrammeOutcome, ...] = Field(default_factory=tuple)
     command_execution: CommandExecutionTrace
     witnessed_outcomes: tuple[WitnessedOutcomeRecord, ...] = Field(default_factory=tuple)
     adapter_exposure: AdapterExposure
     separation_policy: SeparationPolicy = Field(default_factory=SeparationPolicy)
     operator_labor_policy: OperatorLaborPolicy = Field(default_factory=OperatorLaborPolicy)
     final_status: RunFinalStatus
+
+    @model_validator(mode="after")
+    def _validate_nested_outcome_graph(self) -> Self:
+        if self.nested_outcomes:
+            validate_nested_programme_outcomes(self.nested_outcomes)
+        return self
 
 
 class FailClosedDecision(RunStoreModel):
@@ -627,6 +712,46 @@ def public_conversion_is_allowed(candidate: ConversionCandidate) -> bool:
     )
 
 
+def validate_nested_programme_outcomes(outcomes: Sequence[NestedProgrammeOutcome]) -> None:
+    """Fail closed when a programme run's nested outcome graph overclaims."""
+
+    ids = [outcome.outcome_id for outcome in outcomes]
+    if len(ids) != len(set(ids)):
+        raise ValueError("nested programme outcome ids must be unique")
+
+    kinds: set[NestedProgrammeOutcomeKind] = {outcome.kind for outcome in outcomes}
+    required_kinds: set[NestedProgrammeOutcomeKind] = set(REQUIRED_NESTED_PROGRAMME_OUTCOME_KINDS)
+    missing_kinds = required_kinds - kinds
+    if missing_kinds:
+        raise ValueError(
+            "nested programme outcomes missing kinds: " + ", ".join(sorted(missing_kinds))
+        )
+
+    accepted_public_events = {
+        ref
+        for outcome in outcomes
+        if outcome.kind == "public_event" and outcome.state in {"accepted", "linked", "emitted"}
+        for ref in outcome.public_event_refs
+    }
+    for outcome in outcomes:
+        if outcome.kind == "conversion" and outcome.public_conversion_success:
+            if not accepted_public_events.intersection(outcome.public_event_refs):
+                raise ValueError(
+                    "public conversion success requires a matching accepted public-event outcome"
+                )
+        if outcome.kind in {"refusal", "correction"} and outcome.learning_update_allowed:
+            if outcome.claim_posterior_update_allowed or outcome.validates_refused_claim:
+                raise ValueError("refusal/correction learning cannot validate refused claims")
+
+
+def nested_outcome_refs_for_feedback(
+    run: ContentProgrammeRunEnvelope,
+) -> tuple[str, ...]:
+    """Return stable refs the feedback ledger consumes for nested programme outcomes."""
+
+    return tuple(outcome.outcome_id for outcome in run.nested_outcomes)
+
+
 def _fixture_health_state(case: FixtureCase) -> WcsHealthState:
     if case.final_status == "blocked":
         return "blocked"
@@ -703,6 +828,17 @@ def build_fixture_envelope(
         state="linked" if public_event_ref else "held",
         research_vehicle_public_event_ref=public_event_ref,
         unavailable_reasons=case.unavailable_reasons,
+    )
+    nested_outcomes = _fixture_nested_outcomes(
+        case=case,
+        run_id=run_id,
+        evidence_envelope_refs=evidence_envelope_refs,
+        witness_refs=(f"witness:{case.case_id}",) if has_evidence else (),
+        boundary_event_refs=(boundary.boundary_id,),
+        public_event_ref=public_event_ref,
+        conversion_candidate_ref=conversion.candidate_id,
+        refusal_refs=(f"refusal:{case.case_id}",) if case.final_status == "refused" else (),
+        correction_refs=(f"correction:{case.case_id}",) if case.final_status == "corrected" else (),
     )
 
     return ContentProgrammeRunEnvelope(
@@ -834,6 +970,7 @@ def build_fixture_envelope(
         if has_evidence
         else (),
         conversion_candidates=(conversion,),
+        nested_outcomes=nested_outcomes,
         command_execution=CommandExecutionTrace(
             selected=selected,
             commanded_states=(commanded,),
@@ -843,4 +980,126 @@ def build_fixture_envelope(
         witnessed_outcomes=(witnessed,),
         adapter_exposure=AdapterExposure(ref=f"adapter-exposure:{case.case_id}"),
         final_status=case.final_status,
+    )
+
+
+def _fixture_nested_outcomes(
+    *,
+    case: FixtureCase,
+    run_id: str,
+    evidence_envelope_refs: tuple[str, ...],
+    witness_refs: tuple[str, ...],
+    boundary_event_refs: tuple[str, ...],
+    public_event_ref: str | None,
+    conversion_candidate_ref: str,
+    refusal_refs: tuple[str, ...],
+    correction_refs: tuple[str, ...],
+) -> tuple[NestedProgrammeOutcome, ...]:
+    public_event_refs = (public_event_ref,) if public_event_ref else ()
+    public_conversion_success = bool(public_event_refs and case.final_status == "completed")
+    observation_state: NestedProgrammeOutcomeState = (
+        "verified" if evidence_envelope_refs and witness_refs else "missing"
+    )
+    claim_state: NestedProgrammeOutcomeState = "accepted"
+    if case.final_status == "refused":
+        claim_state = "refused"
+    elif case.final_status == "corrected":
+        claim_state = "corrected"
+    elif not evidence_envelope_refs:
+        claim_state = "blocked"
+    conversion_state: NestedProgrammeOutcomeState = (
+        "linked" if public_conversion_success else "held"
+    )
+
+    return (
+        NestedProgrammeOutcome(
+            outcome_id=f"nested:{run_id}:observation",
+            kind="observation",
+            state=observation_state,
+            capability_outcome_refs=(f"coe:{case.case_id}",),
+            evidence_envelope_refs=evidence_envelope_refs,
+            witness_refs=witness_refs,
+            boundary_event_refs=boundary_event_refs,
+            blocked_reasons=case.unavailable_reasons if observation_state == "missing" else (),
+            learning_update_allowed=observation_state == "verified",
+        ),
+        NestedProgrammeOutcome(
+            outcome_id=f"nested:{run_id}:claim-gate",
+            kind="claim_gate",
+            state=claim_state,
+            parent_outcome_refs=(f"nested:{run_id}:observation",),
+            capability_outcome_refs=(f"coe:{case.case_id}",),
+            evidence_envelope_refs=evidence_envelope_refs,
+            boundary_event_refs=boundary_event_refs,
+            blocked_reasons=case.unavailable_reasons
+            if claim_state in {"blocked", "refused"}
+            else (),
+            claim_posterior_update_allowed=(
+                claim_state == "accepted"
+                and case.final_status == "completed"
+                and bool(evidence_envelope_refs)
+            ),
+            learning_update_allowed=claim_state == "accepted",
+        ),
+        NestedProgrammeOutcome(
+            outcome_id=f"nested:{run_id}:artifact",
+            kind="artifact",
+            state="emitted" if case.final_status in {"completed", "corrected"} else "held",
+            parent_outcome_refs=(f"nested:{run_id}:claim-gate",),
+            evidence_envelope_refs=evidence_envelope_refs,
+            boundary_event_refs=boundary_event_refs,
+            public_event_refs=public_event_refs,
+            conversion_candidate_refs=(conversion_candidate_ref,),
+            learning_update_allowed=case.final_status in {"completed", "corrected"},
+        ),
+        NestedProgrammeOutcome(
+            outcome_id=f"nested:{run_id}:public-event",
+            kind="public_event",
+            state="accepted" if public_event_refs else "held",
+            parent_outcome_refs=(f"nested:{run_id}:artifact",),
+            evidence_envelope_refs=evidence_envelope_refs,
+            boundary_event_refs=boundary_event_refs,
+            public_event_refs=public_event_refs,
+            blocked_reasons=(
+                ("research_vehicle_public_event_missing",) if not public_event_refs else ()
+            ),
+            learning_update_allowed=bool(public_event_refs),
+        ),
+        NestedProgrammeOutcome(
+            outcome_id=f"nested:{run_id}:conversion",
+            kind="conversion",
+            state=conversion_state,
+            parent_outcome_refs=(f"nested:{run_id}:public-event",),
+            evidence_envelope_refs=evidence_envelope_refs,
+            public_event_refs=public_event_refs,
+            conversion_candidate_refs=(conversion_candidate_ref,),
+            blocked_reasons=(
+                ("research_vehicle_public_event_missing",)
+                if not public_conversion_success
+                and case.requested_mode in {"public_live", "public_archive", "public_monetizable"}
+                else ()
+            ),
+            learning_update_allowed=public_conversion_success,
+            public_conversion_success=public_conversion_success,
+        ),
+        NestedProgrammeOutcome(
+            outcome_id=f"nested:{run_id}:refusal",
+            kind="refusal",
+            state="refused" if refusal_refs else "not_applicable",
+            parent_outcome_refs=(f"nested:{run_id}:claim-gate",),
+            evidence_envelope_refs=evidence_envelope_refs,
+            refusal_or_correction_refs=refusal_refs,
+            blocked_reasons=case.unavailable_reasons if refusal_refs else (),
+            learning_update_allowed=bool(refusal_refs),
+        ),
+        NestedProgrammeOutcome(
+            outcome_id=f"nested:{run_id}:correction",
+            kind="correction",
+            state="corrected" if correction_refs else "not_applicable",
+            parent_outcome_refs=(f"nested:{run_id}:claim-gate",),
+            evidence_envelope_refs=evidence_envelope_refs,
+            public_event_refs=public_event_refs if correction_refs else (),
+            refusal_or_correction_refs=correction_refs,
+            learning_update_allowed=bool(correction_refs),
+        ),
     )

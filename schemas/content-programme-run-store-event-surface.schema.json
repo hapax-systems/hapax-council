@@ -35,6 +35,7 @@
     "corrections",
     "scores",
     "conversion_candidates",
+    "nested_outcomes",
     "command_execution",
     "witnessed_outcomes",
     "adapter_exposure",
@@ -85,6 +86,11 @@
       "type": "array",
       "items": {"$ref": "#/$defs/conversion_candidate"}
     },
+    "nested_outcomes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/nested_programme_outcome"},
+      "minItems": 7
+    },
     "command_execution": {"$ref": "#/$defs/command_execution_trace"},
     "witnessed_outcomes": {
       "type": "array",
@@ -114,6 +120,15 @@
     "ProgrammeBoundaryEvent",
     "ResearchVehiclePublicEvent",
     "surface_adapter"
+  ],
+  "x-required_nested_programme_outcome_kinds": [
+    "observation",
+    "claim_gate",
+    "artifact",
+    "public_event",
+    "conversion",
+    "refusal",
+    "correction"
   ],
   "$defs": {
     "ref_list": {
@@ -595,6 +610,107 @@
           "uniqueItems": true
         }
       }
+    },
+    "nested_programme_outcome": {
+      "type": "object",
+      "required": [
+        "outcome_id",
+        "kind",
+        "state",
+        "parent_outcome_refs",
+        "capability_outcome_refs",
+        "evidence_envelope_refs",
+        "witness_refs",
+        "boundary_event_refs",
+        "public_event_refs",
+        "conversion_candidate_refs",
+        "refusal_or_correction_refs",
+        "blocked_reasons",
+        "learning_update_allowed",
+        "claim_posterior_update_allowed",
+        "public_conversion_success",
+        "validates_refused_claim"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "outcome_id": {"type": "string", "minLength": 1},
+        "kind": {"$ref": "#/$defs/nested_programme_outcome_kind"},
+        "state": {"$ref": "#/$defs/nested_programme_outcome_state"},
+        "parent_outcome_refs": {"$ref": "#/$defs/ref_list"},
+        "capability_outcome_refs": {"$ref": "#/$defs/ref_list"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/ref_list"},
+        "witness_refs": {"$ref": "#/$defs/ref_list"},
+        "boundary_event_refs": {"$ref": "#/$defs/ref_list"},
+        "public_event_refs": {"$ref": "#/$defs/ref_list"},
+        "conversion_candidate_refs": {"$ref": "#/$defs/ref_list"},
+        "refusal_or_correction_refs": {"$ref": "#/$defs/ref_list"},
+        "blocked_reasons": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        },
+        "learning_update_allowed": {"type": "boolean"},
+        "claim_posterior_update_allowed": {"type": "boolean"},
+        "public_conversion_success": {"type": "boolean"},
+        "validates_refused_claim": {"type": "boolean", "const": false}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {"const": "conversion"},
+              "public_conversion_success": {"const": true}
+            },
+            "required": ["kind", "public_conversion_success"]
+          },
+          "then": {
+            "properties": {
+              "state": {"enum": ["linked", "emitted"]},
+              "public_event_refs": {"minItems": 1},
+              "blocked_reasons": {"maxItems": 0}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"kind": {"enum": ["refusal", "correction"]}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "claim_posterior_update_allowed": {"const": false},
+              "public_conversion_success": {"const": false}
+            }
+          }
+        }
+      ]
+    },
+    "nested_programme_outcome_kind": {
+      "type": "string",
+      "enum": [
+        "observation",
+        "claim_gate",
+        "artifact",
+        "public_event",
+        "conversion",
+        "refusal",
+        "correction"
+      ]
+    },
+    "nested_programme_outcome_state": {
+      "type": "string",
+      "enum": [
+        "verified",
+        "accepted",
+        "emitted",
+        "linked",
+        "held",
+        "blocked",
+        "refused",
+        "corrected",
+        "missing",
+        "not_applicable"
+      ]
     },
     "adapter_exposure": {
       "type": "object",

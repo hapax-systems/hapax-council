@@ -92,6 +92,7 @@ def test_schema_defines_feedback_event_fields_and_lifecycle_states() -> None:
         "revenue_proxies",
         "safety_metrics",
         "witnessed_capability_outcomes",
+        "nested_programme_outcome_refs",
         "posterior_updates",
         "exploration",
         "separation_policy",
