@@ -1,13 +1,13 @@
-"""Daimonion-side caption bridge (ytb-009 Phase 4).
+"""Daimonion-side caption bridge (ytb-009).
 
 Glue between the daimonion's STT pipeline and the live-caption JSONL
 writer. The STT pipeline already returns transcribed text from
-``ResidentSTT.transcribe()``; the caller knows the audio start
-timestamp and the audio duration, but not the writer / routing
-shape. This bridge makes the wire-in a one-liner.
+``ResidentSTT.transcribe()``; the production callsite in
+``ConversationPipeline`` computes an approximate audio-start timestamp
+from utterance duration and forwards only accepted, echo-filtered text.
+This bridge owns the writer / routing shape.
 
-Usage from the CPAL or pipeline layer (the follow-up actually adds
-this call site)::
+Usage from the pipeline layer::
 
     from agents.live_captions.daimonion_bridge import (
         get_caption_bridge,

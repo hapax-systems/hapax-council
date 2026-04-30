@@ -1,8 +1,8 @@
-"""Caption JSONL reader + audio↔video offset alignment (ytb-009 Phase 1).
+"""Caption JSONL reader + audio↔video offset alignment (ytb-009).
 
 Reads timestamped caption events from the daimonion-written stream
 at ``/dev/shm/hapax-captions/live.jsonl`` and exposes a generator
-shape suitable for a GStreamer ``cc708overlay`` consumer.
+shape suitable for downstream caption consumers.
 
 ## Event format
 
@@ -19,17 +19,15 @@ break when the diarization follow-up lands.
 
 ## Audio↔video offset
 
-The daimonion timestamps captions in the audio capture clock
-domain. The broadcast video clock runs ~50–250 ms ahead due to
-encoder + RTMP buffering. ``CaptionReader`` keeps a moving-average
-of the offset and applies it on read so the consumer sees timestamps
-already aligned to the video clock.
+The daimonion timestamps captions in the audio capture clock domain.
+``CaptionReader`` keeps a moving-average of the observed
+audio-to-video offset and applies it on read so a downstream consumer
+can receive timestamps aligned to the video clock.
 
-The offset is updated by ``observe_av_offset(audio_ts, video_ts)``
-called from the GStreamer pipeline (alpha's follow-up). Tests
-inject offsets directly. Without observations the offset stays at
-zero — the reader still works, captions just lead the video by a
-few hundred ms.
+The offset is updated by ``observe_av_offset(audio_ts, video_ts)``.
+The current production JSONL bridge can run with zero offset because no
+native GStreamer CEA combiner is active. A future ``cccombiner`` path
+must feed real observations once an STT JSONL -> CEA packetizer exists.
 """
 
 from __future__ import annotations
