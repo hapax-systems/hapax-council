@@ -1,0 +1,430 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/n1-methodology-dossier.schema.json",
+  "title": "N1MethodologyDossier",
+  "description": "Private-mode dossier and machine-readable contract for Hapax n=1 public positioning, reuse boundaries, and anti-overclaim gates.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "dossier_id",
+    "schema_ref",
+    "declared_at",
+    "producer",
+    "mode_ceiling",
+    "max_public_claim",
+    "source_refs",
+    "category_statements",
+    "near_neighbor_comparisons",
+    "scientific_posture",
+    "automation_doctrine",
+    "structured_diagrams",
+    "required_public_gates",
+    "reuse_profiles",
+    "anti_overclaim_policy",
+    "public_private_boundary"
+  ],
+  "properties": {
+    "$schema": {"type": "string", "const": "../schemas/n1-methodology-dossier.schema.json"},
+    "schema_version": {"type": "integer", "const": 1},
+    "dossier_id": {"type": "string", "const": "n1_methodology_dossier"},
+    "schema_ref": {"type": "string", "const": "schemas/n1-methodology-dossier.schema.json"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "mode_ceiling": {"type": "string", "const": "private"},
+    "max_public_claim": {"type": "string", "const": "provisional"},
+    "source_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 4,
+      "uniqueItems": true
+    },
+    "category_statements": {"$ref": "#/$defs/category_statements"},
+    "near_neighbor_comparisons": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/near_neighbor"},
+      "minItems": 8
+    },
+    "scientific_posture": {"$ref": "#/$defs/scientific_posture"},
+    "automation_doctrine": {"$ref": "#/$defs/automation_doctrine"},
+    "structured_diagrams": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/structured_diagram"},
+      "minItems": 4
+    },
+    "required_public_gates": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/gate_ref"},
+      "minItems": 6,
+      "uniqueItems": true
+    },
+    "reuse_profiles": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/reuse_profile"},
+      "minItems": 8
+    },
+    "anti_overclaim_policy": {"$ref": "#/$defs/anti_overclaim_policy"},
+    "public_private_boundary": {"$ref": "#/$defs/public_private_boundary"}
+  },
+  "x-required_category_statements": [
+    "single-operator autonomous grounding lab",
+    "single-operator live epistemic lab"
+  ],
+  "x-required_near_neighbors": [
+    "autonomous_science_system",
+    "self_driving_lab",
+    "ai_research_assistant",
+    "grounding_benchmark",
+    "personal_knowledge_management",
+    "quantified_self",
+    "vtuber_ai_livestream",
+    "generative_media_art",
+    "observability_control_room",
+    "creator_monetization_stack"
+  ],
+  "x-required_diagrams": [
+    "subject_instrument_studio_publisher_fusion",
+    "truth_spine",
+    "spectacle_spine",
+    "public_event_loop"
+  ],
+  "x-required_reuse_profiles": [
+    "grants_fellowships",
+    "replay_demo",
+    "youtube_vod_packaging",
+    "dataset_card",
+    "artifact_edition_release",
+    "support_prompt",
+    "residency",
+    "licensing"
+  ],
+  "$defs": {
+    "ref_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "category_statements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_category",
+        "alternate_category",
+        "public_short",
+        "public_positioning",
+        "private_construction_note"
+      ],
+      "properties": {
+        "primary_category": {
+          "type": "string",
+          "const": "single-operator autonomous grounding lab"
+        },
+        "alternate_category": {
+          "type": "string",
+          "const": "single-operator live epistemic lab"
+        },
+        "public_short": {"type": "string", "minLength": 1},
+        "public_positioning": {"type": "string", "minLength": 1},
+        "private_construction_note": {"type": "string", "minLength": 1}
+      }
+    },
+    "near_neighbor_category": {
+      "type": "string",
+      "enum": [
+        "autonomous_science_system",
+        "self_driving_lab",
+        "ai_research_assistant",
+        "grounding_benchmark",
+        "personal_knowledge_management",
+        "quantified_self",
+        "vtuber_ai_livestream",
+        "generative_media_art",
+        "observability_control_room",
+        "creator_monetization_stack"
+      ]
+    },
+    "near_neighbor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "display_name",
+        "what_it_shares",
+        "why_generic_category_fails",
+        "retained_signal"
+      ],
+      "properties": {
+        "category": {"$ref": "#/$defs/near_neighbor_category"},
+        "display_name": {"type": "string", "minLength": 1},
+        "what_it_shares": {"type": "string", "minLength": 1},
+        "why_generic_category_fails": {"type": "string", "minLength": 1},
+        "retained_signal": {"type": "string", "minLength": 1}
+      }
+    },
+    "scientific_method": {
+      "type": "string",
+      "enum": ["SCED", "BEST", "repeated_measures", "time_aligned_artifacts"]
+    },
+    "scientific_posture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "n_size",
+        "posture",
+        "methods",
+        "broad_population_claims_allowed",
+        "allowed_claims",
+        "forbidden_claims",
+        "sced_best_framing"
+      ],
+      "properties": {
+        "n_size": {"type": "integer", "const": 1},
+        "posture": {"type": "string", "minLength": 1},
+        "methods": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/scientific_method"},
+          "minItems": 4,
+          "uniqueItems": true
+        },
+        "broad_population_claims_allowed": {"type": "boolean", "const": false},
+        "allowed_claims": {"$ref": "#/$defs/ref_list"},
+        "forbidden_claims": {"$ref": "#/$defs/ref_list"},
+        "sced_best_framing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "intervention_windows_required",
+            "baseline_or_context_required",
+            "uncertainty_language_required",
+            "case_scope"
+          ],
+          "properties": {
+            "intervention_windows_required": {"type": "boolean", "const": true},
+            "baseline_or_context_required": {"type": "boolean", "const": true},
+            "uncertainty_language_required": {"type": "boolean", "const": true},
+            "case_scope": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "automation_class": {
+      "type": "string",
+      "enum": ["AUTO", "BOOTSTRAP", "LEGAL_ATTEST", "GUARDED", "REFUSAL_ARTIFACT"]
+    },
+    "automation_doctrine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recurring_manual_labor_allowed",
+        "support_perks_allowed",
+        "hidden_operator_service_allowed",
+        "manual_community_moderation_allowed",
+        "classes",
+        "allowed_operator_actions",
+        "refusal_conversions",
+        "doctrine_note"
+      ],
+      "properties": {
+        "recurring_manual_labor_allowed": {"type": "boolean", "const": false},
+        "support_perks_allowed": {"type": "boolean", "const": false},
+        "hidden_operator_service_allowed": {"type": "boolean", "const": false},
+        "manual_community_moderation_allowed": {"type": "boolean", "const": false},
+        "classes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/automation_class"},
+          "minItems": 5,
+          "uniqueItems": true
+        },
+        "allowed_operator_actions": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["bootstrap", "legal_attestation"]},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "refusal_conversions": {"$ref": "#/$defs/ref_list"},
+        "doctrine_note": {"type": "string", "minLength": 1}
+      }
+    },
+    "diagram_id": {
+      "type": "string",
+      "enum": [
+        "subject_instrument_studio_publisher_fusion",
+        "truth_spine",
+        "spectacle_spine",
+        "public_event_loop"
+      ]
+    },
+    "diagram_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "label"],
+      "properties": {
+        "from": {"type": "string", "minLength": 1},
+        "to": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1}
+      }
+    },
+    "structured_diagram": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["diagram_id", "title", "nodes", "edges", "claim_limit"],
+      "properties": {
+        "diagram_id": {"$ref": "#/$defs/diagram_id"},
+        "title": {"type": "string", "minLength": 1},
+        "nodes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 3,
+          "uniqueItems": true
+        },
+        "edges": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/diagram_edge"},
+          "minItems": 2
+        },
+        "claim_limit": {"type": "string", "minLength": 1}
+      }
+    },
+    "readiness_state": {
+      "type": "string",
+      "enum": [
+        "blocked",
+        "private-evidence",
+        "dry-run",
+        "public-archive",
+        "public-live",
+        "public-monetizable",
+        "refused"
+      ]
+    },
+    "reuse_profile_id": {
+      "type": "string",
+      "enum": [
+        "grants_fellowships",
+        "replay_demo",
+        "youtube_vod_packaging",
+        "dataset_card",
+        "artifact_edition_release",
+        "support_prompt",
+        "residency",
+        "licensing"
+      ]
+    },
+    "target_family_ref": {
+      "type": "string",
+      "enum": [
+        "grants_fellowships",
+        "replay_demo",
+        "youtube_vod_packaging",
+        "dataset_card",
+        "artifact_edition_release",
+        "support_prompt",
+        "residency",
+        "licensing"
+      ]
+    },
+    "gate_ref": {
+      "type": "string",
+      "enum": [
+        "conversion-target-readiness-threshold-matrix",
+        "WCS witness",
+        "programme run envelope",
+        "temporal span refs",
+        "archive/frame/caption refs",
+        "source-qualified evidence",
+        "privacy/rights gate",
+        "provenance/egress",
+        "public-claim gate",
+        "monetization gate where money-facing",
+        "operator attestation",
+        "support-surface-registry",
+        "legal or license terms",
+        "no-hidden-operator-labor gate"
+      ]
+    },
+    "reuse_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "target_family_ref",
+        "default_state",
+        "allowed_states",
+        "public_release_allowed",
+        "monetization_allowed",
+        "operator_attestation_required",
+        "required_gate_refs",
+        "reuse_note"
+      ],
+      "properties": {
+        "profile_id": {"$ref": "#/$defs/reuse_profile_id"},
+        "target_family_ref": {"$ref": "#/$defs/target_family_ref"},
+        "default_state": {"$ref": "#/$defs/readiness_state"},
+        "allowed_states": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/readiness_state"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "public_release_allowed": {"type": "boolean"},
+        "monetization_allowed": {"type": "boolean"},
+        "operator_attestation_required": {"type": "boolean"},
+        "required_gate_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/gate_ref"},
+          "minItems": 4,
+          "uniqueItems": true
+        },
+        "reuse_note": {"type": "string", "minLength": 1}
+      }
+    },
+    "anti_overclaim_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engagement_can_upgrade",
+        "revenue_potential_can_upgrade",
+        "trend_can_upgrade",
+        "operator_desire_can_upgrade",
+        "aesthetic_quality_can_upgrade",
+        "selected_or_commanded_is_success",
+        "refusal_validates_refused_claim",
+        "notes"
+      ],
+      "properties": {
+        "engagement_can_upgrade": {"type": "boolean", "const": false},
+        "revenue_potential_can_upgrade": {"type": "boolean", "const": false},
+        "trend_can_upgrade": {"type": "boolean", "const": false},
+        "operator_desire_can_upgrade": {"type": "boolean", "const": false},
+        "aesthetic_quality_can_upgrade": {"type": "boolean", "const": false},
+        "selected_or_commanded_is_success": {"type": "boolean", "const": false},
+        "refusal_validates_refused_claim": {"type": "boolean", "const": false},
+        "notes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 4
+        }
+      }
+    },
+    "public_private_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "private_dossier_can_prepare",
+        "public_positioning_requires_gates",
+        "public_or_money_use_requires_conversion_matrix",
+        "claim_ceiling_without_gates",
+        "forbidden_without_gates"
+      ],
+      "properties": {
+        "private_dossier_can_prepare": {"type": "boolean", "const": true},
+        "public_positioning_requires_gates": {"type": "boolean", "const": true},
+        "public_or_money_use_requires_conversion_matrix": {"type": "boolean", "const": true},
+        "claim_ceiling_without_gates": {"type": "string", "minLength": 1},
+        "forbidden_without_gates": {"$ref": "#/$defs/ref_list"}
+      }
+    }
+  }
+}
