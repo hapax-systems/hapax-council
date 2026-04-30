@@ -115,6 +115,16 @@ from shared.scrim_health_fixtures import (
     ScrimHealthWorldSurfaceRef,
     ScrimInvariantScores,
 )
+from shared.scrim_refusal_correction_boundary_gestures import (
+    BoundaryGestureCaps,
+    BoundaryNoExpertGate,
+    BoundaryPublicEventMapping,
+    ProgrammeBoundaryEventGestureRef,
+    ScrimBoundaryGestureFixtureSet,
+    ScrimBoundaryGestureInput,
+    ScrimBoundaryGestureProjection,
+    ScrimBoundaryGestureRecord,
+)
 from shared.scrim_wcs_claim_posture import (
     EvidenceReference,
     ScrimWCSClaimPostureProjection,
@@ -377,6 +387,18 @@ DirectorScrimGestureInput._validate_input_refs
 DirectorScrimGestureProjection._validate_projection_consistency
 DirectorScrimGestureFixtureSet._validate_fixture_set_contract
 DirectorScrimGestureFixtureSet.audit_records_by_outcome
+
+# Scrim refusal/correction boundary gesture validators are invoked by Pydantic
+# while validating programme-boundary fixture packets. The projection is a
+# schema/fixture contract for downstream run-store, audit, and health consumers.
+BoundaryNoExpertGate._blocked_gate_cannot_claim_public
+BoundaryPublicEventMapping._internal_only_cannot_have_public_fallback
+ProgrammeBoundaryEventGestureRef._public_boundary_claims_require_evidence
+BoundaryGestureCaps._bounded_boundary_pulses
+ScrimBoundaryGestureRecord._validate_no_laundered_boundary_claim
+ScrimBoundaryGestureInput._family_must_match_projection
+ScrimBoundaryGestureProjection._refs_stay_consistent
+ScrimBoundaryGestureFixtureSet._validate_fixture_set
 
 # WCS witness probe runtime helpers are the public contract for downstream WCS
 # director snapshots, health blocker bus, and programme WCS snapshot tasks.

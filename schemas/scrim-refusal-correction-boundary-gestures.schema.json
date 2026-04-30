@@ -1,0 +1,367 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/scrim-refusal-correction-boundary-gestures.schema.json",
+  "title": "ScrimRefusalCorrectionBoundaryGestureFixtureSet",
+  "description": "Contract fixtures for converting refusal, correction, uncertainty, and blocked programme boundary events into bounded scrim gestures without granting claim authority or implying public fanout.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "boundary_postures",
+    "fail_closed_policy",
+    "fixtures"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/scrim-refusal-correction-boundary-gestures.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "boundary_postures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/boundary_posture"},
+      "uniqueItems": true
+    },
+    "fail_closed_policy": {"$ref": "#/$defs/fail_closed_policy"},
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/fixture"}
+    }
+  },
+  "x-required_boundary_postures": [
+    "refusal",
+    "correction",
+    "uncertainty",
+    "stale_source",
+    "rights_blocked",
+    "privacy_blocked",
+    "monetization_held",
+    "public_event_held"
+  ],
+  "x-fail_closed_policy": {
+    "scrim_grants_truth": false,
+    "scrim_grants_rights": false,
+    "scrim_grants_safety": false,
+    "scrim_grants_public_status": false,
+    "scrim_grants_monetization_status": false,
+    "scrim_implies_public_fanout": false,
+    "aesthetic_emphasis_validates_blocked_claim": false,
+    "private_blocked_details_can_be_foregrounded": false
+  },
+  "$defs": {
+    "ref_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "boundary_posture": {
+      "type": "string",
+      "enum": [
+        "refusal",
+        "correction",
+        "uncertainty",
+        "stale_source",
+        "rights_blocked",
+        "privacy_blocked",
+        "monetization_held",
+        "public_event_held"
+      ]
+    },
+    "boundary_type": {
+      "type": "string",
+      "enum": [
+        "programme.started",
+        "claim.made",
+        "uncertainty.marked",
+        "refusal.issued",
+        "correction.made",
+        "artifact.candidate",
+        "programme.ended"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "gate_state": {
+      "type": "string",
+      "enum": ["pass", "fail", "dry_run", "private_only", "refusal", "correction_required"]
+    },
+    "claim_kind": {
+      "type": "string",
+      "enum": [
+        "observation",
+        "classification",
+        "ranking",
+        "comparison",
+        "explanation",
+        "refusal",
+        "correction",
+        "metadata"
+      ]
+    },
+    "unavailable_reason": {
+      "type": "string",
+      "enum": [
+        "private_mode",
+        "dry_run_mode",
+        "missing_grounding_gate",
+        "grounding_gate_failed",
+        "unsupported_claim",
+        "source_stale",
+        "rights_blocked",
+        "privacy_blocked",
+        "egress_blocked",
+        "audio_blocked",
+        "archive_missing",
+        "monetization_blocked",
+        "operator_review_required",
+        "research_vehicle_public_event_missing"
+      ]
+    },
+    "visual_treatment": {
+      "type": "string",
+      "enum": [
+        "foreground_public_safe_artifact",
+        "suppress_private_detail",
+        "hold_last_safe",
+        "neutralize_blocked_claim",
+        "boundary_breath_pulse",
+        "local_clarity_shift"
+      ]
+    },
+    "artifact_visibility": {
+      "type": "string",
+      "enum": [
+        "foreground_public_safe",
+        "suppressed_private",
+        "metadata_only",
+        "operator_only",
+        "none"
+      ]
+    },
+    "scrim_gesture_type": {
+      "type": "string",
+      "enum": [
+        "soften",
+        "thicken",
+        "thin",
+        "shimmer",
+        "ripple",
+        "clear_window",
+        "mark_boundary",
+        "conversion_glow",
+        "refusal_dim",
+        "correction_glint",
+        "neutral_hold"
+      ]
+    },
+    "fallback_action": {
+      "type": "string",
+      "enum": [
+        "hold",
+        "dry_run",
+        "private_only",
+        "archive_only",
+        "chapter_only",
+        "operator_review",
+        "deny"
+      ]
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "scrim_grants_truth",
+        "scrim_grants_rights",
+        "scrim_grants_safety",
+        "scrim_grants_public_status",
+        "scrim_grants_monetization_status",
+        "scrim_implies_public_fanout",
+        "aesthetic_emphasis_validates_blocked_claim",
+        "private_blocked_details_can_be_foregrounded"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scrim_grants_truth": {"type": "boolean", "const": false},
+        "scrim_grants_rights": {"type": "boolean", "const": false},
+        "scrim_grants_safety": {"type": "boolean", "const": false},
+        "scrim_grants_public_status": {"type": "boolean", "const": false},
+        "scrim_grants_monetization_status": {"type": "boolean", "const": false},
+        "scrim_implies_public_fanout": {"type": "boolean", "const": false},
+        "aesthetic_emphasis_validates_blocked_claim": {"type": "boolean", "const": false},
+        "private_blocked_details_can_be_foregrounded": {"type": "boolean", "const": false}
+      }
+    },
+    "gate": {
+      "type": "object",
+      "required": [
+        "gate_ref",
+        "gate_state",
+        "claim_allowed",
+        "public_claim_allowed",
+        "infractions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "gate_ref": {"type": ["string", "null"]},
+        "gate_state": {"$ref": "#/$defs/gate_state"},
+        "claim_allowed": {"type": "boolean"},
+        "public_claim_allowed": {"type": "boolean"},
+        "infractions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "claim_shape": {
+      "type": "object",
+      "required": [
+        "claim_kind",
+        "authority_ceiling",
+        "confidence_label",
+        "uncertainty",
+        "scope_limit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_kind": {"$ref": "#/$defs/claim_kind"},
+        "authority_ceiling": {
+          "type": "string",
+          "enum": ["evidence_bound", "speculative", "internal_only"]
+        },
+        "confidence_label": {
+          "type": "string",
+          "enum": ["none", "low", "medium", "medium_high", "high"]
+        },
+        "uncertainty": {"type": "string", "minLength": 1},
+        "scope_limit": {"type": "string", "minLength": 1}
+      }
+    },
+    "public_event_mapping": {
+      "type": "object",
+      "required": ["internal_only", "fallback_action", "unavailable_reasons"],
+      "additionalProperties": false,
+      "properties": {
+        "internal_only": {"type": "boolean"},
+        "fallback_action": {"$ref": "#/$defs/fallback_action"},
+        "unavailable_reasons": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "boundary_event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "boundary_id",
+        "emitted_at",
+        "programme_id",
+        "run_id",
+        "format_id",
+        "sequence",
+        "boundary_type",
+        "public_private_mode",
+        "summary",
+        "evidence_refs",
+        "no_expert_system_gate",
+        "claim_shape",
+        "public_event_mapping",
+        "dry_run_unavailable_reasons",
+        "duplicate_key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "boundary_id": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+        "emitted_at": {"type": "string", "format": "date-time"},
+        "programme_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "format_id": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 0},
+        "boundary_type": {"$ref": "#/$defs/boundary_type"},
+        "public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+        "summary": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/ref_list"},
+        "no_expert_system_gate": {"$ref": "#/$defs/gate"},
+        "claim_shape": {"$ref": "#/$defs/claim_shape"},
+        "public_event_mapping": {"$ref": "#/$defs/public_event_mapping"},
+        "dry_run_unavailable_reasons": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/unavailable_reason"},
+          "uniqueItems": true
+        },
+        "duplicate_key": {"type": "string", "minLength": 1}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "required": [
+        "posture",
+        "visual_treatment",
+        "scrim_state_gesture_type",
+        "artifact_visibility",
+        "programme_output_success",
+        "public_safe_artifact",
+        "reason_code"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "posture": {"$ref": "#/$defs/boundary_posture"},
+        "visual_treatment": {"$ref": "#/$defs/visual_treatment"},
+        "scrim_state_gesture_type": {"$ref": "#/$defs/scrim_gesture_type"},
+        "artifact_visibility": {"$ref": "#/$defs/artifact_visibility"},
+        "programme_output_success": {"type": "boolean"},
+        "public_safe_artifact": {"type": "boolean"},
+        "reason_code": {"type": "string", "minLength": 1}
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "required": [
+        "fixture_id",
+        "family",
+        "boundary_event",
+        "wcs_source_refs",
+        "source_refs",
+        "run_store_ref",
+        "audit_log_ref",
+        "health_ref",
+        "target_region_refs",
+        "requested_intensity",
+        "expected"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "fixture_id": {"type": "string", "minLength": 1},
+        "family": {"$ref": "#/$defs/boundary_posture"},
+        "boundary_event": {"$ref": "#/$defs/boundary_event"},
+        "wcs_source_refs": {"$ref": "#/$defs/ref_list"},
+        "source_refs": {"$ref": "#/$defs/ref_list"},
+        "run_store_ref": {"type": "string", "minLength": 1},
+        "audit_log_ref": {"type": "string", "minLength": 1},
+        "health_ref": {"type": "string", "minLength": 1},
+        "target_region_refs": {"$ref": "#/$defs/ref_list"},
+        "requested_intensity": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "expected": {"$ref": "#/$defs/expected"}
+      }
+    }
+  }
+}
