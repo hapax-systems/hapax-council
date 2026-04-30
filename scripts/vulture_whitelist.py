@@ -57,6 +57,17 @@ from shared.conversion_target_readiness import (
 )
 from shared.director_control_audit import DirectorControlMoveAuditRecord
 from shared.director_intent import CompositionalImpingement, DirectorIntent
+from shared.director_scrim_gesture_adapter import (
+    DirectorControlMoveRef,
+    DirectorScrimGestureAuditRecord,
+    DirectorScrimGestureFixtureSet,
+    DirectorScrimGestureInput,
+    DirectorScrimGestureProjection,
+    ScrimGestureCaps,
+    ScrimGesturePublicClaimPolicy,
+    ScrimGestureRecord,
+    WCSMoveRef,
+)
 from shared.director_vocabulary import DirectorVocabulary, SpectacleLaneState
 from shared.director_world_surface_snapshot import (
     ClaimPosture as DirectorWorldSurfaceClaimPosture,
@@ -316,6 +327,21 @@ ScrimHealthFixture._validate_fixture_contract
 ScrimHealthFixtureSet._validate_set_coverage
 ScrimHealthFixtureSet.world_surface_records
 ScrimHealthFixtureSet.scrim_state_refs
+
+# Director scrim gesture adapter validators are invoked by Pydantic while
+# validating fixture packets. The fixture/projection read helpers are the public
+# contract for downstream ScrimStateEnvelope and audit consumers.
+DirectorControlMoveRef._validate_audited_move_ref
+WCSMoveRef._validate_wcs_claim_floor
+ScrimGesturePublicClaimPolicy._validate_no_public_claim_expansion
+ScrimGestureCaps._validate_pierce_cap
+ScrimGestureRecord._validate_bounded_scrim_gesture
+ScrimGestureRecord.scrim_state_gesture
+DirectorScrimGestureAuditRecord._validate_audit_no_claim_expansion
+DirectorScrimGestureInput._validate_input_refs
+DirectorScrimGestureProjection._validate_projection_consistency
+DirectorScrimGestureFixtureSet._validate_fixture_set_contract
+DirectorScrimGestureFixtureSet.audit_records_by_outcome
 
 # WCS witness probe runtime helpers are the public contract for downstream WCS
 # director snapshots, health blocker bus, and programme WCS snapshot tasks.
