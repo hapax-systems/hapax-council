@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch Daimonion private-voice quarantine for drift
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=hapax-daimonion-quarantine-watchdog.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target
