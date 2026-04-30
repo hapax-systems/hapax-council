@@ -1211,6 +1211,11 @@ class CpalRunner:
                     )
                     return
                 async with self._speech_lock:
+                    # Set speaking gate for the ENTIRE duration — LLM +
+                    # TTS + playback + holdover. The pipeline's _speak_sentence
+                    # only gates per-sentence; between sentences the gate drops
+                    # and the buffer captures inter-sentence audio as "operator."
+                    self._buffer.set_speaking(True)
                     try:
                         await self._pipeline.generate_spontaneous_speech(
                             impingement,
@@ -1251,6 +1256,10 @@ class CpalRunner:
                     except Exception:
                         log.debug("Spontaneous speech failed", exc_info=True)
                     finally:
+                        # Hold the speaking gate past playback end to cover
+                        # room echo tail, same as autonomous narrative path.
+                        await asyncio.sleep(3.0)
+                        self._buffer.set_speaking(False)
                         self._last_speech_end = time.monotonic()
                         self._recent_speech_events.append(
                             SpeechEvent(
