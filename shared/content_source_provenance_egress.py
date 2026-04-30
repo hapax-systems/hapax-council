@@ -304,6 +304,16 @@ def read_broadcast_manifest(
     return BroadcastProvenanceManifest.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+def read_egress_kill_switch_state(
+    path: Path = DEFAULT_KILL_SWITCH_PATH,
+) -> EgressKillSwitchState | None:
+    """Read the global egress kill-switch state, if one exists."""
+
+    if not path.exists():
+        return None
+    return EgressKillSwitchState.model_validate_json(path.read_text(encoding="utf-8"))
+
+
 class EgressManifestGate:
     """Fail-closed gate for broadcast provenance manifests."""
 
@@ -572,6 +582,7 @@ __all__ = [
     "content_risk_rank",
     "max_content_risk_from_env",
     "read_broadcast_manifest",
+    "read_egress_kill_switch_state",
     "read_music_provenance_asset",
     "visual_asset_from_camera_role",
     "visual_asset_from_source_schema",
