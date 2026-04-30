@@ -350,6 +350,7 @@ AudioSurfaceFixture._route_destination_matches_row
 AudioWorldSurfaceFixtureSet._validate_contract_coverage
 AudioWorldSurfaceFixtureSet.require_surface
 AudioWorldSurfaceFixtureSet.rows_for_witness
+AudioMarkerProbeFixture._validate_mode_and_witness
 
 # Local visual-pool sidecar validators are invoked by Pydantic while scanning
 # and ingesting Sierpinski frame assets. The pool lands before downstream visual
