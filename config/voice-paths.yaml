@@ -8,11 +8,12 @@
 # tokens in code paths; audio topology node ids stay kebab-case.
 paths:
   dry:
-    description: Ryzen analog only, no DSP. Maximum intelligibility.
+    description: Diagnostic/private/emergency only; no public expressive default.
     sink: alsa_output.pci-0000_73_00.6.analog-stereo
     via_evil_pet: false
     via_s4: false
-    default_for_tiers: [unadorned]
+    public_expression_allowed: false
+    default_for_tiers: []
   radio:
     description: S-4 USB-direct pitched/reverb FX; no granular.
     sink: alsa_output.usb-Torso_Electronics_S-4
@@ -28,6 +29,7 @@ paths:
     # (engine-engaged) but claim the granular-engine mutex — see
     # shared.evil_pet_state.acquire_engine.
     default_for_tiers:
+      - unadorned
       - broadcast_ghost
       - memory
       - underwater

@@ -215,8 +215,8 @@ class TestVocalChainEmit:
         parsed = VoiceTierImpingement.try_from(imp)
         assert parsed is not None
         assert parsed.tier == VoiceTier.MEMORY
-        # T3 → evil_pet per voice-paths.yaml.
-        assert parsed.voice_path == "evil_pet"
+        # Default public voice path fails closed until FX witness passes.
+        assert parsed.voice_path == "held"
         assert parsed.monetization_risk == "none"
 
     def test_emit_with_excursion_flag(self) -> None:

@@ -235,6 +235,7 @@ class VocalChainCapability:
         decay_rate: float = 0.02,
         *,
         route_switcher: Any | None = None,
+        fx_device_witness_provider: Any | None = None,
     ) -> None:
         self._midi = midi_output
         self._evil_pet_ch = evil_pet_channel
@@ -250,6 +251,10 @@ class VocalChainCapability:
         # Injectable for tests. Production callers leave this None and the
         # default shared.audio_route_switcher.apply_switch is used.
         self._route_switcher = route_switcher
+        # Injectable for tests and future hardware witness producers. When
+        # absent, the expression surface reads the repo-visible /dev/shm
+        # witness and fails closed if it is missing or stale.
+        self._fx_device_witness_provider = fx_device_witness_provider
 
     @property
     def name(self) -> str:
@@ -415,8 +420,8 @@ class VocalChainCapability:
                 content={"metric": f"tier_{int(tier)}"},
             )
 
-        if route_audio:
-            self._maybe_switch_route(tier, path_override)
+        if route_audio and not self._maybe_switch_route(tier, path_override):
+            return
 
         self.deactivate()
         _apply_tier_fn(tier, vocal_chain=self, midi_output=self._midi, impingement=impingement)
@@ -456,7 +461,7 @@ class VocalChainCapability:
             VoicePath as _LiveVoicePath,
         )
         from agents.hapax_daimonion.voice_path import (
-            select_voice_path,
+            resolve_public_voice_path,
         )
         from shared.typed_impingements import VoiceTierImpingement
         from shared.voice_tier import (
@@ -468,11 +473,15 @@ class VocalChainCapability:
 
         tier_enum = tier if isinstance(tier, _VoiceTier) else _VoiceTier(int(tier))
         band = programme_band if programme_band is not None else (int(tier_enum), int(tier_enum))
-        # Map the tier's route choice; fall back to DRY on lookup failure.
+        # Map the tier's public route through the expression-surface gate;
+        # fail closed to HELD on lookup or witness failure.
         try:
-            path_enum = select_voice_path(tier_enum)
+            path_enum = resolve_public_voice_path(
+                tier_enum,
+                device_witness_provider=self._fx_device_witness_provider,
+            ).path
         except Exception:
-            path_enum = _LiveVoicePath.DRY
+            path_enum = _LiveVoicePath.HELD
         payload = VoiceTierImpingement(
             tier=tier_enum,
             programme_band=band,
@@ -483,7 +492,7 @@ class VocalChainCapability:
         )
         return payload.to_impingement(strength=strength)
 
-    def _maybe_switch_route(self, tier: Any, path_override: Any | None) -> None:
+    def _maybe_switch_route(self, tier: Any, path_override: Any | None) -> bool:
         """Resolve the tier's VoicePath and switch PipeWire routing if it changed.
 
         No-ops silently when:
@@ -493,40 +502,59 @@ class VocalChainCapability:
           broken audio graph doesn't block voice MIDI entirely)
         """
         try:
+            from agents.hapax_daimonion.voice_path import VoicePath as _LiveVoicePath
             from agents.hapax_daimonion.voice_path import (
                 load_paths,
-                select_voice_path,
+                resolve_public_voice_path,
             )
         except Exception:
-            return
+            return False
         try:
-            path = path_override if path_override is not None else select_voice_path(tier)
+            if path_override is not None:
+                path = path_override
+            else:
+                decision = resolve_public_voice_path(
+                    tier,
+                    device_witness_provider=self._fx_device_witness_provider,
+                )
+                if not decision.accepted:
+                    self._current_path = _LiveVoicePath.HELD
+                    log.info(
+                        "vocal_chain public route held: %s",
+                        decision.operator_visible_reason,
+                    )
+                    return False
+                path = decision.path
         except Exception:
             log.debug("voice_path resolution failed", exc_info=True)
-            return
+            return False
+        if path == _LiveVoicePath.HELD:
+            self._current_path = _LiveVoicePath.HELD
+            return False
         if path == self._current_path:
-            return
+            return True
         # Resolve the sink from the loaded path config.
         try:
             paths = load_paths()
             sink = paths[path].sink
         except Exception:
             log.debug("voice_path sink lookup failed", exc_info=True)
-            return
+            return False
         switcher = self._route_switcher
         if switcher is None:
             try:
                 from shared.audio_route_switcher import apply_switch as _apply_switch
             except Exception:
-                return
+                return False
             switcher = _apply_switch
         try:
             switcher(sink)
         except Exception:
             log.warning("pactl route switch failed; continuing with MIDI", exc_info=True)
-            return
+            return True
         self._current_path = path
         log.info("vocal_chain route switched to %s (sink=%s)", path, sink)
+        return True
 
     def _send_dimension_cc(self, dimension_name: str) -> None:
         """Send MIDI CC messages for a dimension at its current level."""
