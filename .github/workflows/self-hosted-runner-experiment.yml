@@ -1,0 +1,114 @@
+name: Self-hosted runner experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Bounded non-secret suite to run
+        required: true
+        default: boundary-smoke
+        type: choice
+        options:
+          - boundary-smoke
+          - non-secret-static-ci-slice
+      reason:
+        description: Operator reason for running the experiment
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-hosted-runner-experiment-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pr-safe-non-secret:
+    name: PR-safe non-secret self-hosted experiment
+    if: github.event_name == 'workflow_dispatch'
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - hapax-council-ci
+      - pr-safe
+      - no-secrets
+      - ephemeral-preferred
+    timeout-minutes: 15
+    env:
+      HAPAX_CI_NO_SECRETS: "1"
+      HAPAX_SELF_HOSTED_EXPERIMENT: "1"
+      UV_CACHE_DIR: /var/cache/hapax/github-actions/self-hosted-runner-experiment/uv
+      XDG_CACHE_HOME: /var/cache/hapax/github-actions/self-hosted-runner-experiment/xdg
+    steps:
+      - name: Refuse non-manual invocation
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          SUITE: ${{ inputs.suite }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_NAME" = "workflow_dispatch"
+          test "$RUNNER_ENVIRONMENT" = "self-hosted"
+          case "$SUITE" in
+            boundary-smoke|non-secret-static-ci-slice) ;;
+            *)
+              echo "Unknown experiment suite: $SUITE" >&2
+              exit 64
+              ;;
+          esac
+
+      - name: Verify bounded cache root
+        run: |
+          set -euo pipefail
+          case "$UV_CACHE_DIR" in
+            /var/cache/hapax/github-actions/self-hosted-runner-experiment/uv) ;;
+            *) echo "Unexpected UV_CACHE_DIR: $UV_CACHE_DIR" >&2; exit 64 ;;
+          esac
+          case "$XDG_CACHE_HOME" in
+            /var/cache/hapax/github-actions/self-hosted-runner-experiment/xdg) ;;
+            *) echo "Unexpected XDG_CACHE_HOME: $XDG_CACHE_HOME" >&2; exit 64 ;;
+          esac
+          mkdir -p "$UV_CACHE_DIR" "$XDG_CACHE_HOME"
+          test -w "$UV_CACHE_DIR"
+          test -w "$XDG_CACHE_HOME"
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Boundary smoke
+        if: inputs.suite == 'boundary-smoke'
+        run: |
+          set -euo pipefail
+          python -c "import pathlib; print(pathlib.Path.cwd())"
+          test "$HAPAX_CI_NO_SECRETS" = "1"
+          test "$HAPAX_SELF_HOSTED_EXPERIMENT" = "1"
+
+      - name: Non-secret static CI slice
+        if: inputs.suite == 'non-secret-static-ci-slice'
+        run: |
+          set -euo pipefail
+          uv sync --extra ci --group dev
+          uv run pytest \
+            tests/ci/test_self_hosted_runner_experiment.py \
+            tests/test_ci_discovery.py \
+            tests/test_ci_required_coverage_claims.py \
+            -q
+
+      - name: Summarize experiment
+        if: always()
+        run: |
+          {
+            echo "## Self-hosted runner experiment"
+            echo "- suite: ${{ inputs.suite }}"
+            echo "- reason: ${{ inputs.reason }}"
+            echo "- event: ${{ github.event_name }}"
+            echo "- cache root: /var/cache/hapax/github-actions/self-hosted-runner-experiment"
+            echo "- decision gate: defer until three consecutive manual green runs"
+          } >> "$GITHUB_STEP_SUMMARY"
