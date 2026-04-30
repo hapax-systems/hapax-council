@@ -1,0 +1,542 @@
+#!/usr/bin/env python3
+"""Enforce the private-voice Daimonion quarantine while the incident is active.
+
+This is an incident-containment watchdog, not a restore tool. It can stop/mask
+``hapax-daimonion.service`` and mute known broadcast/TTS/livestream PipeWire
+nodes when quarantine drifts. It never unmasks, restarts, unmutes, synthesizes,
+or probes live audio.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal
+
+SERVICE_NAME = "hapax-daimonion.service"
+DEFAULT_WITNESS_PATH = Path("/dev/shm/hapax-daimonion/quarantine-watchdog.json")
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+DEFAULT_QUARANTINE_STATE_PATH = RUNTIME_DIR / "hapax-daimonion/private-voice-quarantine.json"
+DEFAULT_RESTORE_BYPASS_PATH = RUNTIME_DIR / "hapax-daimonion/authorized-restore.json"
+
+REQUIRED_MUTED_SOURCES = (
+    "hapax-broadcast-master",
+    "hapax-broadcast-normalized",
+    "hapax-obs-broadcast-remap",
+    "hapax-livestream-tap.monitor",
+    "hapax-livestream.monitor",
+    "hapax-tts-duck.monitor",
+    "hapax-voice-fx-capture.monitor",
+    "hapax-loudnorm-capture.monitor",
+    "input.loopback.sink.role.assistant.monitor",
+    "input.loopback.sink.role.broadcast.monitor",
+)
+REQUIRED_MUTED_SINKS = (
+    "hapax-livestream",
+    "hapax-livestream-tap",
+    "hapax-tts-duck",
+    "hapax-voice-fx-capture",
+    "hapax-loudnorm-capture",
+    "input.loopback.sink.role.assistant",
+    "input.loopback.sink.role.broadcast",
+)
+
+SYSTEMD_SHOW_CMD = (
+    "systemctl",
+    "--user",
+    "show",
+    SERVICE_NAME,
+    "-p",
+    "LoadState",
+    "-p",
+    "UnitFileState",
+    "-p",
+    "ActiveState",
+    "-p",
+    "SubState",
+    "--value",
+)
+PGREP_CMD = (
+    "pgrep",
+    "-af",
+    r"agents\.hapax_daimonion|hapax-daimonion\.service|rebuild-service\.sh.*hapax-daimonion",
+)
+
+ActionKind = Literal[
+    "stop_service",
+    "disable_service",
+    "mask_service",
+    "mute_source",
+    "mute_sink",
+]
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+@dataclass(frozen=True)
+class Action:
+    kind: ActionKind
+    command: list[str]
+    attempted: bool
+    succeeded: bool
+    dry_run: bool
+    reason: str
+    stderr: str = ""
+
+
+class CommandRunner:
+    """Run system commands, or deterministic fixture responses in tests."""
+
+    def __init__(self, fixture_path: Path | None = None) -> None:
+        self._fixture_commands = _load_fixture_commands(fixture_path)
+
+    def run(self, command: list[str], *, timeout_s: float = 10.0) -> CommandResult:
+        if self._fixture_commands is not None:
+            for index, entry in enumerate(self._fixture_commands):
+                if entry.get("argv") == command:
+                    self._fixture_commands.pop(index)
+                    return CommandResult(
+                        int(entry.get("returncode", 0)),
+                        str(entry.get("stdout", "")),
+                        str(entry.get("stderr", "")),
+                    )
+            return CommandResult(127, "", f"fixture missing command: {command!r}")
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        return CommandResult(result.returncode, result.stdout, result.stderr)
+
+
+def _load_fixture_commands(fixture_path: Path | None) -> list[dict[str, Any]] | None:
+    if fixture_path is None:
+        return None
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    commands = payload.get("commands")
+    if not isinstance(commands, list):
+        raise ValueError("fixture must contain a commands list")
+    return [entry for entry in commands if isinstance(entry, dict)]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def quarantine_active(path: Path) -> tuple[bool, str]:
+    """Return active state; missing/malformed state fails closed to active."""
+
+    if not path.exists():
+        return True, "missing_state_file_fail_closed"
+    payload = _read_json(path)
+    if payload is None:
+        return True, "malformed_state_file_fail_closed"
+    if payload.get("quarantine_active") is False:
+        return False, "quarantine_state_inactive"
+    return True, "quarantine_state_active"
+
+
+def authorized_restore_bypass(path: Path, *, now: datetime) -> dict[str, Any]:
+    """Return explicit restore-bypass state.
+
+    Accidental bypass is refused: the file must exist, set
+    ``authorized_restore`` to true, name an approver, and carry a future
+    ``expires_at`` timestamp.
+    """
+
+    payload = _read_json(path) if path.exists() else None
+    if payload is None:
+        return {"active": False, "reason": "missing_or_malformed"}
+    expires_at = _parse_iso(payload.get("expires_at"))
+    approved_by = payload.get("approved_by")
+    if payload.get("authorized_restore") is not True:
+        return {"active": False, "reason": "authorization_flag_not_true"}
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        return {"active": False, "reason": "missing_approved_by"}
+    if expires_at is None:
+        return {"active": False, "reason": "missing_or_malformed_expiry"}
+    if expires_at <= now:
+        return {"active": False, "reason": "expired", "expires_at": _iso(expires_at)}
+    return {
+        "active": True,
+        "reason": "authorized_restore_window",
+        "approved_by": approved_by.strip(),
+        "expires_at": _iso(expires_at),
+    }
+
+
+def parse_systemd_state(result: CommandResult) -> dict[str, Any]:
+    state = {
+        "load_state": "unknown",
+        "unit_file_state": "unknown",
+        "active_state": "unknown",
+        "sub_state": "unknown",
+        "healthy": False,
+        "error": result.stderr.strip() if result.returncode != 0 else "",
+    }
+    if result.returncode != 0:
+        return state
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    keyed: dict[str, str] = {}
+    for line in lines:
+        if "=" in line:
+            key, value = line.split("=", 1)
+            keyed[key] = value
+    if keyed:
+        state.update(
+            {
+                "load_state": keyed.get("LoadState", "unknown"),
+                "unit_file_state": keyed.get("UnitFileState", "unknown"),
+                "active_state": keyed.get("ActiveState", "unknown"),
+                "sub_state": keyed.get("SubState", "unknown"),
+            }
+        )
+    elif len(lines) >= 4:
+        state.update(
+            {
+                "load_state": lines[0],
+                "unit_file_state": lines[1],
+                "active_state": lines[2],
+                "sub_state": lines[3],
+            }
+        )
+    state["healthy"] = (
+        state["load_state"] == "masked"
+        and state["unit_file_state"] == "masked"
+        and state["active_state"] == "inactive"
+        and state["sub_state"] == "dead"
+    )
+    return state
+
+
+def parse_pactl_short_names(result: CommandResult) -> set[str] | None:
+    if result.returncode != 0:
+        return None
+    names: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2:
+            names.add(fields[1])
+    return names
+
+
+def parse_mute_state(result: CommandResult) -> bool | None:
+    if result.returncode != 0:
+        return None
+    lowered = result.stdout.lower()
+    if "yes" in lowered:
+        return True
+    if "no" in lowered:
+        return False
+    return None
+
+
+def inspect_quarantine(runner: CommandRunner) -> dict[str, Any]:
+    service = parse_systemd_state(runner.run(list(SYSTEMD_SHOW_CMD)))
+
+    process_result = runner.run(list(PGREP_CMD))
+    process_lines = [line for line in process_result.stdout.splitlines() if line.strip()]
+    process_running = process_result.returncode == 0 and bool(process_lines)
+    process = {
+        "running": process_running,
+        "matches": process_lines[:10],
+        "error": process_result.stderr.strip() if process_result.returncode not in (0, 1) else "",
+    }
+
+    source_names = parse_pactl_short_names(runner.run(["pactl", "list", "short", "sources"]))
+    sink_names = parse_pactl_short_names(runner.run(["pactl", "list", "short", "sinks"]))
+    sources = _inspect_mute_set(
+        runner,
+        names=source_names,
+        required=REQUIRED_MUTED_SOURCES,
+        kind="source",
+    )
+    sinks = _inspect_mute_set(
+        runner,
+        names=sink_names,
+        required=REQUIRED_MUTED_SINKS,
+        kind="sink",
+    )
+    return {
+        "service": service,
+        "process": process,
+        "pipewire": {
+            "sources": sources,
+            "sinks": sinks,
+            "source_list_available": source_names is not None,
+            "sink_list_available": sink_names is not None,
+        },
+    }
+
+
+def _inspect_mute_set(
+    runner: CommandRunner,
+    *,
+    names: set[str] | None,
+    required: tuple[str, ...],
+    kind: Literal["source", "sink"],
+) -> dict[str, dict[str, Any]]:
+    states: dict[str, dict[str, Any]] = {}
+    for name in required:
+        if names is None:
+            states[name] = {"state": "unknown", "muted": None}
+            continue
+        if name not in names:
+            states[name] = {"state": "missing", "muted": None}
+            continue
+        command = ["pactl", f"get-{kind}-mute", name]
+        muted = parse_mute_state(runner.run(command))
+        states[name] = {
+            "state": "muted" if muted is True else "unmuted" if muted is False else "unknown",
+            "muted": muted,
+        }
+    return states
+
+
+def build_actions(state: dict[str, Any]) -> list[tuple[ActionKind, list[str], str]]:
+    actions: list[tuple[ActionKind, list[str], str]] = []
+    service = state["service"]
+    process = state["process"]
+    if not service["healthy"] or process["running"]:
+        actions.extend(
+            [
+                (
+                    "stop_service",
+                    ["systemctl", "--user", "stop", SERVICE_NAME],
+                    "service_or_process_drift",
+                ),
+                (
+                    "disable_service",
+                    ["systemctl", "--user", "disable", SERVICE_NAME],
+                    "service_or_process_drift",
+                ),
+                (
+                    "mask_service",
+                    ["systemctl", "--user", "mask", SERVICE_NAME],
+                    "service_or_process_drift",
+                ),
+            ]
+        )
+    for name, node in state["pipewire"]["sources"].items():
+        if node["state"] == "unmuted":
+            actions.append(
+                ("mute_source", ["pactl", "set-source-mute", name, "1"], "source_unmuted")
+            )
+    for name, node in state["pipewire"]["sinks"].items():
+        if node["state"] == "unmuted":
+            actions.append(("mute_sink", ["pactl", "set-sink-mute", name, "1"], "sink_unmuted"))
+    return actions
+
+
+def execute_actions(
+    runner: CommandRunner,
+    actions: list[tuple[ActionKind, list[str], str]],
+    *,
+    dry_run: bool,
+) -> list[Action]:
+    executed: list[Action] = []
+    for kind, command, reason in actions:
+        if dry_run:
+            executed.append(
+                Action(
+                    kind=kind,
+                    command=command,
+                    attempted=False,
+                    succeeded=False,
+                    dry_run=True,
+                    reason=reason,
+                )
+            )
+            continue
+        result = runner.run(command)
+        executed.append(
+            Action(
+                kind=kind,
+                command=command,
+                attempted=True,
+                succeeded=result.returncode == 0,
+                dry_run=False,
+                reason=reason,
+                stderr=result.stderr.strip(),
+            )
+        )
+    return executed
+
+
+def remaining_blockers(
+    state: dict[str, Any],
+    actions: list[Action],
+    *,
+    dry_run: bool,
+) -> list[str]:
+    blockers: list[str] = []
+    if state["service"]["error"]:
+        blockers.append("systemd_state_unavailable")
+    if state["process"]["error"]:
+        blockers.append("process_check_unavailable")
+    for kind in ("sources", "sinks"):
+        for name, node in state["pipewire"][kind].items():
+            if node["state"] == "missing":
+                blockers.append(f"missing_{kind[:-1]}:{name}")
+            elif node["state"] == "unknown":
+                blockers.append(f"unknown_{kind[:-1]}_mute:{name}")
+    if dry_run and actions:
+        blockers.append("dry_run_drift_not_corrected")
+    for action in actions:
+        if action.attempted and not action.succeeded:
+            blockers.append(f"correction_failed:{action.kind}")
+    return blockers
+
+
+def build_witness(
+    *,
+    runner: CommandRunner,
+    enforce: bool,
+    quarantine_state_path: Path,
+    restore_bypass_path: Path,
+    now: datetime,
+) -> tuple[dict[str, Any], int]:
+    active, active_reason = quarantine_active(quarantine_state_path)
+    bypass = authorized_restore_bypass(restore_bypass_path, now=now)
+    witness: dict[str, Any] = {
+        "checked_at": _iso(now),
+        "surface": "private_voice_quarantine",
+        "quarantine_active": active,
+        "quarantine_reason": active_reason,
+        "restore_bypass": bypass,
+        "mode": "enforce" if enforce else "dry_run",
+        "operator_notification": {
+            "status": "local_witness_pending",
+            "channel": "stdout_journal_and_witness_json",
+            "requires_parent_attention": False,
+        },
+        "actions": [],
+        "remaining_blockers": [],
+        "success": True,
+    }
+    if not active:
+        witness["mode"] = "inactive_quarantine"
+        witness["operator_notification"]["status"] = "quarantine_inactive_witnessed"
+        return witness, 0
+    if bypass.get("active") is True:
+        witness["mode"] = "authorized_restore_bypass"
+        witness["quarantine_active"] = False
+        witness["operator_notification"]["status"] = "restore_bypass_witnessed"
+        witness["operator_notification"]["requires_parent_attention"] = True
+        return witness, 0
+
+    state = inspect_quarantine(runner)
+    planned = build_actions(state)
+    actions = execute_actions(runner, planned, dry_run=not enforce)
+    blockers = remaining_blockers(state, actions, dry_run=not enforce)
+    notification_status = "healthy_quarantine_witnessed"
+    if blockers:
+        notification_status = "quarantine_blocked_witnessed"
+    elif actions:
+        notification_status = "quarantine_correction_witnessed"
+    witness.update(
+        {
+            "service": state["service"],
+            "process": state["process"],
+            "pipewire": state["pipewire"],
+            "operator_notification": {
+                "status": notification_status,
+                "channel": "stdout_journal_and_witness_json",
+                "requires_parent_attention": bool(blockers or actions),
+            },
+            "actions": [asdict(action) for action in actions],
+            "remaining_blockers": blockers,
+            "success": not blockers,
+        }
+    )
+    return witness, 0 if witness["success"] else 2
+
+
+def write_witness(path: Path, witness: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(witness, indent=2, sort_keys=True) + "\n"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def print_summary(witness: dict[str, Any], witness_path: Path) -> None:
+    print(f"quarantine_success={str(witness['success']).lower()}")
+    print(f"mode={witness['mode']}")
+    print(f"quarantine_active={str(witness['quarantine_active']).lower()}")
+    print(f"remaining_blockers={len(witness['remaining_blockers'])}")
+    print(f"actions={len(witness['actions'])}")
+    print(f"witness_path={witness_path}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--enforce", action="store_true", help="Apply stop/mask/mute corrections.")
+    parser.add_argument(
+        "--fixture", type=Path, default=None, help="Read deterministic command results."
+    )
+    parser.add_argument("--witness-path", type=Path, default=DEFAULT_WITNESS_PATH)
+    parser.add_argument("--quarantine-state-file", type=Path, default=DEFAULT_QUARANTINE_STATE_PATH)
+    parser.add_argument("--restore-bypass-file", type=Path, default=DEFAULT_RESTORE_BYPASS_PATH)
+    parser.add_argument("--json", action="store_true", help="Print full witness JSON.")
+    args = parser.parse_args(argv)
+
+    runner = CommandRunner(args.fixture)
+    witness, exit_code = build_witness(
+        runner=runner,
+        enforce=args.enforce,
+        quarantine_state_path=args.quarantine_state_file,
+        restore_bypass_path=args.restore_bypass_file,
+        now=_utc_now(),
+    )
+    write_witness(args.witness_path, witness)
+    if args.json:
+        print(json.dumps(witness, indent=2, sort_keys=True))
+    else:
+        print_summary(witness, args.witness_path)
+    return exit_code
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())
