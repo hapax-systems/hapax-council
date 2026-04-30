@@ -74,19 +74,24 @@ def _message(
     label_id: str,
     *,
     rfc_message_id: str | None = None,
+    body: str = "plain body",
+    extra_headers: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
+    headers = [
+        {"name": "From", "value": "sender@example.com"},
+        {"name": "Subject", "value": "A subject"},
+        {"name": "Message-ID", "value": rfc_message_id or f"<{message_id}@example.com>"},
+        {"name": "References", "value": "<hapax-thread@example.com>"},
+    ]
+    if extra_headers:
+        headers.extend(extra_headers)
     return {
         "id": message_id,
         "labelIds": [label_id],
         "payload": {
             "mimeType": "text/plain",
-            "headers": [
-                {"name": "From", "value": "sender@example.com"},
-                {"name": "Subject", "value": "A subject"},
-                {"name": "Message-ID", "value": rfc_message_id or f"<{message_id}@example.com>"},
-                {"name": "References", "value": "<hapax-thread@example.com>"},
-            ],
-            "body": {"data": _body_data("plain body")},
+            "headers": headers,
+            "body": {"data": _body_data(body)},
         },
     }
 
@@ -96,8 +101,19 @@ def _paths(tmp_path: Path) -> dict[str, Path]:
         "cursor_path": tmp_path / "cursor.json",
         "last_push_path": tmp_path / "last-push.json",
         "seen_set_path": tmp_path / "seen-message-ids.json",
+        "pending_actions_path": tmp_path / "pending-actions.jsonl",
         "lock_path": tmp_path / "mail-monitor.lock",
     }
+
+
+def _write_pending_actions(path: Path, records: list[dict[str, Any] | str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fp:
+        for record in records:
+            if isinstance(record, str):
+                fp.write(record + "\n")
+            else:
+                fp.write(json.dumps(record) + "\n")
 
 
 def test_process_history_reads_each_hapax_label_and_dispatches_once(
@@ -154,6 +170,98 @@ def test_process_history_reads_each_hapax_label_and_dispatches_once(
         "history_id": "200",
         "last_push_at": "2026-04-28T05:30:00+00:00",
     }
+
+
+def test_process_history_enriches_pending_action_correlation(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths["cursor_path"].write_text(json.dumps({"historyId": "100"}), encoding="utf-8")
+    processed_at = datetime(2026, 4, 28, 5, 30, tzinfo=UTC)
+    _write_pending_actions(
+        paths["pending_actions_path"],
+        [
+            {
+                "sender_domain": "example.com",
+                "ts": processed_at.timestamp() - 60,
+                "action": "deposit",
+                "artefact_id": "pub-001",
+            }
+        ],
+    )
+    history = _History({"L_v": [{"history": [{"messagesAdded": [{"message": {"id": "M1"}}]}]}]})
+    messages = _Messages(
+        {
+            "M1": _message(
+                "M1",
+                "L_v",
+                body="Confirm at https://zenodo.org/account/verify?token=abc",
+                extra_headers=[
+                    {"name": "Return-Path", "value": "<sender@example.com>"},
+                    {
+                        "name": "Authentication-Results",
+                        "value": "mx; dkim=pass; spf=pass; dmarc=pass",
+                    },
+                ],
+            )
+        }
+    )
+    service = _Service(history, messages)
+
+    with mock.patch("agents.mail_monitor.runner.dispatch_message") as dispatch:
+        processed = runner.process_history(
+            service,
+            "200",
+            label_ids_by_name={"Hapax/Verify": "L_v"},
+            **paths,
+            now=processed_at,
+        )
+
+    assert processed == 1
+    enriched = dispatch.call_args.args[1]
+    assert enriched["envelope_from"] == "sender@example.com"
+    assert enriched["headers"]["authentication-results"] == "mx; dkim=pass; spf=pass; dmarc=pass"
+    assert enriched["outbound_correlation_hit"] is True
+    assert enriched["auto_accept_candidate"] is True
+    assert enriched["artefact_id"] == "pub-001"
+
+
+def test_process_history_ignores_expired_and_malformed_pending_actions(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths["cursor_path"].write_text(json.dumps({"historyId": "100"}), encoding="utf-8")
+    processed_at = datetime(2026, 4, 28, 5, 30, tzinfo=UTC)
+    _write_pending_actions(
+        paths["pending_actions_path"],
+        [
+            "{not-json",
+            {
+                "sender_domain": "example.com",
+                "ts": processed_at.timestamp() - 3600,
+                "artefact_id": "expired",
+            },
+            {
+                "sender_domain": "other.example",
+                "ts": processed_at.timestamp() - 60,
+                "artefact_id": "wrong-domain",
+            },
+        ],
+    )
+    history = _History({"L_v": [{"history": [{"messagesAdded": [{"message": {"id": "M1"}}]}]}]})
+    messages = _Messages({"M1": _message("M1", "L_v")})
+    service = _Service(history, messages)
+
+    with mock.patch("agents.mail_monitor.runner.dispatch_message") as dispatch:
+        processed = runner.process_history(
+            service,
+            "200",
+            label_ids_by_name={"Hapax/Verify": "L_v"},
+            **paths,
+            now=processed_at,
+        )
+
+    assert processed == 1
+    enriched = dispatch.call_args.args[1]
+    assert enriched["outbound_correlation_hit"] is False
+    assert enriched["auto_accept_candidate"] is False
+    assert "artefact_id" not in enriched
 
 
 def test_process_history_uses_watch_history_id_without_runtime_cursor(

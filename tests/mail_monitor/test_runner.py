@@ -182,8 +182,8 @@ def test_dispatch_audit_records_label_when_present(
     assert "subject" not in entry
 
 
-def test_register_processor_is_placeholder() -> None:
+def test_register_processor_rejects_dynamic_registration() -> None:
     import pytest
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(NotImplementedError, match="wired statically"):
         runner.register_processor(Category.B_VERIFY, lambda *_: True)

@@ -6,9 +6,9 @@ The classifier is deterministic on the primary signal — the
 server-side label installed by filter A/B/C/D — and falls back to
 header / body inspection when the label is missing or ambiguous.
 
-The LLM-fallback path described in cc-task 007 is OUT OF SCOPE for
-this commit; it lands in a follow-up. The current rule set covers the
-non-ambiguous cases that account for >99% of expected traffic.
+The classifier remains deterministic: live mail processing is driven by
+server-side Hapax labels and explicit runner-provided correlation flags,
+not by an LLM fallback.
 
 A Hapax-Suppress-labelled message must never classify as anything but
 ``C_SUPPRESS`` — failing that invariant is a constitutional violation

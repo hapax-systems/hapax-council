@@ -37,10 +37,8 @@ regression risk.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -49,15 +47,15 @@ import requests
 import yaml
 from prometheus_client import Counter
 
+from agents.mail_monitor import correlations
 from agents.mail_monitor.audit import audit_call
 
 log = logging.getLogger(__name__)
 
 ALLOWLISTS_PATH = Path(__file__).parent / "allowlists.yaml"
-PENDING_ACTIONS_PATH = Path("~/.cache/mail-monitor/pending-actions.jsonl").expanduser()
+PENDING_ACTIONS_PATH = correlations.PENDING_ACTIONS_PATH
+CORRELATION_WINDOW_S = correlations.CORRELATION_WINDOW_S
 WORKING_MODE_PATH = Path("~/.cache/hapax/working-mode").expanduser()
-
-CORRELATION_WINDOW_S = 10 * 60  # ±10 min per spec §4 condition 4
 
 _HTTPS_URL_RE = re.compile(r"https://[^\s<>\"']+", re.IGNORECASE)
 # ``Authentication-Results`` typically reads
@@ -195,40 +193,10 @@ def _check_correlation(
     """Find a pending-actions record matching ``sender_domain`` within window.
 
     Returns the matched record dict on success, ``None`` if no match.
-    The pending-actions writer (operator-side daemons) is out of scope
-    for this PR; this read path is forward-compatible.
+    Kept as a compatibility wrapper for existing tests/callers; the
+    shared implementation lives in ``correlations.py``.
     """
-    if not path.exists():
-        return None
-    cutoff_lo = (now if now is not None else time.time()) - CORRELATION_WINDOW_S
-    cutoff_hi = (now if now is not None else time.time()) + CORRELATION_WINDOW_S
-    sender_domain = sender_domain.lower()
-    try:
-        with path.open("r", encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(record, dict):
-                    continue
-                rec_sender = (record.get("sender_domain") or "").lower()
-                if rec_sender != sender_domain:
-                    continue
-                rec_ts = record.get("ts") or record.get("expires") or 0
-                try:
-                    rec_ts_f = float(rec_ts)
-                except (TypeError, ValueError):
-                    continue
-                if cutoff_lo <= rec_ts_f <= cutoff_hi:
-                    return record
-    except OSError as exc:
-        log.warning("pending-actions read failed: %s", exc)
-        return None
-    return None
+    return correlations.find_pending_action(sender_domain, now=now, path=path)
 
 
 def _check_working_mode(
@@ -248,11 +216,7 @@ def _check_working_mode(
 
 
 def _sender_domain(envelope_from: str | None) -> str | None:
-    if not envelope_from:
-        return None
-    if "@" not in envelope_from:
-        return None
-    return envelope_from.split("@", 1)[1].strip().lower()
+    return correlations.sender_domain(envelope_from)
 
 
 def evaluate_gate(
