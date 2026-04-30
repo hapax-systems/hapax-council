@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Dry-run CLI for the audio marker probe harness."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+from shared.audio_marker_probe_harness import (
+    AudioMarkerProbeAuthorization,
+    AudioMarkerProbeHarnessError,
+    evaluate_marker_fixture_set,
+    load_audio_marker_probe_fixtures,
+)
+
+
+def _authorization_from_env() -> AudioMarkerProbeAuthorization:
+    return AudioMarkerProbeAuthorization(
+        private_voice_hard_stop_deployed=os.getenv("HAPAX_PRIVATE_VOICE_HARD_STOP_DEPLOYED") == "1",
+        cx_red_or_operator_authorized=os.getenv("HAPAX_CX_RED_AUDIO_PROBE_AUTHORIZED") == "1",
+        live_audio_probe_authorized=os.getenv("HAPAX_LIVE_AUDIO_PROBE_AUTHORIZED") == "1",
+        authorization_ref=os.getenv("HAPAX_AUDIO_PROBE_AUTHORIZATION_REF"),
+    )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Evaluate dry-run/fixture audio marker probe contracts.",
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="evaluate fixture contracts without live audio actions",
+    )
+    mode.add_argument(
+        "--run",
+        action="store_true",
+        help="refuse unless live probe authorization gates are present",
+    )
+    parser.add_argument(
+        "--fixture",
+        type=Path,
+        default=None,
+        help="fixture JSON path; defaults to config/audio-marker-probe-fixtures.json",
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        dest="cases",
+        help="fixture_case to evaluate; repeat for multiple cases",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    authorization = _authorization_from_env()
+
+    if args.run and not authorization.live_execution_allowed():
+        for reason in authorization.blocking_reasons():
+            print(f"refusing live marker probe: {reason}", file=sys.stderr)
+        return 2
+    if args.run:
+        print(
+            "refusing live marker probe: this harness only implements dry-run/fixture contracts",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        fixtures = (
+            load_audio_marker_probe_fixtures(args.fixture)
+            if args.fixture
+            else (load_audio_marker_probe_fixtures())
+        )
+        results = evaluate_marker_fixture_set(
+            fixtures,
+            cases=args.cases,
+            authorization=authorization,
+        )
+    except (AudioMarkerProbeHarnessError, KeyError) as exc:
+        print(f"audio marker probe dry-run failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps([result.model_dump(mode="json") for result in results], indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

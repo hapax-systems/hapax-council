@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/audio-marker-probe-harness.schema.json",
+  "title": "AudioMarkerProbeHarness",
+  "type": "object",
+  "additionalProperties": false,
+  "x-required_fixture_cases": [
+    "dry_run_public_plan_only",
+    "public_marker_witnessed",
+    "private_marker_witnessed_no_leak",
+    "no_leak_clean",
+    "private_marker_leaked_public_negative",
+    "live_execution_blocked_without_authorization",
+    "commanded_without_marker"
+  ],
+  "x-marker_probe_kinds": ["public", "private", "no_leak"],
+  "x-modes": ["dry_run", "fixture", "live"],
+  "x-states": ["dry_run_planned", "witnessed", "blocked", "failed"],
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "required_fixture_cases",
+    "marker_probe_kinds",
+    "modes",
+    "states",
+    "probes",
+    "fail_closed_policy"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {"const": "schemas/audio-marker-probe-harness.schema.json"},
+    "generated_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}}
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "required_fixture_cases": {
+      "type": "array",
+      "minItems": 7,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "marker_probe_kinds": {
+      "type": "array",
+      "minItems": 3,
+      "items": {"$ref": "#/$defs/probe_kind"}
+    },
+    "modes": {
+      "type": "array",
+      "minItems": 3,
+      "items": {"$ref": "#/$defs/probe_mode"}
+    },
+    "states": {
+      "type": "array",
+      "minItems": 4,
+      "items": {"$ref": "#/$defs/probe_state"}
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 7,
+      "items": {"$ref": "#/$defs/probe_fixture"}
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dry_run_is_live_truth",
+        "live_execution_without_authorization",
+        "private_marker_on_public_path_allowed",
+        "public_claim_without_no_leak",
+        "fixtures_unmask_restart_or_unmute_services",
+        "fixture_result_allows_live_execution"
+      ],
+      "properties": {
+        "dry_run_is_live_truth": {"const": false},
+        "live_execution_without_authorization": {"const": false},
+        "private_marker_on_public_path_allowed": {"const": false},
+        "public_claim_without_no_leak": {"const": false},
+        "fixtures_unmask_restart_or_unmute_services": {"const": false},
+        "fixture_result_allows_live_execution": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "probe_kind": {"type": "string", "enum": ["public", "private", "no_leak"]},
+    "probe_mode": {"type": "string", "enum": ["dry_run", "fixture", "live"]},
+    "probe_state": {
+      "type": "string",
+      "enum": ["dry_run_planned", "witnessed", "blocked", "failed"]
+    },
+    "health_state": {
+      "type": "string",
+      "enum": [
+        "safe",
+        "quiet_off_air",
+        "degraded",
+        "unsafe",
+        "broken",
+        "blocked_absent",
+        "stale",
+        "unknown"
+      ]
+    },
+    "witness_class_id": {
+      "type": "string",
+      "enum": [
+        "public_audio_witness",
+        "private_audio_witness",
+        "no_leak_audio_witness"
+      ]
+    },
+    "failure_class": {
+      "type": ["string", "null"],
+      "enum": [
+        "dry_run_not_runtime_witness",
+        "live_execution_not_authorized",
+        "route_or_playback_missing",
+        "public_marker_missing",
+        "private_marker_missing",
+        "private_marker_leaked_public",
+        "leak_scan_missing",
+        "no_leak_witness_missing",
+        null
+      ]
+    },
+    "string_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}}
+    },
+    "probe_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "route_present",
+        "playback_present",
+        "egress_audible",
+        "marker_seen_on_public_paths",
+        "marker_seen_on_private_targets",
+        "private_marker_seen_on_public_paths",
+        "leak_scan_completed",
+        "observed_at"
+      ],
+      "properties": {
+        "route_present": {"type": "boolean"},
+        "playback_present": {"type": "boolean"},
+        "egress_audible": {"type": ["boolean", "null"]},
+        "marker_seen_on_public_paths": {"$ref": "#/$defs/string_refs"},
+        "marker_seen_on_private_targets": {"$ref": "#/$defs/string_refs"},
+        "private_marker_seen_on_public_paths": {"$ref": "#/$defs/string_refs"},
+        "leak_scan_completed": {"type": "boolean"},
+        "observed_at": {"type": ["string", "null"], "format": "date-time"}
+      }
+    },
+    "probe_fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "fixture_case",
+        "probe_id",
+        "probe_kind",
+        "mode",
+        "surface_id",
+        "semantic_destination",
+        "marker_id",
+        "marker_label",
+        "target_ref",
+        "route_ref",
+        "witness_class",
+        "source_refs",
+        "evidence_refs",
+        "freshness_window_s",
+        "confidence",
+        "required_for_public_claim",
+        "live_execution_requested",
+        "observation",
+        "expected_state",
+        "expected_health_state",
+        "expected_failure_class",
+        "expected_public_claim_allowed",
+        "expected_private_only"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "fixture_case": {"type": "string", "minLength": 1},
+        "probe_id": {"type": "string", "minLength": 1},
+        "probe_kind": {"$ref": "#/$defs/probe_kind"},
+        "mode": {"$ref": "#/$defs/probe_mode"},
+        "surface_id": {"type": "string", "minLength": 1},
+        "semantic_destination": {"type": "string", "minLength": 1},
+        "marker_id": {"type": "string", "minLength": 1},
+        "marker_label": {"type": "string", "minLength": 1},
+        "target_ref": {"type": "string", "minLength": 1},
+        "route_ref": {"type": "string", "minLength": 1},
+        "witness_class": {"$ref": "#/$defs/witness_class_id"},
+        "source_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "evidence_refs": {"$ref": "#/$defs/string_refs"},
+        "freshness_window_s": {"type": "integer", "minimum": 0},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "required_for_public_claim": {"type": "boolean"},
+        "live_execution_requested": {"type": "boolean"},
+        "observation": {"$ref": "#/$defs/probe_observation"},
+        "expected_state": {"$ref": "#/$defs/probe_state"},
+        "expected_health_state": {"$ref": "#/$defs/health_state"},
+        "expected_failure_class": {"$ref": "#/$defs/failure_class"},
+        "expected_public_claim_allowed": {"type": "boolean"},
+        "expected_private_only": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"live_execution_requested": {"const": true}}},
+          "then": {"properties": {"mode": {"const": "live"}}}
+        },
+        {
+          "if": {"properties": {"probe_kind": {"const": "public"}}},
+          "then": {"properties": {"witness_class": {"const": "public_audio_witness"}}}
+        },
+        {
+          "if": {"properties": {"probe_kind": {"const": "private"}}},
+          "then": {"properties": {"witness_class": {"const": "private_audio_witness"}}}
+        },
+        {
+          "if": {"properties": {"probe_kind": {"const": "no_leak"}}},
+          "then": {"properties": {"witness_class": {"const": "no_leak_audio_witness"}}}
+        }
+      ]
+    }
+  }
+}
