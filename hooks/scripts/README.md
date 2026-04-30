@@ -21,7 +21,7 @@ verdict.
 | `axiom-commit-scan.sh` | Bash | BLOCK commits whose messages violate axiom patterns |
 | `axiom-scan.sh` / `axiom-patterns.sh` / `axiom-audit.sh` | session | Axiom compliance scanning, retroactive audit |
 | `conflict-marker-scan.sh` | Write / Edit | WARN on merge-conflict markers in content |
-| `docs-only-pr-warn.sh` | Bash | ADVISORY: docs-only PRs don't trigger branch protection |
+| `docs-only-pr-warn.sh` | Bash | ADVISORY: docs-only PRs use required-check sentinels; no carrier file needed |
 | `doc-update-advisory.sh` | Edit / Write | ADVISORY: suggest related doc updates |
 | `llm-metadata-gate.sh` | Bash | BLOCK LLM calls missing required metadata |
 | `pip-guard.sh` | Bash | BLOCK `pip install` invocations; project uses uv |

@@ -3,11 +3,6 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - "lab-journal/**"
-      - "research/**"
 
 permissions:
   contents: read
@@ -34,8 +29,57 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Detect docs-only review change set
+        id: docs
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          changed_files="$(mktemp)"
+          git fetch --quiet origin "$PR_BASE_SHA" || true
+          git diff --name-only "$PR_BASE_SHA"...HEAD > "$changed_files"
+          sed -i '/^$/d' "$changed_files"
+
+          changed_count="$(wc -l < "$changed_files" | tr -d ' ')"
+          docs_only=true
+          if [ "$changed_count" -eq 0 ]; then
+            docs_only=false
+          fi
+
+          docs_only_path() {
+            local path="$1"
+            case "$path" in
+              docs|docs/*|lab-journal|lab-journal/*|research|research/*)
+                return 0
+                ;;
+            esac
+            if [[ "$path" == *.md && "$path" != */* ]]; then
+              return 0
+            fi
+            if [[ "$path" == axioms/*.md ]]; then
+              return 0
+            fi
+            return 1
+          }
+
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            if ! docs_only_path "$path"; then
+              docs_only=false
+              break
+            fi
+          done < "$changed_files"
+
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "changed_count=$changed_count" >> "$GITHUB_OUTPUT"
+
+      - name: Docs-only review sentinel
+        if: steps.docs.outputs.docs_only == 'true'
+        run: echo "Docs-only PR; review reports success without invoking Claude."
+
       - uses: anthropics/claude-code-action@567fe954a4527e81f132d87d1bdbcc94f7737434
-        if: env.CLAUDE_REVIEW_CONFIGURED == 'true'
+        if: env.CLAUDE_REVIEW_CONFIGURED == 'true' && steps.docs.outputs.docs_only != 'true'
         id: claude
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
