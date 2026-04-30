@@ -1,0 +1,380 @@
+{
+  "$schema": "../schemas/n1-methodology-dossier.schema.json",
+  "schema_version": 1,
+  "dossier_id": "n1_methodology_dossier",
+  "schema_ref": "schemas/n1-methodology-dossier.schema.json",
+  "declared_at": "2026-04-30T07:06:00Z",
+  "producer": "cx-amber",
+  "mode_ceiling": "private",
+  "max_public_claim": "provisional",
+  "source_refs": [
+    "audit:2026-04-29-hapax-n1-singularity-comparison-cluster-a",
+    "audit:2026-04-29-hapax-n1-singularity-comparison-cluster-b",
+    "plan:2026-04-29-autonomous-grounding-value-stream-map",
+    "config:conversion-target-readiness-threshold-matrix",
+    "cc-task:n1-methodology-dossier"
+  ],
+  "category_statements": {
+    "primary_category": "single-operator autonomous grounding lab",
+    "alternate_category": "single-operator live epistemic lab",
+    "public_short": "Hapax is a live, single-operator research instrument for studying whether AI systems can ground themselves in a real life, a real room, and a real public surface.",
+    "public_positioning": "Hapax is a single-operator autonomous grounding lab: a live system that senses a room, reads a vault, recruits agents, governs consent, renders its own state, and streams the evidence of whether its claims are grounded.",
+    "private_construction_note": "This dossier prepares private evidence and reusable positioning. It does not authorize publication, monetization, public safety, rights clearance, or truth authority by itself."
+  },
+  "near_neighbor_comparisons": [
+    {
+      "category": "autonomous_science_system",
+      "display_name": "Autonomous science system",
+      "what_it_shares": "Automated hypothesis, evidence, and evaluation loops.",
+      "why_generic_category_fails": "The subject, instrument, lab, and public surface are one operator/studio system rather than a separable experimental platform.",
+      "retained_signal": "Use closed-loop evidence language without implying broad scientific automation."
+    },
+    {
+      "category": "self_driving_lab",
+      "display_name": "Self-driving lab",
+      "what_it_shares": "Sensing, intervention, and feedback.",
+      "why_generic_category_fails": "Hapax does not optimize a material experiment independent of operator life and public-claim governance.",
+      "retained_signal": "Keep the loop discipline; reject generic material-lab framing."
+    },
+    {
+      "category": "ai_research_assistant",
+      "display_name": "AI research assistant",
+      "what_it_shares": "Agents read, summarize, route, and prepare work.",
+      "why_generic_category_fails": "Assistance is not the object. The object is whether the operating environment can ground its own claims.",
+      "retained_signal": "Use assistant capabilities as substrate evidence, not product category."
+    },
+    {
+      "category": "grounding_benchmark",
+      "display_name": "Grounding benchmark",
+      "what_it_shares": "Claims are compared with external state.",
+      "why_generic_category_fails": "The benchmark is lived, temporal, rights-bound, and public/private gated rather than a static dataset.",
+      "retained_signal": "Keep source-qualified claim discipline."
+    },
+    {
+      "category": "personal_knowledge_management",
+      "display_name": "Personal knowledge management",
+      "what_it_shares": "The vault is a central memory and evidence surface.",
+      "why_generic_category_fails": "PKM does not explain runtime sensing, public-event conversion, or claim authority gates.",
+      "retained_signal": "Treat the vault as one evidence substrate."
+    },
+    {
+      "category": "quantified_self",
+      "display_name": "Quantified Self / personal informatics",
+      "what_it_shares": "Single-person traces and repeated measures.",
+      "why_generic_category_fails": "The aim is not wellness optimization; it is an n=1 grounding and public-evidence apparatus.",
+      "retained_signal": "Use n=1 measurement caution."
+    },
+    {
+      "category": "vtuber_ai_livestream",
+      "display_name": "VTuber / AI livestream",
+      "what_it_shares": "Synthetic public surface and continuous audience-facing output.",
+      "why_generic_category_fails": "The surface is an instrument panel and research vehicle, not a character-first entertainment lane.",
+      "retained_signal": "Keep legible public surface mechanics without making entertainment the claim."
+    },
+    {
+      "category": "generative_media_art",
+      "display_name": "Generative media art",
+      "what_it_shares": "Aesthetic substrates carry visible system state.",
+      "why_generic_category_fails": "Beauty, novelty, or texture cannot grant truth, rights, privacy, public status, or monetization status.",
+      "retained_signal": "Use aesthetic evidence display as spectacle spine, not authority."
+    },
+    {
+      "category": "observability_control_room",
+      "display_name": "Observability control room",
+      "what_it_shares": "Runtime state is rendered as operational telemetry.",
+      "why_generic_category_fails": "Observability alone omits consent, evidence conversion, public claims, and monetization boundaries.",
+      "retained_signal": "Keep machine-readable state discipline."
+    },
+    {
+      "category": "creator_monetization_stack",
+      "display_name": "Creator monetization stack",
+      "what_it_shares": "Public artifacts can become support, licensing, or platform revenue.",
+      "why_generic_category_fails": "Revenue must be automation-only and evidence-gated; perks, service loops, and audience capture are refused.",
+      "retained_signal": "Retain only no-perk, aggregate, guarded support rails."
+    }
+  ],
+  "scientific_posture": {
+    "n_size": 1,
+    "posture": "n=1 single-case evidence practice",
+    "methods": ["SCED", "BEST", "repeated_measures", "time_aligned_artifacts"],
+    "broad_population_claims_allowed": false,
+    "allowed_claims": [
+      "Hapax is an n=1 live epistemic lab for one operator.",
+      "The system can report witnessed evidence about its own runtime state when source refs are present.",
+      "A public artifact may describe a bounded, source-qualified episode after target-specific gates pass."
+    ],
+    "forbidden_claims": [
+      "broad-population generalization",
+      "medical or clinical efficacy",
+      "universal AI grounding",
+      "public safety readiness from private evidence",
+      "monetization readiness from engagement or aesthetic quality"
+    ],
+    "sced_best_framing": {
+      "intervention_windows_required": true,
+      "baseline_or_context_required": true,
+      "uncertainty_language_required": true,
+      "case_scope": "one operator, one studio, one public-surface system"
+    }
+  },
+  "automation_doctrine": {
+    "recurring_manual_labor_allowed": false,
+    "support_perks_allowed": false,
+    "hidden_operator_service_allowed": false,
+    "manual_community_moderation_allowed": false,
+    "classes": ["AUTO", "BOOTSTRAP", "LEGAL_ATTEST", "GUARDED", "REFUSAL_ARTIFACT"],
+    "allowed_operator_actions": ["bootstrap", "legal_attestation"],
+    "refusal_conversions": [
+      "supporter perks",
+      "manual content calendar",
+      "private community moderation",
+      "sponsor deliverables",
+      "consulting as recurring service",
+      "manual replay packaging without an automation path"
+    ],
+    "doctrine_note": "If a value stream cannot be automated, legally attested once, or bounded as guarded bootstrap work, it becomes a refusal artifact."
+  },
+  "structured_diagrams": [
+    {
+      "diagram_id": "subject_instrument_studio_publisher_fusion",
+      "title": "Subject / instrument / studio / publisher fusion",
+      "nodes": ["operator", "vault", "sensors", "agents", "studio", "public_surface"],
+      "edges": [
+        {"from": "operator", "to": "vault", "label": "lived context and memory"},
+        {"from": "vault", "to": "agents", "label": "canonical work-state evidence"},
+        {"from": "sensors", "to": "studio", "label": "room and media observation"},
+        {"from": "agents", "to": "public_surface", "label": "evidence-gated state rendering"}
+      ],
+      "claim_limit": "Fusion explains the category; it does not grant public claim authority."
+    },
+    {
+      "diagram_id": "truth_spine",
+      "title": "Truth spine",
+      "nodes": ["WCS witness", "temporal spans", "programme run", "provenance", "egress", "public claim gate"],
+      "edges": [
+        {"from": "WCS witness", "to": "temporal spans", "label": "source-qualified observation"},
+        {"from": "temporal spans", "to": "programme run", "label": "time-aligned context"},
+        {"from": "programme run", "to": "provenance", "label": "source and rights context"},
+        {"from": "provenance", "to": "egress", "label": "output eligibility"},
+        {"from": "egress", "to": "public claim gate", "label": "fail-closed release boundary"}
+      ],
+      "claim_limit": "Public claims cannot outrun the weakest evidence gate."
+    },
+    {
+      "diagram_id": "spectacle_spine",
+      "title": "Spectacle spine",
+      "nodes": ["scrim", "visual substrates", "audio posture", "public-event surface", "replay artifact"],
+      "edges": [
+        {"from": "scrim", "to": "visual substrates", "label": "bounded attention shaping"},
+        {"from": "visual substrates", "to": "public-event surface", "label": "readable state display"},
+        {"from": "audio posture", "to": "public-event surface", "label": "non-authoritative cueing"},
+        {"from": "public-event surface", "to": "replay artifact", "label": "candidate conversion"}
+      ],
+      "claim_limit": "Spectacle can focus attention but cannot grant truth, rights, privacy, public status, or money status."
+    },
+    {
+      "diagram_id": "public_event_loop",
+      "title": "Public-event loop",
+      "nodes": ["event detection", "boundary event", "conversion matrix", "archive", "publication bus", "refusal ledger"],
+      "edges": [
+        {"from": "event detection", "to": "boundary event", "label": "candidate public moment"},
+        {"from": "boundary event", "to": "conversion matrix", "label": "target-family readiness check"},
+        {"from": "conversion matrix", "to": "archive", "label": "passed evidence package"},
+        {"from": "archive", "to": "publication bus", "label": "eligible public output"},
+        {"from": "conversion matrix", "to": "refusal ledger", "label": "blocked or degraded output"}
+      ],
+      "claim_limit": "Public output is a gated conversion and cannot be the default result of runtime state."
+    }
+  ],
+  "required_public_gates": [
+    "conversion-target-readiness-threshold-matrix",
+    "provenance/egress",
+    "public-claim gate",
+    "privacy/rights gate",
+    "monetization gate where money-facing",
+    "no-hidden-operator-labor gate"
+  ],
+  "reuse_profiles": [
+    {
+      "profile_id": "grants_fellowships",
+      "target_family_ref": "grants_fellowships",
+      "default_state": "private-evidence",
+      "allowed_states": ["blocked", "private-evidence", "dry-run", "refused"],
+      "public_release_allowed": false,
+      "monetization_allowed": false,
+      "operator_attestation_required": true,
+      "required_gate_refs": [
+        "conversion-target-readiness-threshold-matrix",
+        "privacy/rights gate",
+        "provenance/egress",
+        "public-claim gate",
+        "operator attestation",
+        "no-hidden-operator-labor gate"
+      ],
+      "reuse_note": "Reusable for private applications and institutional packets; not public release authority."
+    },
+    {
+      "profile_id": "replay_demo",
+      "target_family_ref": "replay_demo",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "dry-run", "public-archive", "refused"],
+      "public_release_allowed": true,
+      "monetization_allowed": false,
+      "operator_attestation_required": false,
+      "required_gate_refs": [
+        "conversion-target-readiness-threshold-matrix",
+        "WCS witness",
+        "programme run envelope",
+        "temporal span refs",
+        "provenance/egress",
+        "public-claim gate",
+        "privacy/rights gate",
+        "no-hidden-operator-labor gate"
+      ],
+      "reuse_note": "Replay demo copy stays blocked or dry-run until the full evidence chain is present."
+    },
+    {
+      "profile_id": "youtube_vod_packaging",
+      "target_family_ref": "youtube_vod_packaging",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "dry-run", "public-archive", "public-live", "public-monetizable", "refused"],
+      "public_release_allowed": true,
+      "monetization_allowed": true,
+      "operator_attestation_required": false,
+      "required_gate_refs": [
+        "conversion-target-readiness-threshold-matrix",
+        "WCS witness",
+        "programme run envelope",
+        "archive/frame/caption refs",
+        "provenance/egress",
+        "public-claim gate",
+        "privacy/rights gate",
+        "monetization gate where money-facing",
+        "no-hidden-operator-labor gate"
+      ],
+      "reuse_note": "Platform packaging cannot use engagement or aesthetic quality to bypass evidence, rights, egress, or monetization gates."
+    },
+    {
+      "profile_id": "dataset_card",
+      "target_family_ref": "dataset_card",
+      "default_state": "dry-run",
+      "allowed_states": ["blocked", "dry-run", "public-archive", "refused"],
+      "public_release_allowed": true,
+      "monetization_allowed": false,
+      "operator_attestation_required": false,
+      "required_gate_refs": [
+        "conversion-target-readiness-threshold-matrix",
+        "source-qualified evidence",
+        "privacy/rights gate",
+        "provenance/egress",
+        "public-claim gate",
+        "no-hidden-operator-labor gate"
+      ],
+      "reuse_note": "Dataset framing remains dry-run until source refs and privacy/rights labels are complete."
+    },
+    {
+      "profile_id": "artifact_edition_release",
+      "target_family_ref": "artifact_edition_release",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "dry-run", "public-archive", "public-monetizable", "refused"],
+      "public_release_allowed": true,
+      "monetization_allowed": true,
+      "operator_attestation_required": false,
+      "required_gate_refs": [
+        "conversion-target-readiness-threshold-matrix",
+        "archive/frame/caption refs",
+        "privacy/rights gate",
+        "provenance/egress",
+        "public-claim gate",
+        "monetization gate where money-facing",
+        "no-hidden-operator-labor gate"
+      ],
+      "reuse_note": "Artifacts inherit the weakest evidence and rights label."
+    },
+    {
+      "profile_id": "support_prompt",
+      "target_family_ref": "support_prompt",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "dry-run", "public-live", "public-monetizable", "refused"],
+      "public_release_allowed": true,
+      "monetization_allowed": true,
+      "operator_attestation_required": false,
+      "required_gate_refs": [
+        "conversion-target-readiness-threshold-matrix",
+        "support-surface-registry",
+        "privacy/rights gate",
+        "provenance/egress",
+        "public-claim gate",
+        "monetization gate where money-facing",
+        "no-hidden-operator-labor gate"
+      ],
+      "reuse_note": "Support copy must remain no-perk, aggregate-only, and non-service."
+    },
+    {
+      "profile_id": "residency",
+      "target_family_ref": "residency",
+      "default_state": "private-evidence",
+      "allowed_states": ["blocked", "private-evidence", "dry-run", "refused"],
+      "public_release_allowed": false,
+      "monetization_allowed": false,
+      "operator_attestation_required": true,
+      "required_gate_refs": [
+        "conversion-target-readiness-threshold-matrix",
+        "privacy/rights gate",
+        "provenance/egress",
+        "public-claim gate",
+        "operator attestation",
+        "no-hidden-operator-labor gate"
+      ],
+      "reuse_note": "Residency packets use private evidence unless a separate public-event gate passes."
+    },
+    {
+      "profile_id": "licensing",
+      "target_family_ref": "licensing",
+      "default_state": "blocked",
+      "allowed_states": ["blocked", "dry-run", "public-archive", "public-monetizable", "refused"],
+      "public_release_allowed": true,
+      "monetization_allowed": true,
+      "operator_attestation_required": false,
+      "required_gate_refs": [
+        "conversion-target-readiness-threshold-matrix",
+        "privacy/rights gate",
+        "provenance/egress",
+        "public-claim gate",
+        "monetization gate where money-facing",
+        "legal or license terms",
+        "no-hidden-operator-labor gate"
+      ],
+      "reuse_note": "Licensing needs explicit rights/provenance and cannot become consulting-as-service."
+    }
+  ],
+  "anti_overclaim_policy": {
+    "engagement_can_upgrade": false,
+    "revenue_potential_can_upgrade": false,
+    "trend_can_upgrade": false,
+    "operator_desire_can_upgrade": false,
+    "aesthetic_quality_can_upgrade": false,
+    "selected_or_commanded_is_success": false,
+    "refusal_validates_refused_claim": false,
+    "notes": [
+      "Engagement, revenue potential, trends, and operator desire are opportunity signals only.",
+      "Aesthetic force can help public legibility but cannot upgrade truth, rights, privacy, provenance, egress, public status, or monetization status.",
+      "Selected, scheduled, commanded, or recruited is not success without witnessed outcome evidence.",
+      "Refusals and corrections can prove governance behavior but cannot validate the refused claim."
+    ]
+  },
+  "public_private_boundary": {
+    "private_dossier_can_prepare": true,
+    "public_positioning_requires_gates": true,
+    "public_or_money_use_requires_conversion_matrix": true,
+    "claim_ceiling_without_gates": "provisional category language only",
+    "forbidden_without_gates": [
+      "public release authority",
+      "monetization readiness",
+      "rights clearance",
+      "privacy safety",
+      "truth authority",
+      "broad-population claim"
+    ]
+  }
+}
