@@ -1,0 +1,563 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "world-surface-provider-tool-health-fixtures-2026-04-30",
+  "schema_ref": "schemas/world-surface-provider-tool-health.schema.json",
+  "generated_from": [
+    "cc-task:world-surface-health-provider-tool-adapter",
+    "research-spec:2026-04-29-world-surface-health-no-false-grounding",
+    "config:capability-classification-inventory",
+    "config:grounding-providers"
+  ],
+  "declared_at": "2026-04-30T07:45:00Z",
+  "producer": "cc-task:world-surface-health-provider-tool-adapter",
+  "required_route_families": [
+    "model_provider",
+    "search_provider",
+    "mcp_tool",
+    "publication_endpoint",
+    "storage_sync",
+    "local_api",
+    "docker_container"
+  ],
+  "routes": [
+    {
+      "route_id": "provider_tool.search.tavily_source_acquisition",
+      "display_name": "Tavily source acquisition route health",
+      "classification_row_id": "capability.search.tavily_source_acquisition",
+      "route_family": "search_provider",
+      "provider_registry_id": null,
+      "provider_kind": null,
+      "model_id": null,
+      "tool_id": "tavily_search",
+      "route_ref": "route:provider_tool.search.tavily_source_acquisition",
+      "availability_state": "available",
+      "status": "healthy",
+      "source_acquisition_capability": true,
+      "source_acquisition_evidence_refs": [
+        "provider:tavily:cited_result",
+        "witness.search.cited_result"
+      ],
+      "supplied_evidence_mode": "not_supplied_evidence",
+      "redaction_privacy_posture": "public_safe",
+      "redaction_evidence_refs": ["redaction:provider_tool.search.tavily:public-safe"],
+      "source_refs": [
+        "repo:capability-classification-inventory",
+        "config:world-surface-provider-tool-health-fixtures"
+      ],
+      "producer_refs": ["mcp.tavily.search"],
+      "consumer_refs": ["consumer:grounding_provider_router"],
+      "substrate_refs": ["substrate:search_provider"],
+      "capability_refs": [
+        "capability.search.tavily_source_acquisition",
+        "search_provider:tavily"
+      ],
+      "evidence_envelope_refs": ["evidence-envelope:provider_tool.search.tavily:route-health"],
+      "witness_refs": ["witness.search.cited_result"],
+      "grounding_gate_refs": ["gate:provider-tool-route-health:checked"],
+      "public_event_refs": [],
+      "rights_evidence_refs": ["rights:search_provider:tavily"],
+      "privacy_evidence_refs": ["privacy:search_provider:tavily:public-safe"],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 900,
+        "observed_age_s": 12,
+        "source_ref": "provider:tavily:cited_result",
+        "checked_at": "2026-04-30T07:45:00Z"
+      },
+      "confidence": 0.86,
+      "authority_ceiling": "public_gate_required",
+      "public_claim_policy": "public_gate_required",
+      "rights_state": "public_clear",
+      "public_private_posture": "disabled",
+      "blocking_reasons": [],
+      "warnings": ["route_availability_not_public_publication_authority"],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "route_health_not_public_authority",
+        "operator_visible_reason": "Route health can be inspected before publication but cannot publish by itself.",
+        "safe_state": "publication_gate_required"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:provider_tool.search.tavily:clear"]
+      },
+      "owner": "world-surface-health-provider-tool-adapter",
+      "next_probe_due_at": "2026-04-30T08:00:00Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "healthy_witnessed"
+    },
+    {
+      "route_id": "provider_tool.mcp.context7_docs",
+      "display_name": "Context7 documentation retrieval route health",
+      "classification_row_id": "capability.mcp.context7_docs",
+      "route_family": "mcp_tool",
+      "provider_registry_id": null,
+      "provider_kind": null,
+      "model_id": null,
+      "tool_id": "context7.query_docs",
+      "route_ref": "route:provider_tool.mcp.context7_docs",
+      "availability_state": "available",
+      "status": "healthy",
+      "source_acquisition_capability": true,
+      "source_acquisition_evidence_refs": [
+        "mcp:context7.query_docs.self_check",
+        "witness.mcp.context7.cited_result"
+      ],
+      "supplied_evidence_mode": "not_supplied_evidence",
+      "redaction_privacy_posture": "public_safe",
+      "redaction_evidence_refs": ["redaction:provider_tool.mcp.context7:version-context"],
+      "source_refs": [
+        "repo:capability-classification-inventory",
+        "config:world-surface-provider-tool-health-fixtures"
+      ],
+      "producer_refs": ["mcp.context7.query_docs"],
+      "consumer_refs": ["consumer:codex_research_context"],
+      "substrate_refs": ["substrate:mcp_tool"],
+      "capability_refs": [
+        "capability.mcp.context7_docs",
+        "mcp:context7.query_docs"
+      ],
+      "evidence_envelope_refs": ["evidence-envelope:provider_tool.mcp.context7:route-health"],
+      "witness_refs": ["witness.mcp.context7.cited_result"],
+      "grounding_gate_refs": ["gate:provider-tool-route-health:checked"],
+      "public_event_refs": [],
+      "rights_evidence_refs": ["rights:mcp:context7.query_docs"],
+      "privacy_evidence_refs": ["privacy:mcp:context7.query_docs:public-safe"],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 1800,
+        "observed_age_s": 32,
+        "source_ref": "mcp:context7.query_docs.self_check",
+        "checked_at": "2026-04-30T07:45:00Z"
+      },
+      "confidence": 0.82,
+      "authority_ceiling": "evidence_bound",
+      "public_claim_policy": "evidence_bound_only",
+      "rights_state": "public_clear",
+      "public_private_posture": "disabled",
+      "blocking_reasons": [],
+      "warnings": ["documentation_route_requires_citation_binding"],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "evidence_bound_not_public_authority",
+        "operator_visible_reason": "Documentation retrieval can support evidence-bound notes only.",
+        "safe_state": "evidence_bound_private_review"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:provider_tool.mcp.context7:clear"]
+      },
+      "owner": "world-surface-health-provider-tool-adapter",
+      "next_probe_due_at": "2026-04-30T08:15:00Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "healthy_witnessed"
+    },
+    {
+      "route_id": "provider_tool.model.litellm_supplied_evidence",
+      "display_name": "LiteLLM supplied-evidence model route health",
+      "classification_row_id": "capability.model.litellm_supplied_evidence",
+      "route_family": "model_provider",
+      "provider_registry_id": "local_supplied_evidence_command_r",
+      "provider_kind": "source_conditioned",
+      "model_id": "command-r-08-2024-exl3-5.0bpw",
+      "tool_id": "supplied_evidence_citation_envelope",
+      "route_ref": "route:provider_tool.model.litellm_supplied_evidence",
+      "availability_state": "available",
+      "status": "private_only",
+      "source_acquisition_capability": false,
+      "source_acquisition_evidence_refs": [],
+      "supplied_evidence_mode": "supplied_evidence_only",
+      "redaction_privacy_posture": "private_only",
+      "redaction_evidence_refs": ["redaction:provider_tool.model.litellm:local-only"],
+      "source_refs": [
+        "repo:capability-classification-inventory",
+        "config:grounding-providers"
+      ],
+      "producer_refs": ["litellm-gateway"],
+      "consumer_refs": [
+        "consumer:content_grounding",
+        "consumer:daimonion_reasoning"
+      ],
+      "substrate_refs": ["substrate:model_provider"],
+      "capability_refs": [
+        "capability.model.litellm_supplied_evidence",
+        "model_provider:litellm.supplied_evidence"
+      ],
+      "evidence_envelope_refs": ["evidence-envelope:provider_tool.model.litellm:route-health"],
+      "witness_refs": ["witness.model.litellm_health"],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "rights_evidence_refs": ["rights:model_provider:litellm.supplied_evidence"],
+      "privacy_evidence_refs": ["privacy:model_provider:litellm:private"],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 60,
+        "observed_age_s": 10,
+        "source_ref": "provider:litellm:health",
+        "checked_at": "2026-04-30T07:45:00Z"
+      },
+      "confidence": 0.78,
+      "authority_ceiling": "internal_only",
+      "public_claim_policy": "no_public_claim",
+      "rights_state": "private_only",
+      "public_private_posture": "private_only",
+      "blocking_reasons": [
+        "private_only_route",
+        "supplied_evidence_not_source_acquisition"
+      ],
+      "warnings": ["local_model_may_reason_over_sources_but_does_not_acquire_them"],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "supplied_evidence_only",
+        "operator_visible_reason": "Use only with supplied evidence and keep public claims gated elsewhere.",
+        "safe_state": "private_grounding_draft"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:provider_tool.model.litellm:clear"]
+      },
+      "owner": "world-surface-health-provider-tool-adapter",
+      "next_probe_due_at": "2026-04-30T07:46:00Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "private_only"
+    },
+    {
+      "route_id": "provider_tool.local_api.orientation",
+      "display_name": "Local orientation API route health",
+      "classification_row_id": "capability.local_api.orientation",
+      "route_family": "local_api",
+      "provider_registry_id": null,
+      "provider_kind": null,
+      "model_id": null,
+      "tool_id": "logos.orientation",
+      "route_ref": "route:provider_tool.local_api.orientation",
+      "availability_state": "private_only",
+      "status": "private_only",
+      "source_acquisition_capability": false,
+      "source_acquisition_evidence_refs": [],
+      "supplied_evidence_mode": "non_acquiring_route",
+      "redaction_privacy_posture": "private_only",
+      "redaction_evidence_refs": ["redaction:provider_tool.local_api.orientation:private"],
+      "source_refs": [
+        "repo:capability-classification-inventory",
+        "config:world-surface-provider-tool-health-fixtures"
+      ],
+      "producer_refs": ["logos-api.service"],
+      "consumer_refs": [
+        "consumer:obsidian_plugin",
+        "consumer:hapax_mcp"
+      ],
+      "substrate_refs": ["substrate:local_api"],
+      "capability_refs": [
+        "capability.local_api.orientation",
+        "local_api:logos.orientation"
+      ],
+      "evidence_envelope_refs": ["evidence-envelope:provider_tool.local_api.orientation:route-health"],
+      "witness_refs": ["witness.local_api.orientation_ok"],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "rights_evidence_refs": ["rights:local_api:logos.orientation"],
+      "privacy_evidence_refs": ["privacy:local_api:logos.orientation:operator-visible"],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 300,
+        "observed_age_s": 41,
+        "source_ref": "http:127.0.0.1:8051/api/orientation",
+        "checked_at": "2026-04-30T07:45:00Z"
+      },
+      "confidence": 0.73,
+      "authority_ceiling": "internal_only",
+      "public_claim_policy": "no_public_claim",
+      "rights_state": "private_only",
+      "public_private_posture": "private_only",
+      "blocking_reasons": ["private_only_route"],
+      "warnings": ["local_api_state_is_operator_visible_not_public"],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "local_api_private_only",
+        "operator_visible_reason": "Keep local orientation state out of public claims.",
+        "safe_state": "private_status_only"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:provider_tool.local_api.orientation:clear"]
+      },
+      "owner": "world-surface-health-provider-tool-adapter",
+      "next_probe_due_at": "2026-04-30T07:50:00Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "private_only"
+    },
+    {
+      "route_id": "provider_tool.publication.youtube_live",
+      "display_name": "YouTube live publication route health",
+      "classification_row_id": "capability.publication.youtube_live",
+      "route_family": "publication_endpoint",
+      "provider_registry_id": null,
+      "provider_kind": null,
+      "model_id": null,
+      "tool_id": "youtube.live",
+      "route_ref": "route:provider_tool.publication.youtube_live",
+      "availability_state": "available",
+      "status": "degraded",
+      "source_acquisition_capability": false,
+      "source_acquisition_evidence_refs": [],
+      "supplied_evidence_mode": "non_acquiring_route",
+      "redaction_privacy_posture": "redaction_required",
+      "redaction_evidence_refs": ["redaction:provider_tool.publication.youtube:preflight-required"],
+      "source_refs": [
+        "repo:capability-classification-inventory",
+        "config:world-surface-provider-tool-health-fixtures"
+      ],
+      "producer_refs": ["youtube.live.integration"],
+      "consumer_refs": [
+        "consumer:studio_compositor",
+        "consumer:content_programme_runner"
+      ],
+      "substrate_refs": ["substrate:publication_endpoint"],
+      "capability_refs": [
+        "capability.publication.youtube_live",
+        "publication_endpoint:youtube.live"
+      ],
+      "evidence_envelope_refs": ["evidence-envelope:provider_tool.publication.youtube:route-health"],
+      "witness_refs": ["witness.publication.youtube_egress_safe"],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "rights_evidence_refs": ["rights:publication_endpoint:youtube.live"],
+      "privacy_evidence_refs": ["privacy:publication_endpoint:youtube.live:redaction-required"],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 60,
+        "observed_age_s": 8,
+        "source_ref": "provider:youtube.live.broadcast_eligible",
+        "checked_at": "2026-04-30T07:45:00Z"
+      },
+      "confidence": 0.62,
+      "authority_ceiling": "public_gate_required",
+      "public_claim_policy": "public_gate_required",
+      "rights_state": "public_clear",
+      "public_private_posture": "disabled",
+      "blocking_reasons": [
+        "publication_route_health_not_egress_clearance",
+        "redaction_preflight_required"
+      ],
+      "warnings": ["publication_endpoint_requires_egress_privacy_rights_gate"],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "publication_preflight_required",
+        "operator_visible_reason": "Route health is visible, but public publication requires separate egress, privacy, and rights gates.",
+        "safe_state": "block_public_claim"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:provider_tool.publication.youtube:clear"]
+      },
+      "owner": "world-surface-health-provider-tool-adapter",
+      "next_probe_due_at": "2026-04-30T07:46:00Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "degraded_witnessed"
+    },
+    {
+      "route_id": "provider_tool.storage.backblaze_restic_sync",
+      "display_name": "Backblaze restic sync route health",
+      "classification_row_id": "capability.storage.backblaze_restic_sync",
+      "route_family": "storage_sync",
+      "provider_registry_id": null,
+      "provider_kind": null,
+      "model_id": null,
+      "tool_id": "restic-rclone-backup.timer",
+      "route_ref": "route:provider_tool.storage.backblaze_restic_sync",
+      "availability_state": "private_only",
+      "status": "private_only",
+      "source_acquisition_capability": false,
+      "source_acquisition_evidence_refs": [],
+      "supplied_evidence_mode": "non_acquiring_route",
+      "redaction_privacy_posture": "private_only",
+      "redaction_evidence_refs": ["redaction:provider_tool.storage.backblaze:encrypted-private"],
+      "source_refs": [
+        "repo:capability-classification-inventory",
+        "config:world-surface-provider-tool-health-fixtures"
+      ],
+      "producer_refs": ["restic-rclone-backup.timer"],
+      "consumer_refs": ["consumer:system_health"],
+      "substrate_refs": ["substrate:storage_sync"],
+      "capability_refs": [
+        "capability.storage.backblaze_restic_sync",
+        "storage_sync:backblaze.restic"
+      ],
+      "evidence_envelope_refs": ["evidence-envelope:provider_tool.storage.backblaze:route-health"],
+      "witness_refs": ["witness.storage.backup_recent"],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "rights_evidence_refs": ["rights:storage_sync:backblaze.restic"],
+      "privacy_evidence_refs": ["privacy:storage_sync:backblaze.restic:private"],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 86400,
+        "observed_age_s": 3600,
+        "source_ref": "backup:restic:last_success",
+        "checked_at": "2026-04-30T07:45:00Z"
+      },
+      "confidence": 0.7,
+      "authority_ceiling": "internal_only",
+      "public_claim_policy": "no_public_claim",
+      "rights_state": "private_only",
+      "public_private_posture": "private_only",
+      "blocking_reasons": ["private_only_route"],
+      "warnings": ["encrypted_backup_state_is_not_public_evidence"],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "storage_sync_private_only",
+        "operator_visible_reason": "Expose only private durability status.",
+        "safe_state": "private_status_only"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:provider_tool.storage.backblaze:clear"]
+      },
+      "owner": "world-surface-health-provider-tool-adapter",
+      "next_probe_due_at": "2026-05-01T07:45:00Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "private_only"
+    },
+    {
+      "route_id": "provider_tool.container.vector_memory",
+      "display_name": "Vector memory container route health",
+      "classification_row_id": "capability.container.vector_memory",
+      "route_family": "docker_container",
+      "provider_registry_id": null,
+      "provider_kind": null,
+      "model_id": null,
+      "tool_id": "qdrant",
+      "route_ref": "route:provider_tool.container.vector_memory",
+      "availability_state": "available",
+      "status": "private_only",
+      "source_acquisition_capability": false,
+      "source_acquisition_evidence_refs": [],
+      "supplied_evidence_mode": "non_acquiring_route",
+      "redaction_privacy_posture": "private_only",
+      "redaction_evidence_refs": ["redaction:provider_tool.container.qdrant:local-private"],
+      "source_refs": [
+        "repo:capability-classification-inventory",
+        "config:world-surface-provider-tool-health-fixtures"
+      ],
+      "producer_refs": ["docker-compose:qdrant"],
+      "consumer_refs": [
+        "consumer:affordance_pipeline",
+        "consumer:rag_ingest"
+      ],
+      "substrate_refs": ["substrate:docker_container"],
+      "capability_refs": [
+        "capability.container.vector_memory",
+        "docker_container:qdrant"
+      ],
+      "evidence_envelope_refs": ["evidence-envelope:provider_tool.container.qdrant:route-health"],
+      "witness_refs": ["witness.container.vector_memory_healthy"],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "rights_evidence_refs": ["rights:docker_container:qdrant"],
+      "privacy_evidence_refs": ["privacy:docker_container:qdrant:private"],
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 30,
+        "observed_age_s": 6,
+        "source_ref": "container:qdrant:healthy",
+        "checked_at": "2026-04-30T07:45:00Z"
+      },
+      "confidence": 0.79,
+      "authority_ceiling": "internal_only",
+      "public_claim_policy": "no_public_claim",
+      "rights_state": "private_only",
+      "public_private_posture": "private_only",
+      "blocking_reasons": ["private_only_route"],
+      "warnings": ["vector_memory_route_can_support_context_but_not_public_claims"],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "container_private_context_only",
+        "operator_visible_reason": "Vector memory can support private context only.",
+        "safe_state": "private_context_only"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:provider_tool.container.qdrant:clear"]
+      },
+      "owner": "world-surface-health-provider-tool-adapter",
+      "next_probe_due_at": "2026-04-30T07:45:30Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "private_only"
+    },
+    {
+      "route_id": "provider_tool.publication.soundcloud_unavailable",
+      "display_name": "SoundCloud unavailable publication route health",
+      "classification_row_id": "provider.soundcloud.publication_unavailable",
+      "route_family": "publication_endpoint",
+      "provider_registry_id": null,
+      "provider_kind": null,
+      "model_id": null,
+      "tool_id": "soundcloud.upload",
+      "route_ref": "route:provider_tool.publication.soundcloud_unavailable",
+      "availability_state": "unavailable",
+      "status": "blocked",
+      "source_acquisition_capability": false,
+      "source_acquisition_evidence_refs": [],
+      "supplied_evidence_mode": "non_acquiring_route",
+      "redaction_privacy_posture": "blocked",
+      "redaction_evidence_refs": ["redaction:provider_tool.publication.soundcloud:blocked"],
+      "source_refs": [
+        "repo:capability-classification-inventory",
+        "config:world-surface-provider-tool-health-fixtures"
+      ],
+      "producer_refs": ["soundcloud.publisher"],
+      "consumer_refs": ["consumer:content_programme_runner"],
+      "substrate_refs": ["substrate:publication_endpoint"],
+      "capability_refs": [
+        "provider.soundcloud.publication_unavailable",
+        "publication_endpoint:soundcloud"
+      ],
+      "evidence_envelope_refs": ["evidence-envelope:provider_tool.publication.soundcloud:blocked"],
+      "witness_refs": ["witness.not_recruitable.provider.soundcloud.publication_unavailable"],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "rights_evidence_refs": ["rights:publication_endpoint:soundcloud:missing"],
+      "privacy_evidence_refs": ["privacy:publication_endpoint:soundcloud:blocked"],
+      "freshness": {
+        "state": "missing",
+        "ttl_s": null,
+        "observed_age_s": null,
+        "source_ref": null,
+        "checked_at": "2026-04-30T07:45:00Z"
+      },
+      "confidence": 0.25,
+      "authority_ceiling": "internal_only",
+      "public_claim_policy": "no_public_claim",
+      "rights_state": "missing",
+      "public_private_posture": "blocked",
+      "blocking_reasons": [
+        "publication_credentials_missing",
+        "rights_witness_missing",
+        "route_unavailable"
+      ],
+      "warnings": ["unavailable_publication_endpoint_is_visible_as_blocked"],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "publication_endpoint_unavailable",
+        "operator_visible_reason": "SoundCloud publication remains unavailable until credentials and rights evidence exist.",
+        "safe_state": "blocked"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": ["kill-switch:provider_tool.publication.soundcloud:clear"]
+      },
+      "owner": "world-surface-health-provider-tool-adapter",
+      "next_probe_due_at": "2026-04-30T08:45:00Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "blocked_with_reason"
+    }
+  ],
+  "fail_closed_policy": {
+    "route_availability_grants_public_claim": false,
+    "supplied_evidence_counts_as_source_acquisition": false,
+    "source_acquisition_without_evidence_allowed": false,
+    "monetization_allowed_from_route_health": false,
+    "private_route_can_publish_by_default": false
+  }
+}

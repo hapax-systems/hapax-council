@@ -195,6 +195,7 @@ from shared.world_surface_health import (
     WorldSurfaceHealthFixtureSet,
     WorldSurfaceHealthRecord,
 )
+from shared.world_surface_provider_tool_health import ProviderToolRouteHealth
 
 # FastAPI registers this route by decorator; vulture does not follow APIRouter.
 studio_egress_state
@@ -355,6 +356,10 @@ WorldSurfaceHealthRecord._validate_fail_closed_claimability
 WorldSurfaceHealthEnvelope._validate_envelope_counts_and_public_gates
 WorldSurfaceHealthFixtureSet._validate_contract_coverage
 WorldSurfaceHealthFixtureSet.rows_for_fixture_case
+
+# Provider/tool route health validators are invoked dynamically by Pydantic
+# while projecting model/search/MCP/publication/local routes into WCS rows.
+ProviderToolRouteHealth._validate_route_claim_authority
 
 # Scrim WCS claim-posture models are validated by Pydantic and consumed by
 # downstream director/scrim adapters. The first slice publishes the contract and
