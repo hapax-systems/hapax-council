@@ -29,6 +29,12 @@ from agents.visual_pool.repository import (
     VisualPoolAsset,
 )
 from shared.affordance import ContentRisk
+from shared.content_source_provenance_egress import (
+    EgressManifestGate,
+    build_broadcast_manifest,
+    read_music_provenance_asset,
+    write_broadcast_manifest,
+)
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +103,7 @@ class SierpinskiLoader:
             aesthetic_tags=aesthetic_tags,
             max_content_risk=max_content_risk,
         )
+        self._egress_gate = EgressManifestGate(producer_id="studio_compositor.sierpinski_loader")
         self.video_slots = [VisualPoolSlotStub(i, self._selector) for i in range(VIDEO_SLOT_COUNT)]
 
     def start(self) -> None:
@@ -203,13 +210,39 @@ class SierpinskiLoader:
         Inactive slots get opacity 0.3 and z_order 2-4.
         Slots without a valid local pool asset get their source removed.
         """
+        slot_assets = []
+        visual_manifest_assets = []
         for slot in self.video_slots:
             slot_id = slot.slot_id
             asset = slot.current_asset()
             source_id = f"visual-pool-slot-{slot_id}"
             if asset is None or not asset.path.exists():
+                slot_assets.append((slot, source_id, None))
+                continue
+            slot_assets.append((slot, source_id, asset))
+            visual_manifest_assets.append(asset.to_broadcast_manifest_asset(source_id=source_id))
+
+        audio_asset = read_music_provenance_asset()
+        manifest = build_broadcast_manifest(
+            audio_assets=(audio_asset,) if audio_asset is not None else (),
+            visual_assets=visual_manifest_assets,
+        )
+        write_broadcast_manifest(manifest, self._egress_gate.manifest_path)
+        decision = self._egress_gate.tick(manifest)
+        kill_active = bool(decision and decision.kill_switch_fired)
+
+        for slot, source_id, asset in slot_assets:
+            if asset is None:
                 remove_source(source_id)
                 continue
+            if kill_active:
+                remove_source(source_id)
+                log.warning(
+                    "egress manifest gate active; removing visual pool source %s",
+                    source_id,
+                )
+                continue
+            slot_id = slot.slot_id
             is_active = slot_id == self._active_slot
             opacity = 0.9 if is_active else 0.3
             z_order = 5 if is_active else (2 + slot_id)
