@@ -34,8 +34,17 @@ class ToolRecruitmentGate:
         return recruited
 
     def record_outcome(self, tool_name: str, success: bool) -> None:
-        """Record whether a recruited tool was used successfully."""
-        self._pipeline.record_outcome(tool_name, success=success)
+        """Record a legacy tool result without treating it as witnessed success."""
+        from shared.affordance_outcome_adapter import build_tool_recruitment_no_witness_outcome
+
+        outcome = build_tool_recruitment_no_witness_outcome(
+            tool_name,
+            legacy_success=success,
+        )
+        self._pipeline.record_capability_outcome(
+            outcome,
+            context={"source": "tool_recruitment", "tool": tool_name},
+        )
 
     @staticmethod
     def _utterance_to_impingement(utterance: str) -> Impingement:
