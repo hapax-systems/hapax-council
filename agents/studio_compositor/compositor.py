@@ -715,7 +715,9 @@ class StudioCompositor:
         )
 
         if self._egress_manifest_gate is None:
-            self._egress_manifest_gate = EgressManifestGate()
+            self._egress_manifest_gate = EgressManifestGate(
+                producer_id="studio_compositor.compositor"
+            )
         write_broadcast_manifest(manifest, self._egress_manifest_gate.manifest_path)
         decision = self._egress_manifest_gate.tick(manifest)
         if decision is None:

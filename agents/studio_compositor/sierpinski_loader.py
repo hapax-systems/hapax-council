@@ -103,7 +103,7 @@ class SierpinskiLoader:
             aesthetic_tags=aesthetic_tags,
             max_content_risk=max_content_risk,
         )
-        self._egress_gate = EgressManifestGate()
+        self._egress_gate = EgressManifestGate(producer_id="studio_compositor.sierpinski_loader")
         self.video_slots = [VisualPoolSlotStub(i, self._selector) for i in range(VIDEO_SLOT_COUNT)]
 
     def start(self) -> None:

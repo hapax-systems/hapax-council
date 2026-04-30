@@ -8,6 +8,7 @@ It never grants public, rights, safety, truth, or monetization status.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import time
 import uuid
@@ -26,6 +27,7 @@ DEFAULT_IMPINGEMENT_PATH = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 DEFAULT_MUSIC_PROVENANCE_PATH = Path("/dev/shm/hapax-compositor/music-provenance.json")
 DEFAULT_PROGRAMME_MAX_CONTENT_RISK: ContentRisk = "tier_1_platform_cleared"
 PROGRAMME_MAX_CONTENT_RISK_ENV = "HAPAX_BROADCAST_MAX_CONTENT_RISK"
+LEGACY_PRODUCER_ID = "__legacy_shared_kill_switch__"
 
 ContentMedium = Literal["audio", "visual"]
 AudioAction = Literal["pass_through", "duck_to_negative_infinity"]
@@ -125,8 +127,21 @@ class EgressGateDecision(BaseModel):
     notification: EgressNotification | None = None
 
 
+class EgressProducerKillSwitchState(BaseModel):
+    """One producer's durable kill-switch contribution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    producer_id: str = Field(min_length=1)
+    active: bool
+    updated_at: float
+    audio_action: AudioAction
+    visual_action: VisualAction
+    offenders: tuple[EgressOffender, ...] = Field(default_factory=tuple)
+
+
 class EgressKillSwitchState(BaseModel):
-    """Durable state consumed by egress control surfaces."""
+    """Durable global rollup consumed by egress control surfaces."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -136,6 +151,7 @@ class EgressKillSwitchState(BaseModel):
     visual_action: VisualAction
     fallback_visual_token: str = "visual:fallback:tier0-wgpu-shader"
     offenders: tuple[EgressOffender, ...] = Field(default_factory=tuple)
+    producer_states: dict[str, EgressProducerKillSwitchState] = Field(default_factory=dict)
 
 
 def content_risk_rank(tier: ContentRisk) -> int:
@@ -297,12 +313,14 @@ class EgressManifestGate:
         manifest_path: Path = DEFAULT_BROADCAST_MANIFEST_PATH,
         kill_switch_path: Path = DEFAULT_KILL_SWITCH_PATH,
         impingement_path: Path = DEFAULT_IMPINGEMENT_PATH,
+        producer_id: str = "egress_manifest_gate",
         notify_fn: Callable[..., Any] | None = None,
         now_fn: Callable[[], float] | None = None,
     ) -> None:
         self.manifest_path = manifest_path
         self.kill_switch_path = kill_switch_path
         self.impingement_path = impingement_path
+        self.producer_id = producer_id
         self.notify_fn = notify_fn
         self.now_fn = now_fn or time.time
 
@@ -368,6 +386,7 @@ class EgressManifestGate:
             content={
                 "metric": "egress.kill_switch_fired",
                 "tick_id": manifest.tick_id,
+                "producer_id": self.producer_id,
                 "max_content_risk": manifest.max_content_risk,
                 "audio_action": "duck_to_negative_infinity",
                 "visual_action": "crossfade_to_tier0_fallback_shader",
@@ -380,28 +399,81 @@ class EgressManifestGate:
         )
 
     def _write_kill_switch(self, decision: EgressGateDecision) -> None:
-        state = EgressKillSwitchState(
-            active=decision.kill_switch_fired,
-            updated_at=self.now_fn(),
-            audio_action=decision.audio_action,
-            visual_action=decision.visual_action,
-            offenders=decision.offenders,
-        )
         self.kill_switch_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.kill_switch_path.with_suffix(self.kill_switch_path.suffix + ".tmp")
-        tmp.write_text(state.model_dump_json(indent=2), encoding="utf-8")
-        tmp.replace(self.kill_switch_path)
+        lock_path = self.kill_switch_path.with_suffix(self.kill_switch_path.suffix + ".lock")
+        with lock_path.open("a+", encoding="utf-8") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+            try:
+                producer_states = self._read_producer_states()
+                now = self.now_fn()
+                producer_states[self.producer_id] = EgressProducerKillSwitchState(
+                    producer_id=self.producer_id,
+                    active=decision.kill_switch_fired,
+                    updated_at=now,
+                    audio_action=decision.audio_action,
+                    visual_action=decision.visual_action,
+                    offenders=decision.offenders,
+                )
+                state = self._global_kill_switch_state(producer_states, updated_at=now)
+                tmp = self.kill_switch_path.with_suffix(self.kill_switch_path.suffix + ".tmp")
+                tmp.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+                tmp.replace(self.kill_switch_path)
+            finally:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
     def _already_active_for(self, decision: EgressGateDecision) -> bool:
         if not decision.kill_switch_fired or not self.kill_switch_path.exists():
             return False
         try:
-            state = EgressKillSwitchState.model_validate_json(
-                self.kill_switch_path.read_text(encoding="utf-8")
-            )
+            previous = self._read_producer_states().get(self.producer_id)
         except Exception:
             return False
-        return state.active and state.offenders == decision.offenders
+        return bool(previous and previous.active and previous.offenders == decision.offenders)
+
+    def _read_producer_states(self) -> dict[str, EgressProducerKillSwitchState]:
+        if not self.kill_switch_path.exists():
+            return {}
+        state = EgressKillSwitchState.model_validate_json(
+            self.kill_switch_path.read_text(encoding="utf-8")
+        )
+        if state.producer_states:
+            return dict(state.producer_states)
+        if not state.active:
+            return {}
+        return {
+            LEGACY_PRODUCER_ID: EgressProducerKillSwitchState(
+                producer_id=LEGACY_PRODUCER_ID,
+                active=state.active,
+                updated_at=state.updated_at,
+                audio_action=state.audio_action,
+                visual_action=state.visual_action,
+                offenders=state.offenders,
+            )
+        }
+
+    @staticmethod
+    def _global_kill_switch_state(
+        producer_states: dict[str, EgressProducerKillSwitchState],
+        *,
+        updated_at: float,
+    ) -> EgressKillSwitchState:
+        ordered_states = {
+            producer_id: producer_states[producer_id] for producer_id in sorted(producer_states)
+        }
+        active_states = tuple(state for state in ordered_states.values() if state.active)
+        active = bool(active_states)
+        return EgressKillSwitchState(
+            active=active,
+            updated_at=updated_at,
+            audio_action="duck_to_negative_infinity" if active else "pass_through",
+            visual_action="crossfade_to_tier0_fallback_shader" if active else "pass_through",
+            offenders=tuple(
+                offender
+                for producer_state in active_states
+                for offender in producer_state.offenders
+            ),
+            producer_states=ordered_states,
+        )
 
     def _write_impingement(self, impingement: Impingement) -> None:
         self.impingement_path.parent.mkdir(parents=True, exist_ok=True)
@@ -494,6 +566,7 @@ __all__ = [
     "EgressManifestGate",
     "EgressNotification",
     "EgressOffender",
+    "EgressProducerKillSwitchState",
     "audio_asset_from_music_manifest",
     "build_broadcast_manifest",
     "content_risk_rank",

@@ -298,7 +298,7 @@ class LocalMusicPlayer:
         # write so we can distinguish that from external overrides
         # (chat / Hapax cue / operator command) when recording plays.
         self._auto_written_mtime: float = 0.0
-        self._egress_gate = EgressManifestGate()
+        self._egress_gate = EgressManifestGate(producer_id="local_music_player")
 
     def stop(self) -> None:
         """Stop any in-flight playback and exit the loop."""

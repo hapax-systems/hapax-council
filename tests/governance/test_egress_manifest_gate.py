@@ -11,11 +11,17 @@ from shared.content_source_provenance_egress import (
 from shared.impingement_consumer import ImpingementConsumer
 
 
-def _gate(tmp_path: Path, notify_calls: list[tuple]) -> EgressManifestGate:
+def _gate(
+    tmp_path: Path,
+    notify_calls: list[tuple],
+    *,
+    producer_id: str = "egress_manifest_gate",
+) -> EgressManifestGate:
     return EgressManifestGate(
         manifest_path=tmp_path / "manifest.json",
         kill_switch_path=tmp_path / "kill-switch.json",
         impingement_path=tmp_path / "impingements.jsonl",
+        producer_id=producer_id,
         notify_fn=lambda *args, **kwargs: notify_calls.append((args, kwargs)),
         now_fn=lambda: 1234.5,
     )
@@ -117,6 +123,53 @@ def test_clean_manifest_passes_and_clears_kill_switch_state(tmp_path: Path) -> N
     state = json.loads((tmp_path / "kill-switch.json").read_text(encoding="utf-8"))
     assert state["active"] is False
     assert not (tmp_path / "impingements.jsonl").exists()
+
+
+def test_clean_partial_manifest_does_not_clear_other_producer_kill_switch(
+    tmp_path: Path,
+) -> None:
+    notify_calls: list[tuple] = []
+    visual_gate = _gate(tmp_path, notify_calls, producer_id="visual_pool")
+    audio_gate = _gate(tmp_path, notify_calls, producer_id="local_music_player")
+
+    visual_gate.tick(
+        build_broadcast_manifest(
+            visual_assets=(
+                _asset(
+                    token="visual:uncleared:abc",
+                    tier="tier_4_risky",
+                    medium="visual",
+                    source="visual-pool-slot-0",
+                ),
+            ),
+            max_content_risk="tier_1_platform_cleared",
+        )
+    )
+
+    decision = audio_gate.tick(
+        build_broadcast_manifest(
+            audio_assets=(
+                _asset(
+                    token="music:hapax-pool:clear",
+                    tier="tier_0_owned",
+                    medium="audio",
+                    source="music-bed",
+                ),
+            ),
+            max_content_risk="tier_1_platform_cleared",
+        )
+    )
+
+    assert decision is not None
+    assert decision.kill_switch_fired is False
+    state = json.loads((tmp_path / "kill-switch.json").read_text(encoding="utf-8"))
+    assert state["active"] is True
+    assert state["audio_action"] == "duck_to_negative_infinity"
+    assert state["visual_action"] == "crossfade_to_tier0_fallback_shader"
+    assert state["offenders"][0]["source"] == "visual-pool-slot-0"
+    assert state["producer_states"]["visual_pool"]["active"] is True
+    assert state["producer_states"]["local_music_player"]["active"] is False
+    assert len(notify_calls) == 1
 
 
 def test_manifest_authority_ceiling_never_grants_public_money_truth_or_rights() -> None:
