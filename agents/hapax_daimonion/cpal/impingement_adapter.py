@@ -108,6 +108,13 @@ OPERATOR_SPEECH_THRESHOLD_LIFT: float = 0.4
 # disruptive. Decays naturally as seconds_since_last_response increases.
 DIALOG_ACTIVE_THRESHOLD_LIFT: float = 0.3
 DIALOG_ACTIVE_WINDOW_S: float = 30.0  # seconds within which a response counts
+# Casual-role prior: when no programme is active, the private casual
+# role's pacing obligation applies. This is Bayesian evidence — the
+# absence of a programme IS the evidence that the casual role's pacing
+# constraint applies. Per the conative impingement spec: "too-high
+# compulsion → compulsive speech, rumination, operator fatigue."
+# The fix is a continuous suppression field, not a hard rule.
+CASUAL_ROLE_BASE_LIFT: float = 0.15
 SPEECH_CAPABILITY_NAME: str = "speech_production"
 
 
@@ -290,7 +297,15 @@ class ImpingementAdapter:
         except Exception:
             pass  # fail open
 
-        threshold = base_threshold + operator_lift + dialog_lift
+        # Casual-role prior: when no programme is active, the private
+        # casual role's pacing obligation applies. The operator didn't
+        # ask to hear monitoring reports — the absence of a programme
+        # is evidence that autonomous speech is less appropriate.
+        # Per the conative impingement spec: continuous suppression
+        # fields, role-conditioned priors, not hard speak/don't rules.
+        casual_lift = CASUAL_ROLE_BASE_LIFT if programme is None else 0.0
+
+        threshold = base_threshold + operator_lift + dialog_lift + casual_lift
         return min(1.0, max(0.01, threshold))
 
     def _safe_active_programme(self):
