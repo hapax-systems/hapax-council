@@ -53,6 +53,51 @@ log = logging.getLogger(__name__)
 _tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
 _audio_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-out")
 
+_CAPTION_AUDIO_SAMPLE_RATE_HZ = 16000
+_CAPTION_AUDIO_BYTES_PER_SAMPLE = 2
+
+
+def _emit_caption_bridge_for_transcript(
+    *,
+    transcript: str,
+    audio_bytes: bytes,
+    now_s: float | None = None,
+    bridge_factory: Callable[[], object] | None = None,
+) -> bool:
+    """Best-effort live-caption emit for an accepted STT transcript.
+
+    ConversationBuffer delivers raw mono s16le PCM and currently does
+    not carry a media PTS. Use wall-clock epoch seconds minus the
+    utterance duration as the audio-start timestamp expected by the
+    caption bridge.
+    """
+    text = transcript.strip()
+    if not text:
+        return False
+
+    duration_s = len(audio_bytes) / (
+        _CAPTION_AUDIO_SAMPLE_RATE_HZ * _CAPTION_AUDIO_BYTES_PER_SAMPLE
+    )
+    audio_start_ts = (time.time() if now_s is None else now_s) - duration_s
+
+    if bridge_factory is None:
+        from agents.live_captions.daimonion_bridge import get_caption_bridge
+
+        bridge_factory = get_caption_bridge
+
+    try:
+        bridge = bridge_factory()
+        return bool(
+            bridge.emit_transcription(
+                audio_start_ts=audio_start_ts,
+                audio_duration_s=duration_s,
+                text=text,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("live caption bridge emit failed", exc_info=True)
+        return False
+
 
 class ConvState(enum.Enum):
     IDLE = "idle"
@@ -673,6 +718,7 @@ class ConversationPipeline:
             except Exception:
                 pass
         self._emit("user_utterance", text=transcript, principal_id=_pid)
+        _emit_caption_bridge_for_transcript(transcript=transcript, audio_bytes=audio_bytes)
 
         # Continuous-Loop Research Cadence §3.4 — write the most recent
         # transcript line to the STT-recent file so the compositor's

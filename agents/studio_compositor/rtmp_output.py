@@ -16,6 +16,11 @@ Default topology:
         flvmux name=mux ← aacparse ← voaacenc ← audioconvert ← pipewiresrc
     mux → rtmp2sink location=rtmp://127.0.0.1:1935/studio
 
+Native CEA caption insertion is intentionally not in this bin yet:
+``cc708overlay`` is not available, and ``cccombiner`` needs a real
+closedcaption/x-cea-608 or x-cea-708 packetizer before it can combine
+STT captions with video. See ``agents.live_captions.gstreamer``.
+
 All elements are named with a `rtmp_` prefix so the bus message handler
 can route errors back to this bin without affecting other pipeline errors.
 """
@@ -138,6 +143,10 @@ class RtmpOutputBin:
             video_encoder_queue.set_property("max-size-buffers", 10)
             video_encoder_queue.set_property("max-size-time", 500 * Gst.MSECOND)
             video_encoder_queue.set_property("leaky", 2)  # downstream
+            # ytb-009 production-wire: do not insert cccombiner here until
+            # the STT JSONL stream has been converted to closedcaption
+            # buffers. An inert combiner would add pipeline risk without
+            # creating in-band captions.
 
             encoder = Gst.ElementFactory.make("nvh264enc", "rtmp_nvh264enc")
             if encoder is None:
