@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 from agents.hapax_daimonion.tool_affordances import TOOL_AFFORDANCES
 from agents.hapax_daimonion.tool_recruitment import ToolRecruitmentGate
 from shared.affordance import SelectionCandidate
+from shared.affordance_pipeline import AffordancePipeline
+from shared.capability_outcome import CapabilityOutcomeEnvelope, FixtureCase
 
 BANNED_WORDS = ["function", "api", "endpoint", "json", "schema", "qdrant", "shm"]
 
@@ -102,11 +104,32 @@ def test_recruit_filters_non_tool_candidates():
     assert "not_a_real_tool" not in recruited
 
 
-def test_record_outcome_calls_pipeline():
+def test_record_outcome_routes_legacy_bool_through_capability_outcome_adapter():
     gate = ToolRecruitmentGate.__new__(ToolRecruitmentGate)
     gate._pipeline = MagicMock()
     gate.record_outcome("get_weather", success=True)
-    gate._pipeline.record_outcome.assert_called_once_with("get_weather", success=True)
+
+    gate._pipeline.record_capability_outcome.assert_called_once()
+    outcome = gate._pipeline.record_capability_outcome.call_args.args[0]
+    context = gate._pipeline.record_capability_outcome.call_args.kwargs["context"]
+    assert isinstance(outcome, CapabilityOutcomeEnvelope)
+    assert outcome.capability_name == "get_weather"
+    assert outcome.fixture_case is FixtureCase.COMMANDED_ONLY
+    assert outcome.learning_update.allowed is False
+    assert outcome.witness_refs == []
+    assert context == {"source": "tool_recruitment", "tool": "get_weather"}
+
+
+def test_tool_record_outcome_no_witness_does_not_increment_affordance_success():
+    pipeline = AffordancePipeline()
+    gate = ToolRecruitmentGate(pipeline, {"get_weather"})
+
+    gate.record_outcome("get_weather", success=True)
+
+    state = pipeline.get_activation_state("get_weather")
+    assert state.use_count == 0
+    assert ("tool_recruitment", "get_weather") not in pipeline._context_associations
+    assert ("get_weather", "get_weather") not in pipeline._context_associations
 
 
 def test_register_tools_counts_successes():

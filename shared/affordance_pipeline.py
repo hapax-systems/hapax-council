@@ -12,7 +12,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shared.affordance import ActivationState, CapabilityRecord, SelectionCandidate
 from shared.affordance_metrics import AffordanceMetrics
@@ -22,6 +22,10 @@ from shared.exploration import ExplorationSignal
 from shared.impingement import Impingement, render_impingement_text
 
 log = logging.getLogger("affordance_pipeline")
+
+if TYPE_CHECKING:
+    from shared.affordance_outcome_adapter import AffordanceOutcomeDecision
+    from shared.capability_outcome import CapabilityOutcomeEnvelope
 
 ACTIVATION_STATE_PATH = Path("/home/hapax/.cache/hapax/affordance-activation-state.json")
 _DISK_CACHE_PATH = Path.home() / ".cache" / "hapax" / "embed-cache.json"
@@ -879,7 +883,12 @@ class AffordancePipeline:
     def record_outcome(
         self, capability_name: str, success: bool, context: dict[str, Any] | None = None
     ) -> None:
-        """Record outcome and update learned associations."""
+        """Record a low-level internal/exploration outcome.
+
+        Runtime world outcomes should prefer record_capability_outcome(), which
+        gates CapabilityOutcomeEnvelope through witness and learning policy
+        before collapsing to this boolean primitive.
+        """
         if success:
             self.record_success(capability_name)
         else:
@@ -896,6 +905,22 @@ class AffordancePipeline:
             delta = 0.1 if success else -0.05
             for _key, value in context.items():
                 self.update_context_association(str(value), capability_name, delta=delta)
+
+    def record_capability_outcome(
+        self,
+        outcome: CapabilityOutcomeEnvelope,
+        context: dict[str, Any] | None = None,
+    ) -> AffordanceOutcomeDecision:
+        """Gate a CapabilityOutcomeEnvelope before mutating learning state."""
+
+        from shared.affordance_outcome_adapter import decide_affordance_outcome_update
+
+        decision = decide_affordance_outcome_update(outcome)
+        if decision.should_update:
+            if decision.success is None:
+                raise ValueError("affordance outcome decision requested update without success")
+            self.record_outcome(decision.capability_name, decision.success, context=context)
+        return decision
 
     def decay_associations(self, factor: float = 0.995) -> None:
         """Decay all context associations toward zero (passive forgetting)."""
