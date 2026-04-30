@@ -1,0 +1,915 @@
+{
+  "$defs": {
+    "ClosedRepoPresClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "claimed_status": {
+          "title": "Claimed Status",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "live_status": {
+          "enum": [
+            "true",
+            "false",
+            "unreconciled",
+            "not_applicable"
+          ],
+          "title": "Live Status",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "task_path": {
+          "title": "Task Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "task_path",
+        "claimed_status",
+        "live_status",
+        "summary",
+        "evidence_refs"
+      ],
+      "title": "ClosedRepoPresClaim",
+      "type": "object"
+    },
+    "CommunityProfileState": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "files": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "title": "Files",
+          "type": "object"
+        },
+        "health_percentage": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Health Percentage"
+        }
+      },
+      "title": "CommunityProfileState",
+      "type": "object"
+    },
+    "DriftFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "blocks": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocks",
+          "type": "array"
+        },
+        "category": {
+          "title": "Category",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "expected": {
+          "title": "Expected",
+          "type": "string"
+        },
+        "finding_id": {
+          "title": "Finding Id",
+          "type": "string"
+        },
+        "observed": {
+          "title": "Observed",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "blocking",
+            "high",
+            "medium",
+            "low",
+            "info"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "drift",
+            "blocked",
+            "unreconciled",
+            "observed",
+            "ok"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "surface": {
+          "title": "Surface",
+          "type": "string"
+        }
+      },
+      "required": [
+        "finding_id",
+        "severity",
+        "category",
+        "surface",
+        "status",
+        "summary",
+        "expected",
+        "observed",
+        "evidence_refs"
+      ],
+      "title": "DriftFinding",
+      "type": "object"
+    },
+    "GitHubDocsEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "organization_profile_readme_url": {
+          "title": "Organization Profile Readme Url",
+          "type": "string"
+        },
+        "organization_profile_requirement": {
+          "title": "Organization Profile Requirement",
+          "type": "string"
+        },
+        "profile_readme_decision": {
+          "const": "user_repo_named_ryanklee_required",
+          "title": "Profile Readme Decision",
+          "type": "string"
+        },
+        "user_profile_readme_url": {
+          "title": "User Profile Readme Url",
+          "type": "string"
+        },
+        "user_profile_requirement": {
+          "title": "User Profile Requirement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_profile_readme_url",
+        "organization_profile_readme_url",
+        "user_profile_requirement",
+        "organization_profile_requirement",
+        "profile_readme_decision"
+      ],
+      "title": "GitHubDocsEvidence",
+      "type": "object"
+    },
+    "LocalPublicSurfaceEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "notice_links": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notice Links",
+          "type": "array"
+        },
+        "notice_missing_links": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notice Missing Links",
+          "type": "array"
+        },
+        "package_surfaces": {
+          "items": {
+            "$ref": "#/$defs/PackageSurface"
+          },
+          "title": "Package Surfaces",
+          "type": "array"
+        },
+        "registry_assets_policy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Registry Assets Policy"
+        },
+        "registry_license_by_repo": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Registry License By Repo",
+          "type": "object"
+        },
+        "repo_head": {
+          "title": "Repo Head",
+          "type": "string"
+        },
+        "root_file_sha256": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Root File Sha256",
+          "type": "object"
+        }
+      },
+      "required": [
+        "repo_head",
+        "registry_license_by_repo",
+        "root_file_sha256",
+        "notice_links",
+        "notice_missing_links",
+        "package_surfaces"
+      ],
+      "title": "LocalPublicSurfaceEvidence",
+      "type": "object"
+    },
+    "PackageSurface": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_status": {
+          "enum": [
+            "needs_claim_discipline",
+            "evidence_only",
+            "not_public_package"
+          ],
+          "title": "Claim Status",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "has_citation": {
+          "title": "Has Citation",
+          "type": "boolean"
+        },
+        "has_pyproject": {
+          "title": "Has Pyproject",
+          "type": "boolean"
+        },
+        "has_readme": {
+          "title": "Has Readme",
+          "type": "boolean"
+        },
+        "package_name": {
+          "title": "Package Name",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "readme_mentions_issues": {
+          "title": "Readme Mentions Issues",
+          "type": "boolean"
+        },
+        "readme_mentions_support": {
+          "title": "Readme Mentions Support",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "package_name",
+        "has_readme",
+        "has_citation",
+        "has_pyproject",
+        "readme_mentions_issues",
+        "readme_mentions_support",
+        "claim_status",
+        "evidence_refs"
+      ],
+      "title": "PackageSurface",
+      "type": "object"
+    },
+    "PagesState": {
+      "additionalProperties": false,
+      "properties": {
+        "cname": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cname"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "exists": {
+          "title": "Exists",
+          "type": "boolean"
+        },
+        "html_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Html Url"
+        },
+        "source_branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Branch"
+        },
+        "source_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Path"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "exists"
+      ],
+      "title": "PagesState",
+      "type": "object"
+    },
+    "ReleaseTagState": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "title": "Count",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "latest_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latest Name"
+        },
+        "latest_published_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latest Published At"
+        },
+        "latest_tag_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latest Tag Name"
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "title": "ReleaseTagState",
+      "type": "object"
+    },
+    "RepoFilePresence": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "default": "github_contents_api",
+          "title": "Evidence",
+          "type": "string"
+        },
+        "exists": {
+          "title": "Exists",
+          "type": "boolean"
+        },
+        "html_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Html Url"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha"
+        },
+        "size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size"
+        }
+      },
+      "required": [
+        "path",
+        "exists"
+      ],
+      "title": "RepoFilePresence",
+      "type": "object"
+    },
+    "RepoLiveState": {
+      "additionalProperties": false,
+      "properties": {
+        "api_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Error"
+        },
+        "archived": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Archived"
+        },
+        "community": {
+          "$ref": "#/$defs/CommunityProfileState"
+        },
+        "default_branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Branch"
+        },
+        "default_branch_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Branch Sha"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "exists": {
+          "title": "Exists",
+          "type": "boolean"
+        },
+        "expected_public": {
+          "default": true,
+          "title": "Expected Public",
+          "type": "boolean"
+        },
+        "files": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RepoFilePresence"
+          },
+          "title": "Files",
+          "type": "object"
+        },
+        "has_discussions": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Has Discussions"
+        },
+        "has_issues": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Has Issues"
+        },
+        "has_projects": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Has Projects"
+        },
+        "has_wiki": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Has Wiki"
+        },
+        "homepage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Homepage"
+        },
+        "html_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Html Url"
+        },
+        "license_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "License Name"
+        },
+        "license_spdx": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "License Spdx"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "owner": {
+          "title": "Owner",
+          "type": "string"
+        },
+        "pages": {
+          "$ref": "#/$defs/PagesState"
+        },
+        "private": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Private"
+        },
+        "pushed_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pushed At"
+        },
+        "releases": {
+          "$ref": "#/$defs/ReleaseTagState"
+        },
+        "repo_id": {
+          "title": "Repo Id",
+          "type": "string"
+        },
+        "tags": {
+          "$ref": "#/$defs/ReleaseTagState"
+        },
+        "topics": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Topics",
+          "type": "array"
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Visibility"
+        }
+      },
+      "required": [
+        "repo_id",
+        "owner",
+        "name",
+        "exists"
+      ],
+      "title": "RepoLiveState",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "anti_overclaim": {
+      "default": [
+        "live GitHub coherence does not prove research validity",
+        "live GitHub coherence does not prove livestream health",
+        "live GitHub coherence does not prove support readiness",
+        "live GitHub coherence does not prove artifact rights",
+        "live GitHub coherence does not prove monetization readiness"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Anti Overclaim",
+      "type": "array"
+    },
+    "claim_ceiling": {
+      "const": "public_archive",
+      "title": "Claim Ceiling",
+      "type": "string"
+    },
+    "closed_repo_pres_claims": {
+      "items": {
+        "$ref": "#/$defs/ClosedRepoPresClaim"
+      },
+      "title": "Closed Repo Pres Claims",
+      "type": "array"
+    },
+    "docs_evidence": {
+      "$ref": "#/$defs/GitHubDocsEvidence"
+    },
+    "drift_findings": {
+      "items": {
+        "$ref": "#/$defs/DriftFinding"
+      },
+      "title": "Drift Findings",
+      "type": "array"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "generated_by": {
+      "title": "Generated By",
+      "type": "string"
+    },
+    "live_repos": {
+      "items": {
+        "$ref": "#/$defs/RepoLiveState"
+      },
+      "title": "Live Repos",
+      "type": "array"
+    },
+    "local_evidence": {
+      "$ref": "#/$defs/LocalPublicSurfaceEvidence"
+    },
+    "profile_repo_candidates": {
+      "items": {
+        "$ref": "#/$defs/RepoLiveState"
+      },
+      "title": "Profile Repo Candidates",
+      "type": "array"
+    },
+    "required_drift_categories": {
+      "default": [
+        "readme_currentness",
+        "license_detection",
+        "citation_codemeta_zenodo",
+        "contributing_governance",
+        "settings_truth",
+        "profile_repo_state",
+        "pages_cdn_state",
+        "package_public_surfaces",
+        "notice_links",
+        "closed_repo_pres_claims"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Drift Categories",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Source Refs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "generated_at",
+    "generated_by",
+    "claim_ceiling",
+    "source_refs",
+    "live_repos",
+    "profile_repo_candidates",
+    "local_evidence",
+    "docs_evidence",
+    "drift_findings",
+    "closed_repo_pres_claims"
+  ],
+  "title": "GitHubPublicSurfaceReport",
+  "type": "object"
+}
