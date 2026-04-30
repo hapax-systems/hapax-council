@@ -136,6 +136,17 @@ if [ -z "$SERVICE" ]; then
     exit 0
 fi
 
+# A service may be intentionally masked during an incident containment window
+# (for example, Daimonion private voice egress). Treat that as a successful
+# no-op instead of failing the whole rebuild cascade; the explicit restore path
+# is responsible for unmasking and starting the service later.
+UNIT_STATE=$(systemctl --user show "$SERVICE" -p LoadState -p UnitFileState --value 2>/dev/null | tr '\n' ' ')
+if [[ " $UNIT_STATE " == *" masked "* ]]; then
+    echo "$CURRENT_SHA" > "$SHA_FILE"
+    logger -t "$LOG_TAG" "$SERVICE masked - rebuild restart skipped at ${CURRENT_SHA:0:8}"
+    exit 0
+fi
+
 # --- System pressure guard ---
 # 2026-04-16 incident: studio-compositor's main Python process went zombie
 # after rebuild-services fired twice within 5 minutes while the rig was at
