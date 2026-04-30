@@ -94,6 +94,12 @@ from shared.grounding_provider_router import (
     validate_provider_registry,
 )
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
+from shared.programme_revenue_braid_adapters import (
+    BraidSnapshotRowRef,
+    ConversionReadinessBraidProjection,
+    ProgrammeFeedbackBraidProjection,
+    load_programme_revenue_braid_adapter_fixtures,
+)
 from shared.scrim_health_fixtures import (
     ScrimHealthExpectedOutcome,
     ScrimHealthFixture,
@@ -437,3 +443,11 @@ load_application_obligation_fixtures
 OperatorAttestationRequirement._operator_action_matches_requiredness
 GrantOpportunityRecord._validate_private_evidence_contract
 GrantOpportunityFixtureSet._validate_source_coverage
+
+# Programme/revenue braid adapter validators are invoked dynamically by
+# Pydantic while validating fixture packets. The loader is a public contract for
+# downstream programme/conversion consumers and schema tests.
+BraidSnapshotRowRef._private_ceiling_has_no_public_claim
+ProgrammeFeedbackBraidProjection._grounding_updates_need_grounding_signal
+ConversionReadinessBraidProjection._grant_private_evidence_stays_separate
+load_programme_revenue_braid_adapter_fixtures

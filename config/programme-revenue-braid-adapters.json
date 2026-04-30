@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "programme_revenue_braid_adapters",
+  "schema_ref": "schemas/programme-revenue-braid-adapters.schema.json",
+  "source_refs": [
+    "cc-task:programme-and-revenue-braid-adapters",
+    "spec:2026-04-29-braided-value-formal-model",
+    "audit:2026-04-30-post-merge-value-braid-backlog-resequence",
+    "config:conversion-target-readiness-threshold-matrix",
+    "config:content-programme-feedback-ledger"
+  ],
+  "fixtures": [
+    {
+      "fixture_id": "grounded_private_programme_dry_run",
+      "snapshot_row": {
+        "snapshot_ref": "braid-snapshot:fixture:grounded-private-programme",
+        "task_id": "programme-run-fixture-pack-live-smoke",
+        "status": "done",
+        "mode_ceiling": "private",
+        "max_public_claim": "none",
+        "potential": {
+          "engagement": 0.82,
+          "monetary": 0.58,
+          "research": 0.88,
+          "tree_effect": 0.91
+        },
+        "realized": {
+          "engagement": 0.5,
+          "monetary": 0.2,
+          "research": 0.7,
+          "tree_effect": 0.8
+        },
+        "gate_posture": {
+          "hard_vetoes": [],
+          "evidence_ceiling": "private",
+          "deny_wins": false,
+          "trend_can_upgrade_claim_confidence": false
+        },
+        "review_reasons": [],
+        "evidence_refs": [
+          "WCS:fixture:programme-run",
+          "format_grounding_evaluation:fixture:grounded-private",
+          "capability_outcome:fixture:verified",
+          "provenance:fixture:private"
+        ]
+      },
+      "target_family_id": "replay_demo",
+      "requested_state": "dry-run",
+      "satisfied_gate_dimensions": [
+        "wcs",
+        "programme",
+        "privacy",
+        "provenance",
+        "no_hidden_operator_labor"
+      ],
+      "expected_allowed": true,
+      "expected_effective_state": "dry-run",
+      "expected_grounding_update_allowed": true,
+      "expected_missing_gate_dimensions": [],
+      "expected_allowed_posterior_families": [
+        "grounding_quality",
+        "audience_response",
+        "revenue_support_response",
+        "artifact_conversion",
+        "rights_pass_probability"
+      ]
+    },
+    {
+      "fixture_id": "audience_revenue_cannot_upgrade_grounding",
+      "snapshot_row": {
+        "snapshot_ref": "braid-snapshot:fixture:audience-revenue-only",
+        "task_id": "support-prompt-high-interest",
+        "status": "offered",
+        "mode_ceiling": "private",
+        "max_public_claim": "none",
+        "potential": {
+          "engagement": 0.96,
+          "monetary": 0.94,
+          "research": 0.0,
+          "tree_effect": 0.7
+        },
+        "realized": {
+          "engagement": 0.0,
+          "monetary": 0.0,
+          "research": 0.0,
+          "tree_effect": 0.0
+        },
+        "gate_posture": {
+          "hard_vetoes": [],
+          "evidence_ceiling": "private",
+          "deny_wins": false,
+          "trend_can_upgrade_claim_confidence": false
+        },
+        "review_reasons": [],
+        "evidence_refs": [
+          "audience:aggregate:fixture-high-interest",
+          "revenue:aggregate:fixture-support-intent"
+        ]
+      },
+      "target_family_id": "support_prompt",
+      "requested_state": "public-monetizable",
+      "satisfied_gate_dimensions": [
+        "wcs",
+        "programme"
+      ],
+      "expected_allowed": false,
+      "expected_effective_state": "blocked",
+      "expected_grounding_update_allowed": false,
+      "expected_missing_gate_dimensions": [
+        "archive",
+        "egress",
+        "monetization",
+        "no_hidden_operator_labor",
+        "privacy",
+        "provenance",
+        "public_event",
+        "rights"
+      ],
+      "expected_allowed_posterior_families": [
+        "audience_response",
+        "revenue_support_response"
+      ]
+    },
+    {
+      "fixture_id": "revenue_potential_missing_public_gates_blocks_youtube",
+      "snapshot_row": {
+        "snapshot_ref": "braid-snapshot:fixture:youtube-high-money-missing-gates",
+        "task_id": "youtube-vod-packaging-high-revenue",
+        "status": "offered",
+        "mode_ceiling": "private",
+        "max_public_claim": "none",
+        "potential": {
+          "engagement": 0.72,
+          "monetary": 0.99,
+          "research": 0.62,
+          "tree_effect": 0.8
+        },
+        "realized": {
+          "engagement": 0.1,
+          "monetary": 0.0,
+          "research": 0.2,
+          "tree_effect": 0.3
+        },
+        "gate_posture": {
+          "hard_vetoes": [],
+          "evidence_ceiling": "private",
+          "deny_wins": false,
+          "trend_can_upgrade_claim_confidence": false
+        },
+        "review_reasons": [],
+        "evidence_refs": [
+          "WCS:fixture:youtube-run",
+          "format_grounding_evaluation:fixture:youtube",
+          "revenue:aggregate:fixture-high-money"
+        ]
+      },
+      "target_family_id": "youtube_vod_packaging",
+      "requested_state": "public-live",
+      "satisfied_gate_dimensions": [
+        "wcs",
+        "programme",
+        "archive"
+      ],
+      "expected_allowed": false,
+      "expected_effective_state": "blocked",
+      "expected_grounding_update_allowed": true,
+      "expected_missing_gate_dimensions": [
+        "egress",
+        "no_hidden_operator_labor",
+        "privacy",
+        "provenance",
+        "public_event",
+        "rights"
+      ],
+      "expected_allowed_posterior_families": [
+        "grounding_quality",
+        "audience_response",
+        "revenue_support_response",
+        "artifact_conversion"
+      ]
+    },
+    {
+      "fixture_id": "private_grant_evidence_distinct_from_public_release",
+      "snapshot_row": {
+        "snapshot_ref": "braid-snapshot:fixture:grant-private-evidence",
+        "task_id": "grant-opportunity-scout-attestation-queue",
+        "status": "done",
+        "mode_ceiling": "private",
+        "max_public_claim": "none",
+        "potential": {
+          "engagement": 0.4,
+          "monetary": 0.96,
+          "research": 0.78,
+          "tree_effect": 0.83
+        },
+        "realized": {
+          "engagement": 0.2,
+          "monetary": 0.4,
+          "research": 0.6,
+          "tree_effect": 0.7
+        },
+        "gate_posture": {
+          "hard_vetoes": [],
+          "evidence_ceiling": "private",
+          "deny_wins": false,
+          "trend_can_upgrade_claim_confidence": false
+        },
+        "review_reasons": [],
+        "evidence_refs": [
+          "grant-private-evidence:fixture:attestation-queue",
+          "WCS:fixture:grant-context",
+          "provenance:fixture:grant-private",
+          "privacy:fixture:grant-private"
+        ]
+      },
+      "target_family_id": "grants_fellowships",
+      "requested_state": "private-evidence",
+      "satisfied_gate_dimensions": [
+        "wcs",
+        "programme",
+        "privacy",
+        "provenance",
+        "operator_attestation",
+        "no_hidden_operator_labor"
+      ],
+      "expected_allowed": true,
+      "expected_effective_state": "private-evidence",
+      "expected_grounding_update_allowed": true,
+      "expected_missing_gate_dimensions": [],
+      "expected_allowed_posterior_families": [
+        "grounding_quality",
+        "audience_response",
+        "revenue_support_response",
+        "rights_pass_probability"
+      ]
+    },
+    {
+      "fixture_id": "refusal_correction_is_learning_not_public_truth",
+      "snapshot_row": {
+        "snapshot_ref": "braid-snapshot:fixture:refusal-correction",
+        "task_id": "programme-refusal-correction-artifact-path",
+        "status": "offered",
+        "mode_ceiling": "private",
+        "max_public_claim": "none",
+        "potential": {
+          "engagement": 0.55,
+          "monetary": 0.42,
+          "research": 0.66,
+          "tree_effect": 0.82
+        },
+        "realized": {
+          "engagement": 0.0,
+          "monetary": 0.0,
+          "research": 0.1,
+          "tree_effect": 0.2
+        },
+        "gate_posture": {
+          "hard_vetoes": [
+            "rights_gate_failed"
+          ],
+          "evidence_ceiling": "private",
+          "deny_wins": true,
+          "trend_can_upgrade_claim_confidence": false
+        },
+        "review_reasons": [
+          "corrected"
+        ],
+        "evidence_refs": [
+          "format_grounding_evaluation:fixture:correction",
+          "rights:fixture:blocked",
+          "safety:fixture:refusal"
+        ]
+      },
+      "target_family_id": "artifact_edition_release",
+      "requested_state": "public-archive",
+      "satisfied_gate_dimensions": [
+        "wcs",
+        "programme",
+        "archive"
+      ],
+      "expected_allowed": false,
+      "expected_effective_state": "blocked",
+      "expected_grounding_update_allowed": false,
+      "expected_missing_gate_dimensions": [
+        "egress",
+        "no_hidden_operator_labor",
+        "operator_attestation",
+        "privacy",
+        "provenance",
+        "public_event",
+        "rights"
+      ],
+      "expected_allowed_posterior_families": [
+        "audience_response",
+        "revenue_support_response",
+        "artifact_conversion",
+        "rights_pass_probability",
+        "safety_refusal_rate"
+      ]
+    }
+  ]
+}

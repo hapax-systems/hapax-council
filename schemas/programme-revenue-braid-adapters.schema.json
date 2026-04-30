@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/programme-revenue-braid-adapters.schema.json",
+  "title": "Programme Revenue Braid Adapter Fixtures",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "fixture_set_id", "schema_ref", "source_refs", "fixtures"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "const": "programme_revenue_braid_adapters"},
+    "schema_ref": {"type": "string", "const": "schemas/programme-revenue-braid-adapters.schema.json"},
+    "source_refs": {"$ref": "#/$defs/string_array"},
+    "fixtures": {"type": "array", "items": {"$ref": "#/$defs/fixture"}, "minItems": 5}
+  },
+  "$defs": {
+    "string_array": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "mode_ceiling": {
+      "enum": ["private", "dry_run", "public_archive", "public_live", "public_monetizable"]
+    },
+    "readiness_state": {
+      "enum": [
+        "blocked",
+        "private-evidence",
+        "dry-run",
+        "public-archive",
+        "public-live",
+        "public-monetizable",
+        "refused"
+      ]
+    },
+    "target_family_id": {
+      "enum": [
+        "grants_fellowships",
+        "youtube_vod_packaging",
+        "replay_demo",
+        "dataset_card",
+        "artifact_edition_release",
+        "support_prompt",
+        "residency",
+        "licensing"
+      ]
+    },
+    "gate_dimension": {
+      "enum": [
+        "wcs",
+        "programme",
+        "public_event",
+        "archive",
+        "rights",
+        "privacy",
+        "provenance",
+        "egress",
+        "monetization",
+        "operator_attestation",
+        "no_hidden_operator_labor"
+      ]
+    },
+    "posterior_family": {
+      "enum": [
+        "grounding_quality",
+        "audience_response",
+        "artifact_conversion",
+        "revenue_support_response",
+        "rights_pass_probability",
+        "safety_refusal_rate",
+        "format_prior",
+        "source_prior"
+      ]
+    },
+    "family_values": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engagement", "monetary", "research", "tree_effect"],
+      "properties": {
+        "engagement": {"type": "number", "minimum": 0, "maximum": 1},
+        "monetary": {"type": "number", "minimum": 0, "maximum": 1},
+        "research": {"type": "number", "minimum": 0, "maximum": 1},
+        "tree_effect": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "gate_posture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hard_vetoes",
+        "evidence_ceiling",
+        "deny_wins",
+        "trend_can_upgrade_claim_confidence"
+      ],
+      "properties": {
+        "hard_vetoes": {"type": "array", "items": {"type": "string"}},
+        "evidence_ceiling": {"$ref": "#/$defs/mode_ceiling"},
+        "deny_wins": {"type": "boolean"},
+        "trend_can_upgrade_claim_confidence": {"type": "boolean", "const": false}
+      }
+    },
+    "snapshot_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_ref",
+        "task_id",
+        "status",
+        "mode_ceiling",
+        "max_public_claim",
+        "potential",
+        "realized",
+        "gate_posture",
+        "review_reasons",
+        "evidence_refs"
+      ],
+      "properties": {
+        "snapshot_ref": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "minLength": 1},
+        "mode_ceiling": {"$ref": "#/$defs/mode_ceiling"},
+        "max_public_claim": {"type": "string", "minLength": 1},
+        "potential": {"$ref": "#/$defs/family_values"},
+        "realized": {"$ref": "#/$defs/family_values"},
+        "gate_posture": {"$ref": "#/$defs/gate_posture"},
+        "review_reasons": {"type": "array", "items": {"type": "string"}},
+        "evidence_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "snapshot_row",
+        "target_family_id",
+        "requested_state",
+        "satisfied_gate_dimensions",
+        "expected_allowed",
+        "expected_effective_state",
+        "expected_grounding_update_allowed",
+        "expected_missing_gate_dimensions",
+        "expected_allowed_posterior_families"
+      ],
+      "properties": {
+        "fixture_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+        "snapshot_row": {"$ref": "#/$defs/snapshot_row"},
+        "target_family_id": {"$ref": "#/$defs/target_family_id"},
+        "requested_state": {"$ref": "#/$defs/readiness_state"},
+        "satisfied_gate_dimensions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/gate_dimension"}
+        },
+        "expected_allowed": {"type": "boolean"},
+        "expected_effective_state": {"$ref": "#/$defs/readiness_state"},
+        "expected_grounding_update_allowed": {"type": "boolean"},
+        "expected_missing_gate_dimensions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/gate_dimension"}
+        },
+        "expected_allowed_posterior_families": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/posterior_family"}
+        }
+      }
+    }
+  }
+}
