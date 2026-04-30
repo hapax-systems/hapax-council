@@ -33,6 +33,24 @@ class TestProductionStream:
         ps.produce_t1(pcm_data=pcm)
         audio.write.assert_called_once_with(pcm)
 
+    def test_routed_t1_drops_if_audio_output_rejects_target(self):
+        class RejectingAudioOutput:
+            def __init__(self):
+                self.calls = []
+
+            def write(self, pcm_data, **kwargs):
+                self.calls.append((pcm_data, kwargs))
+                if kwargs:
+                    raise TypeError("target kwargs unsupported")
+
+        audio = RejectingAudioOutput()
+        ps = ProductionStream(audio_output=audio, shm_writer=MagicMock())
+        pcm = b"\x00\x01" * 500
+
+        ps.produce_t1(pcm_data=pcm, destination_target="hapax-private")
+
+        assert audio.calls == [(pcm, {"target": "hapax-private"})]
+
     def test_interrupt_stops_production(self):
         ps, _, _ = self._make_stream()
         ps._producing = True

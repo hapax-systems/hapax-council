@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agents.hapax_daimonion.cpal.runner import CpalRunner
+from shared.voice_output_router import VoiceRouteState
 
 
 class TestCpalRunnerLifecycle:
@@ -110,6 +111,38 @@ class TestCpalRunnerLifecycle:
         record_drop.assert_called_once()
         assert record_drop.call_args.kwargs["reason"] == "pipeline_unavailable"
         assert record_drop.call_args.kwargs["destination"] == "livestream"
+
+    @pytest.mark.asyncio
+    async def test_private_route_blocked_before_spontaneous_speech_pipeline(self):
+        runner = self._make_runner()
+        runner._pipeline = AsyncMock()
+        runner._impingement_adapter.adapt = MagicMock(
+            return_value=SimpleNamespace(
+                gain_update=None,
+                should_surface=True,
+                narrative="Private sidechat response.",
+                error_boost=0.5,
+            )
+        )
+        imp = MagicMock()
+        imp.source = "operator.sidechat"
+        imp.content = {"channel": "sidechat", "narrative": "Private sidechat response."}
+        blocked_route = SimpleNamespace(
+            state=VoiceRouteState.BLOCKED,
+            reason_code="private_monitor_status_missing",
+            target_binding=SimpleNamespace(target=None, media_role=None),
+        )
+
+        with (
+            patch("agents.hapax_daimonion.cpal.runner.resolve_route", return_value=blocked_route),
+            patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop,
+        ):
+            await runner.process_impingement(imp)
+
+        record_drop.assert_called_once()
+        assert record_drop.call_args.kwargs["reason"] == "private_monitor_status_missing"
+        assert record_drop.call_args.kwargs["destination"] == "private"
+        runner._pipeline.generate_spontaneous_speech.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_autonomous_narrative_timeout_not_marked_spoken(self, caplog):

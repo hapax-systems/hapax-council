@@ -1,18 +1,10 @@
-"""CPAL TTS destination routing.
+"""CPAL TTS destination classification and route compatibility.
 
-The PipeWire split (``~/.config/pipewire/pipewire.conf.d/hapax-stream-split.conf``)
-creates two sinks:
-
-* ``hapax-livestream`` → Studio 24c LEFT (public utterances, music,
-  anything broadcast-bound).
-* ``hapax-private`` → Studio 24c RIGHT (sidechat replies, debug narration,
-  operator-private).
-
-Every Hapax TTS utterance gets classified into one of these destinations
-at synthesis time. The default stays ``livestream`` (matching the
-systemd drop-in ``HAPAX_TTS_TARGET=hapax-livestream``); only utterances
-the operator explicitly initiated via the sidechat (or that are debug /
-TEXTMODE+sidechat) divert to the private sink.
+Every Hapax TTS utterance is classified as ``livestream`` or ``private`` at
+synthesis time. Those legacy labels are now metrics/classification labels only:
+playback callsites must resolve them through ``shared.voice_output_router`` so
+public voice binds to the broadcast policy target and private voice fails closed
+unless the exact private monitor route has fresh evidence.
 
 **Classification rules** (order matters — first match wins):
 
@@ -30,8 +22,9 @@ coincides with a sidechat-origin impingement do we route private — and
 rules 1/2 already catch that case.
 
 **Feature flag**: ``HAPAX_TTS_DESTINATION_ROUTING_ACTIVE`` (default ``1``).
-Setting ``0`` forces every utterance to ``HAPAX_TTS_TARGET`` (legacy
-single-sink behavior), bypassing classification entirely.
+The flag parser remains for dashboards and legacy controls, but it no longer
+authorizes fallback to ``HAPAX_TTS_TARGET`` or the system default for private
+routes.
 
 **Telemetry**: Prometheus counter ``hapax_tts_destination_total{destination}``
 increments on every classification. The classification is also logged at
@@ -45,27 +38,33 @@ from __future__ import annotations
 import logging
 import os
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
+from shared.voice_output_router import (
+    DEFAULT_PRIVATE_MONITOR_STATUS_PATH,
+    VoiceOutputDestination,
+    VoiceRouteResult,
+    media_role_for_route,
+    resolve_voice_output_route,
+    target_for_route,
+)
 from shared.voice_register import VoiceRegister
 
 log = logging.getLogger(__name__)
 
 
 DESTINATION_ROUTING_ENV: str = "HAPAX_TTS_DESTINATION_ROUTING_ACTIVE"
-"""Feature flag. ``1`` (default) = classify per utterance. ``0`` = legacy
-(always hit ``HAPAX_TTS_TARGET``)."""
+"""Legacy feature flag parser. It does not permit private/default fallback."""
 
 DEFAULT_TARGET_ENV: str = "HAPAX_TTS_TARGET"
-"""Environment variable holding the default/livestream sink. Set by the
-daimonion systemd drop-in."""
+"""Legacy default target env var. Semantic routing no longer consumes it."""
 
 LIVESTREAM_SINK: str = "hapax-livestream"
-"""Canonical livestream sink name. Matches
-``~/.config/pipewire/pipewire.conf.d/hapax-stream-split.conf``."""
+"""Legacy livestream sink label retained for dashboards and compatibility."""
 
 PRIVATE_SINK: str = "hapax-private"
-"""Canonical private sink name. Operator-only (24c RIGHT)."""
+"""Private null sink that is audible only through the exact monitor bridge."""
 
 
 class DestinationChannel(StrEnum):
@@ -169,31 +168,35 @@ def classify_destination(
 def resolve_target(destination: DestinationChannel) -> str | None:
     """Translate a ``DestinationChannel`` to a pw-cat ``--target`` sink name.
 
-    Behavior matrix:
-
-    * Routing active + ``LIVESTREAM`` → ``HAPAX_TTS_TARGET`` (or
-      ``LIVESTREAM_SINK`` when the env var is unset).
-    * Routing active + ``PRIVATE`` → ``PRIVATE_SINK``.
-    * Routing inactive (flag off) → ``HAPAX_TTS_TARGET`` for every
-      destination, falling through to ``None`` (default wireplumber
-      routing) when the env var is unset.
-
-    ``None`` is returned when no explicit sink should be passed to
-    ``pw-cat --target`` — callers treat that as "system default sink".
+    Legacy compatibility helper for older callers. New callsites should use
+    :func:`resolve_route` and inspect the returned route envelope before
+    playback. A blocked route returns ``None`` here, but callers must not treat
+    that as permission to use the system default.
     """
-    default_target = os.environ.get(DEFAULT_TARGET_ENV) or None
+    return target_for_route(resolve_route(destination))
 
-    if not is_routing_active():
-        return default_target
 
-    if destination == DestinationChannel.PRIVATE:
-        return PRIVATE_SINK
+def resolve_route(
+    destination: DestinationChannel,
+    *,
+    private_monitor_status_path: Path = DEFAULT_PRIVATE_MONITOR_STATUS_PATH,
+    now: float | None = None,
+) -> VoiceRouteResult:
+    """Resolve a legacy destination channel through the semantic route API.
 
-    # LIVESTREAM — prefer the env var (systemd drop-in sets it), fall
-    # back to the canonical sink name if somehow unset.
-    if default_target:
-        return default_target
-    return LIVESTREAM_SINK
+    The old ``PRIVATE`` / ``LIVESTREAM`` labels remain stable for metrics and
+    classification, but playback routing now flows through typed semantic
+    destinations and fail-closed evidence checks.
+    """
+    semantic = {
+        DestinationChannel.LIVESTREAM: VoiceOutputDestination.PUBLIC_BROADCAST,
+        DestinationChannel.PRIVATE: VoiceOutputDestination.PRIVATE_ASSISTANT_MONITOR,
+    }[destination]
+    return resolve_voice_output_route(
+        semantic,
+        private_monitor_status_path=private_monitor_status_path,
+        now=now,
+    )
 
 
 # pw-cat ``--media-role`` values for each destination. The role
@@ -231,9 +234,10 @@ def resolve_role(destination: DestinationChannel) -> str:
     ``role=Assistant`` and wireplumber had to pick one target —
     either broadcast (leak risk) or private (silent stream).
     """
-    if destination == DestinationChannel.PRIVATE:
-        return PRIVATE_MEDIA_ROLE
-    return BROADCAST_MEDIA_ROLE
+    route = resolve_route(destination)
+    return media_role_for_route(route) or (
+        PRIVATE_MEDIA_ROLE if destination == DestinationChannel.PRIVATE else BROADCAST_MEDIA_ROLE
+    )
 
 
 class _DestinationCounter:
@@ -331,6 +335,7 @@ __all__ = [
     "classify_destination",
     "is_routing_active",
     "record_destination",
+    "resolve_route",
     "resolve_role",
     "resolve_target",
 ]

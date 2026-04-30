@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Hapax private monitor exact-target witness
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=hapax-private-monitor-recover.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

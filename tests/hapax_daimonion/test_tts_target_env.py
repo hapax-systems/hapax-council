@@ -50,3 +50,28 @@ class TestTtsTargetEnvVar:
             pipeline._open_audio_output()
 
         mock_cls.assert_called_once_with(sample_rate=24000, channels=1, target=None)
+
+
+class TestConversationPipelineRoutedAudio:
+    def test_routed_write_drops_if_audio_output_rejects_route_kwargs(self):
+        class RejectingAudioOutput:
+            def __init__(self):
+                self.calls = []
+
+            def write(self, pcm, **kwargs):
+                self.calls.append((pcm, kwargs))
+                if kwargs:
+                    raise TypeError("route kwargs unsupported")
+
+        audio_output = RejectingAudioOutput()
+        pcm = b"\x00\x01" * 500
+
+        ConversationPipeline._write_audio(
+            audio_output,
+            None,
+            pcm,
+            destination_target="hapax-private",
+            destination_role="Assistant",
+        )
+
+        assert audio_output.calls == [(pcm, {"target": "hapax-private", "media_role": "Assistant"})]

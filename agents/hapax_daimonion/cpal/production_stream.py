@@ -156,11 +156,11 @@ class ProductionStream:
         try:
             audio.write(pcm_data, target=destination_target)
         except TypeError:
-            log.debug(
-                "audio output does not accept target=; falling back to default sink",
+            log.warning(
+                "audio output does not accept target=; dropping routed audio "
+                "instead of falling back to default sink",
                 exc_info=True,
             )
-            audio.write(pcm_data)
 
     def mark_t3_start(self) -> None:
         self._producing = True

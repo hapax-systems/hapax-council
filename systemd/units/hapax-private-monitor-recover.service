@@ -1,0 +1,25 @@
+[Unit]
+Description=Hapax private monitor exact-target witness refresh
+Documentation=file:///home/hapax/projects/hapax-council/docs/runbooks/audio-topology.md
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-private-monitor-recover --repo-root /home/hapax/projects/hapax-council --install
+SuccessExitStatus=2
+TimeoutStartSec=20s
+MemoryMax=128M
+CPUQuota=10%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-private-monitor-recover
+
+[Install]
+WantedBy=default.target
