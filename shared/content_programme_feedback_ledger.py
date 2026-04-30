@@ -361,6 +361,7 @@ class ContentProgrammeFeedbackEvent(FeedbackLedgerModel):
     witnessed_capability_outcomes: tuple[CapabilityOutcomeWitness, ...] = Field(
         default_factory=tuple
     )
+    nested_programme_outcome_refs: tuple[str, ...] = Field(default_factory=tuple)
     posterior_updates: tuple[PosteriorUpdate, ...] = Field(default_factory=tuple)
     exploration: ExplorationSignal
     separation_policy: SeparationPolicy = Field(default_factory=SeparationPolicy)
@@ -460,6 +461,8 @@ def build_feedback_event_from_run_envelope(
 ) -> ContentProgrammeFeedbackEvent:
     """Build the append-only feedback event for an actual programme run envelope."""
 
+    from shared.content_programme_run_store import nested_outcome_refs_for_feedback
+
     state = programme_state_from_run_envelope(run)
     gate_outcomes = _gate_outcomes_from_run(run, state)
     grounding_outputs = _grounding_outputs_from_run(run, state)
@@ -498,6 +501,7 @@ def build_feedback_event_from_run_envelope(
         revenue_proxies=effective_revenue,
         safety_metrics=safety_metrics,
         witnessed_capability_outcomes=witnesses,
+        nested_programme_outcome_refs=nested_outcome_refs_for_feedback(run),
         posterior_updates=_posterior_updates_from_run(
             run,
             state,

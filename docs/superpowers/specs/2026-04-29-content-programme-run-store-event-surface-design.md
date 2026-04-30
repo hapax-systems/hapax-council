@@ -66,6 +66,7 @@ Required fields:
 | `corrections` | Correction refs. |
 | `scores` | Format grounding evaluator refs. |
 | `conversion_candidates` | Archive, chapter, cuepoint, Shorts, artifact, support, grant, or monetization candidates. |
+| `nested_outcomes` | Stage-level outcome refs for observation, claim/gate, artifact, public event, conversion, refusal, and correction. |
 | `command_execution` | Selected, commanded, executed, and witnessed outcome split. |
 | `witnessed_outcomes` | Witnessed outcomes visible at top level for feedback and health consumers. |
 | `adapter_exposure` | Stable adapter-facing state refs. |
@@ -191,6 +192,13 @@ Only witnessed outcomes with `witness_state = witness_verified`, evidence
 envelope refs, and capability outcome refs may update grounding, opportunity,
 or capability-success posteriors. Inferred context, command acceptance, legacy
 public events, and engagement metrics do not satisfy witnesses.
+
+Programme runs also expose `nested_outcomes[]` so consumers can preserve the
+stage that produced each outcome. A run must carry observation, claim/gate,
+artifact, public-event, conversion, refusal, and correction outcome slots. A
+conversion outcome can be marked successful only when it cites an accepted
+public-event ref; refusal and correction outcomes may be successful learning
+events but must keep `validates_refused_claim=false`.
 
 ## Public Conversion Path
 
@@ -433,6 +441,134 @@ manual calendar.
       "owned_cleared_av_ref": null,
       "monetization_readiness_ref": null,
       "unavailable_reasons": []
+    }
+  ],
+  "nested_outcomes": [
+    {
+      "outcome_id": "nested:run_public_archive_evidence_audit_20260429:observation",
+      "kind": "observation",
+      "state": "verified",
+      "parent_outcome_refs": [],
+      "capability_outcome_refs": ["coe:evidence_audit_a"],
+      "evidence_envelope_refs": ["ee:evidence_audit_a"],
+      "witness_refs": ["witness:archive_sidecar_hash"],
+      "boundary_event_refs": ["pbe_evidence_audit_a_001"],
+      "public_event_refs": [],
+      "conversion_candidate_refs": [],
+      "refusal_or_correction_refs": [],
+      "blocked_reasons": [],
+      "learning_update_allowed": true,
+      "claim_posterior_update_allowed": false,
+      "public_conversion_success": false,
+      "validates_refused_claim": false
+    },
+    {
+      "outcome_id": "nested:run_public_archive_evidence_audit_20260429:claim-gate",
+      "kind": "claim_gate",
+      "state": "accepted",
+      "parent_outcome_refs": ["nested:run_public_archive_evidence_audit_20260429:observation"],
+      "capability_outcome_refs": ["coe:evidence_audit_a"],
+      "evidence_envelope_refs": ["ee:evidence_audit_a"],
+      "witness_refs": [],
+      "boundary_event_refs": ["pbe_evidence_audit_a_001"],
+      "public_event_refs": [],
+      "conversion_candidate_refs": [],
+      "refusal_or_correction_refs": [],
+      "blocked_reasons": [],
+      "learning_update_allowed": true,
+      "claim_posterior_update_allowed": true,
+      "public_conversion_success": false,
+      "validates_refused_claim": false
+    },
+    {
+      "outcome_id": "nested:run_public_archive_evidence_audit_20260429:artifact",
+      "kind": "artifact",
+      "state": "emitted",
+      "parent_outcome_refs": ["nested:run_public_archive_evidence_audit_20260429:claim-gate"],
+      "capability_outcome_refs": [],
+      "evidence_envelope_refs": ["ee:evidence_audit_a"],
+      "witness_refs": [],
+      "boundary_event_refs": ["pbe_evidence_audit_a_001"],
+      "public_event_refs": ["rvpe:evidence_audit_a"],
+      "conversion_candidate_refs": ["conversion:evidence_audit_archive"],
+      "refusal_or_correction_refs": [],
+      "blocked_reasons": [],
+      "learning_update_allowed": true,
+      "claim_posterior_update_allowed": false,
+      "public_conversion_success": false,
+      "validates_refused_claim": false
+    },
+    {
+      "outcome_id": "nested:run_public_archive_evidence_audit_20260429:public-event",
+      "kind": "public_event",
+      "state": "accepted",
+      "parent_outcome_refs": ["nested:run_public_archive_evidence_audit_20260429:artifact"],
+      "capability_outcome_refs": [],
+      "evidence_envelope_refs": ["ee:evidence_audit_a"],
+      "witness_refs": [],
+      "boundary_event_refs": ["pbe_evidence_audit_a_001"],
+      "public_event_refs": ["rvpe:evidence_audit_a"],
+      "conversion_candidate_refs": [],
+      "refusal_or_correction_refs": [],
+      "blocked_reasons": [],
+      "learning_update_allowed": true,
+      "claim_posterior_update_allowed": false,
+      "public_conversion_success": false,
+      "validates_refused_claim": false
+    },
+    {
+      "outcome_id": "nested:run_public_archive_evidence_audit_20260429:conversion",
+      "kind": "conversion",
+      "state": "linked",
+      "parent_outcome_refs": ["nested:run_public_archive_evidence_audit_20260429:public-event"],
+      "capability_outcome_refs": [],
+      "evidence_envelope_refs": ["ee:evidence_audit_a"],
+      "witness_refs": [],
+      "boundary_event_refs": [],
+      "public_event_refs": ["rvpe:evidence_audit_a"],
+      "conversion_candidate_refs": ["conversion:evidence_audit_archive"],
+      "refusal_or_correction_refs": [],
+      "blocked_reasons": [],
+      "learning_update_allowed": true,
+      "claim_posterior_update_allowed": false,
+      "public_conversion_success": true,
+      "validates_refused_claim": false
+    },
+    {
+      "outcome_id": "nested:run_public_archive_evidence_audit_20260429:refusal",
+      "kind": "refusal",
+      "state": "not_applicable",
+      "parent_outcome_refs": ["nested:run_public_archive_evidence_audit_20260429:claim-gate"],
+      "capability_outcome_refs": [],
+      "evidence_envelope_refs": [],
+      "witness_refs": [],
+      "boundary_event_refs": [],
+      "public_event_refs": [],
+      "conversion_candidate_refs": [],
+      "refusal_or_correction_refs": [],
+      "blocked_reasons": [],
+      "learning_update_allowed": false,
+      "claim_posterior_update_allowed": false,
+      "public_conversion_success": false,
+      "validates_refused_claim": false
+    },
+    {
+      "outcome_id": "nested:run_public_archive_evidence_audit_20260429:correction",
+      "kind": "correction",
+      "state": "not_applicable",
+      "parent_outcome_refs": ["nested:run_public_archive_evidence_audit_20260429:claim-gate"],
+      "capability_outcome_refs": [],
+      "evidence_envelope_refs": [],
+      "witness_refs": [],
+      "boundary_event_refs": [],
+      "public_event_refs": [],
+      "conversion_candidate_refs": [],
+      "refusal_or_correction_refs": [],
+      "blocked_reasons": [],
+      "learning_update_allowed": false,
+      "claim_posterior_update_allowed": false,
+      "public_conversion_success": false,
+      "validates_refused_claim": false
     }
   ],
   "command_execution": {

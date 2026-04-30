@@ -42,6 +42,8 @@ from shared.content_programme_feedback_ledger import (
     posterior_update_is_evidence_bound,
 )
 from shared.content_programme_run_store import (
+    ContentProgrammeRunEnvelope,
+    NestedProgrammeOutcome,
     append_run_store_event,
     build_fixture_envelope,
     command_execution_allows_posterior_update,
@@ -255,6 +257,8 @@ command_execution_allows_posterior_update
 witnessed_outcome_allows_posterior_update
 public_conversion_is_allowed
 build_fixture_envelope
+NestedProgrammeOutcome._validate_nested_outcome_semantics
+ContentProgrammeRunEnvelope._validate_nested_outcome_graph
 
 # Content programme feedback-ledger helpers are the deterministic public API for
 # downstream Bayesian posterior, scheduler, metrics, and conversion consumers.
