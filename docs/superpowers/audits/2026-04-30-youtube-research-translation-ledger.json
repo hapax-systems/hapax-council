@@ -1,0 +1,907 @@
+{
+  "schema_version": 1,
+  "ledger_id": "youtube_research_translation_ledger:2026-04-30",
+  "generated_at": "2026-04-30T08:54:22Z",
+  "source_refs": [
+    "/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/active/youtube-research-translation-ledger.md",
+    "/home/hapax/Documents/Personal/20-projects/hapax-cc-tasks/closed/youtube-captions-cuepoints-sections-shorts-reconcile.md",
+    "/home/hapax/Documents/Personal/20-projects/hapax-research/audits/2026-04-29-youtube-surface-reconcile-ledger.md",
+    "/home/hapax/Documents/Personal/20-projects/hapax-research/specs/2026-04-28-livestream-research-vehicle-suitcase-parent-spec.md"
+  ],
+  "authority": {
+    "public_event_contract": "schemas/research-vehicle-public-event.schema.json",
+    "egress_state_contract": "shared/livestream_egress_state.py",
+    "substrate_contract": "schemas/livestream-content-substrate.schema.json",
+    "closed_reconcile_ledger": "/home/hapax/Documents/Personal/20-projects/hapax-research/audits/2026-04-29-youtube-surface-reconcile-ledger.md"
+  },
+  "global_policy": {
+    "default_public_claim_allowed": false,
+    "default_monetization_claim_allowed": false,
+    "metadata_may_infer_live_state": false,
+    "most_restrictive_policy_wins": true,
+    "blocked_reason_codes": [
+      "missing_public_event",
+      "egress_blocked",
+      "substrate_unavailable",
+      "rights_blocked",
+      "privacy_blocked",
+      "provenance_missing",
+      "quota_blocked",
+      "source_stale",
+      "suitability_unreviewed",
+      "producer_absent",
+      "live_smoke_missing",
+      "operator_review_required"
+    ]
+  },
+  "official_sources": [
+    {
+      "source_id": "youtube_data_api:quota_calculator",
+      "url": "https://developers.google.com/youtube/v3/determine_quota_cost",
+      "observed_at": "2026-04-30T08:54:22Z",
+      "key_facts": [
+        "Default project quota is 10000 units per day and resets at midnight Pacific Time.",
+        "Every API request costs at least one quota unit, including invalid requests.",
+        "The current quota table lists captions.insert at 400 units, channelSections.insert at 50 units, videos.insert at 100 units, and videos.update at 50 units."
+      ]
+    },
+    {
+      "source_id": "youtube_data_api:captions_insert",
+      "url": "https://developers.google.com/youtube/v3/docs/captions/insert",
+      "observed_at": "2026-04-30T08:54:22Z",
+      "key_facts": [
+        "captions.insert uploads a caption track and has a quota impact of 400 units.",
+        "The required OAuth scope is youtube.force-ssl or youtubepartner."
+      ]
+    },
+    {
+      "source_id": "youtube_data_api:channel_sections_insert",
+      "url": "https://developers.google.com/youtube/v3/docs/channelSections/insert",
+      "observed_at": "2026-04-30T08:54:22Z",
+      "key_facts": [
+        "A channel can create a maximum of 10 shelves.",
+        "channelSections.insert has a quota impact of 50 units."
+      ]
+    },
+    {
+      "source_id": "youtube_data_api:videos_insert",
+      "url": "https://developers.google.com/youtube/v3/docs/videos/insert",
+      "observed_at": "2026-04-30T08:54:22Z",
+      "key_facts": [
+        "The current quota table lists videos.insert at 100 units.",
+        "Older local Shorts notes that assumed 1600 units are historical context, not current authority."
+      ]
+    },
+    {
+      "source_id": "youtube_live_api:live_broadcasts_cuepoint",
+      "url": "https://developers.google.com/youtube/v3/live/docs/liveBroadcasts/cuepoint",
+      "observed_at": "2026-04-30T08:54:22Z",
+      "key_facts": [
+        "liveBroadcasts.cuepoint inserts a cuepoint into a live YouTube broadcast.",
+        "The target broadcast must be actively streaming.",
+        "The request body cueType field must be cueTypeAd."
+      ]
+    },
+    {
+      "source_id": "youtube_help:shorts_upload",
+      "url": "https://support.google.com/youtube/answer/12779649",
+      "observed_at": "2026-04-30T08:54:22Z",
+      "key_facts": [
+        "A Short uploaded from a computer can be up to 3 minutes.",
+        "The file must use a square or vertical aspect ratio."
+      ]
+    },
+    {
+      "source_id": "youtube_help:advertiser_friendly_guidelines",
+      "url": "https://support.google.com/youtube/answer/6162278",
+      "observed_at": "2026-04-30T08:54:22Z",
+      "key_facts": [
+        "Context can affect advertiser suitability, but it does not remove policy risk.",
+        "Graphic, shocking, harmful, or unreliable content requires review before monetization claims."
+      ]
+    }
+  ],
+  "surface_rows": [
+    {
+      "surface_id": "youtube_live_metadata",
+      "display_name": "YouTube live title and description",
+      "publication_surface": true,
+      "current_status": "dry_run",
+      "public_event_inputs": [
+        "broadcast.boundary",
+        "programme.boundary",
+        "chronicle.high_salience",
+        "metadata.update"
+      ],
+      "content_substrate_refs": [
+        "youtube_metadata",
+        "hls_archive",
+        "broadcast_provenance_manifest"
+      ],
+      "existing_task_anchors": [
+        "youtube-research-translation-ledger",
+        "youtube-packaging-claim-policy",
+        "metadata-public-claim-gate",
+        "youtube-content-programming-packaging-compiler"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "ResearchVehiclePublicEvent",
+          "LivestreamEgressState.public_claim_allowed",
+          "ContentSubstrate.public_claim_permissions",
+          "rights_provenance_token",
+          "privacy_class_public_safe",
+          "quota_budget",
+          "advertiser_suitability_review"
+        ],
+        "freshness_refs": [
+          "public_event.occurred_at",
+          "egress_state.evidence",
+          "substrate.health_signal"
+        ],
+        "public_blockers": [
+          "missing_public_event",
+          "egress_blocked",
+          "substrate_unavailable",
+          "rights_blocked",
+          "privacy_blocked",
+          "provenance_missing",
+          "quota_blocked",
+          "suitability_unreviewed"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "private_or_dry_run_status",
+          "blocked_or_unavailable_surface_status",
+          "evidence_backed_programme_boundary",
+          "evidence_backed_archive_chapter"
+        ],
+        "forbidden_claims": [
+          "public_live_captions_without_caption_stream",
+          "programme_boundary_live_cuepoints_without_live_smoke",
+          "archive_replay_without_archive_public_url",
+          "dynamic_channel_sections_without_section_manager",
+          "shorts_extraction_or_upload_without_pipeline",
+          "cross_surface_fanout_without_public_event_adapter",
+          "monetizable_without_monetization_readiness"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": true
+      },
+      "quota_policy": {
+        "endpoint": "videos.update",
+        "units_per_call": 50,
+        "official_source_id": "youtube_data_api:quota_calculator",
+        "local_budget_ref": "config/youtube-quota.yaml",
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "requires_review",
+        "requires_review_reason": "Metadata is a public packaging surface and must not overclaim live, archive, rights, suitability, or monetization state."
+      },
+      "fallback": {
+        "mode": "dry_run",
+        "reason": "Write dry-run metadata or blocked-language copy until all public-event, egress, substrate, quota, and suitability evidence is fresh."
+      },
+      "notes": "This row is the translation surface that prevents YouTube copy from becoming a second truth model."
+    },
+    {
+      "surface_id": "youtube_live_captions",
+      "display_name": "YouTube live captions",
+      "publication_surface": true,
+      "current_status": "unavailable",
+      "public_event_inputs": [
+        "caption.segment"
+      ],
+      "content_substrate_refs": [
+        "caption_in_band"
+      ],
+      "existing_task_anchors": [
+        "ytb-009-production-wire",
+        "caption-substrate-adapter"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "ResearchVehiclePublicEvent",
+          "LivestreamEgressState.public_claim_allowed",
+          "ContentSubstrate.public_claim_permissions",
+          "rights_provenance_token",
+          "privacy_class_public_safe",
+          "caption_stream_freshness",
+          "av_offset_observation"
+        ],
+        "freshness_refs": [
+          "/dev/shm/hapax-captions/live.jsonl",
+          "caption_substrate.health_signal"
+        ],
+        "public_blockers": [
+          "producer_absent",
+          "source_stale",
+          "privacy_blocked",
+          "provenance_missing",
+          "live_smoke_missing"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "captions_unavailable",
+          "captions_dry_run"
+        ],
+        "forbidden_claims": [
+          "public_live_captions",
+          "accurate_caption_timing",
+          "caption_archive_continuity"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": false
+      },
+      "quota_policy": {
+        "endpoint": "captions.insert",
+        "units_per_call": 400,
+        "official_source_id": "youtube_data_api:captions_insert",
+        "local_budget_ref": "shared/youtube_rate_limiter.py",
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "requires_review",
+        "requires_review_reason": "Caption text can carry private speech, unsupported claims, or advertiser-sensitive content."
+      },
+      "fallback": {
+        "mode": "dry_run",
+        "reason": "No production caption producer or in-band path is currently evidenced."
+      },
+      "notes": "Closed reconcile found reader/writer/routing tests, but no production get_caption_bridge callsite and no live caption JSONL evidence."
+    },
+    {
+      "surface_id": "youtube_live_cuepoints",
+      "display_name": "YouTube live cuepoints",
+      "publication_surface": true,
+      "current_status": "legacy_live_unverified",
+      "public_event_inputs": [
+        "cuepoint.candidate",
+        "programme.boundary"
+      ],
+      "content_substrate_refs": [
+        "programme_cuepoints"
+      ],
+      "existing_task_anchors": [
+        "ytb-004-programme-boundary-cuepoints",
+        "cuepoint-substrate-adapter"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "ResearchVehiclePublicEvent",
+          "LivestreamEgressState.public_claim_allowed",
+          "ContentSubstrate.public_claim_permissions",
+          "rights_provenance_token",
+          "privacy_class_public_safe",
+          "youtube_broadcast_actively_streaming",
+          "operator_supervised_live_player_smoke"
+        ],
+        "freshness_refs": [
+          "/dev/shm/hapax-broadcast/events.jsonl",
+          "live_cuepoint_cursor",
+          "youtube_live_player_smoke"
+        ],
+        "public_blockers": [
+          "producer_absent",
+          "live_smoke_missing",
+          "egress_blocked",
+          "quota_blocked",
+          "source_stale"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "legacy_broadcast_rotation_cuepoint_possible",
+          "vod_chapter_fallback_available"
+        ],
+        "forbidden_claims": [
+          "programme_boundary_live_cuepoints",
+          "viewer_visible_cuepoints",
+          "cuepoint_ad_break_effect"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": true
+      },
+      "quota_policy": {
+        "endpoint": "liveBroadcasts.cuepoint",
+        "units_per_call": null,
+        "official_source_id": "youtube_live_api:live_broadcasts_cuepoint",
+        "local_budget_ref": "shared/youtube_rate_limiter.py",
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "requires_review",
+        "requires_review_reason": "Cuepoints may affect public viewing and ad breaks, so smoke and policy review are required."
+      },
+      "fallback": {
+        "mode": "chapter_only",
+        "reason": "VOD chapter fallback is allowed when live cuepoints are blocked, dry-run, quota-blocked, or not smoke-tested."
+      },
+      "notes": "Official live cuepoint docs require an actively streaming broadcast and cueTypeAd; current quota table does not expose a cuepoint row."
+    },
+    {
+      "surface_id": "youtube_vod_chapters",
+      "display_name": "YouTube VOD chapters",
+      "publication_surface": true,
+      "current_status": "wired_private",
+      "public_event_inputs": [
+        "chapter.marker",
+        "programme.boundary",
+        "archive.segment"
+      ],
+      "content_substrate_refs": [
+        "programme_cuepoints",
+        "hls_archive"
+      ],
+      "existing_task_anchors": [
+        "youtube-research-translation-ledger",
+        "ytb-004-programme-boundary-cuepoints",
+        "archive-replay-public-event-adapter"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "ResearchVehiclePublicEvent",
+          "LivestreamEgressState.public_claim_allowed",
+          "ContentSubstrate.public_claim_permissions",
+          "rights_provenance_token",
+          "privacy_class_public_safe",
+          "archive_segment_ref",
+          "chapter_timecode_ref"
+        ],
+        "freshness_refs": [
+          "archive.segment",
+          "metadata_composer_chapter_source"
+        ],
+        "public_blockers": [
+          "missing_public_event",
+          "archive_unavailable",
+          "source_stale",
+          "privacy_blocked",
+          "provenance_missing"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "vod_chapter_generated_from_archive",
+          "programme_boundary_chapter"
+        ],
+        "forbidden_claims": [
+          "live_cuepoint_sent",
+          "viewer_visible_live_marker",
+          "archive_continuity_without_archive_ref"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": false
+      },
+      "quota_policy": {
+        "endpoint": "videos.update",
+        "units_per_call": 50,
+        "official_source_id": "youtube_data_api:quota_calculator",
+        "local_budget_ref": "config/youtube-quota.yaml",
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "requires_review",
+        "requires_review_reason": "Chapter labels are public metadata and must not overclaim programme or archive truth."
+      },
+      "fallback": {
+        "mode": "dry_run",
+        "reason": "Keep generated chapters private/dry-run until archive and public-event refs are present."
+      },
+      "notes": "VOD chapters are distinct from live cuepoints and must not imply a live cuepoint API call."
+    },
+    {
+      "surface_id": "youtube_channel_sections",
+      "display_name": "YouTube channel sections",
+      "publication_surface": true,
+      "current_status": "dormant",
+      "public_event_inputs": [
+        "channel_section.candidate",
+        "publication.artifact"
+      ],
+      "content_substrate_refs": [
+        "youtube_channel_sections"
+      ],
+      "existing_task_anchors": [
+        "ytb-011-channel-sections-manager",
+        "youtube-channel-trailer-public-event-reconcile"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "ResearchVehiclePublicEvent",
+          "LivestreamEgressState.public_claim_allowed",
+          "ContentSubstrate.public_claim_permissions",
+          "rights_provenance_token",
+          "privacy_class_public_safe",
+          "section_count_budget",
+          "dry_run_or_live_section_evidence"
+        ],
+        "freshness_refs": [
+          "channel_section.candidate",
+          "channel_section_manager_state"
+        ],
+        "public_blockers": [
+          "producer_absent",
+          "quota_blocked",
+          "operator_review_required",
+          "provenance_missing"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "channel_sections_unavailable",
+          "manual_channel_layout"
+        ],
+        "forbidden_claims": [
+          "dynamic_channel_sections",
+          "research_playlist_section_live",
+          "shorts_section_auto_curated"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": true
+      },
+      "quota_policy": {
+        "endpoint": "channelSections.insert",
+        "units_per_call": 50,
+        "official_source_id": "youtube_data_api:channel_sections_insert",
+        "local_budget_ref": "shared/youtube_rate_limiter.py",
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "requires_review",
+        "requires_review_reason": "Channel layout changes are durable public presentation and require manual review."
+      },
+      "fallback": {
+        "mode": "operator_review",
+        "reason": "No channel section manager implementation is currently evidenced."
+      },
+      "notes": "Official docs cap channels at 10 shelves; this row prevents unbounded section automation claims."
+    },
+    {
+      "surface_id": "youtube_shorts",
+      "display_name": "YouTube Shorts candidates and uploads",
+      "publication_surface": true,
+      "current_status": "unavailable",
+      "public_event_inputs": [
+        "shorts.candidate",
+        "shorts.upload",
+        "archive.segment"
+      ],
+      "content_substrate_refs": [
+        "shorts_candidates",
+        "hls_archive"
+      ],
+      "existing_task_anchors": [
+        "ytb-012-shorts-extraction-pipeline",
+        "shorts-public-event-adapter"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "ResearchVehiclePublicEvent",
+          "LivestreamEgressState.public_claim_allowed",
+          "ContentSubstrate.public_claim_permissions",
+          "rights_provenance_token",
+          "privacy_class_public_safe",
+          "archive_segment_ref",
+          "shorts_render_artifact",
+          "quota_budget",
+          "advertiser_suitability_review"
+        ],
+        "freshness_refs": [
+          "shorts.candidate",
+          "archive.segment",
+          "upload_result"
+        ],
+        "public_blockers": [
+          "producer_absent",
+          "archive_unavailable",
+          "rights_blocked",
+          "quota_blocked",
+          "suitability_unreviewed",
+          "operator_review_required"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "shorts_unavailable",
+          "shorts_candidate_dry_run"
+        ],
+        "forbidden_claims": [
+          "shorts_extraction",
+          "shorts_upload",
+          "shorts_public_url",
+          "shorts_monetizable"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": true
+      },
+      "quota_policy": {
+        "endpoint": "videos.insert",
+        "units_per_call": 100,
+        "official_source_id": "youtube_data_api:videos_insert",
+        "local_budget_ref": "shared/youtube_rate_limiter.py",
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "requires_review",
+        "requires_review_reason": "Shorts upload uses public media and can carry rights, Content ID, privacy, and advertiser suitability risks."
+      },
+      "fallback": {
+        "mode": "dry_run",
+        "reason": "No Shorts extraction/render/upload pipeline is currently evidenced."
+      },
+      "notes": "Current official docs support 100 units for videos.insert and up to 3 minute square/vertical Shorts; older 1600-unit local cadence must be revised before implementation."
+    },
+    {
+      "surface_id": "youtube_archive_links",
+      "display_name": "YouTube archive and replay links",
+      "publication_surface": true,
+      "current_status": "dry_run",
+      "public_event_inputs": [
+        "archive.segment",
+        "publication.artifact"
+      ],
+      "content_substrate_refs": [
+        "hls_archive"
+      ],
+      "existing_task_anchors": [
+        "archive-replay-public-event-adapter",
+        "public-event-to-artifact-release-state-machine",
+        "youtube-research-translation-ledger"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "ResearchVehiclePublicEvent",
+          "LivestreamEgressState.public_claim_allowed",
+          "ContentSubstrate.public_claim_permissions",
+          "rights_provenance_token",
+          "privacy_class_public_safe",
+          "archive_public_url",
+          "artifact_release_state"
+        ],
+        "freshness_refs": [
+          "archive.segment",
+          "publication.artifact"
+        ],
+        "public_blockers": [
+          "archive_unavailable",
+          "missing_surface_reference",
+          "privacy_blocked",
+          "provenance_missing",
+          "operator_review_required"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "archive_blocked",
+          "archive_private",
+          "archive_public_url_when_evidenced"
+        ],
+        "forbidden_claims": [
+          "archive_replay_available_without_url",
+          "archive_continuity_without_segment_ref",
+          "released_artifact_without_state_machine"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": false
+      },
+      "quota_policy": {
+        "endpoint": "videos.update",
+        "units_per_call": 50,
+        "official_source_id": "youtube_data_api:quota_calculator",
+        "local_budget_ref": "config/youtube-quota.yaml",
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "requires_review",
+        "requires_review_reason": "Archive links are public replay claims and must preserve privacy, rights, and artifact release state."
+      },
+      "fallback": {
+        "mode": "hold_last_safe",
+        "reason": "Keep prior safe metadata or dry-run copy when archive public URL or release state is missing."
+      },
+      "notes": "This row exists because metadata must not imply replay/archive availability when archive producers are absent or private."
+    },
+    {
+      "surface_id": "youtube_cross_surface_fanout",
+      "display_name": "YouTube-to-cross-surface fanout references",
+      "publication_surface": true,
+      "current_status": "dry_run",
+      "public_event_inputs": [
+        "fanout.decision",
+        "publication.artifact",
+        "omg.statuslog",
+        "omg.weblog",
+        "arena_block.candidate"
+      ],
+      "content_substrate_refs": [
+        "youtube_metadata",
+        "publication_rss",
+        "arena_blocks",
+        "omg_statuslog",
+        "omg_weblog"
+      ],
+      "existing_task_anchors": [
+        "cross-surface-event-contract",
+        "cross-surface-public-legibility-pack",
+        "youtube-research-translation-ledger"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "ResearchVehiclePublicEvent",
+          "LivestreamEgressState.public_claim_allowed",
+          "ContentSubstrate.public_claim_permissions",
+          "rights_provenance_token",
+          "privacy_class_public_safe",
+          "fanout_decision_ref",
+          "surface_allowlist"
+        ],
+        "freshness_refs": [
+          "fanout.decision",
+          "publication.artifact"
+        ],
+        "public_blockers": [
+          "missing_public_event",
+          "missing_surface_reference",
+          "privacy_blocked",
+          "provenance_missing",
+          "operator_review_required"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "fanout_dry_run",
+          "fanout_blocked",
+          "fanout_published_when_event_backed"
+        ],
+        "forbidden_claims": [
+          "arena_block_created_without_adapter",
+          "statuslog_posted_without_public_event",
+          "weblog_posted_without_public_event",
+          "social_crosspost_without_fanout_decision"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": true
+      },
+      "quota_policy": {
+        "endpoint": null,
+        "units_per_call": null,
+        "official_source_id": null,
+        "local_budget_ref": null,
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "requires_review",
+        "requires_review_reason": "Cross-surface copy can amplify unsupported public claims unless fanout policy is explicit."
+      },
+      "fallback": {
+        "mode": "dry_run",
+        "reason": "Keep cross-surface references private until each aperture consumes the same public-event contract."
+      },
+      "notes": "YouTube metadata may link or reference other public apertures only when those surfaces have event-backed publication evidence."
+    },
+    {
+      "surface_id": "youtube_quota_posture",
+      "display_name": "YouTube quota posture",
+      "publication_surface": false,
+      "current_status": "quota_only",
+      "public_event_inputs": [
+        "monetization.review",
+        "fanout.decision"
+      ],
+      "content_substrate_refs": [
+        "youtube_metadata",
+        "shorts_candidates",
+        "youtube_channel_sections"
+      ],
+      "existing_task_anchors": [
+        "ytb-OG3-quota-extension-filing",
+        "youtube-research-translation-ledger"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "quota_cost_source",
+          "local_budget_ref",
+          "remaining_budget_state",
+          "endpoint_owner"
+        ],
+        "freshness_refs": [
+          "yt-rate-limit-state",
+          "official_source_observed_at"
+        ],
+        "public_blockers": [
+          "quota_blocked",
+          "operator_review_required"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "quota_dry_run",
+          "quota_blocked",
+          "quota_budget_named"
+        ],
+        "forbidden_claims": [
+          "live_write_available_without_budget",
+          "shorts_cadence_from_stale_cost",
+          "quota_extension_filed"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": true
+      },
+      "quota_policy": {
+        "endpoint": null,
+        "units_per_call": null,
+        "official_source_id": "youtube_data_api:quota_calculator",
+        "local_budget_ref": "shared/youtube_rate_limiter.py",
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "not_applicable",
+        "requires_review_reason": null
+      },
+      "fallback": {
+        "mode": "deny",
+        "reason": "Any ambiguous endpoint cost, stale budget, or missing remaining-budget state blocks live writes."
+      },
+      "notes": "Quota posture is diagnostic evidence for public surfaces; it is not itself permission to publish."
+    },
+    {
+      "surface_id": "youtube_advertiser_suitability",
+      "display_name": "YouTube advertiser-suitability posture",
+      "publication_surface": false,
+      "current_status": "policy_only",
+      "public_event_inputs": [
+        "monetization.review",
+        "metadata.update",
+        "shorts.upload"
+      ],
+      "content_substrate_refs": [
+        "youtube_metadata",
+        "shorts_candidates",
+        "hls_archive"
+      ],
+      "existing_task_anchors": [
+        "monetization-readiness-ledger",
+        "youtube-packaging-claim-policy",
+        "youtube-research-translation-ledger"
+      ],
+      "evidence_requirements": {
+        "required_refs": [
+          "ResearchVehiclePublicEvent",
+          "rights_provenance_token",
+          "privacy_class_public_safe",
+          "monetization_readiness_state",
+          "advertiser_suitability_review"
+        ],
+        "freshness_refs": [
+          "monetization.review",
+          "official_source_observed_at"
+        ],
+        "public_blockers": [
+          "suitability_unreviewed",
+          "rights_blocked",
+          "privacy_blocked",
+          "operator_review_required"
+        ]
+      },
+      "claim_policy": {
+        "allowed_claims": [
+          "monetization_unreviewed",
+          "not_advertiser_suitable",
+          "limited_ads_risk"
+        ],
+        "forbidden_claims": [
+          "safe_to_monetize",
+          "advertiser_friendly",
+          "revenue_ready"
+        ],
+        "default_public_claim_allowed": false,
+        "default_monetization_claim_allowed": false,
+        "requires_human_review": true
+      },
+      "quota_policy": {
+        "endpoint": null,
+        "units_per_call": null,
+        "official_source_id": null,
+        "local_budget_ref": null,
+        "quota_write_allowed": false
+      },
+      "suitability_policy": {
+        "posture": "requires_review",
+        "requires_review_reason": "YouTube policy considers context, but context does not make monetization safe by default."
+      },
+      "fallback": {
+        "mode": "operator_review",
+        "reason": "Monetization claims require a separate readiness ledger and human review."
+      },
+      "notes": "This row keeps monetization evidence separate from public event and egress truth."
+    }
+  ],
+  "child_task_splits": [
+    {
+      "task_id": "ytb-009-production-wire",
+      "owner_scope": "Caption producer, production callsite, in-band or upload path, AV-offset evidence, and live/simulated smoke.",
+      "unblocks": [
+        "caption-substrate-adapter",
+        "youtube_live_captions"
+      ],
+      "blocked_until": [
+        "caption producer writes fresh evidence",
+        "privacy and routing policy are enforced"
+      ]
+    },
+    {
+      "task_id": "ytb-004-programme-boundary-cuepoints",
+      "owner_scope": "Programme-boundary event producer and live cuepoint consumer with duplicate suppression and smoke evidence.",
+      "unblocks": [
+        "cuepoint-substrate-adapter",
+        "youtube_live_cuepoints"
+      ],
+      "blocked_until": [
+        "programme boundary events exist",
+        "operator-supervised live-player smoke passes"
+      ]
+    },
+    {
+      "task_id": "ytb-011-channel-sections-manager",
+      "owner_scope": "Channel section API manager, dry-run/live evidence, section count, and quota policy.",
+      "unblocks": [
+        "youtube_channel_sections"
+      ],
+      "blocked_until": [
+        "section manager exists",
+        "operator review authorizes live write"
+      ]
+    },
+    {
+      "task_id": "ytb-012-shorts-extraction-pipeline",
+      "owner_scope": "Shorts extraction, render, candidate event, upload event, quota model update, and suitability gate.",
+      "unblocks": [
+        "shorts-public-event-adapter",
+        "youtube_shorts"
+      ],
+      "blocked_until": [
+        "Shorts pipeline exists",
+        "current videos.insert cost replaces stale local 1600-unit cadence",
+        "rights/provenance/suitability gate passes"
+      ]
+    },
+    {
+      "task_id": "youtube-packaging-claim-policy",
+      "owner_scope": "Allowed and forbidden YouTube packaging claims for titles, descriptions, thumbnails, chapters, captions, Shorts, and sections.",
+      "unblocks": [
+        "youtube-content-programming-packaging-compiler",
+        "cross-surface-public-legibility-pack"
+      ],
+      "blocked_until": [
+        "monetization-readiness-ledger exists",
+        "this translation ledger is merged"
+      ]
+    },
+    {
+      "task_id": "youtube-public-event-adapter",
+      "owner_scope": "Bounded adapter from ResearchVehiclePublicEvent rows into dry-run YouTube metadata candidates.",
+      "unblocks": [
+        "youtube_live_metadata",
+        "youtube_vod_chapters",
+        "youtube_archive_links"
+      ],
+      "blocked_until": [
+        "packaging claim policy exists",
+        "metadata-public-claim-gate is authoritative"
+      ]
+    }
+  ]
+}
