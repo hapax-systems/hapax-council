@@ -33,6 +33,7 @@ export interface AwarenessState {
   studio: Record<string, unknown>;
   cross_account: Record<string, unknown>;
   governance: Record<string, unknown>;
+  mail: Record<string, unknown>;
   content_programmes: Record<string, unknown>;
   hardware_fleet: Record<string, unknown>;
   time_sprint: Record<string, unknown>;

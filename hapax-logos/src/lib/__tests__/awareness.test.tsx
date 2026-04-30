@@ -89,6 +89,7 @@ describe("useAwareness", () => {
           studio: {},
           cross_account: {},
           governance: {},
+          mail: {},
           content_programmes: {},
           hardware_fleet: {},
           time_sprint: {},

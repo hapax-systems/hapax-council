@@ -13,6 +13,7 @@ from agents.operator_awareness.aggregator import (
     collect_daimonion_block,
     collect_fleet_block,
     collect_health_block,
+    collect_mail_block,
     collect_publishing_block,
     collect_refusals_recent,
     collect_sprint_block,
@@ -611,6 +612,79 @@ class TestCollectPublishingBlock:
         assert block.last_publish_at is None
 
 
+# ── collect_mail_block ─────────────────────────────────────────────
+
+
+class TestCollectMailBlock:
+    def test_missing_file_returns_default(self, tmp_path):
+        block = collect_mail_block(tmp_path / "absent.jsonl")
+        assert block.operational_alerts_total == 0
+        assert block.last_operational_alert_at is None
+
+    def test_counts_operational_events_in_seven_day_window(self, tmp_path):
+        path = tmp_path / "operational-events.jsonl"
+        now = time.time()
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "ts": now - 60,
+                            "kind": "tls_expiry",
+                            "source": "letsencrypt",
+                            "message_id": "opaque-gmail-id",
+                            "payload": {"domain": "example.com"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "ts": now - 120,
+                            "kind": "dependabot",
+                            "source": "github",
+                            "message_id": "opaque-gmail-id-2",
+                            "payload": {"repo": "owner/repo"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "ts": now - 8 * 86400,
+                            "kind": "dns",
+                            "source": "porkbun",
+                            "message_id": "aged-out",
+                            "payload": {"domain": "old.example"},
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        block = collect_mail_block(path, now=now)
+        assert block.operational_alerts.tls_expiry == 1
+        assert block.operational_alerts.dependabot == 1
+        assert block.operational_alerts.dns == 0
+        assert block.operational_alerts_total == 2
+        assert block.last_operational_alert_kind == "tls_expiry"
+        dumped = block.model_dump(mode="json")
+        assert "opaque-gmail-id" not in json.dumps(dumped)
+        assert "example.com" not in json.dumps(dumped)
+
+    def test_skips_malformed_and_unknown_kind(self, tmp_path):
+        path = tmp_path / "operational-events.jsonl"
+        now = time.time()
+        path.write_text(
+            "not json\n"
+            + json.dumps({"ts": now, "kind": "unknown"})
+            + "\n"
+            + json.dumps({"ts": now, "kind": "dns"})
+            + "\n",
+            encoding="utf-8",
+        )
+        block = collect_mail_block(path, now=now)
+        assert block.operational_alerts_total == 1
+        assert block.operational_alerts.dns == 1
+
+
 # ── collect_v5_publications_block (R-9 fix) ─────────────────────────
 
 
@@ -742,6 +816,22 @@ class TestAggregatorAllSourcesWired:
         )
         state = agg.collect()
         assert state.publishing_pipeline.inbox_count == 1
+
+    def test_collect_populates_mail_operational_alerts(self, tmp_path):
+        mail_events = tmp_path / "operational-events.jsonl"
+        mail_events.write_text(
+            json.dumps({"ts": time.time(), "kind": "dns", "message_id": "not-surfaced"}) + "\n",
+            encoding="utf-8",
+        )
+        agg = Aggregator(
+            refusals_log_path=tmp_path / "absent1",
+            infra_snapshot_path=tmp_path / "absent2",
+            chronicle_events_path=tmp_path / "absent3",
+            mail_operational_events_path=mail_events,
+        )
+        state = agg.collect()
+        assert state.mail.operational_alerts.dns == 1
+        assert state.mail.operational_alerts_total == 1
 
 
 # ── Source failure metric — new sources ────────────────────────────

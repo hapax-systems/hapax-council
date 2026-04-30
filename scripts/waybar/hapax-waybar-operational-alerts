@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# waybar custom/operational-alerts module — Category-D mail monitor counts.
+#
+# Reads /dev/shm/hapax-awareness/state.json (canonical awareness spine)
+# and surfaces seven-day active operational mail alerts from .mail:
+# TLS expiry, Dependabot, and DNS/domain notices. The mail processor may
+# retain opaque Gmail ids in its private JSONL event log for idempotency;
+# this reader only displays counters and timestamps from the awareness
+# projection.
+#
+# No click handler. No ack / dismiss / clear state. Alerts age out in
+# the awareness aggregator after seven days.
+
+set -uo pipefail
+
+state="${HAPAX_AWARENESS_STATE_PATH:-/dev/shm/hapax-awareness/state.json}"
+ttl="${HAPAX_AWARENESS_TTL_S:-90}"
+
+if [[ ! -f "$state" ]]; then
+    echo '{"text":"ops --","tooltip":"awareness state not yet present","class":"stale"}'
+    exit 0
+fi
+
+mtime=$(stat -c %Y "$state" 2>/dev/null || echo 0)
+now=$(date +%s)
+if (( now - mtime > ttl )); then
+    echo '{"text":"ops stale","tooltip":"awareness state stale","class":"stale"}'
+    exit 0
+fi
+
+read -r total tls dependabot dns last_kind last_at <<<"$(jq -r '
+    .mail as $m |
+    "\($m.operational_alerts_total // 0) \($m.operational_alerts.tls_expiry // 0) \($m.operational_alerts.dependabot // 0) \($m.operational_alerts.dns // 0) \($m.last_operational_alert_kind // "none") \($m.last_operational_alert_at // "null")"
+' "$state" 2>/dev/null || echo "0 0 0 0 none null")"
+
+[[ "$total" =~ ^[0-9]+$ ]] || total=0
+[[ "$tls" =~ ^[0-9]+$ ]] || tls=0
+[[ "$dependabot" =~ ^[0-9]+$ ]] || dependabot=0
+[[ "$dns" =~ ^[0-9]+$ ]] || dns=0
+
+cls=""
+if (( total > 0 )); then
+    cls="degraded"
+fi
+
+text=$(printf 'ops %d' "$total")
+tooltip=$(printf 'operational mail alerts active 7d | tls %d | dependabot %d | dns %d | last %s at %s' \
+    "$tls" "$dependabot" "$dns" "$last_kind" "$last_at")
+
+escape_json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+printf '{"text":"%s","tooltip":"%s","class":"%s"}\n' \
+    "$(escape_json "$text")" "$(escape_json "$tooltip")" "$cls"

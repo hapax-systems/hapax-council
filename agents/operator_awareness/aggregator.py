@@ -9,7 +9,8 @@ on (per the TTL semantics in ``state.py``).
 Wired sources: refusals_recent, health_system, stream, monetization,
 daimonion_voice (stimmung), time_sprint (sprint), hardware_fleet
 (pi-noir per-Pi heartbeats), publishing_pipeline (publish/ inbox +
-draft + published mtime). Remaining default-empty blocks
+draft + published mtime), mail (Category-D operational alert counts).
+Remaining default-empty blocks
 (marketing_outreach, research_dispatches, music_soundcloud,
 cross_account, governance, content_programmes) wait on producer-side
 substrate to land before the helpers can do better than the typed
@@ -28,9 +29,21 @@ from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from prometheus_client import Counter
 
+from agents.mail_monitor.processors.operational import (
+    EVENTS_DIR as MAIL_OPERATIONAL_EVENTS_DIR,
+)
+from agents.mail_monitor.processors.operational import (
+    EVENTS_FILE_NAME as MAIL_OPERATIONAL_EVENTS_FILE_NAME,
+)
+from agents.mail_monitor.processors.operational import (
+    OPERATIONAL_KIND_DEPENDABOT,
+    OPERATIONAL_KIND_DNS,
+    OPERATIONAL_KIND_TLS,
+)
 from agents.operator_awareness.sources.monetization import (
     collect_monetization_block,
 )
@@ -43,6 +56,9 @@ from agents.operator_awareness.state import (
     DaimonionBlock,
     FleetBlock,
     HealthBlock,
+    MailBlock,
+    MailOperationalAlertKind,
+    OperationalAlertsBlock,
     PublishingBlock,
     RefusalEvent,
     SprintBlock,
@@ -115,6 +131,12 @@ DEFAULT_PUBLICATIONS_DIR = Path(
         str(Path.home() / "hapax-state/publications"),
     )
 )
+DEFAULT_MAIL_OPERATIONAL_EVENTS = Path(
+    os.environ.get(
+        "HAPAX_MAIL_OPERATIONAL_EVENTS_PATH",
+        str(MAIL_OPERATIONAL_EVENTS_DIR / MAIL_OPERATIONAL_EVENTS_FILE_NAME),
+    )
+)
 
 # Bounded tail length for the refusals_recent block. Spec: 50 entries.
 # Surfaces (waybar, sidebar, omg.lol fanout) display individuals; we
@@ -131,6 +153,11 @@ FLEET_FRESHNESS_S = 120.0
 
 # Publishing pipeline 24h count window.
 PUBLISH_COUNT_WINDOW_S = 86400.0
+
+# Category-D operational mail awareness age-out. This is the
+# constitutional anti-HITL primitive: old alerts disappear by time, not
+# by operator acknowledgement.
+MAIL_OPERATIONAL_ALERT_WINDOW_S = 7 * 86400.0
 
 
 def collect_refusals_recent(
@@ -536,6 +563,74 @@ def collect_v5_publications_block(
     )
 
 
+def collect_mail_block(
+    events_path: Path = DEFAULT_MAIL_OPERATIONAL_EVENTS,
+    *,
+    now: float | None = None,
+    window_s: float = MAIL_OPERATIONAL_ALERT_WINDOW_S,
+) -> MailBlock:
+    """Aggregate Category-D operational mail events with seven-day age-out.
+
+    The source JSONL row may carry a Gmail message id for processor-level
+    idempotency, but the awareness block deliberately projects only
+    category counters, total count, and the latest category/timestamp.
+    Missing file is pre-rollout / no events, not a source failure.
+    """
+    if not events_path.exists():
+        return MailBlock()
+
+    cutoff = (now if now is not None else time.time()) - window_s
+    counts = {
+        OPERATIONAL_KIND_TLS: 0,
+        OPERATIONAL_KIND_DEPENDABOT: 0,
+        OPERATIONAL_KIND_DNS: 0,
+    }
+    last_ts = 0.0
+    last_kind: MailOperationalAlertKind | None = None
+
+    try:
+        with events_path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                text = raw.strip()
+                if not text:
+                    continue
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                kind = data.get("kind")
+                if kind not in counts:
+                    continue
+                ts = _safe_float(data.get("ts"))
+                if ts < cutoff:
+                    continue
+                counts[kind] += 1
+                if ts >= last_ts:
+                    last_ts = ts
+                    last_kind = cast("MailOperationalAlertKind", kind)
+    except OSError:
+        log.debug("mail operational events read failed at %s", events_path)
+        aggregator_source_failures_total.labels(source="mail").inc()
+        return MailBlock()
+
+    last_at: datetime | None = None
+    if last_ts > 0:
+        last_at = datetime.fromtimestamp(last_ts, tz=UTC)
+
+    return MailBlock(
+        operational_alerts=OperationalAlertsBlock(
+            tls_expiry=counts[OPERATIONAL_KIND_TLS],
+            dependabot=counts[OPERATIONAL_KIND_DEPENDABOT],
+            dns=counts[OPERATIONAL_KIND_DNS],
+        ),
+        operational_alerts_total=sum(counts.values()),
+        last_operational_alert_at=last_at,
+        last_operational_alert_kind=last_kind,
+    )
+
+
 def _count_dir_files(directory: Path) -> int:
     """Count regular files in ``directory``; missing dir → 0."""
     if not directory.exists() or not directory.is_dir():
@@ -591,6 +686,7 @@ class Aggregator:
         pi_noir_dir: Path = DEFAULT_FLEET_DIR,
         publish_dir: Path = DEFAULT_PUBLISH_DIR,
         publications_dir: Path = DEFAULT_PUBLICATIONS_DIR,
+        mail_operational_events_path: Path = DEFAULT_MAIL_OPERATIONAL_EVENTS,
         l12_scene_flag_path: Path = DEFAULT_SCENE_FLAG_PATH,
         egress_resolver: Callable[[], object] | None = None,
         clock=None,
@@ -604,6 +700,7 @@ class Aggregator:
         self._pi_noir_dir = pi_noir_dir
         self._publish_dir = publish_dir
         self._publications_dir = publications_dir
+        self._mail_operational_events_path = mail_operational_events_path
         self._l12_scene_flag_path = l12_scene_flag_path
         self._egress_resolver = egress_resolver
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -611,11 +708,12 @@ class Aggregator:
     def collect(self) -> AwarenessState:
         """Build one AwarenessState by pulling each wired source.
 
-        Wires 8 source helpers: refusals_recent, health_system,
+        Wires source helpers: refusals_recent, health_system,
         stream, monetization, daimonion_voice (stimmung overall
         stance), time_sprint (obsidian sprint tracker),
         hardware_fleet (pi-noir per-Pi heartbeats), publishing
-        (publish/ inbox/draft/published mtime). Remaining sub-blocks
+        (publish/ inbox/draft/published mtime), and mail
+        (Category-D operational alert counts). Remaining sub-blocks
         (marketing_outreach, research_dispatches, music_soundcloud,
         cross_account, governance, content_programmes) fall through
         to default-empty until producer-side substrate ships.
@@ -634,6 +732,7 @@ class Aggregator:
             hardware_fleet=collect_fleet_block(self._pi_noir_dir),
             publishing_pipeline=collect_publishing_block(self._publish_dir),
             v5_publications=collect_v5_publications_block(self._publications_dir),
+            mail=collect_mail_block(self._mail_operational_events_path),
             studio=collect_studio_block(self._l12_scene_flag_path),
         )
 
@@ -642,12 +741,14 @@ __all__ = [
     "DEFAULT_CHRONICLE_EVENTS",
     "DEFAULT_FLEET_DIR",
     "DEFAULT_INFRA_SNAPSHOT",
+    "DEFAULT_MAIL_OPERATIONAL_EVENTS",
     "DEFAULT_PUBLICATIONS_DIR",
     "DEFAULT_PUBLISH_DIR",
     "DEFAULT_REFUSALS_LOG",
     "DEFAULT_SPRINT_PATH",
     "DEFAULT_STIMMUNG_PATH",
     "FLEET_FRESHNESS_S",
+    "MAIL_OPERATIONAL_ALERT_WINDOW_S",
     "PUBLISH_COUNT_WINDOW_S",
     "REFUSALS_TAIL_LIMIT",
     "STREAM_EVENT_WINDOW_S",
@@ -656,6 +757,7 @@ __all__ = [
     "collect_daimonion_block",
     "collect_fleet_block",
     "collect_health_block",
+    "collect_mail_block",
     "collect_publishing_block",
     "collect_v5_publications_block",
     "collect_refusals_recent",
