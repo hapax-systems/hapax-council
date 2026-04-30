@@ -425,3 +425,9 @@ ClaimBearingMediaOutput._validate_output_claim_shape
 SpanClaimGateDecision._validate_fail_closed_decision
 TemporalSpanRegistryFixtureSet._validate_registry_fixture_contract
 TemporalSpanRegistryFixtureSet.sidecars_by_kind
+
+# Application obligation refusal helpers are the public contract for downstream
+# grant/fellowship scout, attestation, and operating-system tasks. This slice
+# lands the fail-closed policy and fixture packet before those call sites.
+evaluate_application_obligation
+load_application_obligation_fixtures
