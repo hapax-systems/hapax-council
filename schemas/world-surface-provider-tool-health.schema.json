@@ -1,0 +1,341 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/world-surface-provider-tool-health.schema.json",
+  "title": "WorldSurfaceProviderToolHealthFixtures",
+  "description": "Provider/model/tool route health fixtures projected into WorldSurfaceHealthRecord rows without granting public claim authority.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "required_route_families",
+    "routes",
+    "fail_closed_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/world-surface-provider-tool-health.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "required_route_families": {
+      "type": "array",
+      "minItems": 7,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/route_family"}
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 7,
+      "items": {"$ref": "#/$defs/route_health"}
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "route_availability_grants_public_claim",
+        "supplied_evidence_counts_as_source_acquisition",
+        "source_acquisition_without_evidence_allowed",
+        "monetization_allowed_from_route_health",
+        "private_route_can_publish_by_default"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "route_availability_grants_public_claim": {"type": "boolean", "const": false},
+        "supplied_evidence_counts_as_source_acquisition": {"type": "boolean", "const": false},
+        "source_acquisition_without_evidence_allowed": {"type": "boolean", "const": false},
+        "monetization_allowed_from_route_health": {"type": "boolean", "const": false},
+        "private_route_can_publish_by_default": {"type": "boolean", "const": false}
+      }
+    }
+  },
+  "$defs": {
+    "route_family": {
+      "type": "string",
+      "enum": [
+        "model_provider",
+        "search_provider",
+        "mcp_tool",
+        "publication_endpoint",
+        "storage_sync",
+        "local_api",
+        "docker_container"
+      ]
+    },
+    "availability_state": {
+      "type": "string",
+      "enum": [
+        "available",
+        "private_only",
+        "stale",
+        "degraded",
+        "blocked",
+        "unavailable",
+        "decommissioned"
+      ]
+    },
+    "health_status": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "degraded",
+        "blocked",
+        "unsafe",
+        "stale",
+        "missing",
+        "unknown",
+        "private_only",
+        "dry_run",
+        "quiet_off_air",
+        "candidate"
+      ]
+    },
+    "supplied_evidence_mode": {
+      "type": "string",
+      "enum": [
+        "not_supplied_evidence",
+        "requires_supplied_evidence",
+        "supplied_evidence_only",
+        "non_acquiring_route"
+      ]
+    },
+    "redaction_privacy_posture": {
+      "type": "string",
+      "enum": ["public_safe", "redaction_required", "private_only", "blocked"]
+    },
+    "freshness_state": {
+      "type": "string",
+      "enum": ["fresh", "stale", "missing", "unknown", "not_applicable"]
+    },
+    "authority_ceiling": {
+      "type": "string",
+      "enum": [
+        "no_claim",
+        "internal_only",
+        "speculative",
+        "evidence_bound",
+        "posterior_bound",
+        "public_gate_required"
+      ]
+    },
+    "public_claim_policy": {
+      "type": "string",
+      "enum": ["no_public_claim", "evidence_bound_only", "public_gate_required"]
+    },
+    "rights_state": {
+      "type": "string",
+      "enum": [
+        "public_clear",
+        "private_only",
+        "aggregate_only",
+        "blocked",
+        "missing",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "public_private_posture": {
+      "type": "string",
+      "enum": ["public_live", "private_only", "dry_run", "archive_only", "disabled", "blocked"]
+    },
+    "fallback_mode": {
+      "type": "string",
+      "enum": [
+        "none",
+        "hide",
+        "no_op_explain",
+        "dry_run_badge",
+        "private_only",
+        "archive_only",
+        "hold_last_safe",
+        "suppress",
+        "degraded_status",
+        "operator_prompt",
+        "kill_switch",
+        "block_public_claim",
+        "correction_required"
+      ]
+    },
+    "kill_switch_status": {
+      "type": "string",
+      "enum": ["clear", "triggered", "unknown", "not_applicable"]
+    },
+    "witness_policy": {
+      "type": "string",
+      "enum": [
+        "witnessed",
+        "inferred",
+        "selected_only",
+        "commanded_only",
+        "fixture_only",
+        "absent",
+        "candidate"
+      ]
+    },
+    "fixture_case": {
+      "type": "string",
+      "enum": [
+        "healthy_witnessed",
+        "degraded_witnessed",
+        "blocked_with_reason",
+        "unsafe_no_leak",
+        "stale",
+        "missing",
+        "unknown",
+        "private_only",
+        "dry_run",
+        "quiet_off_air",
+        "candidate",
+        "inferred",
+        "selected_only",
+        "commanded_only"
+      ]
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "non_empty_string_array": {
+      "allOf": [
+        {"$ref": "#/$defs/string_array"},
+        {"minItems": 1}
+      ]
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["state", "ttl_s", "observed_age_s", "source_ref", "checked_at"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"$ref": "#/$defs/freshness_state"},
+        "ttl_s": {"type": ["integer", "null"], "minimum": 0},
+        "observed_age_s": {"type": ["integer", "null"], "minimum": 0},
+        "source_ref": {"type": ["string", "null"], "minLength": 1},
+        "checked_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "required": ["mode", "reason_code", "operator_visible_reason", "safe_state"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"$ref": "#/$defs/fallback_mode"},
+        "reason_code": {"type": "string", "minLength": 1},
+        "operator_visible_reason": {"type": "string", "minLength": 1},
+        "safe_state": {"type": "string", "minLength": 1}
+      }
+    },
+    "kill_switch_state": {
+      "type": "object",
+      "required": ["state", "evidence_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"$ref": "#/$defs/kill_switch_status"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "route_health": {
+      "type": "object",
+      "required": [
+        "route_id",
+        "display_name",
+        "classification_row_id",
+        "route_family",
+        "provider_registry_id",
+        "provider_kind",
+        "model_id",
+        "tool_id",
+        "route_ref",
+        "availability_state",
+        "status",
+        "source_acquisition_capability",
+        "source_acquisition_evidence_refs",
+        "supplied_evidence_mode",
+        "redaction_privacy_posture",
+        "redaction_evidence_refs",
+        "source_refs",
+        "producer_refs",
+        "consumer_refs",
+        "substrate_refs",
+        "capability_refs",
+        "evidence_envelope_refs",
+        "witness_refs",
+        "grounding_gate_refs",
+        "public_event_refs",
+        "rights_evidence_refs",
+        "privacy_evidence_refs",
+        "freshness",
+        "confidence",
+        "authority_ceiling",
+        "public_claim_policy",
+        "rights_state",
+        "public_private_posture",
+        "blocking_reasons",
+        "warnings",
+        "fallback",
+        "kill_switch_state",
+        "owner",
+        "next_probe_due_at",
+        "witness_policy",
+        "fixture_case"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "route_id": {"type": "string", "pattern": "^provider_tool\\.[a-z0-9_.-]+$"},
+        "display_name": {"type": "string", "minLength": 1},
+        "classification_row_id": {"type": "string", "minLength": 1},
+        "route_family": {"$ref": "#/$defs/route_family"},
+        "provider_registry_id": {"type": ["string", "null"], "minLength": 1},
+        "provider_kind": {
+          "type": ["string", "null"],
+          "enum": ["source_acquiring", "source_conditioned", "general_reasoning", null]
+        },
+        "model_id": {"type": ["string", "null"], "minLength": 1},
+        "tool_id": {"type": ["string", "null"], "minLength": 1},
+        "route_ref": {"type": "string", "minLength": 1},
+        "availability_state": {"$ref": "#/$defs/availability_state"},
+        "status": {"$ref": "#/$defs/health_status"},
+        "source_acquisition_capability": {"type": "boolean"},
+        "source_acquisition_evidence_refs": {"$ref": "#/$defs/string_array"},
+        "supplied_evidence_mode": {"$ref": "#/$defs/supplied_evidence_mode"},
+        "redaction_privacy_posture": {"$ref": "#/$defs/redaction_privacy_posture"},
+        "redaction_evidence_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "source_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "producer_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "consumer_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "substrate_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "capability_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "evidence_envelope_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "witness_refs": {"$ref": "#/$defs/string_array"},
+        "grounding_gate_refs": {"$ref": "#/$defs/string_array"},
+        "public_event_refs": {"$ref": "#/$defs/string_array"},
+        "rights_evidence_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "privacy_evidence_refs": {"$ref": "#/$defs/non_empty_string_array"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "public_claim_policy": {"$ref": "#/$defs/public_claim_policy"},
+        "rights_state": {"$ref": "#/$defs/rights_state"},
+        "public_private_posture": {"$ref": "#/$defs/public_private_posture"},
+        "blocking_reasons": {"$ref": "#/$defs/string_array"},
+        "warnings": {"$ref": "#/$defs/string_array"},
+        "fallback": {"$ref": "#/$defs/fallback"},
+        "kill_switch_state": {"$ref": "#/$defs/kill_switch_state"},
+        "owner": {"type": "string", "minLength": 1},
+        "next_probe_due_at": {"type": "string", "format": "date-time"},
+        "witness_policy": {"$ref": "#/$defs/witness_policy"},
+        "fixture_case": {"$ref": "#/$defs/fixture_case"}
+      }
+    }
+  }
+}
