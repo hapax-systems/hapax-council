@@ -1,0 +1,357 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "programme_boundary_wcs_evidence_adapter",
+  "schema_ref": "schemas/programme-boundary-wcs-evidence-adapter.schema.json",
+  "generated_from": [
+    "cc-task:programme-boundary-wcs-evidence-adapter",
+    "spec:2026-04-29-programme-world-surface-integration-plan",
+    "spec:2026-04-29-programme-boundary-event-surface-design",
+    "schema:content-programme-run-envelope",
+    "schema:content-programme-feedback-ledger"
+  ],
+  "declared_at": "2026-04-30T08:15:00Z",
+  "producer": "shared.programme_boundary_wcs_evidence_adapter",
+  "required_fixture_cases": [
+    "public_safe_evidence_audit",
+    "conversion_held_run",
+    "world_surface_blocked_run",
+    "refusal_run",
+    "correction_run"
+  ],
+  "fail_closed_policy": {
+    "boundary_alone_grants_public_conversion": false,
+    "adapter_grants_public_authority": false,
+    "adapter_grants_monetization_authority": false,
+    "public_conversion_without_rvpe_allowed": false,
+    "missing_wcs_evidence_or_outcome_refs_can_publish": false
+  },
+  "fixtures": [
+    {
+      "fixture_id": "public_safe_evidence_boundary",
+      "run_fixture_case": "public_safe_evidence_audit",
+      "generated_at": "2026-04-29T14:00:00Z",
+      "boundary": {
+        "schema_version": 1,
+        "boundary_id": "pbe_public_safe_evidence_audit_001",
+        "emitted_at": "2026-04-29T13:59:00Z",
+        "programme_id": "programme_evidence_audit",
+        "run_id": "run_public_safe_evidence_audit",
+        "format_id": "evidence_audit",
+        "sequence": 1,
+        "boundary_type": "rank.assigned",
+        "public_private_mode": "public_archive",
+        "grounding_question": "What can this evidence_audit run ground from declared evidence?",
+        "summary": "Assigned a bounded evidence-audit rank with WCS and outcome refs present.",
+        "evidence_refs": [
+          "source:public_safe_evidence_audit",
+          "grounding-gate:public_safe_evidence_audit"
+        ],
+        "no_expert_system_gate": {
+          "gate_ref": "grounding-gate:public_safe_evidence_audit",
+          "gate_state": "pass",
+          "claim_allowed": true,
+          "public_claim_allowed": true,
+          "infractions": []
+        },
+        "claim_shape": {
+          "claim_kind": "ranking",
+          "authority_ceiling": "evidence_bound",
+          "confidence_label": "medium_high",
+          "uncertainty": "Scope is limited to the cited evidence bundle.",
+          "scope_limit": "Ranks only declared source refs."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "research_vehicle_event_type": "programme.boundary",
+          "state_kind": "programme_state",
+          "source_substrate_id": "programme_cuepoints",
+          "allowed_surfaces": ["youtube_chapters", "archive"],
+          "denied_surfaces": ["youtube_cuepoints", "youtube_shorts", "monetization"],
+          "fallback_action": "chapter_only",
+          "unavailable_reasons": []
+        },
+        "cuepoint_chapter_policy": {
+          "live_ad_cuepoint_allowed": false,
+          "vod_chapter_allowed": true,
+          "live_cuepoint_distinct_from_vod_chapter": true,
+          "chapter_label": "Evidence audit boundary",
+          "timecode": "00:00",
+          "cuepoint_unavailable_reason": null
+        },
+        "dry_run_unavailable_reasons": [],
+        "duplicate_key": "programme_evidence_audit:run_public_safe_evidence_audit:rank.assigned:001"
+      },
+      "expected": {
+        "projection_state": "rvpe_linked",
+        "format_public_event_adapter_ready": true,
+        "blocker_reasons": [],
+        "refusal_or_correction_refs_present": false
+      }
+    },
+    {
+      "fixture_id": "public_mapping_without_rvpe_is_held",
+      "run_fixture_case": "conversion_held_run",
+      "generated_at": "2026-04-29T14:01:00Z",
+      "boundary": {
+        "schema_version": 1,
+        "boundary_id": "pbe_conversion_held_run_001",
+        "emitted_at": "2026-04-29T14:00:30Z",
+        "programme_id": "programme_bracket",
+        "run_id": "run_conversion_held_run",
+        "format_id": "bracket",
+        "sequence": 1,
+        "boundary_type": "claim.made",
+        "public_private_mode": "dry_run",
+        "grounding_question": "What can this bracket run ground from declared evidence?",
+        "summary": "A claim-bearing boundary remains held because no RVPE link exists.",
+        "evidence_refs": [
+          "source:conversion_held_run",
+          "grounding-gate:conversion_held_run"
+        ],
+        "no_expert_system_gate": {
+          "gate_ref": "grounding-gate:conversion_held_run",
+          "gate_state": "dry_run",
+          "claim_allowed": true,
+          "public_claim_allowed": false,
+          "infractions": []
+        },
+        "claim_shape": {
+          "claim_kind": "classification",
+          "authority_ceiling": "evidence_bound",
+          "confidence_label": "medium",
+          "uncertainty": "RVPE conversion is still held.",
+          "scope_limit": "Internal dry-run classification only."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "research_vehicle_event_type": "programme.boundary",
+          "state_kind": "programme_state",
+          "source_substrate_id": "programme_cuepoints",
+          "allowed_surfaces": ["youtube_chapters", "archive"],
+          "denied_surfaces": ["youtube_cuepoints", "youtube_shorts", "monetization"],
+          "fallback_action": "hold",
+          "unavailable_reasons": ["dry_run_mode"]
+        },
+        "cuepoint_chapter_policy": {
+          "live_ad_cuepoint_allowed": false,
+          "vod_chapter_allowed": false,
+          "live_cuepoint_distinct_from_vod_chapter": true,
+          "chapter_label": null,
+          "timecode": null,
+          "cuepoint_unavailable_reason": "dry_run_mode"
+        },
+        "dry_run_unavailable_reasons": ["dry_run_mode"],
+        "duplicate_key": "programme_bracket:run_conversion_held_run:claim.made:001"
+      },
+      "expected": {
+        "projection_state": "held_for_rvpe",
+        "format_public_event_adapter_ready": false,
+        "blocker_reasons": [
+          "dry_run_mode",
+          "research_vehicle_public_event_missing",
+          "grounding_gate_failed",
+          "unsupported_claim"
+        ],
+        "refusal_or_correction_refs_present": false
+      }
+    },
+    {
+      "fixture_id": "world_surface_blocked_boundary",
+      "run_fixture_case": "world_surface_blocked_run",
+      "generated_at": "2026-04-29T14:02:00Z",
+      "boundary": {
+        "schema_version": 1,
+        "boundary_id": "pbe_world_surface_blocked_run_001",
+        "emitted_at": "2026-04-29T14:01:30Z",
+        "programme_id": "programme_watch_along",
+        "run_id": "run_world_surface_blocked_run",
+        "format_id": "watch_along",
+        "sequence": 1,
+        "boundary_type": "live_cuepoint.candidate",
+        "public_private_mode": "private",
+        "grounding_question": "What can this watch_along run ground from declared evidence?",
+        "summary": "Blocked world-surface state stays visible and cannot cue public output.",
+        "evidence_refs": [
+          "source:world_surface_blocked_run",
+          "grounding-gate:world_surface_blocked_run"
+        ],
+        "no_expert_system_gate": {
+          "gate_ref": "grounding-gate:world_surface_blocked_run",
+          "gate_state": "fail",
+          "claim_allowed": false,
+          "public_claim_allowed": false,
+          "infractions": ["world_surface_blocked"]
+        },
+        "claim_shape": {
+          "claim_kind": "metadata",
+          "authority_ceiling": "internal_only",
+          "confidence_label": "none",
+          "uncertainty": "Surface witness is blocked.",
+          "scope_limit": "Diagnostic boundary only."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "research_vehicle_event_type": "cuepoint.candidate",
+          "state_kind": "cuepoint",
+          "source_substrate_id": "programme_cuepoints",
+          "allowed_surfaces": ["youtube_cuepoints"],
+          "denied_surfaces": ["youtube_chapters", "youtube_shorts", "archive", "monetization"],
+          "fallback_action": "deny",
+          "unavailable_reasons": ["egress_blocked", "live_provider_smoke_missing"]
+        },
+        "cuepoint_chapter_policy": {
+          "live_ad_cuepoint_allowed": false,
+          "vod_chapter_allowed": false,
+          "live_cuepoint_distinct_from_vod_chapter": true,
+          "chapter_label": null,
+          "timecode": null,
+          "cuepoint_unavailable_reason": "egress_blocked"
+        },
+        "dry_run_unavailable_reasons": ["egress_blocked"],
+        "duplicate_key": "programme_watch_along:run_world_surface_blocked_run:live_cuepoint.candidate:001"
+      },
+      "expected": {
+        "projection_state": "blocked",
+        "format_public_event_adapter_ready": false,
+        "blocker_reasons": [
+          "private_mode",
+          "world_surface_blocked",
+          "witness_missing",
+          "privacy_blocked",
+          "grounding_gate_failed",
+          "unsupported_claim"
+        ],
+        "refusal_or_correction_refs_present": false
+      }
+    },
+    {
+      "fixture_id": "refusal_boundary_supported",
+      "run_fixture_case": "refusal_run",
+      "generated_at": "2026-04-29T14:03:00Z",
+      "boundary": {
+        "schema_version": 1,
+        "boundary_id": "pbe_refusal_run_001",
+        "emitted_at": "2026-04-29T14:02:30Z",
+        "programme_id": "programme_refusal_breakdown",
+        "run_id": "run_refusal_run",
+        "format_id": "refusal_breakdown",
+        "sequence": 1,
+        "boundary_type": "refusal.issued",
+        "public_private_mode": "dry_run",
+        "grounding_question": "What can this refusal_breakdown run ground from declared evidence?",
+        "summary": "Unsupported claim is refused and retained as an internal learning boundary.",
+        "evidence_refs": ["refusal:refusal_run"],
+        "no_expert_system_gate": {
+          "gate_ref": null,
+          "gate_state": "refusal",
+          "claim_allowed": false,
+          "public_claim_allowed": false,
+          "infractions": ["unsupported_claim"]
+        },
+        "claim_shape": {
+          "claim_kind": "refusal",
+          "authority_ceiling": "internal_only",
+          "confidence_label": "high",
+          "uncertainty": "The refused claim lacks adequate evidence.",
+          "scope_limit": "Refuses only this unsupported candidate."
+        },
+        "public_event_mapping": {
+          "internal_only": true,
+          "research_vehicle_event_type": null,
+          "state_kind": null,
+          "source_substrate_id": null,
+          "allowed_surfaces": [],
+          "denied_surfaces": ["youtube_cuepoints", "youtube_chapters", "youtube_shorts", "archive", "monetization"],
+          "fallback_action": "dry_run",
+          "unavailable_reasons": ["unsupported_claim", "dry_run_mode"]
+        },
+        "cuepoint_chapter_policy": {
+          "live_ad_cuepoint_allowed": false,
+          "vod_chapter_allowed": false,
+          "live_cuepoint_distinct_from_vod_chapter": true,
+          "chapter_label": null,
+          "timecode": null,
+          "cuepoint_unavailable_reason": "dry_run_mode"
+        },
+        "dry_run_unavailable_reasons": ["dry_run_mode"],
+        "duplicate_key": "programme_refusal_breakdown:run_refusal_run:refusal.issued:001"
+      },
+      "expected": {
+        "projection_state": "refusal_supported",
+        "format_public_event_adapter_ready": false,
+        "blocker_reasons": [
+          "dry_run_mode",
+          "missing_evidence_ref",
+          "evidence_envelope_ref_missing",
+          "missing_grounding_gate",
+          "unsupported_claim",
+          "public_event_mapping_internal_only"
+        ],
+        "refusal_or_correction_refs_present": true
+      }
+    },
+    {
+      "fixture_id": "correction_boundary_supported",
+      "run_fixture_case": "correction_run",
+      "generated_at": "2026-04-29T14:04:00Z",
+      "boundary": {
+        "schema_version": 1,
+        "boundary_id": "pbe_correction_run_001",
+        "emitted_at": "2026-04-29T14:03:30Z",
+        "programme_id": "programme_evidence_audit",
+        "run_id": "run_correction_run",
+        "format_id": "evidence_audit",
+        "sequence": 1,
+        "boundary_type": "correction.made",
+        "public_private_mode": "public_archive",
+        "grounding_question": "What can this evidence_audit run ground from declared evidence?",
+        "summary": "Correction artifact is first-class and carries evidence/outcome refs.",
+        "evidence_refs": [
+          "source:correction_run",
+          "correction:correction_run",
+          "grounding-gate:correction_run"
+        ],
+        "no_expert_system_gate": {
+          "gate_ref": "grounding-gate:correction_run",
+          "gate_state": "pass",
+          "claim_allowed": true,
+          "public_claim_allowed": true,
+          "infractions": []
+        },
+        "claim_shape": {
+          "claim_kind": "correction",
+          "authority_ceiling": "evidence_bound",
+          "confidence_label": "high",
+          "uncertainty": "Correction is limited to the referenced boundary.",
+          "scope_limit": "Corrects one prior programme claim."
+        },
+        "public_event_mapping": {
+          "internal_only": false,
+          "research_vehicle_event_type": "publication.artifact",
+          "state_kind": "archive_artifact",
+          "source_substrate_id": "programme_corrections",
+          "allowed_surfaces": ["archive"],
+          "denied_surfaces": ["youtube_cuepoints", "youtube_shorts", "monetization"],
+          "fallback_action": "archive_only",
+          "unavailable_reasons": []
+        },
+        "cuepoint_chapter_policy": {
+          "live_ad_cuepoint_allowed": false,
+          "vod_chapter_allowed": true,
+          "live_cuepoint_distinct_from_vod_chapter": true,
+          "chapter_label": "Correction artifact",
+          "timecode": "00:00",
+          "cuepoint_unavailable_reason": null
+        },
+        "dry_run_unavailable_reasons": [],
+        "duplicate_key": "programme_evidence_audit:run_correction_run:correction.made:001"
+      },
+      "expected": {
+        "projection_state": "correction_supported",
+        "format_public_event_adapter_ready": true,
+        "blocker_reasons": [],
+        "refusal_or_correction_refs_present": true
+      }
+    }
+  ]
+}

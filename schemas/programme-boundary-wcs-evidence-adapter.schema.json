@@ -1,0 +1,428 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/programme-boundary-wcs-evidence-adapter.schema.json",
+  "title": "ProgrammeBoundaryWcsEvidenceAdapterFixtures",
+  "description": "Fixture-backed contract for joining programme boundary events with WCS snapshot refs, evidence envelopes, grounding gates, capability outcomes, and downstream public-event/feedback handoff refs without granting public authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "required_fixture_cases",
+    "fail_closed_policy",
+    "fixtures"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "const": "programme_boundary_wcs_evidence_adapter"},
+    "schema_ref": {"type": "string", "const": "schemas/programme-boundary-wcs-evidence-adapter.schema.json"},
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "const": "shared.programme_boundary_wcs_evidence_adapter"},
+    "required_fixture_cases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/run_fixture_case"},
+      "uniqueItems": true,
+      "minItems": 5
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boundary_alone_grants_public_conversion",
+        "adapter_grants_public_authority",
+        "adapter_grants_monetization_authority",
+        "public_conversion_without_rvpe_allowed",
+        "missing_wcs_evidence_or_outcome_refs_can_publish"
+      ],
+      "properties": {
+        "boundary_alone_grants_public_conversion": {"type": "boolean", "const": false},
+        "adapter_grants_public_authority": {"type": "boolean", "const": false},
+        "adapter_grants_monetization_authority": {"type": "boolean", "const": false},
+        "public_conversion_without_rvpe_allowed": {"type": "boolean", "const": false},
+        "missing_wcs_evidence_or_outcome_refs_can_publish": {"type": "boolean", "const": false}
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fixture"},
+      "minItems": 5
+    }
+  },
+  "x-adapter_output_required_ref_fields": [
+    "wcs_snapshot_refs",
+    "wcs_surface_refs",
+    "evidence_refs",
+    "evidence_envelope_refs",
+    "grounding_gate_refs",
+    "outcome_refs",
+    "refusal_or_correction_refs"
+  ],
+  "x-downstream_consumers": [
+    "format_public_event_adapter",
+    "content_programme_feedback_ledger"
+  ],
+  "x-public_fail_closed_reasons": [
+    "research_vehicle_public_event_missing",
+    "missing_evidence_ref",
+    "evidence_envelope_ref_missing",
+    "missing_grounding_gate",
+    "capability_outcome_ref_missing",
+    "wcs_snapshot_ref_missing",
+    "wcs_surface_ref_missing",
+    "world_surface_blocked",
+    "privacy_blocked",
+    "rights_blocked"
+  ],
+  "$defs": {
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "run_fixture_case": {
+      "type": "string",
+      "enum": [
+        "private_run",
+        "dry_run",
+        "public_archive_run",
+        "public_live_blocked_run",
+        "monetization_blocked_run",
+        "refusal_run",
+        "correction_run",
+        "conversion_held_run",
+        "dry_run_tier_list",
+        "public_safe_evidence_audit",
+        "rights_blocked_react_commentary",
+        "world_surface_blocked_run"
+      ]
+    },
+    "public_private_mode": {
+      "type": "string",
+      "enum": ["private", "dry_run", "public_live", "public_archive", "public_monetizable"]
+    },
+    "boundary_type": {
+      "type": "string",
+      "enum": [
+        "programme.started",
+        "criterion.declared",
+        "evidence.observed",
+        "claim.made",
+        "rank.assigned",
+        "comparison.resolved",
+        "uncertainty.marked",
+        "refusal.issued",
+        "correction.made",
+        "clip.candidate",
+        "live_cuepoint.candidate",
+        "chapter.boundary",
+        "artifact.candidate",
+        "programme.ended"
+      ]
+    },
+    "unavailable_reason": {
+      "type": "string",
+      "enum": [
+        "private_mode",
+        "dry_run_mode",
+        "missing_evidence_ref",
+        "missing_grounding_gate",
+        "grounding_gate_failed",
+        "unsupported_claim",
+        "source_stale",
+        "rights_blocked",
+        "privacy_blocked",
+        "egress_blocked",
+        "audio_blocked",
+        "archive_missing",
+        "video_id_missing",
+        "cuepoint_smoke_missing",
+        "cuepoint_api_rejected",
+        "rate_limited",
+        "monetization_blocked",
+        "monetization_readiness_missing",
+        "operator_review_required",
+        "live_provider_smoke_missing",
+        "third_party_media_blocked",
+        "owned_cleared_av_missing",
+        "research_vehicle_public_event_missing",
+        "world_surface_blocked",
+        "witness_missing"
+      ]
+    },
+    "adapter_blocker_reason": {
+      "type": "string",
+      "enum": [
+        "private_mode",
+        "dry_run_mode",
+        "missing_evidence_ref",
+        "evidence_envelope_ref_missing",
+        "missing_grounding_gate",
+        "grounding_gate_failed",
+        "unsupported_claim",
+        "source_stale",
+        "rights_blocked",
+        "privacy_blocked",
+        "egress_blocked",
+        "audio_blocked",
+        "archive_missing",
+        "video_id_missing",
+        "cuepoint_smoke_missing",
+        "cuepoint_api_rejected",
+        "rate_limited",
+        "monetization_blocked",
+        "monetization_readiness_missing",
+        "operator_review_required",
+        "live_provider_smoke_missing",
+        "third_party_media_blocked",
+        "owned_cleared_av_missing",
+        "research_vehicle_public_event_missing",
+        "world_surface_blocked",
+        "witness_missing",
+        "run_identity_mismatch",
+        "run_boundary_ref_missing",
+        "wcs_snapshot_ref_missing",
+        "wcs_surface_ref_missing",
+        "capability_outcome_ref_missing",
+        "public_event_mapping_internal_only",
+        "format_public_event_mapping_missing",
+        "refusal_ref_missing",
+        "correction_ref_missing"
+      ]
+    },
+    "surface": {
+      "type": "string",
+      "enum": [
+        "youtube_cuepoints",
+        "youtube_chapters",
+        "youtube_description",
+        "youtube_shorts",
+        "youtube_captions",
+        "archive",
+        "arena",
+        "omg_statuslog",
+        "omg_weblog",
+        "mastodon",
+        "bluesky",
+        "discord",
+        "monetization"
+      ]
+    },
+    "no_expert_system_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_ref", "gate_state", "claim_allowed", "public_claim_allowed", "infractions"],
+      "properties": {
+        "gate_ref": {"type": ["string", "null"]},
+        "gate_state": {
+          "type": "string",
+          "enum": ["pass", "fail", "dry_run", "private_only", "refusal", "correction_required"]
+        },
+        "claim_allowed": {"type": "boolean"},
+        "public_claim_allowed": {"type": "boolean"},
+        "infractions": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "claim_shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_kind", "authority_ceiling", "confidence_label", "uncertainty", "scope_limit"],
+      "properties": {
+        "claim_kind": {
+          "type": "string",
+          "enum": [
+            "observation",
+            "classification",
+            "ranking",
+            "comparison",
+            "explanation",
+            "refusal",
+            "correction",
+            "metadata"
+          ]
+        },
+        "authority_ceiling": {"type": "string", "enum": ["evidence_bound", "speculative", "internal_only"]},
+        "confidence_label": {"type": "string", "enum": ["none", "low", "medium", "medium_high", "high"]},
+        "uncertainty": {"type": "string", "minLength": 1},
+        "scope_limit": {"type": "string", "minLength": 1}
+      }
+    },
+    "public_event_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "internal_only",
+        "research_vehicle_event_type",
+        "state_kind",
+        "source_substrate_id",
+        "allowed_surfaces",
+        "denied_surfaces",
+        "fallback_action",
+        "unavailable_reasons"
+      ],
+      "properties": {
+        "internal_only": {"type": "boolean"},
+        "research_vehicle_event_type": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "programme.boundary",
+            "metadata.update",
+            "chapter.marker",
+            "cuepoint.candidate",
+            "chronicle.high_salience",
+            "publication.artifact",
+            "shorts.candidate",
+            "archive.segment"
+          ]
+        },
+        "state_kind": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "programme_state",
+            "research_observation",
+            "cuepoint",
+            "chapter",
+            "short_form",
+            "archive_artifact"
+          ]
+        },
+        "source_substrate_id": {"type": ["string", "null"]},
+        "allowed_surfaces": {"type": "array", "items": {"$ref": "#/$defs/surface"}, "uniqueItems": true},
+        "denied_surfaces": {"type": "array", "items": {"$ref": "#/$defs/surface"}, "uniqueItems": true},
+        "fallback_action": {
+          "type": "string",
+          "enum": ["hold", "dry_run", "private_only", "archive_only", "chapter_only", "operator_review", "deny"]
+        },
+        "unavailable_reasons": {"type": "array", "items": {"$ref": "#/$defs/unavailable_reason"}, "uniqueItems": true}
+      }
+    },
+    "cuepoint_chapter_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "live_ad_cuepoint_allowed",
+        "vod_chapter_allowed",
+        "live_cuepoint_distinct_from_vod_chapter",
+        "chapter_label",
+        "timecode",
+        "cuepoint_unavailable_reason"
+      ],
+      "properties": {
+        "live_ad_cuepoint_allowed": {"type": "boolean"},
+        "vod_chapter_allowed": {"type": "boolean"},
+        "live_cuepoint_distinct_from_vod_chapter": {"type": "boolean", "const": true},
+        "chapter_label": {"type": ["string", "null"]},
+        "timecode": {"type": ["string", "null"], "pattern": "^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$"},
+        "cuepoint_unavailable_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "private_mode",
+            "dry_run_mode",
+            "missing_grounding_gate",
+            "grounding_gate_failed",
+            "egress_blocked",
+            "archive_missing",
+            "video_id_missing",
+            "cuepoint_smoke_missing",
+            "cuepoint_api_rejected",
+            "rate_limited"
+          ]
+        }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "boundary_id",
+        "emitted_at",
+        "programme_id",
+        "run_id",
+        "format_id",
+        "sequence",
+        "boundary_type",
+        "public_private_mode",
+        "grounding_question",
+        "summary",
+        "evidence_refs",
+        "no_expert_system_gate",
+        "claim_shape",
+        "public_event_mapping",
+        "cuepoint_chapter_policy",
+        "dry_run_unavailable_reasons",
+        "duplicate_key"
+      ],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "boundary_id": {"type": "string", "pattern": "^[a-z][a-z0-9_:-]*$"},
+        "emitted_at": {"type": "string", "format": "date-time"},
+        "programme_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "format_id": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 0},
+        "boundary_type": {"$ref": "#/$defs/boundary_type"},
+        "public_private_mode": {"$ref": "#/$defs/public_private_mode"},
+        "grounding_question": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/string_array"},
+        "no_expert_system_gate": {"$ref": "#/$defs/no_expert_system_gate"},
+        "claim_shape": {"$ref": "#/$defs/claim_shape"},
+        "public_event_mapping": {"$ref": "#/$defs/public_event_mapping"},
+        "cuepoint_chapter_policy": {"$ref": "#/$defs/cuepoint_chapter_policy"},
+        "dry_run_unavailable_reasons": {"type": "array", "items": {"$ref": "#/$defs/unavailable_reason"}, "uniqueItems": true},
+        "duplicate_key": {"type": "string", "minLength": 1}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projection_state",
+        "format_public_event_adapter_ready",
+        "blocker_reasons",
+        "refusal_or_correction_refs_present"
+      ],
+      "properties": {
+        "projection_state": {
+          "type": "string",
+          "enum": [
+            "rvpe_linked",
+            "held_for_rvpe",
+            "internal_only",
+            "blocked",
+            "refusal_supported",
+            "correction_supported"
+          ]
+        },
+        "format_public_event_adapter_ready": {"type": "boolean"},
+        "blocker_reasons": {"type": "array", "items": {"$ref": "#/$defs/adapter_blocker_reason"}, "uniqueItems": true},
+        "refusal_or_correction_refs_present": {"type": "boolean"}
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_id", "run_fixture_case", "generated_at", "boundary", "expected"],
+      "properties": {
+        "fixture_id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+        "run_fixture_case": {"$ref": "#/$defs/run_fixture_case"},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "boundary": {"$ref": "#/$defs/boundary"},
+        "expected": {"$ref": "#/$defs/expected"}
+      }
+    }
+  }
+}
