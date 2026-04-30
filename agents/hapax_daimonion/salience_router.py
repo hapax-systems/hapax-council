@@ -370,11 +370,26 @@ class SalienceRouter:
         return min(score, 1.0)
 
     def _activation_to_tier(self, activation: float) -> ModelTier:
-        """Map activation to tier. Intelligence-first: always CAPABLE.
+        """Map continuous activation score to model tier.
+
+        Uses configured thresholds to select grounding-appropriate tier.
+        Previous intelligence_first hardcode (always CAPABLE) removed:
+        it predated the grounding commitment framework (2026-04-29) and
+        contradicts the capability grounding contract which classifies
+        voice as expression_only. See: capability-grounding-contract-
+        envelope.md §Model And Provider Policy.
 
         CANNED handled by phatic detection in route(), never here.
-        Activation still computed for effort calibration — not tier selection.
         """
+        t = self._thresholds
+        if activation <= t.get("canned_max", 0.15):
+            return ModelTier.LOCAL
+        if activation <= t.get("local_max", 0.45):
+            return ModelTier.LOCAL
+        if activation <= t.get("fast_max", 0.60):
+            return ModelTier.FAST
+        if activation <= t.get("strong_max", 0.78):
+            return ModelTier.STRONG
         return ModelTier.CAPABLE
 
     def _pick_canned(self, transcript: str, turn_count: int) -> str:
