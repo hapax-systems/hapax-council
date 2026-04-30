@@ -3,7 +3,7 @@
     {
       "node": "colorgrade",
       "param": "brightness",
-      "source": "sidechain_kick",
+      "source": "music.kick_onset",
       "scale": -0.7,
       "offset": 0.0,
       "attack": 0.0,
@@ -12,7 +12,7 @@
     {
       "node": "colorgrade",
       "param": "saturation",
-      "source": "sidechain_kick",
+      "source": "music.kick_onset",
       "scale": -1.0,
       "offset": 0.0,
       "attack": 0.0,
@@ -21,7 +21,7 @@
     {
       "node": "colorgrade",
       "param": "contrast",
-      "source": "mixer_energy",
+      "source": "music.rms",
       "scale": 0.5,
       "offset": 0.0,
       "attack": 0.05,
@@ -30,7 +30,7 @@
     {
       "node": "colorgrade",
       "param": "hue_rotate",
-      "source": "spectral_centroid",
+      "source": "music.centroid",
       "scale": 40.0,
       "offset": 0.0,
       "attack": 0.3,
@@ -39,7 +39,7 @@
     {
       "node": "vignette",
       "param": "strength",
-      "source": "onset_kick",
+      "source": "music.kick_onset",
       "scale": 1.5,
       "offset": 0.0,
       "attack": 0.0,
@@ -48,7 +48,7 @@
     {
       "node": "bloom",
       "param": "alpha",
-      "source": "onset_kick",
+      "source": "music.kick_onset",
       "scale": 1.0,
       "offset": 0.0,
       "attack": 0.0,
@@ -57,7 +57,7 @@
     {
       "node": "bloom",
       "param": "radius",
-      "source": "mixer_bass",
+      "source": "music.bass",
       "scale": 8.0,
       "offset": 0.0,
       "attack": 0.0,
@@ -66,7 +66,7 @@
     {
       "node": "chromatic_aberration",
       "param": "offset_x",
-      "source": "onset_snare",
+      "source": "music.snare_onset",
       "scale": 10.0,
       "offset": 0.0,
       "attack": 0.0,
@@ -75,7 +75,7 @@
     {
       "node": "noise_overlay",
       "param": "intensity",
-      "source": "onset_hat",
+      "source": "music.hat_onset",
       "scale": 0.3,
       "offset": 0.0,
       "attack": 0.0,
@@ -84,7 +84,7 @@
     {
       "node": "trail",
       "param": "opacity",
-      "source": "mixer_energy",
+      "source": "broadcast.rms",
       "scale": 0.5,
       "offset": 0.0,
       "attack": 0.05,
@@ -93,7 +93,7 @@
     {
       "node": "trail",
       "param": "drift_x",
-      "source": "mixer_bass",
+      "source": "music.bass",
       "scale": 6.0,
       "offset": 0.0,
       "attack": 0.0,
@@ -102,7 +102,7 @@
     {
       "node": "drift",
       "param": "speed",
-      "source": "mixer_energy",
+      "source": "music.rms",
       "scale": 2.0,
       "offset": 0.0,
       "attack": 0.05,
@@ -111,7 +111,7 @@
     {
       "node": "drift",
       "param": "amplitude",
-      "source": "mixer_bass",
+      "source": "music.bass",
       "scale": 8.0,
       "offset": 0.0,
       "attack": 0.0,
