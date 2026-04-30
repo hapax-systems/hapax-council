@@ -1,0 +1,403 @@
+{
+  "$defs": {
+    "ArchiveOutput": {
+      "enum": [
+        "run_card",
+        "rank_table",
+        "criteria_sheet",
+        "chapter_markers",
+        "caption",
+        "refusal_artifact",
+        "correction_artifact",
+        "evidence_table",
+        "replay_note"
+      ],
+      "type": "string"
+    },
+    "ContentProgrammeFormatId": {
+      "enum": [
+        "tier_list",
+        "react_commentary",
+        "ranking",
+        "comparison",
+        "review",
+        "watch_along",
+        "explainer",
+        "rundown",
+        "debate",
+        "bracket",
+        "what_is_this",
+        "refusal_breakdown",
+        "evidence_audit"
+      ],
+      "type": "string"
+    },
+    "ConversionPath": {
+      "enum": [
+        "youtube_metadata",
+        "chapter",
+        "caption",
+        "shorts",
+        "archive_replay",
+        "public_refusal_artifact",
+        "correction_artifact",
+        "support_prompt",
+        "grant_demo_evidence",
+        "artifact",
+        "dataset",
+        "licensing"
+      ],
+      "type": "string"
+    },
+    "DirectorMove": {
+      "enum": [
+        "foreground",
+        "background",
+        "hold",
+        "suppress",
+        "transition",
+        "crossfade",
+        "intensify",
+        "stabilize",
+        "route_attention",
+        "mark_boundary"
+      ],
+      "type": "string"
+    },
+    "FormatWCSMode": {
+      "enum": [
+        "private",
+        "dry_run",
+        "public_archive",
+        "public_live",
+        "public_monetizable"
+      ],
+      "type": "string"
+    },
+    "FormatWCSRequirementRow": {
+      "additionalProperties": false,
+      "description": "WCS companion block for one ContentProgrammeFormat row.",
+      "properties": {
+        "format_id": {
+          "$ref": "#/$defs/ContentProgrammeFormatId"
+        },
+        "content_programme_format_ref": {
+          "minLength": 1,
+          "title": "Content Programme Format Ref",
+          "type": "string"
+        },
+        "grounding_question_ref": {
+          "minLength": 1,
+          "title": "Grounding Question Ref",
+          "type": "string"
+        },
+        "permitted_claim_shape_ref": {
+          "minLength": 1,
+          "title": "Permitted Claim Shape Ref",
+          "type": "string"
+        },
+        "required_surface_blocks": {
+          "items": {
+            "$ref": "#/$defs/WCSSurfaceRequirement"
+          },
+          "minItems": 4,
+          "title": "Required Surface Blocks",
+          "type": "array"
+        },
+        "optional_surface_blocks": {
+          "items": {
+            "$ref": "#/$defs/WCSSurfaceRequirement"
+          },
+          "minItems": 1,
+          "title": "Optional Surface Blocks",
+          "type": "array"
+        },
+        "required_evidence_classes": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Required Evidence Classes",
+          "type": "array"
+        },
+        "required_grounding_gate_refs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Required Grounding Gate Refs",
+          "type": "array"
+        },
+        "required_public_event_policy": {
+          "minLength": 1,
+          "title": "Required Public Event Policy",
+          "type": "string"
+        },
+        "archive_outputs": {
+          "items": {
+            "$ref": "#/$defs/ArchiveOutput"
+          },
+          "minItems": 1,
+          "title": "Archive Outputs",
+          "type": "array"
+        },
+        "conversion_paths": {
+          "items": {
+            "$ref": "#/$defs/ConversionPath"
+          },
+          "minItems": 1,
+          "title": "Conversion Paths",
+          "type": "array"
+        },
+        "monetization_obligations": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Monetization Obligations",
+          "type": "array"
+        },
+        "director_moves": {
+          "items": {
+            "$ref": "#/$defs/DirectorMove"
+          },
+          "minItems": 1,
+          "title": "Director Moves",
+          "type": "array"
+        },
+        "refusal_correction_policy": {
+          "$ref": "#/$defs/RefusalCorrectionPolicy"
+        },
+        "safe_private_mode": {
+          "const": true,
+          "default": true,
+          "title": "Safe Private Mode",
+          "type": "boolean"
+        },
+        "safe_dry_run_mode": {
+          "const": true,
+          "default": true,
+          "title": "Safe Dry Run Mode",
+          "type": "boolean"
+        },
+        "public_live_requires_egress": {
+          "const": true,
+          "default": true,
+          "title": "Public Live Requires Egress",
+          "type": "boolean"
+        },
+        "monetization_requires_readiness_ledger": {
+          "const": true,
+          "default": true,
+          "title": "Monetization Requires Readiness Ledger",
+          "type": "boolean"
+        },
+        "matrix_grants_public_authority": {
+          "const": false,
+          "default": false,
+          "title": "Matrix Grants Public Authority",
+          "type": "boolean"
+        },
+        "matrix_grants_monetization_authority": {
+          "const": false,
+          "default": false,
+          "title": "Matrix Grants Monetization Authority",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "format_id",
+        "content_programme_format_ref",
+        "grounding_question_ref",
+        "permitted_claim_shape_ref",
+        "required_surface_blocks",
+        "optional_surface_blocks",
+        "required_evidence_classes",
+        "required_grounding_gate_refs",
+        "required_public_event_policy",
+        "archive_outputs",
+        "conversion_paths",
+        "monetization_obligations",
+        "director_moves",
+        "refusal_correction_policy"
+      ],
+      "title": "FormatWCSRequirementRow",
+      "type": "object"
+    },
+    "MissingSurfaceBehavior": {
+      "enum": [
+        "private_only",
+        "dry_run",
+        "refuse",
+        "block",
+        "monetization_blocked"
+      ],
+      "type": "string"
+    },
+    "RefusalCorrectionPolicy": {
+      "additionalProperties": false,
+      "description": "How blocked/corrected runs become bounded programme outputs.",
+      "properties": {
+        "public_safe_refusal_artifact_allowed": {
+          "title": "Public Safe Refusal Artifact Allowed",
+          "type": "boolean"
+        },
+        "correction_artifact_required_on_public_error": {
+          "const": true,
+          "default": true,
+          "title": "Correction Artifact Required On Public Error",
+          "type": "boolean"
+        },
+        "blocked_claim_validated_by_aesthetic_emphasis": {
+          "const": false,
+          "default": false,
+          "title": "Blocked Claim Validated By Aesthetic Emphasis",
+          "type": "boolean"
+        },
+        "private_details_must_be_suppressed": {
+          "const": true,
+          "default": true,
+          "title": "Private Details Must Be Suppressed",
+          "type": "boolean"
+        },
+        "evidence_refs_required": {
+          "const": true,
+          "default": true,
+          "title": "Evidence Refs Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "public_safe_refusal_artifact_allowed"
+      ],
+      "title": "RefusalCorrectionPolicy",
+      "type": "object"
+    },
+    "WCSSurfaceFamily": {
+      "enum": [
+        "source",
+        "media",
+        "rights",
+        "claim_gate",
+        "evidence",
+        "director",
+        "public_event",
+        "archive",
+        "monetization",
+        "refusal_correction"
+      ],
+      "type": "string"
+    },
+    "WCSSurfaceRequirement": {
+      "additionalProperties": false,
+      "description": "One required or optional WCS surface for a content format.",
+      "properties": {
+        "surface_id": {
+          "pattern": "^[a-z0-9_.:-]+$",
+          "title": "Surface Id",
+          "type": "string"
+        },
+        "family": {
+          "$ref": "#/$defs/WCSSurfaceFamily"
+        },
+        "required_for_modes": {
+          "items": {
+            "$ref": "#/$defs/FormatWCSMode"
+          },
+          "title": "Required For Modes",
+          "type": "array"
+        },
+        "witness_refs": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Witness Refs",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "missing_behavior": {
+          "$ref": "#/$defs/MissingSurfaceBehavior"
+        },
+        "blocked_reason_code": {
+          "pattern": "^[a-z0-9_.:-]+$",
+          "title": "Blocked Reason Code",
+          "type": "string"
+        },
+        "public_claim_authority": {
+          "const": false,
+          "default": false,
+          "title": "Public Claim Authority",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "surface_id",
+        "family",
+        "witness_refs",
+        "missing_behavior",
+        "blocked_reason_code"
+      ],
+      "title": "WCSSurfaceRequirement",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Canonical matrix mapping initial content formats to WCS requirements.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "matrix_id": {
+      "const": "format_wcs_requirement_matrix",
+      "title": "Matrix Id",
+      "type": "string"
+    },
+    "schema_ref": {
+      "const": "schemas/format-wcs-requirement-matrix.schema.json",
+      "title": "Schema Ref",
+      "type": "string"
+    },
+    "content_programme_format_schema_ref": {
+      "const": "schemas/content-programme-format.schema.json",
+      "title": "Content Programme Format Schema Ref",
+      "type": "string"
+    },
+    "source_refs": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Source Refs",
+      "type": "array"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/FormatWCSRequirementRow"
+      },
+      "minItems": 13,
+      "title": "Rows",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "matrix_id",
+    "schema_ref",
+    "content_programme_format_schema_ref",
+    "source_refs",
+    "rows"
+  ],
+  "title": "Format WCS Requirement Matrix",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/format-wcs-requirement-matrix.schema.json"
+}
