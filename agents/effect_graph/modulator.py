@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
+from .audio_visual_modulation import (
+    AudioVisualModulationGovernor,
+    ModulationDecision,
+)
 from .types import ModulationBinding
 
 
 class UniformModulator:
-    def __init__(self) -> None:
+    def __init__(self, audio_visual_governor: AudioVisualModulationGovernor | None = None) -> None:
         self._bindings: list[ModulationBinding] = []
         self._smoothed: dict[tuple[str, str], float] = {}
+        self._audio_visual_governor = audio_visual_governor or AudioVisualModulationGovernor()
+        self.last_modulation_decisions: list[ModulationDecision] = []
 
     @property
     def bindings(self) -> list[ModulationBinding]:
         return list(self._bindings)
+
+    @property
+    def audio_visual_governor(self) -> AudioVisualModulationGovernor:
+        """Return the source-role modulation governor."""
+
+        return self._audio_visual_governor
 
     def add_binding(self, b: ModulationBinding) -> None:
         self._bindings = [
@@ -30,11 +42,14 @@ class UniformModulator:
 
     def tick(self, signals: dict[str, float]) -> dict[tuple[str, str], float]:
         updates: dict[tuple[str, str], float] = {}
+        self.last_modulation_decisions = []
         for b in self._bindings:
-            raw = signals.get(b.source)
-            if raw is None:
+            resolved = self._audio_visual_governor.resolve_signal(b.source, signals)
+            if resolved is None:
                 continue
-            target = raw * b.scale + b.offset
+            decision = self._audio_visual_governor.evaluate_binding(b, resolved)
+            self.last_modulation_decisions.append(decision)
+            target = decision.target
             key = (b.node, b.param)
             prev = self._smoothed.get(key)
             if prev is None:
