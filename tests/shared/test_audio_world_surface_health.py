@@ -130,6 +130,26 @@ def test_commanded_tts_without_marker_is_not_verified_audio_success() -> None:
     assert envelope.false_grounding_risk_count >= 1
 
 
+def test_public_marker_requires_broadcast_role_and_public_target() -> None:
+    private_role_marker = {
+        "status": "playback_completed",
+        "route_present": True,
+        "playback_present": True,
+        "egress_audible": True,
+        "target": "hapax-yeti-monitor",
+        "media_role": "Assistant",
+        "planned_utterance": {"chars": 21, "words": 3},
+    }
+    envelope, records = _records(_health(evidence=_safe_evidence(voice=private_role_marker)))
+
+    broadcast = records["audio.broadcast_voice.health"]
+    assert envelope.public_live_allowed is False
+    assert broadcast.public_claim_allowed is False
+    assert broadcast.satisfies_claimable_health() is False
+    assert broadcast.witness_policy is not WitnessPolicy.WITNESSED
+    assert "broadcast_voice_marker_missing" in broadcast.blocking_reasons
+
+
 def test_unsafe_audio_safe_for_broadcast_blocks_public_mode() -> None:
     evidence = _safe_evidence(
         voice={

@@ -89,6 +89,17 @@ PUBLIC_BROADCAST_READY_REQUIRED_SURFACE_IDS = frozenset(
     }
 )
 
+PUBLIC_BROADCAST_MEDIA_ROLE = "Broadcast"
+PUBLIC_BROADCAST_TARGETS = frozenset(
+    {
+        "hapax-livestream",
+        "hapax-livestream-tap",
+        "hapax-voice-fx-capture",
+        "hapax-broadcast-normalized",
+        "hapax-obs-broadcast-remap",
+    }
+)
+
 DEFAULT_AUDIO_WCS_TTL_S = 30
 
 
@@ -1207,7 +1218,9 @@ def _evidence_passed(evidence: Mapping[str, Any]) -> bool:
 def _voice_marker_is_public_audible(audio_health: BroadcastAudioHealth) -> bool:
     voice = _evidence_dict(audio_health, "voice_output_witness")
     return (
-        bool(voice.get("route_present"))
+        voice.get("media_role") == PUBLIC_BROADCAST_MEDIA_ROLE
+        and voice.get("target") in PUBLIC_BROADCAST_TARGETS
+        and bool(voice.get("route_present"))
         and bool(voice.get("playback_present"))
         and voice.get("egress_audible") is True
     )
