@@ -315,7 +315,12 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         daemon=daemon,
     )
 
-    # Engagement classifier — callback wraps async on_engagement_detected
+    # Engagement classifier — demoted from session-gate to gain modulator.
+    # Per the no-expert-system commitment, engagement detection no longer
+    # gates whether the system listens. Instead it boosts CPAL gain when
+    # the operator appears engaged, making response more likely without
+    # being a binary veto. The conversation buffer is always active; the
+    # CPAL runner's salience-based recruitment is the sole response gate.
     from agents.hapax_daimonion.engagement import EngagementClassifier
     from agents.hapax_daimonion.session_events import on_engagement_detected
 
@@ -364,6 +369,18 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         daemon.event_log.emit("audio_input_failed", error="Stream not active after start")
         log.info("  Audio input: unavailable (visual-only mode)")
 
+    # Impingement-native voice: activate the conversation buffer and start
+    # the pipeline at startup so operator speech always flows through
+    # buffer → STT → salience router → recruitment. No engagement gate.
+    daemon._conversation_buffer.activate()
+    try:
+        await daemon._start_pipeline()
+        if daemon._cpal_runner is not None:
+            daemon._cpal_runner.set_pipeline(daemon._conversation_pipeline)
+        log.info("Pipeline started at startup (impingement-native voice)")
+    except Exception:
+        log.exception("Pipeline start at startup failed — will retry on engagement")
+
     log.info("Subsystems initialized:")
     log.info("  Backend: %s", daemon.cfg.backend)
     log.info("  Session: silence_timeout=%ds", daemon.cfg.silence_timeout_s)
@@ -376,7 +393,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "  Context gate: volume_threshold=%.0f%%", daemon.cfg.context_gate_volume_threshold * 100
     )
     log.info("  Notifications: %d pending", daemon.notifications.pending_count)
-    log.info("  Activation: engagement classifier")
+    log.info("  Activation: impingement-native (salience recruitment)")
     log.info(
         "  Workspace monitor: %s (cameras: %s)",
         "enabled" if daemon.cfg.screen_monitor_enabled else "disabled",

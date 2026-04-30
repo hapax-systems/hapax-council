@@ -17,7 +17,13 @@ from agents.hapax_daimonion.perception_loop import perception_loop  # noqa: F401
 
 
 async def audio_loop(daemon: VoiceDaemon) -> None:
-    """Distribute audio frames to engagement classifier, VAD, and Gemini consumers."""
+    """Distribute audio frames to VAD, conversation buffer, and Gemini consumers.
+
+    Impingement-native architecture: every operator utterance flows through
+    the conversation buffer to STT → salience router → recruitment. No
+    expert-system engagement gate — the CPAL runner's existing salience-based
+    recruitment decides whether to respond.
+    """
 
     _VAD_CHUNK = 512 * 2
     _vad_buf = bytearray()
@@ -52,8 +58,11 @@ async def audio_loop(daemon: VoiceDaemon) -> None:
 
         _vad_buf.extend(frame)
 
-        if daemon._conversation_buffer.is_active:
-            daemon._conversation_buffer.feed_audio(frame)
+        # Always feed audio to the conversation buffer — the buffer's own
+        # VAD gating (speech start/end detection) handles accumulation.
+        # No session or engagement gate: speech is an impingement, not a
+        # permission-gated event.
+        daemon._conversation_buffer.feed_audio(frame)
 
         while len(_vad_buf) >= _VAD_CHUNK:
             chunk = bytes(_vad_buf[:_VAD_CHUNK])
@@ -61,23 +70,9 @@ async def audio_loop(daemon: VoiceDaemon) -> None:
             try:
                 daemon.presence.process_audio_frame(chunk)
                 vad_prob = daemon.presence._latest_vad_confidence
-                if daemon._conversation_buffer.is_active:
-                    daemon._conversation_buffer.update_vad(vad_prob)
-                # Inline engagement check (runs in audio loop for CPAL mode
-                # where engagement_processor is not a background task)
-                if (
-                    not daemon.session.is_active
-                    and vad_prob >= 0.3
-                    and hasattr(daemon, "_engagement")
-                ):
-                    behaviors = daemon.perception.behaviors
-                    ps = behaviors.get("presence_state")
-                    if ps is not None and getattr(ps, "value", "") == "PRESENT":
-                        daemon._engagement.on_speech_detected(behaviors)
+                daemon._conversation_buffer.update_vad(vad_prob)
             except Exception as exc:
                 log.warning("Presence consumer error: %s", exc)
-
-        # Engagement detection handled inside the VAD while-loop above (no duplicate)
 
 
 async def actuation_loop(daemon: VoiceDaemon) -> None:

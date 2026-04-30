@@ -24,7 +24,11 @@ async def start_pipeline(daemon: VoiceDaemon) -> None:
         from agents.hapax_daimonion.pipeline_start import start_conversation_pipeline
 
         await start_conversation_pipeline(daemon)
-        _pause_vision_for_conversation(daemon)
+        # Vision pause deferred: with impingement-native voice the pipeline
+        # starts at daemon boot. Pausing vision here would permanently disable
+        # it. Vision backends manage their own VRAM via pause_for_conversation/
+        # resume_after_conversation which are called by the conversation
+        # pipeline during active LLM inference only.
 
 
 async def _start_gemini_session(daemon: VoiceDaemon) -> None:
