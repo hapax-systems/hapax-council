@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/archive-replay-public-event.schema.json",
+  "title": "Archive Replay Public Event Fixtures",
+  "description": "Fixture contract for adapting HLS archive sidecars into ResearchVehiclePublicEvent replay/public-link decisions.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "cursor_owner",
+    "idempotency_owner",
+    "fixtures"
+  ],
+  "additionalProperties": false,
+  "x-required_fixture_cases": [
+    "clean_public_replay_link",
+    "missing_temporal_span_refs",
+    "private_temporal_span_ref",
+    "rights_privacy_blocked",
+    "egress_blocked",
+    "capture_only_no_public_url"
+  ],
+  "x-cursor_owner": "archive-replay-public-event-link-adapter:sidecar_path+event_id",
+  "x-idempotency_owner": "archive-replay-public-event-link-adapter:event_id",
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/archive-replay-public-event.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "cursor_owner": {
+      "type": "string",
+      "const": "archive-replay-public-event-link-adapter:sidecar_path+event_id"
+    },
+    "idempotency_owner": {
+      "type": "string",
+      "const": "archive-replay-public-event-link-adapter:event_id"
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fixture"},
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "fixture": {
+      "type": "object",
+      "required": [
+        "case",
+        "sidecar",
+        "evidence",
+        "expected_status",
+        "expected_public_replay_link_claim_allowed",
+        "expected_unavailable_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "case": {
+          "type": "string",
+          "enum": [
+            "clean_public_replay_link",
+            "missing_temporal_span_refs",
+            "private_temporal_span_ref",
+            "rights_privacy_blocked",
+            "egress_blocked",
+            "capture_only_no_public_url"
+          ]
+        },
+        "sidecar": {"$ref": "#/$defs/segment_sidecar"},
+        "evidence": {"$ref": "#/$defs/replay_evidence"},
+        "expected_status": {"type": "string", "enum": ["emitted", "held", "refused"]},
+        "expected_public_replay_link_claim_allowed": {"type": "boolean"},
+        "expected_unavailable_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "segment_sidecar": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "segment_id",
+        "segment_path",
+        "condition_id",
+        "segment_start_ts",
+        "segment_end_ts",
+        "duration_seconds",
+        "reaction_ids",
+        "active_activity",
+        "stimmung_snapshot",
+        "directives_hash",
+        "archive_kind",
+        "created_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "segment_id": {"type": "string", "minLength": 1},
+        "segment_path": {"type": "string", "minLength": 1},
+        "condition_id": {"type": ["string", "null"]},
+        "segment_start_ts": {"type": "string", "format": "date-time"},
+        "segment_end_ts": {"type": "string", "format": "date-time"},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "reaction_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "active_activity": {"type": ["string", "null"]},
+        "stimmung_snapshot": {"type": "object"},
+        "directives_hash": {"type": ["string", "null"]},
+        "archive_kind": {"type": "string", "const": "hls"},
+        "created_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "replay_evidence": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "public_url",
+        "broadcast_id",
+        "programme_id",
+        "replay_title",
+        "salience",
+        "rights_class",
+        "privacy_class",
+        "rights_basis",
+        "attribution_refs",
+        "provenance_token",
+        "provenance_evidence_refs",
+        "temporal_span_refs",
+        "source_segment_refs",
+        "egress_public_claim_allowed",
+        "egress_evidence_refs",
+        "audio_safe_for_broadcast",
+        "public_event_gate_ref",
+        "public_event_gate_status",
+        "evidence_fresh_at",
+        "evidence_max_age_s"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "public_url": {"type": ["string", "null"], "format": "uri"},
+        "broadcast_id": {"type": ["string", "null"]},
+        "programme_id": {"type": ["string", "null"]},
+        "replay_title": {"type": "string", "minLength": 1},
+        "salience": {"type": "number", "minimum": 0, "maximum": 1},
+        "rights_class": {
+          "type": "string",
+          "enum": [
+            "operator_original",
+            "operator_controlled",
+            "third_party_attributed",
+            "third_party_uncleared",
+            "platform_embedded",
+            "unknown"
+          ]
+        },
+        "privacy_class": {
+          "type": "string",
+          "enum": [
+            "operator_private",
+            "consent_required",
+            "aggregate_only",
+            "public_safe",
+            "unknown"
+          ]
+        },
+        "rights_basis": {"type": "string", "minLength": 1},
+        "attribution_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "provenance_token": {"type": ["string", "null"]},
+        "provenance_evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "temporal_span_refs": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^span:[a-z0-9_.:-]+$"},
+          "uniqueItems": true
+        },
+        "source_segment_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "egress_public_claim_allowed": {"type": "boolean"},
+        "egress_evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "audio_safe_for_broadcast": {"type": "boolean"},
+        "public_event_gate_ref": {"type": ["string", "null"]},
+        "public_event_gate_status": {
+          "type": "string",
+          "enum": ["pass", "fail", "missing", "stale"]
+        },
+        "evidence_fresh_at": {"type": "string", "format": "date-time"},
+        "evidence_max_age_s": {"type": "number", "exclusiveMinimum": 0}
+      }
+    }
+  }
+}
