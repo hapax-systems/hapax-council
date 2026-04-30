@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/adapter-tranche-selection-memo.schema.json",
+  "title": "AdapterTrancheSelectionMemo",
+  "description": "Dispatch-table contract for selecting the first bounded livestream substrate adapter tranche.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "memo_id",
+    "schema_ref",
+    "declared_at",
+    "producer",
+    "source_refs",
+    "first_wave_cap",
+    "selected_adapter_ids",
+    "youtube_player_vs_music_choice",
+    "public_live_policy",
+    "umbrella_action",
+    "candidate_statuses",
+    "candidates"
+  ],
+  "properties": {
+    "$schema": {"type": "string", "const": "../schemas/adapter-tranche-selection-memo.schema.json"},
+    "schema_version": {"type": "integer", "const": 1},
+    "memo_id": {"type": "string", "const": "adapter_tranche_selection_memo"},
+    "schema_ref": {"type": "string", "const": "schemas/adapter-tranche-selection-memo.schema.json"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "source_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 6,
+      "uniqueItems": true
+    },
+    "first_wave_cap": {"type": "integer", "const": 5},
+    "selected_adapter_ids": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/adapter_id"},
+      "minItems": 1,
+      "maxItems": 5,
+      "uniqueItems": true
+    },
+    "youtube_player_vs_music_choice": {"$ref": "#/$defs/youtube_player_vs_music_choice"},
+    "public_live_policy": {"$ref": "#/$defs/public_live_policy"},
+    "umbrella_action": {"$ref": "#/$defs/umbrella_action"},
+    "candidate_statuses": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/candidate_status"},
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true
+    },
+    "candidates": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/candidate"},
+      "minItems": 15
+    }
+  },
+  "x-required_candidate_labels": [
+    "Captions",
+    "Cuepoints and chapters",
+    "Chat ambient / keyword",
+    "Overlay / research marker",
+    "Local visual pool",
+    "CBIP",
+    "Re-Splay M8",
+    "Music request / provenance",
+    "YouTube player smoke",
+    "Refusal publication",
+    "Mobile substream",
+    "Lore wards",
+    "Autonomous narrative",
+    "LRR archive",
+    "CDN assets"
+  ],
+  "x-required_selected_adapter_ids": [
+    "caption-substrate-adapter",
+    "cuepoint-substrate-adapter",
+    "chat-ambient-keyword-substrate-adapter",
+    "overlay-research-marker-substrate-adapter",
+    "music-request-provenance-substrate-adapter"
+  ],
+  "$defs": {
+    "adapter_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "ref_list": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "candidate_status": {
+      "type": "string",
+      "enum": [
+        "select_tranche_1",
+        "block",
+        "defer_behind_named_gate",
+        "absorb_into_active_task",
+        "unavailable"
+      ]
+    },
+    "youtube_player_vs_music_choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chosen", "not_chosen", "rationale"],
+      "properties": {
+        "chosen": {"type": "string", "const": "music-request-provenance-substrate-adapter"},
+        "not_chosen": {"type": "string", "const": "youtube-player-substrate-smoke"},
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    },
+    "public_live_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selection_grants_public_live",
+        "selection_grants_viewer_visibility",
+        "selection_grants_publication",
+        "selection_grants_monetization",
+        "requires_egress_public_claim",
+        "requires_rights_consent_privacy",
+        "requires_provenance",
+        "requires_health_signal",
+        "unknown_or_stale_fails_closed"
+      ],
+      "properties": {
+        "selection_grants_public_live": {"type": "boolean", "const": false},
+        "selection_grants_viewer_visibility": {"type": "boolean", "const": false},
+        "selection_grants_publication": {"type": "boolean", "const": false},
+        "selection_grants_monetization": {"type": "boolean", "const": false},
+        "requires_egress_public_claim": {"type": "boolean", "const": true},
+        "requires_rights_consent_privacy": {"type": "boolean", "const": true},
+        "requires_provenance": {"type": "boolean", "const": true},
+        "requires_health_signal": {"type": "boolean", "const": true},
+        "unknown_or_stale_fails_closed": {"type": "boolean", "const": true}
+      }
+    },
+    "umbrella_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["umbrella_task_id", "action", "dispatch_umbrella_as_implementation", "reason"],
+      "properties": {
+        "umbrella_task_id": {"type": "string", "const": "substrate-adapter-buildout-tranche-1"},
+        "action": {"type": "string", "const": "supersede_with_dispatch_table"},
+        "dispatch_umbrella_as_implementation": {"type": "boolean", "const": false},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "label",
+        "status",
+        "substrate_refs",
+        "lane_refs",
+        "anchor_tasks",
+        "event_input",
+        "producer_freshness",
+        "render_target",
+        "rights_consent_posture",
+        "public_claim_policy",
+        "health_signal",
+        "dry_run_explanation",
+        "tests",
+        "verification_artifact",
+        "selection_rationale",
+        "gates",
+        "source_refs"
+      ],
+      "properties": {
+        "adapter_id": {"$ref": "#/$defs/adapter_id"},
+        "label": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/candidate_status"},
+        "substrate_refs": {"$ref": "#/$defs/ref_list"},
+        "lane_refs": {"$ref": "#/$defs/ref_list"},
+        "anchor_tasks": {"$ref": "#/$defs/ref_list"},
+        "event_input": {"type": "string", "minLength": 1},
+        "producer_freshness": {"type": "string", "minLength": 1},
+        "render_target": {"type": "string", "minLength": 1},
+        "rights_consent_posture": {"type": "string", "minLength": 1},
+        "public_claim_policy": {"type": "string", "minLength": 1},
+        "health_signal": {"type": "string", "minLength": 1},
+        "dry_run_explanation": {"type": "string", "minLength": 1},
+        "tests": {"$ref": "#/$defs/ref_list"},
+        "verification_artifact": {"type": "string", "minLength": 1},
+        "selection_rationale": {"type": "string", "minLength": 1},
+        "gates": {"$ref": "#/$defs/ref_list"},
+        "source_refs": {"$ref": "#/$defs/ref_list"}
+      }
+    }
+  }
+}
