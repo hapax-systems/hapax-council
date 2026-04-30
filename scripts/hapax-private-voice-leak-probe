@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/hapax-private-voice-leak-probe --dry-run
+  HAPAX_LIVE_AUDIO_PROBE_AUTHORIZED=1 scripts/hapax-private-voice-leak-probe --run
+
+Dry-run prints the post-review live probe without touching systemd, PipeWire, or
+Daimonion audio. --run is for cx-red/operator-authorized verification only; it
+does not unmask, restart, unmute, synthesize, or route audio by itself.
+USAGE
+}
+
+mode="${1:---dry-run}"
+case "$mode" in
+  --dry-run)
+    usage
+    cat <<'PLAN'
+
+Authorized live probe sequence:
+  1. cx-red reviews/merges the hard-stop patch.
+  2. cx-red authorizes service restoration and private-path unmute.
+  3. Operator triggers one private Blue Yeti/Daimonion utterance.
+  4. Run this script with --run immediately after the utterance.
+
+Pass condition:
+  - voice-output-witness records destination=private or a drop.
+  - voice-output-witness does not record media_role=Broadcast for the private utterance.
+  - This script's PipeWire graph scan finds no private route linked into these broadcast nodes:
+    hapax-obs-broadcast-remap, hapax-broadcast-normalized, hapax-voice-fx-capture.
+
+This dry-run mode intentionally performs no live audio action.
+PLAN
+    exit 0
+    ;;
+  --run)
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 64
+    ;;
+esac
+
+if [[ "${HAPAX_LIVE_AUDIO_PROBE_AUTHORIZED:-}" != "1" ]]; then
+  echo "refusing live probe: set HAPAX_LIVE_AUDIO_PROBE_AUTHORIZED=1 after cx-red authorization" >&2
+  exit 2
+fi
+
+witness="${HAPAX_VOICE_OUTPUT_WITNESS:-/dev/shm/hapax-daimonion/voice-output-witness.json}"
+if [[ ! -r "$witness" ]]; then
+  echo "fail: voice-output witness missing or unreadable: $witness" >&2
+  exit 1
+fi
+
+python - "$witness" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+decision = payload.get("last_destination_decision") or {}
+playback = payload.get("last_playback") or {}
+drop = payload.get("last_drop") or {}
+
+destination = decision.get("destination")
+decision_role = decision.get("media_role")
+playback_role = playback.get("media_role")
+drop_reason = drop.get("reason")
+
+if destination == "private" and playback_role != "Broadcast":
+    print("pass: witness decision is private and playback is not Broadcast")
+    sys.exit(0)
+if drop_reason and playback_role != "Broadcast":
+    print(f"pass: private probe was dropped before broadcast playback ({drop_reason})")
+    sys.exit(0)
+
+print(
+    "fail: witness does not prove private/drop terminal state "
+    f"(destination={destination!r}, decision_role={decision_role!r}, playback_role={playback_role!r})",
+    file=sys.stderr,
+)
+sys.exit(1)
+PY
+
+if ! command -v pw-link >/dev/null 2>&1; then
+  echo "fail: pw-link unavailable; cannot verify private-to-broadcast graph condition" >&2
+  exit 1
+fi
+
+graph="$(pw-link -l)"
+HAPAX_PW_LINK_GRAPH="$graph" python - <<'PY'
+from __future__ import annotations
+
+import os
+import sys
+
+graph = os.environ["HAPAX_PW_LINK_GRAPH"].splitlines()
+private_terms = (
+    "audio.yeti_monitor",
+    "assistant-private",
+    "notification-private",
+    "hapax-private",
+    "private monitor",
+    "route:private",
+)
+broadcast_terms = (
+    "hapax-obs-broadcast-remap",
+    "hapax-broadcast-normalized",
+    "hapax-voice-fx-capture",
+)
+
+violations: list[str] = []
+private_header = False
+broadcast_header = False
+for raw_line in graph:
+    line = raw_line.strip()
+    lowered = line.lower()
+    has_private = any(term.lower() in lowered for term in private_terms)
+    has_broadcast = any(term.lower() in lowered for term in broadcast_terms)
+    is_link_line = raw_line.startswith((" ", "\t")) or "->" in line or "|->" in line
+    if not is_link_line:
+        private_header = has_private
+        broadcast_header = has_broadcast
+    if (has_private and has_broadcast) or (private_header and has_broadcast) or (
+        broadcast_header and has_private
+    ):
+        violations.append(line)
+
+if violations:
+    print("fail: forbidden private-to-broadcast PipeWire linkage detected", file=sys.stderr)
+    for violation in violations:
+        print(violation, file=sys.stderr)
+    sys.exit(1)
+
+print("pass: no private-to-broadcast PipeWire linkage detected")
+PY

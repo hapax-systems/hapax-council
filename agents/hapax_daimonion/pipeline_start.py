@@ -224,12 +224,18 @@ def _resolve_tools(daemon, _exp, get_working_mode):
 def _play_wake_greeting(daemon: VoiceDaemon) -> None:
     """Play a presynthesized acknowledging phrase in a background thread.
 
-    Must not block the event loop — audio_output.write() sleeps for the
+    Must not block the event loop — routed audio_output.write() sleeps for the
     audio duration (real-time pacing). Blocking here freezes the cognitive
-    loop and causes utterances to be swallowed.
+    loop and causes utterances to be swallowed. The greeting still resolves
+    private-or-drop and records voice-output witness before any write.
     """
     try:
         from agents.hapax_daimonion.bridge_engine import BridgeContext
+        from agents.hapax_daimonion.cpal.destination_channel import resolve_playback_decision
+        from agents.hapax_daimonion.voice_output_witness import (
+            record_destination_decision,
+            record_drop,
+        )
 
         ctx = BridgeContext(
             turn_position=0,
@@ -240,10 +246,44 @@ def _play_wake_greeting(daemon: VoiceDaemon) -> None:
         if pcm and daemon._conversation_pipeline._audio_output:
             import threading
 
+            decision = resolve_playback_decision(None)
+            destination_target = decision.target
+            destination_role = decision.media_role
+            record_destination_decision(
+                source="pipeline_start_wake_greeting",
+                destination=decision.destination.value,
+                route_accepted=decision.allowed,
+                reason=decision.reason_code,
+                safety_gate=decision.safety_gate,
+                target=destination_target,
+                media_role=destination_role,
+                text=phrase,
+                terminal_state="pending" if decision.allowed else "inhibited",
+            )
+            if not decision.allowed:
+                record_drop(
+                    reason=decision.reason_code,
+                    source="pipeline_start_wake_greeting",
+                    destination=decision.destination.value,
+                    target=destination_target,
+                    media_role=destination_role,
+                    text=phrase,
+                    terminal_state="inhibited",
+                )
+                return
+
             def _play() -> None:
                 daemon._conversation_buffer.set_speaking(True)
-                daemon._conversation_pipeline._audio_output.write(pcm)
-                daemon._conversation_buffer.set_speaking(False)
+                try:
+                    daemon._conversation_pipeline._write_audio(
+                        daemon._conversation_pipeline._audio_output,
+                        getattr(daemon._conversation_pipeline, "_echo_canceller", None),
+                        pcm,
+                        destination_target,
+                        destination_role,
+                    )
+                finally:
+                    daemon._conversation_buffer.set_speaking(False)
 
             threading.Thread(target=_play, daemon=True).start()
             log.info("Wake greeting: '%s'", phrase)

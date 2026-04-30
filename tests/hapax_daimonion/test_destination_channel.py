@@ -35,9 +35,15 @@ from agents.hapax_daimonion.cpal.destination_channel import (
     classify_and_record,
     classify_destination,
     is_routing_active,
+    resolve_playback_decision,
     resolve_role,
     resolve_route,
     resolve_target,
+)
+from shared.broadcast_audio_health import (
+    BroadcastAudioHealth,
+    BroadcastAudioStatus,
+    write_broadcast_audio_health_state,
 )
 from shared.impingement import Impingement, ImpingementType
 from shared.voice_output_router import VoiceRouteState
@@ -61,6 +67,35 @@ def _write_private_status(path: Path) -> None:
             }
         ),
         encoding="utf-8",
+    )
+
+
+def _write_broadcast_health(path: Path, *, safe: bool) -> None:
+    write_broadcast_audio_health_state(
+        BroadcastAudioHealth(
+            safe=safe,
+            status=BroadcastAudioStatus.SAFE if safe else BroadcastAudioStatus.UNSAFE,
+            checked_at="2026-04-30T02:50:00Z",
+            freshness_s=0.0,
+            evidence={"fixture": True},
+        ),
+        path=path,
+    )
+
+
+def _broadcast_imp(*, now: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        source="autonomous_narrative",
+        content={
+            "public_broadcast_intent": True,
+            "programme_authorization": {
+                "authorized": True,
+                "authorized_at": now,
+                "programme_id": "programme:test-public",
+                "evidence_ref": "programme:test-public:broadcast-voice",
+            },
+            "narrative": "Authorized public narration.",
+        },
     )
 
 
@@ -94,8 +129,8 @@ class TestClassification:
         )
         assert classify_destination(imp) == DestinationChannel.PRIVATE
 
-    def test_director_narrative_routes_livestream(self):
-        """No channel / no debug kind / no sidechat source → livestream."""
+    def test_director_narrative_defaults_private(self):
+        """No explicit broadcast intent now resolves private/drop, not livestream."""
         imp = Impingement(
             timestamp=time.time(),
             source="director.narrative",
@@ -103,7 +138,25 @@ class TestClassification:
             strength=0.6,
             content={"metric": "tempo_shift", "narrative": "the beat opened up"},
         )
+        assert classify_destination(imp) == DestinationChannel.PRIVATE
+
+    def test_explicit_broadcast_intent_routes_livestream_for_later_gate(self):
+        imp = SimpleNamespace(
+            source="autonomous_narrative",
+            content={"public_broadcast_intent": True, "narrative": "public voice"},
+        )
         assert classify_destination(imp) == DestinationChannel.LIVESTREAM
+
+    def test_private_context_wins_over_public_looking_token(self):
+        imp = SimpleNamespace(
+            source="operator.sidechat",
+            content={
+                "channel": "sidechat",
+                "public_broadcast_intent": True,
+                "narrative": "still private",
+            },
+        )
+        assert classify_destination(imp) == DestinationChannel.PRIVATE
 
     def test_debug_kind_routes_private(self):
         """kind='debug' diverts private even without sidechat provenance."""
@@ -113,8 +166,8 @@ class TestClassification:
         )
         assert classify_destination(imp) == DestinationChannel.PRIVATE
 
-    def test_textmode_without_sidechat_routes_livestream(self):
-        """Register alone never flips destination — sidechat origin must be present."""
+    def test_textmode_without_sidechat_defaults_private(self):
+        """Register alone never authorizes public/broadcast voice."""
         imp = Impingement(
             timestamp=time.time(),
             source="homage.bitchx.announce",
@@ -124,7 +177,7 @@ class TestClassification:
         )
         assert (
             classify_destination(imp, voice_register=VoiceRegister.TEXTMODE)
-            == DestinationChannel.LIVESTREAM
+            == DestinationChannel.PRIVATE
         )
 
     def test_textmode_with_sidechat_routes_private(self):
@@ -147,14 +200,14 @@ class TestClassification:
             == DestinationChannel.PRIVATE
         )
 
-    def test_none_impingement_is_livestream(self):
+    def test_none_impingement_is_private(self):
         """Defensive default when something upstream passes None."""
-        assert classify_destination(None) == DestinationChannel.LIVESTREAM
+        assert classify_destination(None) == DestinationChannel.PRIVATE
 
-    def test_missing_content_is_livestream(self):
+    def test_missing_content_is_private(self):
         """Object without content attribute still classifies safely."""
         imp = SimpleNamespace(source="")
-        assert classify_destination(imp) == DestinationChannel.LIVESTREAM
+        assert classify_destination(imp) == DestinationChannel.PRIVATE
 
 
 # --- Target resolution ------------------------------------------------------
@@ -207,6 +260,121 @@ class TestTargetResolution:
         assert result.target_binding is not None
         assert result.target_binding.target is None
 
+
+# --- Playback hard-stop gate -------------------------------------------------
+
+
+class TestPlaybackDecision:
+    def test_blue_yeti_operator_call_resolves_private_when_monitor_ready(self, tmp_path):
+        now = time.time()
+        status_path = tmp_path / "private-monitor-target.json"
+        _write_private_status(status_path)
+        imp = SimpleNamespace(
+            source="operator.microphone.blue_yeti",
+            content={"wake_word": "hapax", "input_device": "blue_yeti"},
+        )
+
+        decision = resolve_playback_decision(
+            imp,
+            private_monitor_status_path=status_path,
+            now=now,
+        )
+
+        assert decision.allowed is True
+        assert decision.destination is DestinationChannel.PRIVATE
+        assert decision.target == PRIVATE_SINK
+        assert decision.media_role == PRIVATE_MEDIA_ROLE
+
+    def test_sidechat_resolves_private_when_monitor_ready(self, tmp_path):
+        now = time.time()
+        status_path = tmp_path / "private-monitor-target.json"
+        _write_private_status(status_path)
+        imp = SimpleNamespace(
+            source="operator.sidechat",
+            content={"channel": "sidechat", "narrative": "private reply"},
+        )
+
+        decision = resolve_playback_decision(
+            imp,
+            private_monitor_status_path=status_path,
+            now=now,
+        )
+
+        assert decision.allowed is True
+        assert decision.destination is DestinationChannel.PRIVATE
+        assert decision.target == PRIVATE_SINK
+
+    def test_autonomous_narration_without_broadcast_contract_drops_when_private_missing(
+        self, tmp_path
+    ):
+        imp = SimpleNamespace(
+            source="autonomous_narrative",
+            content={"narrative": "No public contract."},
+        )
+
+        decision = resolve_playback_decision(
+            imp,
+            private_monitor_status_path=tmp_path / "missing-private-monitor.json",
+            now=1_800_000_000.0,
+        )
+
+        assert decision.allowed is False
+        assert decision.destination is DestinationChannel.PRIVATE
+        assert decision.reason_code == "private_monitor_status_missing"
+        assert decision.target is None
+
+    def test_explicit_broadcast_requires_fresh_programme_auth_and_audio_safe(self, tmp_path):
+        now = time.time()
+        health_path = tmp_path / "audio-safe-for-broadcast.json"
+        _write_broadcast_health(health_path, safe=True)
+
+        decision = resolve_playback_decision(
+            _broadcast_imp(now=now),
+            broadcast_audio_health_path=health_path,
+            now=now,
+        )
+
+        assert decision.allowed is True
+        assert decision.destination is DestinationChannel.LIVESTREAM
+        assert decision.reason_code == "broadcast_voice_authorized"
+        assert decision.target == "hapax-voice-fx-capture"
+        assert decision.media_role == BROADCAST_MEDIA_ROLE
+        assert decision.safety_gate["audio_safe_for_broadcast"]["safe"] is True
+
+    def test_explicit_broadcast_blocks_when_audio_safe_for_broadcast_false(self, tmp_path):
+        now = time.time()
+        health_path = tmp_path / "audio-safe-for-broadcast.json"
+        _write_broadcast_health(health_path, safe=False)
+
+        decision = resolve_playback_decision(
+            _broadcast_imp(now=now),
+            broadcast_audio_health_path=health_path,
+            now=now,
+        )
+
+        assert decision.allowed is False
+        assert decision.destination is DestinationChannel.LIVESTREAM
+        assert decision.reason_code == "audio_safe_for_broadcast_false"
+        assert decision.target is None
+
+    def test_explicit_broadcast_blocks_without_programme_authorization(self, tmp_path):
+        now = time.time()
+        health_path = tmp_path / "audio-safe-for-broadcast.json"
+        _write_broadcast_health(health_path, safe=True)
+        imp = SimpleNamespace(
+            source="autonomous_narrative",
+            content={"public_broadcast_intent": True, "narrative": "No auth."},
+        )
+
+        decision = resolve_playback_decision(
+            imp,
+            broadcast_audio_health_path=health_path,
+            now=now,
+        )
+
+        assert decision.allowed is False
+        assert decision.reason_code == "programme_authorization_missing"
+
     @pytest.mark.parametrize(
         "raw,expected_active",
         [
@@ -249,8 +417,11 @@ class TestCounter:
         baseline_live = _sample("livestream")
         baseline_priv = _sample("private")
 
-        # One livestream utterance.
-        livestream_imp = SimpleNamespace(source="director.narrative", content={"metric": "x"})
+        # One explicitly-public utterance.
+        livestream_imp = SimpleNamespace(
+            source="director.narrative",
+            content={"public_broadcast_intent": True, "metric": "x"},
+        )
         assert classify_and_record(livestream_imp) == DestinationChannel.LIVESTREAM
 
         # Two private utterances (sidechat + debug).
