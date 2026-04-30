@@ -8,18 +8,105 @@ from unittest import mock
 from prometheus_client import CollectorRegistry
 
 from agents.cross_surface.bluesky_post import (
+    ALLOWED_PUBLIC_EVENT_TYPES,
     BLUESKY_TEXT_LIMIT,
-    EVENT_TYPE,
     BlueskyPoster,
     _credentials_from_env,
 )
+from shared.research_vehicle_public_event import (
+    PublicEventChapterRef,
+    PublicEventProvenance,
+    PublicEventSource,
+    PublicEventSurfacePolicy,
+    ResearchVehiclePublicEvent,
+)
 
 
-def _write_events(path, events: list[dict]) -> None:
+def _public_event(**overrides) -> ResearchVehiclePublicEvent:
+    payload = {
+        "schema_version": 1,
+        "event_id": "rvpe:broadcast_boundary:20260430:bsky",
+        "event_type": "broadcast.boundary",
+        "occurred_at": "2026-04-30T12:00:00Z",
+        "broadcast_id": "broadcast-123",
+        "programme_id": None,
+        "condition_id": None,
+        "source": PublicEventSource(
+            producer="tests",
+            substrate_id="youtube_metadata",
+            task_anchor="bluesky-public-event-adapter",
+            evidence_ref="tests#event",
+            freshness_ref="tests.age_s",
+        ),
+        "salience": 0.72,
+        "state_kind": "live_state",
+        "rights_class": "operator_original",
+        "privacy_class": "public_safe",
+        "provenance": PublicEventProvenance(
+            token="public-event-token",
+            generated_at="2026-04-30T12:00:01Z",
+            producer="tests",
+            evidence_refs=["tests.evidence"],
+            rights_basis="operator generated test event",
+            citation_refs=["tests.citation"],
+        ),
+        "public_url": "https://www.youtube.com/watch?v=broadcast-123",
+        "frame_ref": None,
+        "chapter_ref": PublicEventChapterRef(
+            kind="chapter",
+            label="Boundary",
+            timecode="00:00",
+            source_event_id="rvpe:broadcast_boundary:20260430:bsky",
+        ),
+        "attribution_refs": ["tests.attribution"],
+        "surface_policy": PublicEventSurfacePolicy(
+            allowed_surfaces=["bluesky", "archive", "health"],
+            denied_surfaces=["mastodon"],
+            claim_live=True,
+            claim_archive=True,
+            claim_monetizable=False,
+            requires_egress_public_claim=True,
+            requires_audio_safe=True,
+            requires_provenance=True,
+            requires_human_review=False,
+            rate_limit_key="broadcast.boundary:live_state",
+            redaction_policy="operator_referent",
+            fallback_action="hold",
+            dry_run_reason=None,
+        ),
+    }
+    payload.update(overrides)
+    return ResearchVehiclePublicEvent(**payload)
+
+
+def _surface_policy(**overrides) -> PublicEventSurfacePolicy:
+    payload = {
+        "allowed_surfaces": ["bluesky", "archive", "health"],
+        "denied_surfaces": ["mastodon"],
+        "claim_live": True,
+        "claim_archive": True,
+        "claim_monetizable": False,
+        "requires_egress_public_claim": True,
+        "requires_audio_safe": True,
+        "requires_provenance": True,
+        "requires_human_review": False,
+        "rate_limit_key": "broadcast.boundary:live_state",
+        "redaction_policy": "operator_referent",
+        "fallback_action": "hold",
+        "dry_run_reason": None,
+    }
+    payload.update(overrides)
+    return PublicEventSurfacePolicy(**payload)
+
+
+def _write_events(path, events: list[ResearchVehiclePublicEvent | dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
         for event in events:
-            fh.write(json.dumps(event) + "\n")
+            if isinstance(event, ResearchVehiclePublicEvent):
+                fh.write(event.to_json_line())
+            else:
+                fh.write(json.dumps(event) + "\n")
 
 
 def _make_poster(
@@ -45,6 +132,7 @@ def _make_poster(
         client_factory=client_factory,
         event_path=event_path,
         cursor_path=cursor_path,
+        idempotency_path=cursor_path.with_name("posted-event-ids.json"),
         registry=CollectorRegistry(),
         dry_run=dry_run,
     )
@@ -64,24 +152,63 @@ class TestCursor:
 
     def test_persists_cursor(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         cursor = tmp_path / "cursor.txt"
         poster, _ = _make_poster(event_path=bus, cursor_path=cursor)
         poster.run_once()
         assert int(cursor.read_text()) == bus.stat().st_size
+
+    def test_file_shrink_resets_cursor_and_processes_new_event(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        _write_events(bus, [_public_event(event_id="rvpe:broadcast_boundary:long-file")])
+        poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
+        poster.run_once()
+
+        client = factory.return_value
+        client.send_post.reset_mock()
+        _write_events(bus, [_public_event(event_id="rvpe:broadcast_boundary:short")])
+        cursor.write_text(str(bus.stat().st_size + 100), encoding="utf-8")
+
+        assert poster.run_once() == 1
+        assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
+        client.send_post.assert_called_once()
+
+    def test_processed_event_id_prevents_repost_after_cursor_loss(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        event = _public_event(event_id="rvpe:broadcast_boundary:stable-id")
+        _write_events(bus, [event])
+        poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
+        assert poster.run_once() == 1
+
+        cursor.write_text("0", encoding="utf-8")
+        assert poster.run_once() == 0
+        factory.return_value.send_post.assert_called_once()
 
 
 # ── Event filtering ──────────────────────────────────────────────────
 
 
 class TestEventFiltering:
-    def test_skips_non_broadcast_rotated(self, tmp_path):
+    def test_allowed_public_event_types_match_contract(self):
+        assert {
+            "broadcast.boundary",
+            "chronicle.high_salience",
+            "shorts.upload",
+        } == ALLOWED_PUBLIC_EVENT_TYPES
+
+    def test_skips_unsupported_public_event_type(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         _write_events(
             bus,
             [
-                {"event_type": "stream_started"},
-                {"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"},
+                _public_event(
+                    event_id="rvpe:aesthetic_frame:ignored",
+                    event_type="aesthetic.frame_capture",
+                    state_kind="aesthetic_frame",
+                ),
+                _public_event(event_id="rvpe:broadcast_boundary:posted"),
             ],
         )
         client = mock.Mock()
@@ -95,6 +222,88 @@ class TestEventFiltering:
         poster.run_once()
         assert client.send_post.call_count == 1
 
+    def test_rejects_event_without_bluesky_surface_policy(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    surface_policy=_surface_policy(
+                        allowed_surfaces=["archive"],
+                        denied_surfaces=["bluesky"],
+                    )
+                )
+            ],
+        )
+        client = mock.Mock()
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            client_factory=factory,
+        )
+        assert poster.run_once() == 1
+        client.send_post.assert_not_called()
+
+    def test_chronicle_event_projects_grounding_for_allowlist(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    event_id="rvpe:chronicle_high_salience:bsky",
+                    event_type="chronicle.high_salience",
+                    state_kind="research_observation",
+                    chapter_ref=PublicEventChapterRef(
+                        kind="chapter",
+                        label="high-salience observation",
+                        timecode="00:42",
+                        source_event_id="rvpe:chronicle_high_salience:bsky",
+                    ),
+                )
+            ],
+        )
+        client = mock.Mock()
+        client.send_post.return_value = mock.Mock(uri="at://post/1")
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            client_factory=factory,
+        )
+
+        assert poster.run_once() == 1
+        client.send_post.assert_called_once()
+
+    def test_shorts_upload_event_projects_grounding_for_allowlist(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    event_id="rvpe:shorts_upload:bsky",
+                    event_type="shorts.upload",
+                    state_kind="short_form",
+                    public_url="https://www.youtube.com/shorts/short-123",
+                    chapter_ref=None,
+                    surface_policy=_surface_policy(
+                        rate_limit_key="shorts.upload:short_form",
+                    ),
+                )
+            ],
+        )
+        client = mock.Mock()
+        client.send_post.return_value = mock.Mock(uri="at://post/1")
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            client_factory=factory,
+        )
+
+        assert poster.run_once() == 1
+        client.send_post.assert_called_once()
+
 
 # ── Dry-run ──────────────────────────────────────────────────────────
 
@@ -102,7 +311,7 @@ class TestEventFiltering:
 class TestDryRun:
     def test_dry_run_does_not_call_factory(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         factory = mock.Mock()
         poster, _ = _make_poster(
             event_path=bus,
@@ -115,7 +324,7 @@ class TestDryRun:
 
     def test_dry_run_advances_cursor(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         cursor = tmp_path / "cursor.txt"
         poster, _ = _make_poster(event_path=bus, cursor_path=cursor, dry_run=True)
         poster.run_once()
@@ -128,7 +337,7 @@ class TestDryRun:
 class TestAllowlist:
     def test_deny_short_circuits(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         client = mock.Mock()
         factory = mock.Mock(return_value=client)
         poster, _ = _make_poster(
@@ -153,7 +362,7 @@ class TestAllowlist:
 class TestTextLength:
     def test_text_truncated_to_300_chars(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         client = mock.Mock()
         factory = mock.Mock(return_value=client)
         long_text = "x" * 500
@@ -175,7 +384,7 @@ class TestTextLength:
 class TestCredentials:
     def test_missing_handle_skips_send(self, tmp_path, caplog):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         factory = mock.Mock()
         poster, _ = _make_poster(
             event_path=bus,
@@ -189,7 +398,7 @@ class TestCredentials:
 
     def test_missing_password_skips_send(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         factory = mock.Mock()
         poster, _ = _make_poster(
             event_path=bus,
@@ -202,7 +411,7 @@ class TestCredentials:
 
     def test_login_failure_returns_auth_error(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         factory = mock.Mock(side_effect=RuntimeError("invalid creds"))
         poster, _ = _make_poster(
             event_path=bus,
@@ -220,7 +429,7 @@ class TestCredentials:
 
     def test_send_post_raises_returns_error(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         client = mock.Mock()
         client.send_post.side_effect = RuntimeError("api down")
         factory = mock.Mock(return_value=client)
@@ -239,7 +448,7 @@ class TestCredentials:
 
     def test_client_factory_receives_handle_and_password(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         client = mock.Mock()
         factory = mock.Mock(return_value=client)
         poster, _ = _make_poster(
