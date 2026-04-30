@@ -100,7 +100,11 @@ class TestPhase1PublishBusEndToEnd:
                 "discord-webhook",
             ],
         )
-        orch = Orchestrator(state_root=tmp_path, registry=CollectorRegistry())
+        orch = Orchestrator(
+            state_root=tmp_path,
+            public_event_path=tmp_path / "public-events.jsonl",
+            registry=CollectorRegistry(),
+        )
 
         handled = orch.run_once()
         assert handled == 1
@@ -122,7 +126,11 @@ class TestPhase1PublishBusEndToEnd:
 
         _drop_approved_artifact(tmp_path, slug="e2e-bsky-ok", surfaces=["bluesky-post"])
 
-        orch = Orchestrator(state_root=tmp_path, registry=CollectorRegistry())
+        orch = Orchestrator(
+            state_root=tmp_path,
+            public_event_path=tmp_path / "public-events.jsonl",
+            registry=CollectorRegistry(),
+        )
 
         from agents.cross_surface import bluesky_post
 
@@ -150,7 +158,11 @@ class TestPhase1PublishBusEndToEnd:
 
         _drop_approved_artifact(tmp_path, slug="e2e-discord-ok", surfaces=["discord-webhook"])
 
-        orch = Orchestrator(state_root=tmp_path, registry=CollectorRegistry())
+        orch = Orchestrator(
+            state_root=tmp_path,
+            public_event_path=tmp_path / "public-events.jsonl",
+            registry=CollectorRegistry(),
+        )
 
         from agents.cross_surface import discord_webhook
 
@@ -173,7 +185,11 @@ class TestPhase1PublishBusEndToEnd:
 
         _drop_approved_artifact(tmp_path, slug="e2e-arena-ok", surfaces=["arena-post"])
 
-        orch = Orchestrator(state_root=tmp_path, registry=CollectorRegistry())
+        orch = Orchestrator(
+            state_root=tmp_path,
+            public_event_path=tmp_path / "public-events.jsonl",
+            registry=CollectorRegistry(),
+        )
 
         from agents.cross_surface import arena_post
 
@@ -217,7 +233,11 @@ class TestPhase1PublishBusEndToEnd:
             ],
         )
 
-        orch = Orchestrator(state_root=tmp_path, registry=CollectorRegistry())
+        orch = Orchestrator(
+            state_root=tmp_path,
+            public_event_path=tmp_path / "public-events.jsonl",
+            registry=CollectorRegistry(),
+        )
 
         from agents.cross_surface import bluesky_post
 
@@ -243,7 +263,11 @@ class TestPhase1PublishBusEndToEnd:
             surfaces=["bluesky-pst"],  # typo: should be bluesky-post
         )
 
-        orch = Orchestrator(state_root=tmp_path, registry=CollectorRegistry())
+        orch = Orchestrator(
+            state_root=tmp_path,
+            public_event_path=tmp_path / "public-events.jsonl",
+            registry=CollectorRegistry(),
+        )
         handled = orch.run_once()
 
         assert handled == 1

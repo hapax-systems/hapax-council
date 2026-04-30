@@ -63,11 +63,22 @@ from shared.preprint_artifact import (
     INBOX_DIR_NAME,
     PreprintArtifact,
 )
+from shared.publication_artifact_public_event import (
+    PublicationArtifactEventStage,
+    build_publication_artifact_public_event,
+)
+from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
 log = logging.getLogger(__name__)
 
 DEFAULT_TICK_S = 30.0
 METRICS_PORT_DEFAULT = 9510
+PUBLIC_EVENT_PATH = Path(
+    os.environ.get(
+        "HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH",
+        "/dev/shm/hapax-public-events/events.jsonl",
+    )
+)
 
 _SUCCESS_RESULTS = frozenset({"ok"})
 """Only these results count as a real publication."""
@@ -189,6 +200,7 @@ class Orchestrator:
         *,
         state_root: Path | None = None,
         surface_registry: dict[str, str] | None = None,
+        public_event_path: Path | None = PUBLIC_EVENT_PATH,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
         max_workers: int = 8,
@@ -197,10 +209,12 @@ class Orchestrator:
         self._surface_registry = (
             surface_registry if surface_registry is not None else SURFACE_REGISTRY
         )
+        self._public_event_path = public_event_path
         self._tick_s = max(1.0, tick_s)
         self._max_workers = max(1, max_workers)
         self._stop_evt = threading.Event()
         self._import_cache: dict[str, Callable[[PreprintArtifact], str]] = {}
+        self._known_public_event_ids: set[str] | None = None
 
         self.dispatches_total = Counter(
             self.METRIC_NAME,
@@ -259,6 +273,11 @@ class Orchestrator:
             log.warning("artifact %s has no surfaces_targeted; skipping", artifact.slug)
             return
         artifact_fingerprint = _artifact_fingerprint(artifact)
+        self._record_public_event(
+            artifact,
+            artifact_fingerprint=artifact_fingerprint,
+            stage="inbox",
+        )
 
         # Existing log entries — preserve already-terminal results so
         # deferred re-runs only retry the deferred surfaces.
@@ -271,7 +290,18 @@ class Orchestrator:
                 except (OSError, json.JSONDecodeError):
                     continue
                 if record.get("artifact_fingerprint") == artifact_fingerprint:
-                    prior_results[surface] = record.get("result", "")
+                    result = record.get("result", "")
+                    prior_results[surface] = result
+                    if result in _TERMINAL_RESULTS:
+                        self._record_public_event(
+                            artifact,
+                            artifact_fingerprint=artifact_fingerprint,
+                            stage="surface_log",
+                            surface=surface,
+                            result=result,
+                            source_path=log_path,
+                            result_timestamp=_optional_str(record.get("timestamp")),
+                        )
 
         # Dispatch only surfaces that are not already terminal.
         futures = {}
@@ -319,9 +349,13 @@ class Orchestrator:
 
         if all_terminal:
             if all(result in _SUCCESS_RESULTS for result in final_results):
-                self._move_to_published(artifact)
+                self._move_to_published(artifact, artifact_fingerprint=artifact_fingerprint)
             else:
-                self._move_to_failed(artifact, final_results)
+                self._move_to_failed(
+                    artifact,
+                    final_results,
+                    artifact_fingerprint=artifact_fingerprint,
+                )
 
     def _dispatch_one(self, artifact: PreprintArtifact, surface: str) -> str:
         """Resolve + invoke the publisher entry-point for ``surface``."""
@@ -373,11 +407,20 @@ class Orchestrator:
         )
         log_path.write_text(json.dumps(record.to_dict()))
         self.dispatches_total.labels(surface=surface, result=result).inc()
+        self._record_public_event(
+            artifact,
+            artifact_fingerprint=artifact_fingerprint,
+            stage="surface_log",
+            surface=surface,
+            result=result,
+            source_path=log_path,
+            result_timestamp=record.timestamp,
+        )
 
     def _load_artifact(self, path: Path) -> PreprintArtifact:
         return PreprintArtifact.model_validate_json(path.read_text())
 
-    def _move_to_published(self, artifact: PreprintArtifact) -> None:
+    def _move_to_published(self, artifact: PreprintArtifact, *, artifact_fingerprint: str) -> None:
         artifact.mark_published()
         published = artifact.published_path(state_root=self._state_root)
         inbox = artifact.inbox_path(state_root=self._state_root)
@@ -392,8 +435,20 @@ class Orchestrator:
             artifact.slug,
             len(artifact.surfaces_targeted),
         )
+        self._record_public_event(
+            artifact,
+            artifact_fingerprint=artifact_fingerprint,
+            stage="published",
+            source_path=published,
+        )
 
-    def _move_to_failed(self, artifact: PreprintArtifact, results: list[str]) -> None:
+    def _move_to_failed(
+        self,
+        artifact: PreprintArtifact,
+        results: list[str],
+        *,
+        artifact_fingerprint: str,
+    ) -> None:
         artifact.mark_failed()
         failed = artifact.failed_path(state_root=self._state_root)
         inbox = artifact.inbox_path(state_root=self._state_root)
@@ -408,6 +463,69 @@ class Orchestrator:
             artifact.slug,
             ",".join(results),
         )
+        self._record_public_event(
+            artifact,
+            artifact_fingerprint=artifact_fingerprint,
+            stage="failed",
+            source_path=failed,
+        )
+
+    def _record_public_event(
+        self,
+        artifact: PreprintArtifact,
+        *,
+        artifact_fingerprint: str,
+        stage: PublicationArtifactEventStage,
+        surface: str | None = None,
+        result: str | None = None,
+        source_path: Path | None = None,
+        result_timestamp: str | None = None,
+    ) -> None:
+        if self._public_event_path is None:
+            return
+        decision = build_publication_artifact_public_event(
+            artifact,
+            artifact_fingerprint=artifact_fingerprint,
+            state_root=self._state_root,
+            stage=stage,
+            generated_at=datetime.now(UTC),
+            source_path=source_path,
+            surface=surface,
+            result=result,
+            result_timestamp=result_timestamp,
+        )
+        event = decision.public_event
+        if event is None:
+            log.warning(
+                "publication artifact public-event refused for %s stage=%s: %s",
+                artifact.slug,
+                stage,
+                ";".join(decision.notes),
+            )
+            return
+        if self._public_event_already_written(event.event_id):
+            return
+        self._append_public_event(event)
+
+    def _append_public_event(self, event: ResearchVehiclePublicEvent) -> None:
+        if self._public_event_path is None:
+            return
+        try:
+            self._public_event_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._public_event_path.open("a", encoding="utf-8") as fh:
+                fh.write(event.to_json_line())
+        except OSError:
+            log.warning("publication artifact public-event write failed", exc_info=True)
+            return
+        if self._known_public_event_ids is not None:
+            self._known_public_event_ids.add(event.event_id)
+
+    def _public_event_already_written(self, event_id: str) -> bool:
+        if self._public_event_path is None:
+            return True
+        if self._known_public_event_ids is None:
+            self._known_public_event_ids = _load_public_event_ids(self._public_event_path)
+        return event_id in self._known_public_event_ids
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -450,10 +568,31 @@ def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
     return sha256(encoded).hexdigest()
 
 
+def _load_public_event_ids(path: Path) -> set[str]:
+    ids: set[str] = set()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ids
+    for raw in lines:
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict) and isinstance(item.get("event_id"), str):
+            ids.add(item["event_id"])
+    return ids
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 __all__ = [
     "DEFAULT_TICK_S",
     "METRICS_PORT_DEFAULT",
     "Orchestrator",
+    "PUBLIC_EVENT_PATH",
     "SURFACE_REGISTRY",
     "SurfaceResult",
     "_artifact_fingerprint",

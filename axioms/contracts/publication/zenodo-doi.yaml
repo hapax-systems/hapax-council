@@ -1,0 +1,12 @@
+surface: zenodo-doi
+state_kinds:
+  - publication.artifact
+redactions:
+  - operator_profile.*
+  - operator_identity.*
+  - operator_legal_name
+  - chronicle.private_moments
+rate_limit:
+  per_hour: 4
+  per_day: 12
+cadence_hint: "Zenodo DOI deposits from approved PreprintArtifact dispatches. Actual egress remains owned by the Zenodo publisher and publish-orchestrator per-surface logs."
