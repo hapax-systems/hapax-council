@@ -223,6 +223,12 @@ class CpalRunner:
         self._last_stimmung_check = 0.0
         self._queued_utterance: bytes | None = None
         self._last_speech_end: float = 0.0  # monotonic timestamp of last system speech end
+        # Speech mutex: prevents autonomous narration bypass and exploration
+        # surfacing from producing concurrent audio streams. Both paths
+        # acquire this lock before TTS synthesis. This is infrastructure
+        # serialization, not an expert rule — it doesn't decide whether
+        # to speak, only prevents physical audio overlap.
+        self._speech_lock = asyncio.Lock()
         # Queue #225: flipped to True by process_impingement(); reset each tick.
         # Drives the "impingement" label on hapax_cpal_ticks_by_type_total.
         self._impingement_since_last_tick: bool = False
@@ -931,62 +937,69 @@ class CpalRunner:
                 from agents.hapax_daimonion.pw_audio_output import play_pcm
 
                 try:
-                    loop = asyncio.get_running_loop()
-                    pcm = await loop.run_in_executor(None, tts.synthesize, narrative, "proactive")
-                    if not pcm:
-                        record_tts_synthesis(
-                            status="empty",
-                            text=narrative,
-                            pcm=b"",
-                            impulse_id=impulse_id,
+                    if self._speech_lock.locked():
+                        log.debug("Autonomous narrative deferred: speech lock held")
+                        return
+                    async with self._speech_lock:
+                        loop = asyncio.get_running_loop()
+                        pcm = await loop.run_in_executor(
+                            None, tts.synthesize, narrative, "proactive"
                         )
-                        record_drop(
-                            reason="tts_empty_pcm",
-                            source=source,
-                            destination=destination.value,
-                            target=destination_target,
-                            media_role=destination_role,
-                            text=narrative,
-                            impulse_id=impulse_id,
-                        )
-                    else:
-                        record_tts_synthesis(
-                            status="completed",
-                            text=narrative,
-                            pcm=pcm,
-                            impulse_id=impulse_id,
-                        )
-                        playback_result = await loop.run_in_executor(
-                            None,
-                            partial(
-                                play_pcm,
-                                pcm,
-                                24000,
-                                1,
-                                destination_target,
-                                destination_role,
-                            ),
-                        )
-                        record_playback_result(
-                            text=narrative,
-                            playback_result=playback_result,
-                            destination=destination.value,
-                            target=destination_target,
-                            media_role=destination_role,
-                            impulse_id=impulse_id,
-                        )
-                        if playback_result.completed:
-                            log.info(
-                                "Autonomous narrative spoken: %s",
-                                narrative[:60],
+                        if not pcm:
+                            record_tts_synthesis(
+                                status="empty",
+                                text=narrative,
+                                pcm=b"",
+                                impulse_id=impulse_id,
+                            )
+                            record_drop(
+                                reason="tts_empty_pcm",
+                                source=source,
+                                destination=destination.value,
+                                target=destination_target,
+                                media_role=destination_role,
+                                text=narrative,
+                                impulse_id=impulse_id,
                             )
                         else:
-                            log.warning(
-                                "Autonomous narrative playback failed: status=%s target=%s role=%s",
-                                playback_result.status,
-                                destination_target,
-                                destination_role,
+                            record_tts_synthesis(
+                                status="completed",
+                                text=narrative,
+                                pcm=pcm,
+                                impulse_id=impulse_id,
                             )
+                            playback_result = await loop.run_in_executor(
+                                None,
+                                partial(
+                                    play_pcm,
+                                    pcm,
+                                    24000,
+                                    1,
+                                    destination_target,
+                                    destination_role,
+                                ),
+                            )
+                            record_playback_result(
+                                text=narrative,
+                                playback_result=playback_result,
+                                destination=destination.value,
+                                target=destination_target,
+                                media_role=destination_role,
+                                impulse_id=impulse_id,
+                            )
+                            if playback_result.completed:
+                                self._last_speech_end = time.monotonic()
+                                log.info(
+                                    "Autonomous narrative spoken: %s",
+                                    narrative[:60],
+                                )
+                            else:
+                                log.warning(
+                                    "Autonomous narrative playback failed: status=%s target=%s role=%s",
+                                    playback_result.status,
+                                    destination_target,
+                                    destination_role,
+                                )
                 except Exception as exc:
                     record_tts_synthesis(
                         status="failed",
@@ -1082,47 +1095,51 @@ class CpalRunner:
                 register_hint: str | None = (
                     textmode_prompt_prefix() if register == VoiceRegister.TEXTMODE else None
                 )
-                try:
-                    await self._pipeline.generate_spontaneous_speech(
-                        impingement,
-                        register_hint=register_hint,
-                        destination_target=destination_target,
-                        destination_role=destination_role,
-                    )
-                except TypeError:
-                    # Older pipelines without one of the new kwargs — fall
-                    # back through progressively so the impingement is
-                    # never dropped when the signature shifts.
-                    log.debug(
-                        "generate_spontaneous_speech rejected kwarg; "
-                        "retrying with narrower signature",
-                        exc_info=True,
-                    )
+                if self._speech_lock.locked():
+                    log.debug("CPAL: exploration surfacing deferred: speech lock held")
+                    return
+                async with self._speech_lock:
                     try:
                         await self._pipeline.generate_spontaneous_speech(
                             impingement,
                             register_hint=register_hint,
                             destination_target=destination_target,
+                            destination_role=destination_role,
                         )
                     except TypeError:
+                        # Older pipelines without one of the new kwargs — fall
+                        # back through progressively so the impingement is
+                        # never dropped when the signature shifts.
+                        log.debug(
+                            "generate_spontaneous_speech rejected kwarg; "
+                            "retrying with narrower signature",
+                            exc_info=True,
+                        )
                         try:
                             await self._pipeline.generate_spontaneous_speech(
                                 impingement,
                                 register_hint=register_hint,
+                                destination_target=destination_target,
                             )
                         except TypeError:
                             try:
-                                await self._pipeline.generate_spontaneous_speech(impingement)
+                                await self._pipeline.generate_spontaneous_speech(
+                                    impingement,
+                                    register_hint=register_hint,
+                                )
+                            except TypeError:
+                                try:
+                                    await self._pipeline.generate_spontaneous_speech(impingement)
+                                except Exception:
+                                    log.debug("Spontaneous speech failed", exc_info=True)
                             except Exception:
                                 log.debug("Spontaneous speech failed", exc_info=True)
                         except Exception:
                             log.debug("Spontaneous speech failed", exc_info=True)
                     except Exception:
                         log.debug("Spontaneous speech failed", exc_info=True)
-                except Exception:
-                    log.debug("Spontaneous speech failed", exc_info=True)
-                finally:
-                    self._last_speech_end = time.monotonic()
+                    finally:
+                        self._last_speech_end = time.monotonic()
             else:
                 record_drop(
                     reason="pipeline_unavailable",
