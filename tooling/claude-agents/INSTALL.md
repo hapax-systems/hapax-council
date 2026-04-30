@@ -5,7 +5,7 @@ Per-machine install steps. Run after merging the PR that ships these files.
 ## What this suite installs
 
 - **3 hooks** (`hooks/scripts/*.sh` — already tracked, no install needed except wiring)
-  - `docs-only-pr-warn.sh` — PreToolUse Bash advisory when `git commit` would create a docs-only PR (CI paths-ignore filter)
+  - `docs-only-pr-warn.sh` — PreToolUse Bash advisory when `git commit` would create a docs-only PR covered by CI sentinels
   - `cargo-check-rust.sh` — PostToolUse Edit/Write advisory that runs `cargo check -p <crate>` after editing a `.rs` file under `hapax-logos/crates/`
   - `relay-coordination-check.sh` — PreToolUse Edit/Write advisory that fuzzy-matches the edit path against active peer relay yaml files
 - **3 subagents** (`tooling/claude-agents/*.md` — copy to your global agents dir)
@@ -88,7 +88,7 @@ git add docs/test/test.md
 git commit -m "test"
 ```
 
-Expected: stderr advisory about the carrier bundle. Commit still succeeds.
+Expected: stderr advisory that required-check sentinels will run; no carrier file is required. Commit still succeeds.
 
 ### Hook 2: cargo-check-rust
 

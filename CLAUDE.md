@@ -201,7 +201,7 @@ References:
 - Hypothesis for property-based algebraic proofs.
 - Working mode file: `~/.cache/hapax/working-mode` (research/rnd). CLI: `hapax-working-mode`.
 - Safety: LLMs prepare, humans deliver. Never generate feedback language or coaching recommendations about individual team members.
-- **Session handoffs** live at `docs/superpowers/handoff/{date}-{session}-handoff.md`. Each retiring session writes one before stopping; the next session of the same role reads it after relay onboarding. CI's `paths-ignore` filter covers both `docs/**` AND root-level `*.md`, so a CLAUDE.md note is NOT sufficient to trigger branch-protection checks — bundle a non-markdown, non-docs change.
+- **Session handoffs** live at `docs/superpowers/handoff/{date}-{session}-handoff.md`. Each retiring session writes one before stopping; the next session of the same role reads it after relay onboarding. Docs-only and root-level markdown PRs now trigger required-check sentinels, so branch protection stays satisfied without a carrier-file change.
 - **Build rebuild scripts:** `scripts/rebuild-logos.sh` builds logos/imagination in an isolated scratch worktree at `$HOME/.cache/hapax/rebuild/worktree`; primary alpha/beta worktrees are never mutated mid-session. `scripts/rebuild-service.sh` handles Python services and refuses to deploy a feature branch — when alpha is off main it skips the deploy and emits a throttled ntfy so the operator notices. `flock -n` on `$STATE_DIR/lock` prevents concurrent runs. The underlying tension (alpha's worktree doubles as dev branch and production deploy target) is documented in the FU-6 handoff.
 
 ## Axiom Governance

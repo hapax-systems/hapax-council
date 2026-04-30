@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 # docs-only-pr-warn.sh — PreToolUse hook (Bash tool)
 #
-# Warns when a `git commit` on a feature branch contains only files that
-# fall under ci.yml's paths-ignore filter. Such commits will hit branch
-# protection limbo because ci.yml's `test` job (the gate) does not fire
-# when only docs/md change.
+# Notices when a `git commit` on a feature branch contains only files handled
+# by the docs-only CI sentinels. These commits now get lightweight success
+# statuses for required checks; no carrier-file workaround is needed.
 #
-# This hook NEVER blocks. It only prints a stderr advisory pointing at
-# the canonical workaround (bundle a non-md carrier file). Operators may
-# legitimately want a docs-only commit (e.g., resetting beta-standby,
-# WIP). The hook just makes the impending wall visible.
+# This hook NEVER blocks. It only prints a stderr advisory confirming that
+# branch protection will see the sentinel statuses. Operators may legitimately
+# want a docs-only commit (e.g., resetting beta-standby, WIP).
 #
 # Trigger conditions (all must be true):
 #   1. Tool is Bash
@@ -18,7 +16,7 @@
 #   4. Current branch is NOT main / master (the warning only matters on
 #      branches that will become PRs)
 #   5. Staged file list is non-empty
-#   6. EVERY staged file matches one of the paths-ignore patterns:
+#   6. EVERY staged file matches one of the docs-only sentinel patterns:
 #        docs/, *.md (root), lab-journal/, research/, axioms/**.md
 #
 # Fail-open: any error in JSON parsing, git execution, or path matching
@@ -58,8 +56,8 @@ fi
 
 [ -z "$STAGED" ] && exit 0
 
-# Test if every file matches one of the paths-ignore patterns from
-# .github/workflows/ci.yml lines 7-12. Patterns:
+# Test if every file matches one of the docs-only sentinel patterns from
+# .github/workflows/ci.yml. Patterns:
 #   docs/**           — any path under docs/
 #   *.md              — root-level markdown only (docs/foo.md handled by docs/**)
 #   lab-journal/**    — any path under lab-journal/
@@ -71,62 +69,47 @@ fi
 ignored_path() {
   local p="$1"
   case "$p" in
-    docs/*|docs) return 0 ;;
-    lab-journal/*|lab-journal) return 0 ;;
-    research/*|research) return 0 ;;
+    docs|docs/*|lab-journal|lab-journal/*|research|research/*) return 0 ;;
   esac
   # Root-level *.md (no slash in path)
-  case "$p" in
-    *.md)
-      if ! echo "$p" | grep -q '/'; then
-        return 0
-      fi
-      ;;
-  esac
+  if [[ "$p" == *.md && "$p" != */* ]]; then
+    return 0
+  fi
   # axioms/**/*.md
-  case "$p" in
-    axioms/*.md|axioms/*/*.md|axioms/*/*/*.md|axioms/*/*/*/*.md)
-      return 0
-      ;;
-  esac
+  if [[ "$p" == axioms/*.md ]]; then
+    return 0
+  fi
   return 1
 }
 
 ALL_IGNORED=true
-NON_IGNORED_SAMPLE=""
 while IFS= read -r f; do
   [ -z "$f" ] && continue
   if ! ignored_path "$f"; then
     ALL_IGNORED=false
-    NON_IGNORED_SAMPLE="$f"
     break
   fi
 done <<< "$STAGED"
 
 if [ "$ALL_IGNORED" != true ]; then
-  # Mixed staged set — CI will fire normally. No advisory.
+  # Mixed staged set — full CI will run normally. No advisory.
   exit 0
 fi
 
-# Every staged file is under paths-ignore. CI's test job will not fire
-# and branch protection will block the PR from merging.
+# Every staged file is in the docs-only sentinel set. Required checks will
+# appear on the PR and report lightweight success.
 COUNT="$(printf '%s\n' "$STAGED" | wc -l)"
 SAMPLE="$(printf '%s\n' "$STAGED" | head -3 | sed 's/^/    /')"
 
 cat >&2 <<EOF
 ADVISORY: Docs-only commit on feature branch '$BRANCH'.
-  All $COUNT staged file(s) are under ci.yml paths-ignore (docs/**, *.md,
-  lab-journal/**, research/**, axioms/**/*.md). The CI 'test' job will
-  not fire and branch protection will block the PR from merging.
+  All $COUNT staged file(s) match the docs-only CI sentinel set (docs/**,
+  root *.md, lab-journal/**, research/**, axioms/**/*.md). Required checks
+  now run and report lightweight success; no carrier file is required.
 
 Sample staged files:
 $SAMPLE
 
-Workaround: bundle one non-markdown carrier file change. Examples:
-  - PR #708 used '__all__ = [...]' in shared/impingement_consumer.py
-  - PR #720 used '__all__ = [...]' in agents/reverie/debug_uniforms.py
-
-See CLAUDE.md § Council-Specific Conventions for the canonical pattern.
 This commit will still proceed; the advisory is informational.
 EOF
 

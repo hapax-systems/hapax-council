@@ -3,20 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - "lab-journal/**"
-      - "research/**"
-      - "axioms/**/*.md"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - "lab-journal/**"
-      - "research/**"
-      - "axioms/**/*.md"
 
 permissions:
   contents: read
@@ -27,28 +15,111 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  docs_only_filter:
     runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+      changed_count: ${{ steps.diff.outputs.changed_count }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Detect docs-only change set
+        id: diff
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          changed_files="$(mktemp)"
+          if [ -n "$PR_BASE_SHA" ]; then
+            git fetch --quiet origin "$PR_BASE_SHA" || true
+            git diff --name-only "$PR_BASE_SHA"...HEAD > "$changed_files"
+          else
+            if [ -z "$PUSH_BEFORE_SHA" ] || [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+              echo "changed_count=0" >> "$GITHUB_OUTPUT"
+              echo "No stable push base SHA; running full CI."
+              exit 0
+            fi
+            git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
+            git diff --name-only "$PUSH_BEFORE_SHA" HEAD > "$changed_files"
+          fi
+
+          sed -i '/^$/d' "$changed_files"
+          changed_count="$(wc -l < "$changed_files" | tr -d ' ')"
+
+          docs_only=true
+          if [ "$changed_count" -eq 0 ]; then
+            docs_only=false
+          fi
+
+          docs_only_path() {
+            local path="$1"
+            case "$path" in
+              docs|docs/*|lab-journal|lab-journal/*|research|research/*)
+                return 0
+                ;;
+            esac
+            if [[ "$path" == *.md && "$path" != */* ]]; then
+              return 0
+            fi
+            if [[ "$path" == axioms/*.md ]]; then
+              return 0
+            fi
+            return 1
+          }
+
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            if ! docs_only_path "$path"; then
+              docs_only=false
+              break
+            fi
+          done < "$changed_files"
+
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "changed_count=$changed_count" >> "$GITHUB_OUTPUT"
+          if [ "$docs_only" = true ]; then
+            echo "Docs-only change set detected; required jobs will report sentinel success."
+          else
+            echo "Non-docs changes detected; required jobs will run full checks."
+          fi
+
+  lint:
+    needs: docs_only_filter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Docs-only required-check sentinel
+        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        run: echo "Docs-only change set; lint reports success without running heavy gates."
+      - uses: actions/checkout@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
       - uses: astral-sh/setup-uv@v7
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
       - uses: astral-sh/ruff-action@v3
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           args: "check"
       - uses: astral-sh/ruff-action@v3
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           args: "format --check"
       # Task #155 Stage 5 — anti-personification fail-loud CI gate.
       # Scans axioms/**/*.md and prompt-surface modules; exits non-zero
       # on any deny-list finding that survives the carve-out windows.
       - name: Install system deps (cairo, gobject)
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
-      - run: uv sync --extra ci
+      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: uv sync --extra ci
       - name: Unused-function gate
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
@@ -65,12 +136,14 @@ jobs:
             uv run python scripts/check-unused-functions.py --diff-range "$PUSH_BEFORE_SHA..HEAD"
           fi
       - name: Anti-personification linter
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/lint_personification.py
       # ytb-AUTH1 — aesthetic library integrity. Verifies _manifest.yaml
       # and _NOTICES.md match on-disk bytes and every asset's SHA-256
       # still agrees with its manifest entry. Fail-loud if a regenerated
       # asset bypassed the manifest refresh.
       - name: Aesthetic library verify
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/verify-aesthetic-library.py
       # AUDIT-22 Phase B-2 — publication-contract redaction linter.
       # Validates every contract `redactions:` entry is either a
@@ -79,6 +152,7 @@ jobs:
       # unregistered transforms that would silently no-op in the
       # _apply_redactions wire-in.
       - name: Publication redaction transforms verify
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/verify-redaction-transforms.py
       # V5 weave wk1 d4 — polysemic-audit CI gate (epsilon-owned).
       # Walks docs/audience/ + docs/published-artifacts/ for any *.md
@@ -87,6 +161,7 @@ jobs:
       # invariant 5: every artifact passes this gate before approval-
       # queue entry.
       - name: Polysemic audit verify
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/verify-polysemic-audit.py
       # Bayesian Phase 0 FULL — HPX003 + HPX004 claim/LR registry gates.
       # HPX003: every signal in shared/lr_registry.yaml validates against
@@ -95,6 +170,7 @@ jobs:
       # (verbatim): "Lack of priors is itself a prior; priors must be
       # derivations of invariants, not ad-hoc."
       - name: HPX003+HPX004 claim/LR registry validators
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/check-claim-registry.py
 
       # Operator legal-name leak guard. Per `interpersonal_transparency`
@@ -106,6 +182,7 @@ jobs:
       # SHAs are not user-input but env: pattern is used per safe-CI
       # idiom regardless.
       - name: Operator legal-name leak guard
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -125,24 +202,37 @@ jobs:
 
 
   typecheck:
+    needs: docs_only_filter
     runs-on: ubuntu-latest
     steps:
+      - name: Docs-only required-check sentinel
+        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        run: echo "Docs-only change set; typecheck reports success without running pyrefly."
       - uses: actions/checkout@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
       - uses: astral-sh/setup-uv@v7
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
       # Keep the typecheck path independent of the full CI environment.
       # Pyrefly does not need the cairo/gobject runtime deps or uv sync, and
       # the previous analysis-cache restore did not materially shorten this
       # check.
-      - run: uv run --no-project --with pyrefly==0.62.0 pyrefly check
+      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: uv run --no-project --with pyrefly==0.62.0 pyrefly check
 
   test:
+    needs: docs_only_filter
     runs-on: ubuntu-latest
     timeout-minutes: 22
     steps:
+      - name: Docs-only required-check sentinel
+        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        run: echo "Docs-only change set; test reports success without running pytest."
       - uses: actions/checkout@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
       - name: Install system deps (cairo, gobject, gst, pango)
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -150,6 +240,7 @@ jobs:
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             gir1.2-pango-1.0
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency, audit 4.7 PR #1109)
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: |
           # Install system-wide so fontconfig's /usr/share/fonts scan picks it up.
           sudo mkdir -p /usr/share/fonts/TTF
@@ -164,10 +255,13 @@ jobs:
           fc-list | grep -i 'Px437.*IBM VGA 8x16' \
             || (echo "font install failed (fc-list)" >&2; exit 1)
       - uses: astral-sh/setup-uv@v7
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
-      - run: uv sync --extra ci
+      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: uv sync --extra ci
       - name: Verify Pango can resolve Px437 IBM VGA 8x16
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         # Pango consults fontconfig but has its own per-process cache; a
         # Pango-level probe confirms the HARDM render path will see the
         # font, not just fontconfig. If this fails, HARDM tests render
@@ -175,6 +269,7 @@ jobs:
         run: |
           uv run python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
       - name: Run tests
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
@@ -371,23 +466,34 @@ jobs:
           echo "Diff artifacts (if any) are attached to this run for review."
 
   web-build:
+    needs: docs_only_filter
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: hapax-logos
     steps:
+      - name: Docs-only required-check sentinel
+        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        working-directory: .
+        run: echo "Docs-only change set; web-build reports success without running pnpm."
       - uses: actions/checkout@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
       - uses: pnpm/action-setup@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           version: 9
       - uses: actions/setup-node@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: hapax-logos/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm build
+      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: pnpm install --frozen-lockfile
+      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: pnpm lint
+      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: pnpm build
 
   rust-check:
     runs-on: ubuntu-latest
@@ -438,22 +544,32 @@ jobs:
         run: echo "Skipped — this change does not touch hapax-logos Rust crate inputs."
 
   vscode-build:
+    needs: docs_only_filter
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: vscode
     steps:
+      - name: Docs-only required-check sentinel
+        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        working-directory: .
+        run: echo "Docs-only change set; vscode-build reports success without running pnpm."
       - uses: actions/checkout@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
       - uses: pnpm/action-setup@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           version: 9
       - uses: actions/setup-node@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: vscode/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build
+      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: pnpm install --frozen-lockfile
+      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: pnpm run build
 
   secrets-scan:
     runs-on: ubuntu-latest
