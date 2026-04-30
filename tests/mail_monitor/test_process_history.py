@@ -307,6 +307,28 @@ def test_process_history_uses_notification_history_id_as_last_resort(
     assert history.calls[0]["startHistoryId"] == "300"
 
 
+def test_process_history_can_preserve_pubsub_push_marker_for_fallback(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    history = _History({"L_v": [{"history": []}]})
+    messages = _Messages({})
+    service = _Service(history, messages)
+
+    with mock.patch("agents.mail_monitor.runner.load_watch_state", return_value=None):
+        processed = runner.process_history(
+            service,
+            "300",
+            label_ids_by_name={"Hapax/Verify": "L_v"},
+            **paths,
+            record_last_push=False,
+        )
+
+    assert processed == 0
+    assert json.loads(paths["cursor_path"].read_text(encoding="utf-8"))["history_id"] == "300"
+    assert not paths["last_push_path"].exists()
+
+
 def test_process_history_persists_hashed_seen_set_and_skips_duplicate_message_ids(
     tmp_path: Path,
 ) -> None:
