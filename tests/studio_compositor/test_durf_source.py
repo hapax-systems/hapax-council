@@ -1,112 +1,368 @@
-"""Tests for DURF (Display Under Reflective Frame) ward — Phase 2.
-
-Phase 2 replaces Phase 1's text-classification + redaction approach with
-literal Hyprland window pixel capture (per operator directive 2026-04-24
-"BE my term content AS it IS"). Token classification, redaction regex,
-and ring buffer tests from Phase 1 are removed because the underlying
-``_classify_line_role`` / ``_PaneRing`` / ``_redact`` primitives no
-longer exist on ``DURFCairoSource``.
-
-AUDIT-01 (2026-04-25) reintroduces redaction at the pixel layer via
-``durf_redaction.redact_terminal_capture`` invoked inside
-``_grim_capture`` after grim writes the tmp PNG and before the atomic
-``os.replace`` into the published path. Per-capture wiring is tested
-here; the redaction primitive itself is covered by
-``test_durf_redaction.py``.
-
-What this file pins now:
-- Source registration in the cairo_sources registry
-- Construction with explicit + missing config
-- Gate behavior (off when desk inactive)
-- ``state()`` shape (alpha, now)
-- Layout integration (default.json includes durf surface + assignment)
-- AUDIT-01 wiring: SUPPRESS / UNAVAILABLE drops capture; CLEAN passes
-  through; consent-safe short-circuits the poll iteration.
-"""
+"""Tests for the DURF Codex coding-session HOMAGE ward."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
 
 from agents.studio_compositor import durf_source as _durf_module
 from agents.studio_compositor.cairo_sources import get_cairo_source_class
-from agents.studio_compositor.durf_redaction import (
-    RedactionAction,
-    RedactionResult,
+from agents.studio_compositor.durf_redaction import RedactionAction
+from agents.studio_compositor.durf_source import (
+    CodexPaneRegistry,
+    DURFCairoSource,
+    DURFPaneState,
+    DURFSourceSnapshot,
+    build_wcs_row,
+    capture_tmux_text,
+    is_pane_stale,
+    redact_terminal_lines,
 )
-from agents.studio_compositor.durf_source import DURFCairoSource, _grim_capture
-
-# ── Source instantiation + registration ──────────────────────────────
 
 
 @pytest.fixture
-def minimal_config(tmp_path):
-    """Phase 2 config — same yaml shape as Phase 1, but only the
-    ``panes`` block carries forward as the discovery hint list."""
+def codex_config(tmp_path: Path) -> Path:
     cfg = {
+        "defaults": {
+            "capture_lines": 3,
+            "stale_after_seconds": 5,
+            "max_visible_panes": 4,
+        },
         "panes": [
-            {"role": "alpha", "tmux_target": "nowhere:0.0", "glyph": "A-//"},
-            {"role": "beta", "tmux_target": "nowhere:0.1", "glyph": "B-|/"},
-        ]
+            {"lane": "cx-cyan", "tmux_target": "hapax-codex-cx-cyan:0.0", "glyph": "C-<>"},
+            {"lane": "cx-blue", "tmux_target": "hapax-codex-cx-blue:0.0", "glyph": "B-|/"},
+            {"lane": "cx-violet", "tmux_target": "hapax-codex-cx-violet:0.0", "glyph": "V-\\\\"},
+        ],
     }
     path = tmp_path / "durf-panes.yaml"
-    path.write_text(yaml.dump(cfg))
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
     return path
 
 
-class TestDURFSource:
-    def test_registered_in_cairo_sources(self):
+@pytest.fixture
+def registry_paths(tmp_path: Path, codex_config: Path) -> tuple[Path, Path, Path, Path]:
+    relay_dir = tmp_path / "relay"
+    claim_dir = tmp_path / "claims"
+    relay_dir.mkdir()
+    claim_dir.mkdir()
+    health_path = tmp_path / "codex-session-health.md"
+    return codex_config, relay_dir, claim_dir, health_path
+
+
+def _registry(paths: tuple[Path, Path, Path, Path]) -> CodexPaneRegistry:
+    config_path, relay_dir, claim_dir, health_path = paths
+    return CodexPaneRegistry(
+        config_path=config_path,
+        relay_dir=relay_dir,
+        claim_dir=claim_dir,
+        session_health_path=health_path,
+    )
+
+
+def _write_health(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "| Session | Role | Control | Screen | Task | Task status | Branch | PR | Why / current status | Warnings |",
+                "|---|---|---|---|---|---|---|---|---|---|",
+                "| cx-cyan | production worker lane | tmux | not required | coding-session-livestream-homage-ward - Coding session livestream HOMAGE ward | claimed | codex/cx-cyan-coding-session-livestream-homage-ward | - | implementing | - |",
+                "| cx-violet | protected research lane | tmux | visible | - | idle | codex/cx-violet | - | protected | protected_do_not_relaunch_or_kill |",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestDURFSourceRegistration:
+    def test_registered_in_cairo_sources(self) -> None:
         cls = get_cairo_source_class("DURFCairoSource")
         assert cls is DURFCairoSource
 
-    def test_instantiates_with_config(self, minimal_config):
-        src = DURFCairoSource(config_path=minimal_config)
+    def test_instantiates_without_starting_poll_thread(self, codex_config: Path) -> None:
+        src = DURFCairoSource(config_path=codex_config, start_thread=False)
         try:
             assert src.source_id == "durf"
-            assert src._config_path == minimal_config
-        finally:
-            src.stop()
-
-    def test_gate_false_without_desk_active(self, minimal_config):
-        src = DURFCairoSource(config_path=minimal_config)
-        try:
-            assert src._gate_active() is False
-        finally:
-            src.stop()
-
-    def test_state_returns_alpha_and_now(self, minimal_config):
-        src = DURFCairoSource(config_path=minimal_config)
-        try:
+            assert src._config_path == codex_config
             state = src.state()
             assert "alpha" in state
-            assert "now" in state
-            assert 0.0 <= state["alpha"] <= 1.0
+            assert "wcs" in state
         finally:
             src.stop()
 
-    def test_missing_config_handles_gracefully(self, tmp_path):
-        """No yaml file at config_path: source still constructs and
-        gates off — the discovery thread starts with no hints, finds
-        no sessions, and reports alpha=0.0."""
-        src = DURFCairoSource(config_path=tmp_path / "nonexistent.yaml")
+
+class TestCodexPaneRegistry:
+    def test_discovers_codex_lane_from_relay_claim_health_and_config(
+        self, registry_paths: tuple[Path, Path, Path, Path]
+    ) -> None:
+        _, relay_dir, claim_dir, health_path = registry_paths
+        (claim_dir / "cc-active-task-cx-cyan").write_text(
+            "coding-session-livestream-homage-ward\n",
+            encoding="utf-8",
+        )
+        (relay_dir / "cx-cyan.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "status": "review_fix_ci_pending",
+                    "task_id": "coding-session-livestream-homage-ward",
+                    "branch": "codex/cx-cyan-coding-session-livestream-homage-ward",
+                    "current_pr": 1860,
+                }
+            ),
+            encoding="utf-8",
+        )
+        _write_health(health_path)
+
+        lanes, max_visible = _registry(registry_paths).discover_lanes()
+        cyan = next(lane for lane in lanes if lane.lane_id == "cx-cyan")
+
+        assert max_visible == 4
+        assert cyan.tmux_target == "hapax-codex-cx-cyan:0.0"
+        assert cyan.task_id == "coding-session-livestream-homage-ward"
+        assert cyan.branch == "codex/cx-cyan-coding-session-livestream-homage-ward"
+        assert cyan.pr == "1860"
+        assert cyan.impingement_kind == "review"
+        assert any("cc-active-task-cx-cyan" in ref for ref in cyan.source_refs)
+
+    def test_lane_without_configured_tmux_target_is_suppressed(
+        self, registry_paths: tuple[Path, Path, Path, Path]
+    ) -> None:
+        _, relay_dir, claim_dir, health_path = registry_paths
+        (claim_dir / "cc-active-task-cx-amber").write_text(
+            "director-scrim-gesture-adapter\n",
+            encoding="utf-8",
+        )
+        (relay_dir / "cx-amber.yaml").write_text(
+            yaml.safe_dump({"status": "claimed", "task_id": "director-scrim-gesture-adapter"}),
+            encoding="utf-8",
+        )
+        _write_health(health_path)
+
+        source = DURFCairoSource(registry=_registry(registry_paths), start_thread=False)
         try:
-            state = src.state()
-            assert state["alpha"] == 0.0
+            snapshot = source._poll_once(now=100.0)
         finally:
-            src.stop()
+            source.stop()
+
+        amber = next(pane for pane in snapshot.panes if pane.lane_id == "cx-amber")
+        assert amber.visible is False
+        assert amber.suppressed_reason == "tmux_target_unconfigured"
 
 
-# ── Layout parse ─────────────────────────────────────────────────────
+class TestTmuxCapture:
+    def test_capture_tmux_text_uses_bounded_tmux_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = MagicMock()
+        fake.returncode = 0
+        fake.stdout = "\x1b[31mone\x1b[0m\n" + "\n".join(["two", "three", "four", "five"])
+        fake.stderr = ""
+        run_spy = MagicMock(return_value=fake)
+        monkeypatch.setattr(_durf_module.subprocess, "run", run_spy)
+
+        result = capture_tmux_text("hapax-codex-cx-cyan:0.0", capture_lines=3)
+
+        assert result.ok is True
+        assert result.lines == ("three", "four", "five")
+        assert run_spy.call_args.args[0] == [
+            "tmux",
+            "capture-pane",
+            "-p",
+            "-S",
+            "-3",
+            "-t",
+            "hapax-codex-cx-cyan:0.0",
+        ]
+
+    def test_missing_tmux_target_reports_suppression_reason(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = MagicMock()
+        fake.returncode = 1
+        fake.stdout = ""
+        fake.stderr = "can't find pane"
+        monkeypatch.setattr(_durf_module.subprocess, "run", MagicMock(return_value=fake))
+
+        result = capture_tmux_text("missing:0.0", capture_lines=80)
+
+        assert result.ok is False
+        assert result.reason == "tmux_target_missing"
+        assert "find pane" in (result.detail or "")
+
+
+class TestRedaction:
+    def test_redaction_suppresses_secret_like_text(self) -> None:
+        result = redact_terminal_lines(("Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",))
+
+        assert result.action is RedactionAction.SUPPRESS
+        assert result.matched_pattern == "bearer_token"
+        assert result.lines == ()
+
+    def test_redaction_suppresses_operator_home_paths(self) -> None:
+        result = redact_terminal_lines(("/home/hapax/.ssh/id_ed25519",))
+
+        assert result.action is RedactionAction.SUPPRESS
+        assert result.matched_pattern == "operator_home_path"
+
+    def test_raw_bypass_fails_closed_in_public_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_DURF_RAW", "1")
+
+        result = redact_terminal_lines(("ordinary line",))
+
+        assert result.action is RedactionAction.SUPPRESS
+        assert result.matched_pattern == "unsafe_public_bypass"
+
+
+class TestSourceState:
+    def test_consent_safe_suppresses_before_tmux_capture(
+        self, registry_paths: tuple[Path, Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, relay_dir, claim_dir, health_path = registry_paths
+        (claim_dir / "cc-active-task-cx-cyan").write_text("task\n", encoding="utf-8")
+        (relay_dir / "cx-cyan.yaml").write_text(
+            yaml.safe_dump({"status": "claimed", "task_id": "task"}),
+            encoding="utf-8",
+        )
+        _write_health(health_path)
+        monkeypatch.setattr(_durf_module, "_consent_safe_active", lambda: True)
+        capture_spy = MagicMock()
+        monkeypatch.setattr(_durf_module, "capture_tmux_text", capture_spy)
+
+        source = DURFCairoSource(registry=_registry(registry_paths), start_thread=False)
+        try:
+            snapshot = source._poll_once(now=100.0)
+        finally:
+            source.stop()
+
+        assert capture_spy.call_count == 0
+        assert snapshot.wcs_row["mode"] == "suppressed"
+        assert snapshot.wcs_row["egress_allowed"] is False
+        assert snapshot.panes[0].suppressed_reason == "consent_safe"
+
+    def test_source_state_shape_for_clean_visible_lane(
+        self, registry_paths: tuple[Path, Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, relay_dir, claim_dir, health_path = registry_paths
+        (claim_dir / "cc-active-task-cx-cyan").write_text(
+            "coding-session-livestream-homage-ward\n",
+            encoding="utf-8",
+        )
+        (relay_dir / "cx-cyan.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "status": "claimed",
+                    "task_id": "coding-session-livestream-homage-ward",
+                    "branch": "codex/cx-cyan-coding-session-livestream-homage-ward",
+                }
+            ),
+            encoding="utf-8",
+        )
+        _write_health(health_path)
+        monkeypatch.setattr(_durf_module, "_consent_safe_active", lambda: False)
+        monkeypatch.setattr(_durf_module, "_unsafe_public_bypass_active", lambda: False)
+        monkeypatch.setattr(
+            _durf_module,
+            "capture_tmux_text",
+            MagicMock(
+                return_value=_durf_module.TmuxCaptureResult(
+                    True,
+                    lines=(
+                        "uv run pytest tests/studio_compositor/test_durf_source.py -q",
+                        "12 passed",
+                    ),
+                )
+            ),
+        )
+
+        source = DURFCairoSource(registry=_registry(registry_paths), start_thread=False)
+        try:
+            snapshot = source._poll_once(now=100.0)
+            state = source.state()
+        finally:
+            source.stop()
+
+        assert snapshot.wcs_row["surface_id"] == "coding_sessions.durf"
+        assert snapshot.wcs_row["mode"] == "text_panes"
+        assert snapshot.wcs_row["visible_lanes"] == ["cx-cyan"]
+        assert snapshot.wcs_row["public_claim_ceiling"] == "work_trace_visible"
+        assert snapshot.wcs_row["redaction_state"] == "clean"
+        assert snapshot.wcs_row["egress_allowed"] is True
+        assert state["wcs"]["surface_id"] == "coding_sessions.durf"
+
+    def test_stale_pane_helper_marks_old_capture(self) -> None:
+        pane = DURFPaneState(
+            lane_id="cx-cyan",
+            glyph="C-<>",
+            tmux_target="hapax-codex-cx-cyan:0.0",
+            visible=True,
+            lines=("old",),
+            captured_at=50.0,
+            redaction_state="clean",
+        )
+
+        assert is_pane_stale(pane, now=100.0, stale_after_s=20.0) is True
+        assert is_pane_stale(pane, now=55.0, stale_after_s=20.0) is False
+
+    def test_wcs_row_records_redacted_suppression(self) -> None:
+        pane = DURFPaneState(
+            lane_id="cx-cyan",
+            glyph="C-<>",
+            tmux_target="hapax-codex-cx-cyan:0.0",
+            visible=False,
+            captured_at=100.0,
+            redaction_state="suppress",
+            suppressed_reason="bearer_token",
+        )
+
+        row = build_wcs_row((pane,), now=100.0, egress_allowed=True)
+
+        assert row["mode"] == "metadata"
+        assert row["redaction_state"] == "suppressed"
+        assert row["suppressed_lanes"] == [
+            {
+                "lane_id": "cx-cyan",
+                "reason": "bearer_token",
+                "redaction_state": "suppress",
+            }
+        ]
+
+    def test_render_smoke_nonblank_without_dashboard_labels(self, codex_config: Path) -> None:
+        import cairo
+
+        pane = DURFPaneState(
+            lane_id="cx-cyan",
+            glyph="C-<>",
+            tmux_target="hapax-codex-cx-cyan:0.0",
+            visible=True,
+            lines=("uv run pytest tests/studio_compositor/test_durf_source.py -q", "15 passed"),
+            captured_at=100.0,
+            redaction_state="clean",
+        )
+        source = DURFCairoSource(config_path=codex_config, start_thread=False)
+        try:
+            source._snapshot = DURFSourceSnapshot(
+                panes=(pane,),
+                captured_at=100.0,
+                wcs_row=build_wcs_row((pane,), now=100.0, egress_allowed=True),
+            )
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 640, 360)
+            cr = cairo.Context(surface)
+            source.render_content(cr, 640, 360, 0.0, {"alpha": 0.9})
+            assert any(byte != 0 for byte in bytes(surface.get_data()))
+            rendered_text = "\n".join(pane.lines)
+            assert "DURF" not in rendered_text
+            assert "SESSION" not in rendered_text
+        finally:
+            source.stop()
 
 
 class TestLayoutIntegration:
-    def test_default_layout_includes_durf(self):
-        import json
-
+    def test_default_layout_includes_durf(self) -> None:
         from shared.compositor_model import Layout
 
         path = (
@@ -115,179 +371,21 @@ class TestLayoutIntegration:
             / "compositor-layouts"
             / "default.json"
         )
-        d = json.loads(path.read_text())
-        layout = Layout.model_validate(d)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        layout = Layout.model_validate(data)
         assert any(s.id == "durf" for s in layout.sources)
         assert any(s.id == "durf-fullframe" for s in layout.surfaces)
         assert any(a.source == "durf" for a in layout.assignments)
 
-    def test_durf_source_full_frame_geometry(self):
-        import json
-
+    def test_durf_source_full_frame_geometry(self) -> None:
         path = (
             Path(__file__).resolve().parent.parent.parent
             / "config"
             / "compositor-layouts"
             / "default.json"
         )
-        d = json.loads(path.read_text())
-        surf = next(s for s in d["surfaces"] if s["id"] == "durf-fullframe")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        surf = next(s for s in data["surfaces"] if s["id"] == "durf-fullframe")
         assert surf["geometry"]["w"] == 1920
         assert surf["geometry"]["h"] == 1080
         assert surf["z_order"] == 5
-
-
-# ── AUDIT-01: redaction wiring ───────────────────────────────────────
-
-
-def _fake_grim_run(returncode: int = 0):
-    """Build a MagicMock simulating ``subprocess.run(['grim', ...])``."""
-    fake = MagicMock()
-    fake.returncode = returncode
-    fake.stdout = ""
-    fake.stderr = ""
-    return fake
-
-
-class TestGrimCaptureRedactionWiring:
-    """Pin: ``_grim_capture`` runs the AUDIT-01 redaction primitive
-    between grim's tmp-write and the atomic ``os.replace`` into the
-    published path."""
-
-    def _patch_grim_success(self, tmp_path: Path):
-        """Helper: subprocess.run(grim) succeeds + writes a tmp file."""
-
-        # tmp_path within _grim_capture is `output_path.with_suffix(... + ".tmp")`
-        def fake_run(cmd, *args, **kwargs):
-            tmp = Path(cmd[-1])  # last arg is the tmp output path
-            tmp.write_bytes(b"\x89PNG\r\n\x1a\nfake")
-            return _fake_grim_run(0)
-
-        return fake_run
-
-    def test_clean_capture_publishes_png(self, tmp_path: Path) -> None:
-        out = tmp_path / "alpha.png"
-        with (
-            patch.object(
-                _durf_module.subprocess,
-                "run",
-                side_effect=self._patch_grim_success(tmp_path),
-            ),
-            patch.object(
-                _durf_module,
-                "redact_terminal_capture",
-                return_value=RedactionResult(RedactionAction.CLEAN),
-            ) as fake_redact,
-        ):
-            ok = _grim_capture({"x": 0, "y": 0, "w": 100, "h": 100}, out)
-        assert ok is True
-        assert out.exists()
-        # Redaction was invoked exactly once
-        assert fake_redact.call_count == 1
-
-    def test_suppress_drops_tmp_and_published(self, tmp_path: Path) -> None:
-        out = tmp_path / "alpha.png"
-        # Pre-existing clean snapshot must ALSO be cleared
-        out.write_bytes(b"prev clean")
-        with (
-            patch.object(
-                _durf_module.subprocess,
-                "run",
-                side_effect=self._patch_grim_success(tmp_path),
-            ),
-            patch.object(
-                _durf_module,
-                "redact_terminal_capture",
-                return_value=RedactionResult(
-                    RedactionAction.SUPPRESS,
-                    matched_pattern="anthropic_api_key",
-                    detail="matched 'anthropic_api_key'",
-                ),
-            ),
-        ):
-            ok = _grim_capture({"x": 0, "y": 0, "w": 100, "h": 100}, out)
-        assert ok is False
-        # Both the tmp AND the previously-published path are gone
-        assert not out.exists()
-        assert not out.with_suffix(".png.tmp").exists()
-
-    def test_unavailable_drops_tmp_and_published(self, tmp_path: Path) -> None:
-        """OCR-unavailable is fail-closed — same outcome as SUPPRESS."""
-        out = tmp_path / "alpha.png"
-        out.write_bytes(b"prev clean")
-        with (
-            patch.object(
-                _durf_module.subprocess,
-                "run",
-                side_effect=self._patch_grim_success(tmp_path),
-            ),
-            patch.object(
-                _durf_module,
-                "redact_terminal_capture",
-                return_value=RedactionResult(
-                    RedactionAction.UNAVAILABLE,
-                    detail="ocr failed",
-                ),
-            ),
-        ):
-            ok = _grim_capture({"x": 0, "y": 0, "w": 100, "h": 100}, out)
-        assert ok is False
-        assert not out.exists()
-
-
-class _StopAfterFirstWait:
-    """Stand-in for :class:`threading.Event` that exits a poll loop
-    after exactly one iteration: ``is_set()`` is False initially so the
-    while-condition lets the body run, then ``wait()`` flips the flag
-    so the next while-check exits."""
-
-    def __init__(self) -> None:
-        self._stopped = False
-
-    def is_set(self) -> bool:
-        return self._stopped
-
-    def set(self) -> None:
-        self._stopped = True
-
-    def clear(self) -> None:
-        self._stopped = False
-
-    def wait(self, timeout: float | None = None) -> bool:
-        self._stopped = True
-        return True
-
-
-class TestPollLoopConsentSafe:
-    """Pin: when ``consent-state.txt = safe`` the poll loop refuses to
-    call ``_grim_capture`` at all (defense in depth — the render gate
-    already suppresses, but this prevents pixel bytes from ever
-    landing in /dev/shm)."""
-
-    def test_consent_safe_skips_capture_and_clears_state(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Stand up a source but stop its real discovery thread first.
-        src = DURFCairoSource(config_path=tmp_path / "nonexistent.yaml")
-        src.stop()
-        # Manually populate "discovered" state to verify it gets cleared.
-        src._discovered = [{"role": "alpha"}]
-        src._capture_paths = {"alpha": tmp_path / "alpha.png"}
-
-        monkeypatch.setattr(_durf_module, "_consent_safe_active", lambda: True)
-        # Discovery + capture must NOT be called
-        discover_spy = MagicMock(return_value=[])
-        capture_spy = MagicMock(return_value=False)
-        monkeypatch.setattr(_durf_module, "_discover_session_windows", discover_spy)
-        monkeypatch.setattr(_durf_module, "_grim_capture", capture_spy)
-
-        # Swap the stop event for the one-iteration stub so the loop
-        # exits cleanly after running its body exactly once.
-        src._stop_event = _StopAfterFirstWait()
-        src._poll_loop()
-
-        assert discover_spy.call_count == 0
-        assert capture_spy.call_count == 0
-        # State cleared so the render path has nothing to render
-        assert src._discovered == []
-        assert src._capture_paths == {}
