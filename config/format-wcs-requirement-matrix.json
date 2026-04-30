@@ -1,0 +1,2950 @@
+{
+  "schema_version": 1,
+  "matrix_id": "format_wcs_requirement_matrix",
+  "schema_ref": "schemas/format-wcs-requirement-matrix.schema.json",
+  "content_programme_format_schema_ref": "schemas/content-programme-format.schema.json",
+  "source_refs": [
+    "cc-task:format-wcs-requirement-matrix",
+    "spec:2026-04-29-programme-world-surface-integration-plan",
+    "schemas/content-programme-format.schema.json"
+  ],
+  "rows": [
+    {
+      "format_id": "tier_list",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#tier_list",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#tier_list.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#tier_list.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "tier_list.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:tier_list:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:tier_list:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "tier_list.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:tier_list:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:tier_list:rights_provenance"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "tier_list.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:tier_list:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:tier_list:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "tier_list.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:tier_list:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:tier_list:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "tier_list.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:tier_list:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "tier_list.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:tier_list:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "tier_list.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:tier_list:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "tier_list.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:tier_list:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "tier_list.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:tier_list:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "tier_list.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:tier_list:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "tier_list.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:tier_list:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:tier_list:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "rank_table",
+        "criteria_sheet",
+        "chapter_markers"
+      ],
+      "conversion_paths": [
+        "archive_replay",
+        "chapter",
+        "support_prompt",
+        "grant_demo_evidence"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "foreground",
+        "route_attention",
+        "mark_boundary",
+        "hold"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "react_commentary",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#react_commentary",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#react_commentary.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#react_commentary.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "react_commentary.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:react_commentary:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:react_commentary:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:react_commentary:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:react_commentary:rights_provenance"
+          ],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:react_commentary:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:react_commentary:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:react_commentary:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:react_commentary:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:react_commentary:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:react_commentary:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:react_commentary:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:react_commentary:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.media_route",
+          "family": "media",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:react_commentary:media_route"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "unsafe_or_missing_media_route",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "react_commentary.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:react_commentary:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:react_commentary:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "react_commentary.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:react_commentary:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:react_commentary:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "caption",
+        "refusal_artifact"
+      ],
+      "conversion_paths": [
+        "archive_replay",
+        "caption",
+        "public_refusal_artifact"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "foreground",
+        "background",
+        "suppress",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "ranking",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#ranking",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#ranking.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#ranking.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "ranking.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:ranking:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:ranking:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "ranking.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:ranking:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:ranking:rights_provenance"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "ranking.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:ranking:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:ranking:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "ranking.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:ranking:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:ranking:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "ranking.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:ranking:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "ranking.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:ranking:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "ranking.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:ranking:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "ranking.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:ranking:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "ranking.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:ranking:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "ranking.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:ranking:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "ranking.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:ranking:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:ranking:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "rank_table",
+        "chapter_markers"
+      ],
+      "conversion_paths": [
+        "archive_replay",
+        "chapter",
+        "artifact"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "foreground",
+        "transition",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "comparison",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#comparison",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#comparison.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#comparison.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "comparison.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:comparison:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:comparison:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "comparison.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:comparison:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:comparison:rights_provenance"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "comparison.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:comparison:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:comparison:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "comparison.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:comparison:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:comparison:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "comparison.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:comparison:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "comparison.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:comparison:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "comparison.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:comparison:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "comparison.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:comparison:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "comparison.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:comparison:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "comparison.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:comparison:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "comparison.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:comparison:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:comparison:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "criteria_sheet",
+        "chapter_markers"
+      ],
+      "conversion_paths": [
+        "archive_replay",
+        "chapter",
+        "support_prompt",
+        "grant_demo_evidence"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "crossfade",
+        "transition",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "review",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#review",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#review.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#review.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "review.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:review:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:review:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:review:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:review:rights_provenance"
+          ],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:review:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:review:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:review:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:review:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:review:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:review:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:review:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:review:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.media_route",
+          "family": "media",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:review:media_route"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "unsafe_or_missing_media_route",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "review.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:review:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:review:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "review.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:review:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:review:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "criteria_sheet",
+        "correction_artifact"
+      ],
+      "conversion_paths": [
+        "archive_replay",
+        "artifact",
+        "support_prompt",
+        "grant_demo_evidence"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "foreground",
+        "mark_boundary",
+        "suppress"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "watch_along",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#watch_along",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#watch_along.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#watch_along.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "watch_along.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:watch_along:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:watch_along:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:watch_along:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:watch_along:rights_provenance"
+          ],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:watch_along:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:watch_along:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:watch_along:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:watch_along:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:watch_along:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:watch_along:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:watch_along:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:watch_along:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.media_route",
+          "family": "media",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:watch_along:media_route"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "unsafe_or_missing_media_route",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "watch_along.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:watch_along:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:watch_along:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "watch_along.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:watch_along:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:watch_along:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "replay_note",
+        "caption",
+        "chapter_markers"
+      ],
+      "conversion_paths": [
+        "archive_replay",
+        "caption",
+        "support_prompt"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "hold",
+        "route_attention",
+        "suppress",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "explainer",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#explainer",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#explainer.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#explainer.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "explainer.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:explainer:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:explainer:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "explainer.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:explainer:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:explainer:rights_provenance"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "explainer.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:explainer:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:explainer:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "explainer.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:explainer:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:explainer:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "explainer.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:explainer:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "explainer.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:explainer:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "explainer.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:explainer:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "explainer.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:explainer:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "explainer.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:explainer:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "explainer.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:explainer:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "explainer.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:explainer:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:explainer:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "chapter_markers",
+        "caption"
+      ],
+      "conversion_paths": [
+        "youtube_metadata",
+        "chapter",
+        "caption",
+        "archive_replay",
+        "artifact",
+        "grant_demo_evidence"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "foreground",
+        "stabilize",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "rundown",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#rundown",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#rundown.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#rundown.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "rundown.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:rundown:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:rundown:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "rundown.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:rundown:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:rundown:rights_provenance"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "rundown.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:rundown:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:rundown:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "rundown.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:rundown:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:rundown:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "rundown.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:rundown:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "rundown.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:rundown:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "rundown.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:rundown:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "rundown.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:rundown:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "rundown.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:rundown:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "rundown.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:rundown:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "rundown.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:rundown:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:rundown:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "chapter_markers",
+        "correction_artifact"
+      ],
+      "conversion_paths": [
+        "youtube_metadata",
+        "chapter",
+        "archive_replay",
+        "support_prompt"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "transition",
+        "suppress",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "debate",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#debate",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#debate.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#debate.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "debate.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:debate:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:debate:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "debate.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:debate:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:debate:rights_provenance"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "debate.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:debate:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:debate:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "debate.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:debate:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:debate:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "debate.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:debate:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "debate.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:debate:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "debate.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:debate:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "debate.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:debate:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "debate.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:debate:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "debate.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:debate:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "debate.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:debate:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:debate:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "caption",
+        "correction_artifact"
+      ],
+      "conversion_paths": [
+        "archive_replay",
+        "caption",
+        "artifact",
+        "grant_demo_evidence"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "foreground",
+        "crossfade",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "bracket",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#bracket",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#bracket.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#bracket.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "bracket.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:bracket:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:bracket:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "bracket.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:bracket:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:bracket:rights_provenance"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "bracket.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:bracket:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:bracket:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "bracket.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:bracket:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:bracket:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "bracket.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:bracket:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "bracket.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:bracket:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "bracket.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:bracket:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "bracket.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:bracket:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "bracket.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:bracket:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "bracket.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:bracket:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "bracket.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:bracket:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:bracket:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "rank_table",
+        "chapter_markers"
+      ],
+      "conversion_paths": [
+        "archive_replay",
+        "chapter",
+        "artifact"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "transition",
+        "foreground",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "what_is_this",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#what_is_this",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#what_is_this.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#what_is_this.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "what_is_this.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:what_is_this:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:what_is_this:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:what_is_this:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:what_is_this:rights_provenance"
+          ],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:what_is_this:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:what_is_this:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:what_is_this:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:what_is_this:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:what_is_this:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:what_is_this:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:what_is_this:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:what_is_this:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.media_route",
+          "family": "media",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:what_is_this:media_route"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "unsafe_or_missing_media_route",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "what_is_this.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:what_is_this:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:what_is_this:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "what_is_this.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:what_is_this:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:what_is_this:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "run_card",
+        "caption",
+        "correction_artifact"
+      ],
+      "conversion_paths": [
+        "shorts",
+        "archive_replay",
+        "caption"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "foreground",
+        "route_attention",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "refusal_breakdown",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#refusal_breakdown",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#refusal_breakdown.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#refusal_breakdown.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "refusal_breakdown.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:refusal_breakdown:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:refusal_breakdown:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "refusal_breakdown.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:refusal_breakdown:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:refusal_breakdown:rights_provenance"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "refusal_breakdown.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:refusal_breakdown:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:refusal_breakdown:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "refusal_breakdown.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:refusal_breakdown:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:refusal_breakdown:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "refusal_breakdown.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:refusal_breakdown:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "refusal_breakdown.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:refusal_breakdown:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "refusal_breakdown.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:refusal_breakdown:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "refusal_breakdown.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:refusal_breakdown:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "refusal_breakdown.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:refusal_breakdown:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "refusal_breakdown.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:refusal_breakdown:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "refusal_breakdown.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:refusal_breakdown:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:refusal_breakdown:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "refusal_artifact",
+        "run_card"
+      ],
+      "conversion_paths": [
+        "public_refusal_artifact",
+        "archive_replay",
+        "support_prompt",
+        "grant_demo_evidence"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "foreground",
+        "stabilize",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    },
+    {
+      "format_id": "evidence_audit",
+      "content_programme_format_ref": "schemas/content-programme-format.schema.json#evidence_audit",
+      "grounding_question_ref": "schemas/content-programme-format.schema.json#evidence_audit.grounding_question",
+      "permitted_claim_shape_ref": "schemas/content-programme-format.schema.json#evidence_audit.permitted_claim_shape",
+      "required_surface_blocks": [
+        {
+          "surface_id": "evidence_audit.source_bundle",
+          "family": "source",
+          "required_for_modes": [
+            "private",
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:evidence_audit:source_bundle"
+          ],
+          "evidence_refs": [
+            "evidence:evidence_audit:source_bundle"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_source_bundle",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "evidence_audit.rights_provenance",
+          "family": "rights",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:evidence_audit:rights_provenance"
+          ],
+          "evidence_refs": [
+            "evidence:evidence_audit:rights_provenance"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_rights_provenance",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "evidence_audit.claim_gate",
+          "family": "claim_gate",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:evidence_audit:claim_gate"
+          ],
+          "evidence_refs": [
+            "evidence:evidence_audit:claim_gate"
+          ],
+          "missing_behavior": "refuse",
+          "blocked_reason_code": "missing_claim_gate",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "evidence_audit.evidence_trace",
+          "family": "evidence",
+          "required_for_modes": [
+            "dry_run",
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:evidence_audit:evidence_trace"
+          ],
+          "evidence_refs": [
+            "evidence:evidence_audit:evidence_trace"
+          ],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_evidence_trace",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "evidence_audit.public_event_policy",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:evidence_audit:public_event_policy"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_public_event_policy",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "evidence_audit.archive_surface",
+          "family": "archive",
+          "required_for_modes": [
+            "public_archive",
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:evidence_audit:archive_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "dry_run",
+          "blocked_reason_code": "missing_archive_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "evidence_audit.egress_state",
+          "family": "public_event",
+          "required_for_modes": [
+            "public_live",
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:evidence_audit:egress_state"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "block",
+          "blocked_reason_code": "missing_egress_state",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "evidence_audit.monetization_ledger",
+          "family": "monetization",
+          "required_for_modes": [
+            "public_monetizable"
+          ],
+          "witness_refs": [
+            "WCS:evidence_audit:monetization_ledger"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "monetization_blocked",
+          "blocked_reason_code": "missing_monetization_readiness",
+          "public_claim_authority": false
+        }
+      ],
+      "optional_surface_blocks": [
+        {
+          "surface_id": "evidence_audit.caption_surface",
+          "family": "archive",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:evidence_audit:caption_surface"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_caption_surface",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "evidence_audit.director_context",
+          "family": "director",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:evidence_audit:director_context"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_director_context",
+          "public_claim_authority": false
+        },
+        {
+          "surface_id": "evidence_audit.refusal_artifact",
+          "family": "refusal_correction",
+          "required_for_modes": [],
+          "witness_refs": [
+            "WCS:evidence_audit:refusal_artifact"
+          ],
+          "evidence_refs": [],
+          "missing_behavior": "private_only",
+          "blocked_reason_code": "missing_refusal_artifact",
+          "public_claim_authority": false
+        }
+      ],
+      "required_evidence_classes": [
+        "source_ref",
+        "grounding_gate_ref",
+        "wcs_surface_ref",
+        "rights_provenance"
+      ],
+      "required_grounding_gate_refs": [
+        "grounding-gate:evidence_audit:claim-shape"
+      ],
+      "required_public_event_policy": "ResearchVehiclePublicEvent required before public fanout; dry-run/private otherwise.",
+      "archive_outputs": [
+        "evidence_table",
+        "correction_artifact",
+        "run_card"
+      ],
+      "conversion_paths": [
+        "archive_replay",
+        "artifact",
+        "correction_artifact",
+        "grant_demo_evidence"
+      ],
+      "monetization_obligations": [
+        "monetization-readiness-ledger",
+        "no-hidden-operator-labor",
+        "rights-clearance"
+      ],
+      "director_moves": [
+        "foreground",
+        "suppress",
+        "mark_boundary"
+      ],
+      "refusal_correction_policy": {
+        "public_safe_refusal_artifact_allowed": true,
+        "correction_artifact_required_on_public_error": true,
+        "blocked_claim_validated_by_aesthetic_emphasis": false,
+        "private_details_must_be_suppressed": true,
+        "evidence_refs_required": true
+      }
+    }
+  ]
+}

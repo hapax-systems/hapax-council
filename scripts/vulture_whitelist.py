@@ -86,6 +86,14 @@ from shared.director_world_surface_snapshot import (
 from shared.director_world_surface_snapshot import (
     Freshness as DirectorWorldSurfaceFreshness,
 )
+from shared.format_wcs_requirement_matrix import (
+    FormatWCSRequirementMatrix,
+    FormatWCSRequirementRow,
+    decide_format_wcs_readiness,
+    director_projection,
+    load_format_wcs_requirement_matrix,
+    opportunity_gate_projection,
+)
 from shared.grounding_provider_router import (
     build_eval_artifact,
     build_privacy_egress_preflight,
@@ -451,3 +459,14 @@ BraidSnapshotRowRef._private_ceiling_has_no_public_claim
 ProgrammeFeedbackBraidProjection._grounding_updates_need_grounding_signal
 ConversionReadinessBraidProjection._grant_private_evidence_stays_separate
 load_programme_revenue_braid_adapter_fixtures
+
+# Format WCS requirement matrix validators are invoked dynamically by Pydantic
+# while validating the matrix. The projection helpers are public contracts for
+# downstream director and opportunity-to-run gate packets.
+FormatWCSRequirementRow._validate_format_wcs_contract
+FormatWCSRequirementRow.surface_ids_for_director
+FormatWCSRequirementMatrix._validate_all_initial_formats_present
+load_format_wcs_requirement_matrix
+decide_format_wcs_readiness
+director_projection
+opportunity_gate_projection
