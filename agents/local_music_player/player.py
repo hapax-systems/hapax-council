@@ -46,6 +46,13 @@ from pathlib import Path
 from typing import Any
 
 from shared.affordance import ContentRisk
+from shared.content_source_provenance_egress import (
+    EgressGateDecision,
+    EgressManifestGate,
+    audio_asset_from_music_manifest,
+    build_broadcast_manifest,
+    write_broadcast_manifest,
+)
 from shared.music.provenance import (
     MusicManifestAsset,
     MusicProvenance,
@@ -291,6 +298,7 @@ class LocalMusicPlayer:
         # write so we can distinguish that from external overrides
         # (chat / Hapax cue / operator command) when recording plays.
         self._auto_written_mtime: float = 0.0
+        self._egress_gate = EgressManifestGate()
 
     def stop(self) -> None:
         """Stop any in-flight playback and exit the loop."""
@@ -353,8 +361,20 @@ class LocalMusicPlayer:
         manifest_asset = self._resolve_manifest_asset(selection)
         try:
             write_music_provenance(self.config.provenance_path, manifest_asset)
+            decision = self._publish_and_gate_music_asset(manifest_asset)
         except OSError:
             log.warning("music provenance write failed; skipping track")
+            try:
+                write_attribution(self.config.attribution_path, "")
+            except OSError:
+                log.debug("attribution clear failed", exc_info=True)
+            return
+
+        if decision.kill_switch_fired:
+            log.warning(
+                "egress manifest gate fired; skipping track: %s",
+                track_path,
+            )
             try:
                 write_attribution(self.config.attribution_path, "")
             except OSError:
@@ -503,6 +523,33 @@ class LocalMusicPlayer:
             source=source_str or "selection",
         )
 
+    def _publish_and_gate_music_asset(self, asset: MusicManifestAsset) -> EgressGateDecision:
+        manifest = build_broadcast_manifest(
+            audio_assets=(audio_asset_from_music_manifest(asset),),
+        )
+        write_broadcast_manifest(manifest, self._egress_gate.manifest_path)
+        decision = self._egress_gate.tick(manifest)
+        if decision is None:
+            raise OSError("egress manifest gate did not return a decision")
+        return decision
+
+    def _enforce_egress_gate(self) -> bool:
+        """Apply the latest broadcast manifest gate; return True when it fired."""
+
+        try:
+            decision = self._egress_gate.tick()
+        except OSError:
+            log.debug("egress manifest gate tick failed", exc_info=True)
+            return False
+        if decision is None or not decision.kill_switch_fired:
+            return False
+        self._kill_current()
+        try:
+            write_attribution(self.config.attribution_path, "")
+        except OSError:
+            log.debug("attribution clear failed", exc_info=True)
+        return True
+
     def _current_proc_alive(self) -> bool:
         """True when the current playback chain is still producing audio.
 
@@ -584,6 +631,8 @@ class LocalMusicPlayer:
         is detected, the programmer writes selection.json; the SAME tick
         below sees the new mtime and dispatches playback.
         """
+        if self._current_proc_alive() and self._enforce_egress_gate():
+            return
         path = self.config.selection_path
         try:
             current_mtime = path.stat().st_mtime if path.exists() else 0.0

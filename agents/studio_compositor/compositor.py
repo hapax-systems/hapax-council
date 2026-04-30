@@ -565,6 +565,8 @@ class StudioCompositor:
         self._status_timer_id: int | None = None
         self._broadcast_mode_timer_id: int | None = None
         self._broadcast_mode: str = self._resolve_broadcast_mode()
+        self._egress_manifest_gate: Any | None = None
+        self._egress_compose_safe_active = False
         self._mobile_salience_router: Any | None = None
         self._mobile_cairo_runner: Any | None = None
         self._overlay_state = OverlayState()
@@ -672,6 +674,67 @@ class StudioCompositor:
         except OSError:
             log.debug("camera-classifications.json write failed", exc_info=True)
         return classifications
+
+    def _publish_broadcast_manifest_and_gate(self) -> None:
+        """Publish the provenance manifest and apply the egress gate."""
+
+        from shared.content_source_provenance_egress import (
+            EgressManifestGate,
+            build_broadcast_manifest,
+            read_music_provenance_asset,
+            visual_asset_from_camera_role,
+            visual_asset_from_source_schema,
+            write_broadcast_manifest,
+        )
+
+        visual_assets = []
+        if self.layout_state is not None:
+            visual_assets.extend(
+                visual_asset_from_source_schema(source)
+                for source in self.layout_state.get().sources
+            )
+        visual_assets.extend(visual_asset_from_camera_role(cam.role) for cam in self.config.cameras)
+
+        loader = getattr(self, "_sierpinski_loader", None)
+        for slot in getattr(loader, "video_slots", ()):
+            try:
+                asset = slot.current_asset()
+            except Exception:
+                log.debug("sierpinski slot asset read failed", exc_info=True)
+                continue
+            if asset is None:
+                continue
+            visual_assets.append(
+                asset.to_broadcast_manifest_asset(source_id=f"visual-pool-slot-{slot.slot_id}")
+            )
+
+        audio_asset = read_music_provenance_asset()
+        manifest = build_broadcast_manifest(
+            audio_assets=(audio_asset,) if audio_asset is not None else (),
+            visual_assets=visual_assets,
+        )
+
+        if self._egress_manifest_gate is None:
+            self._egress_manifest_gate = EgressManifestGate()
+        write_broadcast_manifest(manifest, self._egress_manifest_gate.manifest_path)
+        decision = self._egress_manifest_gate.tick(manifest)
+        if decision is None:
+            return
+        pm = getattr(self, "_pipeline_manager", None)
+        if decision.kill_switch_fired:
+            self._egress_compose_safe_active = True
+            if pm is not None:
+                try:
+                    pm.set_compose_safe(True)
+                except Exception:
+                    log.debug("egress gate compose-safe apply failed", exc_info=True)
+        elif self._egress_compose_safe_active:
+            self._egress_compose_safe_active = False
+            if pm is not None and not getattr(self, "_compose_safe_active", False):
+                try:
+                    pm.set_compose_safe(False)
+                except Exception:
+                    log.debug("egress gate compose-safe clear failed", exc_info=True)
 
     def _on_graph_params_changed(self, node_id: str, params: dict) -> None:
         if hasattr(self, "_slot_pipeline") and self._slot_pipeline is not None:
@@ -929,6 +992,10 @@ class StudioCompositor:
     def _status_tick(self) -> bool:
         if self._running:
             self._write_status("running")
+            try:
+                self._publish_broadcast_manifest_and_gate()
+            except Exception:
+                log.debug("broadcast provenance manifest tick failed", exc_info=True)
             # Drop #41 BT-5 / drop #52 FDL-2: publish process fd count so
             # future regressions in the camera-rebuild-thrash path become
             # scrape-visible before they hit the LimitNOFILE=65536

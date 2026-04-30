@@ -14,12 +14,15 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.affordance import ContentRisk
+
+if TYPE_CHECKING:
+    from shared.content_source_provenance_egress import BroadcastManifestAsset
 
 log = logging.getLogger(__name__)
 
@@ -114,6 +117,19 @@ class VisualPoolAsset(BaseModel):
     @property
     def frame_loadable(self) -> bool:
         return self.path.suffix.lower() in SUPPORTED_FRAME_EXTENSIONS
+
+    def to_broadcast_manifest_asset(
+        self,
+        *,
+        source_id: str | None = None,
+    ) -> BroadcastManifestAsset:
+        """Return the provenance projection consumed at broadcast egress."""
+
+        from shared.content_source_provenance_egress import (
+            visual_asset_from_visual_pool_asset,
+        )
+
+        return visual_asset_from_visual_pool_asset(self, source_id=source_id)
 
 
 class LocalVisualPool:
