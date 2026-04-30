@@ -1,0 +1,1239 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "director-world-surface-snapshot-fixtures-2026-04-30",
+  "schema_ref": "schemas/director-world-surface-snapshot.schema.json",
+  "declared_at": "2026-04-30T01:12:00Z",
+  "generated_from": [
+    "Documents/Personal/20-projects/hapax-research/specs/2026-04-29-director-world-surface-read-model.md",
+    "schemas/world-surface-health-envelope.schema.json",
+    "config/world-surface-health-fixtures.json",
+    "config/capability-classification-inventory.json"
+  ],
+  "producer": "director-world-surface-snapshot-schema-fixtures",
+  "move_statuses": [
+    "mounted",
+    "public",
+    "private",
+    "dry_run",
+    "stale",
+    "blocked",
+    "unavailable",
+    "blocked_hardware_no_op"
+  ],
+  "surface_families": [
+    "tool_schema",
+    "runtime_service",
+    "state_file",
+    "device",
+    "audio_route",
+    "model_provider",
+    "publication_endpoint",
+    "blocked_decommissioned",
+    "static_prompt_hint"
+  ],
+  "director_move_row_required_fields": [
+    "schema_version",
+    "move_id",
+    "surface_id",
+    "status",
+    "verb",
+    "target_type",
+    "target_id",
+    "display_name",
+    "source_refs",
+    "generated_from",
+    "intent_families",
+    "surface_family",
+    "surface_ids",
+    "route_refs",
+    "evidence_status",
+    "freshness",
+    "availability",
+    "privacy_class",
+    "rights_class",
+    "monetization_state",
+    "grounding_status",
+    "claim_authority_ceiling",
+    "claim_posture",
+    "public_claim_allowed",
+    "public_event_policy",
+    "evidence_obligations",
+    "required_witness_refs",
+    "missing_witness_refs",
+    "blocked_reasons",
+    "blocker_reason",
+    "fallback",
+    "outcome_policy_ref",
+    "director_control_move_template"
+  ],
+  "director_snapshot_required_fields": [
+    "schema_version",
+    "snapshot_id",
+    "generated_at",
+    "freshness_ttl_s",
+    "mode",
+    "programme_ref",
+    "condition_ref",
+    "egress_state_ref",
+    "audio_state_ref",
+    "rights_state_ref",
+    "privacy_state_ref",
+    "capability_refs",
+    "substrate_refs",
+    "route_refs",
+    "lane_refs",
+    "claim_refs",
+    "public_event_refs",
+    "available_moves",
+    "blocked_moves",
+    "dry_run_moves",
+    "private_only_moves",
+    "fallback_moves",
+    "eligible_programme_formats",
+    "opportunity_refs",
+    "evidence_obligations",
+    "refusal_or_correction_candidates",
+    "prompt_summary",
+    "audit_refs"
+  ],
+  "snapshots": [
+    {
+      "schema_version": 1,
+      "snapshot_id": "director-wcs-snapshot-fixture-20260430",
+      "generated_at": "2026-04-30T01:12:00Z",
+      "freshness_ttl_s": 300,
+      "mode": "fortress",
+      "programme_ref": "programme:fixture.world-surface-director",
+      "condition_ref": "condition:wcs.fixture.coverage",
+      "egress_state_ref": "state:public-egress-provenance.fixture",
+      "audio_state_ref": "state:audio-route-ledger.fixture",
+      "rights_state_ref": "state:rights-clearance.fixture",
+      "privacy_state_ref": "state:privacy-posture.fixture",
+      "capability_refs": [
+        "capability:director.query-scene-state",
+        "capability:director.broadcast-master-route",
+        "capability:director.private-log-replay",
+        "capability:director.publisher-dry-run",
+        "capability:director.stale-vision-state",
+        "capability:director.decommissioned-tauri-frame",
+        "capability:director.model-route-unavailable",
+        "capability:director.hardware-no-op",
+        "capability:director.static-prompt-hint"
+      ],
+      "substrate_refs": [
+        "wcs-health:fixture",
+        "capability-classification:fixture",
+        "runtime-witness:fixture"
+      ],
+      "route_refs": [
+        "route:director.wcs.fixture",
+        "route:audio.broadcast-master.fixture"
+      ],
+      "lane_refs": [
+        "lane:cx-cyan.fixture"
+      ],
+      "claim_refs": [
+        "claim:public-live.audio.broadcast-master.fixture"
+      ],
+      "public_event_refs": [
+        "public-event:youtube.live-cuepoint.fixture"
+      ],
+      "available_moves": [
+        {
+          "schema_version": 1,
+          "move_id": "move.director.tool.query-scene-state",
+          "surface_id": "tool_schema:director.query_scene_state",
+          "status": "mounted",
+          "verb": "query",
+          "target_type": "tool",
+          "target_id": "director.query_scene_state",
+          "display_name": "Query scene state",
+          "source_refs": [
+            "capability-classification:tool_schema.director.query_scene_state",
+            "wcs-health:tool_schema.director.query_scene_state"
+          ],
+          "generated_from": [
+            "capability_classification_inventory",
+            "wcs_health_envelope"
+          ],
+          "intent_families": [
+            "inspect",
+            "director_world_surface"
+          ],
+          "surface_family": "tool_schema",
+          "surface_ids": [
+            "tool_schema:director.query_scene_state"
+          ],
+          "route_refs": [
+            "route:logos-api.tool.query_scene_state"
+          ],
+          "evidence_status": "fresh",
+          "freshness": {
+            "state": "fresh",
+            "checked_at": "2026-04-30T01:11:30Z",
+            "ttl_s": 300,
+            "observed_age_s": 12,
+            "source_ref": "wcs-health:tool_schema.director.query_scene_state"
+          },
+          "availability": {
+            "available_to_attempt": true,
+            "available_to_render": false,
+            "available_to_observe": true,
+            "available_to_claim_private": false,
+            "available_to_claim_public_live": false,
+            "available_to_archive": false,
+            "available_to_monetize": false,
+            "available_to_convert": false
+          },
+          "privacy_class": "private_only",
+          "rights_class": "not_applicable",
+          "monetization_state": "not_applicable",
+          "grounding_status": "grounded",
+          "claim_authority_ceiling": "internal_only",
+          "claim_posture": {
+            "authority_ceiling": "internal_only",
+            "public_claim_allowed": false,
+            "public_live_claim_allowed": false,
+            "private_claim_allowed": true,
+            "archive_claim_allowed": false,
+            "monetization_claim_allowed": false,
+            "claim_refs": [
+              "claim:internal.tool-mounted.fixture"
+            ],
+            "blocker_reasons": []
+          },
+          "public_claim_allowed": false,
+          "public_event_policy": "not_applicable",
+          "evidence_obligations": [
+            {
+              "obligation_id": "obligation.query-scene-state.runtime-witness",
+              "dimension": "witness",
+              "required_for": [
+                "attempt",
+                "observe"
+              ],
+              "evidence_refs": [
+                "wcs-health:tool_schema.director.query_scene_state"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            }
+          ],
+          "required_witness_refs": [
+            "wcs-health:tool_schema.director.query_scene_state"
+          ],
+          "missing_witness_refs": [],
+          "blocked_reasons": [],
+          "blocker_reason": null,
+          "fallback": {
+            "mode": "hold_last_safe",
+            "reason_code": "mounted_tool_no_public_claim",
+            "no_op": false,
+            "operator_visible_reason": "Tool surface is mounted for private director inspection only.",
+            "target_surface_id": null
+          },
+          "outcome_policy_ref": "outcome-policy:capability-outcome-envelope.required",
+          "director_control_move_template": {
+            "verb": "query",
+            "target": "director.query_scene_state",
+            "execution_state": "mounted_private",
+            "public_claim_allowed": false,
+            "emits_capability_outcome_envelope": true
+          }
+        },
+        {
+          "schema_version": 1,
+          "move_id": "move.director.audio.broadcast-master",
+          "surface_id": "audio_route:broadcast.master.normalized",
+          "status": "public",
+          "verb": "broadcast",
+          "target_type": "audio_route",
+          "target_id": "broadcast.master.normalized",
+          "display_name": "Broadcast master route",
+          "source_refs": [
+            "capability-classification:audio_route.broadcast.master.normalized",
+            "wcs-health:audio_route.broadcast.master.normalized",
+            "grounding-gate:audio.broadcast-master.public-live.fixture",
+            "egress-provenance:audio.broadcast-master.fixture"
+          ],
+          "generated_from": [
+            "capability_classification_inventory",
+            "wcs_health_envelope",
+            "runtime_witness",
+            "public_event_gate"
+          ],
+          "intent_families": [
+            "public_live",
+            "audio_route",
+            "programme_output"
+          ],
+          "surface_family": "audio_route",
+          "surface_ids": [
+            "audio_route:broadcast.master.normalized"
+          ],
+          "route_refs": [
+            "route:pipewire.broadcast-master",
+            "route:public-event.youtube.fixture"
+          ],
+          "evidence_status": "fresh",
+          "freshness": {
+            "state": "fresh",
+            "checked_at": "2026-04-30T01:11:35Z",
+            "ttl_s": 120,
+            "observed_age_s": 8,
+            "source_ref": "runtime-witness:audio.broadcast-master.fixture"
+          },
+          "availability": {
+            "available_to_attempt": true,
+            "available_to_render": true,
+            "available_to_observe": true,
+            "available_to_claim_private": true,
+            "available_to_claim_public_live": true,
+            "available_to_archive": true,
+            "available_to_monetize": false,
+            "available_to_convert": false
+          },
+          "privacy_class": "public_safe",
+          "rights_class": "public_clear",
+          "monetization_state": "not_applicable",
+          "grounding_status": "grounded",
+          "claim_authority_ceiling": "public_gate_required",
+          "claim_posture": {
+            "authority_ceiling": "public_gate_required",
+            "public_claim_allowed": true,
+            "public_live_claim_allowed": true,
+            "private_claim_allowed": true,
+            "archive_claim_allowed": true,
+            "monetization_claim_allowed": false,
+            "claim_refs": [
+              "claim:public-live.audio.broadcast-master.fixture",
+              "claim:grounded.audio.broadcast-master.fixture"
+            ],
+            "blocker_reasons": []
+          },
+          "public_claim_allowed": true,
+          "public_event_policy": "public_live_allowed",
+          "evidence_obligations": [
+            {
+              "obligation_id": "obligation.public.source-ref",
+              "dimension": "source_ref",
+              "required_for": [
+                "public_live"
+              ],
+              "evidence_refs": [
+                "capability-classification:audio_route.broadcast.master.normalized"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            },
+            {
+              "obligation_id": "obligation.public.freshness",
+              "dimension": "freshness",
+              "required_for": [
+                "public_live"
+              ],
+              "evidence_refs": [
+                "runtime-witness:audio.broadcast-master.fixture"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            },
+            {
+              "obligation_id": "obligation.public.route",
+              "dimension": "route",
+              "required_for": [
+                "public_live"
+              ],
+              "evidence_refs": [
+                "route:pipewire.broadcast-master"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            },
+            {
+              "obligation_id": "obligation.public.witness",
+              "dimension": "witness",
+              "required_for": [
+                "public_live"
+              ],
+              "evidence_refs": [
+                "witness:audio.broadcast-master.fixture"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            },
+            {
+              "obligation_id": "obligation.public.grounding-gate",
+              "dimension": "grounding_gate",
+              "required_for": [
+                "public_live"
+              ],
+              "evidence_refs": [
+                "grounding-gate:audio.broadcast-master.public-live.fixture"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            },
+            {
+              "obligation_id": "obligation.public.rights",
+              "dimension": "rights",
+              "required_for": [
+                "public_live"
+              ],
+              "evidence_refs": [
+                "rights:audio.broadcast-master.public-clear.fixture"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            },
+            {
+              "obligation_id": "obligation.public.privacy",
+              "dimension": "privacy",
+              "required_for": [
+                "public_live"
+              ],
+              "evidence_refs": [
+                "privacy:audio.broadcast-master.public-safe.fixture"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            },
+            {
+              "obligation_id": "obligation.public.egress",
+              "dimension": "egress",
+              "required_for": [
+                "public_live"
+              ],
+              "evidence_refs": [
+                "egress-provenance:audio.broadcast-master.fixture"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            },
+            {
+              "obligation_id": "obligation.public.public-event",
+              "dimension": "public_event",
+              "required_for": [
+                "public_live"
+              ],
+              "evidence_refs": [
+                "public-event:youtube.live-cuepoint.fixture"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            }
+          ],
+          "required_witness_refs": [
+            "witness:audio.broadcast-master.fixture",
+            "grounding-gate:audio.broadcast-master.public-live.fixture"
+          ],
+          "missing_witness_refs": [],
+          "blocked_reasons": [],
+          "blocker_reason": null,
+          "fallback": {
+            "mode": "hold_last_safe",
+            "reason_code": "public_live_witnessed",
+            "no_op": false,
+            "operator_visible_reason": "Public route is witnessed, grounded, and rights-cleared.",
+            "target_surface_id": null
+          },
+          "outcome_policy_ref": "outcome-policy:capability-outcome-envelope.required",
+          "director_control_move_template": {
+            "verb": "broadcast",
+            "target": "broadcast.master.normalized",
+            "execution_state": "public_live_allowed",
+            "public_claim_allowed": true,
+            "emits_capability_outcome_envelope": true
+          }
+        }
+      ],
+      "blocked_moves": [
+        {
+          "schema_version": 1,
+          "move_id": "move.director.decommissioned.tauri-frame",
+          "surface_id": "blocked_decommissioned:hapax-logos.tauri-frame-server",
+          "status": "blocked",
+          "verb": "suppress",
+          "target_type": "video_surface",
+          "target_id": "hapax-logos.tauri-frame-server",
+          "display_name": "Decommissioned Tauri frame server",
+          "source_refs": [
+            "decommission:tauri-logos.frame-server",
+            "capability-classification:blocked_decommissioned.tauri-frame-server"
+          ],
+          "generated_from": [
+            "decommission_evidence",
+            "capability_classification_inventory"
+          ],
+          "intent_families": [
+            "decommissioned",
+            "director_world_surface"
+          ],
+          "surface_family": "blocked_decommissioned",
+          "surface_ids": [
+            "blocked_decommissioned:hapax-logos.tauri-frame-server"
+          ],
+          "route_refs": [],
+          "evidence_status": "blocked",
+          "freshness": {
+            "state": "not_applicable",
+            "checked_at": "2026-04-30T01:11:40Z",
+            "ttl_s": null,
+            "observed_age_s": null,
+            "source_ref": null
+          },
+          "availability": {
+            "available_to_attempt": false,
+            "available_to_render": false,
+            "available_to_observe": true,
+            "available_to_claim_private": false,
+            "available_to_claim_public_live": false,
+            "available_to_archive": false,
+            "available_to_monetize": false,
+            "available_to_convert": false
+          },
+          "privacy_class": "blocked",
+          "rights_class": "blocked",
+          "monetization_state": "blocked",
+          "grounding_status": "blocked",
+          "claim_authority_ceiling": "no_claim",
+          "claim_posture": {
+            "authority_ceiling": "no_claim",
+            "public_claim_allowed": false,
+            "public_live_claim_allowed": false,
+            "private_claim_allowed": false,
+            "archive_claim_allowed": false,
+            "monetization_claim_allowed": false,
+            "claim_refs": [],
+            "blocker_reasons": [
+              "decommissioned_runtime_path"
+            ]
+          },
+          "public_claim_allowed": false,
+          "public_event_policy": "blocked",
+          "evidence_obligations": [
+            {
+              "obligation_id": "obligation.tauri-frame.decommission",
+              "dimension": "source_ref",
+              "required_for": [
+                "block",
+                "no_real_move"
+              ],
+              "evidence_refs": [
+                "decommission:tauri-logos.frame-server"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            }
+          ],
+          "required_witness_refs": [],
+          "missing_witness_refs": [
+            "runtime-witness:tauri-frame-server.disabled"
+          ],
+          "blocked_reasons": [
+            "decommissioned_runtime_path"
+          ],
+          "blocker_reason": "Legacy Tauri/WebKit frame server is decommissioned and cannot execute real moves.",
+          "fallback": {
+            "mode": "kill_switch",
+            "reason_code": "decommissioned_surface",
+            "no_op": false,
+            "operator_visible_reason": "Director may name the blocked surface only as a decommissioned path.",
+            "target_surface_id": null
+          },
+          "outcome_policy_ref": "outcome-policy:capability-outcome-envelope.required",
+          "director_control_move_template": {
+            "verb": "suppress",
+            "target": "hapax-logos.tauri-frame-server",
+            "execution_state": "blocked_decommissioned",
+            "public_claim_allowed": false,
+            "emits_capability_outcome_envelope": true
+          }
+        },
+        {
+          "schema_version": 1,
+          "move_id": "move.director.model-route.litellm",
+          "surface_id": "model_provider:litellm.remote-route",
+          "status": "unavailable",
+          "verb": "route",
+          "target_type": "model_route",
+          "target_id": "litellm.remote-route",
+          "display_name": "LiteLLM remote route",
+          "source_refs": [
+            "capability-classification:model_provider.litellm.remote-route",
+            "wcs-health:model_provider.litellm.remote-route"
+          ],
+          "generated_from": [
+            "capability_classification_inventory",
+            "wcs_health_envelope"
+          ],
+          "intent_families": [
+            "model_route",
+            "fallback"
+          ],
+          "surface_family": "model_provider",
+          "surface_ids": [
+            "model_provider:litellm.remote-route"
+          ],
+          "route_refs": [
+            "route:litellm.remote"
+          ],
+          "evidence_status": "missing",
+          "freshness": {
+            "state": "missing",
+            "checked_at": "2026-04-30T01:11:45Z",
+            "ttl_s": null,
+            "observed_age_s": null,
+            "source_ref": null
+          },
+          "availability": {
+            "available_to_attempt": false,
+            "available_to_render": false,
+            "available_to_observe": false,
+            "available_to_claim_private": false,
+            "available_to_claim_public_live": false,
+            "available_to_archive": false,
+            "available_to_monetize": false,
+            "available_to_convert": false
+          },
+          "privacy_class": "unknown",
+          "rights_class": "unknown",
+          "monetization_state": "not_applicable",
+          "grounding_status": "missing",
+          "claim_authority_ceiling": "no_claim",
+          "claim_posture": {
+            "authority_ceiling": "no_claim",
+            "public_claim_allowed": false,
+            "public_live_claim_allowed": false,
+            "private_claim_allowed": false,
+            "archive_claim_allowed": false,
+            "monetization_claim_allowed": false,
+            "claim_refs": [],
+            "blocker_reasons": [
+              "missing_runtime_witness"
+            ]
+          },
+          "public_claim_allowed": false,
+          "public_event_policy": "not_applicable",
+          "evidence_obligations": [
+            {
+              "obligation_id": "obligation.model-route.runtime-witness",
+              "dimension": "witness",
+              "required_for": [
+                "attempt"
+              ],
+              "evidence_refs": [],
+              "satisfied": false,
+              "missing_refs": [
+                "runtime-witness:litellm.remote-route"
+              ]
+            }
+          ],
+          "required_witness_refs": [
+            "runtime-witness:litellm.remote-route"
+          ],
+          "missing_witness_refs": [
+            "runtime-witness:litellm.remote-route"
+          ],
+          "blocked_reasons": [
+            "missing_runtime_witness"
+          ],
+          "blocker_reason": "No fresh route witness exists for the remote model provider.",
+          "fallback": {
+            "mode": "no_op",
+            "reason_code": "missing_model_route_witness",
+            "no_op": true,
+            "operator_visible_reason": "Model route remains visible but cannot be attempted without a runtime witness.",
+            "target_surface_id": null
+          },
+          "outcome_policy_ref": "outcome-policy:capability-outcome-envelope.required",
+          "director_control_move_template": {
+            "verb": "route",
+            "target": "litellm.remote-route",
+            "execution_state": "unavailable_no_op",
+            "public_claim_allowed": false,
+            "emits_capability_outcome_envelope": true
+          }
+        },
+        {
+          "schema_version": 1,
+          "move_id": "move.director.hardware.resplay-s4",
+          "surface_id": "device:resplay-s4.transport",
+          "status": "blocked_hardware_no_op",
+          "verb": "transport",
+          "target_type": "hardware_device",
+          "target_id": "resplay-s4.transport",
+          "display_name": "Resplay S4 transport",
+          "source_refs": [
+            "capability-classification:device.resplay-s4.transport",
+            "hardware-witness:resplay-s4.absent"
+          ],
+          "generated_from": [
+            "capability_classification_inventory",
+            "runtime_witness"
+          ],
+          "intent_families": [
+            "hardware",
+            "no_op"
+          ],
+          "surface_family": "device",
+          "surface_ids": [
+            "device:resplay-s4.transport"
+          ],
+          "route_refs": [],
+          "evidence_status": "blocked",
+          "freshness": {
+            "state": "missing",
+            "checked_at": "2026-04-30T01:11:50Z",
+            "ttl_s": null,
+            "observed_age_s": null,
+            "source_ref": null
+          },
+          "availability": {
+            "available_to_attempt": false,
+            "available_to_render": false,
+            "available_to_observe": true,
+            "available_to_claim_private": false,
+            "available_to_claim_public_live": false,
+            "available_to_archive": false,
+            "available_to_monetize": false,
+            "available_to_convert": false
+          },
+          "privacy_class": "blocked",
+          "rights_class": "not_applicable",
+          "monetization_state": "not_applicable",
+          "grounding_status": "blocked",
+          "claim_authority_ceiling": "no_claim",
+          "claim_posture": {
+            "authority_ceiling": "no_claim",
+            "public_claim_allowed": false,
+            "public_live_claim_allowed": false,
+            "private_claim_allowed": false,
+            "archive_claim_allowed": false,
+            "monetization_claim_allowed": false,
+            "claim_refs": [],
+            "blocker_reasons": [
+              "hardware_absent"
+            ]
+          },
+          "public_claim_allowed": false,
+          "public_event_policy": "blocked",
+          "evidence_obligations": [
+            {
+              "obligation_id": "obligation.resplay-s4.hardware",
+              "dimension": "hardware",
+              "required_for": [
+                "attempt"
+              ],
+              "evidence_refs": [],
+              "satisfied": false,
+              "missing_refs": [
+                "hardware-witness:resplay-s4.present"
+              ]
+            }
+          ],
+          "required_witness_refs": [
+            "hardware-witness:resplay-s4.present"
+          ],
+          "missing_witness_refs": [
+            "hardware-witness:resplay-s4.present"
+          ],
+          "blocked_reasons": [
+            "hardware_absent"
+          ],
+          "blocker_reason": "Physical transport hardware is absent; row remains a visible operator no-op.",
+          "fallback": {
+            "mode": "operator_reason",
+            "reason_code": "hardware_absent_no_op",
+            "no_op": true,
+            "operator_visible_reason": "Hardware is not mounted, so the director can only surface the blocked reason.",
+            "target_surface_id": null
+          },
+          "outcome_policy_ref": "outcome-policy:capability-outcome-envelope.required",
+          "director_control_move_template": {
+            "verb": "transport",
+            "target": "resplay-s4.transport",
+            "execution_state": "blocked_hardware_no_op",
+            "public_claim_allowed": false,
+            "emits_capability_outcome_envelope": true
+          }
+        },
+        {
+          "schema_version": 1,
+          "move_id": "move.director.static-prompt.surface-family-hint",
+          "surface_id": "prompt_hint:director.static-surface-family",
+          "status": "unavailable",
+          "verb": "hint",
+          "target_type": "prompt_hint",
+          "target_id": "director.static-surface-family",
+          "display_name": "Static surface family hint",
+          "source_refs": [
+            "prompt-hint:director.static-surface-family"
+          ],
+          "generated_from": [
+            "static_prompt_hint"
+          ],
+          "intent_families": [
+            "prompt_context"
+          ],
+          "surface_family": "static_prompt_hint",
+          "surface_ids": [
+            "prompt_hint:director.static-surface-family"
+          ],
+          "route_refs": [],
+          "evidence_status": "not_applicable",
+          "freshness": {
+            "state": "not_applicable",
+            "checked_at": "2026-04-30T01:11:55Z",
+            "ttl_s": null,
+            "observed_age_s": null,
+            "source_ref": null
+          },
+          "availability": {
+            "available_to_attempt": false,
+            "available_to_render": false,
+            "available_to_observe": false,
+            "available_to_claim_private": false,
+            "available_to_claim_public_live": false,
+            "available_to_archive": false,
+            "available_to_monetize": false,
+            "available_to_convert": false
+          },
+          "privacy_class": "unknown",
+          "rights_class": "not_applicable",
+          "monetization_state": "not_applicable",
+          "grounding_status": "not_applicable",
+          "claim_authority_ceiling": "no_claim",
+          "claim_posture": {
+            "authority_ceiling": "no_claim",
+            "public_claim_allowed": false,
+            "public_live_claim_allowed": false,
+            "private_claim_allowed": false,
+            "archive_claim_allowed": false,
+            "monetization_claim_allowed": false,
+            "claim_refs": [],
+            "blocker_reasons": [
+              "static_prompt_hint_only"
+            ]
+          },
+          "public_claim_allowed": false,
+          "public_event_policy": "not_applicable",
+          "evidence_obligations": [
+            {
+              "obligation_id": "obligation.static-prompt.no-authority",
+              "dimension": "source_ref",
+              "required_for": [
+                "prompt_context"
+              ],
+              "evidence_refs": [],
+              "satisfied": false,
+              "missing_refs": [
+                "runtime-witness:static-prompt-hints-never-authority"
+              ]
+            }
+          ],
+          "required_witness_refs": [],
+          "missing_witness_refs": [
+            "runtime-witness:static-prompt-hints-never-authority"
+          ],
+          "blocked_reasons": [
+            "static_prompt_hint_only"
+          ],
+          "blocker_reason": "Static prompt hints may orient wording but cannot establish availability or public/live claimability.",
+          "fallback": {
+            "mode": "no_op",
+            "reason_code": "static_prompt_hint_only",
+            "no_op": true,
+            "operator_visible_reason": "Hint is prompt context only and never a live surface.",
+            "target_surface_id": null
+          },
+          "outcome_policy_ref": "outcome-policy:capability-outcome-envelope.required",
+          "director_control_move_template": {
+            "verb": "hint",
+            "target": "director.static-surface-family",
+            "execution_state": "hint_only_no_op",
+            "public_claim_allowed": false,
+            "emits_capability_outcome_envelope": true
+          }
+        }
+      ],
+      "dry_run_moves": [
+        {
+          "schema_version": 1,
+          "move_id": "move.director.publication.youtube-dry-run",
+          "surface_id": "publication_endpoint:youtube.live-cuepoint",
+          "status": "dry_run",
+          "verb": "publish",
+          "target_type": "public_event",
+          "target_id": "youtube.live-cuepoint",
+          "display_name": "YouTube live cuepoint dry-run",
+          "source_refs": [
+            "capability-classification:publication_endpoint.youtube.live-cuepoint",
+            "public-event-gate:youtube.live-cuepoint.dry-run"
+          ],
+          "generated_from": [
+            "capability_classification_inventory",
+            "public_event_gate"
+          ],
+          "intent_families": [
+            "public_event",
+            "dry_run"
+          ],
+          "surface_family": "publication_endpoint",
+          "surface_ids": [
+            "publication_endpoint:youtube.live-cuepoint"
+          ],
+          "route_refs": [
+            "route:public-event.youtube.fixture"
+          ],
+          "evidence_status": "dry_run",
+          "freshness": {
+            "state": "not_applicable",
+            "checked_at": "2026-04-30T01:12:00Z",
+            "ttl_s": null,
+            "observed_age_s": null,
+            "source_ref": null
+          },
+          "availability": {
+            "available_to_attempt": true,
+            "available_to_render": false,
+            "available_to_observe": true,
+            "available_to_claim_private": false,
+            "available_to_claim_public_live": false,
+            "available_to_archive": false,
+            "available_to_monetize": false,
+            "available_to_convert": false
+          },
+          "privacy_class": "dry_run",
+          "rights_class": "not_applicable",
+          "monetization_state": "not_applicable",
+          "grounding_status": "dry_run",
+          "claim_authority_ceiling": "dry_run",
+          "claim_posture": {
+            "authority_ceiling": "dry_run",
+            "public_claim_allowed": false,
+            "public_live_claim_allowed": false,
+            "private_claim_allowed": false,
+            "archive_claim_allowed": false,
+            "monetization_claim_allowed": false,
+            "claim_refs": [],
+            "blocker_reasons": [
+              "dry_run_only"
+            ]
+          },
+          "public_claim_allowed": false,
+          "public_event_policy": "dry_run",
+          "evidence_obligations": [
+            {
+              "obligation_id": "obligation.youtube-dry-run.public-event",
+              "dimension": "public_event",
+              "required_for": [
+                "dry_run"
+              ],
+              "evidence_refs": [
+                "public-event-gate:youtube.live-cuepoint.dry-run"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            }
+          ],
+          "required_witness_refs": [],
+          "missing_witness_refs": [],
+          "blocked_reasons": [],
+          "blocker_reason": null,
+          "fallback": {
+            "mode": "dry_run",
+            "reason_code": "dry_run_public_endpoint",
+            "no_op": false,
+            "operator_visible_reason": "Endpoint is available only as dry-run rehearsal.",
+            "target_surface_id": null
+          },
+          "outcome_policy_ref": "outcome-policy:capability-outcome-envelope.required",
+          "director_control_move_template": {
+            "verb": "publish",
+            "target": "youtube.live-cuepoint",
+            "execution_state": "dry_run_only",
+            "public_claim_allowed": false,
+            "emits_capability_outcome_envelope": true
+          }
+        }
+      ],
+      "private_only_moves": [
+        {
+          "schema_version": 1,
+          "move_id": "move.director.runtime-service.private-log",
+          "surface_id": "runtime_service:programme.private-outcome-log",
+          "status": "private",
+          "verb": "record",
+          "target_type": "service",
+          "target_id": "programme.private-outcome-log",
+          "display_name": "Private programme outcome log",
+          "source_refs": [
+            "capability-classification:runtime_service.programme.private-outcome-log",
+            "wcs-health:runtime_service.programme.private-outcome-log"
+          ],
+          "generated_from": [
+            "capability_classification_inventory",
+            "wcs_health_envelope"
+          ],
+          "intent_families": [
+            "private_record",
+            "programme_feedback"
+          ],
+          "surface_family": "runtime_service",
+          "surface_ids": [
+            "runtime_service:programme.private-outcome-log"
+          ],
+          "route_refs": [
+            "route:local.programme-outcome-log"
+          ],
+          "evidence_status": "private_only",
+          "freshness": {
+            "state": "fresh",
+            "checked_at": "2026-04-30T01:12:05Z",
+            "ttl_s": 300,
+            "observed_age_s": 18,
+            "source_ref": "wcs-health:runtime_service.programme.private-outcome-log"
+          },
+          "availability": {
+            "available_to_attempt": true,
+            "available_to_render": false,
+            "available_to_observe": true,
+            "available_to_claim_private": true,
+            "available_to_claim_public_live": false,
+            "available_to_archive": true,
+            "available_to_monetize": false,
+            "available_to_convert": false
+          },
+          "privacy_class": "private_only",
+          "rights_class": "private_only",
+          "monetization_state": "not_applicable",
+          "grounding_status": "private_only",
+          "claim_authority_ceiling": "private_only",
+          "claim_posture": {
+            "authority_ceiling": "private_only",
+            "public_claim_allowed": false,
+            "public_live_claim_allowed": false,
+            "private_claim_allowed": true,
+            "archive_claim_allowed": true,
+            "monetization_claim_allowed": false,
+            "claim_refs": [
+              "claim:private.programme-outcome-log.fixture"
+            ],
+            "blocker_reasons": []
+          },
+          "public_claim_allowed": false,
+          "public_event_policy": "not_applicable",
+          "evidence_obligations": [
+            {
+              "obligation_id": "obligation.private-log.privacy",
+              "dimension": "privacy",
+              "required_for": [
+                "private_claim"
+              ],
+              "evidence_refs": [
+                "privacy:runtime_service.programme.private-outcome-log.private-only"
+              ],
+              "satisfied": true,
+              "missing_refs": []
+            }
+          ],
+          "required_witness_refs": [
+            "wcs-health:runtime_service.programme.private-outcome-log"
+          ],
+          "missing_witness_refs": [],
+          "blocked_reasons": [],
+          "blocker_reason": null,
+          "fallback": {
+            "mode": "private_only",
+            "reason_code": "private_surface",
+            "no_op": false,
+            "operator_visible_reason": "Outcome log is private-only and cannot be projected into public/live claims.",
+            "target_surface_id": null
+          },
+          "outcome_policy_ref": "outcome-policy:capability-outcome-envelope.required",
+          "director_control_move_template": {
+            "verb": "record",
+            "target": "programme.private-outcome-log",
+            "execution_state": "private_only",
+            "public_claim_allowed": false,
+            "emits_capability_outcome_envelope": true
+          }
+        }
+      ],
+      "fallback_moves": [
+        {
+          "schema_version": 1,
+          "move_id": "move.director.state-file.vision-classification-stale",
+          "surface_id": "state_file:vision.classification-snapshot",
+          "status": "stale",
+          "verb": "observe",
+          "target_type": "state_file",
+          "target_id": "vision.classification-snapshot",
+          "display_name": "Vision classification snapshot",
+          "source_refs": [
+            "capability-classification:state_file.vision.classification-snapshot",
+            "wcs-health:state_file.vision.classification-snapshot"
+          ],
+          "generated_from": [
+            "capability_classification_inventory",
+            "wcs_health_envelope"
+          ],
+          "intent_families": [
+            "observe",
+            "fallback"
+          ],
+          "surface_family": "state_file",
+          "surface_ids": [
+            "state_file:vision.classification-snapshot"
+          ],
+          "route_refs": [],
+          "evidence_status": "stale",
+          "freshness": {
+            "state": "stale",
+            "checked_at": "2026-04-30T01:12:10Z",
+            "ttl_s": 60,
+            "observed_age_s": 900,
+            "source_ref": "state-file:vision.classification-snapshot"
+          },
+          "availability": {
+            "available_to_attempt": false,
+            "available_to_render": false,
+            "available_to_observe": true,
+            "available_to_claim_private": false,
+            "available_to_claim_public_live": false,
+            "available_to_archive": false,
+            "available_to_monetize": false,
+            "available_to_convert": false
+          },
+          "privacy_class": "unknown",
+          "rights_class": "unknown",
+          "monetization_state": "not_applicable",
+          "grounding_status": "missing",
+          "claim_authority_ceiling": "no_claim",
+          "claim_posture": {
+            "authority_ceiling": "no_claim",
+            "public_claim_allowed": false,
+            "public_live_claim_allowed": false,
+            "private_claim_allowed": false,
+            "archive_claim_allowed": false,
+            "monetization_claim_allowed": false,
+            "claim_refs": [],
+            "blocker_reasons": [
+              "stale_source"
+            ]
+          },
+          "public_claim_allowed": false,
+          "public_event_policy": "not_applicable",
+          "evidence_obligations": [
+            {
+              "obligation_id": "obligation.vision-state.freshness",
+              "dimension": "freshness",
+              "required_for": [
+                "observe"
+              ],
+              "evidence_refs": [],
+              "satisfied": false,
+              "missing_refs": [
+                "fresh-state-file:vision.classification-snapshot"
+              ]
+            }
+          ],
+          "required_witness_refs": [
+            "state-file:vision.classification-snapshot"
+          ],
+          "missing_witness_refs": [
+            "fresh-state-file:vision.classification-snapshot"
+          ],
+          "blocked_reasons": [
+            "stale_source"
+          ],
+          "blocker_reason": "Vision state is visible but stale, so it can only be a degraded fallback.",
+          "fallback": {
+            "mode": "degraded_status",
+            "reason_code": "stale_state_file",
+            "no_op": false,
+            "operator_visible_reason": "Director may mention stale status but not make a fresh claim.",
+            "target_surface_id": null
+          },
+          "outcome_policy_ref": "outcome-policy:capability-outcome-envelope.required",
+          "director_control_move_template": {
+            "verb": "observe",
+            "target": "vision.classification-snapshot",
+            "execution_state": "stale_fallback",
+            "public_claim_allowed": false,
+            "emits_capability_outcome_envelope": true
+          }
+        }
+      ],
+      "eligible_programme_formats": [
+        "format:audio-broadcast.fixture",
+        "format:private-operator-note.fixture"
+      ],
+      "opportunity_refs": [
+        "opportunity:director.world-surface.fixture"
+      ],
+      "evidence_obligations": [
+        {
+          "obligation_id": "obligation.snapshot.source-refs",
+          "dimension": "source_ref",
+          "required_for": [
+            "prompt",
+            "vocabulary",
+            "programme",
+            "public_event",
+            "move_normalizer"
+          ],
+          "evidence_refs": [
+            "capability-classification:fixture",
+            "wcs-health:fixture"
+          ],
+          "satisfied": true,
+          "missing_refs": []
+        }
+      ],
+      "refusal_or_correction_candidates": [
+        "refusal:static-prompt-hint-not-authority",
+        "correction:stale-state-requires-fallback"
+      ],
+      "prompt_summary": {
+        "checked_at": "2026-04-30T01:12:15Z",
+        "mode": "fortress",
+        "available": [
+          "move.director.tool.query-scene-state",
+          "move.director.audio.broadcast-master"
+        ],
+        "dry_run": [
+          "move.director.publication.youtube-dry-run"
+        ],
+        "blocked": [
+          "move.director.decommissioned.tauri-frame",
+          "move.director.model-route.litellm",
+          "move.director.hardware.resplay-s4",
+          "move.director.static-prompt.surface-family-hint"
+        ],
+        "private_only": [
+          "move.director.runtime-service.private-log"
+        ],
+        "prompt_hint_refs": [
+          "prompt-hint:director.static-surface-family"
+        ]
+      },
+      "audit_refs": [
+        "audit:director-world-surface-snapshot-fixture.coverage"
+      ]
+    }
+  ],
+  "fail_closed_policy": {
+    "static_prompt_hint_satisfies_availability": false,
+    "static_prompt_hint_satisfies_public_live": false,
+    "stale_surface_claims_public_live": false,
+    "private_surface_claims_public_live": false,
+    "dry_run_surface_claims_public_live": false,
+    "blocked_surface_executes_real_move": false,
+    "unavailable_surface_executes_real_move": false,
+    "blocked_hardware_uses_default_fallback": false,
+    "monetization_without_public_live": false,
+    "public_live_without_evidence_obligations": false
+  }
+}
