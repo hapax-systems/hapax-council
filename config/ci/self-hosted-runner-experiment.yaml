@@ -1,0 +1,152 @@
+schema_version: 1
+task_id: cicd-self-hosted-runner-experiment
+status: bounded_experiment
+current_decision: defer
+decision_reason: >-
+  Self-hosted execution remains an experiment until manually dispatched
+  non-secret runs prove speed, parity, and operational cost. No existing
+  required CI job is enrolled by default.
+
+baseline:
+  source: docs/research/2026-04-26-cicd-speedup-pr3-5-priorities.md
+  hosted_reference:
+    test_wall_time_s: 225
+    typecheck_wall_time_s: 83
+    secrets_scan_wall_time_s: 6
+  target_improvement:
+    test_wall_time_s: 75
+    minimum_speedup: 3.0
+
+runner_boundary:
+  required_labels:
+    - self-hosted
+    - linux
+    - x64
+    - hapax-council-ci
+    - pr-safe
+    - no-secrets
+    - ephemeral-preferred
+  forbidden_labels:
+    - broadcast
+    - camera
+    - daimonion
+    - operator-private
+    - production
+    - secrets
+    - violet
+  service_user: github-runner-hapax-ci
+  work_root: /var/lib/hapax/github-actions/self-hosted-runner-experiment
+  isolation:
+    - dedicated non-login service user
+    - no pass store, no operator tmux sockets, no user session bus
+    - no audio, camera, stream, broadcast, or Daimonion group membership
+    - rootless or systemd-nspawn boundary preferred before adoption
+  network_egress:
+    allowed:
+      - github.com
+      - api.github.com
+      - objects.githubusercontent.com
+      - release-assets.githubusercontent.com
+      - astral.sh
+      - pypi.org
+      - files.pythonhosted.org
+    forbidden:
+      - private operator services
+      - production Hapax services
+      - secret managers
+
+workflow_boundary:
+  workflow: .github/workflows/self-hosted-runner-experiment.yml
+  allowed_events:
+    - workflow_dispatch
+  forbidden_events:
+    - pull_request
+    - pull_request_target
+    - push
+    - schedule
+  permissions:
+    contents: read
+  secrets_allowed: false
+  default_enrollment: none
+  branch_protection_required: false
+  automatic_pull_request_enrollment: false
+  manual_suites_pr_safe: true
+  manual_dispatch_only: true
+
+cache_paths:
+  root: /var/cache/hapax/github-actions/self-hosted-runner-experiment
+  uv: /var/cache/hapax/github-actions/self-hosted-runner-experiment/uv
+  xdg: /var/cache/hapax/github-actions/self-hosted-runner-experiment/xdg
+  work: /var/cache/hapax/github-actions/self-hosted-runner-experiment/work
+  metrics: /var/cache/hapax/github-actions/self-hosted-runner-experiment/metrics
+  owner: github-runner-hapax-ci
+  mode: "0700"
+  max_total_gib: 10
+  retention_days: 7
+
+allowed_jobs:
+  - id: boundary-smoke
+    secret_bearing: false
+    pr_safe: true
+    command: python -c "import pathlib; print(pathlib.Path.cwd())"
+    purpose: Verify label, event, token, and cache boundaries on the runner.
+  - id: non-secret-static-ci-slice
+    secret_bearing: false
+    pr_safe: true
+    command: >-
+      uv run pytest tests/ci/test_self_hosted_runner_experiment.py
+      tests/test_ci_discovery.py tests/test_ci_required_coverage_claims.py -q
+    purpose: Exercise a small deterministic non-secret Python test slice.
+
+excluded_default_jobs:
+  - id: ci.yml:test
+    reason: Remains on hosted runners until three consecutive manual experiment runs pass.
+  - id: ci.yml:typecheck
+    reason: Remains hosted until environment parity is demonstrated.
+  - id: secrets-scan
+    reason: Secret-oriented checks must not move to the experiment runner.
+  - id: release-and-deploy-workflows
+    reason: Release tokens and deploy paths are outside the experiment boundary.
+  - id: claude-and-sdlc-workflows
+    reason: Automation with privileged review or implementation tokens is excluded.
+
+teardown:
+  reversible: true
+  required_steps:
+    - Disable the runner service and remove it from GitHub runner registration.
+    - Delete the self-hosted runner labels from repository settings.
+    - Remove work and cache roots under the experiment paths.
+    - Remove the service user if no other runner experiment uses it.
+    - Remove or retire the manual workflow after dismissing the experiment.
+  commands:
+    - sudo systemctl disable --now github-runner-hapax-ci.service
+    - sudo rm -rf /var/lib/hapax/github-actions/self-hosted-runner-experiment
+    - sudo rm -rf /var/cache/hapax/github-actions/self-hosted-runner-experiment
+    - sudo userdel github-runner-hapax-ci
+
+success_metrics:
+  - id: wall_time
+    threshold: "non-secret-static-ci-slice <= 75 seconds median over 3 green runs"
+  - id: queue_time
+    threshold: "manual dispatch starts within 30 seconds when runner is online"
+  - id: parity
+    threshold: "no hosted-only or self-hosted-only failures across 3 runs"
+  - id: burden
+    threshold: "operator setup, update, and teardown stay under 30 minutes total"
+  - id: security
+    threshold: "no secret references, private service calls, or unsafe labels observed"
+
+decision_gate:
+  adopt_when:
+    - Three consecutive manually dispatched runs pass on the self-hosted runner.
+    - Median test-slice wall time is at least 3x faster than hosted baseline.
+    - Runner setup, patching, cache cleanup, and teardown are documented and repeatable.
+    - Security boundary review confirms no secret-bearing or unsafe jobs are enrolled.
+  defer_when:
+    - Runner is unavailable, manually queued, or not yet isolated strongly enough.
+    - Speedup is below 3x or parity is not demonstrated.
+    - Operational burden exceeds the expected CI savings.
+  dismiss_when:
+    - The runner requires secrets, default PR execution, privileged host access, or production service access.
+    - Cache/work roots cannot be bounded and cleaned deterministically.
+    - Environment divergence creates false confidence versus hosted CI.
