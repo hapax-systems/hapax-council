@@ -108,6 +108,41 @@ def test_selected_observed_blocked_stale_and_failed_emit_blocked_reasons() -> No
         assert evaluation.public_claim_allowed is False
 
 
+def test_media_public_aperture_witnesses_cover_missing_stale_and_hold_cases() -> None:
+    fixtures = load_wcs_witness_probe_fixtures()
+
+    public_live = evaluate_probe(
+        fixtures.require_probe("camera.studio_compositor_public_output.public_egress_witnessed"),
+        now=datetime(2026, 4, 30, 11, 20, 0, tzinfo=UTC),
+    )
+    archive_public = evaluate_probe(
+        fixtures.require_probe("archive.vod_replay_public_url.public_witnessed"),
+        now=datetime(2026, 4, 30, 11, 20, 0, tzinfo=UTC),
+    )
+    internal_camera = evaluate_probe(
+        fixtures.require_probe("camera.studio_rgb_fleet.live_visible_witnessed"),
+        now=datetime(2026, 4, 30, 11, 20, 0, tzinfo=UTC),
+    )
+    camera_missing = evaluate_probe(fixtures.require_probe("camera.studio_rgb_fleet.missing"))
+    archive_missing = evaluate_probe(fixtures.require_probe("archive.hls_sidecar.missing"))
+    public_stale = evaluate_probe(fixtures.require_probe("public.youtube_live_aperture.stale"))
+    egress_unknown = evaluate_probe(
+        fixtures.require_probe("public.research_vehicle_apertures.egress_unknown")
+    )
+    rights_hold = evaluate_probe(
+        fixtures.require_probe("public.archive_replay_aperture.privacy_rights_hold")
+    )
+
+    assert public_live.public_claim_allowed is True
+    assert archive_public.public_claim_allowed is True
+    assert internal_camera.public_claim_allowed is False
+    assert "camera_missing" in camera_missing.blocked_reasons
+    assert "archive_missing" in archive_missing.blocked_reasons
+    assert "public_surface_stale" in public_stale.blocked_reasons
+    assert "egress_unknown" in egress_unknown.blocked_reasons
+    assert "privacy_rights_hold" in rights_hold.blocked_reasons
+
+
 def test_probe_records_certify_obligations_not_expert_truth() -> None:
     fixtures = load_wcs_witness_probe_fixtures()
 

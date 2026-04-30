@@ -1,0 +1,763 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "wcs-camera-archive-public-aperture-slice-20260430",
+  "generated_from": [
+    "vault-task:wcs-camera-archive-public-aperture-slice",
+    "vault-spec:2026-04-29-programme-world-surface-integration-plan",
+    "repo:config/world-capability-registry.json",
+    "repo:config/wcs-witness-probe-fixtures.json",
+    "repo:config/archive-replay-public-event-fixtures.json"
+  ],
+  "declared_at": "2026-04-30T11:20:00Z",
+  "visibility_states": [
+    "live_visible",
+    "internal_visible",
+    "archived",
+    "public",
+    "private",
+    "missing",
+    "stale",
+    "blocked"
+  ],
+  "records": [
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:compositor_public_output.live_visible",
+      "capability_id": "camera.studio_compositor_public_output",
+      "surface_id": "video_surface:studio_compositor.public_output",
+      "surface_kind": "compositor_public_output",
+      "visibility_state": "live_visible",
+      "observed_at": "2026-04-30T11:19:55Z",
+      "freshness_ttl_s": 3,
+      "observed_age_s": 2,
+      "camera_refs": [
+        "camera:brio-overhead",
+        "camera:c920-desk",
+        "video_surface:studio_compositor.composed_frame"
+      ],
+      "archive_refs": [],
+      "public_urls": [],
+      "witness_probe_refs": [
+        "camera.studio_compositor_public_output.public_egress_witnessed"
+      ],
+      "temporal_span_refs": [],
+      "archive_replay_decision_refs": [],
+      "research_vehicle_public_event_refs": [
+        "rvpe:programme_boundary:fixture-live-visible"
+      ],
+      "evidence": {
+        "face_privacy_refs": [
+          "privacy:face-obscure:producer-layer:pass"
+        ],
+        "consent_refs": [
+          "consent:operator-self:studio-visual:pass"
+        ],
+        "audio_refs": [
+          "shm:hapax-broadcast/audio-safe-for-broadcast.json"
+        ],
+        "egress_refs": [
+          "egress:livestream-state:public_claim_allowed",
+          "egress:provenance-kill-switch:clear"
+        ],
+        "archive_refs": [],
+        "public_event_refs": [
+          "rvpe:programme_boundary:fixture-live-visible"
+        ],
+        "rights_refs": [
+          "rights:operator-original:studio-frame"
+        ],
+        "privacy_refs": [
+          "privacy:public-safe:face-obscure"
+        ]
+      },
+      "face_privacy_state": "pass",
+      "consent_state": "pass",
+      "audio_state": "pass",
+      "egress_state": "pass",
+      "archive_state": "not_applicable",
+      "public_event_state": "pass",
+      "rights_state": "pass",
+      "privacy_state": "pass",
+      "claim_posture": {
+        "live_visible": true,
+        "internally_visible": false,
+        "archived": false,
+        "public": false,
+        "private": false,
+        "public_safe": true,
+        "public_live_claim_allowed": true,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [],
+      "notes": "Viewer-visible compositor output still requires explicit egress, privacy, consent, audio, rights, and public-event refs."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:camera_rgb.internal_visible",
+      "capability_id": "camera.studio_rgb_fleet",
+      "surface_id": "camera:studio_rgb_fleet",
+      "surface_kind": "camera",
+      "visibility_state": "internal_visible",
+      "observed_at": "2026-04-30T11:19:56Z",
+      "freshness_ttl_s": 3,
+      "observed_age_s": 1,
+      "camera_refs": [
+        "camera:brio-overhead",
+        "camera:c920-room"
+      ],
+      "archive_refs": [],
+      "public_urls": [],
+      "witness_probe_refs": [
+        "camera.studio_rgb_fleet.live_visible_witnessed"
+      ],
+      "temporal_span_refs": [],
+      "archive_replay_decision_refs": [],
+      "research_vehicle_public_event_refs": [],
+      "evidence": {
+        "face_privacy_refs": [
+          "privacy:internal-camera:operator-visible"
+        ],
+        "consent_refs": [
+          "consent:operator-self:internal-preview"
+        ],
+        "audio_refs": [],
+        "egress_refs": [],
+        "archive_refs": [],
+        "public_event_refs": [],
+        "rights_refs": [],
+        "privacy_refs": [
+          "privacy:operator-visible:internal-only"
+        ]
+      },
+      "face_privacy_state": "pass",
+      "consent_state": "pass",
+      "audio_state": "not_applicable",
+      "egress_state": "not_applicable",
+      "archive_state": "not_applicable",
+      "public_event_state": "not_applicable",
+      "rights_state": "not_applicable",
+      "privacy_state": "pass",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": true,
+        "archived": false,
+        "public": false,
+        "private": true,
+        "public_safe": false,
+        "public_live_claim_allowed": false,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [
+        "internal_visible_only",
+        "public_event_evidence_missing",
+        "egress_evidence_missing"
+      ],
+      "notes": "Fresh camera evidence may support internal decisions without becoming public-safe."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:archive_hls_sidecar.archived",
+      "capability_id": "archive.hls_sidecar",
+      "surface_id": "archive:hls.sidecar",
+      "surface_kind": "vod_hls_sidecar",
+      "visibility_state": "archived",
+      "observed_at": "2026-04-30T11:18:00Z",
+      "freshness_ttl_s": 300,
+      "observed_age_s": 120,
+      "camera_refs": [],
+      "archive_refs": [
+        "archive:hls:segment00042.ts",
+        "archive:hls:segment00042.json"
+      ],
+      "public_urls": [],
+      "witness_probe_refs": [
+        "archive.hls_sidecar.archived_witnessed"
+      ],
+      "temporal_span_refs": [
+        "span:archive.hls.segment00042"
+      ],
+      "archive_replay_decision_refs": [],
+      "research_vehicle_public_event_refs": [],
+      "evidence": {
+        "face_privacy_refs": [
+          "privacy:face-obscure:archive-input:pass"
+        ],
+        "consent_refs": [
+          "consent:operator-self:archive-capture"
+        ],
+        "audio_refs": [],
+        "egress_refs": [],
+        "archive_refs": [
+          "archive:hls:segment00042.ts",
+          "archive:hls:segment00042.json",
+          "hash:archive:hls:segment00042"
+        ],
+        "public_event_refs": [],
+        "rights_refs": [
+          "rights:operator-original:archive-capture"
+        ],
+        "privacy_refs": [
+          "privacy:archive-only:operator-review"
+        ]
+      },
+      "face_privacy_state": "pass",
+      "consent_state": "pass",
+      "audio_state": "not_applicable",
+      "egress_state": "not_applicable",
+      "archive_state": "pass",
+      "public_event_state": "missing",
+      "rights_state": "pass",
+      "privacy_state": "pass",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": false,
+        "archived": true,
+        "public": false,
+        "private": false,
+        "public_safe": false,
+        "public_live_claim_allowed": false,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [
+        "archive_only_not_public",
+        "public_event_evidence_missing",
+        "public_url_missing"
+      ],
+      "notes": "Archive sidecar existence is an archive fact only, not a public replay/public-safe claim."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:youtube_live.public",
+      "capability_id": "public.youtube_live_aperture",
+      "surface_id": "public:youtube.live",
+      "surface_kind": "public_aperture_url",
+      "visibility_state": "public",
+      "observed_at": "2026-04-30T11:19:50Z",
+      "freshness_ttl_s": 60,
+      "observed_age_s": 5,
+      "camera_refs": [
+        "video_surface:studio_compositor.public_output"
+      ],
+      "archive_refs": [],
+      "public_urls": [
+        "https://youtube.example.invalid/live/fixture-video"
+      ],
+      "witness_probe_refs": [
+        "camera.studio_compositor_public_output.public_egress_witnessed"
+      ],
+      "temporal_span_refs": [],
+      "archive_replay_decision_refs": [],
+      "research_vehicle_public_event_refs": [
+        "rvpe:youtube_live:fixture-video"
+      ],
+      "evidence": {
+        "face_privacy_refs": [
+          "privacy:face-obscure:producer-layer:pass"
+        ],
+        "consent_refs": [
+          "consent:operator-self:public-live"
+        ],
+        "audio_refs": [
+          "shm:hapax-broadcast/audio-safe-for-broadcast.json"
+        ],
+        "egress_refs": [
+          "egress:livestream-state:public_claim_allowed",
+          "egress:youtube-ingest:fixture-active"
+        ],
+        "archive_refs": [],
+        "public_event_refs": [
+          "rvpe:youtube_live:fixture-video",
+          "public-event-gate:youtube-live:pass"
+        ],
+        "rights_refs": [
+          "rights:operator-original:live-programme"
+        ],
+        "privacy_refs": [
+          "privacy:public-safe:live-programme"
+        ]
+      },
+      "face_privacy_state": "pass",
+      "consent_state": "pass",
+      "audio_state": "pass",
+      "egress_state": "pass",
+      "archive_state": "not_applicable",
+      "public_event_state": "pass",
+      "rights_state": "pass",
+      "privacy_state": "pass",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": false,
+        "archived": false,
+        "public": true,
+        "private": false,
+        "public_safe": true,
+        "public_live_claim_allowed": true,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [],
+      "notes": "Public-live aperture with explicit egress and public-event evidence; monetization remains false."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:archive_replay_url.public_archive",
+      "capability_id": "public.archive_replay_aperture",
+      "surface_id": "public:archive.replay_url",
+      "surface_kind": "public_aperture_url",
+      "visibility_state": "public",
+      "observed_at": "2026-04-30T11:19:30Z",
+      "freshness_ttl_s": 300,
+      "observed_age_s": 30,
+      "camera_refs": [],
+      "archive_refs": [
+        "archive:hls:segment00042.ts",
+        "archive:hls:segment00042.json"
+      ],
+      "public_urls": [
+        "https://example.invalid/replay/segment00042"
+      ],
+      "witness_probe_refs": [
+        "archive.vod_replay_public_url.public_witnessed"
+      ],
+      "temporal_span_refs": [
+        "span:archive.hls.segment00042",
+        "span:audio.broadcast.window.0042",
+        "span:replay.chapter.opening.0042"
+      ],
+      "archive_replay_decision_refs": [
+        "archive_replay_decision:rvpe:archive_replay:segment00042"
+      ],
+      "research_vehicle_public_event_refs": [
+        "rvpe:archive_replay:segment00042"
+      ],
+      "evidence": {
+        "face_privacy_refs": [
+          "privacy:face-obscure:archive-input:pass"
+        ],
+        "consent_refs": [
+          "consent:operator-self:archive-public-replay"
+        ],
+        "audio_refs": [
+          "audio:broadcast-window.0042:safe"
+        ],
+        "egress_refs": [
+          "egress:public-claim:fixture-pass"
+        ],
+        "archive_refs": [
+          "archive:hls:segment00042.ts",
+          "archive:hls:segment00042.json",
+          "hash:archive:hls:segment00042"
+        ],
+        "public_event_refs": [
+          "rvpe:archive_replay:segment00042",
+          "public-event-gate:archive-replay:pass"
+        ],
+        "rights_refs": [
+          "rights:operator-original:archive-replay"
+        ],
+        "privacy_refs": [
+          "privacy:public-safe:archive-replay"
+        ]
+      },
+      "face_privacy_state": "pass",
+      "consent_state": "pass",
+      "audio_state": "pass",
+      "egress_state": "pass",
+      "archive_state": "pass",
+      "public_event_state": "pass",
+      "rights_state": "pass",
+      "privacy_state": "pass",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": false,
+        "archived": false,
+        "public": true,
+        "private": false,
+        "public_safe": true,
+        "public_live_claim_allowed": false,
+        "public_archive_claim_allowed": true,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [],
+      "notes": "Public archive URL is allowed only through archive replay decision, RVPE, temporal spans, rights, privacy, audio, and egress evidence."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:camera_private_preview.private",
+      "capability_id": "camera.studio_rgb_fleet",
+      "surface_id": "camera:studio_rgb_private_preview",
+      "surface_kind": "camera",
+      "visibility_state": "private",
+      "observed_at": "2026-04-30T11:19:40Z",
+      "freshness_ttl_s": 3,
+      "observed_age_s": 3,
+      "camera_refs": [
+        "camera:c920-desk"
+      ],
+      "archive_refs": [],
+      "public_urls": [],
+      "witness_probe_refs": [
+        "camera.studio_rgb_fleet.live_visible_witnessed"
+      ],
+      "temporal_span_refs": [],
+      "archive_replay_decision_refs": [],
+      "research_vehicle_public_event_refs": [],
+      "evidence": {
+        "face_privacy_refs": [
+          "privacy:internal-camera:operator-visible"
+        ],
+        "consent_refs": [
+          "consent:operator-self:private-preview"
+        ],
+        "audio_refs": [],
+        "egress_refs": [],
+        "archive_refs": [],
+        "public_event_refs": [],
+        "rights_refs": [],
+        "privacy_refs": [
+          "privacy:private-preview"
+        ]
+      },
+      "face_privacy_state": "pass",
+      "consent_state": "pass",
+      "audio_state": "not_applicable",
+      "egress_state": "not_applicable",
+      "archive_state": "not_applicable",
+      "public_event_state": "not_applicable",
+      "rights_state": "not_applicable",
+      "privacy_state": "pass",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": false,
+        "archived": false,
+        "public": false,
+        "private": true,
+        "public_safe": false,
+        "public_live_claim_allowed": false,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [
+        "private_only_surface",
+        "public_event_evidence_missing",
+        "egress_evidence_missing"
+      ],
+      "notes": "Private preview is intentionally available only to internal consumers."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:camera_rgb.missing",
+      "capability_id": "camera.studio_rgb_fleet",
+      "surface_id": "camera:studio_rgb_fleet",
+      "surface_kind": "camera",
+      "visibility_state": "missing",
+      "observed_at": "2026-04-30T11:19:00Z",
+      "freshness_ttl_s": 3,
+      "observed_age_s": 999,
+      "camera_refs": [],
+      "archive_refs": [],
+      "public_urls": [],
+      "witness_probe_refs": [
+        "camera.studio_rgb_fleet.missing"
+      ],
+      "temporal_span_refs": [],
+      "archive_replay_decision_refs": [],
+      "research_vehicle_public_event_refs": [],
+      "evidence": {
+        "face_privacy_refs": [],
+        "consent_refs": [],
+        "audio_refs": [],
+        "egress_refs": [],
+        "archive_refs": [],
+        "public_event_refs": [],
+        "rights_refs": [],
+        "privacy_refs": []
+      },
+      "face_privacy_state": "missing",
+      "consent_state": "missing",
+      "audio_state": "not_applicable",
+      "egress_state": "not_applicable",
+      "archive_state": "not_applicable",
+      "public_event_state": "missing",
+      "rights_state": "missing",
+      "privacy_state": "missing",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": false,
+        "archived": false,
+        "public": false,
+        "private": false,
+        "public_safe": false,
+        "public_live_claim_allowed": false,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [
+        "camera_missing",
+        "camera_frame_freshness_not_proven"
+      ],
+      "notes": "Missing camera blocks camera-derived claims."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:archive_hls_sidecar.missing",
+      "capability_id": "archive.hls_sidecar",
+      "surface_id": "archive:hls.sidecar",
+      "surface_kind": "vod_hls_sidecar",
+      "visibility_state": "missing",
+      "observed_at": "2026-04-30T11:19:00Z",
+      "freshness_ttl_s": 300,
+      "observed_age_s": null,
+      "camera_refs": [],
+      "archive_refs": [],
+      "public_urls": [],
+      "witness_probe_refs": [
+        "archive.hls_sidecar.missing"
+      ],
+      "temporal_span_refs": [],
+      "archive_replay_decision_refs": [],
+      "research_vehicle_public_event_refs": [],
+      "evidence": {
+        "face_privacy_refs": [],
+        "consent_refs": [],
+        "audio_refs": [],
+        "egress_refs": [],
+        "archive_refs": [],
+        "public_event_refs": [],
+        "rights_refs": [],
+        "privacy_refs": []
+      },
+      "face_privacy_state": "not_applicable",
+      "consent_state": "not_applicable",
+      "audio_state": "not_applicable",
+      "egress_state": "not_applicable",
+      "archive_state": "missing",
+      "public_event_state": "missing",
+      "rights_state": "missing",
+      "privacy_state": "missing",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": false,
+        "archived": false,
+        "public": false,
+        "private": false,
+        "public_safe": false,
+        "public_live_claim_allowed": false,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [
+        "archive_missing",
+        "archive_hash_mtime_not_supplied"
+      ],
+      "notes": "Archive missing is a blocker; no replay/public claim is inferred."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:youtube_live.stale",
+      "capability_id": "public.youtube_live_aperture",
+      "surface_id": "public:youtube.live",
+      "surface_kind": "public_aperture_url",
+      "visibility_state": "stale",
+      "observed_at": "2026-04-30T11:10:00Z",
+      "freshness_ttl_s": 60,
+      "observed_age_s": 600,
+      "camera_refs": [],
+      "archive_refs": [],
+      "public_urls": [
+        "https://youtube.example.invalid/live/stale-video"
+      ],
+      "witness_probe_refs": [
+        "public.youtube_live_aperture.stale"
+      ],
+      "temporal_span_refs": [],
+      "archive_replay_decision_refs": [],
+      "research_vehicle_public_event_refs": [],
+      "evidence": {
+        "face_privacy_refs": [],
+        "consent_refs": [],
+        "audio_refs": [],
+        "egress_refs": [
+          "egress:youtube-ingest:stale"
+        ],
+        "archive_refs": [],
+        "public_event_refs": [],
+        "rights_refs": [],
+        "privacy_refs": []
+      },
+      "face_privacy_state": "stale",
+      "consent_state": "stale",
+      "audio_state": "stale",
+      "egress_state": "stale",
+      "archive_state": "not_applicable",
+      "public_event_state": "stale",
+      "rights_state": "stale",
+      "privacy_state": "stale",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": false,
+        "archived": false,
+        "public": false,
+        "private": false,
+        "public_safe": false,
+        "public_live_claim_allowed": false,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [
+        "public_surface_stale",
+        "stale_public_egress_witness"
+      ],
+      "notes": "A stale public URL is not current public truth."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:public_egress.unknown_blocked",
+      "capability_id": "public.research_vehicle_apertures",
+      "surface_id": "public:research_vehicle.apertures",
+      "surface_kind": "public_aperture_url",
+      "visibility_state": "blocked",
+      "observed_at": "2026-04-30T11:19:00Z",
+      "freshness_ttl_s": 60,
+      "observed_age_s": null,
+      "camera_refs": [
+        "video_surface:studio_compositor.public_output"
+      ],
+      "archive_refs": [],
+      "public_urls": [],
+      "witness_probe_refs": [
+        "public.research_vehicle_apertures.egress_unknown"
+      ],
+      "temporal_span_refs": [],
+      "archive_replay_decision_refs": [],
+      "research_vehicle_public_event_refs": [],
+      "evidence": {
+        "face_privacy_refs": [
+          "privacy:face-obscure:producer-layer:unknown"
+        ],
+        "consent_refs": [],
+        "audio_refs": [],
+        "egress_refs": [],
+        "archive_refs": [],
+        "public_event_refs": [],
+        "rights_refs": [],
+        "privacy_refs": []
+      },
+      "face_privacy_state": "unknown",
+      "consent_state": "unknown",
+      "audio_state": "unknown",
+      "egress_state": "unknown",
+      "archive_state": "not_applicable",
+      "public_event_state": "missing",
+      "rights_state": "unknown",
+      "privacy_state": "unknown",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": false,
+        "archived": false,
+        "public": false,
+        "private": false,
+        "public_safe": false,
+        "public_live_claim_allowed": false,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [
+        "egress_unknown",
+        "public_event_acceptance_missing"
+      ],
+      "notes": "Unknown egress blocks public aperture claims even if cameras exist."
+    },
+    {
+      "schema_version": 1,
+      "record_id": "media_aperture:archive_replay.privacy_rights_hold",
+      "capability_id": "public.archive_replay_aperture",
+      "surface_id": "public:archive.replay_url",
+      "surface_kind": "public_aperture_url",
+      "visibility_state": "blocked",
+      "observed_at": "2026-04-30T11:19:00Z",
+      "freshness_ttl_s": 300,
+      "observed_age_s": 10,
+      "camera_refs": [],
+      "archive_refs": [
+        "archive:hls:segment00045.ts"
+      ],
+      "public_urls": [
+        "https://example.invalid/replay/segment00045"
+      ],
+      "witness_probe_refs": [
+        "public.archive_replay_aperture.privacy_rights_hold"
+      ],
+      "temporal_span_refs": [
+        "span:archive.hls.segment00045"
+      ],
+      "archive_replay_decision_refs": [
+        "archive_replay_decision:rvpe:archive_replay:segment00045"
+      ],
+      "research_vehicle_public_event_refs": [],
+      "evidence": {
+        "face_privacy_refs": [
+          "privacy:face-obscure:archive-input:pass"
+        ],
+        "consent_refs": [
+          "consent:operator-self:archive-capture"
+        ],
+        "audio_refs": [
+          "audio:broadcast-window.0045:blocked"
+        ],
+        "egress_refs": [
+          "egress:public-claim:fixture-pass"
+        ],
+        "archive_refs": [
+          "archive:hls:segment00045.ts"
+        ],
+        "public_event_refs": [],
+        "rights_refs": [
+          "rights:third-party-uncleared:segment00045"
+        ],
+        "privacy_refs": [
+          "privacy:consent-required:segment00045"
+        ]
+      },
+      "face_privacy_state": "pass",
+      "consent_state": "pass",
+      "audio_state": "fail",
+      "egress_state": "pass",
+      "archive_state": "pass",
+      "public_event_state": "missing",
+      "rights_state": "fail",
+      "privacy_state": "fail",
+      "claim_posture": {
+        "live_visible": false,
+        "internally_visible": false,
+        "archived": false,
+        "public": false,
+        "private": false,
+        "public_safe": false,
+        "public_live_claim_allowed": false,
+        "public_archive_claim_allowed": false,
+        "monetization_allowed": false
+      },
+      "blocking_reasons": [
+        "privacy_rights_hold",
+        "rights_blocked",
+        "privacy_blocked",
+        "audio_blocked",
+        "public_event_evidence_missing"
+      ],
+      "notes": "Public URL and archive refs remain blocked under privacy/rights hold."
+    }
+  ],
+  "fail_closed_policy": {
+    "camera_existence_implies_public_safe": false,
+    "archive_existence_implies_public_safe": false,
+    "public_url_without_public_event_allows_claim": false,
+    "stale_public_surface_allows_claim": false,
+    "egress_unknown_allows_public_claim": false,
+    "privacy_rights_hold_allows_public_claim": false,
+    "monetization_without_explicit_readiness": false
+  }
+}

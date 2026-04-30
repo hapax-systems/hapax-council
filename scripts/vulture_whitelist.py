@@ -184,6 +184,10 @@ from shared.wcs_browser_mcp_file_surface import (
 from shared.wcs_browser_mcp_file_surface import (
     schema as wcs_browser_mcp_file_surface_schema,
 )
+from shared.wcs_camera_archive_public_aperture import (
+    MediaApertureFixtureSet,
+    MediaApertureRecord,
+)
 from shared.wcs_witness_probe_runtime import WCSWitnessProbeFixtureSet, WitnessProbeRecord
 from shared.world_capability_surface import (
     EvidenceEnvelopeRequirements,
@@ -495,6 +499,15 @@ WCSBrowserMCPFileSurfaceFixtureSet.evaluate_all
 evaluate_surface
 load_wcs_browser_mcp_file_surface_fixtures
 wcs_browser_mcp_file_surface_schema
+
+# Camera/archive/public-aperture WCS validators are invoked dynamically by
+# Pydantic while validating the fixture packet. The read helpers are public
+# contracts for downstream camera salience, archive sidecar, and programme WCS
+# consumers; production vulture does not count focused tests as callsites.
+MediaApertureRecord._validate_media_aperture_contract
+MediaApertureFixtureSet._validate_fixture_coverage
+MediaApertureFixtureSet.require_record
+MediaApertureFixtureSet.records_for_state
 
 # Narration triad validators are invoked dynamically by Pydantic while the
 # autonomous narration ledger validates open/closed semantic-outcome policy.

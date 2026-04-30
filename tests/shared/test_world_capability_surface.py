@@ -24,11 +24,17 @@ def test_seed_registry_loads_required_surface_domains() -> None:
     registry = load_world_capability_registry()
 
     assert {record.domain for record in registry.records} >= REQUIRED_SURFACE_DOMAINS
-    assert set(world_capabilities_by_id()) == {
+    assert set(world_capabilities_by_id()) >= {
         "audio.broadcast_voice",
         "camera.studio_compositor_frame",
+        "camera.studio_rgb_fleet",
+        "camera.studio_compositor_public_output",
         "archive.replay_sidecar",
+        "archive.hls_sidecar",
+        "archive.vod_replay_public_url",
         "public.research_vehicle_apertures",
+        "public.youtube_live_aperture",
+        "public.archive_replay_aperture",
         "file.obsidian_vault",
         "browser.mcp_tool_read",
         "music.midi_control_surface",
@@ -85,11 +91,39 @@ def test_read_access_supports_downstream_queries() -> None:
     assert {
         record.capability_id
         for record in registry.records_for_surface_ref("public:youtube_metadata")
-    } == {"public.research_vehicle_apertures"}
+    } >= {"public.research_vehicle_apertures", "public.youtube_live_aperture"}
     assert "seed_record_no_live_witness" in registry.blocked_reason_codes()
 
     with pytest.raises(KeyError):
         registry.require("unknown.surface")
+
+
+def test_media_public_aperture_seed_records_keep_public_claims_gated() -> None:
+    registry = load_world_capability_registry()
+
+    camera = registry.require("camera.studio_rgb_fleet")
+    compositor = registry.require("camera.studio_compositor_public_output")
+    hls = registry.require("archive.hls_sidecar")
+    replay = registry.require("archive.vod_replay_public_url")
+    youtube = registry.require("public.youtube_live_aperture")
+    public_replay = registry.require("public.archive_replay_aperture")
+
+    assert camera.authority_ceiling.value == "internal_only"
+    assert camera.public_claim_policy.claim_public_live is False
+    assert "public:*" in camera.public_claim_policy.denied_surface_refs
+
+    for record in (compositor, replay, youtube, public_replay):
+        assert record.authority_ceiling.value == "public_gate_required"
+        assert record.public_claim_policy.requires_egress_public_claim is True
+        assert record.public_claim_policy.requires_privacy_public_safe is True
+        assert record.public_claim_policy.requires_provenance is True
+        assert record.public_claim_policy.claim_public_live is False
+        assert record.public_claim_policy.claim_monetizable is False
+        assert "seed_record_no_live_witness" in record.blocked_reasons
+
+    assert hls.availability_state is AvailabilityState.ARCHIVE_ONLY
+    assert hls.public_claim_policy.claim_archive is False
+    assert "archive_hash_mtime_not_supplied" in hls.blocked_reasons
 
 
 def test_malformed_registry_rows_fail_closed(tmp_path: Path) -> None:

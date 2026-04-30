@@ -273,6 +273,309 @@
     },
     {
       "schema_version": 1,
+      "probe_id": "camera.studio_rgb_fleet.live_visible_witnessed",
+      "surface_id": "camera.studio_rgb_fleet",
+      "capability_id": "camera.studio_rgb_fleet",
+      "witness_class": "audio_video_state",
+      "state": "witnessed",
+      "checked_at": "2026-04-30T11:20:00Z",
+      "selected_ref": "selection:camera.studio_rgb_fleet",
+      "command_ref": "command:compositor.camera_snapshot.read",
+      "witness_ref": "shm:hapax-compositor/c920-desk.jpg#nonblank",
+      "source_refs": [
+        "wcs-registry:camera.studio_rgb_fleet",
+        "shm:hapax-compositor/c920-desk.jpg",
+        "privacy:internal-camera:operator-visible"
+      ],
+      "freshness_window_s": 3,
+      "confidence": 0.84,
+      "failure_reason": null,
+      "blocked_reasons": [],
+      "required_for_public_claim": false,
+      "required_witness_classes": [
+        "audio_video_state"
+      ],
+      "command_result_success": true,
+      "selected_at": "2026-04-30T11:19:55Z",
+      "commanded_at": "2026-04-30T11:19:56Z",
+      "observed_at": "2026-04-30T11:19:57Z",
+      "witnessed_at": "2026-04-30T11:19:57Z",
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "camera.studio_compositor_public_output.public_egress_witnessed",
+      "surface_id": "camera.studio_compositor_public_output",
+      "capability_id": "camera.studio_compositor_public_output",
+      "witness_class": "public_egress",
+      "state": "witnessed",
+      "checked_at": "2026-04-30T11:20:00Z",
+      "selected_ref": "selection:camera.studio_compositor_public_output",
+      "command_ref": "command:livestream_egress.resolve",
+      "witness_ref": "egress:livestream-state:public_claim_allowed",
+      "source_refs": [
+        "wcs-registry:camera.studio_compositor_public_output",
+        "shared.livestream_egress_state:public_claim_allowed",
+        "privacy:face-obscure:producer-layer:pass",
+        "consent:operator-self:public-live",
+        "shm:hapax-broadcast/audio-safe-for-broadcast.json",
+        "rvpe:programme_boundary:fixture-live-visible"
+      ],
+      "freshness_window_s": 60,
+      "confidence": 0.88,
+      "failure_reason": null,
+      "blocked_reasons": [],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "public_egress",
+        "audio_video_state"
+      ],
+      "command_result_success": true,
+      "selected_at": "2026-04-30T11:19:50Z",
+      "commanded_at": "2026-04-30T11:19:51Z",
+      "observed_at": "2026-04-30T11:19:55Z",
+      "witnessed_at": "2026-04-30T11:19:55Z",
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "archive.hls_sidecar.archived_witnessed",
+      "surface_id": "archive.hls_sidecar",
+      "capability_id": "archive.hls_sidecar",
+      "witness_class": "archive_ref",
+      "state": "witnessed",
+      "checked_at": "2026-04-30T11:20:00Z",
+      "selected_ref": "selection:archive.hls_sidecar",
+      "command_ref": "command:archive.hls_sidecar.read",
+      "witness_ref": "archive:hls:segment00042.json#hash_mtime",
+      "source_refs": [
+        "wcs-registry:archive.hls_sidecar",
+        "archive:hls:segment00042.ts",
+        "archive:hls:segment00042.json",
+        "hash:archive:hls:segment00042",
+        "span:archive.hls.segment00042"
+      ],
+      "freshness_window_s": 300,
+      "confidence": 0.9,
+      "failure_reason": null,
+      "blocked_reasons": [],
+      "required_for_public_claim": false,
+      "required_witness_classes": [
+        "archive_ref"
+      ],
+      "command_result_success": true,
+      "selected_at": "2026-04-30T11:18:00Z",
+      "commanded_at": "2026-04-30T11:18:01Z",
+      "observed_at": "2026-04-30T11:18:02Z",
+      "witnessed_at": "2026-04-30T11:18:02Z",
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "archive.vod_replay_public_url.public_witnessed",
+      "surface_id": "archive.vod_replay_public_url",
+      "capability_id": "archive.vod_replay_public_url",
+      "witness_class": "archive_ref",
+      "state": "witnessed",
+      "checked_at": "2026-04-30T11:20:00Z",
+      "selected_ref": "selection:archive.vod_replay_public_url",
+      "command_ref": "command:archive_replay_public_event_adapter.emit",
+      "witness_ref": "archive_replay_decision:rvpe:archive_replay:segment00042#emitted",
+      "source_refs": [
+        "wcs-registry:archive.vod_replay_public_url",
+        "archive:hls:segment00042.json",
+        "https://example.invalid/replay/segment00042",
+        "rvpe:archive_replay:segment00042",
+        "egress:public-claim:fixture-pass"
+      ],
+      "freshness_window_s": 300,
+      "confidence": 0.86,
+      "failure_reason": null,
+      "blocked_reasons": [],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "archive_ref",
+        "public_egress"
+      ],
+      "command_result_success": true,
+      "selected_at": "2026-04-30T11:19:25Z",
+      "commanded_at": "2026-04-30T11:19:26Z",
+      "observed_at": "2026-04-30T11:19:30Z",
+      "witnessed_at": "2026-04-30T11:19:30Z",
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "public.youtube_live_aperture.stale",
+      "surface_id": "public.youtube_live_aperture",
+      "capability_id": "public.youtube_live_aperture",
+      "witness_class": "public_egress",
+      "state": "stale",
+      "checked_at": "2026-04-30T11:20:00Z",
+      "selected_ref": "selection:public.youtube_live_aperture",
+      "command_ref": "command:youtube.live_ingest.probe",
+      "witness_ref": "egress:youtube-ingest:stale",
+      "source_refs": [
+        "wcs-registry:public.youtube_live_aperture",
+        "egress:youtube-ingest:stale"
+      ],
+      "freshness_window_s": 60,
+      "confidence": 0.41,
+      "failure_reason": "public_surface_stale",
+      "blocked_reasons": [
+        "public_surface_stale",
+        "stale_public_egress_witness"
+      ],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "public_egress"
+      ],
+      "command_result_success": true,
+      "selected_at": "2026-04-30T11:10:00Z",
+      "commanded_at": "2026-04-30T11:10:01Z",
+      "observed_at": "2026-04-30T11:10:02Z",
+      "witnessed_at": "2026-04-30T11:10:02Z",
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "camera.studio_rgb_fleet.missing",
+      "surface_id": "camera.studio_rgb_fleet",
+      "capability_id": "camera.studio_rgb_fleet",
+      "witness_class": "audio_video_state",
+      "state": "blocked",
+      "checked_at": "2026-04-30T11:20:00Z",
+      "selected_ref": "selection:camera.studio_rgb_fleet",
+      "command_ref": "command:compositor.camera_snapshot.read",
+      "witness_ref": null,
+      "source_refs": [
+        "wcs-registry:camera.studio_rgb_fleet",
+        "studio-compositor:status:no-camera-device"
+      ],
+      "freshness_window_s": 3,
+      "confidence": 0.0,
+      "failure_reason": "camera_missing",
+      "blocked_reasons": [
+        "camera_missing",
+        "camera_frame_freshness_not_proven"
+      ],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "audio_video_state"
+      ],
+      "command_result_success": false,
+      "selected_at": "2026-04-30T11:19:00Z",
+      "commanded_at": "2026-04-30T11:19:01Z",
+      "observed_at": null,
+      "witnessed_at": null,
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "archive.hls_sidecar.missing",
+      "surface_id": "archive.hls_sidecar",
+      "capability_id": "archive.hls_sidecar",
+      "witness_class": "archive_ref",
+      "state": "blocked",
+      "checked_at": "2026-04-30T11:20:00Z",
+      "selected_ref": "selection:archive.hls_sidecar",
+      "command_ref": "command:archive.hls_sidecar.read",
+      "witness_ref": null,
+      "source_refs": [
+        "wcs-registry:archive.hls_sidecar",
+        "archive:hls:segment_missing"
+      ],
+      "freshness_window_s": 300,
+      "confidence": 0.0,
+      "failure_reason": "archive_missing",
+      "blocked_reasons": [
+        "archive_missing",
+        "archive_hash_mtime_not_supplied"
+      ],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "archive_ref"
+      ],
+      "command_result_success": false,
+      "selected_at": "2026-04-30T11:19:00Z",
+      "commanded_at": "2026-04-30T11:19:01Z",
+      "observed_at": null,
+      "witnessed_at": null,
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "public.research_vehicle_apertures.egress_unknown",
+      "surface_id": "public.research_vehicle_apertures",
+      "capability_id": "public.research_vehicle_apertures",
+      "witness_class": "public_egress",
+      "state": "blocked",
+      "checked_at": "2026-04-30T11:20:00Z",
+      "selected_ref": "selection:public.research_vehicle_apertures",
+      "command_ref": "command:livestream_egress.resolve",
+      "witness_ref": null,
+      "source_refs": [
+        "wcs-registry:public.research_vehicle_apertures",
+        "egress:livestream-state:unknown"
+      ],
+      "freshness_window_s": 60,
+      "confidence": 0.0,
+      "failure_reason": "egress_unknown",
+      "blocked_reasons": [
+        "egress_unknown",
+        "public_event_acceptance_missing"
+      ],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "public_egress"
+      ],
+      "command_result_success": false,
+      "selected_at": "2026-04-30T11:19:00Z",
+      "commanded_at": "2026-04-30T11:19:01Z",
+      "observed_at": null,
+      "witnessed_at": null,
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
+      "probe_id": "public.archive_replay_aperture.privacy_rights_hold",
+      "surface_id": "public.archive_replay_aperture",
+      "capability_id": "public.archive_replay_aperture",
+      "witness_class": "public_egress",
+      "state": "blocked",
+      "checked_at": "2026-04-30T11:20:00Z",
+      "selected_ref": "selection:public.archive_replay_aperture",
+      "command_ref": "command:archive_replay_public_event_adapter.emit",
+      "witness_ref": null,
+      "source_refs": [
+        "wcs-registry:public.archive_replay_aperture",
+        "archive:hls:segment00045.ts",
+        "rights:third-party-uncleared:segment00045",
+        "privacy:consent-required:segment00045"
+      ],
+      "freshness_window_s": 300,
+      "confidence": 0.0,
+      "failure_reason": "privacy_rights_hold",
+      "blocked_reasons": [
+        "privacy_rights_hold",
+        "rights_blocked",
+        "privacy_blocked",
+        "audio_blocked"
+      ],
+      "required_for_public_claim": true,
+      "required_witness_classes": [
+        "public_egress",
+        "archive_ref"
+      ],
+      "command_result_success": false,
+      "selected_at": "2026-04-30T11:19:00Z",
+      "commanded_at": "2026-04-30T11:19:01Z",
+      "observed_at": null,
+      "witnessed_at": null,
+      "certifies_declared_obligation_only": true
+    },
+    {
+      "schema_version": 1,
       "probe_id": "browser.mcp_tool_read.failed_source_acquisition",
       "surface_id": "browser.mcp_tool_read",
       "capability_id": "browser.mcp_tool_read",
