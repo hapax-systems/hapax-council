@@ -24,7 +24,9 @@ effects to go silently dead after PR #555.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from agents.hapax_daimonion.cpal.programme_context import (
     ProgrammeProvider,
@@ -33,6 +35,25 @@ from agents.hapax_daimonion.cpal.programme_context import (
 from agents.hapax_daimonion.cpal.types import GainUpdate
 
 log = logging.getLogger(__name__)
+
+
+class BufferSpeechState(NamedTuple):
+    """Snapshot of operator speech activity from the conversation buffer.
+
+    Used as downward evidence on the surfacing posterior — NOT as a hard
+    gate. When the operator is speaking, the posterior probability of
+    surfacing decreases continuously.
+    """
+
+    speech_active: bool
+    in_cooldown: bool
+
+
+def _null_buffer_state() -> BufferSpeechState:
+    return BufferSpeechState(speech_active=False, in_cooldown=False)
+
+
+BufferStateProvider = Callable[[], BufferSpeechState]
 
 # Gain deltas by impingement source
 _GAIN_DELTAS: dict[str, float] = {
@@ -46,12 +67,18 @@ _GAIN_DELTAS: dict[str, float] = {
 
 # Phase 6: surface-threshold defaults + bounds. Threshold is a SOFT
 # PRIOR — programmes shift it within [MIN, MAX] (multiplier in
-# [0.5, 2.0] applied to the base) but salience >= ALWAYS_SURFACE_AT
-# overrides any threshold (the soft-prior-not-gate property).
+# [0.5, 2.0] applied to the base). ALWAYS_SURFACE_AT is a soft ceiling,
+# not a hard bypass — operator speech evidence can still dampen it.
 DEFAULT_SURFACE_THRESHOLD: float = 0.7
 SURFACE_MULTIPLIER_MIN: float = 0.5
 SURFACE_MULTIPLIER_MAX: float = 2.0
 ALWAYS_SURFACE_AT: float = 1.0
+
+# Operator speech evidence: when the operator is speaking, the threshold
+# rises by this additive amount. This is a continuous Bayesian evidence
+# signal, not a hard gate — it reduces P(surfacing | operator_speaking)
+# without setting it to zero.
+OPERATOR_SPEECH_THRESHOLD_LIFT: float = 0.4
 SPEECH_CAPABILITY_NAME: str = "speech_production"
 
 
@@ -81,14 +108,23 @@ class ImpingementAdapter:
     returns ``None`` (no active programme, or test-default), the
     adapter falls back to ``DEFAULT_SURFACE_THRESHOLD`` and behaves
     as before.
+
+    Operator speech evidence: optional ``buffer_state_provider``
+    returns the conversation buffer's speech activity state. When the
+    operator is speaking or in post-TTS cooldown, the surfacing
+    threshold rises continuously — P(surfacing | operator_speaking)
+    decreases without a hard gate. Per the conative-impingement spec:
+    continuous suppression fields, not hard speak/don't-speak rules.
     """
 
     def __init__(
         self,
         *,
         programme_provider: ProgrammeProvider = null_provider,
+        buffer_state_provider: BufferStateProvider = _null_buffer_state,
     ) -> None:
         self._programme_provider = programme_provider
+        self._buffer_state_provider = buffer_state_provider
 
     def adapt(self, impingement: object) -> ImpingementEffect:
         """Convert an impingement to a CPAL control loop effect.
@@ -129,16 +165,21 @@ class ImpingementAdapter:
         # (operator should know about this but doesn't yet)
         error_boost = strength * 0.3 if strength > 0.3 else 0.0
 
-        # Phase 6: programme-biased threshold. salience-1.0 overrides
-        # any threshold so high-impingement-pressure speech still
-        # surfaces under a quieting programme (soft-prior-not-gate).
+        # Phase 6: programme-biased threshold with operator-speech
+        # evidence. The threshold is a posterior that incorporates
+        # programme posture AND operator speech activity as evidence.
         surface_threshold = self._compose_threshold()
-        should_surface = (
-            strength >= ALWAYS_SURFACE_AT
-            or strength >= surface_threshold
-            or interrupt_token in ("population_critical", "operator_distress")
-            or gain_key in ("stimmung_critical", "operator_distress", "system_alert")
-        )
+
+        # Safety-critical interrupt tokens bypass the posterior —
+        # operator distress and population-critical events MUST surface.
+        safety_override = interrupt_token in (
+            "population_critical",
+            "operator_distress",
+        ) or gain_key in ("stimmung_critical", "operator_distress", "system_alert")
+        # ALWAYS_SURFACE_AT is a soft ceiling, not a hard bypass.
+        # Operator speech evidence dampens it so strength=1.0 alone
+        # doesn't override the operator's active speech.
+        should_surface = safety_override or strength >= surface_threshold
 
         # Narrative for vocal surfacing
         if not narrative:
@@ -153,14 +194,18 @@ class ImpingementAdapter:
         )
 
     def _compose_threshold(self) -> float:
-        """Compose the should_surface threshold from the active programme.
+        """Compose the should_surface threshold from programme + operator evidence.
 
         Composition:
           - base = ``programme.constraints.surface_threshold_prior`` if
             set, else ``DEFAULT_SURFACE_THRESHOLD``.
           - multiplier = ``programme.bias_multiplier(SPEECH_CAPABILITY_NAME)``
             clamped to ``[SURFACE_MULTIPLIER_MIN, SURFACE_MULTIPLIER_MAX]``.
-          - threshold = base * multiplier, clamped to (0, 1].
+          - operator_lift = ``OPERATOR_SPEECH_THRESHOLD_LIFT`` when the
+            operator is speaking or in post-TTS cooldown. This is
+            additive evidence, not a gate: P(surfacing appropriate |
+            operator_speaking) is lower, expressed as a higher threshold.
+          - threshold = base * multiplier + operator_lift, clamped to (0, 1].
 
         Returns ``DEFAULT_SURFACE_THRESHOLD`` when the provider returns
         no programme or raises. The clamp on the multiplier guarantees
@@ -170,17 +215,34 @@ class ImpingementAdapter:
         """
         programme = self._safe_active_programme()
         if programme is None:
-            return DEFAULT_SURFACE_THRESHOLD
+            base_threshold = DEFAULT_SURFACE_THRESHOLD
+        else:
+            try:
+                base = programme.constraints.surface_threshold_prior
+                base_threshold_raw = base if base is not None else DEFAULT_SURFACE_THRESHOLD
+                raw_mult = float(programme.bias_multiplier(SPEECH_CAPABILITY_NAME))
+                multiplier = min(SURFACE_MULTIPLIER_MAX, max(SURFACE_MULTIPLIER_MIN, raw_mult))
+                base_threshold = base_threshold_raw * multiplier
+            except Exception:
+                log.debug("programme threshold composition failed", exc_info=True)
+                base_threshold = DEFAULT_SURFACE_THRESHOLD
+
+        # Operator speech evidence: continuous downward suppression.
+        # When the buffer reports speech_active or in_cooldown, the
+        # threshold rises — making surfacing less likely. This is a
+        # Bayesian evidence signal: the observation "operator is
+        # speaking" increases the posterior probability that surfacing
+        # is inappropriate.
+        operator_lift = 0.0
         try:
-            base = programme.constraints.surface_threshold_prior
-            base_threshold = base if base is not None else DEFAULT_SURFACE_THRESHOLD
-            raw_mult = float(programme.bias_multiplier(SPEECH_CAPABILITY_NAME))
-            multiplier = min(SURFACE_MULTIPLIER_MAX, max(SURFACE_MULTIPLIER_MIN, raw_mult))
-            threshold = base_threshold * multiplier
-            return min(1.0, max(0.01, threshold))
+            buf_state = self._buffer_state_provider()
+            if buf_state.speech_active or buf_state.in_cooldown:
+                operator_lift = OPERATOR_SPEECH_THRESHOLD_LIFT
         except Exception:
-            log.debug("programme threshold composition failed", exc_info=True)
-            return DEFAULT_SURFACE_THRESHOLD
+            pass  # fail open — no evidence is neutral, not a veto
+
+        threshold = base_threshold + operator_lift
+        return min(1.0, max(0.01, threshold))
 
     def _safe_active_programme(self):
         try:

@@ -133,7 +133,21 @@ class CpalRunner:
         self._grounding = GroundingBridge(ledger=grounding_ledger)
         # Phase 6: programme-aware should_surface threshold via the
         # default_provider that reads the canonical programme store.
-        self._impingement_adapter = ImpingementAdapter(programme_provider=default_provider)
+        # Operator speech evidence: buffer state provider lets the
+        # adapter incorporate speech_active/in_cooldown as downward
+        # evidence on the surfacing posterior.
+        from agents.hapax_daimonion.cpal.impingement_adapter import BufferSpeechState
+
+        def _buffer_state_provider() -> BufferSpeechState:
+            return BufferSpeechState(
+                speech_active=getattr(buffer, "_speech_active", False),
+                in_cooldown=getattr(buffer, "in_cooldown", False),
+            )
+
+        self._impingement_adapter = ImpingementAdapter(
+            programme_provider=default_provider,
+            buffer_state_provider=_buffer_state_provider,
+        )
         self._tier_composer = TierComposer()
         self._signal_cache = SignalCache()
         # HOMAGE Phase 7 — voice register bridge. Single instance per runner
@@ -1000,6 +1014,22 @@ class CpalRunner:
             return
 
         if effect.should_surface:
+            # Refractory inhibition for exploration surfacing.
+            # Same mechanism as autonomous narration's 120s refractory
+            # (run_loops_aux._NARRATION_REFRACTORY_S). After successful
+            # spontaneous speech, suppress subsequent exploration
+            # surfacing for a period. This is a temporal suppression
+            # field per the conative-impingement spec, not a hard rule.
+            _EXPLORATION_REFRACTORY_S = 60.0
+            since_last_speech = time.monotonic() - self._last_speech_end
+            if self._last_speech_end > 0.0 and since_last_speech < _EXPLORATION_REFRACTORY_S:
+                log.debug(
+                    "CPAL: exploration surfacing suppressed by refractory "
+                    "(%.1fs since last speech, refractory=%.0fs)",
+                    since_last_speech,
+                    _EXPLORATION_REFRACTORY_S,
+                )
+                return
             log.info("CPAL: impingement surfacing: %s", effect.narrative[:60])
             # Classify destination BEFORE T0 so both signals (visual and
             # audio) follow the same routing decision, and so the counter
