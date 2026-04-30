@@ -1071,6 +1071,12 @@ class CpalRunner:
                                     ),
                                 )
                             finally:
+                                # Hold the speaking gate for a few seconds
+                                # past playback end to cover residual room
+                                # echo. Without this holdover, the Yeti mic
+                                # captures the echo tail as "operator speech"
+                                # and the pipeline processes it as a response.
+                                await asyncio.sleep(3.0)
                                 self._buffer.set_speaking(False)
                             record_playback_result(
                                 text=narrative,
