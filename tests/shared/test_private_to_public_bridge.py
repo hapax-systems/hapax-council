@@ -220,9 +220,39 @@ def test_all_gates_pass_public_proposal() -> None:
     assert result.outcome is BridgeOutcome.PUBLIC_ACTION_PROPOSAL
     assert result.public_broadcast_intent
     assert result.route_posture == "broadcast_authorized"
-    assert result.programme_authorization is not None
+    assert result.programme_authorization == "programme:prog:test"
     assert result.claim_ceiling is AuthorityCeiling.PUBLIC_GATE_REQUIRED
     assert not result.blockers
+
+
+def test_public_proposal_uses_envelope_programme_when_request_omits_it() -> None:
+    """Public proposal falls back to the witnessed envelope programme id."""
+
+    request = BridgeRequest(
+        narrative_text="Hapax observes the research instrument stabilizing.",
+        envelope=_full_gates_envelope(),
+        explicit_public_intent=True,
+    )
+    result = evaluate_bridge(request)
+
+    assert result.outcome is BridgeOutcome.PUBLIC_ACTION_PROPOSAL
+    assert result.programme_authorization == "programme:prog:test"
+
+
+def test_public_proposal_holds_on_programme_id_mismatch() -> None:
+    """Request/envelope programme mismatch cannot authorize broadcast."""
+
+    request = BridgeRequest(
+        narrative_text="Hapax observes the research instrument stabilizing.",
+        programme_id="prog:other",
+        envelope=_full_gates_envelope(),
+        explicit_public_intent=True,
+    )
+    result = evaluate_bridge(request)
+
+    assert result.outcome is BridgeOutcome.HELD
+    assert result.blockers == ("programme_id_mismatch",)
+    assert result.public_broadcast_intent is False
 
 
 def test_private_risk_blocks_broadcast() -> None:
@@ -287,7 +317,7 @@ def test_impingement_content_has_broadcast_intent() -> None:
     assert content["destination"] == "broadcast"
     assert content["bridge_outcome"] == "public_action_proposal"
     assert content["route_posture"] == "broadcast_authorized"
-    assert content["programme_authorization"] is not None
+    assert content["programme_authorization"] == "programme:prog:test"
 
 
 def test_impingement_content_private_has_no_broadcast() -> None:

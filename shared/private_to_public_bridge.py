@@ -173,9 +173,20 @@ def evaluate_bridge(request: BridgeRequest) -> BridgeResult:
 
     # 4. Public intent AND envelope allows public speech
     if AllowedOutcome.PUBLIC_SPEECH_ALLOWED in envelope.allowed_outcomes:
+        programme_id = request.programme_id or envelope.programme_id
+        if (
+            request.programme_id
+            and envelope.programme_id
+            and request.programme_id != envelope.programme_id
+        ):
+            return BridgeResult(
+                outcome=BridgeOutcome.HELD,
+                narrative_text=request.narrative_text,
+                blockers=("programme_id_mismatch",),
+            )
         programme_auth = (
-            f"programme:{envelope.role.role_id}"
-            if envelope.programme_authorization.value == "fresh"
+            f"programme:{programme_id}"
+            if envelope.programme_authorization.value == "fresh" and programme_id
             else None
         )
         if programme_auth is None:

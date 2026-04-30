@@ -71,6 +71,14 @@ async def audio_loop(daemon: VoiceDaemon) -> None:
                 daemon.presence.process_audio_frame(chunk)
                 vad_prob = daemon.presence._latest_vad_confidence
                 daemon._conversation_buffer.update_vad(vad_prob)
+                # Engagement is a gain/context modulator only. It never
+                # gates buffer ingestion above; audio has already reached
+                # the always-on conversation buffer before this point.
+                if vad_prob >= 0.3 and hasattr(daemon, "_engagement"):
+                    behaviors = daemon.perception.behaviors
+                    ps = behaviors.get("presence_state")
+                    if ps is not None and getattr(ps, "value", "") == "PRESENT":
+                        daemon._engagement.on_speech_detected(behaviors)
             except Exception as exc:
                 log.warning("Presence consumer error: %s", exc)
 

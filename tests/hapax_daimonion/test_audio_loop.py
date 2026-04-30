@@ -159,16 +159,18 @@ class TestAudioLoopDistribution:
         assert daemon.presence.process_audio_frame.call_count == 5
 
     @pytest.mark.asyncio
-    async def test_buffer_always_receives_audio_and_vad(self):
-        """Buffer receives audio and VAD updates without engagement gate.
+    async def test_buffer_always_receives_audio_vad_and_engagement_signal(self):
+        """Buffer receives audio/VAD before non-gating engagement modulation.
 
         Impingement-native architecture: every operator utterance flows
-        through the buffer to STT → salience router. No engagement
-        classifier gate — the CPAL runner's salience-based recruitment
-        decides whether to respond.
+        through the buffer to STT → salience router. Engagement can still
+        boost gain after VAD/presence evidence, but it never gates capture.
         """
         daemon = _make_daemon()
         daemon.presence._latest_vad_confidence = 0.5
+        ps_behavior = MagicMock()
+        ps_behavior.value = "PRESENT"
+        daemon.perception.behaviors = {"presence_state": ps_behavior}
         frames = _make_flush_frames(3)
         _wire_audio_input(daemon, frames)
 
@@ -178,6 +180,7 @@ class TestAudioLoopDistribution:
         assert daemon._conversation_buffer.feed_audio.call_count == 3
         # Buffer always receives update_vad (once per VAD chunk)
         assert daemon._conversation_buffer.update_vad.call_count == 2
+        daemon._engagement.on_speech_detected.assert_called()
 
 
 # --- Error handling ---

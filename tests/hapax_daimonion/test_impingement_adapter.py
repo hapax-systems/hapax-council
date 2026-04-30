@@ -35,7 +35,8 @@ class TestImpingementAdapter:
 
     def test_high_strength_surfaces(self):
         adapter = ImpingementAdapter()
-        imp = _make_impingement(source="imagination", strength=0.8, narrative="urgent thought")
+        # strength must exceed casual-role threshold: 0.7 base + 0.15 casual = 0.85
+        imp = _make_impingement(source="imagination", strength=0.9, narrative="urgent thought")
         effect = adapter.adapt(imp)
         assert effect.should_surface
 

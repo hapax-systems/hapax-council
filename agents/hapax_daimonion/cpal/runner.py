@@ -14,9 +14,12 @@ the T3 production capability.
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import logging
 import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 from agents.hapax_daimonion.cpal.destination_channel import (
@@ -48,6 +51,39 @@ from shared.voice_register import VoiceRegister
 log = logging.getLogger(__name__)
 
 TICK_INTERVAL_S = 0.15  # 150ms cognitive tick
+
+# --- Shared Speech Event Ring ---
+# Minimum viable aperture unification: a shared in-memory ring that all
+# speech paths (conversational, autonomous narration, exploration
+# surfacing) append to. Provides cross-path evidence of recent speech
+# activity without requiring the full SelfPresenceEnvelope.
+_SPEECH_EVENT_RING_MAXLEN = 20
+_DIALOG_ACTIVE_WINDOW_S = 30.0  # matches impingement_adapter.DIALOG_ACTIVE_WINDOW_S
+
+
+class SpeechEventKind(enum.Enum):
+    """Classification of speech events for cross-path awareness."""
+
+    RESPONSE = "response"  # conversational response to operator speech
+    NARRATION = "narration"  # autonomous narrative drive
+    EXPLORATION = "exploration"  # exploration surfacing
+
+
+@dataclass(frozen=True)
+class SpeechEvent:
+    """Record of a speech emission for cross-path awareness.
+
+    Lightweight surrogate for ApertureEvent from the Unified Self-Grounding
+    Spine spec. Provides enough evidence for cross-path dialog suppression
+    without the full ontology.
+    """
+
+    kind: SpeechEventKind
+    timestamp: float  # time.monotonic()
+    source_path: str  # e.g. "pipeline._process_utterance_inner", "autonomous_narrative"
+    text_preview: str = ""  # first 40 chars for debug/context
+
+
 _STIMMUNG_PATH = Path("/dev/shm/hapax-stimmung/state.json")
 _TPN_PATH = Path("/dev/shm/hapax-dmn/tpn_active")
 
@@ -133,7 +169,40 @@ class CpalRunner:
         self._grounding = GroundingBridge(ledger=grounding_ledger)
         # Phase 6: programme-aware should_surface threshold via the
         # default_provider that reads the canonical programme store.
-        self._impingement_adapter = ImpingementAdapter(programme_provider=default_provider)
+        # Operator speech evidence: buffer state provider lets the
+        # adapter incorporate speech_active/in_cooldown as downward
+        # evidence on the surfacing posterior.
+        from agents.hapax_daimonion.cpal.impingement_adapter import (
+            BufferSpeechState,
+            DialogState,
+        )
+
+        def _buffer_state_provider() -> BufferSpeechState:
+            return BufferSpeechState(
+                speech_active=getattr(buffer, "_speech_active", False),
+                in_cooldown=getattr(buffer, "in_cooldown", False),
+            )
+
+        def _dialog_state_provider() -> DialogState:
+            """Evidence of recent conversational response activity."""
+            now = time.monotonic()
+            for evt in reversed(self._recent_speech_events):
+                if evt.kind == SpeechEventKind.RESPONSE:
+                    elapsed = now - evt.timestamp
+                    return DialogState(
+                        seconds_since_last_response=elapsed,
+                        dialog_active=elapsed < _DIALOG_ACTIVE_WINDOW_S,
+                    )
+            return DialogState(
+                seconds_since_last_response=float("inf"),
+                dialog_active=False,
+            )
+
+        self._impingement_adapter = ImpingementAdapter(
+            programme_provider=default_provider,
+            buffer_state_provider=_buffer_state_provider,
+            dialog_state_provider=_dialog_state_provider,
+        )
         self._tier_composer = TierComposer()
         self._signal_cache = SignalCache()
         # HOMAGE Phase 7 — voice register bridge. Single instance per runner
@@ -209,6 +278,17 @@ class CpalRunner:
         self._last_stimmung_check = 0.0
         self._queued_utterance: bytes | None = None
         self._last_speech_end: float = 0.0  # monotonic timestamp of last system speech end
+        # Shared speech event ring: minimum viable aperture unification.
+        # All speech paths (response, narration, exploration) append here
+        # so cross-path evidence is available. Replaces the split-hemisphere
+        # where conversational and narration paths had no awareness of each other.
+        self._recent_speech_events: deque[SpeechEvent] = deque(maxlen=_SPEECH_EVENT_RING_MAXLEN)
+        # Speech mutex: prevents autonomous narration bypass and exploration
+        # surfacing from producing concurrent audio streams. Both paths
+        # acquire this lock before TTS synthesis. This is infrastructure
+        # serialization, not an expert rule — it doesn't decide whether
+        # to speak, only prevents physical audio overlap.
+        self._speech_lock = asyncio.Lock()
         # Queue #225: flipped to True by process_impingement(); reset each tick.
         # Drives the "impingement" label on hapax_cpal_ticks_by_type_total.
         self._impingement_since_last_tick: bool = False
@@ -571,6 +651,7 @@ class CpalRunner:
         """
         self._processing_utterance = True
         self._production.mark_t3_start()
+        system_speech_observed = False
 
         try:
             # T0: Visual acknowledgment (instant)
@@ -592,10 +673,13 @@ class CpalRunner:
                 ack = self._signal_cache.select("acknowledgment")
                 if ack is not None:
                     _, pcm = ack
-                    await self._play_guarded_t1_pcm(
-                        pcm,
-                        source="cpal_t1_acknowledgement",
-                        text="acknowledgment",
+                    system_speech_observed = (
+                        await self._play_guarded_t1_pcm(
+                            pcm,
+                            source="cpal_t1_acknowledgement",
+                            text="acknowledgment",
+                        )
+                        or system_speech_observed
                     )
 
             # T3: Full formulation via pipeline
@@ -605,7 +689,12 @@ class CpalRunner:
                 # utterance IS the impingement that recruits the pipeline.
                 if not self._pipeline._running:
                     await self._pipeline.start()
-                await self._pipeline.process_utterance(utterance)
+                # Acquire speech lock: prevents autonomous narration and
+                # exploration surfacing from producing audio during a
+                # multi-sentence conversational response.
+                async with self._speech_lock:
+                    await self._pipeline.process_utterance(utterance)
+                    system_speech_observed = True
 
                 # Record grounding outcome based on pipeline result (C: C1)
                 self._evaluator.gain_controller.record_grounding_outcome(success=True)
@@ -625,7 +714,15 @@ class CpalRunner:
             log.exception("CPAL: utterance processing failed")
             self._evaluator.gain_controller.record_grounding_outcome(success=False)
         finally:
-            self._last_speech_end = time.monotonic()
+            if system_speech_observed:
+                self._last_speech_end = time.monotonic()
+                self._recent_speech_events.append(
+                    SpeechEvent(
+                        kind=SpeechEventKind.RESPONSE,
+                        timestamp=self._last_speech_end,
+                        source_path="pipeline._process_utterance_inner",
+                    )
+                )
             self._processing_utterance = False
             self._production.mark_t3_end()
             self._formulation.reset()
@@ -917,62 +1014,105 @@ class CpalRunner:
                 from agents.hapax_daimonion.pw_audio_output import play_pcm
 
                 try:
-                    loop = asyncio.get_running_loop()
-                    pcm = await loop.run_in_executor(None, tts.synthesize, narrative, "proactive")
-                    if not pcm:
-                        record_tts_synthesis(
-                            status="empty",
-                            text=narrative,
-                            pcm=b"",
-                            impulse_id=impulse_id,
+                    if self._speech_lock.locked():
+                        log.debug("Autonomous narrative deferred: speech lock held")
+                        return
+                    if self._processing_utterance:
+                        log.debug("Autonomous narrative deferred: conversational response active")
+                        return
+                    async with self._speech_lock:
+                        loop = asyncio.get_running_loop()
+                        pcm = await loop.run_in_executor(
+                            None, tts.synthesize, narrative, "proactive"
                         )
-                        record_drop(
-                            reason="tts_empty_pcm",
-                            source=source,
-                            destination=destination.value,
-                            target=destination_target,
-                            media_role=destination_role,
-                            text=narrative,
-                            impulse_id=impulse_id,
-                        )
-                    else:
-                        record_tts_synthesis(
-                            status="completed",
-                            text=narrative,
-                            pcm=pcm,
-                            impulse_id=impulse_id,
-                        )
-                        playback_result = await loop.run_in_executor(
-                            None,
-                            partial(
-                                play_pcm,
-                                pcm,
-                                24000,
-                                1,
-                                destination_target,
-                                destination_role,
-                            ),
-                        )
-                        record_playback_result(
-                            text=narrative,
-                            playback_result=playback_result,
-                            destination=destination.value,
-                            target=destination_target,
-                            media_role=destination_role,
-                            impulse_id=impulse_id,
-                        )
-                        if playback_result.completed:
-                            log.info(
-                                "Autonomous narrative spoken: %s",
-                                narrative[:60],
+                        if not pcm:
+                            record_tts_synthesis(
+                                status="empty",
+                                text=narrative,
+                                pcm=b"",
+                                impulse_id=impulse_id,
+                            )
+                            record_drop(
+                                reason="tts_empty_pcm",
+                                source=source,
+                                destination=destination.value,
+                                target=destination_target,
+                                media_role=destination_role,
+                                text=narrative,
+                                impulse_id=impulse_id,
                             )
                         else:
-                            log.warning(
-                                "Autonomous narrative playback failed: status=%s target=%s role=%s",
-                                playback_result.status,
-                                destination_target,
-                                destination_role,
+                            record_tts_synthesis(
+                                status="completed",
+                                text=narrative,
+                                pcm=pcm,
+                                impulse_id=impulse_id,
                             )
+                            # Speaking gate: suppress VAD during playback
+                            # to prevent the Yeti mic from capturing our
+                            # own TTS output as an "operator utterance."
+                            # Also register the narrative text with the
+                            # pipeline's echo history so _is_echo() can
+                            # reject mic-captured echoes of this TTS.
+                            if self._pipeline and hasattr(self._pipeline, "_recent_tts_texts"):
+                                self._pipeline._recent_tts_texts.append(
+                                    (
+                                        time.monotonic(),
+                                        narrative.lower().strip().rstrip(".,!?"),
+                                    )
+                                )
+                            self._buffer.set_speaking(True)
+                            if self._echo_canceller:
+                                self._echo_canceller.feed_reference(pcm)
+                            try:
+                                playback_result = await loop.run_in_executor(
+                                    None,
+                                    partial(
+                                        play_pcm,
+                                        pcm,
+                                        24000,
+                                        1,
+                                        destination_target,
+                                        destination_role,
+                                    ),
+                                )
+                            finally:
+                                # Hold the speaking gate for a few seconds
+                                # past playback end to cover residual room
+                                # echo. Without this holdover, the Yeti mic
+                                # captures the echo tail as "operator speech"
+                                # and the pipeline processes it as a response.
+                                await asyncio.sleep(3.0)
+                                self._buffer.set_speaking(False)
+                            record_playback_result(
+                                text=narrative,
+                                playback_result=playback_result,
+                                destination=destination.value,
+                                target=destination_target,
+                                media_role=destination_role,
+                                impulse_id=impulse_id,
+                            )
+                            if playback_result.completed:
+                                self._last_speech_end = time.monotonic()
+                                self._recent_speech_events.append(
+                                    SpeechEvent(
+                                        kind=SpeechEventKind.NARRATION,
+                                        timestamp=self._last_speech_end,
+                                        source_path="autonomous_narrative",
+                                        text_preview=narrative[:40],
+                                    )
+                                )
+                                log.info(
+                                    "Autonomous narrative spoken: %s",
+                                    narrative[:60],
+                                )
+                            else:
+                                log.warning(
+                                    "Autonomous narrative playback failed: status=%s target=%s role=%s",
+                                    playback_result.status,
+                                    destination_target,
+                                    destination_role,
+                                )
                 except Exception as exc:
                     record_tts_synthesis(
                         status="failed",
@@ -1000,6 +1140,22 @@ class CpalRunner:
             return
 
         if effect.should_surface:
+            # Refractory inhibition for exploration surfacing.
+            # Same mechanism as autonomous narration's 120s refractory
+            # (run_loops_aux._NARRATION_REFRACTORY_S). After successful
+            # spontaneous speech, suppress subsequent exploration
+            # surfacing for a period. This is a temporal suppression
+            # field per the conative-impingement spec, not a hard rule.
+            _EXPLORATION_REFRACTORY_S = 60.0
+            since_last_speech = time.monotonic() - self._last_speech_end
+            if self._last_speech_end > 0.0 and since_last_speech < _EXPLORATION_REFRACTORY_S:
+                log.debug(
+                    "CPAL: exploration surfacing suppressed by refractory "
+                    "(%.1fs since last speech, refractory=%.0fs)",
+                    since_last_speech,
+                    _EXPLORATION_REFRACTORY_S,
+                )
+                return
             log.info("CPAL: impingement surfacing: %s", effect.narrative[:60])
             # Classify destination BEFORE T0 so both signals (visual and
             # audio) follow the same routing decision, and so the counter
@@ -1052,47 +1208,73 @@ class CpalRunner:
                 register_hint: str | None = (
                     textmode_prompt_prefix() if register == VoiceRegister.TEXTMODE else None
                 )
-                try:
-                    await self._pipeline.generate_spontaneous_speech(
-                        impingement,
-                        register_hint=register_hint,
-                        destination_target=destination_target,
-                        destination_role=destination_role,
-                    )
-                except TypeError:
-                    # Older pipelines without one of the new kwargs — fall
-                    # back through progressively so the impingement is
-                    # never dropped when the signature shifts.
+                if self._speech_lock.locked():
+                    log.debug("CPAL: exploration surfacing deferred: speech lock held")
+                    return
+                if self._processing_utterance:
                     log.debug(
-                        "generate_spontaneous_speech rejected kwarg; "
-                        "retrying with narrower signature",
-                        exc_info=True,
+                        "CPAL: exploration surfacing deferred: conversational response active"
                     )
+                    return
+                async with self._speech_lock:
+                    # Set speaking gate for the ENTIRE duration — LLM +
+                    # TTS + playback + holdover. The pipeline's _speak_sentence
+                    # only gates per-sentence; between sentences the gate drops
+                    # and the buffer captures inter-sentence audio as "operator."
+                    self._buffer.set_speaking(True)
                     try:
                         await self._pipeline.generate_spontaneous_speech(
                             impingement,
                             register_hint=register_hint,
                             destination_target=destination_target,
+                            destination_role=destination_role,
                         )
                     except TypeError:
+                        # Older pipelines without one of the new kwargs — fall
+                        # back through progressively so the impingement is
+                        # never dropped when the signature shifts.
+                        log.debug(
+                            "generate_spontaneous_speech rejected kwarg; "
+                            "retrying with narrower signature",
+                            exc_info=True,
+                        )
                         try:
                             await self._pipeline.generate_spontaneous_speech(
                                 impingement,
                                 register_hint=register_hint,
+                                destination_target=destination_target,
                             )
                         except TypeError:
                             try:
-                                await self._pipeline.generate_spontaneous_speech(impingement)
+                                await self._pipeline.generate_spontaneous_speech(
+                                    impingement,
+                                    register_hint=register_hint,
+                                )
+                            except TypeError:
+                                try:
+                                    await self._pipeline.generate_spontaneous_speech(impingement)
+                                except Exception:
+                                    log.debug("Spontaneous speech failed", exc_info=True)
                             except Exception:
                                 log.debug("Spontaneous speech failed", exc_info=True)
                         except Exception:
                             log.debug("Spontaneous speech failed", exc_info=True)
                     except Exception:
                         log.debug("Spontaneous speech failed", exc_info=True)
-                except Exception:
-                    log.debug("Spontaneous speech failed", exc_info=True)
-                finally:
-                    self._last_speech_end = time.monotonic()
+                    finally:
+                        # Hold the speaking gate past playback end to cover
+                        # room echo tail, same as autonomous narrative path.
+                        await asyncio.sleep(3.0)
+                        self._buffer.set_speaking(False)
+                        self._last_speech_end = time.monotonic()
+                        self._recent_speech_events.append(
+                            SpeechEvent(
+                                kind=SpeechEventKind.EXPLORATION,
+                                timestamp=self._last_speech_end,
+                                source_path="exploration_surfacing",
+                                text_preview=effect.narrative[:40],
+                            )
+                        )
             else:
                 record_drop(
                     reason="pipeline_unavailable",
