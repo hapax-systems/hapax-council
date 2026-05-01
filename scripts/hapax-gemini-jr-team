@@ -1,0 +1,514 @@
+#!/usr/bin/env python3
+"""Packetized Gemini CLI junior team runner.
+
+Gemini is useful here as a junior reviewer/scout, not as a production agent.
+This runner keeps it packet-only: Gemini can produce review/research artifacts,
+but cannot claim tasks, edit files, create PRs, merge, deploy, restart services,
+or mutate Obsidian work state.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+LATEST_ADVANCED_GEMINI_MODEL = "gemini-3.1-pro-preview"
+MODEL_POLICY = (
+    "Strict latest-highest-capability Gemini CLI selector. If this model is "
+    "unavailable, the junior lane fails closed instead of falling back."
+)
+
+
+@dataclass(frozen=True)
+class RolePolicy:
+    sidecar_mode: str
+    safe_work: str
+    output_contract: str
+
+
+ROLE_POLICIES: dict[str, RolePolicy] = {
+    "jr-reviewer": RolePolicy(
+        sidecar_mode="reviewer",
+        safe_work="Read-only review of supplied diffs, plans, specs, CI logs, or packet drafts.",
+        output_contract="Findings only: severity, evidence, uncertainty, concrete senior-owned remediation.",
+    ),
+    "jr-test-scout": RolePolicy(
+        sidecar_mode="spec-drafter",
+        safe_work="Test-gap scouting and acceptance-matrix drafting from supplied requirements.",
+        output_contract="Suggested tests and fixtures only; no implementation or task closure claims.",
+    ),
+    "jr-currentness-scout": RolePolicy(
+        sidecar_mode="currentness-scout",
+        safe_work="Official-doc/currentness scouting for APIs, model IDs, quotas, platform rules, or standards.",
+        output_contract="Dated facts, URLs, source confidence, and uncertainty; no runtime changes.",
+    ),
+    "jr-large-context": RolePolicy(
+        sidecar_mode="large-context-summarizer",
+        safe_work="Summarizing long supplied transcripts, handoffs, docs, and prior research packets.",
+        output_contract="Grounded summary with source anchors and explicit unknowns; no invented state.",
+    ),
+    "jr-extractor": RolePolicy(
+        sidecar_mode="extraction",
+        safe_work="Bounded extraction, normalization, and classification of supplied material.",
+        output_contract="Structured extraction only; preserve uncertainty and do not infer missing facts.",
+    ),
+    "jr-aesthetic-scout": RolePolicy(
+        sidecar_mode="aesthetic-researcher",
+        safe_work="Aesthetic option scouting, comparison tables, and examples for senior design synthesis.",
+        output_contract="Options and tradeoffs only; never copy protected expression or make final taste calls.",
+    ),
+}
+
+PROHIBITED_WORK = (
+    "No repo edits. No vault task mutation. No cc-claim/cc-close. No branch, worktree, PR, "
+    "merge, rebase, deploy, restart, systemctl, pass, sudo, secret handling, or governance-final calls."
+)
+
+GEMINI_CLI_NOISE_PREFIXES = (
+    "Created execution plan for SessionEnd:",
+    "Expanding hook command:",
+    "Hook execution for SessionEnd:",
+)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _iso(dt: datetime | None = None) -> str:
+    return (dt or _now()).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _stamp() -> str:
+    return _now().strftime("%Y%m%dT%H%M%SZ")
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _state_root() -> Path:
+    return Path(os.environ.get("HAPAX_GEMINI_JR_ROOT", Path.home() / ".cache/hapax/gemini-jr-team"))
+
+
+def _metadata_log() -> Path:
+    return _state_root() / "metadata.jsonl"
+
+
+def _packet_dir() -> Path:
+    return _state_root() / "packets"
+
+
+def _sidecar_artifact_dir() -> Path:
+    return _state_root() / "sidecar-artifacts"
+
+
+def _relay_path() -> Path:
+    return Path(
+        os.environ.get("HAPAX_GEMINI_JR_RELAY", Path.home() / ".cache/hapax/relay/gemini-jr.yaml")
+    )
+
+
+def _dashboard_path() -> Path:
+    return Path(
+        os.environ.get(
+            "HAPAX_GEMINI_JR_DASHBOARD",
+            Path.home()
+            / "Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/gemini-jr-team.md",
+        )
+    )
+
+
+def _prompt_from_args(args: argparse.Namespace) -> str:
+    if args.prompt and args.prompt_file:
+        raise SystemExit("--prompt and --prompt-file are mutually exclusive")
+    if args.prompt_file:
+        return Path(args.prompt_file).expanduser().read_text(encoding="utf-8")
+    if args.prompt:
+        return args.prompt
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    raise SystemExit("provide --prompt, --prompt-file, or stdin")
+
+
+def _build_prompt(*, role: str, task_id: str, title: str, operator_prompt: str) -> str:
+    policy = ROLE_POLICIES[role]
+    return "\n\n".join(
+        [
+            "# Hapax Gemini JR Dev Team Contract",
+            f"Role: {role}",
+            f"Task ID: {task_id}",
+            f"Title: {title}",
+            f"Model policy: {MODEL_POLICY}",
+            f"Safe work: {policy.safe_work}",
+            f"Output contract: {policy.output_contract}",
+            f"Prohibited work: {PROHIBITED_WORK}",
+            "You are junior support. Your output is an untrusted packet for senior Codex/Claude review.",
+            "Do not say you changed files, ran tests, merged, deployed, restarted, or updated work state unless the supplied material proves it.",
+            "Separate evidence from inference. Cite exact supplied paths, lines, PR numbers, URLs, or timestamps when available.",
+            "If evidence is insufficient, say so directly and stop at a recommendation.",
+            "Return Markdown with sections: Findings, Evidence, Uncertainty, Senior Intake.",
+            "# Supplied Work",
+            operator_prompt.strip(),
+        ]
+    )
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _safe_slug(value: str) -> str:
+    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in value)
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug.strip("-")[:80] or "task"
+
+
+def _sidecar_command(args: argparse.Namespace, *, sidecar_prompt: str) -> list[str]:
+    return [
+        args.sidecar_bin,
+        "--mode",
+        ROLE_POLICIES[args.role].sidecar_mode,
+        "--model",
+        LATEST_ADVANCED_GEMINI_MODEL,
+        "--strict-model",
+        "--timeout",
+        str(args.timeout),
+        "--output-format",
+        "text",
+        "--metadata-log",
+        str(_state_root() / "sidecar-metadata.jsonl"),
+        "--artifact-dir",
+        str(_sidecar_artifact_dir()),
+        "--prompt",
+        sidecar_prompt,
+    ]
+
+
+def _redacted_command(command: list[str]) -> list[str]:
+    redacted: list[str] = []
+    skip_next = False
+    for part in command:
+        if skip_next:
+            redacted.append("<redacted-prompt>")
+            skip_next = False
+            continue
+        redacted.append(part)
+        if part == "--prompt":
+            skip_next = True
+    return redacted
+
+
+def _clean_sidecar_output(text: str) -> str:
+    lines = [
+        line
+        for line in text.splitlines()
+        if not any(line.startswith(prefix) for prefix in GEMINI_CLI_NOISE_PREFIXES)
+    ]
+    return "\n".join(lines).strip()
+
+
+def _packet_path(role: str, task_id: str) -> Path:
+    return _packet_dir() / f"{_stamp()}-{role}-{_safe_slug(task_id)}.md"
+
+
+def _write_packet(
+    *,
+    path: Path,
+    role: str,
+    task_id: str,
+    title: str,
+    status: str,
+    prompt_hash: str,
+    started_at: str,
+    duration_ms: int,
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    output = _clean_sidecar_output(stdout) or _clean_sidecar_output(stderr) or "(no output)"
+    path.write_text(
+        "\n".join(
+            [
+                "---",
+                "type: gemini-jr-packet",
+                f"created_at: {_iso()}",
+                f"jr_role: {role}",
+                f"task_id: {task_id}",
+                f"title: {json.dumps(title)}",
+                f"status: {status}",
+                f"model: {LATEST_ADVANCED_GEMINI_MODEL}",
+                "strict_latest_model: true",
+                f"prompt_sha256: {prompt_hash}",
+                f"sidecar_exit_code: {exit_code}",
+                "senior_review_required: true",
+                "---",
+                "",
+                f"# {title}",
+                "",
+                "## Guardrails",
+                "",
+                f"- Model policy: {MODEL_POLICY}",
+                f"- Prohibited work: {PROHIBITED_WORK}",
+                "- This packet is evidence/draft only. It is not work-state truth until Codex or Claude accepts it.",
+                "",
+                "## Run",
+                "",
+                f"- Started: `{started_at}`",
+                f"- Duration: `{duration_ms} ms`",
+                f"- Exit code: `{exit_code}`",
+                "",
+                "## Gemini Output",
+                "",
+                output,
+                "",
+                "## Senior Intake",
+                "",
+                "- Verify every path, claim, PR state, and source before acting.",
+                "- Convert useful work into a normal cc-task/branch/PR only through a senior lane.",
+                "- Discard the packet if it invents state, requests authority, or lacks evidence.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _append_metadata(record: dict[str, object]) -> None:
+    path = _metadata_log()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _recent_records(limit: int = 10) -> list[dict[str, object]]:
+    path = _metadata_log()
+    if not path.exists():
+        return []
+    records: list[dict[str, object]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records[-limit:]
+
+
+def _write_relay(latest: dict[str, object]) -> None:
+    path = _relay_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "session: gemini-jr",
+                f"updated: {_iso()}",
+                "role: packetized Gemini CLI junior dev team",
+                "status: packet_only_waiting_for_senior_intake",
+                f"model: {LATEST_ADVANCED_GEMINI_MODEL}",
+                "strict_latest_model: true",
+                "authority: no_repo_edits_no_claims_no_prs_no_merge_no_deploy",
+                "latest_packet:",
+                f"  task_id: {latest.get('task_id', '')}",
+                f"  role: {latest.get('role', '')}",
+                f"  status: {latest.get('status', '')}",
+                f"  path: {latest.get('packet_path', '')}",
+                f"  exit_code: {latest.get('exit_code', '')}",
+                "senior_required: true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_dashboard() -> None:
+    path = _dashboard_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for record in reversed(_recent_records(12)):
+        rows.append(
+            "| {created} | {role} | {task} | {status} | {code} | {packet} |".format(
+                created=record.get("created_at", ""),
+                role=record.get("role", ""),
+                task=record.get("task_id", ""),
+                status=record.get("status", ""),
+                code=record.get("exit_code", ""),
+                packet=record.get("packet_path", ""),
+            )
+        )
+    if not rows:
+        rows.append("| - | - | - | - | - | - |")
+    path.write_text(
+        "\n".join(
+            [
+                "---",
+                "type: gemini-jr-dashboard",
+                "title: Gemini JR Team",
+                f"updated_at: {_iso()}",
+                "tags: [gemini, coordination, junior-team]",
+                "---",
+                "",
+                "# Gemini JR Team",
+                "",
+                "Gemini CLI is a packet-only junior support team. It does not own work-state.",
+                "",
+                f"- Model: `{LATEST_ADVANCED_GEMINI_MODEL}`",
+                "- Strict latest model: `true`",
+                "- Authority: no edits, no claims, no PRs, no merge, no deploy, no service restarts.",
+                "- Intake rule: Codex or Claude must verify and graduate anything useful.",
+                "",
+                "## Roles",
+                "",
+                *[
+                    f"- `{role}`: {policy.safe_work}"
+                    for role, policy in sorted(ROLE_POLICIES.items())
+                ],
+                "",
+                "## Recent Packets",
+                "",
+                "| Created | Role | Task | Status | Exit | Packet |",
+                "|---|---|---|---|---:|---|",
+                *rows,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _dispatch(args: argparse.Namespace) -> int:
+    supplied = _prompt_from_args(args)
+    sidecar_prompt = _build_prompt(
+        role=args.role,
+        task_id=args.task_id,
+        title=args.title,
+        operator_prompt=supplied,
+    )
+    prompt_hash = _sha256(sidecar_prompt)
+    command = _sidecar_command(args, sidecar_prompt=sidecar_prompt)
+    if args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "role": args.role,
+                    "task_id": args.task_id,
+                    "model": LATEST_ADVANCED_GEMINI_MODEL,
+                    "strict_latest_model": True,
+                    "sidecar_mode": ROLE_POLICIES[args.role].sidecar_mode,
+                    "command": _redacted_command(command),
+                    "prompt_sha256": prompt_hash,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    started = _iso()
+    start = time.monotonic()
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=args.timeout + 10,
+        check=False,
+    )
+    duration_ms = round((time.monotonic() - start) * 1000)
+    status = (
+        "ready_for_senior_review"
+        if result.returncode == 0
+        else "blocked_strict_model_or_sidecar_error"
+    )
+    packet_path = _packet_path(args.role, args.task_id)
+    _write_packet(
+        path=packet_path,
+        role=args.role,
+        task_id=args.task_id,
+        title=args.title,
+        status=status,
+        prompt_hash=prompt_hash,
+        started_at=started,
+        duration_ms=duration_ms,
+        exit_code=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
+    record: dict[str, object] = {
+        "created_at": _iso(),
+        "duration_ms": duration_ms,
+        "exit_code": result.returncode,
+        "model": LATEST_ADVANCED_GEMINI_MODEL,
+        "packet_path": str(packet_path),
+        "prompt_sha256": prompt_hash,
+        "role": args.role,
+        "sidecar_mode": ROLE_POLICIES[args.role].sidecar_mode,
+        "status": status,
+        "strict_latest_model": True,
+        "task_id": args.task_id,
+        "title": args.title,
+    }
+    _append_metadata(record)
+    _write_relay(record)
+    _write_dashboard()
+    print(packet_path)
+    return result.returncode
+
+
+def _plan(_: argparse.Namespace) -> int:
+    print(f"model: {LATEST_ADVANCED_GEMINI_MODEL}")
+    print("strict_latest_model: true")
+    print("authority: packet-only; senior review required")
+    for role, policy in sorted(ROLE_POLICIES.items()):
+        print(f"- {role}: {policy.safe_work}")
+    return 0
+
+
+def _status(_: argparse.Namespace) -> int:
+    _write_dashboard()
+    latest = _recent_records(1)
+    if latest:
+        _write_relay(latest[-1])
+    print(_dashboard_path())
+    return 0
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run Gemini CLI as a safe junior dev packet team.")
+    parser.add_argument(
+        "--sidecar-bin",
+        default=str(_repo_root() / "scripts/hapax-gemini-sidecar"),
+        help="Path to hapax-gemini-sidecar.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    dispatch = sub.add_parser("dispatch", help="Run one packetized junior task.")
+    dispatch.add_argument("--role", choices=sorted(ROLE_POLICIES), required=True)
+    dispatch.add_argument("--task-id", required=True)
+    dispatch.add_argument("--title", required=True)
+    dispatch.add_argument("--prompt")
+    dispatch.add_argument("--prompt-file")
+    dispatch.add_argument("--timeout", type=float, default=300.0)
+    dispatch.add_argument("--dry-run", action="store_true")
+    dispatch.set_defaults(func=_dispatch)
+    plan = sub.add_parser("plan", help="List safe junior roles and authority boundaries.")
+    plan.set_defaults(func=_plan)
+    status = sub.add_parser("status", help="Refresh the Gemini JR dashboard and relay.")
+    status.set_defaults(func=_status)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
