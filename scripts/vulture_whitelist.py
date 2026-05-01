@@ -840,3 +840,11 @@ fingerprint_image
 from logos.api.routes.x402 import demo_payment_required
 
 demo_payment_required
+
+# Canonical precedent loader — mirrors load_implications. No
+# downstream consumer yet (substrate for future governance reports);
+# whitelisted so vulture doesn't flag while a consumer is wired.
+from shared.axiom_registry import Precedent, load_precedents
+
+Precedent
+load_precedents

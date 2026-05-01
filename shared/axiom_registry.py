@@ -98,6 +98,43 @@ class Implication:
     scope: ImplicationScope | None = None  # E-1: optional scope for sufficiency implications
 
 
+@dataclass(frozen=True)
+class Precedent:
+    """One axiom-anchored precedent.
+
+    Mirrors the shape of :class:`Implication` for callers that want to
+    enumerate the operator-ratified case law backing an axiom's
+    enforcement decisions.
+
+    Attributes:
+        id: Stable precedent identifier (``sp-XXX-NNN`` form).
+        axiom_id: Parent axiom whose enforcement this precedent backs.
+        situation: One-paragraph description of the situation that
+            motivated the precedent.
+        decision: Short label — typically ``"compliant"``,
+            ``"non-compliant"``, ``"compliant-with-conditions"``.
+        reasoning: Free-form rationale for the decision.
+        tier: Optional enforcement tier the precedent applies to
+            (T0 / T1 / T2 / T3 / empty).
+        created: ISO date the precedent was ratified.
+        authority: Who ratified — typically ``"operator"``.
+        secondary_axioms: Other axioms the precedent partially backs.
+        distinguishing_facts: Facts that make this precedent's holding
+            specific (so future cases can be distinguished).
+    """
+
+    id: str
+    axiom_id: str
+    situation: str = ""
+    decision: str = ""
+    reasoning: str = ""
+    tier: str = ""
+    created: str = ""
+    authority: str = ""
+    secondary_axioms: tuple[str, ...] = ()
+    distinguishing_facts: tuple[str, ...] = ()
+
+
 def load_schema_version(*, path: Path = AXIOMS_PATH) -> SchemaVer | None:
     """Load the schema_version from registry.yaml. Returns None if not present."""
     registry_file = path / "registry.yaml"
@@ -291,6 +328,127 @@ def load_implications(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Implic
             impls.append(standalone)
 
     return impls
+
+
+def _build_precedent(entry: dict, *, default_axiom_id: str) -> Precedent:
+    """Build a :class:`Precedent` from a parsed YAML mapping.
+
+    Accepts both the list-schema row shape (``id``, ``axiom_id``
+    optional + inherited from parent doc) and the standalone-doc
+    shape (``precedent_id`` at root + ``axiom_id`` carries parent).
+    Caller pre-normalizes ``id`` before invoking; ``default_axiom_id``
+    is the fallback when the entry omits ``axiom_id``.
+    """
+    secondary_raw = entry.get("secondary_axioms") or ()
+    distinguishing_raw = entry.get("distinguishing_facts") or ()
+    return Precedent(
+        id=entry["id"],
+        axiom_id=entry.get("axiom_id", default_axiom_id),
+        situation=str(entry.get("situation", "")).strip(),
+        decision=str(entry.get("decision", "")).strip(),
+        reasoning=str(entry.get("reasoning", "")).strip(),
+        tier=str(entry.get("tier", "")).strip(),
+        created=str(entry.get("created", "")).strip(),
+        authority=str(entry.get("authority", "")).strip(),
+        secondary_axioms=tuple(str(s) for s in secondary_raw),
+        distinguishing_facts=tuple(str(s) for s in distinguishing_raw),
+    )
+
+
+def _load_list_schema_precedents(precedent_file: Path) -> list[Precedent]:
+    """Load list-schema precedents from a seed file.
+
+    File shape: ``precedents:`` list of per-precedent rows. Two
+    sub-shapes coexist in the production tree:
+
+    - **Multi-axiom seeds** (``architecture-seeds.yaml``,
+      ``sufficiency-seeds.yaml``): no top-level ``axiom_id``; each
+      row declares its own ``axiom_id``.
+    - **Single-axiom seeds** (``single-user-seeds.yaml``,
+      ``executive-function-seeds.yaml``, ``management-seeds.yaml``):
+      top-level ``axiom_id: <id>`` + bare rows that inherit the
+      parent's axiom_id.
+
+    Rows fall back to the parent-doc ``axiom_id`` when the row
+    doesn't carry one. Rows where neither path resolves to a non-empty
+    axiom_id are silently skipped.
+    """
+    try:
+        data = yaml.safe_load(precedent_file.read_text())
+    except Exception as e:  # pragma: no cover
+        log.error("Failed to parse precedent file %s: %s", precedent_file, e)
+        return []
+    if not isinstance(data, dict):
+        return []
+    parent_axiom_id = data.get("axiom_id", "")
+    out: list[Precedent] = []
+    for entry in data.get("precedents", []) or []:
+        if not isinstance(entry, dict) or "id" not in entry:
+            continue
+        axiom_id = entry.get("axiom_id") or parent_axiom_id
+        if not axiom_id:
+            continue
+        out.append(_build_precedent(entry, default_axiom_id=axiom_id))
+    return out
+
+
+def _load_standalone_schema_precedent(precedent_file: Path) -> Precedent | None:
+    """Load a single-document standalone-schema precedent file.
+
+    File shape: ``precedent_id:`` at root + ``axiom_id`` + fields.
+    Returns ``None`` for list-schema files (which lack
+    ``precedent_id``) or malformed YAML.
+    """
+    try:
+        data = yaml.safe_load(precedent_file.read_text())
+    except Exception as e:  # pragma: no cover
+        log.error("Failed to parse standalone precedent %s: %s", precedent_file, e)
+        return None
+    if not isinstance(data, dict):
+        return None
+    pid = data.get("precedent_id")
+    axiom_id = data.get("axiom_id")
+    if not pid or not axiom_id:
+        return None
+    entry = {**data, "id": pid}
+    return _build_precedent(entry, default_axiom_id=axiom_id)
+
+
+def load_precedents(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Precedent]:
+    """Load precedents that anchor a specific axiom's enforcement.
+
+    Discovers two file shapes under ``axioms/precedents/``:
+
+    1. **List schema (seed files)** — ``axioms/precedents/seed/*.yaml``
+       with a top-level ``precedents:`` list. Rows declare their own
+       ``axiom_id`` (a single seed file may carry rows for multiple
+       axioms organized by topic).
+    2. **Standalone schema** — ``axioms/precedents/<sp-id>.yaml``
+       with a top-level ``precedent_id`` flat document.
+
+    Returns the merged list filtered by the requested ``axiom_id``.
+    """
+    precedents_dir = path / "precedents"
+    if not precedents_dir.is_dir():
+        return []
+
+    out: list[Precedent] = []
+
+    # 1. Seed files (list-schema).
+    seed_dir = precedents_dir / "seed"
+    if seed_dir.is_dir():
+        for seed_file in sorted(seed_dir.glob("*.yaml")):
+            for prec in _load_list_schema_precedents(seed_file):
+                if prec.axiom_id == axiom_id:
+                    out.append(prec)
+
+    # 2. Standalone files at the precedents/ root.
+    for candidate in sorted(precedents_dir.glob("*.yaml")):
+        standalone = _load_standalone_schema_precedent(candidate)
+        if standalone is not None and standalone.axiom_id == axiom_id:
+            out.append(standalone)
+
+    return out
 
 
 @dataclass
