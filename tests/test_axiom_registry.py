@@ -617,3 +617,127 @@ def test_load_precedents_real_tree_resolves_known_ids():
     ef_ids = {p.id for p in ef}
     # executive-function-seeds.yaml uses parent-doc axiom_id.
     assert "sp-ef-001" in ef_ids
+
+
+# ── Implication.linkage (cc-task: coherence-orphan-implications-catalog follow-up) ──
+
+
+def test_implication_linkage_default_empty(tmp_path):
+    """Implications without an explicit `linkage` field default to empty
+    string — meaning they SHOULD have a constitutive rule feeding them."""
+    impl_dir = tmp_path / "implications"
+    impl_dir.mkdir()
+    (impl_dir / "test_axiom.yaml").write_text(
+        "axiom_id: test_axiom\n"
+        "implications:\n"
+        "  - id: ta-001\n"
+        "    tier: T0\n"
+        '    text: "No linkage declared."\n'
+        "    enforcement: block\n"
+        "    canon: textualist\n"
+    )
+    impls = load_implications("test_axiom", path=tmp_path)
+    assert len(impls) == 1
+    assert impls[0].linkage == ""
+
+
+def test_implication_linkage_code_direct_explicit(tmp_path):
+    """List-schema rows can declare `linkage: code-direct` to opt out of
+    coherence orphan-tracking."""
+    impl_dir = tmp_path / "implications"
+    impl_dir.mkdir()
+    (impl_dir / "test_axiom.yaml").write_text(
+        "axiom_id: test_axiom\n"
+        "implications:\n"
+        "  - id: ta-001\n"
+        "    tier: T0\n"
+        '    text: "Code-direct."\n'
+        "    enforcement: block\n"
+        "    canon: textualist\n"
+        "    linkage: code-direct\n"
+    )
+    impls = load_implications("test_axiom", path=tmp_path)
+    assert impls[0].linkage == "code-direct"
+
+
+def test_standalone_schema_linkage_field(tmp_path):
+    """Standalone-schema files carry `linkage` at top level same as
+    other Implication fields. Pins that the four production standalone
+    files annotated with `linkage: code-direct` round-trip cleanly."""
+    impl_dir = tmp_path / "implications"
+    impl_dir.mkdir()
+    (impl_dir / "cd-impl.yaml").write_text(
+        "implication_id: cd-001\n"
+        "axiom_id: target\n"
+        "linkage: code-direct\n"
+        "tier: T0\n"
+        'text: "Standalone code-direct."\n'
+        "enforcement: block\n"
+    )
+    impls = load_implications("target", path=tmp_path)
+    assert len(impls) == 1
+    assert impls[0].linkage == "code-direct"
+
+
+def test_check_coherence_skips_code_direct_implications(tmp_path):
+    """coherence.check_coherence skips implications with
+    linkage='code-direct' from the orphan tally."""
+    from shared.coherence import check_coherence
+
+    reg = tmp_path / "registry.yaml"
+    reg.write_text(
+        "version: 1\n"
+        "axioms:\n"
+        "  - id: test_axiom\n"
+        '    text: "Test"\n'
+        "    weight: 80\n"
+        "    type: hardcoded\n"
+        '    created: "2026-01-01"\n'
+        "    status: active\n"
+    )
+    impl_dir = tmp_path / "implications"
+    impl_dir.mkdir()
+    # One regular impl (orphan, expected to flag) + one code-direct
+    # (should NOT flag).
+    (impl_dir / "test_axiom.yaml").write_text(
+        "axiom_id: test_axiom\n"
+        "implications:\n"
+        "  - id: ta-orphan\n"
+        "    tier: T0\n"
+        '    text: "Orphan."\n'
+        "    enforcement: block\n"
+        "    canon: textualist\n"
+        "  - id: ta-code-direct\n"
+        "    tier: T0\n"
+        '    text: "Code-direct."\n'
+        "    enforcement: block\n"
+        "    canon: textualist\n"
+        "    linkage: code-direct\n"
+    )
+    # Empty constitutive-rules so neither impl gets linked.
+    (tmp_path / "constitutive-rules.yaml").write_text("rules: []\n")
+    report = check_coherence(axioms_path=tmp_path)
+    orphan_ids = {g.source_id for g in report.gaps if g.gap_type == "orphan_implication"}
+    assert "ta-orphan" in orphan_ids
+    assert "ta-code-direct" not in orphan_ids
+
+
+def test_check_coherence_real_tree_drops_4_standalone_orphans():
+    """After annotating the 4 standalone implications with
+    linkage: code-direct, the production-tree orphan count must drop
+    by 4 — no longer flagging cb-officium-data-boundary,
+    it-irreversible-broadcast, mg-drafting-visibility-001,
+    su-non-formal-referent-001."""
+    from shared.coherence import check_coherence
+
+    report = check_coherence()
+    orphan_ids = {g.source_id for g in report.gaps if g.gap_type == "orphan_implication"}
+    for not_orphan in (
+        "cb-officium-data-boundary",
+        "it-irreversible-broadcast",
+        "mg-drafting-visibility-001",
+        "su-non-formal-referent-001",
+    ):
+        assert not_orphan not in orphan_ids, (
+            f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
+        )

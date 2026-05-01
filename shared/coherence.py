@@ -59,11 +59,18 @@ def check_coherence(*, axioms_path: Path = AXIOMS_PATH) -> CoherenceReport:
     ruleset = ConstitutiveRuleSet.from_yaml(axioms_path)
     axioms = load_axioms(path=axioms_path)
 
-    # Collect all implication IDs
+    # Collect all implication IDs. Implications with `linkage: code-direct`
+    # are excluded from the orphan tally — they're enforced via direct
+    # text-reference in agent code rather than via the constitutive-rule →
+    # implication chain. See cc-task `coherence-orphan-implications-catalog`
+    # for the triage strategy.
     all_impl_ids: set[str] = set()
+    code_direct_impl_ids: set[str] = set()
     for axiom in axioms:
         for impl in load_implications(axiom.id, path=axioms_path):
             all_impl_ids.add(impl.id)
+            if impl.linkage == "code-direct":
+                code_direct_impl_ids.add(impl.id)
 
     # Collect linked implications from constitutive rules
     linked_from_rules: set[str] = set()
@@ -85,8 +92,9 @@ def check_coherence(*, axioms_path: Path = AXIOMS_PATH) -> CoherenceReport:
                     )
                 )
 
-    # Find orphan implications (not linked from any constitutive rule)
-    orphan_impls = all_impl_ids - linked_from_rules
+    # Find orphan implications (not linked from any constitutive rule).
+    # Code-direct implications are excluded — see comment above.
+    orphan_impls = all_impl_ids - linked_from_rules - code_direct_impl_ids
     for impl_id in sorted(orphan_impls):
         gaps.append(
             CoherenceGap(

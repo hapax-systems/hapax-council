@@ -1,5 +1,6 @@
 implication_id: su-non-formal-referent-001
 axiom_id: single_user
+linkage: code-direct
 version: 1
 tier: T1
 enforcement: review
