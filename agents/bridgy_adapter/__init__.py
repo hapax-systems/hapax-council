@@ -11,9 +11,10 @@ operator's downstream silos at bootstrap and reads the source URL's
 microformats at crawl time.
 
 Wires the surface slug ``bridgy-webmention-publish`` per
-``agents/publication_bus/wire_status.py``. Fan-out path: refusal
-annexes published to omg-weblog become source URLs that Bridgy
-crawls and forwards to the operator's authorized Mastodon + Bluesky.
+``agents/publication_bus/wire_status.py`` for generic weblog artifacts.
+Refusal-annex artifacts are blocked here until the committed path can
+prove the omg-weblog source URL exists before issuing the webmention
+POST.
 """
 
 from __future__ import annotations
@@ -31,6 +32,11 @@ WEBLOG_TARGET_URL = "https://hapax.omg.lol/weblog"
 entries; if/when other surfaces (now, statuslog) need fanout, add a
 target-by-slug-prefix dispatch here. Must match an entry in
 ``BridgyPublisher.allowlist.permitted``."""
+
+REFUSAL_ANNEX_WEBMENTION_BLOCKER = (
+    "refusal-annex Bridgy webmention is blocked until the omg-weblog source URL "
+    "has a committed witness before POST"
+)
 
 
 def _source_url_for_artifact(artifact: PreprintArtifact) -> str:
@@ -56,6 +62,14 @@ def publish_artifact(artifact: PreprintArtifact) -> str:
     - 4xx (unauthorized source URL, missing microformats) → ``denied``
     - 5xx / transport failure → ``error``
     """
+    if _is_refusal_annex_artifact(artifact):
+        log.warning(
+            "publication_bus.bridgy: refusing refusal-annex %s: %s",
+            artifact.slug,
+            REFUSAL_ANNEX_WEBMENTION_BLOCKER,
+        )
+        return "denied"
+
     publisher = BridgyPublisher()
     payload = PublisherPayload(
         target=WEBLOG_TARGET_URL,
@@ -75,4 +89,13 @@ def publish_artifact(artifact: PreprintArtifact) -> str:
     return "error"
 
 
-__all__ = ["WEBLOG_TARGET_URL", "publish_artifact"]
+def _is_refusal_annex_artifact(artifact: PreprintArtifact) -> bool:
+    """Return true for refusal-annex artifacts that are still dry-run only."""
+    return artifact.slug.startswith("refusal-annex-")
+
+
+__all__ = [
+    "REFUSAL_ANNEX_WEBMENTION_BLOCKER",
+    "WEBLOG_TARGET_URL",
+    "publish_artifact",
+]

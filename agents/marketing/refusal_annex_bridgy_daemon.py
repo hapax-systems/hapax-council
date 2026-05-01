@@ -1,20 +1,15 @@
-"""Refusal-annex Bridgy fan-out daemon — Phase 2 dry-run scaffold.
+"""Refusal-annex Bridgy fan-out daemon - dry-run inventory.
 
 Walks ``~/hapax-state/publications/refusal-annex-*.md`` and reports
-what would be fanned out via Bridgy POSSE (Mastodon + Bluesky) when
-``--commit`` is implemented. Phase 1 of the refusal-annex series
-(renderer + cross-linker) shipped earlier; this is the Phase 2
-scaffold for the Bridgy fan-out half.
+what would be eligible for Bridgy POSSE once refusal-annex webmention
+fanout has a committed source-URL witness path. The daemon is not a
+publisher; ``--commit`` fails closed with the blocker instead of
+issuing a webmention POST.
 
-Mirrors the #1673 refusal-brief daemon + #1678 self-citation graph
-DOI scanner patterns: --dry-run by default, --commit explicitly opt-in,
-minting/posting deferred until cred-arrival + per-call review.
-
-Cred state pairing: bluesky/operator-app-password +
-bluesky/operator-did + omg-lol/api-key all arrived this cycle.
-Bridgy webmention POSSE goes through the operator's omg.lol weblog →
-brid.gy/publish/webmention → fan-out per the operator's pre-configured
-brid.gy account links.
+Generic Bridgy webmention publishing exists for normal weblog artifacts.
+Refusal-annex fanout remains blocked because the orchestrator dispatches
+surfaces in parallel, while Bridgy must only POST after the omg.lol
+weblog source URL exists and is witnessable.
 """
 
 from __future__ import annotations
@@ -25,15 +20,20 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from agents.bridgy_adapter import WEBLOG_TARGET_URL
+from agents.marketing.refusal_annex_renderer import BRIDGY_FANOUT_BLOCKER
+
 log = logging.getLogger(__name__)
 
 
 DEFAULT_PUBLICATIONS_DIR = Path.home() / "hapax-state/publications"
 """Where the refusal-annex renderer writes ``refusal-annex-{slug}.md``."""
 
-OMG_LOL_WEBLOG_BASE = "https://hapax.weblog.lol/refusal-annex"
-"""Operator's omg.lol weblog URL stem; the renderer uploads each annex
-markdown into this surface as one entry per slug."""
+REFUSAL_ANNEX_WEBLOG_PREFIX = f"{WEBLOG_TARGET_URL}/refusal-annex-"
+"""Operator's omg.lol weblog URL stem for rendered refusal-annex artifacts."""
+
+COMMIT_BLOCKER = BRIDGY_FANOUT_BLOCKER
+"""Why ``--commit`` refuses to POST a webmention."""
 
 
 @dataclass(frozen=True)
@@ -69,7 +69,7 @@ def scan_refusal_annexes(
             AnnexFanoutTarget(
                 slug=slug,
                 source_path=path,
-                weblog_url=f"{OMG_LOL_WEBLOG_BASE}/{slug}",
+                weblog_url=f"{REFUSAL_ANNEX_WEBLOG_PREFIX}{slug}",
             )
         )
     return targets
@@ -93,12 +93,13 @@ def render_dry_run_report(targets: list[AnnexFanoutTarget]) -> str:
         lines.append(f"### refusal-annex-{target.slug}")
         lines.append(f"- source_path: {target.source_path}")
         lines.append(f"- weblog_url:  {target.weblog_url}")
-        lines.append("- bridgy_source:  hapax.weblog.lol (configured at brid.gy)")
+        lines.append(f"- bridgy_target:  {WEBLOG_TARGET_URL}")
         lines.append("- bridgy_targets: mastodon + bluesky (per operator's pre-linked accounts)")
-        lines.append("- next_action:    (dry-run; no Bridgy webmention POSTed)")
+        lines.append("- status:         dry-run only; no Bridgy webmention POSTed")
+        lines.append(f"- blocker:        {COMMIT_BLOCKER}")
         lines.append("")
 
-    lines.append("Re-run with --commit to issue Bridgy webmention POSSE per target.")
+    lines.append("Live refusal-annex Bridgy fanout is blocked until source URL witness exists.")
     lines.append("")
     return "\n".join(lines)
 
@@ -114,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--commit",
         action="store_true",
-        help="EXPLICIT opt-in to issue Bridgy webmention POSSE (Phase 2.5 — not yet implemented)",
+        help="Fail closed with the current blocker; live refusal-annex Bridgy is not implemented",
     )
     args = parser.parse_args(argv)
 
@@ -122,11 +123,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.commit:
         print(
-            f"# --commit recognised; Bridgy fan-out loop is the Phase 2.5 sub-PR. "
-            f"({len(targets)} annexes would fan out via brid.gy POSSE)",
+            f"# --commit refused; {COMMIT_BLOCKER}. "
+            f"({len(targets)} annexes inventoried; no webmention POST issued)",
             file=sys.stderr,
         )
-        return 0
+        return 2
 
     sys.stdout.write(render_dry_run_report(targets))
     return 0
@@ -138,8 +139,9 @@ if __name__ == "__main__":
 
 __all__ = [
     "AnnexFanoutTarget",
+    "COMMIT_BLOCKER",
     "DEFAULT_PUBLICATIONS_DIR",
-    "OMG_LOL_WEBLOG_BASE",
+    "REFUSAL_ANNEX_WEBLOG_PREFIX",
     "main",
     "render_dry_run_report",
     "scan_refusal_annexes",

@@ -196,8 +196,9 @@ class TestEnqueueAnnexForFanout:
 
     The orchestrator globs ``~/hapax-state/publish/inbox/`` for approved artifacts and
     dispatches each via ``SURFACE_REGISTRY``. A successful annex publish must drop a
-    matching ``PreprintArtifact.json`` so Zenodo (DOI mint), omg.lol weblog, and Bridgy
-    (POSSE) all receive the annex without operator action.
+    matching ``PreprintArtifact.json`` so committed Zenodo (DOI mint) and omg.lol weblog
+    surfaces receive the annex without operator action. Bridgy remains dry-run/blocked
+    until source URL sequencing is committed.
     """
 
     def test_writes_approved_preprint_artifact_to_inbox(self, tmp_path: Path) -> None:
@@ -218,8 +219,9 @@ class TestEnqueueAnnexForFanout:
         assert artifact.approved_at is not None
         assert artifact.approved_by_referent == "Oudepode"
 
-    def test_default_surfaces_target_zenodo_omg_bridgy(self, tmp_path: Path) -> None:
+    def test_default_surfaces_target_only_committed_zenodo_omg(self, tmp_path: Path) -> None:
         from agents.marketing.refusal_annex_renderer import (
+            BRIDGY_FANOUT_SURFACE,
             DEFAULT_FANOUT_SURFACES,
             enqueue_annex_for_fanout,
         )
@@ -231,8 +233,28 @@ class TestEnqueueAnnexForFanout:
         artifact = PreprintArtifact.model_validate_json(path.read_text())
         assert "zenodo-refusal-deposit" in artifact.surfaces_targeted
         assert "omg-weblog" in artifact.surfaces_targeted
-        assert "bridgy-webmention-publish" in artifact.surfaces_targeted
+        assert BRIDGY_FANOUT_SURFACE not in artifact.surfaces_targeted
         assert set(artifact.surfaces_targeted) == set(DEFAULT_FANOUT_SURFACES)
+
+    def test_bridgy_fanout_target_is_rejected_until_committed(self, tmp_path: Path) -> None:
+        from agents.marketing.refusal_annex_renderer import (
+            BRIDGY_FANOUT_BLOCKER,
+            BRIDGY_FANOUT_SURFACE,
+            enqueue_annex_for_fanout,
+        )
+
+        try:
+            enqueue_annex_for_fanout(
+                slug="declined-bandcamp",
+                title="x",
+                body="x",
+                surfaces=["omg-weblog", BRIDGY_FANOUT_SURFACE],
+                state_root=tmp_path,
+            )
+        except ValueError as exc:
+            assert BRIDGY_FANOUT_BLOCKER in str(exc)
+        else:  # pragma: no cover - defensive assertion
+            raise AssertionError("Bridgy refusal-annex fanout must fail closed")
 
     def test_explicit_surfaces_override_default(self, tmp_path: Path) -> None:
         from agents.marketing.refusal_annex_renderer import enqueue_annex_for_fanout
