@@ -35,7 +35,13 @@ pub enum WindowAction {
 #[serde(tag = "action")]
 #[serde(rename_all = "snake_case")]
 pub enum RenderAction {
-    SetFps { fps: u32 },
+    // SetFps was removed 2026-05-01 per cc-task imagination-set-fps-ipc.
+    // The visual surface runs at vsync; variable-FPS targeting added IPC
+    // surface area without a runtime consumer (no Python/external caller
+    // ever sent SetFps; the handler logged "not yet implemented" and
+    // continued at vsync). Senders that still emit `{"action":"set_fps"}`
+    // now get a parse error from serde, which the dispatch loop converts
+    // to an Error response — explicit rejection rather than silent no-op.
     Pause,
     Resume,
 }
@@ -173,5 +179,18 @@ mod tests {
         let input = r#"{"not":"valid"}"#;
         let result = parse_command(input);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_set_fps_is_rejected() {
+        // SetFps was removed 2026-05-01 (cc-task imagination-set-fps-ipc).
+        // Senders that still emit the legacy `set_fps` action must get a
+        // deterministic parse error, not a silent no-op acceptance.
+        let input = r#"{"type":"render","action":{"action":"set_fps","fps":30}}"#;
+        let result = parse_command(input);
+        assert!(
+            result.is_err(),
+            "set_fps must fail parse so the dispatch loop returns an explicit Error response"
+        );
     }
 }

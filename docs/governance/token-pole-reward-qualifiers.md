@@ -173,8 +173,17 @@ the qualifier window counters.
 Subs, donations, and memberships bypass the qualifier rubric. The
 platform's payment gesture already asserts the contributive act;
 the rubric does not re-evaluate it. Fixed token increments per
-tier (`config/sister-epic/patreon-tiers.yaml`). The per-tier
-increment is operator-set and not dynamic.
+support surface (`config/support-surface-registry.json` enumerates
+the post-Patreon-refusal surfaces under `no_perk_support_doctrine`:
+liberapay_recurring, lightning_invoice_receive, nostr_zaps). The
+per-surface increment is operator-set and not dynamic.
+
+Note: an earlier draft of this section referenced
+`config/sister-epic/patreon-tiers.yaml` as the tier source. Patreon
+is REFUSED per `docs/refusal-briefs/leverage-patreon.md`; that file
+is now a `superseded_refusal` artifact (`tiers: []`,
+`activation_allowed: false`) and the canonical tier-source is the
+support-surface-registry above.
 
 Rationale: re-evaluating a paid gesture via the qualifier rubric
 would (a) silently disqualify some paid messages, which breaks
@@ -228,7 +237,9 @@ operator's own decisions.
 - **Ethical constraints source:** `docs/streaming/2026-04-09-garage-door-open-handoff.md §3.1`
 - **Research inputs:** `/tmp/cvs-research-146.md`, `/tmp/cvs-research-147.md`
 - **HOMAGE package registry:** `agents/studio_compositor/homage/`
-- **Per-tier increments:** `config/sister-epic/patreon-tiers.yaml`
+- **Per-surface increments:** `config/support-surface-registry.json`
+  (post-Patreon-refusal canonical source; `config/sister-epic/patreon-tiers.yaml`
+  remains as a `superseded_refusal` artifact only)
 - **Ledger schema:** `scripts/token_ledger.py`
 
 ## 8. Decisions imported from #146

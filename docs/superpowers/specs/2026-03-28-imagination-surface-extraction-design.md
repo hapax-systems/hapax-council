@@ -57,11 +57,12 @@ Extract the visual render pipeline from Tauri's in-process bridge into a standal
 {"type": "window", "action": "hide"}
 {"type": "window", "action": "show"}
 {"type": "window", "action": "always_on_top", "enabled": true}
-{"type": "render", "action": "set_fps", "fps": 30}
 {"type": "render", "action": "pause"}
 {"type": "render", "action": "resume"}
 {"type": "status"}
 ```
+
+> **2026-05-01 amendment** — `{"type":"render","action":"set_fps","fps":N}` was removed per cc-task `imagination-set-fps-ipc`. The handler had been a no-op since launch (logged "not yet implemented, running at vsync") and the visual surface is vsync-bound by design. Senders that still emit `set_fps` now get a deterministic serde parse error → `Error` IPC response.
 
 ### Responses (imagination → Tauri)
 

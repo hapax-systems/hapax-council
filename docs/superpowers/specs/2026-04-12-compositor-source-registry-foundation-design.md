@@ -108,7 +108,7 @@ Env var `HAPAX_IMAGINATION_HEADLESS=1` tells `src-imagination/src/main.rs` to sk
 - `gpu.surface.get_current_texture()` and `gpu.surface.configure()` are bypassed in the headless path.
 - `ShmOutput::write_frame()` runs unchanged; it was already the authoritative off-screen path.
 - **New**: the render loop also writes `/dev/shm/hapax-sources/reverie.rgba` + `reverie.rgba.json` sidecar alongside the existing `/dev/shm/hapax-visual/frame.{jpg,rgba}` outputs. The sidecar contains `{w, h, stride, frame_id}` and is written atomically (tmpfile + rename) after the RGBA buffer update.
-- IPC UDS (`$XDG_RUNTIME_DIR/hapax-imagination.sock`) still runs. `Window{*}` commands become no-ops in headless mode, returning `{status: "headless"}`. `Render{SetFps, Pause, Resume}` and `Status` still work.
+- IPC UDS (`$XDG_RUNTIME_DIR/hapax-imagination.sock`) still runs. `Window{*}` commands become no-ops in headless mode, returning `{status: "headless"}`. `Render{Pause, Resume}` and `Status` still work. (`Render::SetFps` was removed 2026-05-01 per cc-task `imagination-set-fps-ipc` — it had been a no-op since launch and the visual surface is vsync-bound by design. Senders that still emit `set_fps` now get a deterministic parse error.)
 
 Opt-out for debugging: `HAPAX_IMAGINATION_HEADLESS=0` keeps the winit window. Systemd unit sets it to 1 by default.
 
