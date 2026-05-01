@@ -76,9 +76,7 @@ class TestStaleness:
 
     def test_stale_data_returns_empty(self, fake_temporal: Path) -> None:
         """timestamp older than 30s gates the block to empty."""
-        fake_temporal.write_text(
-            json.dumps(_payload(timestamp=time.time() - 100))
-        )
+        fake_temporal.write_text(json.dumps(_payload(timestamp=time.time() - 100)))
         assert temporal_shm.read_temporal_block() == ""
 
     def test_no_timestamp_treated_as_fresh(self, fake_temporal: Path) -> None:
