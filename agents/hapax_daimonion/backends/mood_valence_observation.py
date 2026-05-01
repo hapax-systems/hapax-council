@@ -1,9 +1,7 @@
 """Health/voice → MoodValenceEngine signal adapter.
 
-Phase 6b-ii.B partial wire-in for the mood-valence claim engine that
-#1371 shipped as engine math + signal contract without a live consumer.
-
-Mood-valence signals are sourced from heterogeneous backends (per
+Phase 6b-ii adapter for the mood-valence claim engine. Mood-valence
+signals are sourced from heterogeneous backends (per
 ``DEFAULT_SIGNAL_WEIGHTS`` in ``mood_valence_engine.py``):
 
 - ``hrv_below_baseline``: Pixel Watch HRV below operator's recent
@@ -20,11 +18,11 @@ any ``_HealthVoiceValenceSource`` (anything implementing the four
 accessors) and returns a single-tick observation dict for
 ``MoodValenceEngine.contribute()``.
 
-Phase 6b-ii.B Part 1 wires the adapter contract + lifespan scaffolding;
-all four signal accessors return ``None`` from the initial bridge until
-production thresholds are calibrated. Follow-up PRs land each signal
-source — same additive pattern delta used for OAE in #1389 and alpha
-used for MAE in #1392.
+The adapter contract is fully wired; the live ``LogosMoodValenceBridge``
+returns ``None`` from every accessor until per-backend baseline
+references are calibrated against production data. Per the
+``ClaimEngine.tick`` contract, ``None`` means skip-this-signal-for-this-tick
+so the engine math runs cleanly under the deferred-calibration regime.
 
 Reference doc: ``docs/superpowers/research/2026-04-23-bayesian-claims-research.md``
 §Phase 6b + the MoodValenceEngine module docstring.

@@ -229,19 +229,16 @@ class LogosPerceptionStateBridge:
         return state not in self._WATCH_IDLE_STATES
 
 
-# Phase 6b-i.B partial wire-in. Bridge contract for the four
-# mood-arousal signals (``ambient_audio_rms_high``,
-# ``contact_mic_onset_rate_high``, ``midi_clock_bpm_high``,
-# ``hr_bpm_above_baseline``) defined in
+# Phase 6b-i bridge contract for the four mood-arousal signals
+# (``ambient_audio_rms_high``, ``contact_mic_onset_rate_high``,
+# ``midi_clock_bpm_high``, ``hr_bpm_above_baseline``) defined in
 # ``mood_arousal_engine.DEFAULT_SIGNAL_WEIGHTS``. Per-signal sources
 # live in heterogeneous backends — ambient_audio.py / contact_mic.py /
 # midi_clock.py / health.py — each with its own quantile or baseline
-# threshold semantics. Part 1 (this PR) ships the protocol-matching
-# bridge with all accessors returning ``None`` so the engine math runs
-# cleanly with no live signal contribution. Subsequent PRs wire each
-# threshold reference as the per-backend quantile / baseline references
-# stabilise — same additive pattern delta used in #1389 and beta used
-# across #1379 + #1377.
+# threshold semantics. The bridge ships the protocol-matching surface
+# with all accessors returning ``None`` so the engine math runs cleanly
+# with no live signal contribution; per-backend threshold calibration
+# is deferred until production data stabilises the references.
 class LogosStimmungBridge:
     """Bridge stimmung-derived signals → MoodArousalEngine signal Protocol."""
 
@@ -258,17 +255,16 @@ class LogosStimmungBridge:
         return None
 
 
-# Phase 6b-ii.B partial wire-in. Bridge contract for the four
-# mood-valence signals (``hrv_below_baseline``, ``skin_temp_drop``,
-# ``sleep_debt_high``, ``voice_pitch_elevated``) defined in
+# Phase 6b-ii bridge contract for the four mood-valence signals
+# (``hrv_below_baseline``, ``skin_temp_drop``, ``sleep_debt_high``,
+# ``voice_pitch_elevated``) defined in
 # ``mood_valence_engine.DEFAULT_SIGNAL_WEIGHTS``. Per-signal sources
 # live in heterogeneous backends — health.py (Pixel Watch HRV /
 # skin temp / sleep) + voice-side speech analysis (pitch baseline).
-# Part 1 (this PR) ships the protocol-matching bridge with all
-# accessors returning ``None`` so the engine math runs cleanly with
-# no live signal contribution. Subsequent PRs wire each threshold
-# reference as the per-backend baseline references stabilise — same
-# additive pattern delta used in #1389 and alpha used in #1392.
+# The bridge ships the protocol-matching surface with all accessors
+# returning ``None`` so the engine math runs cleanly with no live
+# signal contribution; per-backend threshold calibration is deferred
+# until production data stabilises the references.
 class LogosMoodValenceBridge:
     """Bridge health/voice signals → MoodValenceEngine signal Protocol."""
 
@@ -285,18 +281,16 @@ class LogosMoodValenceBridge:
         return None
 
 
-# Phase 6b-iii.B partial wire-in. Bridge contract for the four
-# mood-coherence (low-tier) signals (``hrv_variability_high``,
-# ``respiration_irregular``, ``movement_jitter_high``,
-# ``skin_temp_volatility_high``) defined in
+# Phase 6b-iii bridge contract for the four mood-coherence (low-tier)
+# signals (``hrv_variability_high``, ``respiration_irregular``,
+# ``movement_jitter_high``, ``skin_temp_volatility_high``) defined in
 # ``mood_coherence_engine.DEFAULT_SIGNAL_WEIGHTS``. Per-signal sources
-# live in heterogeneous backends — mostly Pixel Watch volatility/
-# variance metrics in health.py. Part 1 (this PR) ships the protocol-
-# matching bridge with all accessors returning ``None`` so the engine
-# math runs cleanly with no live signal contribution. Subsequent PRs
-# wire each threshold reference as the per-backend volatility windows
-# stabilise — same additive pattern alpha used in #1392 / #1399 and
-# delta used in #1389.
+# live in heterogeneous backends — mostly Pixel Watch volatility /
+# variance metrics in health.py. The bridge ships the protocol-matching
+# surface with all accessors returning ``None`` so the engine math
+# runs cleanly with no live signal contribution; per-backend threshold
+# calibration is deferred until production data stabilises the
+# references.
 class LogosMoodCoherenceBridge:
     """Bridge health-volatility signals → MoodCoherenceEngine signal Protocol."""
 
@@ -403,13 +397,11 @@ async def lifespan(app: FastAPI):
         except Exception:
             _log.exception("SystemDegradedEngine wire-in failed (continuing without it)")
 
-    # Phase 6a-i.B partial wire-in: OperatorActivityEngine observes the
-    # daimonion-side perception-state.json (currently keyboard_active
-    # only; midi_clock_active / desk_active / focus_changed /
-    # watch_movement wire in follow-up PRs as their adapters land).
-    # The engine math + signal contract shipped in #1375; this PR
-    # activates the live consumer. Posterior + state are exposed at
-    # GET /api/engine/operator_activity for the DMN governor + future
+    # Phase 6a-i.B OperatorActivityEngine observes the daimonion-side
+    # perception-state.json. Five accessors wired (keyboard_active,
+    # desk_active, desktop_focus_changed_recent, midi_clock_active,
+    # watch_movement). Posterior + state exposed at
+    # GET /api/engine/operator_activity for the DMN governor +
     # narration-cadence consumers.
     oae = None
     try:
@@ -420,16 +412,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("OperatorActivityEngine wire-in failed (continuing without it)")
 
-    # Phase 6b-i.B partial wire-in: MoodArousalEngine observes the four
-    # stimmung-derived arousal signals (ambient room mic RMS, contact mic
-    # onset rate, MIDI clock BPM, watch HR vs baseline). Engine math +
-    # signal contract shipped in #1368; this PR activates the live
-    # consumer + adapter contract. All four signal accessors return
-    # ``None`` from LogosStimmungBridge until per-backend quantile /
-    # baseline references stabilise — same additive pattern delta used
-    # for OAE in #1389. Posterior + state will be exposed at
-    # GET /api/engine/mood_arousal in a follow-up route PR for the DMN
-    # governor + future stimmung-routing consumers.
+    # Phase 6b-i MoodArousalEngine observes four stimmung-derived
+    # arousal signals (ambient room mic RMS, contact mic onset rate,
+    # MIDI clock BPM, watch HR vs baseline). All four signal accessors
+    # on LogosStimmungBridge return ``None`` until per-backend quantile
+    # / baseline references are calibrated against production data —
+    # the bridge ships the protocol-matching surface and is the
+    # documented "calibration deferred" contract. Posterior + state
+    # exposed at GET /api/engine/mood_arousal for the DMN governor.
     mae = None
     try:
         from agents.hapax_daimonion.mood_arousal_engine import MoodArousalEngine
@@ -439,14 +429,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("MoodArousalEngine wire-in failed (continuing without it)")
 
-    # Phase 6b-ii.B partial wire-in: MoodValenceEngine observes the four
-    # health/voice valence signals (HRV vs baseline, skin temp drop,
-    # sleep debt, voice pitch elevated). Engine math + signal contract
-    # shipped in #1371; this PR activates the live consumer + adapter
-    # contract. All four signal accessors return ``None`` from
-    # LogosMoodValenceBridge until per-backend baseline references
-    # stabilise — same additive pattern alpha used for MAE in #1392 and
-    # delta used for OAE in #1389.
+    # Phase 6b-ii MoodValenceEngine observes four health/voice valence
+    # signals (HRV vs baseline, skin temp drop, sleep debt, voice pitch
+    # elevated). All four signal accessors on LogosMoodValenceBridge
+    # return ``None`` until per-backend baseline references are
+    # calibrated against production data. Posterior + state exposed at
+    # GET /api/engine/mood_valence for the DMN governor.
     mve = None
     try:
         from agents.hapax_daimonion.mood_valence_engine import MoodValenceEngine
@@ -456,14 +444,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("MoodValenceEngine wire-in failed (continuing without it)")
 
-    # Phase 6b-iii.B partial wire-in: MoodCoherenceEngine observes the
-    # four health-volatility coherence signals (HRV CV, respiration
-    # variance, movement jitter, skin temp volatility). Engine math +
-    # signal contract shipped in #1374; this PR activates the live
-    # consumer + adapter contract. All four signal accessors return
-    # ``None`` from LogosMoodCoherenceBridge until per-backend
-    # volatility windows stabilise — same additive pattern alpha used
-    # for MAE in #1392 and MVE in #1399.
+    # Phase 6b-iii MoodCoherenceEngine observes four health-volatility
+    # coherence signals (HRV CV, respiration variance, movement jitter,
+    # skin temp volatility). All four signal accessors on
+    # LogosMoodCoherenceBridge return ``None`` until per-backend
+    # volatility windows are calibrated against production data.
+    # Posterior + state exposed at GET /api/engine/mood_coherence for
+    # the DMN governor.
     mce = None
     try:
         from agents.hapax_daimonion.mood_coherence_engine import MoodCoherenceEngine

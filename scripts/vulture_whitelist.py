@@ -791,3 +791,18 @@ NormalizedDirectorControlMove.is_executable
 NormalizedDirectorControlMove.is_public_authoritative
 NormalizedDirectorControlMove._validate_public_carries_evidence
 normalize_director_control_move
+
+# Phase 6b mood-engine status routes are FastAPI handlers registered via
+# the `@router.get` decorator; vulture's static analysis can't see the
+# decorator-driven dispatch. Mirrors the (un-whitelisted but pre-existing)
+# system_degraded_status / operator_activity_status handlers in the same
+# module.
+from logos.api.routes.engine import (
+    mood_arousal_status,
+    mood_coherence_status,
+    mood_valence_status,
+)
+
+mood_arousal_status
+mood_valence_status
+mood_coherence_status
