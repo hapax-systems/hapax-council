@@ -13,6 +13,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-init-002
+  linkage: code-direct
   tier: T1
   text: Agent entry points must not require the operator to remember command-line
     arguments or flags.
