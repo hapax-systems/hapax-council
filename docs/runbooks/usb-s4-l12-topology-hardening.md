@@ -5,9 +5,12 @@ Status: host baseline packet for the livestream workstation.
 This runbook makes the 2026-04-29 live S-4/L-12/CalDigit mitigation durable
 without writing firmware to S-4, L-12, cameras, or CalDigit hardware.
 
-Known-good evidence captured from cx-violet:
+Known-good evidence captured from cx-violet and the 2026-04-30 post-firmware
+replug witness:
 
-- S-4 serial `fedcba9876543220` on USB device `3-1.5`.
+- S-4 serial `fedcba9876543220` on approved CalDigit paths:
+  `pci-0000:71:00.0-usb-0:1.5` and
+  `pci-0000:71:00.0-usb-0:1.1.1.3`.
 - L-12 serial `8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF` on USB device `3-1.1.2.2`.
 - L-12 default PipeWire sink/source intact.
 - Six Logitech cameras are off the CalDigit audio controller path
@@ -98,13 +101,11 @@ wpctl status
 Replug S-4, then run:
 
 ```bash
+scripts/hapax-usb-topology-witness --repair
+jq '.s4, .issues' /dev/shm/hapax-usb/topology-status.json
 udevadm info -q property -n /dev/disk/by-id/usb-Linux_File-Stor_Gadget_fedcba9876543220-0:0 | \
   rg 'UDISKS_IGNORE|ID_MM_DEVICE_IGNORE|ID_SERIAL_SHORT'
-udevadm info -q property -p /sys/class/net/enp113s0u1u5 | \
-  rg 'NM_UNMANAGED|ID_MM_DEVICE_IGNORE|ID_SERIAL_SHORT'
-nmcli device status | rg 'enp113s0u1u5|DEVICE'
-cat /sys/bus/usb/devices/3-1.5/power/control
-scripts/hapax-usb-topology-witness
+nmcli device status | rg 'eth0|enp113s0u|DEVICE'
 ```
 
 Expected:
@@ -114,8 +115,10 @@ Expected:
   function.
 - `NM_UNMANAGED=1` and `ID_MM_DEVICE_IGNORE=1` are present for the CDC
   Ethernet function.
-- `nmcli` reports `enp113s0u1u5` as unmanaged.
+- `nmcli` reports the S-4 CDC Ethernet interface as unmanaged.
 - `power/control` is `on`.
+- No `s4_usb_missing`, `s4_path_drift:*`, `s4_sink_missing`,
+  `s4_source_missing`, `s4_alsa_*_missing`, or `s4_*midi*_missing` issues.
 
 For L-12:
 
@@ -181,7 +184,9 @@ S-4 absent:
 
 1. Run `scripts/hapax-usb-topology-witness` and preserve the JSON output.
 2. Check `journalctl -k -b --no-pager | rg -i 'torso|s-4|usb|reset|disconnect'`.
-3. Replug S-4 on the known-good CalDigit branch `3-1.5`.
+3. Replug S-4 on an approved CalDigit branch and re-run the witness. Current
+   approved branches are `pci-0000:71:00.0-usb-0:1.5` and
+   `pci-0000:71:00.0-usb-0:1.1.1.3`.
 4. Do not copy firmware or staged OS payloads unless the operator explicitly
    assigns a firmware task.
 
