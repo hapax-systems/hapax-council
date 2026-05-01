@@ -84,22 +84,16 @@ class TestLoadPatterns:
 
     def test_caching(self, tmp_path: Path) -> None:
         """Second call returns cached result without re-reading file."""
-        path = _write_patterns(
-            tmp_path, [{"id": "p1", "regex": r"x", "tier": "T0"}]
-        )
+        path = _write_patterns(tmp_path, [{"id": "p1", "regex": r"x", "tier": "T0"}])
         first = load_patterns(path=path)
         second = load_patterns(path=path)
         assert first is second  # identity, not just equality
 
     def test_reload_clears_cache(self, tmp_path: Path) -> None:
-        path = _write_patterns(
-            tmp_path, [{"id": "p1", "regex": r"x", "tier": "T0"}]
-        )
+        path = _write_patterns(tmp_path, [{"id": "p1", "regex": r"x", "tier": "T0"}])
         first = load_patterns(path=path)
         reload_patterns()
-        path = _write_patterns(
-            tmp_path, [{"id": "p2", "regex": r"y", "tier": "T0"}]
-        )
+        path = _write_patterns(tmp_path, [{"id": "p2", "regex": r"y", "tier": "T0"}])
         second = load_patterns(path=path)
         assert first is not second
         assert {p.id for p in second} == {"p2"}
@@ -128,9 +122,7 @@ class TestLoadPatterns:
 
 class TestCheckOutput:
     def test_no_match_returns_empty(self, tmp_path: Path) -> None:
-        path = _write_patterns(
-            tmp_path, [{"id": "p1", "regex": r"\bfeedback\b", "tier": "T0"}]
-        )
+        path = _write_patterns(tmp_path, [{"id": "p1", "regex": r"\bfeedback\b", "tier": "T0"}])
         # Prime the module-level cache with our fixture patterns so
         # check_output's inner load_patterns() reuses them.
         load_patterns(path=path)
@@ -161,9 +153,7 @@ class TestCheckOutput:
         assert v.matched_text == "feedback"
 
     def test_multiple_matches_each_become_a_violation(self, tmp_path: Path) -> None:
-        path = _write_patterns(
-            tmp_path, [{"id": "p1", "regex": r"\btest\b", "tier": "T1"}]
-        )
+        path = _write_patterns(tmp_path, [{"id": "p1", "regex": r"\btest\b", "tier": "T1"}])
         load_patterns(path=path)
         violations = check_output("test the test on a test rig")
         assert len(violations) == 3
@@ -208,9 +198,7 @@ class TestCheckOutput:
         assert {v.pattern_id for v in violations} == {"p_a"}
 
     def test_match_offsets_recorded(self, tmp_path: Path) -> None:
-        path = _write_patterns(
-            tmp_path, [{"id": "p1", "regex": r"\bxyz\b", "tier": "T0"}]
-        )
+        path = _write_patterns(tmp_path, [{"id": "p1", "regex": r"\bxyz\b", "tier": "T0"}])
         load_patterns(path=path)
         violations = check_output("hello xyz world")
         assert len(violations) == 1
