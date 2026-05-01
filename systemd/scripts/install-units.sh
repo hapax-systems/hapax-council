@@ -18,6 +18,7 @@ DECOMMISSIONED_UNITS=(
     hapax-build-reload.path
     hapax-build-reload.service
     logos-dev.service
+    tabbyapi-hermes8b.service
 )
 
 EXPECTED_PRIMARY="${HOME}/projects/hapax-council"
@@ -69,6 +70,12 @@ remove_decommissioned_unit() {
         echo "removed decommissioned wants link: $wants_link"
         removed=1
     done
+    local dropin_dir="$DEST_DIR/${name}.d"
+    if [ -d "$dropin_dir" ]; then
+        rm -rf "$dropin_dir"
+        echo "removed decommissioned drop-in dir: ${name}.d"
+        removed=1
+    fi
     systemctl --user disable --now "$name" >/dev/null 2>&1 || true
     systemctl --user mask "$name" >/dev/null 2>&1 || true
     [ "$removed" -eq 1 ]

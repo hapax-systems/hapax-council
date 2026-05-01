@@ -144,10 +144,20 @@ systemctl --user daemon-reload
 
 **Units are symlinked, not copied.** Edits to `systemd/units/` take effect on `daemon-reload` without re-running the install script. The script covers `.service`, `.timer`, `.target`, and `.path` files.
 
-`install-units.sh` also removes and masks retired Tauri/WebKit runtime units
-(`hapax-logos.service`, `hapax-build-reload.path`,
-`hapax-build-reload.service`, `logos-dev.service`) if stale copies are present
-under `~/.config/systemd/user/`.
+`install-units.sh` also removes and masks retired units listed in its
+`DECOMMISSIONED_UNITS` array if stale copies are present under
+`~/.config/systemd/user/`. Currently retired:
+
+- `hapax-logos.service`, `hapax-build-reload.path`,
+  `hapax-build-reload.service`, `logos-dev.service` — Tauri/WebKit
+  runtime, replaced by `hapax-imagination`.
+- `tabbyapi-hermes8b.service` — second-instance TabbyAPI for the
+  Hermes 3 8B parallel pivot. Operator abandoned Hermes 2026-04-15
+  (drop #62 §14, commit `2bc6aec17`); the unit was retained as
+  audit-trail reference until 2026-04-30 and never deployed (weights
+  and config file referenced by the unit do not exist on disk).
+  Cleanup also removes the linked `tabbyapi-hermes8b.service.d/`
+  drop-in directory.
 
 **Newly installed timers are auto-enabled.** As of the audit-followups-e1 PR, `install-units.sh` runs `systemctl --user enable --now <name>.timer` for every timer file it sees for the first time. Existing timers are left alone (re-running is idempotent). To suppress this for a one-off install, set `SKIP_TIMER_ENABLE=1` before running the script (intentionally not a flag — disabling auto-enable is the rare case).
 
