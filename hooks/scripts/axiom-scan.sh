@@ -27,8 +27,15 @@ fi
 FILE_PATH="$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // "unknown"' 2>/dev/null || echo unknown)"
 
 # Skip scanning axiom enforcement files themselves (pattern definitions)
+# and the regression-test fixtures that exercise those patterns. The
+# tests must contain the very strings the hook looks for in order to
+# verify it fires; without this exemption the hook would prevent
+# itself from being tested.
 case "$FILE_PATH" in
   *axiom-patterns.sh|*axiom-scan.sh|*axiom-commit-scan.sh)
+    exit 0
+    ;;
+  *tests/hooks/test_axiom_scan.py|*tests/hooks/test_axiom_commit_scan.py|*tests/hooks/test_axiom_patterns.py)
     exit 0
     ;;
 esac
