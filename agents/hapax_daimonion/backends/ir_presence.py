@@ -50,6 +50,12 @@ _SIGNALS: frozenset[str] = frozenset(
         "ir_brightness",
         "ir_brightness_delta",
         "ir_hand_zone",
+        # Phase 4 of `ir-perception-replace-zones-with-vlm-classification`:
+        # the rich-vocabulary hand-activity classifier output, threaded
+        # through from the freshest Pi report. None when no Pi report
+        # carries the field yet (older Pi-edge daemons) — consumers
+        # fall back to the legacy zone/activity enums.
+        "ir_hand_semantics",
     }
 )
 
@@ -115,6 +121,7 @@ class IrPresenceBackend:
             "ir_heart_rate_conf": Behavior(0.0),
             "ir_brightness": Behavior(0.0),
             "ir_hand_zone": Behavior("none"),
+            "ir_hand_semantics": Behavior(None),
         }
 
     @property
@@ -250,6 +257,7 @@ class IrPresenceBackend:
             self._behaviors["ir_posture"].update("unknown", now)
             self._behaviors["ir_hand_activity"].update("none", now)
             self._behaviors["ir_hand_zone"].update("none", now)
+            self._behaviors["ir_hand_semantics"].update(None, now)
             self._behaviors["ir_screen_looking"].update(False, now)
             self._behaviors["ir_drowsiness_score"].update(0.0, now)
             self._behaviors["ir_blink_rate"].update(0.0, now)
@@ -311,6 +319,11 @@ class IrPresenceBackend:
         self._behaviors["ir_hand_activity"].update(hand_activity, now)
         hand_zone = self._pick_hand_zone(reports)
         self._behaviors["ir_hand_zone"].update(hand_zone, now)
+        # Phase 4 of `ir-perception-replace-zones-with-vlm-classification`:
+        # rich-vocabulary classifier output threaded through from the
+        # freshest Pi report. None when no Pi yet carries the field.
+        hand_semantics = self._pick_hand_semantics(reports)
+        self._behaviors["ir_hand_semantics"].update(hand_semantics, now)
 
         # --- Biometrics from best person's report (desk preferred) ---
         bio = best_report.get("biometrics", {}) if best_report else {}
@@ -370,3 +383,30 @@ class IrPresenceBackend:
             if hands and isinstance(hands[0], dict):
                 return str(hands[0].get("zone", "none"))
         return "none"
+
+    def _pick_hand_semantics(
+        self, reports: dict[str, dict[str, object]]
+    ) -> dict[str, object] | None:
+        """Pick hand_semantics from the freshest Pi report (overhead first).
+
+        Returns ``None`` when no Pi report carries the field — older
+        Pi-edge daemons that haven't been redeployed with Phase 3 do
+        not include ``hand_semantics`` in their JSON. Consumers fall
+        back to the legacy zone/activity enums in that case.
+
+        Selection mirrors :meth:`_pick_hand_zone` / :meth:`_pick_hand_activity`
+        — overhead Pi has the canonical hand view; other Pis are a
+        fallback only.
+        """
+        if "overhead" in reports:
+            overhead = reports["overhead"]
+            if isinstance(overhead, dict):
+                semantics = overhead.get("hand_semantics")
+                if isinstance(semantics, dict):
+                    return semantics
+        for report in reports.values():
+            if isinstance(report, dict):
+                semantics = report.get("hand_semantics")
+                if isinstance(semantics, dict):
+                    return semantics
+        return None
