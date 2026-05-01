@@ -1287,7 +1287,9 @@ class AffordancePipeline:
             with _PERCEPTUAL_IMPINGEMENTS_FILE.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(payload) + "\n")
         except OSError:
-            pass
+            from shared.affordance_jsonl_write_metrics import record_write_failure
+
+            record_write_failure("perceptual_impingements")
 
     def _log_cascade(self, impingement: Impingement, winners: list[SelectionCandidate]) -> None:
         if not winners:
@@ -1343,7 +1345,9 @@ class AffordancePipeline:
             with RECRUITMENT_LOG_FILE.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(line) + "\n")
         except OSError:
-            pass
+            from shared.affordance_jsonl_write_metrics import record_write_failure
+
+            record_write_failure("recruitment_log")
 
     def _emit_dispatch_trace(self, trace: dict[str, Any]) -> None:
         """Append a dispatch-trace JSONL record for the dropout investigation.
@@ -1367,7 +1371,9 @@ class AffordancePipeline:
             with DISPATCH_TRACE_FILE.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(trace, default=str) + "\n")
         except OSError:
-            pass
+            from shared.affordance_jsonl_write_metrics import record_write_failure
+
+            record_write_failure("dispatch_trace")
 
     @property
     def recent_cascades(self) -> list[dict[str, Any]]:
