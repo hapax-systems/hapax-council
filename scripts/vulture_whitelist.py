@@ -117,6 +117,10 @@ from shared.operator_quality_feedback import (
     OperatorQualityRatingEvent,
     iter_operator_quality_ratings,
 )
+from shared.operator_quality_posterior import (
+    OperatorQualityPosteriorReadModel,
+    aggregate_operator_quality_posterior,
+)
 from shared.private_to_public_bridge import BridgeResult, evaluate_bridge
 from shared.programme_revenue_braid_adapters import (
     BraidSnapshotRowRef,
@@ -647,3 +651,13 @@ from agents.hapax_daimonion.awareness_digest_watcher import (
 )
 
 awareness_digest_watcher_loop
+
+# Operator-quality posterior read-model is the private dossier substrate for
+# the operator-predictive-dossier value-braid. Public callers (the value-braid
+# adapter cc-task `operator-dossier-value-braid-adapter`) land in a follow-up
+# PR; until then the aggregator and projection helpers are exercised by tests
+# only.
+aggregate_operator_quality_posterior
+OperatorQualityPosteriorReadModel.cells_for_programme
+OperatorQualityPosteriorReadModel.cells_for_axis
+OperatorQualityPosteriorReadModel.private_summary_lines
