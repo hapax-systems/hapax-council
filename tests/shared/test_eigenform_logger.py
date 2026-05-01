@@ -109,9 +109,7 @@ class TestEntryShape:
 
 
 class TestRingBufferTrim:
-    def test_under_threshold_no_trim(
-        self, tmp_path: Path, monkeypatch: object
-    ) -> None:
+    def test_under_threshold_no_trim(self, tmp_path: Path, monkeypatch: object) -> None:
         """When line count is <= 2× MAX_ENTRIES, no trim happens."""
         target = tmp_path / "log.jsonl"
         # Use a small max via monkeypatch for fast tests
@@ -127,9 +125,7 @@ class TestRingBufferTrim:
         finally:
             mp.undo()
 
-    def test_over_threshold_trims_to_max(
-        self, tmp_path: Path
-    ) -> None:
+    def test_over_threshold_trims_to_max(self, tmp_path: Path) -> None:
         """When line count exceeds 2× MAX_ENTRIES, trim to last MAX_ENTRIES."""
         target = tmp_path / "log.jsonl"
         from pytest import MonkeyPatch
