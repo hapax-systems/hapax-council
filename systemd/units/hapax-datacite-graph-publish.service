@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax DataCite citation-graph DOI publisher — Phase 2B chained mint after daily mirror refresh
+After=hapax-secrets.service hapax-datacite-mirror.service
+Wants=hapax-datacite-mirror.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.publication_bus.self_citation_graph_doi --commit
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+EnvironmentFile=-%h/.cache/hapax/secrets.env
+
+[Install]
+WantedBy=default.target
