@@ -71,6 +71,9 @@ def list_classes() -> list[str]:
 def _register_builtins() -> None:
     from agents.studio_compositor.album_overlay import AlbumOverlayCairoSource
     from agents.studio_compositor.captions_source import CaptionsCairoSource
+    from agents.studio_compositor.cbip_signal_density import (
+        CBIPSignalDensityCairoSource,
+    )
 
     # HOMAGE follow-on #123 (2026-04-18) — ChatAmbientWard replaces the
     # static ChatKeywordLegendCairoSource with a dynamic, aggregate-only
@@ -99,6 +102,7 @@ def _register_builtins() -> None:
 
     register("TokenPoleCairoSource", TokenPoleCairoSource)
     register("AlbumOverlayCairoSource", AlbumOverlayCairoSource)
+    register("CBIPSignalDensityCairoSource", CBIPSignalDensityCairoSource)
     register("SierpinskiCairoSource", SierpinskiCairoSource)
     # LRR Phase 9 §3.6 — scientific-register caption overlay. The
     # production default layout retired captions at GEM cutover; keep
