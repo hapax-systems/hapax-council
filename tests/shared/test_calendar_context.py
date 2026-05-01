@@ -91,10 +91,7 @@ class TestNextMeetingWith:
                     ),
                 ]
             )
-            assert (
-                CalendarContext(state=state).next_meeting_with("alice@example.com")
-                is None
-            )
+            assert CalendarContext(state=state).next_meeting_with("alice@example.com") is None
 
     def test_email_match_is_case_insensitive(self) -> None:
         with patch("shared.calendar_context.datetime") as mock_dt:
@@ -125,10 +122,7 @@ class TestNextMeetingWith:
                     ),
                 ]
             )
-            assert (
-                CalendarContext(state=state).next_meeting_with("alice@example.com")
-                is None
-            )
+            assert CalendarContext(state=state).next_meeting_with("alice@example.com") is None
 
 
 # ── meetings_in_range ──────────────────────────────────────────────
@@ -204,11 +198,7 @@ class TestMeetingCountToday:
             now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
             mock_dt.now.return_value = now
             mock_dt.fromisoformat = datetime.fromisoformat
-            state = _state_with(
-                [
-                    _event(f"e{i}", now + timedelta(hours=i)) for i in range(1, 5)
-                ]
-            )
+            state = _state_with([_event(f"e{i}", now + timedelta(hours=i)) for i in range(1, 5)])
             ctx = CalendarContext(state=state)
             assert ctx.is_high_meeting_day(threshold=3)
             assert not ctx.is_high_meeting_day(threshold=10)

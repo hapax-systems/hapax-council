@@ -123,7 +123,9 @@ class TestFromPatternMatch:
 
 class TestFromProbeResult:
     def test_met_probe_yields_pass_severity(self) -> None:
-        result = ProbeResult(probe_id="agent-error-remediation", met=True, evidence="ok", timestamp="t")
+        result = ProbeResult(
+            probe_id="agent-error-remediation", met=True, evidence="ok", timestamp="t"
+        )
         finding = from_probe_result(result, axiom_id="ex-error-001")
         assert finding.kind is FindingKind.SUFFICIENCY
         assert finding.severity is FindingSeverity.PASS
@@ -139,9 +141,7 @@ class TestFromProbeResult:
         """severity_on_fail lets the caller treat sufficiency gaps as
         BLOCKED if the axiom is hard-required."""
         result = ProbeResult(probe_id="x", met=False, evidence="m", timestamp="t")
-        finding = from_probe_result(
-            result, severity_on_fail=FindingSeverity.BLOCKED
-        )
+        finding = from_probe_result(result, severity_on_fail=FindingSeverity.BLOCKED)
         assert finding.severity is FindingSeverity.BLOCKED
         assert finding.is_blocking
 

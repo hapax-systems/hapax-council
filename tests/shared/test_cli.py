@@ -75,17 +75,13 @@ def _ns(**kwargs: object) -> argparse.Namespace:
 
 
 class TestHandleOutputStdout:
-    def test_json_mode_prints_model_dump_json(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_json_mode_prints_model_dump_json(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_output(_Sample(), _ns(json=True))
         out = capsys.readouterr().out
         assert '"name": "alpha"' in out
         assert '"n": 7' in out
 
-    def test_human_formatter_when_not_json(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_human_formatter_when_not_json(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_output(
             _Sample(),
             _ns(json=False),
@@ -94,9 +90,7 @@ class TestHandleOutputStdout:
         out = capsys.readouterr().out.strip()
         assert out == "hello alpha"
 
-    def test_no_formatter_falls_back_to_json(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_no_formatter_falls_back_to_json(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Without --json AND without human_formatter, output still goes
         to model_dump_json."""
         handle_output(_Sample(), _ns(json=False))
@@ -128,9 +122,7 @@ class TestHandleOutputSave:
         )
         assert target.read_text() == "alpha=7"
 
-    def test_save_skipped_when_args_save_missing(
-        self, tmp_path: Path
-    ) -> None:
+    def test_save_skipped_when_args_save_missing(self, tmp_path: Path) -> None:
         """If args has no .save attribute (or is False), no write occurs."""
         target = tmp_path / "no-write.json"
         handle_output(_Sample(), _ns(json=True), save_path=target)
