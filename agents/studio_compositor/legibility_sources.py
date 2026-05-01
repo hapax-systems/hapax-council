@@ -63,6 +63,17 @@ _DIRECTOR_INTENT_JSONL = Path(
     os.path.expanduser("~/hapax-state/stream-experiment/director-intent.jsonl")
 )
 
+_BRIGHT_FIELD_OUTLINE_OFFSETS: tuple[tuple[int, int], ...] = (
+    (-3, 0),
+    (3, 0),
+    (0, -3),
+    (0, 3),
+    (-2, -2),
+    (2, -2),
+    (-2, 2),
+    (2, 2),
+)
+
 
 # Per-stream-mode accent hint. Kept from Phase F6 for the optional border
 # under BitchX grammar (BitchX packages do not refuse this — the line is
@@ -240,6 +251,12 @@ def _fallback_package() -> HomagePackage:
     return BITCHX_PACKAGE
 
 
+def _bright_field_outline(pkg: HomagePackage) -> tuple[float, float, float, float]:
+    """Dark package ink used as text outline on bright shader fields."""
+    r, g, b, _a = pkg.resolve_colour("background")
+    return (r, g, b, 0.95)
+
+
 def _paint_bitchx_bg(
     cr: cairo.Context,
     w: float,
@@ -307,6 +324,9 @@ def _emissive_structural(
     t: float,
     phase_base: float = 0.0,
     shimmer_hz: float = 0.5,
+    halo_radius_px: float | None = None,
+    outline_rgba: tuple[float, float, float, float] | None = None,
+    outline_offsets: tuple[tuple[int, int], ...] = (),
 ) -> float:
     """Render ``text`` as a run of emissive glyphs + return advance width."""
     from agents.studio_compositor.text_render import TextStyle, measure_text
@@ -325,6 +345,15 @@ def _emissive_structural(
             continue
         cx = x + per_cell * i
         phase = phase_base + i * 0.31
+        kwargs: dict[str, Any] = {
+            "t": t,
+            "phase": phase,
+            "shimmer_hz": shimmer_hz,
+            "outline_rgba": outline_rgba,
+            "outline_offsets": outline_offsets,
+        }
+        if halo_radius_px is not None:
+            kwargs["halo_radius_px"] = halo_radius_px
         paint_emissive_glyph(
             cr,
             x=cx,
@@ -332,9 +361,7 @@ def _emissive_structural(
             glyph=ch,
             font_size=font_size,
             role_rgba=role_rgba,
-            t=t,
-            phase=phase,
-            shimmer_hz=shimmer_hz,
+            **kwargs,
         )
     return float(total_w)
 
@@ -519,6 +546,7 @@ class StanceIndicatorCairoSource(HomageTransitionalSource):
         )
 
         muted = pkg.resolve_colour("muted")
+        outline = _bright_field_outline(pkg)
         stance_role_name = _STANCE_ROLE.get(stance, "accent_green")
         stance_rgba = pkg.resolve_colour(stance_role_name)  # type: ignore[arg-type]
         pulse_hz = STANCE_HZ.get(stance, 1.0)
@@ -528,7 +556,17 @@ class StanceIndicatorCairoSource(HomageTransitionalSource):
         x = 6.0
 
         x += _emissive_structural(
-            cr, "[+H ", x, y, role_rgba=muted, font_size=font_size, t=t, phase_base=0.0
+            cr,
+            "[+H ",
+            x,
+            y,
+            role_rgba=muted,
+            font_size=font_size,
+            t=t,
+            phase_base=0.0,
+            halo_radius_px=0.0,
+            outline_rgba=outline,
+            outline_offsets=_BRIGHT_FIELD_OUTLINE_OFFSETS,
         )
         x += _emissive_structural(
             cr,
@@ -540,9 +578,22 @@ class StanceIndicatorCairoSource(HomageTransitionalSource):
             t=t,
             phase_base=0.6,
             shimmer_hz=pulse_hz,
+            halo_radius_px=0.0,
+            outline_rgba=outline,
+            outline_offsets=_BRIGHT_FIELD_OUTLINE_OFFSETS,
         )
         _emissive_structural(
-            cr, "]", x, y, role_rgba=muted, font_size=font_size, t=t, phase_base=1.3
+            cr,
+            "]",
+            x,
+            y,
+            role_rgba=muted,
+            font_size=font_size,
+            t=t,
+            phase_base=1.3,
+            halo_radius_px=0.0,
+            outline_rgba=outline,
+            outline_offsets=_BRIGHT_FIELD_OUTLINE_OFFSETS,
         )
 
         alpha = _flash_alpha(t, self._stance_flash_started_at)

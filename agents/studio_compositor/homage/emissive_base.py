@@ -149,6 +149,8 @@ def paint_emissive_point(
     halo_radius_px: float = HALO_RADIUS_PX,
     outer_glow_radius_px: float = OUTER_GLOW_RADIUS_PX,
     shimmer_hz: float = SHIMMER_HZ_DEFAULT,
+    outline_rgba: tuple[float, float, float, float] | None = None,
+    outline_radius_px: float = 0.0,
 ) -> None:
     """Paint one radial-gradient point of light at ``(cx, cy)``.
 
@@ -181,6 +183,17 @@ def paint_emissive_point(
     sg = g * shimmer
     sb = b * shimmer
     cell_alpha = a * baseline_alpha
+
+    # Optional dark ink outline for transparent wards that sit directly
+    # on bright shader fields. This is content-level contrast, not a
+    # container background; callers opt in only for small chrome wards.
+    if outline_rgba is not None and outline_radius_px > 0.0 and cell_alpha > 0.0:
+        cr.save()
+        or_, og, ob, oa = outline_rgba
+        cr.set_source_rgba(or_, og, ob, oa)
+        cr.arc(cx, cy, outline_radius_px, 0.0, 2.0 * math.pi)
+        cr.fill()
+        cr.restore()
 
     # Outer glow — low-alpha bleed into neighbours.
     if outer_glow_radius_px > 0.0:
@@ -229,6 +242,8 @@ def paint_emissive_glyph(
     font_family: str = "Px437 IBM VGA 8x16",
     shimmer_hz: float = SHIMMER_HZ_DEFAULT,
     halo_radius_px: float = HALO_RADIUS_PX,
+    outline_rgba: tuple[float, float, float, float] | None = None,
+    outline_offsets: tuple[tuple[int, int], ...] = (),
 ) -> None:
     """Render a CP437 glyph as an emissive point.
 
@@ -274,10 +289,17 @@ def paint_emissive_glyph(
         cr.fill()
         cr.restore()
 
-    # Glyph text pass.
+    # Glyph text pass. Optional outline draws first so the BitchX colour
+    # still owns the glyph center while dark ink preserves bright-field
+    # legibility.
     cr.save()
     cr.select_font_face(font_family, _c.FONT_SLANT_NORMAL, _c.FONT_WEIGHT_BOLD)
     cr.set_font_size(font_size)
+    if outline_rgba is not None and outline_offsets and cell_alpha > 0.0:
+        cr.set_source_rgba(*outline_rgba)
+        for dx, dy in outline_offsets:
+            cr.move_to(x + dx, y + dy)
+            cr.show_text(glyph)
     cr.set_source_rgba(sr, sg, sb, cell_alpha)
     cr.move_to(x, y)
     cr.show_text(glyph)

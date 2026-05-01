@@ -76,6 +76,24 @@ _PRESENCE_STATE = Path(os.path.expanduser("~/.cache/hapax-daimonion/presence-sta
 _RECENT_RECRUITMENT = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
 _YOUTUBE_VIEWER_COUNT = Path("/dev/shm/hapax-compositor/youtube-viewer-count.txt")
 
+_BRIGHT_FIELD_OUTLINE_OFFSETS_IDLE: tuple[tuple[int, int], ...] = (
+    (-2, 0),
+    (2, 0),
+    (0, -2),
+    (0, 2),
+)
+
+_BRIGHT_FIELD_OUTLINE_OFFSETS_ACTIVE: tuple[tuple[int, int], ...] = (
+    (-3, 0),
+    (3, 0),
+    (0, -3),
+    (0, 3),
+    (-2, -2),
+    (2, -2),
+    (-2, 2),
+    (2, 2),
+)
+
 # ── Shared readers ────────────────────────────────────────────────────────
 
 
@@ -263,6 +281,12 @@ def _lerp_rgba(
         a[2] + (b[2] - a[2]) * tt,
         a[3] + (b[3] - a[3]) * tt,
     )
+
+
+def _bright_field_outline(pkg: Any) -> tuple[float, float, float, float]:
+    """Dark package ink used as content outline on bright shader fields."""
+    r, g, b, _a = pkg.resolve_colour("background")
+    return (r, g, b, 0.95)
 
 
 # ── 1. Impingement cascade ───────────────────────────────────────────────
@@ -591,6 +615,7 @@ class ThinkingIndicatorCairoSource(HomageTransitionalSource):
         muted = pkg.resolve_colour("muted")
         bright = pkg.resolve_colour("bright")
         accent_cyan = pkg.resolve_colour("accent_cyan")
+        outline = _bright_field_outline(pkg)
         stance = _read_stance()
         hz = stance_hz(stance)
 
@@ -615,6 +640,8 @@ class ThinkingIndicatorCairoSource(HomageTransitionalSource):
                 halo_radius_px=9.0,
                 outer_glow_radius_px=13.0,
                 shimmer_hz=hz,
+                outline_rgba=outline,
+                outline_radius_px=14.0,
             )
             # Label fade-in — alpha tracks the breathing amplitude.
             elapsed = max(0.0, time.time() - float(info.get("started_at") or time.time()))
@@ -624,6 +651,8 @@ class ThinkingIndicatorCairoSource(HomageTransitionalSource):
                 text=f"[thinking...] {model} {elapsed:.1f}s",
                 font_description=font_desc,
                 color_rgba=(bright[0], bright[1], bright[2], bright[3] * amp_alpha),
+                outline_color_rgba=outline,
+                outline_offsets=_BRIGHT_FIELD_OUTLINE_OFFSETS_ACTIVE,
             )
             render_text(cr, label_style, x=30.0, y=cy - 8.0)
         else:
@@ -640,12 +669,16 @@ class ThinkingIndicatorCairoSource(HomageTransitionalSource):
                 halo_radius_px=5.5,
                 outer_glow_radius_px=8.0,
                 shimmer_hz=hz,
+                outline_rgba=outline,
+                outline_radius_px=6.0,
             )
             font_desc = select_bitchx_font_pango(cr, 11, bold=False)
             idle_style = TextStyle(
                 text="(idle)",
                 font_description=font_desc,
                 color_rgba=muted,
+                outline_color_rgba=outline,
+                outline_offsets=_BRIGHT_FIELD_OUTLINE_OFFSETS_IDLE,
             )
             render_text(cr, idle_style, x=30.0, y=cy - 8.0)
 

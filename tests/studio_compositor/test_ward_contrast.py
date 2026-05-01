@@ -9,10 +9,12 @@ extends the lssh-001 luminance harness with WCAG contrast measurement:
 each ward must read against a worst-case bright background at
 ≥ 3.0 : 1 (WCAG-AA UI threshold).
 
-A failing test here means the mitigation phase of lssh-005 (outline-
-contrast bump, non-destructive flag audit, geometric size bump) needs
-to fire. The test is the diagnostic — its failure message names the
-ward, the background, the measured ratio, and the threshold it missed.
+A failing test here means the small-ward bright-field contract has
+regressed. The chosen product direction is foreground-only contrast:
+small chrome wards use dark pixel outlines and no bright-background
+scrim or container fill, preserving the zero-opacity ward contract.
+The test is the diagnostic — its failure message names the ward, the
+background, the measured ratio, and the threshold it missed.
 """
 
 from __future__ import annotations
@@ -56,23 +58,6 @@ def _render_factory(ward, w: int, h: int):
 # ── stance_indicator ──────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    reason=(
-        "ytb-WARD-CONTRAST-FOLLOWUP — stance_indicator's muted-grey HOMAGE "
-        "accent renders at luminance ≈0.43 against a 0.85 synthetic-bright "
-        "background, yielding contrast ~1.86 vs WCAG-AA min 3.0. Real "
-        "design regression (not test/palette drift): the muted role isn't "
-        "dark enough for bright shaders, and inverting it on bright bg "
-        "violates the inline 'bitchx' aesthetic. Fix paths under operator "
-        "review: (a) add a darker-fallback role to HomagePalette for "
-        "bright-bg detection, (b) compositor adds a scrim layer behind "
-        "wards when shader luminance >0.7. Pin stays xfail (strict=False) "
-        "until operator picks a path. WCAG-AA threshold pin "
-        "(test_default_contrast_threshold_matches_wcag_aa_ui) intentionally "
-        "preserved."
-    ),
-    strict=False,
-)
 @requires_cairo
 def test_stance_indicator_contrast_against_bright_shader() -> None:
     """stance_indicator must remain readable against a worst-case bright
@@ -98,29 +83,42 @@ def test_stance_indicator_contrast_against_bright_shader() -> None:
 # ── thinking_indicator ────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    reason=(
-        "ytb-WARD-CONTRAST-FOLLOWUP — same root cause as "
-        "test_stance_indicator_contrast_against_bright_shader: the HOMAGE "
-        "accent palette renders below WCAG-AA against synthetic-bright "
-        "shader backgrounds. Tracked under the same follow-up. xfail "
-        "(strict=False) until operator picks a fix path."
-    ),
-    strict=False,
-)
 @requires_cairo
-def test_thinking_indicator_contrast_against_bright_shader() -> None:
+def test_thinking_indicator_contrast_against_bright_shader(tmp_path, monkeypatch) -> None:
     """thinking_indicator at the 0.3 Hz idle breath must remain readable
     against a worst-case bright background."""
-    from agents.studio_compositor.hothouse_sources import ThinkingIndicatorCairoSource
+    from agents.studio_compositor import hothouse_sources as hs
 
-    ward = ThinkingIndicatorCairoSource()
+    monkeypatch.setattr(hs, "_LLM_IN_FLIGHT", tmp_path / "absent.json")
+    ward = hs.ThinkingIndicatorCairoSource()
     result = audit_ward_against_background(
         ward_name="thinking_indicator",
         render_fn=_render_factory(ward, 100, 40),
         background_factory=synthetic_bright_background,
         width=100,
         height=40,
+        sample_at=2.0,
+    )
+    assert result.passes, result.diagnostic()
+
+
+@requires_cairo
+def test_thinking_indicator_in_flight_contrast_against_bright_shader(tmp_path, monkeypatch) -> None:
+    """The in-flight label uses brighter HOMAGE roles, so it needs the
+    stronger foreground outline variant pinned separately."""
+    from agents.studio_compositor import hothouse_sources as hs
+
+    marker = tmp_path / "llm-in-flight.json"
+    marker.write_text('{"model":"test","started_at":0}', encoding="utf-8")
+    monkeypatch.setattr(hs, "_LLM_IN_FLIGHT", marker)
+
+    ward = hs.ThinkingIndicatorCairoSource()
+    result = audit_ward_against_background(
+        ward_name="thinking_indicator:in-flight",
+        render_fn=_render_factory(ward, 170, 44),
+        background_factory=synthetic_bright_background,
+        width=170,
+        height=44,
         sample_at=2.0,
     )
     assert result.passes, result.diagnostic()
