@@ -57,6 +57,20 @@ def test_stereo_pair_wiring(raw_config: str):
     assert "duck_r" in raw_config
 
 
+def test_sc4m_mono_audio_ports_match_runtime_plugin(raw_config: str):
+    """sc4m_1916 exposes mono audio ports named Input/Output.
+
+    The stereo ``Left input``/``Left output`` names belong to a different
+    LADSPA plugin and make the PipeWire filter-chain fail to link.
+    """
+    assert 'inputs  = [ "duck_l:Input" "duck_r:Input" ]' in raw_config
+    assert 'outputs = [ "duck_l:Output" "duck_r:Output" ]' in raw_config
+    assert "duck_l:Left input" not in raw_config
+    assert "duck_r:Left input" not in raw_config
+    assert "duck_l:Left output" not in raw_config
+    assert "duck_r:Left output" not in raw_config
+
+
 def test_filter_chain_has_threshold_and_ratio_defaults(raw_config: str):
     """Starting-point tuning values stay pinned — operator tunes from here."""
     assert '"Threshold level (dB)" = -30.0' in raw_config

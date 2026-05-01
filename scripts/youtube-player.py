@@ -756,8 +756,9 @@ def _apply_slot_mute_policy() -> None:
     """Mute all non-active YT sink-inputs via wpctl (idempotent).
 
     Discovers PipeWire node IDs for youtube-audio-{0,1,2}, sets the
-    active slot to 1.0 and the others to 0.0. Safe to call on every
-    tick — wpctl set-volume is idempotent and ~10ms per call.
+    active slot to unmuted 1.0 and the others to muted 0.0. Safe to
+    call on every tick — wpctl set-volume/set-mute are idempotent and
+    ~10ms per call.
     """
     try:
         result = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=5)
@@ -776,14 +777,21 @@ def _apply_slot_mute_policy() -> None:
             slot_id = int(media_name.rsplit("-", 1)[-1])
         except ValueError:
             continue
-        vol = "1.0" if slot_id == active else "0.0"
+        is_active = slot_id == active
+        vol = "1.0" if is_active else "0.0"
+        mute = "0" if is_active else "1"
         try:
             subprocess.run(
                 ["wpctl", "set-volume", str(node["id"]), vol],
                 timeout=2,
                 capture_output=True,
             )
-        except subprocess.TimeoutExpired:
+            subprocess.run(
+                ["wpctl", "set-mute", str(node["id"]), mute],
+                timeout=2,
+                capture_output=True,
+            )
+        except (subprocess.TimeoutExpired, OSError):
             pass
 
 
