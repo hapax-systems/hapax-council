@@ -161,6 +161,19 @@ implications:
   canon: purposivist
   mode: sufficiency
   level: component
+  status: retired
+  retirement_rationale: |
+    Superseded by ex-err-001 (already-wired code-direct T0/block).
+    Both are error-message-quality rules under executive_function with
+    nearly-identical scope. ex-err-001 ("Error messages must include
+    specific next actions, not just descriptions of what went wrong")
+    is the constitutional T0/block form already wired as code-direct
+    in axioms/implications/executive-function.yaml. ex-error-001
+    ("Error messages must include specific next steps rather than
+    generic failure descriptions") is the T1/review rationale-only
+    duplicate covering the same concept ("specific next steps" =
+    "specific next actions"). The constitutional, wired, stronger-tier
+    rule subsumes the T1 duplicate.
 - id: ex-error-002
   tier: T1
   text: System failures must provide automatic recovery or graceful degradation without
