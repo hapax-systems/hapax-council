@@ -1,0 +1,149 @@
+name: P-9 mutation nightly
+
+# Bounded nightly mutation-testing run against high-leverage governance
+# modules. Per cc-task `p9-mutation-nightly` (WSJF 4.5, closed
+# 2026-05-01). Closes the absence-bug R-9 ambiguity from the
+# absence-bugs-synthesis-for-beta research drop §92.
+#
+# Scope is intentionally narrow for the first cycle:
+#   - agents/refused_lifecycle/  (~1.3k LOC, 9 modules)
+#   - agents/publication_bus/    (~4.5k LOC, 25 modules)
+#
+# `shared/` (~109k LOC) is deliberately OUT OF SCOPE for the first
+# rollout — mutation testing scales as O(mutations × test_runtime), and
+# 109k LOC would not finish inside any reasonable nightly budget.
+# Re-evaluate after the first month of survivor-trend data lands.
+#
+# Triage policy: docs/governance/p9-mutation-nightly.md.
+#
+# Workflow uses only repository-trusted context (github.run_id,
+# github.server_url, github.repository) plus the operator-set
+# NTFY_TOPIC repo variable; no untrusted issue/PR/commit-author input
+# is interpolated into shell.
+
+on:
+  schedule:
+    # 03:00 UTC daily — well before the 04:00 datacite-mirror timer and
+    # outside any operator-active window.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9-mutation-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    # 90-min hard cap. mutmut on ~5.8k LOC with the existing test suite
+    # is expected to complete in 30–60 min based on rough estimates
+    # (mutations-per-LOC × test-suite runtime). The cap is conservative
+    # headroom; if a future module addition pushes runtime past 90 min,
+    # split the targets across two parallel jobs rather than raising.
+    timeout-minutes: 90
+    # Informational rollout: a survivor count above the operator-set
+    # baseline does not fail the workflow; it ntfy's instead. Threshold
+    # gating is a phase-2 follow-up after the first month of trend data
+    # establishes a defensible baseline.
+    continue-on-error: true
+    env:
+      LITELLM_BASE_URL: "http://0.0.0.0:1"
+      QDRANT_URL: "http://0.0.0.0:1"
+      OLLAMA_HOST: "http://0.0.0.0:1"
+      OTEL_SDK_DISABLED: "true"
+      LANGFUSE_HOST: "http://0.0.0.0:1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Sync uv ci extras
+        # Same env shape as homage-vr-nightly so the test runner has
+        # everything it needs — except live LiteLLM/Qdrant/Langfuse,
+        # which we point at no-op localhost.
+        run: uv sync --extra ci
+      - name: Install mutmut
+        # mutmut is intentionally NOT in [dependency-groups] dev — it is
+        # a workflow-only tool to keep the dev-install footprint minimal.
+        # Pinning the major to 3.x; the 3.x line stabilised the legacy
+        # 2.x cache-format quirks.
+        run: uv pip install "mutmut>=3.2,<4.0"
+      - name: Run mutmut against agents/refused_lifecycle
+        id: mut_refused_lifecycle
+        run: |
+          uv run mutmut run \
+            --paths-to-mutate agents/refused_lifecycle \
+            --runner "uv run pytest -x -q tests/agents/refused_lifecycle/" \
+            || true
+          uv run mutmut results > refused_lifecycle.txt 2>&1 || true
+          echo "===== refused_lifecycle results ====="
+          cat refused_lifecycle.txt
+      - name: Run mutmut against agents/publication_bus
+        id: mut_publication_bus
+        run: |
+          uv run mutmut run \
+            --paths-to-mutate agents/publication_bus \
+            --runner "uv run pytest -x -q tests/agents/publication_bus/" \
+            || true
+          uv run mutmut results > publication_bus.txt 2>&1 || true
+          echo "===== publication_bus results ====="
+          cat publication_bus.txt
+      - name: Generate HTML report
+        if: always()
+        run: |
+          uv run mutmut html || true
+      - name: Upload mutation reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: p9-mutation-nightly-reports
+          path: |
+            html/
+            refused_lifecycle.txt
+            publication_bus.txt
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Count survivors and notify
+        if: always()
+        env:
+          NTFY_TOPIC: ${{ vars.NTFY_TOPIC }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # `mutmut results` lists survived mutations; count them per
+          # target. The output format includes a "Survived" section
+          # listing each surviving mutation by id.
+          count_survivors() {
+            local file="$1"
+            if [ ! -f "$file" ]; then echo 0; return; fi
+            # Lines of the form "n: survived" in the summary. Tolerant
+            # of mutmut output variants across the 3.x line.
+            local n
+            n=$(grep -cE '^\s*[0-9]+:\s+survived\b' "$file" 2>/dev/null || true)
+            if [ -z "$n" ] || [ "$n" -eq 0 ]; then
+              n=$(grep -oE 'Survived[^0-9]*([0-9]+)' "$file" 2>/dev/null \
+                    | head -1 \
+                    | grep -oE '[0-9]+' || true)
+            fi
+            echo "${n:-0}"
+          }
+          rl=$(count_survivors refused_lifecycle.txt)
+          pb=$(count_survivors publication_bus.txt)
+          total=$((rl + pb))
+          echo "refused_lifecycle survivors: $rl"
+          echo "publication_bus survivors: $pb"
+          echo "total survivors: $total"
+          if [ -z "${NTFY_TOPIC:-}" ]; then
+            echo "NTFY_TOPIC not configured; skipping notify"
+            exit 0
+          fi
+          curl -s \
+            -H "Title: P-9 mutation-nightly: $total survivor(s)" \
+            -H "Priority: default" \
+            -H "Tags: bug,test" \
+            -H "Click: $RUN_URL" \
+            -d "refused_lifecycle=$rl, publication_bus=$pb. Triage: docs/governance/p9-mutation-nightly.md" \
+            "https://ntfy.sh/${NTFY_TOPIC}" \
+            || true
