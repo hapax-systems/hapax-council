@@ -70,3 +70,14 @@ implications:
   canon: purposivist
   mode: compatibility
   level: component
+  status: retired
+  retirement_rationale: |
+    Superseded by cb-officium-data-boundary (T0, blocking, code-direct).
+    cb-officium-data-boundary covers identical scope at constitutional
+    tier with stronger enforcement: data originating in hapax-officium
+    stays in hapax-officium; non-officium systems must not ingest
+    officium-originated data except via explicit operator action.
+    The mg-bridge-001 "no work-specific PII leaks into personal domain
+    tooling" rule is the management-domain-tier instance of the
+    constitutional corporate-boundary rule. The constitutional rule
+    subsumes the management-domain instance.

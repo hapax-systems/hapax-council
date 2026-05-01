@@ -879,20 +879,19 @@ def test_check_coherence_real_tree_drops_3_mg_cluster_orphans():
         assert not_orphan not in orphan_ids, (
             f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
         )
-    # mg-prep-001 + mg-selfreport-001 retired in Phase 3
-    # (status: retired). mg-selfreport-001 superseded by
+    # mg-prep-001 + mg-selfreport-001 + mg-bridge-001 retired in
+    # Phase 3 (status: retired). mg-selfreport-001 superseded by
     # mg-deterministic-001 (broader "no LLM in mgmt state" rule).
-    # The other 2 remain as legitimate orphans pending Phase 2 wiring
-    # or Phase 3 retirement of their own.
-    legitimate_orphans = (
-        "mg-deterministic-001",
-        "mg-bridge-001",
-    )
+    # mg-bridge-001 superseded by cb-officium-data-boundary (T0
+    # constitutional corporate-boundary rule already shipped
+    # code-direct). Only mg-deterministic-001 remains as legitimate
+    # orphan pending Phase 2 wiring or Phase 3 retirement.
+    legitimate_orphans = ("mg-deterministic-001",)
     for orphan in legitimate_orphans:
         assert orphan in orphan_ids, (
             f"{orphan} has no code references; should remain orphan but doesn't appear"
         )
-    retired = ("mg-prep-001", "mg-selfreport-001")
+    retired = ("mg-prep-001", "mg-selfreport-001", "mg-bridge-001")
     for ret in retired:
         assert ret not in orphan_ids, (
             f"{ret} should be retired (status:retired); must not appear in orphan tally"
