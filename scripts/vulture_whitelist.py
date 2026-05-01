@@ -680,3 +680,20 @@ RegistryRow.is_diagnostic_only
 RegistryRow.allows_consumer
 RegistryRow.public_safe
 default_registry
+
+# CEA-608 Roll-Up encoder ships ahead of its consumer (the GStreamer
+# `gst_injector.py` slice in the live-captions Phase 5 train). The
+# public surface (RollUpEncoder, CaptionFrame, encode_line, filler_pair)
+# is invoked by the upcoming injector — whitelisted here so the
+# encoder can land first per the cc-task
+# `live-captions-phase5-in-band-cea608-injection` Phase 5a slice.
+from agents.live_captions.cea608 import (
+    CaptionFrame,
+    RollUpEncoder,
+    filler_pair,
+)
+
+CaptionFrame
+RollUpEncoder
+RollUpEncoder.encode_line
+filler_pair
