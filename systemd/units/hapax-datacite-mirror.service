@@ -8,7 +8,17 @@ ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.publication_bus.d
 WorkingDirectory=%h/projects/hapax-council
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/projects/hapax-council
-EnvironmentFile=-%h/.cache/hapax/secrets.env
+# HAPAX_OPERATOR_ORCID is the load-bearing env var (read by
+# shared.orcid.operator_orcid() ahead of the pass-store fallback).
+# Two paths populate it:
+#   1. /run/user/1000/hapax-secrets.env — written by hapax-secrets.service
+#      from `pass show orcid/orcid` at boot.
+#   2. ~/.config/hapax/datacite-mirror.env — written by
+#      scripts/configure-orcid.sh for one-time bootstrap.
+# Both are loaded with leading dash so the unit boots when either path
+# is missing; whichever loads last wins per systemd EnvironmentFile semantics.
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+EnvironmentFile=-%h/.config/hapax/datacite-mirror.env
 
 [Install]
 WantedBy=default.target
