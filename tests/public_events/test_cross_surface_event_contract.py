@@ -116,6 +116,7 @@ def test_contract_payload_is_schema_valid_and_covers_required_apertures() -> Non
         aperture.aperture_id: aperture.current_reality for aperture in CROSS_SURFACE_APERTURES
     }
     assert realities["mastodon"] == "active_canonical"
+    assert realities["bluesky"] == "active_canonical"
     assert realities["youtube_channel_trailer"] == "credential_blocked"
 
 
