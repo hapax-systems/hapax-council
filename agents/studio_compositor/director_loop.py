@@ -956,6 +956,17 @@ def _read_album_info() -> str:
         artist = data.get("artist", "unknown")
         title = data.get("title", "unknown")
         track = data.get("current_track", "")
+        # Album-identifier writes the visually-recognized cover even when no
+        # vinyl is spinning; consumers must respect the playing flag or
+        # they hallucinate present-tense narrations of catalog state.
+        # Empty artist/title (e.g., after a clear) also degenerates to
+        # "unknown by unknown", which the model treats as a license to
+        # invent an artist; bail to "unknown" in both cases.
+        playing = bool(data.get("playing", False))
+        if not playing:
+            return "unknown (no music playing)"
+        if not artist or not title or artist == "unknown" or title == "unknown":
+            return "unknown"
         base = f"{title} by {artist}" + (f", track: {track}" if track else "")
         extras: list[str] = []
         # Vinyl playback rate / RPM (from shared.vinyl_rate; nominal deck = 33⅓).
