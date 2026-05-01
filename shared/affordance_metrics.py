@@ -75,6 +75,14 @@ class AffordanceMetrics:
                 was_fallback=was_fallback,
             )
         )
+        # Pair with the dispatch / recruitment / outcome counter trio:
+        # observe the cosine score of the winning candidate so Grafana
+        # can chart percentiles. Skip empty selections (no winner) — the
+        # dispatch counter already accounts for those.
+        if winner is not None and winner_similarity > 0.0:
+            from shared.affordance_score_metrics import observe_winner_similarity
+
+            observe_winner_similarity(winner_similarity)
 
     def record_outcome(
         self,
