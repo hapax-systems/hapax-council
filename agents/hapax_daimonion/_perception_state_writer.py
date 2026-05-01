@@ -449,6 +449,11 @@ def write_perception_state(
             "ir_posture": str(_bval("ir_posture", "unknown")),
             "ir_heart_rate_conf": _safe_float(_bval("ir_heart_rate_conf", 0.0)),
             "ir_hand_zone": str(_bval("ir_hand_zone", "none")),
+            # Phase 4 of `ir-perception-replace-zones-with-vlm-classification`:
+            # rich-vocabulary classifier output. Dict with intent /
+            # surface / hand_position / confidence, or None when no Pi
+            # report carries it yet.
+            "ir_hand_semantics": _bval("ir_hand_semantics", None),
             # Voice session (Batch A)
             "voice_session": _snapshot_voice_session(session, pipeline),
             # Supplementary content (Batch B)

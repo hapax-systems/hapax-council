@@ -57,13 +57,72 @@ _VINYL_OVERRIDE_FLAG = SHM_DIR / "vinyl-operator-active.flag"
 _PERCEPTION_STATE_FILE = Path.home() / ".cache/hapax-daimonion/perception-state.json"
 
 
+#: Surface phrases (in `ir_hand_semantics.surface`) that indicate the
+#: operator is touching or near vinyl-playing equipment. Match is
+#: substring-based so the open-vocabulary VLM output ("turntable
+#: platter", "vinyl sleeve", "record sleeve") all hit the same gate.
+_VINYL_SURFACE_PHRASES: tuple[str, ...] = (
+    "turntable",
+    "vinyl",
+    "platter",
+    "record sleeve",
+)
+
+#: Intent phrases (in `ir_hand_semantics.intent`) that indicate active
+#: vinyl handling regardless of which surface the hand sits on (e.g.
+#: "scratching" without a surface match still means vinyl is playing).
+_VINYL_INTENT_PHRASES: tuple[str, ...] = (
+    "vinyl",
+    "scratching",
+    "cueing a record",
+    "lifting needle",
+    "lowering needle",
+    "spinning",
+)
+
+
+def _semantics_indicates_vinyl(semantics: object) -> bool:
+    """Return ``True`` when the VLM hand-semantics dict points at vinyl.
+
+    Phase 4 consumer for the rich-vocabulary classifier output shipped
+    in PR #1994. Either the surface phrase ("turntable platter",
+    "vinyl sleeve", …) or the intent phrase ("cueing a record",
+    "scratching", …) is enough — one positive signal lifts the gate.
+
+    Defensive against malformed or missing fields: anything that
+    isn't a dict with non-empty string fields returns ``False`` so the
+    legacy zone / activity checks remain the load-bearing path until
+    every Pi-edge daemon ships Phase 3.
+    """
+    if not isinstance(semantics, dict):
+        return False
+    surface = semantics.get("surface")
+    intent = semantics.get("intent")
+    if isinstance(surface, str):
+        surf_lc = surface.lower()
+        if any(phrase in surf_lc for phrase in _VINYL_SURFACE_PHRASES):
+            return True
+    if isinstance(intent, str):
+        int_lc = intent.lower()
+        if any(phrase in int_lc for phrase in _VINYL_INTENT_PHRASES):
+            return True
+    return False
+
+
 def _vinyl_probably_playing() -> bool:
     """Mirror of director_loop._vinyl_is_playing — platter actually spinning?
 
     Duplicated here (not imported) to keep album-identifier free of the
-    studio_compositor dependency. Kept deliberately narrow: override flag
-    OR hand-zone=turntable OR hand-activity=scratching. The same gate the
-    director prompt uses to construct its "is music playing" framing.
+    studio_compositor dependency. Override flag OR hand-zone=turntable
+    OR hand-activity=scratching OR VLM semantics indicate vinyl
+    handling. The same gate the director prompt uses to construct its
+    "is music playing" framing.
+
+    Phase 4 of ``ir-perception-replace-zones-with-vlm-classification``
+    adds the VLM-semantics check so the rich-vocabulary classifier
+    output participates in the gate alongside the legacy enum signals.
+    Either positive signal is enough — backward-compat ensured by
+    keeping the zone / activity checks intact.
     """
     try:
         if _VINYL_OVERRIDE_FLAG.exists():
@@ -75,6 +134,8 @@ def _vinyl_probably_playing() -> bool:
             if "turntable" in hand_zone:
                 return True
             if hand_activity in {"scratching", "scratch"}:
+                return True
+            if _semantics_indicates_vinyl(data.get("ir_hand_semantics")):
                 return True
     except Exception:
         pass
