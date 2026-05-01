@@ -156,11 +156,12 @@ impl ImaginationApp {
     }
 
     fn apply_render_command(&mut self, action: RenderAction) {
+        // SetFps was removed 2026-05-01 (cc-task imagination-set-fps-ipc):
+        // variable-FPS targeting was a no-op stub from the start; the
+        // visual surface is vsync-bound by design. Any caller still
+        // sending `{"action":"set_fps"}` now fails serde parse and gets
+        // an explicit Error response from the dispatch loop.
         match action {
-            RenderAction::SetFps { fps: _ } => {
-                // TODO: variable frame rate target
-                log::info!("SetFps received (not yet implemented, running at vsync)");
-            }
             RenderAction::Pause => {
                 self.paused = true;
                 log::info!("Render paused");
