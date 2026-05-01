@@ -1,4 +1,4 @@
-"""OSF preregistration publisher — Phase 1.
+"""OSF preregistration publisher.
 
 Per cc-task ``cold-contact-osf-preregistration``. OSF (Open Science
 Framework) preregistrations are pre-analysis commitments to a research
@@ -12,17 +12,24 @@ files OSF preregistrations (``/v2/registrations/``). Different OSF
 endpoint, different content semantics, distinct surface_name in the
 publication-bus.
 
-Phase 1 (this module) ships the V5 Publisher ABC subclass with the
-three load-bearing invariants (allowlist gate + legal-name leak guard +
-canonical Counter), a minimal ``requests``-based POST against the OSF
-v2 API, and surface-registry entry. The ``osf-prereg`` surface is
+This module ships the V5 Publisher ABC subclass with the three load-
+bearing invariants (allowlist gate + legal-name leak guard + canonical
+Counter), a minimal ``requests``-based POST against the OSF v2 API,
+and surface-registry entry. The ``osf-prereg`` surface is
 ``FULL_AUTO`` once the operator provisions ``HAPAX_OSF_TOKEN`` (one-
 time bootstrap action).
 
-Phase 2 will wire the preregistration daemon
-(``agents/osf_prereg_publisher/``) that drafts preregistration body +
-auto-populates ``## Related works`` from the cold-contact candidate
-registry and dispatches via this publisher.
+Orchestrator dispatch path (was previously called part of "Phase 2")
+has shipped: ``agents/osf_prereg_adapter/`` is registered in
+``surface_registry`` as the ``publish_artifact`` entry-point for
+``osf-prereg``; the publish-orchestrator can dispatch a
+``PreprintArtifact`` through the publisher via the standard surface
+hand-off. The remaining (still-deferred) half is the body-drafting +
+auto-populated ``## Related works`` daemon — currently the publish-
+orchestrator dispatches whatever ``PreprintArtifact`` body the
+upstream surface composes; no code path drafts a preregistration body
+from scratch nor auto-populates Related-works from the cold-contact
+candidate registry.
 
 Endpoint: ``https://api.osf.io/v2/registrations/``
 Authorization: ``Bearer <PAT>`` (OSF Personal Access Token)
