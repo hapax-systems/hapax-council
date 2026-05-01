@@ -743,6 +743,39 @@ def test_check_coherence_real_tree_drops_4_standalone_orphans():
         )
 
 
+def test_check_coherence_real_tree_drops_3_mg_cluster_orphans():
+    """The management_governance cluster (mg-boundary-001/002,
+    mg-cadence-001) is text-referenced in `shared/axiom_patterns.txt`,
+    `scripts/run_deliberations.py`, `agents/hapax_daimonion/governor.py`,
+    and `agents/drift_detector/sufficiency_probes.py`. After
+    annotating with linkage: code-direct, these 3 must NOT appear in
+    the production-tree orphan tally.
+
+    mg-selfreport-001, mg-deterministic-001, mg-bridge-001,
+    mg-prep-001 stay as legitimate orphans (no code references) —
+    real wiring backlog.
+    """
+    from shared.coherence import check_coherence
+
+    report = check_coherence()
+    orphan_ids = {g.source_id for g in report.gaps if g.gap_type == "orphan_implication"}
+    code_direct = ("mg-boundary-001", "mg-boundary-002", "mg-cadence-001")
+    for not_orphan in code_direct:
+        assert not_orphan not in orphan_ids, (
+            f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
+        )
+    legitimate_orphans = (
+        "mg-selfreport-001",
+        "mg-deterministic-001",
+        "mg-bridge-001",
+        "mg-prep-001",
+    )
+    for orphan in legitimate_orphans:
+        assert orphan in orphan_ids, (
+            f"{orphan} has no code references; should remain orphan but doesn't appear"
+        )
+
+
 def test_check_coherence_real_tree_drops_5_cb_cluster_orphans():
     """The corporate_boundary cluster (cb-data-001, cb-degrade-001,
     cb-key-001, cb-llm-001, cb-secret-scan-001) is text-referenced in

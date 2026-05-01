@@ -4,6 +4,7 @@ model: balanced
 derivation_version: 1
 implications:
 - id: mg-boundary-001
+  linkage: code-direct
   tier: T0
   text: Never generate feedback language, performance evaluations, or coaching
     recommendations directed at individual team members.
@@ -13,6 +14,7 @@ implications:
   level: component
 
 - id: mg-boundary-002
+  linkage: code-direct
   tier: T0
   text: Never suggest what the operator should say to a team member or draft
     language for delivery in people conversations.
@@ -22,6 +24,7 @@ implications:
   level: component
 
 - id: mg-cadence-001
+  linkage: code-direct
   tier: T1
   text: 1:1 meeting cadence must be the primary staleness signal for people
     management, auto-detected from frontmatter date fields.
