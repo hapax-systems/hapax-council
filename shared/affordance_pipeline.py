@@ -16,6 +16,9 @@ from typing import TYPE_CHECKING, Any
 
 from shared.affordance import ActivationState, CapabilityRecord, SelectionCandidate
 from shared.affordance_metrics import AffordanceMetrics
+from shared.affordance_recruitment_metrics import (
+    record_recruitment as _record_recruitment,
+)
 from shared.conative_impingement import action_tendency_prior_for_candidate
 from shared.embed_cache import DiskEmbeddingCache
 from shared.exploration import ExplorationSignal
@@ -800,6 +803,11 @@ class AffordancePipeline:
         survivors = [c for c in normal if c.combined > effective_threshold]
         survivors.sort(key=lambda c: -c.combined)
         self._log_cascade(impingement, survivors)
+        # Audit-closeout 12.3: per-recruitment Prometheus counter, labelled
+        # by 6-domain taxonomy. Cardinality is hard-bounded in the helper
+        # so a registry extension can't blow up the label set.
+        for survivor in survivors:
+            _record_recruitment(survivor.capability_name)
         # Threshold-miss detail: when survivors is empty but normal had
         # candidates, capture the top score and the threshold so PR-A2 can
         # see how far below the bar the best score landed.
