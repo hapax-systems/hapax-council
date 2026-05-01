@@ -814,3 +814,12 @@ mood_coherence_status
 from shared.ir_vlm_classifier import classify_hand_via_vlm
 
 classify_hand_via_vlm
+
+# IR VLM motion-gated runner (Phase 2) — same Phase 1/2 split: the
+# runner ships ahead of its daemon owner. `fingerprint_image` is a
+# public log helper consumed by the daemon owner's log lines.
+from agents.ir_vlm_runner import MotionGatedVlmRunner, fingerprint_image
+
+MotionGatedVlmRunner
+MotionGatedVlmRunner.tick
+fingerprint_image
