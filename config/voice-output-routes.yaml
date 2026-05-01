@@ -1,0 +1,38 @@
+# Voice output route map.
+#
+# The director and other voice-emitting subsystems should ask the
+# semantic API in shared.voice_output_router for an audio sink by
+# ROLE rather than hard-coding PipeWire target names. Roles are the
+# fixed enum below; sink_name values are operator-curated PipeWire
+# sink identifiers (the same string ``pw-cat --target=...`` accepts).
+#
+# Operator can edit this file at runtime; the router reloads on
+# next route() call when the file mtime advances.
+
+schema_version: 1
+roles:
+  assistant:
+    sink_name: hapax-voice-fx-capture
+    description: |
+      Operator-private TTS path through the voice FX chain to the
+      Studio 24c analog out. The "talking to Hapax" route.
+
+  broadcast:
+    sink_name: hapax-livestream
+    description: |
+      Public-facing voice path on the livestream. Hapax-on-air.
+      Single canonical sink so director cannot accidentally
+      double-route to the broadcast bus.
+
+  private_monitor:
+    sink_name: hapax-voice-monitor
+    description: |
+      Local headphone monitor for studio mixing checks. Never the
+      same sink as the broadcast role; never the same sink as the
+      operator-private assistant role.
+
+  notification:
+    sink_name: hapax-notification-sink
+    description: |
+      Short non-speech audio (chimes, alerts). Routed through the
+      notification loopback for a separate gain stage from speech.
