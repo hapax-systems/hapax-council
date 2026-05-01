@@ -94,6 +94,15 @@ class BraidVector:
     evidence_confidence: float | None
     risk_penalty: float
     declared_score: float | None
+    schema: str = "1"
+    # v1.1 optional dimensions. None when the task is v1 or when v1.1 has not
+    # populated the field. Validated lazily by ``recompute_braid_score``.
+    forcing_function_window: str | None = None
+    unblock_breadth: float | None = None
+    polysemic_channels: tuple[int, ...] | None = None
+    funnel_role: str | None = None
+    compounding_curve: str | None = None
+    axiomatic_strain: float | None = None
 
     @property
     def complete(self) -> bool:
@@ -108,6 +117,17 @@ class BraidVector:
             )
         )
 
+    @property
+    def is_v11(self) -> bool:
+        """True when the braid_schema discriminator selects v1.1.
+
+        Per the schema contract in ``cc-readme.md`` braid-overlay section,
+        only ``braid_schema: 1.1`` selects the new formula. Anything else
+        (``1``, missing, parse error) routes to v1 unchanged.
+        """
+
+        return self.schema == "1.1"
+
     def as_dict(self) -> JsonDict:
         return {
             "engagement": self.engagement,
@@ -117,6 +137,15 @@ class BraidVector:
             "evidence_confidence": self.evidence_confidence,
             "risk_penalty": self.risk_penalty,
             "declared_score": self.declared_score,
+            "schema": self.schema,
+            "forcing_function_window": self.forcing_function_window,
+            "unblock_breadth": self.unblock_breadth,
+            "polysemic_channels": list(self.polysemic_channels)
+            if self.polysemic_channels is not None
+            else None,
+            "funnel_role": self.funnel_role,
+            "compounding_curve": self.compounding_curve,
+            "axiomatic_strain": self.axiomatic_strain,
         }
 
 
@@ -296,7 +325,134 @@ def load_task_notes(task_root: Path) -> list[TaskNote]:
     return notes
 
 
+_FUNNEL_ROLES: frozenset[str] = frozenset(
+    {"none", "inbound", "conversion", "amplifier", "compounder"}
+)
+_COMPOUNDING_CURVES: frozenset[str] = frozenset(
+    {"linear", "log_saturating", "step_function", "preferential_attachment", "mixed"}
+)
+# braid_forcing_function_window kinds per the v1.1 schema. ``none`` is a
+# bare token; the other three carry an ``:<YYYY-MM-DD>`` suffix.
+_FORCING_WINDOW_RE: re.Pattern[str] = re.compile(
+    r"^(?:none|(regulatory|deadline|amplifier_window):(\d{4}-\d{2}-\d{2}))$"
+)
+
+
+def _normalize_schema(value: Any) -> str:
+    """Canonicalise braid_schema into '1' or '1.1'.
+
+    YAML may produce numeric (1, 1.1), string ('1', '1.1'), or absent —
+    all collapse to a string discriminator. Anything else (parse error,
+    unknown version) routes to v1 to preserve backward compatibility.
+    """
+
+    if value is None:
+        return "1"
+    if isinstance(value, bool):
+        return "1"
+    if isinstance(value, int):
+        return "1" if value == 1 else "1"
+    if isinstance(value, float):
+        return "1.1" if abs(value - 1.1) < 1e-6 else "1"
+    text = str(value).strip()
+    if text in {"1", "1.0"}:
+        return "1"
+    if text == "1.1":
+        return "1.1"
+    return "1"
+
+
+def _parse_polysemic_channels(value: Any) -> tuple[int, ...] | None:
+    """Validate ``braid_polysemic_channels`` per the seven-channel taxonomy.
+
+    Permitted: list of distinct ints in ``{1..7}``. Out-of-range integers,
+    duplicates, and non-integer entries warn-and-skip — the contract in
+    cc-readme.md says runner should never crash on malformed input.
+    Returns the validated tuple or ``None`` when the field is absent or
+    every entry was rejected.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        return None
+    seen: set[int] = set()
+    out: list[int] = []
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        if not isinstance(item, int):
+            continue
+        if not 1 <= item <= 7:
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return tuple(out) if out else None
+
+
+def _parse_forcing_window(value: Any) -> str | None:
+    """Validate ``braid_forcing_function_window`` regex.
+
+    Permitted: ``none`` or one of ``regulatory|deadline|amplifier_window:<YYYY-MM-DD>``.
+    Anything else returns ``None`` so the score path treats it as missing.
+    """
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if _FORCING_WINDOW_RE.match(text):
+        return text
+    return None
+
+
+def compute_forcing_function_urgency(
+    window: str | None,
+    *,
+    now: datetime | None = None,
+) -> float:
+    """Translate a forcing-function window into the v1.1 urgency score.
+
+    Per the cc-readme.md table:
+        ``none`` / closed / null     → 0
+        > 365 days out               → 2
+        90 - 365 days out            → 5
+        30 - 90 days out             → 8
+        < 30 days (incl. past)       → 10
+
+    The "closed" case (date already in the past) is the most operator-
+    facing failure mode — the spec is explicit that closed windows score
+    0, not 10. This function follows the spec.
+    """
+
+    if not window or window == "none":
+        return 0.0
+    match = _FORCING_WINDOW_RE.match(window)
+    if not match or match.group(1) is None:
+        return 0.0
+    try:
+        target = datetime.strptime(match.group(2), "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError:
+        return 0.0
+    reference = now if now is not None else utc_now()
+    days = (target - reference).total_seconds() / 86400.0
+    if days < 0:
+        # Closed window: explicit zero per spec.
+        return 0.0
+    if days < 30:
+        return 10.0
+    if days < 90:
+        return 8.0
+    if days <= 365:
+        return 5.0
+    return 2.0
+
+
 def braid_vector_from_frontmatter(frontmatter: JsonDict) -> BraidVector:
+    schema = _normalize_schema(frontmatter.get("braid_schema"))
     return BraidVector(
         engagement=as_float(frontmatter.get("braid_engagement")),
         monetary=as_float(frontmatter.get("braid_monetary")),
@@ -305,25 +461,95 @@ def braid_vector_from_frontmatter(frontmatter: JsonDict) -> BraidVector:
         evidence_confidence=as_float(frontmatter.get("braid_evidence_confidence")),
         risk_penalty=as_float(frontmatter.get("braid_risk_penalty")) or 0.0,
         declared_score=as_float(frontmatter.get("braid_score")),
+        schema=schema,
+        forcing_function_window=_parse_forcing_window(
+            frontmatter.get("braid_forcing_function_window")
+        ),
+        unblock_breadth=as_float(frontmatter.get("braid_unblock_breadth")),
+        polysemic_channels=_parse_polysemic_channels(frontmatter.get("braid_polysemic_channels")),
+        funnel_role=(
+            str(frontmatter["braid_funnel_role"]).strip()
+            if frontmatter.get("braid_funnel_role")
+            and str(frontmatter["braid_funnel_role"]).strip() in _FUNNEL_ROLES
+            else None
+        ),
+        compounding_curve=(
+            str(frontmatter["braid_compounding_curve"]).strip()
+            if frontmatter.get("braid_compounding_curve")
+            and str(frontmatter["braid_compounding_curve"]).strip() in _COMPOUNDING_CURVES
+            else None
+        ),
+        axiomatic_strain=as_float(frontmatter.get("braid_axiomatic_strain")),
     )
 
 
-def recompute_braid_score(vector: BraidVector) -> float | None:
-    if not vector.complete:
-        return None
+def _recompute_v1(vector: BraidVector) -> float:
     engagement = float(vector.engagement)
     monetary = float(vector.monetary)
     research = float(vector.research)
     tree_effect = float(vector.tree_effect)
     evidence_confidence = float(vector.evidence_confidence)
-    score = (
+    return (
         0.35 * min(engagement, monetary, research)
         + 0.30 * ((engagement + monetary + research) / 3.0)
         + 0.25 * tree_effect
         + 0.10 * evidence_confidence
         - vector.risk_penalty
     )
-    return round(score, 2)
+
+
+def _recompute_v11(vector: BraidVector, *, now: datetime | None = None) -> float:
+    """Compute v1.1 score per cc-readme.md formula.
+
+    The three new positive terms (``unblock_breadth``, ``polysemic_channels``,
+    ``forcing_function_urgency``) and the new subtractive ``axiomatic_strain``
+    default to 0 when their fields are absent — per the
+    backward-compatibility invariant, a v1.1 task with no new fields
+    populated computes to (close to) the v1 score, modulated only by the
+    rebalanced base weights.
+    """
+
+    engagement = float(vector.engagement)
+    monetary = float(vector.monetary)
+    research = float(vector.research)
+    tree_effect = float(vector.tree_effect)
+    evidence_confidence = float(vector.evidence_confidence)
+
+    unblock = vector.unblock_breadth or 0.0
+    channels = vector.polysemic_channels or ()
+    urgency = compute_forcing_function_urgency(vector.forcing_function_window, now=now)
+    strain = vector.axiomatic_strain or 0.0
+
+    return (
+        0.30 * min(engagement, monetary, research)
+        + 0.25 * ((engagement + monetary + research) / 3.0)
+        + 0.20 * tree_effect
+        + 0.10 * (unblock / 1.5)
+        + 0.10 * float(len(channels))
+        + 0.05 * urgency
+        + 0.10 * evidence_confidence
+        - vector.risk_penalty
+        - strain
+    )
+
+
+def recompute_braid_score(vector: BraidVector, *, now: datetime | None = None) -> float | None:
+    """Compute the braid score, dispatching by schema discriminator.
+
+    v1 tasks (``braid_schema: 1`` or missing) use the original 5-term
+    formula. v1.1 tasks use the rebalanced 9-term formula with the three
+    new positive terms and the subtractive axiomatic_strain.
+
+    Returns ``None`` when the base 5 dimensions aren't fully populated;
+    incomplete v1.1 fields (e.g., a v1.1 task with no
+    ``unblock_breadth``) default to 0 so backward compatibility holds.
+    """
+
+    if not vector.complete:
+        return None
+    if vector.is_v11:
+        return round(_recompute_v11(vector, now=now), 2)
+    return round(_recompute_v1(vector), 2)
 
 
 def load_hygiene_state(path: Path) -> HygieneRead:
