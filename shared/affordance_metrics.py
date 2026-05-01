@@ -90,6 +90,13 @@ class AffordanceMetrics:
                 context_cues=context_cues or {},
             )
         )
+        # Pair with hapax_affordance_recruitment_total (set in select()):
+        # once a capability has been recruited, this counter records
+        # whether activation succeeded — Grafana dashboards can compute
+        # the per-tick success-rate from the two streams.
+        from shared.affordance_outcome_metrics import record_outcome as _record_outcome
+
+        _record_outcome(success)
 
     def compute_summary(self) -> dict[str, Any]:
         """Compute validation metrics summary."""
