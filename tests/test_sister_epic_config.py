@@ -3,6 +3,13 @@
 Pins the structure of config/sister-epic/*.yaml so an operator edit
 can't accidentally drop a required key. The test asserts the schema
 shape — NOT the values, which are operator-owned.
+
+Sister-epic-scaffold-refusal-reconcile (cc-task closed 2026-05-01) added
+the ``TestRefusalSupersession`` class below: assertion-level guards that
+prevent the patreon-tiers + discord-channels scaffolds from regressing
+out of ``superseded_refusal`` state, plus a positive pin that the
+visual-signature scaffold remains active (per task acceptance criterion
+"Preserve any non-conflicting visual/signature work only if still useful").
 """
 
 from __future__ import annotations
@@ -13,6 +20,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SISTER_EPIC_DIR = REPO_ROOT / "config" / "sister-epic"
+EXPECTED_SUPERSEDED_BY = "config/support-surface-registry.json"
 
 
 def _load(name: str) -> dict:
@@ -127,3 +135,77 @@ class TestVisualSignature:
     def test_dont_recolor_visual_constants_rule(self) -> None:
         d = _load("visual-signature.yaml")
         assert d["usage_rules"]["do_not_recolor_visual_constants"] is True
+
+
+class TestRefusalSupersession:
+    """Lock the sister-epic refused-scaffold reconciliation in.
+
+    The patreon-tiers + discord-channels scaffolds were originally written
+    as if they would activate. Operator later refused both Patreon and the
+    Discord community surface (`leverage-REFUSED-patreon-sponsorship` +
+    `leverage-REFUSED-discord-community`). The configs were kept as
+    ``superseded_refusal`` artifacts pointing at the support-surface
+    registry. These pins prevent accidental regression: re-activation must
+    be a deliberate axiom-level decision, not a one-line yaml edit that
+    silently flips ``activation_allowed`` back to true.
+    """
+
+    REFUSED_SCAFFOLDS = ("patreon-tiers.yaml", "discord-channels.yaml")
+
+    def test_refused_scaffolds_are_marked_superseded_refusal(self) -> None:
+        for name in self.REFUSED_SCAFFOLDS:
+            d = _load(name)
+            assert d["status"] == "superseded_refusal", (
+                f"{name} status drifted from superseded_refusal to {d['status']!r}; "
+                "re-activation requires the corresponding refusal-brief to be "
+                "withdrawn first"
+            )
+            assert d["activation_allowed"] is False, (
+                f"{name} activation_allowed flipped to True; the surface is REFUSED"
+            )
+            assert d["operator_action_required"] is False, (
+                f"{name} operator_action_required flipped to True; refused scaffolds "
+                "must not pull operator attention"
+            )
+
+    def test_refused_scaffolds_point_at_canonical_successor(self) -> None:
+        for name in self.REFUSED_SCAFFOLDS:
+            d = _load(name)
+            assert d["superseded_by"] == EXPECTED_SUPERSEDED_BY, (
+                f"{name} superseded_by drifted to {d['superseded_by']!r}; the "
+                "canonical successor is the support-surface registry"
+            )
+            successor_path = REPO_ROOT / EXPECTED_SUPERSEDED_BY
+            assert successor_path.is_file(), (
+                f"{name} points at {EXPECTED_SUPERSEDED_BY} but that file is missing; "
+                "the supersession reference is dangling"
+            )
+
+    def test_refused_scaffolds_have_resolvable_refusal_refs(self) -> None:
+        """Every refusal_ref must resolve to an actual file on disk."""
+        for name in self.REFUSED_SCAFFOLDS:
+            d = _load(name)
+            refusal_refs = d.get("refusal_refs", [])
+            assert refusal_refs, f"{name} has no refusal_refs to back the supersession"
+            for ref in refusal_refs:
+                ref_path = REPO_ROOT / ref
+                assert ref_path.is_file(), (
+                    f"{name} refusal_ref {ref!r} does not resolve to a file; "
+                    "either the brief was moved/deleted or the ref is mistyped"
+                )
+
+    def test_visual_signature_is_NOT_superseded(self) -> None:
+        """Visual signature is preserved per the reconcile cc-task: it is a
+        non-conflicting useful scaffold (operator visual identity for sister-epic
+        artifacts) that survives the Patreon/Discord refusal."""
+        d = _load("visual-signature.yaml")
+        assert d.get("status") != "superseded_refusal", (
+            "visual-signature.yaml must NOT be marked superseded_refusal — it is "
+            "a preserved scaffold for the operator's sister-epic visual identity, "
+            "non-conflicting with the Patreon/Discord refusals"
+        )
+        assert d["operator_action_required"] is True, (
+            "visual-signature.yaml is operator-fillable scaffolding; the "
+            "operator_action_required flag signals the TODOs are awaiting the "
+            "operator's value choices, not a defect"
+        )
