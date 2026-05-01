@@ -1,20 +1,11 @@
-"""Tests for ``shared.apperception_shm``.
-
-The module reads self-band state from ``/dev/shm`` and formats it for
-LLM prompt injection. It must degrade silently to an empty string on
-any read / parse failure (no exceptions propagate to the prompt-build
-path) and must skip stale data older than 30 seconds.
-
-These tests pin those contracts deterministically by writing fixtures
-to a tmp_path and overriding the ``path`` argument so the live
-``/dev/shm`` location is never touched.
-"""
+"""Tests for ``shared.apperception_shm`` prompt-block rendering."""
 
 from __future__ import annotations
 
 import json
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 from shared.apperception_shm import (
     _STALENESS_THRESHOLD,
@@ -32,97 +23,120 @@ def _fresh_now() -> float:
     return time.time()
 
 
-# ── Module surface ───────────────────────────────────────────────────
-
-
 class TestModuleSurface:
     def test_canonical_path_under_dev_shm(self) -> None:
-        # Don't accidentally relocate the canonical write site.
         assert Path("/dev/shm/hapax-apperception/self-band.json") == APPERCEPTION_SHM_PATH
 
     def test_staleness_threshold_30s(self) -> None:
-        # Pin the threshold; any change is a behavior change worth a
-        # test failure.
         assert _STALENESS_THRESHOLD == 30
 
 
-# ── Failure paths return empty string ────────────────────────────────
-
-
-class TestFailurePaths:
+class TestEmptyAndMalformedInput:
     def test_missing_path_returns_empty(self, tmp_path: Path) -> None:
-        result = read_apperception_block(tmp_path / "nonexistent.json")
-        assert result == ""
+        assert read_apperception_block(tmp_path / "missing.json") == ""
 
     def test_invalid_json_returns_empty(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+        target = tmp_path / "bad.json"
         target.write_text("{not valid json", encoding="utf-8")
         assert read_apperception_block(target) == ""
 
     def test_empty_dict_returns_empty(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+        target = tmp_path / "empty.json"
         _write_state(target, {})
         assert read_apperception_block(target) == ""
 
-    def test_stale_data_returns_empty(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+    def test_empty_self_model_returns_empty(self, tmp_path: Path) -> None:
+        target = tmp_path / "empty-self-model.json"
+        _write_state(target, {"timestamp": _fresh_now(), "self_model": {}})
+        assert read_apperception_block(target) == ""
+
+    def test_reflections_without_dimensions_or_observations_return_empty(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "reflections-only.json"
         _write_state(
             target,
             {
-                "timestamp": _fresh_now() - 60,  # 60s old, > 30s threshold
-                "self_model": {"dimensions": {"x": {"confidence": 0.7}}},
+                "timestamp": _fresh_now(),
+                "self_model": {"recent_reflections": ["reflection"]},
+                "pending_actions": ["action"],
             },
         )
         assert read_apperception_block(target) == ""
 
     def test_no_dimensions_or_observations_returns_empty(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+        target = tmp_path / "empty-content.json"
         _write_state(
             target,
             {
                 "timestamp": _fresh_now(),
-                "self_model": {
-                    # Both empty — the module treats this as "nothing
-                    # interesting to inject".
-                    "dimensions": {},
-                    "recent_observations": [],
-                },
+                "self_model": {"dimensions": {}, "recent_observations": []},
             },
         )
         assert read_apperception_block(target) == ""
 
 
-# ── Successful render paths ──────────────────────────────────────────
+class TestStaleness:
+    def test_fresh_data_returned(self, tmp_path: Path) -> None:
+        target = tmp_path / "fresh.json"
+        _write_state(
+            target,
+            {
+                "timestamp": _fresh_now(),
+                "self_model": {"dimensions": {"focus": {"confidence": 0.8}}},
+            },
+        )
+        block = read_apperception_block(target)
+        assert "Self-dimensions" in block
+        assert "focus" in block
+
+    def test_stale_data_returns_empty(self, tmp_path: Path) -> None:
+        target = tmp_path / "stale.json"
+        with patch("shared.apperception_shm.time") as mock_time:
+            mock_time.time.return_value = 10_000.0
+            _write_state(
+                target,
+                {
+                    "timestamp": 9_900.0,
+                    "self_model": {"dimensions": {"focus": {"confidence": 0.8}}},
+                },
+            )
+            assert read_apperception_block(target) == ""
+
+    def test_no_timestamp_field_treated_as_fresh(self, tmp_path: Path) -> None:
+        target = tmp_path / "no-timestamp.json"
+        _write_state(
+            target,
+            {"self_model": {"dimensions": {"alpha": {"confidence": 0.7}}}},
+        )
+        assert "alpha" in read_apperception_block(target)
 
 
-class TestSuccessfulRender:
-    def test_dimensions_block_renders(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+class TestSectionRendering:
+    def test_dimensions_render_with_counts(self, tmp_path: Path) -> None:
+        target = tmp_path / "dimensions.json"
         _write_state(
             target,
             {
                 "timestamp": _fresh_now(),
                 "self_model": {
                     "dimensions": {
-                        "alpha": {
-                            "confidence": 0.85,
-                            "affirming_count": 4,
-                            "problematizing_count": 1,
-                        },
-                    },
-                    "recent_observations": [],
+                        "focus": {
+                            "confidence": 0.92,
+                            "affirming_count": 7,
+                            "problematizing_count": 2,
+                        }
+                    }
                 },
             },
         )
-        result = read_apperception_block(target)
-        assert "Self-dimensions:" in result
-        assert "alpha" in result
-        assert "0.85" in result
-        assert "+4" in result
-        assert "-1" in result
+        block = read_apperception_block(target)
+        assert "focus" in block
+        assert "confidence=0.92" in block
+        assert "(+7/-2)" in block
 
     def test_dimensions_sorted_alphabetically(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+        target = tmp_path / "sorted-dimensions.json"
         _write_state(
             target,
             {
@@ -132,158 +146,130 @@ class TestSuccessfulRender:
                         "zeta": {"confidence": 0.5},
                         "alpha": {"confidence": 0.9},
                         "mu": {"confidence": 0.7},
-                    },
-                    "recent_observations": [],
+                    }
                 },
             },
         )
-        result = read_apperception_block(target)
-        # Each name must appear, with alpha before mu before zeta.
-        a_idx = result.index("alpha")
-        m_idx = result.index("mu")
-        z_idx = result.index("zeta")
-        assert a_idx < m_idx < z_idx
+        block = read_apperception_block(target)
+        assert block.index("alpha") < block.index("mu") < block.index("zeta")
 
-    def test_low_coherence_emits_warning(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+    def test_observations_render(self, tmp_path: Path) -> None:
+        target = tmp_path / "observations.json"
         _write_state(
             target,
             {
                 "timestamp": _fresh_now(),
                 "self_model": {
-                    "coherence": 0.2,
-                    "dimensions": {"x": {"confidence": 0.6}},
-                    "recent_observations": [],
+                    "dimensions": {"focus": {"confidence": 0.5}},
+                    "recent_observations": ["obs-1", "obs-2", "obs-3"],
                 },
             },
         )
-        result = read_apperception_block(target)
-        # Two-byte unicode warning sigil + the coherence value.
-        assert "Self-coherence low" in result
-        assert "0.20" in result
+        block = read_apperception_block(target)
+        assert "Recent self-observations" in block
+        for observation in ["obs-1", "obs-2", "obs-3"]:
+            assert observation in block
+
+    def test_observations_truncated_to_last_five(self, tmp_path: Path) -> None:
+        target = tmp_path / "many-observations.json"
+        _write_state(
+            target,
+            {
+                "timestamp": _fresh_now(),
+                "self_model": {
+                    "dimensions": {"focus": {"confidence": 0.5}},
+                    "recent_observations": [f"obs-{i}" for i in range(10)],
+                },
+            },
+        )
+        block = read_apperception_block(target)
+        for i in range(5):
+            assert f"obs-{i}" not in block
+        for i in range(5, 10):
+            assert f"obs-{i}" in block
+
+    def test_low_coherence_emits_warning(self, tmp_path: Path) -> None:
+        target = tmp_path / "low-coherence.json"
+        _write_state(
+            target,
+            {
+                "timestamp": _fresh_now(),
+                "self_model": {
+                    "coherence": 0.25,
+                    "dimensions": {"focus": {"confidence": 0.5}},
+                },
+            },
+        )
+        block = read_apperception_block(target)
+        assert "Self-coherence low" in block
+        assert "0.25" in block
 
     def test_high_coherence_no_warning(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+        target = tmp_path / "high-coherence.json"
         _write_state(
             target,
             {
                 "timestamp": _fresh_now(),
                 "self_model": {
                     "coherence": 0.85,
-                    "dimensions": {"x": {"confidence": 0.6}},
-                    "recent_observations": [],
+                    "dimensions": {"focus": {"confidence": 0.5}},
                 },
             },
         )
-        result = read_apperception_block(target)
-        assert "Self-coherence low" not in result
-
-    def test_observations_truncated_to_last_five(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
-        _write_state(
-            target,
-            {
-                "timestamp": _fresh_now(),
-                "self_model": {
-                    "dimensions": {},
-                    "recent_observations": [f"obs-{i}" for i in range(10)],
-                },
-            },
-        )
-        result = read_apperception_block(target)
-        # Only the last 5 should render.
-        for i in range(5, 10):
-            assert f"obs-{i}" in result
-        for i in range(0, 5):
-            assert f"obs-{i}" not in result
+        assert "Self-coherence low" not in read_apperception_block(target)
 
     def test_reflections_truncated_to_last_three(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+        target = tmp_path / "reflections.json"
         _write_state(
             target,
             {
                 "timestamp": _fresh_now(),
                 "self_model": {
-                    "dimensions": {},
-                    "recent_observations": ["seed"],  # ensures non-empty render
+                    "dimensions": {"focus": {"confidence": 0.5}},
                     "recent_reflections": [f"ref-{i}" for i in range(8)],
                 },
             },
         )
-        result = read_apperception_block(target)
+        block = read_apperception_block(target)
+        assert "ref-4" not in block
         for i in range(5, 8):
-            assert f"ref-{i}" in result
-        for i in range(0, 5):
-            assert f"ref-{i}" not in result
+            assert f"ref-{i}" in block
 
     def test_pending_actions_truncated_to_three(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+        target = tmp_path / "actions.json"
         _write_state(
             target,
             {
                 "timestamp": _fresh_now(),
-                "self_model": {
-                    "dimensions": {},
-                    "recent_observations": ["seed"],
-                },
-                "pending_actions": [f"act-{i}" for i in range(6)],
+                "self_model": {"dimensions": {"focus": {"confidence": 0.5}}},
+                "pending_actions": [f"act-{i}" for i in range(8)],
             },
         )
-        result = read_apperception_block(target)
-        # First 3 only.
-        for i in range(0, 3):
-            assert f"act-{i}" in result
-        for i in range(3, 6):
-            assert f"act-{i}" not in result
-
-    def test_no_timestamp_field_treated_as_fresh(self, tmp_path: Path) -> None:
-        # Defensive: when ``timestamp`` is missing/zero the module
-        # falls through (does NOT treat as stale; staleness only kicks
-        # in when ts > 0). This avoids dropping the very first read
-        # before the writer has a chance to set ts.
-        target = tmp_path / "self-band.json"
-        _write_state(
-            target,
-            {
-                "self_model": {
-                    "dimensions": {"alpha": {"confidence": 0.7}},
-                    "recent_observations": [],
-                },
-            },
-        )
-        result = read_apperception_block(target)
-        assert "alpha" in result
-
-
-# ── Format invariants ─────────────────────────────────────────────────
+        block = read_apperception_block(target)
+        assert "act-0" in block
+        assert "act-2" in block
+        assert "act-3" not in block
 
 
 class TestFormat:
     def test_starts_with_self_awareness_header(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+        target = tmp_path / "header.json"
         _write_state(
             target,
             {
                 "timestamp": _fresh_now(),
-                "self_model": {
-                    "dimensions": {"x": {"confidence": 0.6}},
-                    "recent_observations": [],
-                },
+                "self_model": {"dimensions": {"focus": {"confidence": 0.6}}},
             },
         )
-        result = read_apperception_block(target)
-        assert result.startswith("Self-awareness")
+        assert read_apperception_block(target).startswith("Self-awareness")
 
     def test_returns_str_type(self, tmp_path: Path) -> None:
-        target = tmp_path / "self-band.json"
+        target = tmp_path / "type.json"
         _write_state(
             target,
             {
                 "timestamp": _fresh_now(),
-                "self_model": {
-                    "dimensions": {"x": {"confidence": 0.6}},
-                    "recent_observations": [],
-                },
+                "self_model": {"dimensions": {"focus": {"confidence": 0.6}}},
             },
         )
         assert isinstance(read_apperception_block(target), str)
