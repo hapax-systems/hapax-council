@@ -3424,15 +3424,36 @@ class DirectorLoop:
         return self._tts_client.synthesize(text, "conversation")
 
     def _play_audio(self, pcm: bytes) -> None:
-        """Play PCM using persistent pw-cat subprocess targeting assistant sink."""
+        """Play PCM via the role-keyed VoiceOutputRouter.
+
+        Asks the router for the ``private_monitor`` semantic role
+        instead of hard-coding ``"input.loopback.sink.role.assistant"``.
+        The role → sink mapping lives in
+        ``config/voice-output-routes.yaml`` so the canonical decision
+        is operator-editable in one place.
+
+        Closes cc-task ``director-loop-semantic-audio-route`` (WSJF 8.5).
+        Stacks on the role-API delivery in cc-task
+        ``voice-output-router-semantic-api`` (beta) which adds
+        ``VoiceOutputRouter`` to ``shared.voice_output_router``.
+
+        Falls back to the literal sink when the router reports the
+        sink as ``unavailable`` so director audio doesn't go silent —
+        silence is the worse failure mode; the router surfaces the
+        unavailable state via its ``provenance`` field.
+        """
         try:
             if not hasattr(self, "_audio_output") or self._audio_output is None:
                 from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
+                from shared.voice_output_router import VoiceOutputRouter
 
+                router = VoiceOutputRouter()
+                result = router.route("private_monitor")
+                target = result.sink_name or "input.loopback.sink.role.assistant"
                 self._audio_output = PwAudioOutput(
                     sample_rate=24000,
                     channels=1,
-                    target="input.loopback.sink.role.assistant",
+                    target=target,
                 )
             self._audio_output.write(pcm)
         except Exception:
