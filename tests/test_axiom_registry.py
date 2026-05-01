@@ -741,3 +741,35 @@ def test_check_coherence_real_tree_drops_4_standalone_orphans():
         assert not_orphan not in orphan_ids, (
             f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
         )
+
+
+def test_check_coherence_real_tree_drops_5_cb_cluster_orphans():
+    """The corporate_boundary cluster (cb-data-001, cb-degrade-001,
+    cb-key-001, cb-llm-001, cb-secret-scan-001) is text-referenced in
+    `agents/_sufficiency_probes.py` + `agents/drift_detector/probes_boundary.py`
+    + manifests. After annotating with linkage: code-direct, these 5
+    must NOT appear in the production-tree orphan tally.
+
+    cb-extensible-001 and cb-parity-001 stay as legitimate orphans
+    (no code references found).
+    """
+    from shared.coherence import check_coherence
+
+    report = check_coherence()
+    orphan_ids = {g.source_id for g in report.gaps if g.gap_type == "orphan_implication"}
+    code_direct = (
+        "cb-data-001",
+        "cb-degrade-001",
+        "cb-key-001",
+        "cb-llm-001",
+        "cb-secret-scan-001",
+    )
+    for not_orphan in code_direct:
+        assert not_orphan not in orphan_ids, (
+            f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
+        )
+    legitimate_orphans = ("cb-extensible-001", "cb-parity-001")
+    for orphan in legitimate_orphans:
+        assert orphan in orphan_ids, (
+            f"{orphan} has no code references; should remain orphan but doesn't appear"
+        )
