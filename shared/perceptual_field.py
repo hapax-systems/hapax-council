@@ -616,11 +616,32 @@ def build_perceptual_field(
     )
 
     # ── Album ─────────────────────────────────────────────────────────────
+    # album-identifier writes /dev/shm/hapax-compositor/album-state.json from
+    # IR-vision album-cover recognition; the visual recognition fires whenever
+    # a cover is on the deck regardless of whether vinyl is actually spinning.
+    # The album-identifier sets ``playing`` from its own ``_vinyl_probably_playing``
+    # gate (override flag OR ir_hand_zone=turntable OR ir_hand_activity=scratching),
+    # but the gate fires on transient IR misclassifications and the file then
+    # holds the stale ``playing: true`` until the album zone changes (which it
+    # does not, since the cover keeps sitting on the deck).
+    #
+    # Operator-reported regression 2026-05-01: the LLM kept emitting present-
+    # tense narrations of catalog state ("the bass on this Metal Fingers cut
+    # …") because PerceptualField.model_dump_json exposed album.artist and
+    # album.title regardless of playing. Refusal gate caught >40 hallucinated
+    # narrations in 30 minutes.
+    #
+    # Fix: when album-state's ``playing`` field is False (or absent), suppress
+    # artist/title/current_track/year from the perceptual-field JSON entirely,
+    # so the LLM cannot ground in catalog state. ``confidence`` survives —
+    # downstream classifiers may still want to know the visual confidence in
+    # the cover identification, that's not a present-tense claim.
+    album_playing = bool(album.get("playing"))
     album_field = AlbumField(
-        artist=album.get("artist"),
-        title=album.get("title"),
-        current_track=album.get("current_track"),
-        year=_as_int(album.get("year")),
+        artist=album.get("artist") if album_playing else None,
+        title=album.get("title") if album_playing else None,
+        current_track=album.get("current_track") if album_playing else None,
+        year=_as_int(album.get("year")) if album_playing else None,
         confidence=_as_float(album.get("confidence")),
     )
 
