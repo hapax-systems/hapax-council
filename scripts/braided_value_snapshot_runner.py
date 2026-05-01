@@ -23,6 +23,8 @@ from typing import Any
 
 import yaml
 
+from shared.github_publication_log import classify_publication_log_payload
+
 DEFAULT_TASK_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
 DEFAULT_HYGIENE_STATE = Path.home() / ".cache/hapax/cc-hygiene-state.json"
 DEFAULT_DASHBOARD = DEFAULT_TASK_ROOT / "_dashboard/cc-braided-value.md"
@@ -605,6 +607,9 @@ def payload_text(payload: Any) -> str:
 
 
 def classify_payload(spec: WitnessSpec, payload: Any) -> tuple[str, tuple[str, ...]]:
+    if spec.witness_id == "publication_log":
+        return classify_publication_log_payload(payload)
+
     text = payload_text(payload)
     reasons: list[str] = []
     status = "ok"

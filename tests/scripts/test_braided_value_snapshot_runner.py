@@ -11,6 +11,8 @@ from typing import Any
 
 import yaml
 
+from shared.github_publication_log import ANTI_OVERCLAIM_REASON, build_github_publication_event
+
 REPO_ROOT = Path(__file__).parent.parent.parent
 RUNNER_PATH = REPO_ROOT / "scripts" / "braided_value_snapshot_runner.py"
 NOW = datetime(2026, 4, 30, 0, 0, tzinfo=UTC)
@@ -373,3 +375,83 @@ def test_write_outputs_append_ledger_without_mutating_tasks(tmp_path: Path) -> N
     first = json.loads(lines[0])
     assert first["policy"]["dispatch_sort_key"] == "wsjf"
     assert first["policy"]["trend_can_upgrade_claim_confidence"] is False
+
+
+def test_github_publication_log_witness_feeds_publication_tree_effect(
+    tmp_path: Path,
+) -> None:
+    runner = load_runner()
+    vault = tmp_path / "tasks"
+    hygiene = tmp_path / "hygiene.json"
+    log_path = tmp_path / "publication-log.jsonl"
+    write_hygiene(hygiene)
+    event = build_github_publication_event(
+        repo="ryanklee/hapax-council",
+        surface="readme",
+        generated_at="2026-05-01T00:50:00Z",
+        occurred_at="2026-04-30T03:46:00Z",
+        source_refs=("docs/repo-pres/github-public-surface-live-state-reconcile.json",),
+        evidence_refs=("gh:contents/ryanklee/hapax-council/README.md",),
+        publication_state="public",
+        publication_mode="public_archive",
+        live_url="https://github.com/ryanklee/hapax-council/blob/main/README.md",
+        commit_sha="a" * 40,
+        content_sha="b" * 40,
+        ref="main",
+    )
+    log_path.write_text(event.to_json_line(), encoding="utf-8")
+
+    snapshot = runner.build_snapshot(
+        task_root=vault,
+        hygiene_path=hygiene,
+        now=NOW,
+        witness_specs=[
+            runner.WitnessSpec(
+                "publication_log",
+                "Publication log",
+                log_path,
+                "publication_tree_effect",
+            )
+        ],
+        include_systemd=False,
+    )
+
+    witness = snapshot["witnesses"][0]
+    assert witness["status"] == "ok"
+    assert witness["reasons"] == ["github_publication_witness", ANTI_OVERCLAIM_REASON]
+    row = row_by_task(snapshot, "publication-tree-effect")
+    assert row["mode_ceiling"] == "dry_run"
+    assert row["max_public_claim"] == "internal_evidence_summary_only"
+    assert row["claimability_reason"] == "live_witnessed_presence_only"
+    assert row["gate_posture"]["trend_can_upgrade_claim_confidence"] is False
+
+
+def test_missing_publication_log_downgrades_publication_tree_effect(tmp_path: Path) -> None:
+    runner = load_runner()
+    vault = tmp_path / "tasks"
+    hygiene = tmp_path / "hygiene.json"
+    write_hygiene(hygiene)
+
+    snapshot = runner.build_snapshot(
+        task_root=vault,
+        hygiene_path=hygiene,
+        now=NOW,
+        witness_specs=[
+            runner.WitnessSpec(
+                "publication_log",
+                "Publication log",
+                tmp_path / "missing-publication-log.jsonl",
+                "publication_tree_effect",
+            )
+        ],
+        include_systemd=False,
+    )
+
+    witness = snapshot["witnesses"][0]
+    assert witness["status"] == "missing"
+    assert witness["reasons"] == ["missing_live_witness"]
+    row = row_by_task(snapshot, "publication-tree-effect")
+    assert row["blockers"] == ["publication_log"]
+    assert row["review_reason"] == ["live_witness_downgrade"]
+    assert row["mode_ceiling"] == "private"
+    assert row["max_public_claim"] == "none"
