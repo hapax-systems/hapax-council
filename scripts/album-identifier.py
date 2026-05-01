@@ -790,6 +790,38 @@ def track_id_loop() -> None:
                 log.info("Now playing: %s", track)
 
 
+def _refresh_playing_for_current_album() -> None:
+    """Re-evaluate `playing` and rewrite album-state.json each tick.
+
+    Producer-side hardening for the metalfingers ghost-claim regression
+    (cc-task `album-identifier-playing-flag-periodic-engine-truth`,
+    parent PRs #1933 + #1936). Before this hook, ``write_state`` was
+    only called on album-zone change, so a stale ``playing: true`` from
+    a transient IR misclassification would persist for hours/days while
+    the same cover sat on the deck.
+
+    Intent: at every poll tick, if we have a previously-identified
+    album, recompute ``playing`` via ``_vinyl_probably_playing()`` and
+    rewrite ``album-state.json`` with the current truth. The full
+    write_state path also refreshes ``music-attribution.txt`` so the
+    "ALBUM CATALOG (not playing)" header tracks reality.
+
+    Engine-with-hysteresis integration is Phase 2 (the
+    ``VinylSpinningEngine`` lives in ``agents/hapax_daimonion`` and
+    importing it from this scripts/-tier daemon is a larger refactor;
+    in practice, the IR-zone gate's binary off-transition gives
+    operator faster recovery — ~5 s — than the engine's slow-exit
+    hysteresis would).
+    """
+
+    if _current_album is None:
+        return
+    try:
+        write_state(_current_album, _current_track or "")
+    except Exception:
+        log.debug("periodic playing-flag refresh failed", exc_info=True)
+
+
 def main() -> None:
     global _last_hash, _current_album, _current_track, _album_start_time
 
@@ -803,6 +835,15 @@ def main() -> None:
     while True:
         time.sleep(POLL_INTERVAL)
         now = time.monotonic()
+
+        # Periodic playing-flag refresh: every tick, regardless of the
+        # cover-zone change check below, re-evaluate `playing` and
+        # rewrite album-state.json. This kills the stale-true bug where
+        # a transient IR mis-classification at one tick would persist
+        # in album-state.json for hours/days because the album cover
+        # itself never changed (so the LLM identification path never
+        # rewrote the file).
+        _refresh_playing_for_current_album()
 
         if now < cooldown_until:
             continue
