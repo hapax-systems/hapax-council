@@ -264,4 +264,76 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=_check_long_running_agent_progress_emission,
     ),
+    SufficiencyProbe(
+        id="probe-init-002",
+        axiom_id="executive_function",
+        implication_id="ex-init-002",
+        level="subsystem",
+        question=(
+            "Do all systemd unit ExecStart lines have pre-resolved flags, "
+            "with no operator-supplied placeholders?"
+        ),
+        check=lambda: _check_systemd_unit_exec_self_contained(),
+    ),
 ]
+
+
+def _check_systemd_unit_exec_self_contained() -> tuple[bool, str]:
+    """Enforces ex-init-002 (executive_function).
+
+    Agent entry points must not require the operator to remember
+    command-line arguments or flags. Verifies every systemd unit's
+    ExecStart line is self-contained: no `${VAR}` placeholders, no
+    bare `<...>` operator-fill markers, no ` $1`/`$2`/etc positional
+    references requiring shell-time substitution.
+
+    EnvironmentFile-driven systemd units (which load env vars from a
+    shared config) are acceptable — those are static, repo-checked
+    config files (e.g. /etc/hapax/secrets.env) that the operator
+    never has to edit at agent-start time.
+    """
+    units_dir = AI_AGENTS_DIR / "systemd" / "units"
+    if not units_dir.exists():
+        return False, "systemd/units directory not found"
+
+    placeholder_pattern = re.compile(r"\$\d+|<[A-Z_]+>|\{[A-Z_]+\}|TODO|FIXME")
+
+    checked = 0
+    self_contained = 0
+    problems: list[str] = []
+
+    for unit_file in sorted(units_dir.glob("*.service")):
+        try:
+            content = unit_file.read_text()
+        except OSError:
+            continue
+
+        exec_lines = [line for line in content.splitlines() if line.startswith("ExecStart=")]
+        if not exec_lines:
+            continue
+
+        checked += 1
+        unit_clean = True
+        for line in exec_lines:
+            if placeholder_pattern.search(line):
+                unit_clean = False
+                break
+
+        if unit_clean:
+            self_contained += 1
+        else:
+            problems.append(unit_file.name)
+
+    if checked == 0:
+        return False, "no systemd .service files with ExecStart found"
+
+    ratio = self_contained / checked
+    if ratio >= 0.95:
+        return True, (
+            f"{self_contained}/{checked} systemd units have self-contained "
+            f"ExecStart (ex-init-002 sufficient)"
+        )
+    return False, (
+        f"only {self_contained}/{checked} units self-contained; "
+        f"placeholders in: {', '.join(problems[:3])}"
+    )
