@@ -16,8 +16,21 @@ Validates:
 
 from __future__ import annotations
 
+from datetime import datetime
+from types import SimpleNamespace
+
 import pytest
 
+from agents.hapax_daimonion.cpal.destination_channel import (
+    BROADCAST_MEDIA_ROLE,
+    DestinationChannel,
+    resolve_playback_decision,
+)
+from shared.broadcast_audio_health import (
+    BroadcastAudioHealth,
+    BroadcastAudioStatus,
+    write_broadcast_audio_health_state,
+)
 from shared.private_to_public_bridge import (
     BridgeOutcome,
     BridgeRequest,
@@ -44,6 +57,10 @@ from shared.self_presence import (
 )
 
 # ---- Shared fixtures ----
+
+
+def _timestamp(value: str) -> float:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
 def _private_role() -> RoleSnapshot:
@@ -317,7 +334,50 @@ def test_impingement_content_has_broadcast_intent() -> None:
     assert content["destination"] == "broadcast"
     assert content["bridge_outcome"] == "public_action_proposal"
     assert content["route_posture"] == "broadcast_authorized"
-    assert content["programme_authorization"] == "programme:prog:test"
+    assert content["programme_authorization_ref"] == "programme:prog:test"
+    assert content["programme_authorization"] == {
+        "authorized": True,
+        "authorized_at": "2026-04-30T16:00:00Z",
+        "expires_at": "2026-04-30T17:00:00Z",
+        "programme_id": "prog:test",
+        "evidence_ref": "programme:prog:test",
+    }
+
+
+def test_bridge_impingement_content_passes_playback_gate(tmp_path) -> None:
+    """Bridge public proposal metadata is accepted by the CPAL playback gate."""
+
+    health_path = tmp_path / "audio-safe-for-broadcast.json"
+    write_broadcast_audio_health_state(
+        BroadcastAudioHealth(
+            safe=True,
+            status=BroadcastAudioStatus.SAFE,
+            checked_at="2026-04-30T16:01:00Z",
+            freshness_s=0.0,
+            evidence={"fixture": True},
+        ),
+        path=health_path,
+    )
+    request = BridgeRequest(
+        narrative_text="Hapax observes the research instrument stabilizing.",
+        programme_id="prog:test",
+        speech_event_id="speech:001",
+        envelope=_full_gates_envelope(),
+        explicit_public_intent=True,
+    )
+    result = evaluate_bridge(request)
+    content = _format_impingement_content(request, result)
+
+    decision = resolve_playback_decision(
+        SimpleNamespace(source="autonomous_narrative", content=content),
+        broadcast_audio_health_path=health_path,
+        now=_timestamp("2026-04-30T16:01:00Z"),
+    )
+
+    assert decision.allowed is True
+    assert decision.destination is DestinationChannel.LIVESTREAM
+    assert decision.reason_code == "broadcast_voice_authorized"
+    assert decision.media_role == BROADCAST_MEDIA_ROLE
 
 
 def test_impingement_content_private_has_no_broadcast() -> None:
@@ -332,6 +392,7 @@ def test_impingement_content_private_has_no_broadcast() -> None:
 
     assert content["public_broadcast_intent"] is False
     assert content["destination"] == "private"
+    assert content["programme_authorization"] is None
 
 
 def test_blue_yeti_private_cannot_reach_broadcast() -> None:

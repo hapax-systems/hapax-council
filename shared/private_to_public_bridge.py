@@ -112,9 +112,10 @@ def _format_impingement_content(request: BridgeRequest, result: BridgeResult) ->
     ``destination_channel.py`` will inspect to find explicit broadcast intent.
     """
 
+    programme_id = request.programme_id or request.envelope.programme_id
     content: dict = {
         "narrative": result.narrative_text,
-        "programme_id": request.programme_id,
+        "programme_id": programme_id,
         "operator_referent": request.operator_referent,
         "impulse_id": request.impulse_id,
         "speech_event_id": request.speech_event_id,
@@ -126,10 +127,34 @@ def _format_impingement_content(request: BridgeRequest, result: BridgeResult) ->
         "route_posture": result.route_posture,
         "claim_ceiling": result.claim_ceiling.value,
         "aperture_id": result.aperture_id,
-        "programme_authorization": result.programme_authorization,
+        "programme_authorization": _programme_authorization_payload(request, result),
+        "programme_authorization_ref": result.programme_authorization,
         "evidence_refs": list(result.evidence_refs),
     }
     return content
+
+
+def _programme_authorization_payload(
+    request: BridgeRequest,
+    result: BridgeResult,
+) -> dict[str, object] | None:
+    if (
+        result.outcome is not BridgeOutcome.PUBLIC_ACTION_PROPOSAL
+        or not result.public_broadcast_intent
+        or not result.programme_authorization
+        or not request.envelope.programme_authorized_at
+    ):
+        return None
+
+    payload: dict[str, object] = {
+        "authorized": True,
+        "authorized_at": request.envelope.programme_authorized_at,
+        "programme_id": request.programme_id or request.envelope.programme_id,
+        "evidence_ref": result.programme_authorization,
+    }
+    if request.envelope.programme_expires_at:
+        payload["expires_at"] = request.envelope.programme_expires_at
+    return payload
 
 
 def evaluate_bridge(request: BridgeRequest) -> BridgeResult:
@@ -183,6 +208,12 @@ def evaluate_bridge(request: BridgeRequest) -> BridgeResult:
                 outcome=BridgeOutcome.HELD,
                 narrative_text=request.narrative_text,
                 blockers=("programme_id_mismatch",),
+            )
+        if not envelope.programme_authorized_at:
+            return BridgeResult(
+                outcome=BridgeOutcome.HELD,
+                narrative_text=request.narrative_text,
+                blockers=("programme_authorization_timestamp_missing",),
             )
         programme_auth = (
             f"programme:{programme_id}"
