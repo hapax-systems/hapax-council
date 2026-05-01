@@ -58,6 +58,7 @@ implications:
   level: system
 
 - id: cb-extensible-001
+  status: retired
   tier: T1
   text: Adding a new LLM provider must require only implementing a provider
     interface and adding a settings entry, not structural changes.
@@ -67,6 +68,7 @@ implications:
   level: subsystem
 
 - id: cb-parity-001
+  status: retired
   tier: T2
   text: Core chat functionality (conversation, note context, slash commands)
     must work identically regardless of provider selection.

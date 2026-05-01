@@ -52,6 +52,7 @@ implications:
   level: subsystem
 
 - id: mg-prep-001
+  status: retired
   tier: T2
   text: Prep agents focus on signal aggregation and open-loop surfacing,
     not people recommendations or relationship advice.

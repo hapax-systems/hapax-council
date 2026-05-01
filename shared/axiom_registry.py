@@ -97,6 +97,7 @@ class Implication:
     level: str = "component"  # "component" | "subsystem" | "system"
     scope: ImplicationScope | None = None  # E-1: optional scope for sufficiency implications
     linkage: str = ""  # "" (default; expects constitutive rule) | "code-direct"
+    status: str = "active"  # "active" | "retired"
     """Optional: explicitly declares how the implication is enforced.
 
     Default empty string means the implication SHOULD be backed by a
@@ -244,6 +245,7 @@ def _build_implication(entry: dict, *, default_axiom_id: str) -> Implication:
         level=entry.get("level", "component"),
         scope=scope,
         linkage=str(entry.get("linkage", "")).strip(),
+        status=str(entry.get("status", "active")).strip() or "active",
     )
 
 

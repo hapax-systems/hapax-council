@@ -782,6 +782,36 @@ def test_check_coherence_real_tree_drops_su_and_it_cluster_orphans():
         )
 
 
+def test_implication_status_default_active():
+    """Implications without explicit `status` default to 'active'."""
+    from shared.axiom_registry import load_implications
+
+    # Use any production implication; sample one from the corpus.
+    impls = load_implications("single_user")
+    assert impls, "production single_user impls should load"
+    # All non-retired impls have status='active'.
+    actives = [i for i in impls if i.status == "active"]
+    assert actives  # at least some are active
+    for impl in actives:
+        assert impl.status == "active"
+
+
+def test_implication_status_retired_excluded_from_orphan_tally():
+    """Phase 3 of the orphan-train: 3 retired impls (cb-extensible-001,
+    cb-parity-001, mg-prep-001) annotated with status: retired must
+    be excluded from the orphan tally entirely.
+    """
+    from shared.coherence import check_coherence
+
+    report = check_coherence()
+    orphan_ids = {g.source_id for g in report.gaps if g.gap_type == "orphan_implication"}
+    retired = ("cb-extensible-001", "cb-parity-001", "mg-prep-001")
+    for ret in retired:
+        assert ret not in orphan_ids, (
+            f"{ret} is status: retired; must be excluded from orphan tally"
+        )
+
+
 def test_check_coherence_real_tree_drops_16_ex_cluster_orphans():
     """Phase 4 of the orphan-train: 16 executive_function impls
     annotated as code-direct (all verified text-referenced in
@@ -838,16 +868,21 @@ def test_check_coherence_real_tree_drops_3_mg_cluster_orphans():
         assert not_orphan not in orphan_ids, (
             f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
         )
+    # mg-prep-001 was retired in Phase 3 (status: retired); the other
+    # 3 remain as legitimate orphans pending Phase 2 wiring or Phase 3
+    # retirement of their own.
     legitimate_orphans = (
         "mg-selfreport-001",
         "mg-deterministic-001",
         "mg-bridge-001",
-        "mg-prep-001",
     )
     for orphan in legitimate_orphans:
         assert orphan in orphan_ids, (
             f"{orphan} has no code references; should remain orphan but doesn't appear"
         )
+    assert "mg-prep-001" not in orphan_ids, (
+        "mg-prep-001 should be retired (status:retired); must not appear in orphan tally"
+    )
 
 
 def test_check_coherence_real_tree_drops_5_cb_cluster_orphans():
@@ -875,8 +910,11 @@ def test_check_coherence_real_tree_drops_5_cb_cluster_orphans():
         assert not_orphan not in orphan_ids, (
             f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
         )
-    legitimate_orphans = ("cb-extensible-001", "cb-parity-001")
-    for orphan in legitimate_orphans:
-        assert orphan in orphan_ids, (
-            f"{orphan} has no code references; should remain orphan but doesn't appear"
+    # cb-extensible-001 and cb-parity-001 were retired in the Phase 3
+    # dead-letter retirement batch (status: retired). They no longer
+    # appear in the orphan tally — that is the intended behavior.
+    retired = ("cb-extensible-001", "cb-parity-001")
+    for ret in retired:
+        assert ret not in orphan_ids, (
+            f"{ret} should be retired (status:retired); must not appear in orphan tally"
         )
