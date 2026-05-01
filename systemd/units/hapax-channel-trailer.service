@@ -1,6 +1,6 @@
 [Unit]
-Description=Hapax channel trailer rotator (ytb-011 Phase 1)
-Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/channel_metadata/trailer_rotator.py
+Description=Hapax channel trailer rotator (NOT-LIVE — credential_blocked; awaits OAuth + YOUTUBE_CHANNEL_ID bootstrap)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/docs/governance/channel-trailer-status.md
 After=network-online.target hapax-secrets.service
 Wants=network-online.target
 PartOf=hapax.target
@@ -13,10 +13,28 @@ Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
 Environment=HAPAX_CHANNEL_TRAILER_METRICS_PORT=9499
 Environment=HAPAX_CHANNEL_TRAILER_TICK_S=30
 Environment=HAPAX_LOG_LEVEL=INFO
-# OAuth path: shared/google_auth.py reads `google/token` from the pass
-# store. Operator must mint the token with `youtube.force-ssl` scope
-# (the channels.update API requires write access). YOUTUBE_CHANNEL_ID
-# must be exported from hapax-secrets — daemon errors gracefully if absent.
+# Status: credential_blocked — see docs/governance/channel-trailer-status.md
+# (decision recorded 2026-05-01 under cc-task
+# youtube-channel-trailer-public-event-reconcile).
+#
+# Aperture row: shared/cross_surface_event_contract.py
+# (aperture_id="youtube_channel_trailer", current_reality="credential_blocked",
+# allowed_actions=("link", "embed", "redact", "hold")). The trailer never
+# `publish`es content; it only re-points YouTube's `unsubscribedTrailer`
+# at the current live broadcast URL.
+#
+# Quota owner: `channels.update` part=brandingSettings (~50 quota units
+# per call; rate-limit-gated to 2/hour, 6/day per
+# axioms/contracts/publication/channel-trailer.yaml).
+#
+# To go live (post-bootstrap):
+#   1. shared/google_auth.py reads `google/token` from the pass store —
+#      mint with the `youtube.force-ssl` scope (channels.update needs write).
+#   2. Export YOUTUBE_CHANNEL_ID via hapax-secrets.
+#   3. Flip current_reality → active_legacy in cross_surface_event_contract.
+#   4. systemctl --user restart hapax-channel-trailer.service.
+# Until then the daemon idles + logs "no_credentials" / "no_channel_id"
+# per `broadcast_rotated` event with NO public-live claim.
 ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.channel_metadata
 Restart=on-failure
 RestartSec=15

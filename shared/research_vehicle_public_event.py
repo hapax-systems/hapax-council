@@ -74,6 +74,7 @@ type Surface = Literal[
     "youtube_captions",
     "youtube_shorts",
     "youtube_channel_sections",
+    "youtube_channel_trailer",
     "arena",
     "omg_statuslog",
     "omg_weblog",

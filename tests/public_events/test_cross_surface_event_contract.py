@@ -101,6 +101,7 @@ def test_contract_payload_is_schema_valid_and_covers_required_apertures() -> Non
     assert set(payload["actions"]) == set(ALL_FANOUT_ACTIONS)
     assert {aperture.aperture_id for aperture in CROSS_SURFACE_APERTURES} == {
         "youtube",
+        "youtube_channel_trailer",
         "omg_statuslog",
         "omg_weblog",
         "arena",
@@ -115,6 +116,7 @@ def test_contract_payload_is_schema_valid_and_covers_required_apertures() -> Non
         aperture.aperture_id: aperture.current_reality for aperture in CROSS_SURFACE_APERTURES
     }
     assert realities["mastodon"] == "active_canonical"
+    assert realities["youtube_channel_trailer"] == "credential_blocked"
 
 
 def test_publish_decision_allows_policy_matching_mastodon_event() -> None:
