@@ -1,9 +1,18 @@
 [Unit]
-Description=Sync gdrive:drop every 5s
+Description=Sync gdrive:drop every 30s
 
 [Timer]
-OnBootSec=5s
-OnUnitActiveSec=5s
+# Cadence: 30s (per operator CLAUDE.md "syncs from gdrive:drop every 30s
+# via rclone systemd timer"). The prior 5s value was stale relative to
+# operator intent; bisync runtime averaged ~14s, so the 5s cadence
+# meant the next cycle started immediately after the previous finished
+# with no idle time, producing continuous disk + network churn for
+# essentially zero benefit on a drop folder that gets new files
+# minute-scale at most. PR #1730 had bundled this fix with unrelated
+# audio/CPU work and was closed without merge; closing this drift via
+# cc-task `rclone-gdrive-drop-cadence-decision` (2026-05-01).
+OnBootSec=30s
+OnUnitActiveSec=30s
 AccuracySec=1s
 
 [Install]
