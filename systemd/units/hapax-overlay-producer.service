@@ -1,0 +1,24 @@
+[Unit]
+Description=Hapax overlay-zones producer (Phase 1 — git activity → overlay text repo)
+Documentation=https://github.com/ryanklee/council/blob/main/agents/overlay_producer/daemon.py
+Documentation=https://github.com/ryanklee/council/blob/main/docs/superpowers/specs/2026-04-27-overlay-zones-producer-design.md
+After=network-online.target
+Wants=network-online.target
+PartOf=hapax.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=HAPAX_LOG_LEVEL=INFO
+# Default tick cadence is 60s (DEFAULT_TICK_INTERVAL_S); override via
+# HAPAX_OVERLAY_PRODUCER_TICK_S if needed.
+# Phase 1 ships the GitActivitySource (council repo activity → overlay
+# text repo); future sources mount onto the same producer module.
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.overlay_producer
+Restart=on-failure
+RestartSec=15
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target
