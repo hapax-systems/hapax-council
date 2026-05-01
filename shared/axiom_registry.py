@@ -273,10 +273,20 @@ def _build_precedent(entry: dict, *, default_axiom_id: str) -> Precedent:
 def _load_list_schema_precedents(precedent_file: Path) -> list[Precedent]:
     """Load list-schema precedents from a seed file.
 
-    File shape: ``precedents:`` list of per-precedent rows. Each row's
-    ``axiom_id`` is required (rows in the same file may target
-    different axioms — the seed files are organized by topic, not
-    by parent axiom).
+    File shape: ``precedents:`` list of per-precedent rows. Two
+    sub-shapes coexist in the production tree:
+
+    - **Multi-axiom seeds** (``architecture-seeds.yaml``,
+      ``sufficiency-seeds.yaml``): no top-level ``axiom_id``; each
+      row declares its own ``axiom_id``.
+    - **Single-axiom seeds** (``single-user-seeds.yaml``,
+      ``executive-function-seeds.yaml``, ``management-seeds.yaml``):
+      top-level ``axiom_id: <id>`` + bare rows that inherit the
+      parent's axiom_id.
+
+    Rows fall back to the parent-doc ``axiom_id`` when the row
+    doesn't carry one. Rows where neither path resolves to a non-empty
+    axiom_id are silently skipped.
     """
     try:
         data = yaml.safe_load(precedent_file.read_text())
@@ -285,12 +295,12 @@ def _load_list_schema_precedents(precedent_file: Path) -> list[Precedent]:
         return []
     if not isinstance(data, dict):
         return []
+    parent_axiom_id = data.get("axiom_id", "")
     out: list[Precedent] = []
     for entry in data.get("precedents", []) or []:
         if not isinstance(entry, dict) or "id" not in entry:
             continue
-        # Each row must declare its own axiom_id; no parent fallback.
-        axiom_id = entry.get("axiom_id")
+        axiom_id = entry.get("axiom_id") or parent_axiom_id
         if not axiom_id:
             continue
         out.append(_build_precedent(entry, default_axiom_id=axiom_id))

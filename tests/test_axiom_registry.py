@@ -377,12 +377,74 @@ def test_load_precedents_missing_dir(tmp_path):
     assert load_precedents("anything", path=tmp_path) == []
 
 
+def test_load_precedents_falls_back_to_parent_doc_axiom_id(tmp_path):
+    """Single-axiom seed files declare ``axiom_id`` once at the top
+    of the document; rows inherit. The loader must fall back to the
+    parent-doc axiom_id when a row doesn't carry its own.
+
+    Production examples: ``axioms/precedents/seed/single-user-seeds.yaml``,
+    ``executive-function-seeds.yaml``, ``management-seeds.yaml``.
+    """
+    from shared.axiom_registry import load_precedents
+
+    seed = tmp_path / "precedents" / "seed"
+    seed.mkdir(parents=True)
+    (seed / "inherited.yaml").write_text(
+        "axiom_id: parent_axiom\n"
+        "precedents:\n"
+        "  - id: sp-bare-001\n"
+        '    situation: "First bare row."\n'
+        "    decision: compliant\n"
+        "    tier: T1\n"
+        "  - id: sp-bare-002\n"
+        '    situation: "Second bare row."\n'
+        "    decision: compliant\n"
+        "    tier: T0\n"
+    )
+    out = load_precedents("parent_axiom", path=tmp_path)
+    ids = {p.id for p in out}
+    assert "sp-bare-001" in ids
+    assert "sp-bare-002" in ids
+    assert all(p.axiom_id == "parent_axiom" for p in out)
+
+
+def test_load_precedents_per_row_axiom_id_overrides_parent(tmp_path):
+    """When a row declares its own axiom_id (multi-axiom seed shape),
+    it overrides the parent-doc axiom_id. Mixed files are valid."""
+    from shared.axiom_registry import load_precedents
+
+    seed = tmp_path / "precedents" / "seed"
+    seed.mkdir(parents=True)
+    (seed / "mixed.yaml").write_text(
+        "axiom_id: parent_axiom\n"
+        "precedents:\n"
+        "  - id: sp-inherits\n"
+        '    situation: "Inherits parent."\n'
+        "    decision: compliant\n"
+        "  - id: sp-overrides\n"
+        "    axiom_id: other_axiom\n"
+        '    situation: "Overrides to other."\n'
+        "    decision: compliant\n"
+    )
+    parent_out = load_precedents("parent_axiom", path=tmp_path)
+    parent_ids = {p.id for p in parent_out}
+    assert "sp-inherits" in parent_ids
+    assert "sp-overrides" not in parent_ids
+
+    other_out = load_precedents("other_axiom", path=tmp_path)
+    other_ids = {p.id for p in other_out}
+    assert "sp-overrides" in other_ids
+    assert "sp-inherits" not in other_ids
+
+
 def test_load_precedents_real_tree_resolves_known_ids():
     """Smoke against the production axioms/precedents/ tree.
 
     `single_user` and `management_governance` axioms each have at
     least one standalone precedent file plus seed entries; both
-    must be discoverable via the loader.
+    must be discoverable via the loader. This pins both seed shapes:
+    sp-su-001..004 use parent-doc inheritance; sp-arch-* use per-row
+    axiom_id; sp-su-005 is standalone-schema.
     """
     from shared.axiom_registry import AXIOMS_PATH, load_precedents
 
@@ -390,9 +452,20 @@ def test_load_precedents_real_tree_resolves_known_ids():
     su_ids = {p.id for p in su}
     # The standalone sp-su-005-worktree-isolation must appear.
     assert "sp-su-005-worktree-isolation" in su_ids
-    # At least one seed-file entry must also appear.
-    assert any(p.id.startswith("sp-arch-") or p.id.startswith("sp-su-") for p in su)
+    # Inherited seed entries (single-user-seeds.yaml uses parent-doc
+    # axiom_id) must appear.
+    assert "sp-su-001" in su_ids
+    assert "sp-su-004" in su_ids
+    # Per-row seed entries (architecture-seeds.yaml has rows targeting
+    # single_user) must appear.
+    assert any(p.id.startswith("sp-arch-") for p in su)
 
     mg = load_precedents("management_governance", path=AXIOMS_PATH)
     mg_ids = {p.id for p in mg}
     assert "sp-hsea-mg-001" in mg_ids
+    assert "sp-mgmt-001" in mg_ids  # inherited from management-seeds.yaml top-level
+
+    ef = load_precedents("executive_function", path=AXIOMS_PATH)
+    ef_ids = {p.id for p in ef}
+    # executive-function-seeds.yaml uses parent-doc axiom_id.
+    assert "sp-ef-001" in ef_ids
