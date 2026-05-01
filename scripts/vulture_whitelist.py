@@ -716,3 +716,36 @@ MonetizationReadinessLedger.public_target_families
 MonetizationReadinessLedger.monetizable_target_families
 MonetizationReadinessLedger.blocked_target_families
 evaluate_default_monetization_readiness
+# Operator predictive dossier productization contract: typed atomic-row
+# schema + leak detectors + render path. The query helpers, leak detectors,
+# and renderer are the public read-side API for downstream feature-spec
+# and value-braid surfaces; tests + Phase 2+ ingestion call them dynamically.
+from shared.operator_predictive_dossier_contract import (
+    LeakFinding,
+    OperatorPredictiveDossier,
+    detect_evidence_ref_leaks,
+    detect_leaks,
+    empty_dossier,
+    render_dossier_for_prompt,
+    render_row_for_prompt,
+)
+
+LeakFinding
+OperatorPredictiveDossier.by_id
+OperatorPredictiveDossier.active_rows
+OperatorPredictiveDossier.for_vertical
+OperatorPredictiveDossier.for_operator_dimension
+detect_evidence_ref_leaks
+detect_leaks
+empty_dossier
+render_dossier_for_prompt
+render_row_for_prompt
+
+# DossierRow Pydantic validators are invoked dynamically at construction.
+# Vulture flags _validate_governance_consistency because its body
+# raises only — but the validator itself is the gate that keeps the
+# anti-overclaim invariant from being bypassed.
+from shared.operator_predictive_dossier_contract import DossierRow as _DossierRow
+
+_DossierRow._validate_evidence_sufficiency
+_DossierRow._validate_governance_consistency
