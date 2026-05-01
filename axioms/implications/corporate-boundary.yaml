@@ -4,6 +4,7 @@ model: balanced
 derivation_version: 1
 implications:
 - id: cb-llm-001
+  linkage: code-direct
   tier: T0
   text: Extension must support direct API calls to sanctioned providers (OpenAI,
     Anthropic) without requiring a localhost proxy. LiteLLM restriction is
@@ -14,6 +15,7 @@ implications:
   level: component
 
 - id: cb-data-001
+  linkage: code-direct
   tier: T0
   text: Vault data flow must use only git via corporate-approved remote.
     Extension must never require direct network access to home services for
@@ -24,6 +26,7 @@ implications:
   level: subsystem
 
 - id: cb-degrade-001
+  linkage: code-direct
   tier: T0
   text: Features depending on localhost services (RAG search, health status,
     embedding) must fail silently with informative UI, not throw errors.
@@ -33,6 +36,7 @@ implications:
   level: component
 
 - id: cb-key-001
+  linkage: code-direct
   tier: T0
   text: API credentials resolved from VS Code settings, environment variables,
     or pass store (in that order). Per-machine settings are not synced via git.
@@ -43,6 +47,7 @@ implications:
   level: component
 
 - id: cb-secret-scan-001
+  linkage: code-direct
   tier: T1
   text: All hapax repositories must have .gitignore patterns for sensitive files
     (.env, *.pem, *.key, credentials.json). No tracked files may match sensitive
