@@ -103,6 +103,7 @@ from shared.format_wcs_requirement_matrix import (
     load_format_wcs_requirement_matrix,
     opportunity_gate_projection,
 )
+from shared.github_publication_log import GitHubPublicationLogEvent
 from shared.grounding_provider_router import (
     build_eval_artifact,
     build_privacy_egress_preflight,
@@ -258,6 +259,7 @@ TemporalShmPayloadFixture._validate_fixture_case
 TemporalBandEvidenceFixtureSet._validate_fixture_set
 LivestreamHealthGroup._non_healthy_groups_explain_themselves
 LivestreamHealthEnvelope._validate_group_set_and_claim_implications
+GitHubPublicationLogEvent._publication_state_matches_evidence
 LivestreamHealthEnvelope.groups_by_id
 
 # Director intent models split real provenance from synthetic diagnostics via
