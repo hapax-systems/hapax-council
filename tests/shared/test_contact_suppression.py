@@ -95,9 +95,7 @@ class TestLoad:
     def test_loads_existing_yaml(self, tmp_path: Path) -> None:
         path = tmp_path / "list.yaml"
         # Pre-populate via append.
-        append_entry(
-            orcid=VALID_ORCID, reason="test entry", path=path
-        )
+        append_entry(orcid=VALID_ORCID, reason="test entry", path=path)
         result = load(path=path)
         assert len(result.entries) == 1
         assert result.entries[0].orcid == VALID_ORCID
@@ -123,12 +121,8 @@ class TestAppendEntry:
         """Same orcid + email_domain + initiator returns the existing
         entry, not a new one."""
         path = tmp_path / "list.yaml"
-        first = append_entry(
-            orcid=VALID_ORCID, reason="initial", path=path
-        )
-        second = append_entry(
-            orcid=VALID_ORCID, reason="duplicate", path=path
-        )
+        first = append_entry(orcid=VALID_ORCID, reason="initial", path=path)
+        second = append_entry(orcid=VALID_ORCID, reason="duplicate", path=path)
         # Returns the existing entry, not a fresh one.
         assert second.reason == first.reason
         # And the file still has just one entry.
