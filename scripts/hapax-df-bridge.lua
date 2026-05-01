@@ -275,9 +275,38 @@ local function build_full_state()
     state.wealth = wealth_ok and wealth or {created = 0, exported = 0, imported = 0}
 
     -- Map summary (basic)
+    -- z_levels_explored: prefer the world map's allocated-block count
+    -- (the cc-task `fortress-df-bridge-narrative-data-completeness`
+    -- documents `df.global.world.map.z_count_block` as the canonical
+    -- proxy for "z-levels the fortress has actually allocated", which
+    -- is closer to the operator's mental model of "explored" than the
+    -- raw z_count world dimension).
+    local z_levels_explored = 0
+    pcall(function()
+        z_levels_explored = df.global.world.map.z_count_block or 0
+    end)
+
+    -- cavern_layers_breached: count cavern subterranean features whose
+    -- `flags.discovered` bit is set. DF exposes ~3 cavern layers per
+    -- world; a fortress that has dug into N of them reports N here.
+    -- The `pcall` defends against DFHack version drift in the feature
+    -- struct layout — fail-soft to 0 rather than crashing the bridge.
+    local cavern_layers_breached = 0
+    pcall(function()
+        local features = df.global.world.features.map_features
+        if features == nil then return end
+        for _, feat in ipairs(features) do
+            if df.feature_init_subterranean_from_layerst:is_instance(feat) then
+                if feat.flags and feat.flags.Discovered then
+                    cavern_layers_breached = cavern_layers_breached + 1
+                end
+            end
+        end
+    end)
+
     state.map_summary = {
-        z_levels_explored = 0,  -- TODO: count explored z-levels
-        cavern_layers_breached = 0,  -- TODO: check cavern flags
+        z_levels_explored = z_levels_explored,
+        cavern_layers_breached = cavern_layers_breached,
         has_magma_access = false,
         has_water_source = true,  -- assume true for now
         aquifer_present = false,
@@ -632,12 +661,63 @@ local function poll_commands()
 end
 
 -- Event hooks
+
+-- Count active hostile units belonging to the invader civ. DF doesn't
+-- expose a single "siege roster size" field, so iterate
+-- `world.units.active` and filter by civ + not-citizen + not-dead.
+-- Wrapped in `pcall` so a missing field on a future DFHack version
+-- degrades to 0 rather than killing the event hook.
+local function _count_invaders(civ_id)
+    local count = 0
+    pcall(function()
+        for _, unit in ipairs(df.global.world.units.active) do
+            if unit.civ_id == civ_id and not dfhack.units.isCitizen(unit)
+               and not unit.flags1.dead then
+                count = count + 1
+            end
+        end
+    end)
+    return count
+end
+
 local function on_invasion(civ_id)
     table.insert(event_buffer, {
         type = "siege",
         attacker_civ = tostring(civ_id),
-        force_size = 0,  -- TODO: count invaders
+        force_size = _count_invaders(civ_id),
     })
+end
+
+-- Resolve a unit's cause-of-death enum to a readable string.
+-- DFHack stores the enum value in `unit.counters.death_id`'s referenced
+-- history-event when available, but the simpler stable path is the
+-- per-unit `death_cause` counter that maps into `df.death_type`. Fall
+-- back to "unknown" if either lookup fails.
+local function _death_cause_label(unit)
+    local label = "unknown"
+    pcall(function()
+        local raw = unit.counters and unit.counters.death_id
+        if raw == nil then
+            return
+        end
+        -- death_id < 0 means "no resolved history event" — leave label.
+        if raw < 0 then
+            return
+        end
+        local event = df.history_event.find(raw)
+        if event == nil then
+            return
+        end
+        local cause_enum = event.death_cause
+        if cause_enum == nil then
+            return
+        end
+        local mapped = df.death_type[cause_enum]
+        if mapped ~= nil then
+            label = tostring(mapped)
+        end
+    end)
+    return label
 end
 
 local function on_unit_death(unit_id)
@@ -647,7 +727,7 @@ local function on_unit_death(unit_id)
             type = "death",
             unit_id = unit_id,
             unit_name = dfhack.df2utf(dfhack.units.getReadableName(unit)),
-            cause = "unknown",  -- TODO: extract death cause
+            cause = _death_cause_label(unit),
         })
     end
 end
