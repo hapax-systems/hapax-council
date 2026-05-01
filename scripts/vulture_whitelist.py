@@ -806,3 +806,11 @@ from logos.api.routes.engine import (
 mood_arousal_status
 mood_valence_status
 mood_coherence_status
+
+# IR VLM hand-semantics classifier — Phase 1 ships the helper before
+# its consumer (Pi-edge daemon wiring in `pi-edge/ir_hands.py` lands
+# in a follow-up). Whitelisted so the Phase 1 slice can land first per
+# cc-task `ir-perception-replace-zones-with-vlm-classification`.
+from shared.ir_vlm_classifier import classify_hand_via_vlm
+
+classify_hand_via_vlm
