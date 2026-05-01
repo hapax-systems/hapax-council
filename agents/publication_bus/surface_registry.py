@@ -85,11 +85,6 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "agents.publication_bus.self_citation_graph_doi --commit"
         ),
     ),
-    "discord-webhook": SurfaceSpec(
-        automation_status=AutomationStatus.FULL_AUTO,
-        api="webhook",
-        dispatch_entry="agents.cross_surface.discord_webhook:publish_artifact",
-    ),
     "internet-archive-ias3": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="S3",
@@ -200,6 +195,19 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
     "discogs-submission": SurfaceSpec(
         automation_status=AutomationStatus.REFUSED,
         refusal_link="docs/refusal-briefs/discogs-tos-forbids.md",
+    ),
+    "discord-webhook": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/leverage-discord-community.md",
+        scope_note=(
+            "Discord is a multi-user platform; the single-operator axiom "
+            "and feedback_full_automation_or_no_engagement constitutional "
+            "directive both refuse webhook bots. The cross-surface webhook "
+            "agent at agents/cross_surface/discord_webhook.py is retained "
+            "as legacy reference; runtime dispatch is gated off via the "
+            "REFUSED tier (is_engageable returns False) so the publish "
+            "orchestrator never reaches it."
+        ),
     ),
     "rym-submission": SurfaceSpec(
         automation_status=AutomationStatus.REFUSED,

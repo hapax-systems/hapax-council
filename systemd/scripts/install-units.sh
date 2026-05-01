@@ -19,6 +19,7 @@ DECOMMISSIONED_UNITS=(
     hapax-build-reload.service
     logos-dev.service
     tabbyapi-hermes8b.service
+    hapax-discord-webhook.service
 )
 
 EXPECTED_PRIMARY="${HOME}/projects/hapax-council"

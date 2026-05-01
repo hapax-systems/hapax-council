@@ -152,7 +152,8 @@
         "missing_unit",
         "credential_blocked",
         "unavailable",
-        "operator_review"
+        "operator_review",
+        "refused"
       ]
     },
     "aperture_contract": {

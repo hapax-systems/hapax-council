@@ -37,7 +37,7 @@ Managed by:                         studio-fx-output  → ffmpeg /dev/video50
 Two top-level grouping targets organise the application stack:
 
 - **`hapax-visual-stack.target`** — production visual surface pipeline: `hapax-imagination`, `hapax-imagination-loop`, `hapax-dmn`, `hapax-reverie`, `hapax-content-resolver`, `visual-layer-aggregator`, `studio-compositor`. Lists dependents explicitly via `Wants=`. The Tauri/WebKit `hapax-logos` preview is decommissioned and is not pulled in by this target.
-- **`hapax.target`** — non-visual application services: broadcast/audio (`hapax-mastodon-post`, `hapax-bluesky-post`, `hapax-omg-lol-fanout`, `hapax-channel-trailer`, `hapax-live-cuepoints`), awareness (`hapax-operator-awareness`), marketing/observability (`hapax-chronicle-quality-exporter`, `hapax-feedback-loop-detector`, `hapax-impingement-sampler`, `hapax-quota-observability`, `hapax-youtube-telemetry`), mail-monitor (`hapax-mail-monitor-watch-renewal`, `hapax-mail-monitor-weekly-digest`), `hapax-broadcast-orchestrator`, `hapax-discord-webhook`. Dependent units declare `WantedBy=hapax.target`; enabling each unit creates a symlink under `~/.config/systemd/user/hapax.target.wants/`, and starting the target pulls the whole stack.
+- **`hapax.target`** — non-visual application services: broadcast/audio (`hapax-mastodon-post`, `hapax-bluesky-post`, `hapax-omg-lol-fanout`, `hapax-channel-trailer`, `hapax-live-cuepoints`), awareness (`hapax-operator-awareness`), marketing/observability (`hapax-chronicle-quality-exporter`, `hapax-feedback-loop-detector`, `hapax-impingement-sampler`, `hapax-quota-observability`, `hapax-youtube-telemetry`), mail-monitor (`hapax-mail-monitor-watch-renewal`, `hapax-mail-monitor-weekly-digest`), `hapax-broadcast-orchestrator`. Dependent units declare `WantedBy=hapax.target`; enabling each unit creates a symlink under `~/.config/systemd/user/hapax.target.wants/`, and starting the target pulls the whole stack. The `hapax-discord-webhook` unit was previously listed here but was decommissioned 2026-05-01 — see the `DECOMMISSIONED_UNITS` bullet list below.
 
 Both targets are `WantedBy=default.target` so they activate on user login.
 
@@ -158,6 +158,17 @@ systemctl --user daemon-reload
   and config file referenced by the unit do not exist on disk).
   Cleanup also removes the linked `tabbyapi-hermes8b.service.d/`
   drop-in directory.
+- `hapax-discord-webhook.service` — cross-surface Discord webhook
+  poster for the `discord-webhook` publication-bus surface. Retired
+  2026-05-01 per cc-task `discord-public-event-activation-or-retire`
+  to close the constitutional drift between the existing
+  `leverage-REFUSED-discord-community` refusal-brief (ratified
+  2026-04-26) and the still-deployed FULL_AUTO surface entry. The
+  agent module at `agents/cross_surface/discord_webhook.py` is
+  retained as legacy reference; the surface is now `REFUSED` tier in
+  `agents/publication_bus/surface_registry.py` so the orchestrator
+  cannot reach it at runtime. The unit had been linked but never
+  active (operator never bootstrapped `HAPAX_DISCORD_WEBHOOK_URL`).
 
 **Newly installed timers are auto-enabled.** As of the audit-followups-e1 PR, `install-units.sh` runs `systemctl --user enable --now <name>.timer` for every timer file it sees for the first time. Existing timers are left alone (re-running is idempotent). To suppress this for a one-off install, set `SKIP_TIMER_ENABLE=1` before running the script (intentionally not a flag — disabling auto-enable is the rare case).
 
