@@ -212,6 +212,26 @@ if [ -z "$CLAUDE_BIN" ]; then
   exit 4
 fi
 
+# Operator default: spawn lanes at max effort with permission prompts
+# bypassed. Override per-spawn via env: HAPAX_CLAUDE_EFFORT=xhigh,
+# HAPAX_CLAUDE_SKIP_PERMS=0. Anything passed after `--` wins over the
+# defaults because the user-supplied args trail CLAUDE_DEFAULT_ARGS.
+CLAUDE_DEFAULT_ARGS=()
+CLAUDE_EFFORT="${HAPAX_CLAUDE_EFFORT:-max}"
+case "$CLAUDE_EFFORT" in
+  low|medium|high|xhigh|max)
+    CLAUDE_DEFAULT_ARGS+=("--effort" "$CLAUDE_EFFORT")
+    ;;
+  '') ;;  # explicit opt-out — caller passed empty
+  *)
+    echo "hapax-claude: invalid HAPAX_CLAUDE_EFFORT '$CLAUDE_EFFORT'" >&2
+    exit 2
+    ;;
+esac
+if [ "${HAPAX_CLAUDE_SKIP_PERMS:-1}" = "1" ]; then
+  CLAUDE_DEFAULT_ARGS+=("--dangerously-skip-permissions")
+fi
+
 TMUX_NAME="hapax-claude-$ROLE"
 
 if [ "$TERMINAL" != "none" ]; then
@@ -237,7 +257,7 @@ export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
 
 if [ "$TERMINAL" = "none" ]; then
   cd "$WORKDIR"
-  exec "$CLAUDE_BIN" "${CLAUDE_EXTRA[@]}"
+  exec "$CLAUDE_BIN" "${CLAUDE_DEFAULT_ARGS[@]}" "${CLAUDE_EXTRA[@]}"
 fi
 
 # tmux/foot path: build a runner script that re-execs hapax-claude with
@@ -257,6 +277,9 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
   printf 'exec %q' "$CLAUDE_BIN"
+  for arg in "${CLAUDE_DEFAULT_ARGS[@]}"; do
+    printf ' %q' "$arg"
+  done
   for arg in "${CLAUDE_EXTRA[@]}"; do
     printf ' %q' "$arg"
   done
