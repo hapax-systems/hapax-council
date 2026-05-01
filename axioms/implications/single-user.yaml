@@ -120,6 +120,15 @@ implications:
   canon: purposivist
   mode: compatibility
   level: subsystem
+  status: retired
+  retirement_rationale: |
+    Superseded by su-deploy-001 (same scope, stronger phrasing). Both
+    are T1/review/subsystem-level deployment rules under single_user.
+    su-deployment-001 ("should optimize for single-instance") is the
+    softer normative form; su-deploy-001 ("must assume single-user
+    access patterns and can skip multi-tenancy considerations") is
+    the prescriptive form. Stronger phrasing subsumes the weaker
+    duplicate.
 - id: su-perf-001
   tier: T2
   text: Performance optimizations should prioritize single-user workflows over multi-user
