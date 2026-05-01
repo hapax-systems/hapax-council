@@ -39,12 +39,14 @@ class TestRefusedPublisherBase:
 
 
 class TestRegisteredRefusedClasses:
-    def test_five_refused_classes_registered(self) -> None:
-        """The keystone task acceptance criterion #6 enumerated 4
-        REFUSED-class publishers (bandcamp / discogs / rym /
-        crossref-event-data); cc-task `cold-contact-alphaxiv-comments`
-        adds the 5th (alphaxiv-comments)."""
-        assert len(REFUSED_PUBLISHER_CLASSES) == 5
+    def test_refused_classes_registered(self) -> None:
+        """The keystone task acceptance criterion #6 enumerated 4 REFUSED-class
+        publishers (bandcamp / discogs / rym / crossref-event-data); cc-task
+        `cold-contact-alphaxiv-comments` adds the 5th (alphaxiv-comments);
+        cc-task `discord-public-event-activation-or-retire` (2026-05-01
+        retirement) adds the 6th (discord-webhook).
+        """
+        assert len(REFUSED_PUBLISHER_CLASSES) == 6
 
     def test_all_refused_classes_subclass_refused_publisher(self) -> None:
         for cls in REFUSED_PUBLISHER_CLASSES:

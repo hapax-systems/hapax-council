@@ -4,6 +4,7 @@
 **Axiom tag:** `single_user`, `feedback_full_automation_or_no_engagement`
 **Refusal classification:** Multi-user platform — violates single-operator axiom
 **Status:** REFUSED — no Discord server, no webhook bot, no `agents/social_media/discord.py`.
+**Surface registry entry:** `discord-webhook` (REFUSED)
 **Date:** 2026-04-26 (amended 2026-05-01)
 **Related cc-tasks:**
   - `leverage-REFUSED-discord-community`
