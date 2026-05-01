@@ -749,3 +749,30 @@ from shared.operator_predictive_dossier_contract import DossierRow as _DossierRo
 
 _DossierRow._validate_evidence_sufficiency
 _DossierRow._validate_governance_consistency
+
+# Institutional fit source registry: public read-side API for the grant
+# attestation OS + reusable funding evidence packet cc-tasks (this PR
+# `blocks:` both). Tests + Phase 2+ ingestion call dynamically.
+from shared.institutional_fit_source_registry import (
+    EligibilityNote,
+    FundingAmount,
+    InstitutionalFitSourceRegistry,
+    Obligation,
+    SourceRow,
+    default_registry,
+)
+
+EligibilityNote
+FundingAmount
+Obligation
+InstitutionalFitSourceRegistry.by_id
+InstitutionalFitSourceRegistry.by_category
+InstitutionalFitSourceRegistry.engaged
+InstitutionalFitSourceRegistry.refused
+InstitutionalFitSourceRegistry.upcoming_deadlines
+SourceRow.freshness
+SourceRow.is_engaged
+SourceRow.days_until_deadline
+SourceRow._validate_no_false_affiliation
+FundingAmount._validate_range
+default_registry
