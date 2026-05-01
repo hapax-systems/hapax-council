@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax omg.lol weblog composer Timer (monthly, first day 09:00 UTC)
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+AccuracySec=15min
+
+[Install]
+WantedBy=timers.target

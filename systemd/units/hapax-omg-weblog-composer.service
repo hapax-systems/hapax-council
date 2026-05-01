@@ -1,0 +1,13 @@
+[Unit]
+Description=Hapax omg.lol weblog composer — monthly draft skeleton emitter to ~/hapax-state/weblog-drafts/
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.omg_weblog_composer
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+
+[Install]
+WantedBy=default.target
