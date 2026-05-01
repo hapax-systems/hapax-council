@@ -10,11 +10,9 @@ ExecStart=%h/projects/tabbyAPI/venv/bin/python3 main.py
 Restart=on-failure
 RestartSec=15
 # LRR Phase 3 item 8: raised from 120 → 180 seconds. Qwen3.5-9B EXL3
-# loads in ~40-50 s; Hermes 3 70B EXL3 at 3.0bpw (~26 GB) loads in
-# ~70-90 s on the 3090 based on comparable 70B EXL3 model-load
-# benchmarks. The extra 60 s of headroom prevents systemd from
-# killing start before the 70B model-load path finishes reading the
-# 30 safetensors shards from disk.
+# loads in ~40-50 s and would fit a 120 s timeout; the 180 s ceiling
+# is held as conservative headroom for substrate swaps that load more
+# safetensors shards from disk than the current Qwen 9B substrate.
 TimeoutStartSec=180
 Environment=PYTORCH_ALLOC_CONF=backend:cudaMallocAsync
 
