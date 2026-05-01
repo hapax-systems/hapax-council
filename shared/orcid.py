@@ -18,27 +18,44 @@ via ``shared.governance.omg_referent``.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from functools import lru_cache
 
 log = logging.getLogger(__name__)
 
 ORCID_PASS_KEY = "orcid/orcid"
+ORCID_ENV_VAR = "HAPAX_OPERATOR_ORCID"
 
 
 @lru_cache(maxsize=1)
 def operator_orcid() -> str | None:
     """Return the operator's ORCID iD or ``None`` if unavailable.
 
+    Resolution order:
+
+    1. ``$HAPAX_OPERATOR_ORCID`` env var — wins if non-empty. Set by
+       ``hapax-secrets.service`` (which sources from ``pass show
+       orcid/orcid``) and consumed by services that load
+       ``/run/user/1000/hapax-secrets.env`` via ``EnvironmentFile=``,
+       or by ``scripts/configure-orcid.sh`` for one-time bootstrap.
+    2. ``pass show orcid/orcid`` — direct pass-store fallback for
+       processes that don't have the env var loaded (interactive CLI,
+       tests, ad-hoc scripts).
+
     Cached for the process lifetime — the operator doesn't rotate the
-    iD across a session. Returns ``None`` when ``pass show`` fails for
-    any reason (missing key, gpg-agent unavailable, pass not installed)
-    so callers can degrade gracefully.
+    iD across a session. Returns ``None`` when both paths fail (no
+    env var + ``pass show`` errors out for any reason — missing key,
+    gpg-agent unavailable, pass not installed) so callers can degrade
+    gracefully.
 
     The iD has the form ``NNNN-NNNN-NNNN-NNNN`` (16 hex digits in 4
     hyphen-separated quads). No format validation is enforced here —
-    pass-store content is operator-controlled.
+    pass-store / env-var content is operator-controlled.
     """
+    env_value = (os.environ.get(ORCID_ENV_VAR) or "").strip()
+    if env_value:
+        return env_value
     try:
         result = subprocess.run(
             ["pass", "show", ORCID_PASS_KEY],
@@ -62,4 +79,4 @@ def operator_orcid() -> str | None:
     return iD or None
 
 
-__all__ = ["operator_orcid", "ORCID_PASS_KEY"]
+__all__ = ["operator_orcid", "ORCID_PASS_KEY", "ORCID_ENV_VAR"]
