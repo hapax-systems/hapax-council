@@ -122,7 +122,19 @@ class CBIPSignalDensityCairoSource(HomageTransitionalSource):
     # ── Layer 1: cover-art texture base ───────────────────────────
 
     def _refresh_cover(self) -> cairo.ImageSurface | None:
-        """Reload the cover-art surface when the file mtime changes."""
+        """Reload + palette-quantize the cover surface on mtime change.
+
+        Phase 2 of cc-task ``content-source-cbip-signal-density``
+        wires :func:`agents.studio_compositor.palette_quantize.quantize_cairo_to_package_palette`
+        into the cache so the layer paints the palette-quantized
+        cover, not the raw decode. Quantization is mtime-cached so
+        the per-tick render path stays cheap (the inner Pillow
+        round-trip is only paid when the cover file changes).
+
+        Falls back to the raw decode if quantization fails (PIL
+        missing, palette resolution failed, etc.) so a transient
+        error doesn't take the whole layer offline.
+        """
         try:
             mtime = COVER_PATH.stat().st_mtime
         except OSError:
@@ -132,24 +144,42 @@ class CBIPSignalDensityCairoSource(HomageTransitionalSource):
         if self._cached_cover is not None and mtime == self._cached_cover_mtime:
             return self._cached_cover
         try:
-            surface = cairo.ImageSurface.create_from_png(str(COVER_PATH))
+            raw_surface = cairo.ImageSurface.create_from_png(str(COVER_PATH))
         except Exception:
             log.debug("cbip cover-art decode failed", exc_info=True)
             self._cached_cover = None
             self._cached_cover_mtime = 0.0
             return None
-        self._cached_cover = surface
+
+        # Phase 2: quantize to the active HOMAGE package's mIRC palette
+        # so the cover-art base layer reads in the same colour family as
+        # the rest of the ward chrome. Falls back to the raw decode if
+        # quantization fails (PIL missing, package unavailable, etc.).
+        from agents.studio_compositor.palette_quantize import (
+            quantize_cairo_to_package_palette,
+        )
+
+        quantized: cairo.ImageSurface | None = None
+        try:
+            pkg = active_package()
+        except Exception:
+            log.debug("cbip active_package read failed; using raw cover", exc_info=True)
+            pkg = None
+        if pkg is not None:
+            quantized = quantize_cairo_to_package_palette(raw_surface, pkg)
+
+        self._cached_cover = quantized if quantized is not None else raw_surface
         self._cached_cover_mtime = mtime
-        return surface
+        return self._cached_cover
 
     def _paint_cover_art_base(self, cr: cairo.Context, canvas_w: int, canvas_h: int) -> bool:
-        """Tile the palette-quantized cover into the canvas as a low-
-        opacity texture base. Returns True if anything was drawn,
-        False when the cover-art file is missing or undecodable.
+        """Paint the palette-quantized cover as a low-opacity texture base.
 
-        The quantization step itself is delegated to a follow-up
-        slice — this Phase 1 paints the raw cover at COVER_BASE_ALPHA
-        so the base layer is visible while the palette mapper lands.
+        Returns True if anything was drawn, False when the cover-art
+        file is missing or undecodable. Quantization happens inside
+        :meth:`_refresh_cover` (mtime-cached) so this method just
+        scales-to-fit the cached surface and paints at
+        :data:`COVER_BASE_ALPHA`.
         """
         surface = self._refresh_cover()
         if surface is None:
@@ -159,10 +189,6 @@ class CBIPSignalDensityCairoSource(HomageTransitionalSource):
         if sw <= 0 or sh <= 0:
             return False
 
-        # Scale-to-fit using the larger axis so the cover doesn't
-        # repeat — palette-quantized tiling lands in the next slice
-        # (needs the active-package palette mapper from
-        # ``album_overlay._build_mirc16_palette_image``).
         scale_x = canvas_w / sw
         scale_y = canvas_h / sh
         scale = max(scale_x, scale_y)
