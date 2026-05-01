@@ -1306,15 +1306,28 @@ def _capture_snapshot_b64() -> str | None:
     Phase 3 (AUDIT-07 layer 4): switched from FX_SNAPSHOT (post-cairo)
     to LLM_FRAME (camera-only) so the model never reads ward text it
     previously authored. See ``add_llm_frame_snapshot_branch``.
+
+    False-grounding-prevention layer: when ``album-state.playing`` is
+    not ``True`` the frame is redacted (whole-frame pixelation) so the
+    multimodal LLM cannot read the album cover sitting on the
+    turntable and hallucinate track narrations from its training data.
     """
     import base64
 
+    from agents.studio_compositor.llm_frame_album_mask import mask_if_not_playing
+
     try:
-        if LLM_FRAME.exists():
-            return base64.b64encode(LLM_FRAME.read_bytes()).decode()
+        if not LLM_FRAME.exists():
+            return None
+        raw = LLM_FRAME.read_bytes()
     except Exception:
         log.warning("LLM-frame b64 capture failed", exc_info=True)
-    return None
+        return None
+
+    masked, decision = mask_if_not_playing(raw)
+    if decision.should_mask:
+        log.debug("album-mask applied to LLM frame: reason=%s", decision.reason)
+    return base64.b64encode(masked).decode()
 
 
 ACTIVITY_CAPABILITIES = (
@@ -3045,10 +3058,20 @@ class DirectorLoop:
         if images and DIRECTOR_MODEL in MULTIMODAL_ROUTES:
             import base64
 
+            from agents.studio_compositor.llm_frame_album_mask import mask_if_not_playing
+
             for img_path in images:
                 try:
                     if Path(img_path).exists():
-                        b64 = base64.b64encode(Path(img_path).read_bytes()).decode()
+                        raw = Path(img_path).read_bytes()
+                        # Apply album-cover redaction to the LLM_FRAME path
+                        # specifically — chat-reaction surfaces also forward
+                        # the camera frame, so the same false-grounding leak
+                        # would otherwise reach the model on the gather_images
+                        # path (only _capture_snapshot_b64 was wrapped before).
+                        if Path(img_path) == LLM_FRAME:
+                            raw, _decision = mask_if_not_playing(raw)
+                        b64 = base64.b64encode(raw).decode()
                         content.append(
                             {
                                 "type": "image_url",
