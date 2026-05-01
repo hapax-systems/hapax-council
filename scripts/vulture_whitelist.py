@@ -112,6 +112,10 @@ from shared.grounding_provider_router import (
 )
 from shared.livestream_health_group import LivestreamHealthEnvelope, LivestreamHealthGroup
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
+from shared.operator_quality_feedback import (
+    OperatorQualityRatingEvent,
+    iter_operator_quality_ratings,
+)
 from shared.private_to_public_bridge import BridgeResult, evaluate_bridge
 from shared.programme_revenue_braid_adapters import (
     BraidSnapshotRowRef,
@@ -290,6 +294,16 @@ public_conversion_is_allowed
 build_fixture_envelope
 NestedProgrammeOutcome._validate_nested_outcome_semantics
 ContentProgrammeRunEnvelope._validate_nested_outcome_graph
+
+# Operator-quality feedback is a private JSONL contract consumed by operator
+# control surfaces and downstream SS2/QM5 analysis. Pydantic invokes validators
+# dynamically, and the iterator is the stable reader for those later consumers.
+OperatorQualityRatingEvent._rating_must_not_be_bool
+OperatorQualityRatingEvent._occurred_at_must_be_utc
+OperatorQualityRatingEvent._strip_optional_strings
+OperatorQualityRatingEvent._required_strings_non_empty
+OperatorQualityRatingEvent._refs_non_empty
+iter_operator_quality_ratings
 
 # Content programme feedback-ledger helpers are the deterministic public API for
 # downstream Bayesian posterior, scheduler, metrics, and conversion consumers.

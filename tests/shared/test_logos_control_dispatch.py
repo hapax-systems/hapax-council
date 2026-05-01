@@ -85,6 +85,40 @@ def test_dispatch_uses_injected_compositor_client() -> None:
     assert client.calls == [("degraded.activate", {"reason": "operator"})]
 
 
+def test_operator_quality_route_writes_private_jsonl(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "ratings.jsonl"
+    monkeypatch.setenv("HAPAX_OPERATOR_QUALITY_FEEDBACK_PATH", str(target))
+
+    action = route_logos_control_command(
+        "operator.quality.rate",
+        {
+            "rating": 4,
+            "event_id": "oqr-dispatch",
+            "occurred_at": "2026-05-01T00:12:00Z",
+            "evidence_refs": ["control:stream_deck.key.13"],
+        },
+    )
+    assert action.transport == "local-quality-feedback"
+
+    result = asyncio.run(
+        dispatch_logos_control(
+            "operator.quality.rate",
+            {
+                "rating": 4,
+                "event_id": "oqr-dispatch",
+                "occurred_at": "2026-05-01T00:12:00Z",
+                "evidence_refs": ["control:stream_deck.key.13"],
+            },
+        )
+    )
+
+    assert result["event_id"] == "oqr-dispatch"
+    assert result["source_surface"] == "streamdeck"
+    assert target.exists()
+
+
 def test_frontend_only_command_fails_closed() -> None:
     with pytest.raises(UnsupportedLogosControlCommand):
         route_logos_control_command("terrain.focus", {"region": "ground"})
