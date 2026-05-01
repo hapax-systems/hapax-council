@@ -178,3 +178,18 @@ rules:
       Files with `inferred: true` count as derived/inferred state
       about a non-operator person, requiring consent-contract scope
       coverage (it-inference-001).
+
+  # ── Configuration file defaults (ex-config-001) ───────────────────
+  # Files at `config/*.yaml` ARE the operator-environment configuration
+  # surface. They count as configuration-file under ex-config-001
+  # (must have comprehensive defaults that work in the operator's
+  # environment without mandatory customization).
+  - id: cr-config-yaml
+    brute_pattern: "config/*.yaml"
+    institutional_type: configuration-file
+    context: configuration
+    match_type: path
+    linked_implications: [ex-config-001]
+    description: >
+      Files at `config/*.yaml` count as operator-environment config
+      surface; must have comprehensive defaults per ex-config-001.

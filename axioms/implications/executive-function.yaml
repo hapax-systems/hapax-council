@@ -225,6 +225,7 @@ implications:
   mode: sufficiency
   level: system
 - id: ex-config-005
+  status: retired
   tier: T1
   text: Configuration files must provide sensible defaults that work without operator
     customization.
