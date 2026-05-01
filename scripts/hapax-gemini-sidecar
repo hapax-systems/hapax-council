@@ -54,6 +54,12 @@ MODE_TEMPLATES: dict[str, str] = {
     ),
 }
 
+# Latest highest-capability Gemini CLI selector verified 2026-05-01:
+# Gemini CLI docs say Gemini 3.1 Pro Preview is rolling out and can be launched
+# directly with `-m gemini-3.1-pro-preview` when the account has access. The
+# Gemini API models page identifies Gemini 3 Pro as the most intelligent public
+# model family. For coding/review sidecars, use the 3.1 Pro selector first and
+# let strict callers fail closed instead of silently downgrading quality.
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 AUTO_ROUTING_SENTINEL = "auto"
 FALLBACK_BY_MODE: dict[str, list[str]] = {
@@ -130,6 +136,13 @@ def _model_attempts(mode: str, requested_model: str | None) -> list[str]:
         tail = [model for model in FALLBACK_BY_MODE[mode] if model != requested]
         return [requested, *tail]
     return list(FALLBACK_BY_MODE[mode])
+
+
+def _strict_model_attempts(mode: str, requested_model: str | None) -> list[str]:
+    attempts = _model_attempts(mode, requested_model)
+    if not attempts:
+        raise SystemExit(f"hapax-gemini-sidecar: no model attempts configured for mode {mode}")
+    return [attempts[0]]
 
 
 def _fallbackable(output: str) -> bool:
@@ -214,6 +227,12 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metadata-log")
     parser.add_argument("--artifact-dir")
     parser.add_argument(
+        "--strict-model",
+        action="store_true",
+        default=os.environ.get("HAPAX_GEMINI_SIDECAR_STRICT_MODEL") == "1",
+        help="Use only the selected model; do not fall back to lower-capability models.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print planned command/prompt as JSON without invoking Gemini.",
@@ -224,7 +243,11 @@ def _make_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _make_parser().parse_args(argv)
     prompt = _build_prompt(args.mode, _prompt_from_args(args))
-    attempts = _model_attempts(args.mode, args.model)
+    attempts = (
+        _strict_model_attempts(args.mode, args.model)
+        if args.strict_model
+        else _model_attempts(args.mode, args.model)
+    )
 
     if args.dry_run:
         print(

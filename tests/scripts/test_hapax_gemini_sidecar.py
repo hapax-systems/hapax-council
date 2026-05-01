@@ -156,3 +156,105 @@ exit 2
             "model": "gemini-3.1-pro-preview",
         }
     ]
+
+
+def test_strict_model_disables_lower_capability_fallback(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls.jsonl"
+    fake_gemini = bin_dir / "gemini"
+    fake_gemini.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\0' "$*" >> {calls}
+printf '%s\\n' '429 quota exceeded for pro' >&2
+exit 1
+"""
+    )
+    fake_gemini.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            str(WRAPPER),
+            "--strict-model",
+            "--mode",
+            "reviewer",
+            "--prompt",
+            "Review without fallback.",
+            "--metadata-log",
+            str(tmp_path / "metadata.jsonl"),
+            "--artifact-dir",
+            str(tmp_path / "artifacts"),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    call_lines = [line for line in calls.read_text().split("\0") if line]
+    assert len(call_lines) == 1
+    assert "gemini-3.1-pro-preview" in call_lines[0]
+    assert "gemini-3-flash-preview" not in call_lines[0]
+    metadata = json.loads((tmp_path / "metadata.jsonl").read_text().splitlines()[0])
+    assert metadata["fallback_selected"] == "gemini-3.1-pro-preview"
+    assert metadata["attempts"] == [
+        {
+            "exit_code": 1,
+            "fallbackable": True,
+            "model": "gemini-3.1-pro-preview",
+        }
+    ]
+
+
+def test_strict_model_env_disables_lower_capability_fallback(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls.jsonl"
+    fake_gemini = bin_dir / "gemini"
+    fake_gemini.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\0' "$*" >> {calls}
+printf '%s\\n' '429 quota exceeded for pro' >&2
+exit 1
+"""
+    )
+    fake_gemini.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_GEMINI_SIDECAR_STRICT_MODEL"] = "1"
+
+    result = subprocess.run(
+        [
+            str(WRAPPER),
+            "--mode",
+            "reviewer",
+            "--prompt",
+            "Review without fallback.",
+            "--metadata-log",
+            str(tmp_path / "metadata.jsonl"),
+            "--artifact-dir",
+            str(tmp_path / "artifacts"),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    call_lines = [line for line in calls.read_text().split("\0") if line]
+    assert len(call_lines) == 1
+    assert "gemini-3.1-pro-preview" in call_lines[0]
+    metadata = json.loads((tmp_path / "metadata.jsonl").read_text().splitlines()[0])
+    assert metadata["attempts"] == [
+        {
+            "exit_code": 1,
+            "fallbackable": True,
+            "model": "gemini-3.1-pro-preview",
+        }
+    ]
