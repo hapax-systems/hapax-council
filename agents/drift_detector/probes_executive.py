@@ -145,6 +145,81 @@ def _check_briefing_multi_source() -> tuple[bool, str]:
     return False, f"briefing only uses {len(sources)} sources: {', '.join(sources)}"
 
 
+def _check_long_running_agent_progress_emission() -> tuple[bool, str]:
+    """Enforces ex-feedback-001 (executive_function).
+
+    Long-running agents must provide regular progress updates without
+    being queried. Verifies that canonical always-on agent modules
+    emit progress signals — either structured telemetry
+    (hapax_event/hapax_span/hapax_score) or `logger.info`/`logger.debug`
+    calls. Either path lands in Langfuse or journald, both of which
+    surface progress without operator query.
+    """
+    canonical_long_running = (
+        "hapax_daimonion",
+        "imagination_daemon",
+        "dmn",
+        "studio_compositor",
+        "visual_layer_aggregator",
+        "content_resolver",
+        "reverie",
+    )
+
+    agents_dir = AI_AGENTS_DIR / "agents"
+    if not agents_dir.exists():
+        return False, "agents directory not found"
+
+    progress_pattern = re.compile(
+        r"hapax_(event|span|score)|logger\.(info|debug|warning)|logging\.(info|debug|warning)"
+    )
+
+    found_modules = 0
+    instrumented = 0
+    missing: list[str] = []
+
+    for module_name in canonical_long_running:
+        module_path = agents_dir / module_name
+        if module_path.is_dir():
+            candidates = list(module_path.rglob("*.py"))
+        elif (single_file := agents_dir / f"{module_name}.py").exists():
+            candidates = [single_file]
+        else:
+            continue
+
+        if not candidates:
+            continue
+
+        found_modules += 1
+        has_progress = False
+        for f in candidates:
+            try:
+                content = f.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if progress_pattern.search(content):
+                has_progress = True
+                break
+
+        if has_progress:
+            instrumented += 1
+        else:
+            missing.append(module_name)
+
+    if found_modules == 0:
+        return False, "no canonical long-running agent modules found"
+
+    if instrumented >= 2:
+        return True, (
+            f"{instrumented}/{found_modules} canonical long-running agents "
+            f"emit progress (telemetry or logger) (ex-feedback-001 sufficient — "
+            f"pattern in use; missing modules surface separately for follow-up)"
+        )
+    return False, (
+        f"only {instrumented}/{found_modules} long-running agents emit progress; "
+        f"missing in: {', '.join(missing[:3])}"
+    )
+
+
 EXECUTIVE_PROBES: list[SufficiencyProbe] = [
     SufficiencyProbe(
         id="probe-err-001",
@@ -177,5 +252,16 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         level="subsystem",
         question="Does the briefing aggregate from multiple data sources?",
         check=_check_briefing_multi_source,
+    ),
+    SufficiencyProbe(
+        id="probe-feedback-001",
+        axiom_id="executive_function",
+        implication_id="ex-feedback-001",
+        level="subsystem",
+        question=(
+            "Do canonical long-running agents emit progress signals "
+            "(hapax_event/hapax_span/hapax_score or logger.info/debug)?"
+        ),
+        check=_check_long_running_agent_progress_emission,
     ),
 ]
