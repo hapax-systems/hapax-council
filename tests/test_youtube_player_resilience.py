@@ -9,6 +9,7 @@ wedged forever.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -87,3 +88,40 @@ def test_extract_urls_timeout_is_45_seconds(tmp_path):
     assert channel == "Channel"
     assert video_url == "https://video.example/v"
     assert audio_url == "https://audio.example/a"
+
+
+def test_slot_mute_policy_unmutes_active_slot(tmp_path, monkeypatch):
+    """Active slot must clear restored Pulse mute state as well as volume."""
+    yt = _load_yt_player(tmp_path)
+    monkeypatch.setenv("HAPAX_YT_ACTIVE_SLOT", "1")
+    pw_dump = json.dumps(
+        [
+            {
+                "id": 101,
+                "type": "PipeWire:Interface:Node",
+                "info": {"props": {"media.name": "youtube-audio-0"}},
+            },
+            {
+                "id": 102,
+                "type": "PipeWire:Interface:Node",
+                "info": {"props": {"media.name": "youtube-audio-1"}},
+            },
+        ]
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+
+        class _Result:
+            stdout = pw_dump
+
+        return _Result()
+
+    with patch.object(yt.subprocess, "run", side_effect=fake_run):
+        yt._apply_slot_mute_policy()
+
+    assert ["wpctl", "set-volume", "101", "0.0"] in calls
+    assert ["wpctl", "set-mute", "101", "1"] in calls
+    assert ["wpctl", "set-volume", "102", "1.0"] in calls
+    assert ["wpctl", "set-mute", "102", "0"] in calls
