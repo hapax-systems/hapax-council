@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax DataCite citation-graph DOI publisher Timer (daily 04:30 UTC, 30min after mirror refresh)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
