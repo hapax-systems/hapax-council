@@ -26,9 +26,11 @@ Phase 0 invariants the renderer enforces:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Final
 
+from agents.citable_nexus.citation_graph import compose_graph
 from agents.citable_nexus.datacite_snapshot import (
     DataCiteSnapshot,
     Work,
@@ -70,9 +72,10 @@ PAGE_PATHS: Final[tuple[str, ...]] = (
     "/manifesto",
     "/refusal-brief",
     "/deposits",
+    "/citation-graph",
 )
-"""Phase 0 + Phase 1b + Phase 1c page set. Phase 2 adds
-/citation-graph (Cytoscape.js)."""
+"""Phase 0 + Phase 1 + Phase 2 page set. The cc-task design's
+8-page schedule is now complete."""
 
 CANONICAL_BASE_URL: Final[str] = "https://hapax.research"
 """Canonical base URL the rendered site assumes when emitting
@@ -475,6 +478,95 @@ def render_deposits_page(snapshot: DataCiteSnapshot | None = None) -> PageMeta:
     )
 
 
+# ── Phase 2: citation graph from DataCite snapshot ───────────────────
+
+
+# Single deliberate exception to the "self-contained HTML / no external
+# CSS/JS dependencies" Phase 0 invariant: the /citation-graph page
+# loads Cytoscape.js from a SHA-pinned jsdelivr CDN. The page's graph
+# JSON is embedded in a <script type="application/json"> block so the
+# data is degradeable to plain JSON when JS is disabled.
+CYTOSCAPE_CDN_URL: Final[str] = (
+    "https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"
+)
+"""Pinned Cytoscape.js URL. Update the version + integrity hash together."""
+
+CYTOSCAPE_INTEGRITY: Final[str] = (
+    "sha384-t06iElIZJxlR9pJEDgN4yEJoWuRvUg4F2RwkiFoY67RdOEkB7DyJX0aLmwjF6gd3"
+)
+"""SRI hash for the pinned Cytoscape.js. Verified against npm shasum.
+Update both this constant and CYTOSCAPE_CDN_URL when bumping versions."""
+
+
+def render_citation_graph_page(
+    snapshot: DataCiteSnapshot | None = None,
+) -> PageMeta:
+    """``/citation-graph`` — DataCite-derived backlink network.
+
+    Composes a Cytoscape.js elements list from the freshest DataCite
+    snapshot (or an injected fixture for tests). The page embeds the
+    JSON inline so it survives JS-disabled clients as a machine-
+    extractable payload; the active rendering uses Cytoscape.js to
+    lay out a force-directed graph.
+    """
+    snap = snapshot if snapshot is not None else read_latest_snapshot()
+    graph = compose_graph(snap)
+    elements = graph.to_cytoscape_elements()
+    elements_json = json.dumps(elements, sort_keys=True)
+
+    if snap.available:
+        intro = (
+            f"DataCite-derived backlink network. Snapshot date: "
+            f"<code>{_esc(snap.snapshot_date or '')}</code>; "
+            f"{len(graph.nodes)} nodes, {len(graph.edges)} edges."
+        )
+        body_main = f"""    <main>
+        <section class="graph-canvas">
+            <p class="legend"><strong>work</strong> = operator-authored DOI; <strong>related</strong> = identifier referenced by relatedIdentifiers (typed by relationType: <code>IsVersionOf</code>, <code>IsRequiredBy</code>, <code>IsObsoletedBy</code>, etc.).</p>
+            <div id="cy" style="width:100%;height:600px;border:1px solid #444"></div>
+        </section>
+        <section class="graph-data-fallback">
+            <h2>Embedded JSON (no-JS fallback)</h2>
+            <p>The graph payload is also embedded in a machine-extractable JSON block on this page (see <code>&lt;script type="application/json" id="graph-data"&gt;</code>); a no-JS client can parse the JSON directly without Cytoscape.</p>
+        </section>
+    </main>
+    <script type="application/json" id="graph-data">{elements_json}</script>
+    <script src="{_esc(CYTOSCAPE_CDN_URL)}" integrity="{_esc(CYTOSCAPE_INTEGRITY)}" crossorigin="anonymous"></script>
+    <script>
+      (function() {{
+        var data = JSON.parse(document.getElementById('graph-data').textContent);
+        cytoscape({{
+          container: document.getElementById('cy'),
+          elements: data,
+          style: [
+            {{ selector: 'node', style: {{ 'label': 'data(label)', 'font-size': '10px', 'background-color': '#888' }} }},
+            {{ selector: 'node[type = "work"]', style: {{ 'background-color': '#e8b923', 'shape': 'round-rectangle' }} }},
+            {{ selector: 'node[type = "related"]', style: {{ 'background-color': '#458588' }} }},
+            {{ selector: 'edge', style: {{ 'label': 'data(label)', 'font-size': '8px', 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'line-color': '#666' }} }}
+          ],
+          layout: {{ name: 'cose', idealEdgeLength: 120, animate: false }}
+        }});
+      }})();
+    </script>"""
+    else:
+        intro = "DataCite-derived backlink network."
+        body_main = """    <main class="snapshot-placeholder">
+        <p>No DataCite snapshot found at <code>~/hapax-state/datacite-mirror/</code>. The graph reads the same snapshot file as <code>/deposits</code>; once the operator runs <code>scripts/configure-orcid.sh</code> (PR #2018) and the nightly mirror fires, this page renders.</p>
+    </main>"""
+
+    body = f"""    <header>
+        <h1>Citation graph</h1>
+        <p class="intent">{intro}</p>
+    </header>
+{body_main}"""
+    return PageMeta(
+        path="/citation-graph",
+        title="Citation graph — Hapax research",
+        description=f"DataCite-derived backlink network ({len(graph.nodes)} nodes, {len(graph.edges)} edges).",
+        body_html=body,
+    )
+
+
 # ── Site-level renderer ───────────────────────────────────────────────
 
 
@@ -486,7 +578,7 @@ class RenderedSite:
 
 
 def render_site() -> RenderedSite:
-    """Render all Phase-0 + Phase-1 pages.
+    """Render all Phase-0 + Phase-1 + Phase-2 pages.
 
     Returns a :class:`RenderedSite` mapping URL path → fully-formed
     HTML document. Pages with the long-form non-engagement clause:
@@ -501,4 +593,5 @@ def render_site() -> RenderedSite:
     pages["/manifesto"] = _wrap(render_manifesto_page(), footer_long_form=False)
     pages["/refusal-brief"] = _wrap(render_refusal_brief_page(), footer_long_form=True)
     pages["/deposits"] = _wrap(render_deposits_page(), footer_long_form=False)
+    pages["/citation-graph"] = _wrap(render_citation_graph_page(), footer_long_form=False)
     return RenderedSite(pages=pages)
