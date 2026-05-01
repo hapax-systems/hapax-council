@@ -1,0 +1,11 @@
+[Unit]
+Description=Hapax credential watch Timer (5-minute cadence)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Hapax credential watch — snapshot pass entry names; emit operator-unblocker report (no values, ever)
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.hapax_cred_monitor --once
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+
+[Install]
+WantedBy=default.target
