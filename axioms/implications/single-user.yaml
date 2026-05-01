@@ -137,6 +137,14 @@ implications:
   canon: purposivist
   mode: compatibility
   level: component
+  status: retired
+  retirement_rationale: |
+    Superseded by su-scale-001 (same scope, stronger enforcement
+    tier). Both are perf-optimization rules under single_user with
+    identical scope ("performance optimizations should target/
+    prioritize single-user load patterns/workflows over multi-user
+    scalability concerns"). su-scale-001 is T1/review; su-perf-001
+    is T2/warn. The stronger-tier rule subsumes the weaker duplicate.
 - id: su-audit-001
   tier: T2
   text: Audit logs and monitoring can omit user identification fields since all activity
