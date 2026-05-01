@@ -29,6 +29,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+from agents.citable_nexus.datacite_snapshot import (
+    DataCiteSnapshot,
+    Work,
+    read_latest_snapshot,
+)
+from agents.citable_nexus.vault_content import (
+    markdown_to_html,
+    read_vault_document,
+)
 from agents.publication_bus.surface_registry import (
     SURFACE_REGISTRY,
     AutomationStatus,
@@ -53,10 +62,17 @@ class PageMeta:
     body_html: str
 
 
-PAGE_PATHS: Final[tuple[str, ...]] = ("/", "/cite", "/refuse", "/surfaces")
-"""Phase 0 page set. Phase 1+ adds /manifesto, /refusal-brief,
-/deposits, /citation-graph (those depend on vault-sync ingest +
-DataCite snapshot ledger; see __init__.py)."""
+PAGE_PATHS: Final[tuple[str, ...]] = (
+    "/",
+    "/cite",
+    "/refuse",
+    "/surfaces",
+    "/manifesto",
+    "/refusal-brief",
+    "/deposits",
+)
+"""Phase 0 + Phase 1b + Phase 1c page set. Phase 2 adds
+/citation-graph (Cytoscape.js)."""
 
 CANONICAL_BASE_URL: Final[str] = "https://hapax.research"
 """Canonical base URL the rendered site assumes when emitting
@@ -318,6 +334,147 @@ def _render_surface_row(surface_name: str) -> str:
     return f"                <li><code>{_esc(surface_name)}</code>{api}{note}</li>"
 
 
+# ── Phase 1b: vault-content pages ────────────────────────────────────
+
+
+def _render_vault_page(
+    *,
+    slug: str,
+    path: str,
+    title: str,
+    description: str,
+    placeholder_intro: str,
+) -> PageMeta:
+    """Render one vault-sourced page with safe-fallback for missing files.
+
+    The renderer build environment (CI, ad-hoc) may not have the
+    operator vault mounted. When the source file is absent,
+    ``vault_content.read_vault_document`` returns
+    ``available=False`` and we emit a Phase-1 placeholder rather
+    than failing the build.
+    """
+    doc = read_vault_document(slug)
+    if doc.available:
+        rendered = markdown_to_html(doc.markdown)
+        body = f"""    <header>
+        <h1>{_esc(title)}</h1>
+        <p class="intent">Sourced from the operator vault at build time.</p>
+    </header>
+    <main class="vault-content">
+{rendered}
+    </main>"""
+    else:
+        body = f"""    <header>
+        <h1>{_esc(title)}</h1>
+        <p class="intent">{_esc(placeholder_intro)}</p>
+    </header>
+    <main class="vault-placeholder">
+        <p>The {slug} markdown source is not yet synced into the renderer's build scope. The operator vault path
+            (<code>~/Documents/Personal/30-areas/hapax/{slug}.md</code>) is the canonical authoring surface;
+            this page renders that content directly when the build host has read access to the vault.</p>
+        <p>Set <code>HAPAX_VAULT_HAPAX_DIR</code> to override the source dir.</p>
+    </main>"""
+    return PageMeta(
+        path=path,
+        title=title,
+        description=description,
+        body_html=body,
+    )
+
+
+def render_manifesto_page() -> PageMeta:
+    """``/manifesto`` — Manifesto v0 rendered from the operator vault."""
+    return _render_vault_page(
+        slug="manifesto",
+        path="/manifesto",
+        title="Manifesto — Hapax research",
+        description="Manifesto v0 — the canonical articulation of Hapax's single-operator research-instrument posture.",
+        placeholder_intro="Manifesto v0 is the canonical articulation of Hapax's single-operator research-instrument posture.",
+    )
+
+
+def render_refusal_brief_page() -> PageMeta:
+    """``/refusal-brief`` — Refusal Brief rendered from the operator vault."""
+    return _render_vault_page(
+        slug="refusal-brief",
+        path="/refusal-brief",
+        title="Refusal Brief — Hapax research",
+        description="Refusal Brief — per-surface rationale for the publication-bus's REFUSED catalog.",
+        placeholder_intro="The Refusal Brief enumerates the load-bearing constitutional, technical, and ethical reasons the publication-bus declines each Tier-3 REFUSED surface.",
+    )
+
+
+# ── Phase 1c: deposits page from DataCite snapshot ───────────────────
+
+
+def _render_work_row(work: Work) -> str:
+    """Render one DataCite-tracked work as an HTML list entry."""
+    related_count = len(work.related_identifiers)
+    related_suffix = (
+        f" &middot; {related_count} related identifier{'s' if related_count != 1 else ''}"
+        if related_count
+        else ""
+    )
+    citations_suffix = (
+        f" &middot; {work.citation_count} citation{'s' if work.citation_count != 1 else ''}"
+        if work.citation_count
+        else ""
+    )
+    return (
+        f'                <li><a href="{_esc(work.landing_page_url)}"><code>{_esc(work.doi)}</code></a>'
+        f"{citations_suffix}{related_suffix}</li>"
+    )
+
+
+def render_deposits_page(snapshot: DataCiteSnapshot | None = None) -> PageMeta:
+    """``/deposits`` — operator's DataCite-tracked authored works.
+
+    Reads the freshest snapshot via :func:`read_latest_snapshot`
+    when ``snapshot`` is None (the build-time path); tests inject
+    a fixture instead. Safe-fallback when no snapshot is available.
+    """
+    snap = snapshot if snapshot is not None else read_latest_snapshot()
+
+    if snap.available:
+        works_html = "\n".join(_render_work_row(w) for w in snap.works) or (
+            "                <li><em>The DataCite mirror tracks zero works for this ORCID iD "
+            "as of the snapshot date. New deposits land here on the next nightly fire.</em></li>"
+        )
+        body = f"""    <header>
+        <h1>Deposits</h1>
+        <p class="intent">Operator's authored works as resolved by the DataCite GraphQL API. Snapshot date: <code>{_esc(snap.snapshot_date or "")}</code>; ORCID iD: <a href="{_esc(snap.orcid_url or "")}"><code>{_esc(snap.orcid_url or "")}</code></a>.</p>
+    </header>
+    <main>
+        <section class="deposits-list">
+            <h2>Tracked works ({len(snap.works)})</h2>
+            <ul>
+{works_html}
+            </ul>
+        </section>
+        <section class="snapshot-provenance">
+            <h2>Snapshot provenance</h2>
+            <p>Source: <code>~/hapax-state/datacite-mirror/{_esc(snap.snapshot_date or "")}.json</code> (updated daily by <code>hapax-datacite-mirror.timer</code>). Schema follows the DataCite Commons GraphQL <code>orcidWorks</code> query; <code>citations.totalCount</code> is the inbound-citation count DataCite knows about, and <code>relatedIdentifiers</code> are operator-or-deposit-asserted relations to other DOIs / URIs.</p>
+        </section>
+    </main>"""
+    else:
+        body = """    <header>
+        <h1>Deposits</h1>
+        <p class="intent">Operator's authored works as resolved by the DataCite GraphQL API.</p>
+    </header>
+    <main class="snapshot-placeholder">
+        <p>No DataCite snapshot found at <code>~/hapax-state/datacite-mirror/</code>. The mirror runs nightly via
+            <code>hapax-datacite-mirror.timer</code>; the first snapshot lands after the operator configures
+            <code>HAPAX_OPERATOR_ORCID</code> (see <code>scripts/configure-orcid.sh</code> from PR #2018).
+            Set <code>HAPAX_DATACITE_MIRROR_DIR</code> to override the source dir for this build.</p>
+    </main>"""
+    return PageMeta(
+        path="/deposits",
+        title="Deposits — Hapax research",
+        description=f"Operator's DataCite-tracked authored works ({len(snap.works) if snap.available else 0} works).",
+        body_html=body,
+    )
+
+
 # ── Site-level renderer ───────────────────────────────────────────────
 
 
@@ -329,15 +486,19 @@ class RenderedSite:
 
 
 def render_site() -> RenderedSite:
-    """Render all Phase-0 pages.
+    """Render all Phase-0 + Phase-1 pages.
 
     Returns a :class:`RenderedSite` mapping URL path → fully-formed
     HTML document. Pages with the long-form non-engagement clause:
-    ``/`` and ``/refuse``. Other pages use the short form.
+    ``/``, ``/refuse``, and ``/refusal-brief``. Other pages use the
+    short form.
     """
     pages: dict[str, str] = {}
     pages["/"] = _wrap(render_landing_page(), footer_long_form=True)
     pages["/cite"] = _wrap(render_cite_page(), footer_long_form=False)
     pages["/refuse"] = _wrap(render_refuse_page(), footer_long_form=True)
     pages["/surfaces"] = _wrap(render_surfaces_page(), footer_long_form=False)
+    pages["/manifesto"] = _wrap(render_manifesto_page(), footer_long_form=False)
+    pages["/refusal-brief"] = _wrap(render_refusal_brief_page(), footer_long_form=True)
+    pages["/deposits"] = _wrap(render_deposits_page(), footer_long_form=False)
     return RenderedSite(pages=pages)

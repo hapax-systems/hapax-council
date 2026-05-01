@@ -42,23 +42,47 @@ surface; Oudepode is the operator-of-record referent). No
 appears on every page footer.
 """
 
+from agents.citable_nexus.datacite_snapshot import (
+    DataCiteSnapshot,
+    RelatedIdentifier,
+    Work,
+    read_latest_snapshot,
+)
 from agents.citable_nexus.renderer import (
     PAGE_PATHS,
     PageMeta,
     RenderedSite,
     render_cite_page,
+    render_deposits_page,
     render_landing_page,
+    render_manifesto_page,
+    render_refusal_brief_page,
     render_refuse_page,
     render_site,
     render_surfaces_page,
 )
+from agents.citable_nexus.vault_content import (
+    VaultDocument,
+    markdown_to_html,
+    read_vault_document,
+)
 
 __all__ = [
     "PAGE_PATHS",
+    "DataCiteSnapshot",
     "PageMeta",
+    "RelatedIdentifier",
     "RenderedSite",
+    "VaultDocument",
+    "Work",
+    "markdown_to_html",
+    "read_latest_snapshot",
+    "read_vault_document",
     "render_cite_page",
+    "render_deposits_page",
     "render_landing_page",
+    "render_manifesto_page",
+    "render_refusal_brief_page",
     "render_refuse_page",
     "render_site",
     "render_surfaces_page",

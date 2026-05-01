@@ -1787,7 +1787,140 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-systemd", action="store_true", help="Skip read-only systemd probes."
     )
+    parser.add_argument(
+        "--verify-auto-gtm-predictions",
+        action="store_true",
+        help=(
+            "Verify the seven Auto-GTM cc-tasks compute braid scores within "
+            "+/- 0.1 of the spec's predicted re-ranking. Exits non-zero on "
+            "any drift. Implies --no-write."
+        ),
+    )
+    parser.add_argument(
+        "--verify-v1-stability",
+        action="store_true",
+        help=(
+            "Verify all braid_schema=1 tasks compute identically to their "
+            "declared braid_score frontmatter (within +/- 0.1). Exits "
+            "non-zero on drift. Implies --no-write."
+        ),
+    )
+    parser.add_argument(
+        "--predictions-tolerance",
+        type=float,
+        default=0.1,
+        help="Tolerance (delta) for verification modes (default: 0.1).",
+    )
     return parser
+
+
+# Spec-predicted re-ranking under v1.1 from cc-readme.md / spec table.
+# Source: docs/superpowers/specs/2026-05-01-braid-schema-v11-design.md
+# §Schema Specification → Predicted re-ranking. Hardcoded here so the
+# CI / verification runs don't depend on parsing the spec markdown.
+SPEC_AUTO_GTM_PREDICTIONS: dict[str, float] = {
+    "wyoming-llc-dba-legal-entity-bootstrap": 8.0,
+    "citable-nexus-front-door-static-site": 7.6,
+    "publication-bus-monetization-rails-surfaces": 6.5,
+    "immediate-q2-2026-grant-submission-batch": 6.7,
+    "refusal-brief-article-50-case-study": 8.5,
+    "eu-ai-act-art-50-c2pa-watermark-fingerprint-mvp": 7.6,
+    "auto-clip-shorts-livestream-pipeline": 5.7,
+}
+
+
+def _verify_auto_gtm_predictions(
+    *, task_root: Path, now: datetime, tolerance: float = 0.1
+) -> tuple[int, list[str]]:
+    """Compare each Auto-GTM task's runner-computed v1.1 score to the spec table.
+
+    Returns ``(exit_code, lines)``. ``exit_code == 0`` only when EVERY task
+    matches the spec prediction within ``tolerance``. ``lines`` carries
+    human-readable per-task pass/fail records.
+    """
+
+    notes_by_id: dict[str, TaskNote] = {}
+    for note in load_task_notes(task_root):
+        notes_by_id[note.task_id] = note
+    # Also walk closed/ for tasks that have already shipped (e.g.,
+    # citable-nexus-front-door-static-site landed before the migration).
+    closed_root = task_root / "closed"
+    if closed_root.exists():
+        for note in load_task_notes(closed_root):
+            notes_by_id.setdefault(note.task_id, note)
+
+    lines: list[str] = []
+    failures = 0
+    for task_id, predicted in SPEC_AUTO_GTM_PREDICTIONS.items():
+        note = notes_by_id.get(task_id)
+        if note is None:
+            lines.append(f"FAIL {task_id}: task not found in vault")
+            failures += 1
+            continue
+        vector = braid_vector_from_frontmatter(note.frontmatter)
+        if not vector.is_v11:
+            lines.append(f"FAIL {task_id}: braid_schema is {vector.schema!r}, expected '1.1'")
+            failures += 1
+            continue
+        computed = recompute_braid_score(vector, now=now)
+        if computed is None:
+            lines.append(f"FAIL {task_id}: incomplete dimensions, score not computable")
+            failures += 1
+            continue
+        delta = computed - predicted
+        if abs(delta) > tolerance:
+            lines.append(
+                f"FAIL {task_id}: computed={computed:.2f} predicted={predicted:.2f} "
+                f"delta={delta:+.2f} (tolerance +/-{tolerance})"
+            )
+            failures += 1
+        else:
+            lines.append(
+                f"OK   {task_id}: computed={computed:.2f} predicted={predicted:.2f} "
+                f"delta={delta:+.2f}"
+            )
+    return (1 if failures > 0 else 0), lines
+
+
+def _verify_v1_stability(*, task_root: Path, tolerance: float = 0.1) -> tuple[int, list[str]]:
+    """Verify v1 tasks compute identically to their declared braid_score.
+
+    Walks ``active/`` and ``closed/`` for every task with
+    ``braid_schema=1`` and a populated ``braid_score``; recomputes via
+    the v1 formula; reports drift.
+    """
+
+    lines: list[str] = []
+    failures = 0
+    checked = 0
+    notes: list[TaskNote] = list(load_task_notes(task_root))
+    closed_root = task_root / "closed"
+    if closed_root.exists():
+        notes.extend(load_task_notes(closed_root))
+    seen: set[str] = set()
+    for note in notes:
+        if note.task_id in seen:
+            continue
+        seen.add(note.task_id)
+        vector = braid_vector_from_frontmatter(note.frontmatter)
+        if vector.is_v11:
+            continue
+        if vector.declared_score is None or not vector.complete:
+            continue
+        computed = recompute_braid_score(vector)
+        if computed is None:
+            continue
+        delta = computed - vector.declared_score
+        checked += 1
+        if abs(delta) > tolerance:
+            lines.append(
+                f"FAIL {note.task_id}: computed={computed:.2f} "
+                f"declared={vector.declared_score:.2f} delta={delta:+.2f}"
+            )
+            failures += 1
+    if not lines:
+        lines.append(f"OK   v1 stability: {checked} v1 task(s) all computed within +/- {tolerance}")
+    return (1 if failures > 0 else 0), lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1796,6 +1929,20 @@ def main(argv: list[str] | None = None) -> int:
     now = parse_iso_datetime(args.now) if args.now else utc_now()
     if now is None:
         parser.error("--now must be an ISO timestamp")
+    if args.verify_auto_gtm_predictions:
+        exit_code, lines = _verify_auto_gtm_predictions(
+            task_root=args.task_root, now=now, tolerance=args.predictions_tolerance
+        )
+        for line in lines:
+            print(line)
+        return exit_code
+    if args.verify_v1_stability:
+        exit_code, lines = _verify_v1_stability(
+            task_root=args.task_root, tolerance=args.predictions_tolerance
+        )
+        for line in lines:
+            print(line)
+        return exit_code
     snapshot = build_snapshot(
         task_root=args.task_root,
         hygiene_path=args.hygiene_state,
