@@ -4,6 +4,7 @@ model: balanced
 derivation_version: 1
 implications:
 - id: ex-init-001
+  linkage: code-direct
   tier: T0
   text: All agents must be runnable with zero configuration or setup steps beyond
     environment variables.
@@ -20,6 +21,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-err-001
+  linkage: code-direct
   tier: T0
   text: Error messages must include specific next actions, not just descriptions of
     what went wrong.
@@ -36,6 +38,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-state-001
+  linkage: code-direct
   tier: T1
   text: Agents must persist their own state and resume work without requiring the
     operator to remember where they left off.
@@ -52,6 +55,7 @@ implications:
   mode: sufficiency
   level: subsystem
 - id: ex-routine-001
+  linkage: code-direct
   tier: T0
   text: Recurring tasks must be automated rather than requiring manual triggering
     by the operator.
@@ -115,6 +119,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-attention-001
+  linkage: code-direct
   tier: T0
   text: Critical alerts must be delivered through external channels (notifications,
     email) rather than requiring log monitoring.
@@ -186,6 +191,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-alert-001
+  linkage: code-direct
   tier: T1
   text: Alert conditions must be actionable and include enough context to respond
     without additional investigation.
@@ -210,6 +216,7 @@ implications:
   mode: sufficiency
   level: subsystem
 - id: ex-alert-004
+  linkage: code-direct
   tier: T0
   text: Alert mechanisms (notify.py, alert_state.py) must proactively surface actionable
     items rather than requiring operator to check status.
@@ -234,6 +241,7 @@ implications:
   mode: sufficiency
   level: subsystem
 - id: ex-routine-007
+  linkage: code-direct
   tier: T0
   text: Routine maintenance agents (knowledge_maint, health_monitor) must run autonomously
     on schedules, not on-demand.
@@ -250,6 +258,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-cognitive-009
+  linkage: code-direct
   tier: T1
   text: Interfaces must minimize context switching by batching related information
     in single views (briefing.py, digest.py).
@@ -258,6 +267,7 @@ implications:
   mode: sufficiency
   level: subsystem
 - id: ex-memory-010
+  linkage: code-direct
   tier: T2
   text: System must automatically capture and surface relevant historical context
     without requiring operator to recall or search.
@@ -282,6 +292,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-delib-001
+  linkage: code-direct
   tier: T1
   text: Multi-round deliberations must pass at least 2 of 3 process-tracing hoop
     tests (position shift, argument tracing, counterfactual divergence) to qualify
@@ -291,6 +302,7 @@ implications:
   mode: sufficiency
   level: system
 - id: ex-delib-002
+  linkage: code-direct
   tier: T2
   text: Multi-round deliberation activation rate (fraction of pre-committed update
     conditions acknowledged as met) must exceed 10% to indicate agents are engaging
@@ -300,6 +312,7 @@ implications:
   mode: sufficiency
   level: system
 - id: ex-delib-003
+  linkage: code-direct
   tier: T2
   text: Concession asymmetry ratio across the rolling window of recent deliberations
     must not exceed 3.0x, indicating one agent is systematically capitulating rather
@@ -309,6 +322,7 @@ implications:
   mode: sufficiency
   level: system
 - id: ex-delib-004
+  linkage: code-direct
   tier: T2
   text: Deliberation activation rate trend must not show sustained decline across
     batches, which would indicate governance process degradation requiring prompt
@@ -318,6 +332,7 @@ implications:
   mode: sufficiency
   level: system
 - id: ex-skill-health-001
+  linkage: code-direct
   tier: T1
   text: Skill definitions (SKILL.md files) must be syntactically valid. YAML frontmatter
     must include name and description. Embedded Python snippets must parse without
@@ -336,6 +351,7 @@ implications:
   mode: sufficiency
   level: system
 - id: ex-prose-001
+  linkage: code-direct
   tier: T0
   text: >
     All LLM-generated text outputs — agent reports, briefings, documentation,

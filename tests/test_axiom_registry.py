@@ -743,6 +743,41 @@ def test_check_coherence_real_tree_drops_4_standalone_orphans():
         )
 
 
+def test_check_coherence_real_tree_drops_16_ex_cluster_orphans():
+    """Phase 4 of the orphan-train: 16 executive_function impls
+    annotated as code-direct (all verified text-referenced in
+    `agents/_sufficiency_probes.py`, `agents/drift_detector/probes_*.py`,
+    `agents/manifests/hapax_daimonion.yaml`, and
+    `agents/studio_compositor/structural_director.py`).
+    """
+    from shared.coherence import check_coherence
+
+    report = check_coherence()
+    orphan_ids = {g.source_id for g in report.gaps if g.gap_type == "orphan_implication"}
+    code_direct = (
+        "ex-alert-001",
+        "ex-alert-004",
+        "ex-attention-001",
+        "ex-cognitive-009",
+        "ex-delib-001",
+        "ex-delib-002",
+        "ex-delib-003",
+        "ex-delib-004",
+        "ex-err-001",
+        "ex-init-001",
+        "ex-memory-010",
+        "ex-prose-001",
+        "ex-routine-001",
+        "ex-routine-007",
+        "ex-skill-health-001",
+        "ex-state-001",
+    )
+    for not_orphan in code_direct:
+        assert not_orphan not in orphan_ids, (
+            f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
+        )
+
+
 def test_check_coherence_real_tree_drops_3_mg_cluster_orphans():
     """The management_governance cluster (mg-boundary-001/002,
     mg-cadence-001) is text-referenced in `shared/axiom_patterns.txt`,
