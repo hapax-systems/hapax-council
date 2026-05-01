@@ -231,14 +231,15 @@ jobs:
         run: echo "Docs-only change set; test reports success without running pytest."
       - uses: actions/checkout@v6
         if: needs.docs_only_filter.outputs.docs_only != 'true'
-      - name: Install system deps (cairo, gobject, gst, pango)
+      - name: Install system deps (cairo, gobject, gst, pango, hook transports)
         if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libcairo2-dev libgirepository-2.0-dev gobject-introspection \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
-            gir1.2-pango-1.0
+            gir1.2-pango-1.0 \
+            socat
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency, audit 4.7 PR #1109)
         if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: |
@@ -513,6 +514,11 @@ jobs:
       - name: Install Rust toolchain
         if: steps.filter.outputs.rust_crates == 'true'
         uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust crate system deps
+        if: steps.filter.outputs.rust_crates == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm
       - name: Cache cargo registry and build output
         if: steps.filter.outputs.rust_crates == 'true'
         uses: actions/cache@v4
