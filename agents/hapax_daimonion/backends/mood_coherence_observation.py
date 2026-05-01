@@ -1,12 +1,9 @@
 """Health-volatility → MoodCoherenceEngine signal adapter.
 
-Phase 6b-iii.B partial wire-in for the mood-coherence claim engine
-that #1374 shipped as engine math + signal contract without a live
-consumer.
-
-Mood-coherence (low / INCOHERENT-tier) signals are sourced from
-heterogeneous backends, mostly Pixel Watch volatility/variance metrics
-(per ``DEFAULT_SIGNAL_WEIGHTS`` in ``mood_coherence_engine.py``):
+Phase 6b-iii adapter for the mood-coherence claim engine. Mood-coherence
+(low / INCOHERENT-tier) signals are sourced from heterogeneous backends,
+mostly Pixel Watch volatility/variance metrics (per
+``DEFAULT_SIGNAL_WEIGHTS`` in ``mood_coherence_engine.py``):
 
 - ``hrv_variability_high``: HRV beat-to-beat coefficient-of-variation
   high (``backends/health.py``; bidirectional)
@@ -22,11 +19,11 @@ takes any ``_HealthVolatilityCoherenceSource`` (anything implementing
 the four accessors) and returns a single-tick observation dict for
 ``MoodCoherenceEngine.contribute()``.
 
-Phase 6b-iii.B Part 1 wires the adapter contract + lifespan
-scaffolding; all four signal accessors return ``None`` from the initial
-bridge until production thresholds are calibrated. Follow-up PRs land
-each signal source — same additive pattern alpha used for MAE in #1392
-and MVE in #1399.
+The adapter contract is fully wired; the live ``LogosMoodCoherenceBridge``
+returns ``None`` from every accessor until per-backend volatility
+windows are calibrated against production data. Per the
+``ClaimEngine.tick`` contract, ``None`` means skip-this-signal-for-this-tick
+so the engine math runs cleanly under the deferred-calibration regime.
 
 Reference doc: ``docs/superpowers/research/2026-04-23-bayesian-claims-research.md``
 §Phase 6b + the MoodCoherenceEngine module docstring.

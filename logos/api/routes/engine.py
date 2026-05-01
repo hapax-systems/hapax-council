@@ -43,14 +43,66 @@ async def operator_activity_status(request: Request):
 
     Returns the Bayesian activity-claim posterior and discrete state
     derived from the live perception-state observation stream
-    (currently keyboard_active; midi_clock_active / desk_active /
-    desktop_focus_changed_recent / watch_movement wire in subsequent
-    PRs). State is one of ACTIVE / UNCERTAIN / IDLE.
+    (keyboard_active, desk_active, desktop_focus_changed_recent,
+    midi_clock_active, watch_movement). State is one of
+    ACTIVE / UNCERTAIN / IDLE.
     """
     oae = getattr(request.app.state, "operator_activity_engine", None)
     if oae is None:
         return JSONResponse({"error": "OperatorActivityEngine not initialized"}, status_code=503)
     return {"posterior": oae.posterior, "state": oae.state}
+
+
+@router.get("/mood_arousal")
+async def mood_arousal_status(request: Request):
+    """Phase 6b-i MoodArousalEngine posterior + state.
+
+    Returns the Bayesian mood-arousal posterior and discrete state.
+    Signal accessors on ``LogosStimmungBridge`` (ambient_audio_rms_high,
+    contact_mic_onset_rate_high, midi_clock_bpm_high, hr_bpm_above_baseline)
+    return ``None`` until per-backend quantile / baseline references are
+    calibrated against production data; the engine treats ``None`` as
+    skip-this-signal so the posterior stays at its prior in that regime.
+    State is one of AROUSED / UNCERTAIN / CALM.
+    """
+    mae = getattr(request.app.state, "mood_arousal_engine", None)
+    if mae is None:
+        return JSONResponse({"error": "MoodArousalEngine not initialized"}, status_code=503)
+    return {"posterior": mae.posterior, "state": mae.state}
+
+
+@router.get("/mood_valence")
+async def mood_valence_status(request: Request):
+    """Phase 6b-ii MoodValenceEngine posterior + state.
+
+    Returns the Bayesian mood-valence posterior and discrete state.
+    Signal accessors on ``LogosMoodValenceBridge`` (hrv_below_baseline,
+    skin_temp_drop, sleep_debt_high, voice_pitch_elevated) return
+    ``None`` until per-backend baseline references are calibrated
+    against production data. State is one of NEGATIVE / UNCERTAIN /
+    POSITIVE.
+    """
+    mve = getattr(request.app.state, "mood_valence_engine", None)
+    if mve is None:
+        return JSONResponse({"error": "MoodValenceEngine not initialized"}, status_code=503)
+    return {"posterior": mve.posterior, "state": mve.state}
+
+
+@router.get("/mood_coherence")
+async def mood_coherence_status(request: Request):
+    """Phase 6b-iii MoodCoherenceEngine posterior + state.
+
+    Returns the Bayesian mood-coherence posterior and discrete state.
+    Signal accessors on ``LogosMoodCoherenceBridge`` (hrv_variability_high,
+    respiration_irregular, movement_jitter_high, skin_temp_volatility_high)
+    return ``None`` until per-backend volatility windows are calibrated
+    against production data. State is one of INCOHERENT / UNCERTAIN /
+    COHERENT.
+    """
+    mce = getattr(request.app.state, "mood_coherence_engine", None)
+    if mce is None:
+        return JSONResponse({"error": "MoodCoherenceEngine not initialized"}, status_code=503)
+    return {"posterior": mce.posterior, "state": mce.state}
 
 
 @router.get("/rules")

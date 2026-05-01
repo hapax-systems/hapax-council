@@ -238,6 +238,171 @@ class TestOperatorActivityStatus:
         assert resp.status_code == 503
 
 
+# ── TestMoodArousalStatus (Phase 6b-i route) ────────────────────────────
+
+
+class TestMoodArousalStatus:
+    def test_returns_posterior_and_state(self):
+        from agents.hapax_daimonion.mood_arousal_engine import MoodArousalEngine
+
+        mae = MoodArousalEngine()
+        app = _make_app(_mock_engine())
+        app.state.mood_arousal_engine = mae
+        client = TestClient(app)
+        resp = client.get("/api/engine/mood_arousal")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "posterior" in data
+        assert "state" in data
+        assert 0.0 <= data["posterior"] <= 1.0
+        assert data["state"] in {"AROUSED", "UNCERTAIN", "CALM"}
+
+    def test_state_responds_to_observations(self):
+        """Sustained ambient_audio_rms_high=True drives AROUSED."""
+        from agents.hapax_daimonion.backends.mood_arousal_observation import (
+            mood_arousal_observation,
+        )
+        from agents.hapax_daimonion.mood_arousal_engine import MoodArousalEngine
+
+        class _StubAroused:
+            def ambient_audio_rms_high(self) -> bool:
+                return True
+
+            def contact_mic_onset_rate_high(self) -> bool:
+                return True
+
+            def midi_clock_bpm_high(self) -> bool:
+                return True
+
+            def hr_bpm_above_baseline(self) -> bool:
+                return True
+
+        mae = MoodArousalEngine()
+        for _ in range(8):
+            mae.contribute(mood_arousal_observation(_StubAroused()))
+        app = _make_app(_mock_engine())
+        app.state.mood_arousal_engine = mae
+        client = TestClient(app)
+        resp = client.get("/api/engine/mood_arousal")
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "AROUSED"
+
+    def test_503_when_no_mae(self):
+        client = TestClient(_make_app())
+        resp = client.get("/api/engine/mood_arousal")
+        assert resp.status_code == 503
+
+
+# ── TestMoodValenceStatus (Phase 6b-ii route) ───────────────────────────
+
+
+class TestMoodValenceStatus:
+    def test_returns_posterior_and_state(self):
+        from agents.hapax_daimonion.mood_valence_engine import MoodValenceEngine
+
+        mve = MoodValenceEngine()
+        app = _make_app(_mock_engine())
+        app.state.mood_valence_engine = mve
+        client = TestClient(app)
+        resp = client.get("/api/engine/mood_valence")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "posterior" in data
+        assert "state" in data
+        assert 0.0 <= data["posterior"] <= 1.0
+        assert data["state"] in {"NEGATIVE", "UNCERTAIN", "POSITIVE"}
+
+    def test_state_responds_to_observations(self):
+        """Sustained negative-valence signals drive NEGATIVE state."""
+        from agents.hapax_daimonion.backends.mood_valence_observation import (
+            mood_valence_observation,
+        )
+        from agents.hapax_daimonion.mood_valence_engine import MoodValenceEngine
+
+        class _StubNegative:
+            def hrv_below_baseline(self) -> bool:
+                return True
+
+            def skin_temp_drop(self) -> bool:
+                return True
+
+            def sleep_debt_high(self) -> bool:
+                return True
+
+            def voice_pitch_elevated(self) -> bool:
+                return True
+
+        mve = MoodValenceEngine()
+        for _ in range(8):
+            mve.contribute(mood_valence_observation(_StubNegative()))
+        app = _make_app(_mock_engine())
+        app.state.mood_valence_engine = mve
+        client = TestClient(app)
+        resp = client.get("/api/engine/mood_valence")
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "NEGATIVE"
+
+    def test_503_when_no_mve(self):
+        client = TestClient(_make_app())
+        resp = client.get("/api/engine/mood_valence")
+        assert resp.status_code == 503
+
+
+# ── TestMoodCoherenceStatus (Phase 6b-iii route) ────────────────────────
+
+
+class TestMoodCoherenceStatus:
+    def test_returns_posterior_and_state(self):
+        from agents.hapax_daimonion.mood_coherence_engine import MoodCoherenceEngine
+
+        mce = MoodCoherenceEngine()
+        app = _make_app(_mock_engine())
+        app.state.mood_coherence_engine = mce
+        client = TestClient(app)
+        resp = client.get("/api/engine/mood_coherence")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "posterior" in data
+        assert "state" in data
+        assert 0.0 <= data["posterior"] <= 1.0
+        assert data["state"] in {"INCOHERENT", "UNCERTAIN", "COHERENT"}
+
+    def test_state_responds_to_observations(self):
+        """Sustained volatility-high signals drive INCOHERENT state."""
+        from agents.hapax_daimonion.backends.mood_coherence_observation import (
+            mood_coherence_observation,
+        )
+        from agents.hapax_daimonion.mood_coherence_engine import MoodCoherenceEngine
+
+        class _StubIncoherent:
+            def hrv_variability_high(self) -> bool:
+                return True
+
+            def respiration_irregular(self) -> bool:
+                return True
+
+            def movement_jitter_high(self) -> bool:
+                return True
+
+            def skin_temp_volatility_high(self) -> bool:
+                return True
+
+        mce = MoodCoherenceEngine()
+        for _ in range(8):
+            mce.contribute(mood_coherence_observation(_StubIncoherent()))
+        app = _make_app(_mock_engine())
+        app.state.mood_coherence_engine = mce
+        client = TestClient(app)
+        resp = client.get("/api/engine/mood_coherence")
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "INCOHERENT"
+
+    def test_503_when_no_mce(self):
+        client = TestClient(_make_app())
+        resp = client.get("/api/engine/mood_coherence")
+        assert resp.status_code == 503
+
+
 # ── TestLogosPerceptionStateBridge ──────────────────────────────────────
 
 

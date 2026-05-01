@@ -1,9 +1,7 @@
 """Stimmung → MoodArousalEngine signal adapter.
 
-Phase 6b-i.B partial wire-in for the mood-arousal claim engine that
-#1368 shipped as engine math + signal contract without a live consumer.
-
-Mood-arousal signals are sourced from heterogeneous backends (per
+Phase 6b-i adapter for the mood-arousal claim engine. Mood-arousal
+signals are sourced from heterogeneous backends (per
 ``DEFAULT_SIGNAL_WEIGHTS`` in ``mood_arousal_engine.py``):
 
 - ``ambient_audio_rms_high``: room mic RMS above operator's recent quantile
@@ -21,12 +19,11 @@ any ``_StimmungArousalSource`` (anything implementing the four
 high/baseline accessors) and returns a single-tick observation dict for
 ``MoodArousalEngine.contribute()``.
 
-Phase 6b-i.B Part 1 wires the adapter contract + lifespan scaffolding;
-all four signal accessors return ``None`` from the initial bridge until
-their production thresholds are calibrated. Follow-up PRs land each
-signal source as the per-backend quantile / baseline references stabilise
-(same additive pattern delta used for OperatorActivityEngine in #1389
-and beta used for SystemDegradedEngine across #1379 + #1377).
+The adapter contract is fully wired; the live ``LogosStimmungBridge``
+returns ``None`` from every accessor until per-backend quantile /
+baseline references are calibrated against production data. Per the
+``ClaimEngine.tick`` contract, ``None`` means skip-this-signal-for-this-tick
+so the engine math runs cleanly under the deferred-calibration regime.
 
 Reference doc: ``docs/superpowers/research/2026-04-23-bayesian-claims-research.md``
 §Phase 6b + the MoodArousalEngine module docstring.
