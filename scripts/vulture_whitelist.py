@@ -661,6 +661,7 @@ aggregate_operator_quality_posterior
 OperatorQualityPosteriorReadModel.cells_for_programme
 OperatorQualityPosteriorReadModel.cells_for_axis
 OperatorQualityPosteriorReadModel.private_summary_lines
+
 # PerceptualField grounding key registry: registry rows + helpers expose a
 # public API for downstream director / autonomous-narration / public-broadcast
 # consumers. Tests + downstream phases call these dynamically.
@@ -681,16 +682,14 @@ RegistryRow.allows_consumer
 RegistryRow.public_safe
 default_registry
 
-# CEA-608 Roll-Up encoder ships ahead of its consumer (the GStreamer
-# `gst_injector.py` slice in the live-captions Phase 5 train). The
-# public surface (RollUpEncoder, CaptionFrame, encode_line, filler_pair)
-# is invoked by the upcoming injector — whitelisted here so the
-# encoder can land first per the cc-task
-# `live-captions-phase5-in-band-cea608-injection` Phase 5a slice.
-from agents.live_captions.cea608 import (
-    CaptionFrame,
-    RollUpEncoder,
-    filler_pair,
+# Monetization readiness ledger: the ledger query helpers are the public
+# read-side API for downstream public-growth surfaces (artifact-edition
+# release, support-prompt, YouTube/VOD packaging, etc.) that need to know
+# which target families are public, monetizable, or blocked. The default-
+# matrix convenience constructor is the canonical loader.
+from shared.monetization_readiness_ledger import (
+    MonetizationReadinessLedger,
+    evaluate_default_monetization_readiness,
 )
 
 CaptionFrame
@@ -712,3 +711,8 @@ TimingAligner
 TimingAligner.record_pair
 TimingAligner.align
 TimingAligner.reset
+MonetizationReadinessLedger.for_target_family
+MonetizationReadinessLedger.public_target_families
+MonetizationReadinessLedger.monetizable_target_families
+MonetizationReadinessLedger.blocked_target_families
+evaluate_default_monetization_readiness
