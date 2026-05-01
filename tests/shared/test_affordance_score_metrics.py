@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 
 import pytest
 
@@ -24,7 +25,7 @@ class TestBuckets:
         assert len(WINNER_SIMILARITY_BUCKETS) == 11
 
     def test_buckets_strictly_increasing(self) -> None:
-        for a, b in zip(WINNER_SIMILARITY_BUCKETS, WINNER_SIMILARITY_BUCKETS[1:], strict=True):
+        for a, b in pairwise(WINNER_SIMILARITY_BUCKETS):
             assert a < b
 
 
