@@ -9,6 +9,7 @@ from agents.self_federate.rss_validator import (
     extract_items,
     fetch_rss,
     items_with_doi_links,
+    main,
     validate_rss,
 )
 
@@ -124,3 +125,52 @@ class TestItemsWithDoiLinks:
         with_dois = items_with_doi_links(items)
         assert len(with_dois) == 1
         assert with_dois[0]["dois"] == []
+
+
+class TestMainNtfyOnValidityLoss:
+    """Phase 2 closeout: ``main`` pushes ntfy on transport-error or
+    invalid-xml so the operator notices between weekly ticks."""
+
+    @patch("shared.notify.send_notification")
+    @patch("agents.self_federate.rss_validator.requests")
+    def test_main_notifies_on_transport_failure(
+        self, mock_requests: MagicMock, mock_notify: MagicMock
+    ) -> None:
+        mock_requests.get.return_value = _mock_response(404)
+        rc = main()
+        assert rc == 0
+        mock_notify.assert_called_once()
+        kwargs = mock_notify.call_args.kwargs
+        assert "RSS fetch failed" in kwargs["message"]
+        assert DEFAULT_HAPAX_RSS_URL in kwargs["message"]
+        assert "self-federate" in kwargs["tags"]
+
+    @patch("shared.notify.send_notification")
+    @patch("agents.self_federate.rss_validator.requests")
+    def test_main_notifies_on_malformed_xml(
+        self, mock_requests: MagicMock, mock_notify: MagicMock
+    ) -> None:
+        mock_requests.get.return_value = _mock_response(200, "<rss>not closed")
+        rc = main()
+        assert rc == 0
+        mock_notify.assert_called_once()
+        assert "malformed" in mock_notify.call_args.kwargs["message"]
+
+    @patch("shared.notify.send_notification")
+    @patch("agents.self_federate.rss_validator.requests")
+    def test_main_does_not_notify_on_success(
+        self, mock_requests: MagicMock, mock_notify: MagicMock
+    ) -> None:
+        mock_requests.get.return_value = _mock_response(200, _VALID_RSS)
+        rc = main()
+        assert rc == 0
+        mock_notify.assert_not_called()
+
+    @patch("shared.notify.send_notification", side_effect=RuntimeError("ntfy down"))
+    @patch("agents.self_federate.rss_validator.requests")
+    def test_main_swallows_notify_failure(
+        self, mock_requests: MagicMock, mock_notify: MagicMock
+    ) -> None:
+        # Daemon contract: main() must exit 0 even if ntfy itself errors.
+        mock_requests.get.return_value = _mock_response(404)
+        assert main() == 0
