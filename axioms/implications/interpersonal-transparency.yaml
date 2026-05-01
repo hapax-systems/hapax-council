@@ -73,6 +73,7 @@ implications:
   level: component
 
 - id: it-audit-001
+  linkage: code-direct
   tier: T2
   text: All consent contracts must be stored with creation timestamp, parties,
     scope, and revocation status. Contract history must be retained for audit
@@ -94,6 +95,7 @@ implications:
   level: component
 
 - id: it-attribution-001
+  linkage: code-direct
   tier: T1
   text: Third-party content the system redistributes to any audience (stream
     overlays, omg.lol surfaces, CDN-published assets) must carry attribution

@@ -743,6 +743,45 @@ def test_check_coherence_real_tree_drops_4_standalone_orphans():
         )
 
 
+def test_check_coherence_real_tree_drops_su_and_it_cluster_orphans():
+    """Phase 5 of the orphan-train: 3 single_user + 2
+    interpersonal_transparency impls annotated as code-direct.
+
+    su-* code-direct: su-auth-001, su-privacy-001, su-decision-001.
+    it-* code-direct: it-attribution-001, it-audit-001.
+
+    Pins that paper-rule it-* impls (it-inspect-001, it-revoke-001,
+    it-scope-001, it-backend-001, it-inference-001) remain as
+    legitimate orphans.
+    """
+    from shared.coherence import check_coherence
+
+    report = check_coherence()
+    orphan_ids = {g.source_id for g in report.gaps if g.gap_type == "orphan_implication"}
+    code_direct = (
+        "su-auth-001",
+        "su-privacy-001",
+        "su-decision-001",
+        "it-attribution-001",
+        "it-audit-001",
+    )
+    for not_orphan in code_direct:
+        assert not_orphan not in orphan_ids, (
+            f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
+        )
+    paper_rules = (
+        "it-inspect-001",
+        "it-revoke-001",
+        "it-scope-001",
+        "it-backend-001",
+        "it-inference-001",
+    )
+    for orphan in paper_rules:
+        assert orphan in orphan_ids, (
+            f"{orphan} has no code references; should remain orphan but doesn't appear"
+        )
+
+
 def test_check_coherence_real_tree_drops_16_ex_cluster_orphans():
     """Phase 4 of the orphan-train: 16 executive_function impls
     annotated as code-direct (all verified text-referenced in

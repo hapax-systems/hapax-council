@@ -5,6 +5,7 @@ model: balanced
 derivation_version: 2
 implications:
 - id: su-auth-001
+  linkage: code-direct
   tier: T0
   text: All authentication, authorization, and user management code must be removed
     or disabled since there is exactly one authorized user.
@@ -29,6 +30,7 @@ implications:
   mode: compatibility
   level: component
 - id: su-privacy-001
+  linkage: code-direct
   tier: T0
   text: Privacy controls, data anonymization, and consent mechanisms for the operator's
     own data are unnecessary since the user is also the developer. This does not
@@ -151,6 +153,7 @@ implications:
   mode: compatibility
   level: component
 - id: su-decision-001
+  linkage: code-direct
   tier: T1
   text: All architectural and design decisions must be evaluated primarily for how
     they serve the operator's specific needs rather than generalized user bases.
