@@ -52,13 +52,22 @@ KNOWN_ROLES: tuple[Role, ...] = ("alpha", "beta", "delta", "epsilon")
 # Status values that mean the session is no longer ticking and should not
 # be staleness-checked. A retired/wound-down lane is correctly silent;
 # flagging it as stale is noise. Matched case-insensitively.
+#
+# Empirical note (2026-05-01): the post-codex cx-* lanes carry several
+# spelling variants — `idle_wound_down`, `wind_down_idle`, `wind_down`,
+# and `wound_down`. We accept all four. The retirement contract is
+# semantic ("this lane has stopped ticking"), not strict-spelling, so
+# the recognizer is permissive on word order + form.
 RETIRED_STATUS_VALUES: frozenset[str] = frozenset(
     {
         "retired",
         "superseded",
         "closed",
         "idle_wound_down",
+        "wind_down_idle",
         "wound_down",
+        "wind_down",
+        "winding_down",
         "antigravity_takeover",
     }
 )
