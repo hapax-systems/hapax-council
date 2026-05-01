@@ -114,6 +114,7 @@ implications:
   mode: compatibility
   level: component
 - id: ex-feedback-001
+  linkage: code-direct
   tier: T1
   text: Long-running agents must provide regular progress updates without being queried.
   enforcement: review
