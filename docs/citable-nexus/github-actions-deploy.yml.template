@@ -1,0 +1,95 @@
+# GitHub Actions workflow for the citable-nexus front-door site.
+#
+# This file is the TEMPLATE that ships in hapax-council; the actual
+# `.github/workflows/deploy.yml` lives in the bootstrapped external repo
+# (`ryanklee/hapax-research`). The bootstrap script
+# (`scripts/bootstrap_citable_nexus_repo.sh`) copies this template into
+# the new repo at `.github/workflows/deploy.yml` during initial push.
+#
+# What the workflow does:
+#   - Checks out hapax-council (the source-of-truth for the renderer).
+#   - Runs `scripts/build_citable_nexus.py` to render fresh HTML.
+#   - Commits the rendered output into the citable-nexus repo's main
+#     branch + lets GitHub Pages auto-deploy.
+#
+# Cron cadence: 04:30 UTC daily — chosen so the rebuild fires AFTER
+# the council DataCite mirror's nightly fire (04:00 UTC) so any
+# DataCite-derived rendering picks up the freshest snapshot.
+#
+# Triggers: cron + push-to-main (for manual edits) + workflow_dispatch
+# (for ad-hoc rebuilds).
+
+name: Deploy citable-nexus
+
+on:
+  schedule:
+    - cron: '30 4 * * *'  # 04:30 UTC daily
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # commits the rendered HTML back into main
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout hapax-research (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: hapax-research
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout hapax-council (renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: ryanklee/hapax-council
+          path: hapax-council
+          ref: main
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install council deps
+        working-directory: hapax-council
+        run: uv sync --extra ci
+
+      - name: Render site
+        working-directory: hapax-council
+        run: |
+          uv run python scripts/build_citable_nexus.py \
+            --out "${GITHUB_WORKSPACE}/render"
+
+      - name: Sync rendered site to hapax-research repo
+        run: |
+          # Preserve the CNAME + .github/ in the destination
+          rsync -av --delete \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'CNAME' \
+            "${GITHUB_WORKSPACE}/render/" \
+            "${GITHUB_WORKSPACE}/hapax-research/"
+
+      - name: Commit rendered output
+        working-directory: hapax-research
+        run: |
+          git config user.name "hapax-research-deploy[bot]"
+          git config user.email "hapax-research-deploy@noreply.github.com"
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git add -A
+            git commit -m "chore(render): nightly rebuild from hapax-council@$(cd ../hapax-council && git rev-parse --short HEAD)
+
+Triggered by: ${{ github.event_name }}
+Renderer: hapax-council/agents/citable_nexus/
+Pages: /, /cite, /refuse, /surfaces"
+            git push origin main
+          else
+            echo "No changes to render; skipping commit."
+          fi
