@@ -1,4 +1,5 @@
 surface: discord-webhook
+automation_status: REFUSED
 state_kinds:
   - broadcast.boundary
   - chronicle.high_salience
@@ -9,6 +10,6 @@ redactions:
   - operator_legal_name
   - chronicle.private_moments
 rate_limit:
-  per_hour: 12
-  per_day: 60
-cadence_hint: "Discord rate = 5 req / 2s per webhook; more generous than YT"
+  per_hour: 0
+  per_day: 0
+cadence_hint: "REFUSED surface per leverage-REFUSED-discord-community + awareness-refused-slack-discord-dm-bots constitutional refusals (single-operator axiom + full-automation envelope). Contract retained to document the redaction posture for historical/refusal records; runtime dispatch is gated off via REFUSED tier in agents.publication_bus.surface_registry. The cross-surface webhook agent at agents/cross_surface/discord_webhook.py is legacy reference; the daemon systemd unit is decommissioned."

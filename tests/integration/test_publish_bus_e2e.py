@@ -64,15 +64,24 @@ class TestPhase1PublishBusEndToEnd:
     publishers + osf-preprint, against the live SURFACE_REGISTRY."""
 
     def test_all_phase_1_surfaces_registered(self):
-        """Pin: SURFACE_REGISTRY has every Phase 1+2 entry."""
+        """Pin: SURFACE_REGISTRY has every Phase 1+2 entry.
+
+        ``discord-webhook`` was retired 2026-05-01 per cc-task
+        ``discord-public-event-activation-or-retire`` (constitutional refusal,
+        ``leverage-REFUSED-discord-community``). It is now REFUSED tier in the
+        canonical registry and intentionally absent from the orchestrator
+        dispatch registry.
+        """
         for surface in (
             "bluesky-post",
             "mastodon-post",
             "arena-post",
-            "discord-webhook",
             "osf-preprint",
         ):
             assert surface in SURFACE_REGISTRY, f"{surface} missing from SURFACE_REGISTRY"
+        assert "discord-webhook" not in SURFACE_REGISTRY, (
+            "discord-webhook is REFUSED; runtime dispatch must not reach it"
+        )
 
     def test_e2e_no_credentials_path(self, tmp_path, monkeypatch):
         """Without env credentials, every Phase 1 surface returns
@@ -86,7 +95,6 @@ class TestPhase1PublishBusEndToEnd:
             "HAPAX_MASTODON_ACCESS_TOKEN",
             "HAPAX_ARENA_TOKEN",
             "HAPAX_ARENA_CHANNEL_SLUG",
-            "HAPAX_DISCORD_WEBHOOK_URL",
         ):
             monkeypatch.delenv(env_var, raising=False)
 
@@ -97,7 +105,6 @@ class TestPhase1PublishBusEndToEnd:
                 "bluesky-post",
                 "mastodon-post",
                 "arena-post",
-                "discord-webhook",
             ],
         )
         orch = Orchestrator(
@@ -109,8 +116,9 @@ class TestPhase1PublishBusEndToEnd:
         handled = orch.run_once()
         assert handled == 1
 
-        # All 4 surfaces report no_credentials (terminal failure).
-        for surface in ("bluesky-post", "mastodon-post", "arena-post", "discord-webhook"):
+        # All 3 active surfaces report no_credentials (terminal failure).
+        # discord-webhook was retired 2026-05-01 (REFUSED tier).
+        for surface in ("bluesky-post", "mastodon-post", "arena-post"):
             record = _read_log(tmp_path, "e2e-no-creds", surface)
             assert record["result"] == "no_credentials", f"surface={surface} got {record['result']}"
 
@@ -149,14 +157,18 @@ class TestPhase1PublishBusEndToEnd:
         assert "Hapax + Claude Code" in called_text
         assert "unsettled contribution as feature" in called_text
 
-    def test_e2e_discord_ok_with_mocked_transport(self, tmp_path, monkeypatch):
-        """With webhook URL set + mocked POST, discord returns ``ok``."""
-        monkeypatch.setenv(
-            "HAPAX_DISCORD_WEBHOOK_URL",
-            "https://discord.test/webhook/abc",
-        )
+    def test_e2e_discord_typed_artifact_lands_surface_unwired(self, tmp_path, monkeypatch):
+        """discord-webhook was retired 2026-05-01 (cc-task
+        ``discord-public-event-activation-or-retire``). An artifact targeting
+        ``discord-webhook`` now falls through to ``surface_unwired`` because
+        REFUSED-tier surfaces are intentionally absent from the orchestrator
+        dispatch registry. This is the correct fail-mode for a refused surface
+        — no spurious ``no_credentials`` outcome that would imply Discord is
+        merely waiting for a webhook URL.
+        """
+        monkeypatch.delenv("HAPAX_DISCORD_WEBHOOK_URL", raising=False)
 
-        _drop_approved_artifact(tmp_path, slug="e2e-discord-ok", surfaces=["discord-webhook"])
+        _drop_approved_artifact(tmp_path, slug="e2e-discord-refused", surfaces=["discord-webhook"])
 
         orch = Orchestrator(
             state_root=tmp_path,
@@ -164,19 +176,12 @@ class TestPhase1PublishBusEndToEnd:
             registry=CollectorRegistry(),
         )
 
-        from agents.cross_surface import discord_webhook
-
-        with mock.patch.object(discord_webhook, "_default_post", return_value=True) as post_mock:
-            handled = orch.run_once()
-
+        handled = orch.run_once()
         assert handled == 1
-        assert _read_log(tmp_path, "e2e-discord-ok", "discord-webhook")["result"] == "ok"
-
-        # Embed payload shape preserved through the orchestrator path.
-        payload = post_mock.call_args.args[1]
-        assert "embeds" in payload
-        assert payload["embeds"][0]["title"].startswith("E2E test artifact")
-        assert payload["embeds"][0]["color"] == discord_webhook.DISCORD_EMBED_COLOR
+        record = _read_log(tmp_path, "e2e-discord-refused", "discord-webhook")
+        assert record["result"] == "surface_unwired", (
+            f"REFUSED surface dispatch must yield surface_unwired, got {record['result']}"
+        )
 
     def test_e2e_arena_ok_with_mocked_transport(self, tmp_path, monkeypatch):
         """With token + slug set + mocked Arena adapter, arena returns ``ok``."""
@@ -218,7 +223,6 @@ class TestPhase1PublishBusEndToEnd:
             "HAPAX_MASTODON_ACCESS_TOKEN",
             "HAPAX_ARENA_TOKEN",
             "HAPAX_ARENA_CHANNEL_SLUG",
-            "HAPAX_DISCORD_WEBHOOK_URL",
         ):
             monkeypatch.delenv(env_var, raising=False)
 
@@ -229,7 +233,6 @@ class TestPhase1PublishBusEndToEnd:
                 "bluesky-post",
                 "mastodon-post",
                 "arena-post",
-                "discord-webhook",
             ],
         )
 
@@ -250,7 +253,6 @@ class TestPhase1PublishBusEndToEnd:
         assert _read_log(tmp_path, "e2e-partial", "bluesky-post")["result"] == "ok"
         assert _read_log(tmp_path, "e2e-partial", "mastodon-post")["result"] == "no_credentials"
         assert _read_log(tmp_path, "e2e-partial", "arena-post")["result"] == "no_credentials"
-        assert _read_log(tmp_path, "e2e-partial", "discord-webhook")["result"] == "no_credentials"
         assert not (tmp_path / "publish" / "published" / "e2e-partial.json").exists()
         assert (tmp_path / "publish" / "failed" / "e2e-partial.json").exists()
 

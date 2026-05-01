@@ -129,6 +129,30 @@ class CrossrefEventDataRefusedPublisher(RefusedPublisher):
     )
 
 
+class DiscordWebhookRefusedPublisher(RefusedPublisher):
+    """Discord webhook — multi-user platform, single-operator axiom precludes.
+
+    Per cc-task ``discord-public-event-activation-or-retire`` (2026-05-01
+    retirement): Discord webhook bots violate both the single-operator
+    axiom (multi-user platform; community moderation is per-user / per-
+    message) and ``feedback_full_automation_or_no_engagement`` (the
+    moment a webhook bot lands in a server, @-mentions become a
+    bidirectional engagement surface). The cross-surface webhook agent
+    at ``agents/cross_surface/discord_webhook.py`` was retained as
+    legacy reference but the surface is REFUSED tier; runtime dispatch
+    is quarantined via ``is_engageable()``. The systemd unit was
+    decommissioned in the same PR.
+    """
+
+    surface_name = "discord-webhook"
+    refusal_reason = (
+        "Discord is a multi-user platform — single-operator axiom precludes "
+        "operator-mediated community moderation, and webhook bots become "
+        "bidirectional engagement surfaces the moment users @-mention them, "
+        "violating the full-automation-or-no-engagement constitutional posture."
+    )
+
+
 class AlphaXivCommentsRefusedPublisher(RefusedPublisher):
     """alphaXiv comments — community guidelines prohibit LLM-generated comments.
 
@@ -154,6 +178,7 @@ class AlphaXivCommentsRefusedPublisher(RefusedPublisher):
 REFUSED_PUBLISHER_CLASSES: list[type[RefusedPublisher]] = [
     BandcampRefusedPublisher,
     DiscogsRefusedPublisher,
+    DiscordWebhookRefusedPublisher,
     RymRefusedPublisher,
     CrossrefEventDataRefusedPublisher,
     AlphaXivCommentsRefusedPublisher,

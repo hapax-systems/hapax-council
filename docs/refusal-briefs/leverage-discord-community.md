@@ -4,11 +4,46 @@
 **Axiom tag:** `single_user`, `feedback_full_automation_or_no_engagement`
 **Refusal classification:** Multi-user platform — violates single-operator axiom
 **Status:** REFUSED — no Discord server, no webhook bot, no `agents/social_media/discord.py`.
-**Date:** 2026-04-26
+**Surface registry entry:** `discord-webhook` (REFUSED)
+**Date:** 2026-04-26 (amended 2026-05-01)
 **Related cc-tasks:**
   - `leverage-REFUSED-discord-community`
   - `awareness-refused-slack-discord-dm-bots` (precedent)
-**CI guard:** `tests/test_forbidden_social_media_imports.py`
+  - `discord-public-event-activation-or-retire` (2026-05-01 retirement of the
+    pre-existing `agents/cross_surface/discord_webhook.py` cross-surface poster
+    that pre-dated this brief)
+**CI guard:** `tests/test_forbidden_social_media_imports.py`,
+`tests/systemd/test_discord_webhook_decommission.py`
+
+## 2026-05-01 amendment — pre-existing webhook agent retired
+
+When this brief was first ratified (2026-04-26), there was already an active
+``agents/cross_surface/discord_webhook.py`` daemon module + companion
+``hapax-discord-webhook.service`` systemd unit + ``discord-webhook`` allowlist
+contract + a publication-bus surface_registry entry at ``FULL_AUTO`` tier. The
+daemon was never given a webhook URL (operator never bootstrapped
+``HAPAX_DISCORD_WEBHOOK_URL``) so it sat ``linked / inactive``, but the surface
+remained a live claim — contradicting this brief's "no webhook bot" status.
+
+The 2026-05-01 retirement (cc-task
+``discord-public-event-activation-or-retire``, PR forthcoming) closes that
+drift:
+
+- The ``hapax-discord-webhook.service`` unit was removed from
+  ``systemd/units/`` and added to the install-units ``DECOMMISSIONED_UNITS``
+  list (alongside the prior tauri-logos and tabbyapi-hermes8b retirements).
+- ``discord-webhook`` was moved from ``FULL_AUTO`` → ``REFUSED`` in
+  ``agents/publication_bus/surface_registry.py`` with ``refusal_link``
+  pointing at this brief.
+- The ``discord-webhook`` allowlist contract was annotated as
+  ``automation_status: REFUSED`` with ``rate_limit: 0/0``.
+- The ``agents/cross_surface/discord_webhook.py`` module was annotated with a
+  retirement docstring listing the lift sequence; the implementation is
+  retained as legacy reference but no longer reachable from runtime fanout
+  (the orchestrator dispatch registry filters out REFUSED surfaces).
+- The ``agents/cross_surface/__main__.py`` entrypoint was changed to print a
+  refusal message and ``sys.exit(2)`` so manual invocation cannot accidentally
+  restart the retired daemon.
 
 ## What was refused
 

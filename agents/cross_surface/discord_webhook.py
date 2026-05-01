@@ -1,4 +1,27 @@
-"""Discord webhook poster (ytb-010 Phase 1).
+"""Discord webhook poster — RETIRED (legacy reference only).
+
+**Status (2026-05-01):** The ``discord-webhook`` surface was retired per
+cc-task ``discord-public-event-activation-or-retire``. The constitutional
+refusal is documented in ``docs/refusal-briefs/leverage-discord-community.md``
+(single-operator axiom + ``feedback_full_automation_or_no_engagement``). The
+publication-bus surface entry is now ``REFUSED`` tier in
+``agents.publication_bus.surface_registry`` so the orchestrator never
+reaches this module at runtime, and the ``hapax-discord-webhook.service``
+systemd unit was decommissioned (added to the install-units
+``DECOMMISSIONED_UNITS`` list). This module is retained only as historical
+reference; do not invoke it from new code.
+
+Lift sequence (if Discord is ever de-refused):
+  1. Amend / withdraw ``docs/refusal-briefs/leverage-discord-community.md``.
+  2. Move ``discord-webhook`` back to ``FULL_AUTO`` (or
+     ``CONDITIONAL_ENGAGE``) in ``agents.publication_bus.surface_registry``.
+  3. Restore ``systemd/units/hapax-discord-webhook.service`` and remove
+     it from ``DECOMMISSIONED_UNITS``.
+  4. Bootstrap ``HAPAX_DISCORD_WEBHOOK_URL`` via hapax-secrets.
+
+Original docstring follows.
+
+Discord webhook poster (ytb-010 Phase 1).
 
 Tails ``/dev/shm/hapax-broadcast/events.jsonl`` and POSTs an embed to
 the operator's Discord webhook on each ``broadcast_rotated`` event.

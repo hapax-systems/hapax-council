@@ -16,6 +16,11 @@ refusals:
     cc_task: discogs-submission
     publisher_class: agents.publication_bus.publisher_kit.refused.DiscogsRefusedPublisher
     lifecycle_probe: discogs-automation-terms
+  discord-webhook:
+    brief: docs/refusal-briefs/leverage-discord-community.md
+    cc_task: discord-public-event-activation-or-retire
+    publisher_class: agents.publication_bus.publisher_kit.refused.DiscordWebhookRefusedPublisher
+    lifecycle_probe: discord-multi-user-axiom
   rym-submission:
     brief: docs/refusal-briefs/rym-no-api.md
     cc_task: rym-submission

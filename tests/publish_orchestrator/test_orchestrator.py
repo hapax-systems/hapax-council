@@ -364,23 +364,30 @@ class TestSurfaceRegistry:
         fn = getattr(mod, attr)
         assert callable(fn)
 
-    def test_discord_webhook_wired(self):
-        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
-
-        assert "discord-webhook" in SURFACE_REGISTRY
-        assert SURFACE_REGISTRY["discord-webhook"] == (
-            "agents.cross_surface.discord_webhook:publish_artifact"
+    def test_discord_webhook_refused_not_in_dispatch(self):
+        """discord-webhook was retired 2026-05-01 per cc-task
+        ``discord-public-event-activation-or-retire``. Constitutional refusal
+        per ``leverage-REFUSED-discord-community`` (single-operator axiom +
+        full-automation envelope). The surface still exists in the canonical
+        registry as REFUSED tier so refusal_brief / dashboard can enumerate it,
+        but the runtime dispatch registry (FULL_AUTO + CONDITIONAL_ENGAGE only)
+        must not include it.
+        """
+        from agents.publication_bus.surface_registry import (
+            SURFACE_REGISTRY as CANONICAL,
         )
-
-    def test_discord_entry_resolves(self):
-        import importlib
-
+        from agents.publication_bus.surface_registry import (
+            AutomationStatus,
+        )
         from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
 
-        module_path, attr = SURFACE_REGISTRY["discord-webhook"].split(":")
-        mod = importlib.import_module(module_path)
-        fn = getattr(mod, attr)
-        assert callable(fn)
+        assert CANONICAL["discord-webhook"].automation_status == AutomationStatus.REFUSED, (
+            "discord-webhook must be REFUSED tier in canonical surface_registry"
+        )
+        assert "discord-webhook" not in SURFACE_REGISTRY, (
+            "discord-webhook must not appear in the orchestrator dispatch "
+            "registry (REFUSED surfaces are quarantined from runtime fanout)"
+        )
 
     def test_zenodo_doi_wired(self):
         from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY

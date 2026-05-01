@@ -59,6 +59,7 @@ type ApertureReality = Literal[
     "credential_blocked",
     "unavailable",
     "operator_review",
+    "refused",
 ]
 
 ALL_FANOUT_ACTIONS: tuple[FanoutAction, ...] = (
@@ -268,10 +269,14 @@ CROSS_SURFACE_APERTURES: tuple[CrossSurfaceApertureContract, ...] = (
         target_surfaces=("discord",),
         allowed_event_types=("broadcast.boundary", "chronicle.high_salience", "shorts.upload"),
         allowed_actions=("publish", "link", "embed", "redact", "hold"),
-        current_reality="inactive",
+        # Retired 2026-05-01 per cc-task discord-public-event-activation-or-retire;
+        # constitutional refusal in docs/refusal-briefs/leverage-discord-community.md.
+        # `refused` (vs the prior `inactive`) signals the operator disposition is
+        # final, not "waiting on creds bootstrap".
+        current_reality="refused",
         publication_contract="discord-webhook",
         child_task="discord-public-event-activation-or-retire",
-        health_owner="discord-public-event-activation-or-retire",
+        health_owner="leverage-REFUSED-discord-community",
     ),
     CrossSurfaceApertureContract(
         aperture_id="shorts",
