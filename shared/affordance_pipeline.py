@@ -1353,6 +1353,13 @@ class AffordancePipeline:
         ``select()`` call to its outcome: ``dropout_at`` names the gate
         that returned [], or stays ``None`` when survivors emerged.
         """
+        # Per-outcome Prometheus counter — increment BEFORE the env gate so
+        # operators get the in-memory signal even when JSONL is disabled.
+        # Pairs with hapax_affordance_recruitment_total + outcome_total.
+        from shared.affordance_dispatch_metrics import record_dispatch
+
+        record_dispatch(trace.get("dropout_at"))
+
         if os.environ.get(DISPATCH_TRACE_ENV, "1") == "0":
             return
         try:
