@@ -1,4 +1,4 @@
-"""ORCID auto-update verifier — Phase 1.
+"""ORCID auto-update verifier.
 
 Per cc-task ``pub-bus-orcid-auto-update``. ORCID's DataCite
 auto-update only operates at concept-DOI granularity; the daemon
@@ -6,7 +6,7 @@ verifies that minted concept-DOIs flow through to the operator's
 ORCID record without intervening per-version PUTs (anti-pattern
 per drop 5).
 
-Phase 1 ships the verifier function trio:
+The verifier function trio:
 
   - :func:`fetch_orcid_works` — GET against the ORCID public API
     (``https://pub.orcid.org/v3.0/{orcid}/works``); no auth required
@@ -15,10 +15,12 @@ Phase 1 ships the verifier function trio:
   - :func:`verify_dois_present` — set diff returning DOIs expected
     but not present in ORCID
 
-Phase 2 wires these into a 24h timer that reads recent concept-DOIs
-from local state, verifies they appear, and emits ntfy if any are
-missing past 72h (likely indicates auto-update toggle was disabled
-on the ORCID side).
+The 24h daemon timer (``hapax-orcid-verifier.timer``) reads recent
+concept-DOIs from local state, verifies they appear, and emits ntfy
+if any are missing past 72h (likely indicates auto-update toggle was
+disabled on the ORCID side). Both the verifier trio (PR #1535) and
+the timer wiring (PR #1536) are shipped — the prior "Phase 1 / Phase
+2" framing is retired.
 """
 
 from __future__ import annotations
@@ -144,9 +146,9 @@ DEFAULT_RECENT_CONCEPT_DOIS_PATH = (
     Path.home() / "hapax-state" / "publications" / "recent-concept-dois.txt"
 )
 """Local newline-delimited list of concept-DOIs recently minted by
-the publication bus. The Phase 2 daemon reads this file as the
+the publication bus. The verifier daemon reads this file as the
 "expected DOIs" set; the Zenodo deposit_builder writes to it on each
-successful mint (Phase 2 of pub-bus-zenodo-related-identifier-graph)."""
+successful mint (per pub-bus-zenodo-related-identifier-graph)."""
 
 
 def load_recent_concept_dois(*, path: Path = DEFAULT_RECENT_CONCEPT_DOIS_PATH) -> set[str]:
