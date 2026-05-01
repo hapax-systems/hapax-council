@@ -27,9 +27,7 @@ def _report(checks: list[tuple[str, str, str]], group: str = "general") -> dict:
         "groups": [
             {
                 "name": group,
-                "checks": [
-                    {"name": n, "status": s, "message": m} for n, s, m in checks
-                ],
+                "checks": [{"name": n, "status": s, "message": m} for n, s, m in checks],
             }
         ]
     }
@@ -62,9 +60,7 @@ class TestHealthyPath:
                 }
             )
         )
-        actions = process_report(
-            _report([("check-a", "healthy", "ok")]), state_path=state_path
-        )
+        actions = process_report(_report([("check-a", "healthy", "ok")]), state_path=state_path)
         assert len(actions) == 1
         assert actions[0]["title"] == "Recovered"
         assert "check-a" in actions[0]["message"]
@@ -73,13 +69,9 @@ class TestHealthyPath:
     def test_recovery_skipped_if_never_alerted(self, tmp_path: Path) -> None:
         state_path = tmp_path / "s.json"
         state_path.write_text(
-            json.dumps(
-                {"check-a": {"status": "failed", "alerted": False, "cycles": 1}}
-            )
+            json.dumps({"check-a": {"status": "failed", "alerted": False, "cycles": 1}})
         )
-        actions = process_report(
-            _report([("check-a", "healthy", "ok")]), state_path=state_path
-        )
+        actions = process_report(_report([("check-a", "healthy", "ok")]), state_path=state_path)
         assert actions == []
 
 
@@ -220,9 +212,7 @@ class TestGroupAggregation:
 class TestStatePersistence:
     def test_state_file_written_atomically(self, tmp_path: Path) -> None:
         state_path = tmp_path / "subdir" / "s.json"
-        process_report(
-            _report([("c1", "healthy", "ok")]), state_path=state_path
-        )
+        process_report(_report([("c1", "healthy", "ok")]), state_path=state_path)
         assert state_path.exists()
         # No leftover .tmp.
         assert not state_path.with_suffix(".tmp").exists()
@@ -257,7 +247,5 @@ class TestRecoveryTags:
                 }
             )
         )
-        actions = process_report(
-            _report([("c1", "healthy", "ok")]), state_path=state_path
-        )
+        actions = process_report(_report([("c1", "healthy", "ok")]), state_path=state_path)
         assert "white_check_mark" in actions[0]["tags"]
