@@ -832,3 +832,11 @@ from agents.ir_vlm_runner import MotionGatedVlmRunner, fingerprint_image
 MotionGatedVlmRunner
 MotionGatedVlmRunner.tick
 fingerprint_image
+
+# x402 receive-endpoint handler — Path A demo route is dispatched via
+# the @router.get decorator; vulture's static analysis can't see the
+# decorator-driven dispatch. Same pattern as the mood_*_status
+# handlers above.
+from logos.api.routes.x402 import demo_payment_required
+
+demo_payment_required
