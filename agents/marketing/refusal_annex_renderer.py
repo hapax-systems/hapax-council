@@ -233,18 +233,36 @@ approved artefacts, dispatches each via ``SURFACE_REGISTRY``, and moves
 to ``published/`` when every targeted surface reaches a terminal state.
 """
 
+BRIDGY_FANOUT_SURFACE: Final[str] = "bridgy-webmention-publish"
+"""Generic Bridgy webmention surface slug.
+
+This is intentionally not part of the refusal-annex default fanout set:
+the publish orchestrator dispatches targeted surfaces in parallel, while
+refusal-annex Bridgy fanout needs a previously published omg.lol weblog
+source URL witness before POSTing to Bridgy.
+"""
+
+BRIDGY_FANOUT_BLOCKER: Final[str] = (
+    "refusal-annex Bridgy fanout is blocked until the committed path can "
+    "prove the omg-weblog source URL exists before issuing the webmention POST"
+)
+
 DEFAULT_FANOUT_SURFACES: tuple[str, ...] = (
     "zenodo-refusal-deposit",
     "omg-weblog",
-    "bridgy-webmention-publish",
 )
 """Where each refusal annex fans out via the orchestrator.
 
 - ``zenodo-refusal-deposit`` — V5 RefusalBriefPublisher (#1676 wired); mints DOI
 - ``omg-weblog`` — operator-owned hapax.weblog.lol (legacy adapter, WIRED)
-- ``bridgy-webmention-publish`` — POSSE fan-out via brid.gy (CRED_BLOCKED on
-  weblog source URL; orchestrator records ``auth_error`` + retries on next tick)
+
+The generic ``bridgy-webmention-publish`` surface remains wired for normal
+weblog artifacts, but refusal-annex artifacts do not target it by default
+until source-URL sequencing is committed.
 """
+
+DORMANT_FANOUT_SURFACES: tuple[str, ...] = (BRIDGY_FANOUT_SURFACE,)
+"""Refusal-annex surfaces that are inventoried but deliberately not live."""
 
 
 def enqueue_annex_for_fanout(
@@ -261,20 +279,24 @@ def enqueue_annex_for_fanout(
     ``~/hapax-state/publications/`` via the V5 RefusalAnnexPublisher.
     This function drops the orchestrator-side companion: an approved
     PreprintArtifact JSON in ``~/hapax-state/publish/inbox/`` whose
-    ``surfaces_targeted`` instructs the orchestrator to fan out to
-    Zenodo (DOI mint) + omg.lol weblog + Bridgy POSSE.
+    ``surfaces_targeted`` instructs the orchestrator to fan out to the
+    committed refusal-annex surfaces. Bridgy POSSE is excluded until a
+    source-URL witness/sequencing path is committed.
 
     Returns the inbox path for caller observability.
     """
     from shared.preprint_artifact import PreprintArtifact
 
+    requested_surfaces = _validate_committed_fanout_surfaces(
+        list(surfaces or DEFAULT_FANOUT_SURFACES)
+    )
     artefact_slug = f"refusal-annex-{slug}"
     artefact = PreprintArtifact(
         slug=artefact_slug,
         title=title,
         abstract=body[:4096],
         body_md=body,
-        surfaces_targeted=list(surfaces or DEFAULT_FANOUT_SURFACES),
+        surfaces_targeted=requested_surfaces,
     )
     artefact.mark_approved(by_referent="Oudepode")
     inbox_path = artefact.inbox_path(state_root=state_root)
@@ -302,8 +324,9 @@ def publish_all_annexes(
 
     Phase 3 (``enqueue_for_fanout=True``): per published annex, drop a
     ``PreprintArtifact`` in the orchestrator inbox so each annex fans out
-    to Zenodo (DOI mint) + omg.lol weblog + Bridgy POSSE without operator
-    action.
+    to the committed Zenodo + omg.lol weblog surfaces without operator
+    action. Bridgy remains a documented dry-run/dormant path until its
+    source-URL witness is committed.
 
     Returns ``{slug: output_path}`` for the per-annex files. The index
     file is always written (even when empty) so downstream tooling
@@ -375,11 +398,22 @@ def main() -> int:
     return 0
 
 
+def _validate_committed_fanout_surfaces(surfaces: list[str]) -> list[str]:
+    """Reject refusal-annex targets that are inventoried but not live."""
+    dormant = sorted(set(surfaces).intersection(DORMANT_FANOUT_SURFACES))
+    if dormant:
+        raise ValueError(f"{BRIDGY_FANOUT_BLOCKER}: {', '.join(dormant)}")
+    return surfaces
+
+
 __all__ = [
+    "BRIDGY_FANOUT_BLOCKER",
+    "BRIDGY_FANOUT_SURFACE",
     "DEFAULT_ANNEX_OUTPUT_DIR",
     "DEFAULT_FANOUT_SURFACES",
     "DEFAULT_LOG_PATH",
     "DEFAULT_PUBLISH_STATE_ROOT",
+    "DORMANT_FANOUT_SURFACES",
     "INDEX_FILENAME",
     "NON_ENGAGEMENT_CLAUSE",
     "PER_ANNEX_FILENAME_PREFIX",
@@ -392,6 +426,7 @@ __all__ = [
     "refusal_annexes_published_total",
     "render_annex",
     "render_index",
+    "_validate_committed_fanout_surfaces",
 ]
 
 

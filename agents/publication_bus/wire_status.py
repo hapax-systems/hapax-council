@@ -63,7 +63,9 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "`bridgy-webmention-publish`. No publish-time credentials — "
             "Bridgy was OAuth'd to the operator's downstream silos at "
             "bootstrap and reads source URL microformats at crawl time. "
-            "Source URL constructed as https://hapax.omg.lol/weblog/{slug}."
+            "Source URL constructed as https://hapax.omg.lol/weblog/{slug}. "
+            "Refusal-annex artifacts remain blocked at the adapter until "
+            "omg-weblog source URL witness/sequencing is committed."
         ),
     ),
     "agents.publication_bus.internet_archive_publisher": WireEntry(

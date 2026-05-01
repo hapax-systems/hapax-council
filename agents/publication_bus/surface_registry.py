@@ -72,6 +72,10 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         automation_status=AutomationStatus.FULL_AUTO,
         api="webmention",
         dispatch_entry="agents.bridgy_adapter:publish_artifact",
+        scope_note=(
+            "generic weblog webmention fanout; refusal-annex artifacts are held "
+            "until an omg-weblog source URL witness/sequencing path is committed"
+        ),
     ),
     "datacite-graphql-mirror": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,

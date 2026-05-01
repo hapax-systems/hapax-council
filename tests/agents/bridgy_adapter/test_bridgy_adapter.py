@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from agents.bridgy_adapter import (
+    REFUSAL_ANNEX_WEBMENTION_BLOCKER,
     WEBLOG_TARGET_URL,
     _source_url_for_artifact,
     publish_artifact,
@@ -13,10 +14,10 @@ from agents.publication_bus.publisher_kit import PublisherResult
 from shared.preprint_artifact import PreprintArtifact
 
 
-def _artifact(slug: str = "refusal-annex-declined-bandcamp") -> PreprintArtifact:
+def _artifact(slug: str = "hapax-manifesto-v0") -> PreprintArtifact:
     return PreprintArtifact(
         slug=slug,
-        title="Refusal Annex: Bandcamp",
+        title="Hapax Manifesto",
         body_md="# Refusal\n\nbody",
         surfaces_targeted=["bridgy-webmention-publish"],
     )
@@ -78,9 +79,17 @@ class TestPublishArtifact:
         """``payload.text`` is the source URL Bridgy will crawl."""
         with patch("agents.bridgy_adapter.BridgyPublisher") as PublisherCls:
             PublisherCls.return_value.publish.return_value = PublisherResult(ok=True)
-            publish_artifact(_artifact("declined-discord-community"))
+            publish_artifact(_artifact("weblog-dispatch-note"))
             payload = PublisherCls.return_value.publish.call_args.args[0]
-            assert payload.text == "https://hapax.omg.lol/weblog/declined-discord-community"
+            assert payload.text == "https://hapax.omg.lol/weblog/weblog-dispatch-note"
+
+    def test_refusal_annex_returns_denied_without_webmention_post(self) -> None:
+        """Refusal-annex Bridgy stays dry-run until source URL sequencing exists."""
+        with patch("agents.bridgy_adapter.BridgyPublisher") as PublisherCls:
+            result = publish_artifact(_artifact("refusal-annex-declined-bandcamp"))
+            PublisherCls.assert_not_called()
+        assert result == "denied"
+        assert "source URL" in REFUSAL_ANNEX_WEBMENTION_BLOCKER
 
     def test_target_in_publisher_allowlist(self) -> None:
         """End-to-end constraint: WEBLOG_TARGET_URL must be in BridgyPublisher

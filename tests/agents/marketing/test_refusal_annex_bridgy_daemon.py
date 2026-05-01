@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agents.marketing.refusal_annex_bridgy_daemon import (
+    COMMIT_BLOCKER,
     AnnexFanoutTarget,
     main,
     render_dry_run_report,
@@ -36,20 +37,21 @@ def test_target_carries_weblog_url(tmp_path: Path):
     (tmp_path / "refusal-annex-stripe-kyc.md").write_text("x", encoding="utf-8")
     targets = scan_refusal_annexes(tmp_path)
     assert len(targets) == 1
-    assert "hapax.weblog.lol" in targets[0].weblog_url
-    assert targets[0].weblog_url.endswith("/stripe-kyc")
+    assert "hapax.omg.lol/weblog" in targets[0].weblog_url
+    assert targets[0].weblog_url.endswith("/refusal-annex-stripe-kyc")
 
 
 def test_render_with_targets():
     target = AnnexFanoutTarget(
         slug="bandcamp",
         source_path=Path("/tmp/refusal-annex-bandcamp.md"),
-        weblog_url="https://hapax.weblog.lol/refusal-annex/bandcamp",
+        weblog_url="https://hapax.omg.lol/weblog/refusal-annex-bandcamp",
     )
     report = render_dry_run_report([target])
     assert "Scan found:       1" in report
     assert "bandcamp" in report
-    assert "Re-run with --commit" in report
+    assert "dry-run only" in report
+    assert COMMIT_BLOCKER in report
 
 
 def test_render_with_zero_targets():
@@ -67,11 +69,12 @@ def test_main_dry_run(tmp_path: Path, capsys):
     assert "refusal-annex-x" in captured.out
 
 
-def test_main_commit_acknowledges_unimplemented(tmp_path: Path, capsys):
+def test_main_commit_fails_closed_with_blocker(tmp_path: Path, capsys):
     rc = main(["--publications-dir", str(tmp_path), "--commit"])
-    assert rc == 0
+    assert rc == 2
     captured = capsys.readouterr()
-    assert "Phase 2.5 sub-PR" in captured.err
+    assert "--commit refused" in captured.err
+    assert COMMIT_BLOCKER in captured.err
 
 
 def test_skips_files_without_slug(tmp_path: Path):
