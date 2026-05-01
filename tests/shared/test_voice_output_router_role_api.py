@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from shared.voice_role_router import (
+from shared.voice_output_router import (
     VOICE_ROLES,
     RouteResult,
     VoiceOutputRouter,
