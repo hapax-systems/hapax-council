@@ -257,3 +257,151 @@ def test_explicit_mode_and_level(tmp_path):
     assert impls[0].level == "system"
     assert impls[1].mode == "compatibility"
     assert impls[1].level == "subsystem"
+
+
+# ── Standalone-schema discovery (cc-task: axioms-loader-discovers-standalone-impls) ──
+
+
+@pytest.fixture
+def standalone_registry(tmp_path):
+    """Registry with one list-schema and three standalone-schema files,
+    matching the production shape that motivated the audit."""
+    reg = tmp_path / "registry.yaml"
+    reg.write_text(
+        "version: 1\n"
+        "axioms:\n"
+        "  - id: test_axiom\n"
+        '    text: "Test"\n'
+        "    weight: 80\n"
+        "    type: hardcoded\n"
+        '    created: "2026-01-01"\n'
+        "    status: active\n"
+    )
+    impl_dir = tmp_path / "implications"
+    impl_dir.mkdir()
+    # List-schema entry, parent-axiom-named filename.
+    (impl_dir / "test_axiom.yaml").write_text(
+        "axiom_id: test_axiom\n"
+        "implications:\n"
+        "  - id: ta-list-001\n"
+        "    tier: T0\n"
+        '    text: "List entry."\n'
+        "    enforcement: block\n"
+        "    canon: textualist\n"
+    )
+    # Standalone-schema entry, implication-named filename.
+    (impl_dir / "ta-standalone-001.yaml").write_text(
+        "implication_id: ta-standalone-001\n"
+        "axiom_id: test_axiom\n"
+        "tier: T1\n"
+        "enforcement: review\n"
+        "canon: purposivist\n"
+        "mode: sufficiency\n"
+        "level: system\n"
+        'text: "Standalone entry."\n'
+    )
+    # Standalone-schema entry whose axiom_id is DIFFERENT — must not be
+    # discovered when querying for `test_axiom`.
+    (impl_dir / "other-axiom-impl.yaml").write_text(
+        "implication_id: oth-001\n"
+        "axiom_id: other_axiom\n"
+        "tier: T0\n"
+        'text: "Belongs to other axiom."\n'
+    )
+    return tmp_path
+
+
+def test_load_implications_merges_list_and_standalone_schemas(standalone_registry):
+    impls = load_implications("test_axiom", path=standalone_registry)
+    impl_ids = {i.id for i in impls}
+    assert "ta-list-001" in impl_ids  # list-schema regression
+    assert "ta-standalone-001" in impl_ids  # standalone-schema discovered
+    assert len(impls) == 2
+
+
+def test_standalone_schema_axiom_id_filter(standalone_registry):
+    """Standalone files whose axiom_id != requested are not returned."""
+    impls = load_implications("test_axiom", path=standalone_registry)
+    assert all(i.axiom_id == "test_axiom" for i in impls)
+    assert "oth-001" not in {i.id for i in impls}
+
+
+def test_standalone_schema_carries_full_metadata(standalone_registry):
+    """Standalone-schema rows roundtrip every field through Implication."""
+    impls = load_implications("test_axiom", path=standalone_registry)
+    standalone = next(i for i in impls if i.id == "ta-standalone-001")
+    assert standalone.tier == "T1"
+    assert standalone.enforcement == "review"
+    assert standalone.canon == "purposivist"
+    assert standalone.mode == "sufficiency"
+    assert standalone.level == "system"
+    assert standalone.text == "Standalone entry."
+    assert standalone.axiom_id == "test_axiom"
+
+
+def test_standalone_only_axiom_returns_only_standalone(tmp_path):
+    """An axiom with NO list-schema file but a standalone entry still
+    returns the standalone implication."""
+    impl_dir = tmp_path / "implications"
+    impl_dir.mkdir()
+    (impl_dir / "lone-impl.yaml").write_text(
+        'implication_id: lone-001\naxiom_id: lone_axiom\ntier: T0\ntext: "Only one."\n'
+    )
+    impls = load_implications("lone_axiom", path=tmp_path)
+    assert len(impls) == 1
+    assert impls[0].id == "lone-001"
+
+
+def test_load_implications_missing_implications_dir_returns_empty(tmp_path):
+    """No `implications/` directory → empty list (covers the early-return
+    path; pre-fix the loader fell through to the file-not-found case
+    which had the same behavior, but the new code is explicit)."""
+    assert load_implications("anything", path=tmp_path) == []
+
+
+def test_standalone_schema_skips_malformed_entry(tmp_path):
+    """A malformed standalone file (missing axiom_id) is silently
+    skipped; other entries still load."""
+    impl_dir = tmp_path / "implications"
+    impl_dir.mkdir()
+    (impl_dir / "good.yaml").write_text(
+        'implication_id: good-001\naxiom_id: target\ntier: T0\ntext: "Good."\n'
+    )
+    (impl_dir / "bad.yaml").write_text(
+        "implication_id: bad-001\n"
+        # axiom_id missing — should be skipped
+        "tier: T0\n"
+        'text: "Bad."\n'
+    )
+    impls = load_implications("target", path=tmp_path)
+    assert len(impls) == 1
+    assert impls[0].id == "good-001"
+
+
+def test_real_implications_directory_discovers_all_four_standalone(tmp_path, monkeypatch):
+    """Smoke against the production axioms/implications/ tree.
+
+    The four standalone files identified by the audit all map to known
+    axioms:
+
+        - cb-officium-data-boundary.yaml       → corporate_boundary
+        - it-irreversible-broadcast.yaml       → interpersonal_transparency
+        - mg-drafting-visibility-001.yaml      → management_governance
+        - non-formal-referent-policy.yaml      → single_user
+
+    Each must now be discoverable via the canonical loader.
+    """
+    from shared.axiom_registry import AXIOMS_PATH
+
+    expected = {
+        "corporate_boundary": "cb-officium-data-boundary",
+        "interpersonal_transparency": "it-irreversible-broadcast",
+        "management_governance": "mg-drafting-visibility-001",
+        "single_user": "su-non-formal-referent-001",
+    }
+    for axiom_id, expected_impl_id in expected.items():
+        impls = load_implications(axiom_id, path=AXIOMS_PATH)
+        impl_ids = {i.id for i in impls}
+        assert expected_impl_id in impl_ids, (
+            f"axiom {axiom_id!r}: expected {expected_impl_id!r} in {sorted(impl_ids)}"
+        )
