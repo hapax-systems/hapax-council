@@ -125,8 +125,22 @@ class TestVinylDecoupling:
         assert director_loop._vinyl_is_playing() is True
 
     def test_framing_when_vinyl_playing(self, tmp_path, monkeypatch):
+        # `playing: True` is required for `_read_album_info` to surface
+        # the artist/title — without it the function returns "unknown
+        # (no music playing)" per PR #1933's playing-flag guard. The
+        # test scenario explicitly models a spinning record, so the
+        # album-state must reflect that.
         state = tmp_path / "album-state.json"
-        state.write_text(json.dumps({"artist": "Bobby Konders", "title": "M1", "confidence": 0.9}))
+        state.write_text(
+            json.dumps(
+                {
+                    "artist": "Bobby Konders",
+                    "title": "M1",
+                    "confidence": 0.9,
+                    "playing": True,
+                }
+            )
+        )
         monkeypatch.setattr(director_loop, "ALBUM_STATE_FILE", state)
         self._set_override(tmp_path, monkeypatch, active=False)
         monkeypatch.setattr(director_loop, "_hand_on_turntable_recent", lambda: True)
