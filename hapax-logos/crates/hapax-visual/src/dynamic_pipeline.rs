@@ -328,6 +328,20 @@ struct PoolTexture {
     view: wgpu::TextureView,
 }
 
+/// Pick any slot from the slot map whose key is not `exclude`. HashMap
+/// iteration order is unspecified, so the caller must not depend on
+/// which slot is returned — only that it differs from `exclude`. Used
+/// by [`DynamicPipeline::any_intermediate_excluding`] to pick a
+/// fallback bind-group input that won't conflict with the same pass's
+/// COLOR_TARGET. Free function so it can be unit-tested without a wgpu
+/// device.
+fn pick_slot_excluding(slots: &HashMap<String, usize>, exclude: &str) -> Option<usize> {
+    slots
+        .iter()
+        .find(|(name, _)| name.as_str() != exclude)
+        .map(|(_, slot)| *slot)
+}
+
 /// Snapshot of intermediate texture pool state for external observability.
 ///
 /// Returned by [`DynamicPipeline::pool_metrics`]. Closes the §4.7 follow-up
@@ -1186,6 +1200,7 @@ impl DynamicPipeline {
                 let input_bind_group = self.create_input_bind_group(
                     device,
                     &pass.inputs,
+                    &pass.output,
                     pass.requires_content_slots,
                     &pass.slot_family,
                     &pass.node_id,
@@ -1244,6 +1259,7 @@ impl DynamicPipeline {
                 let input_bind_group = self.create_input_bind_group(
                     device,
                     &pass.inputs,
+                    &pass.output,
                     pass.requires_content_slots,
                     &pass.slot_family,
                     &pass.node_id,
@@ -1455,6 +1471,15 @@ impl DynamicPipeline {
             .and_then(|slot| self.intermediate_pool.get(self.intermediate_pool_key, slot))
     }
 
+    /// Like [`any_intermediate`] but skips the named slot. Used when a
+    /// pass with no inputs needs a placeholder texture for binding 0 —
+    /// binding the pass's own COLOR_TARGET as RESOURCE inside the same
+    /// renderpass is a fatal wgpu validation error.
+    fn any_intermediate_excluding(&self, exclude: &str) -> Option<&PoolTexture> {
+        let slot = pick_slot_excluding(&self.intermediate_slots, exclude)?;
+        self.intermediate_pool.get(self.intermediate_pool_key, slot)
+    }
+
     fn ensure_texture(&mut self, device: &wgpu::Device, name: &str) {
         if self.intermediate_slots.contains_key(name) {
             return;
@@ -1633,6 +1658,7 @@ impl DynamicPipeline {
         &self,
         device: &wgpu::Device,
         inputs: &[String],
+        output_name: &str,
         requires_content_slots: bool,
         slot_family: &str,
         pass_id: &str,
@@ -1691,13 +1717,18 @@ impl DynamicPipeline {
                         )
                     })
             } else {
-                self.any_intermediate()
+                // Same RESOURCE/COLOR_TARGET hazard as the standard branch
+                // (see comment further below) — pick a fallback that is
+                // not this pass's own output.
+                self.any_intermediate_excluding(output_name)
                     .map(|t| &t.view)
                     .unwrap_or_else(|| {
                         panic!(
-                            "BUG: bind group has no inputs and intermediate pool is empty — \
-                             every render path must pre-allocate at least one intermediate \
-                             texture before binding. Check ensure_texture() call sites in render()."
+                            "BUG: bind group has no inputs and intermediate pool has no slot \
+                             distinct from the pass output '{}' — every render path must \
+                             pre-allocate at least one non-output intermediate texture before \
+                             binding. Check ensure_texture() call sites in render().",
+                            output_name,
                         )
                     })
             };
@@ -1791,9 +1822,17 @@ impl DynamicPipeline {
                 });
             }
         }
-        // If no inputs, still provide a default texture+sampler (shaders expect at least one)
+        // If no inputs, still provide a default texture+sampler (shaders expect at least one).
+        //
+        // The fallback texture MUST NOT be the same texture this pass writes
+        // to as COLOR_TARGET — wgpu's usage tracker treats binding the same
+        // texture as both RESOURCE and COLOR_TARGET inside one renderpass as
+        // a fatal validation error. The `noise` pass triggered this in
+        // production: empty inputs + output=`layer_0` and HashMap iteration
+        // sometimes returned the `layer_0` PoolTexture from
+        // `any_intermediate()`. Per `imagination-wgpu-validation-exits`.
         if inputs.is_empty() {
-            if let Some(tex) = self.any_intermediate() {
+            if let Some(tex) = self.any_intermediate_excluding(output_name) {
                 entries.push(wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&tex.view),
@@ -2115,6 +2154,63 @@ mod tests {
         // Reuse ratio derivation matches the pool's contract.
         let derived = (m.total_acquires - m.total_allocations) as f64 / m.total_acquires as f64;
         assert!((derived - m.reuse_ratio).abs() < 1e-9);
+    }
+
+    // ----- pick_slot_excluding — RESOURCE/COLOR_TARGET conflict guard -----
+    //
+    // Per `imagination-wgpu-validation-exits`: production logs showed
+    // recurrent `Texture 'main:layer_0' RESOURCE + COLOR_TARGET` panics
+    // from the bind-group fallback when a pass with empty inputs hit
+    // `any_intermediate()` and HashMap iteration happened to return the
+    // same slot the pass writes to. The fix is to pick a slot whose key
+    // is not the pass output. These tests pin the contract of the
+    // selection helper that `any_intermediate_excluding` delegates to.
+
+    #[test]
+    fn pick_slot_excluding_skips_the_named_slot() {
+        let mut slots = HashMap::new();
+        slots.insert("layer_0".to_string(), 0usize);
+        slots.insert("layer_1".to_string(), 1usize);
+        slots.insert("layer_2".to_string(), 2usize);
+
+        // The result must never be the slot we excluded, even though
+        // HashMap iteration order is randomized.
+        for _ in 0..32 {
+            let picked = pick_slot_excluding(&slots, "layer_0");
+            assert!(picked.is_some());
+            assert_ne!(picked, Some(0usize));
+        }
+    }
+
+    #[test]
+    fn pick_slot_excluding_returns_none_when_only_exclude_present() {
+        // The empty-input pass is the only writer when the pool was
+        // just initialized — there is no other slot to fall back to.
+        // The bind-group code is responsible for treating None as a
+        // BUG (every render path must `ensure_texture()` enough slots
+        // before binding); this test only pins that we return None
+        // rather than silently aliasing the output.
+        let mut slots = HashMap::new();
+        slots.insert("layer_0".to_string(), 0usize);
+        let picked = pick_slot_excluding(&slots, "layer_0");
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn pick_slot_excluding_returns_none_for_empty_map() {
+        let slots: HashMap<String, usize> = HashMap::new();
+        let picked = pick_slot_excluding(&slots, "anything");
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn pick_slot_excluding_with_unknown_exclude_returns_some() {
+        // If the excluded name isn't in the map at all, any slot is OK
+        // — the helper picks the first iterated entry and returns it.
+        let mut slots = HashMap::new();
+        slots.insert("layer_0".to_string(), 7usize);
+        let picked = pick_slot_excluding(&slots, "layer_99");
+        assert_eq!(picked, Some(7usize));
     }
 
     // ----- LRR Phase 0 item 4 / FINDING-Q step 2 — pre-validation gate -----
