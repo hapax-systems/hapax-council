@@ -6,6 +6,7 @@ framework, subprocess entrypoint, import string, or other dynamic path that
 vulture cannot see. Do not use this as a baseline for ordinary dead code.
 """
 
+from agents.payment_processors.x402.models import Accept, SettlementResponse
 from agents.visual_pool.repository import VisualPoolSidecar
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
 from shared.aperture_registry import (
@@ -255,6 +256,14 @@ check_l12_forward_invariant
 SpectacleLaneState._known_director_verbs
 DirectorVocabulary.for_programme_scheduler
 DirectorVocabulary.for_content_runner
+
+# x402 v2 transport models — Pydantic field validators invoked
+# dynamically at model_validate time. Vulture cannot trace through
+# the @field_validator decorator regardless of test reachability.
+Accept._scheme_supported
+Accept._network_caip_eip155
+Accept._amount_is_numeric_string
+SettlementResponse._network_caip_eip155
 
 # Pydantic invokes model validators dynamically during model validation.
 DirectorControlMoveAuditRecord._validate_boundary_and_evidence
