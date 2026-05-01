@@ -1,15 +1,20 @@
 """Moksha (Enlightenment E17) theme ``.edc`` loader.
 
-Phase 1 of ``ytb-AUTH-PALETTE`` (Moksha portion). Parses a Moksha
+Per cc-task ``ytb-AUTH-PALETTE`` (Moksha portion). Parses a Moksha
 theme ``.edc`` file and extracts the seven canonical color classes
 into a dict of CIE-LAB triples (D65, ``shared.palette_curve_evaluator``
-convention). Phase 2 wires this into compositor boot so operator-
-supplied Moksha .edc files augment the static registry palettes with
-byte-exact theme colours; Phase 1 is the skeleton + graceful-fallback
-contract.
+convention).
+
+Compositor wiring is shipped:
+``agents/studio_compositor/homage/enlightenment_moksha_authentic.py``
+imports :func:`load_default_moksha` from this module and uses it to
+build the authentic Moksha homage palette when an upstream
+``assets/aesthetic-library/enlightenment/themes/moksha.edc`` is
+present. Operator-supplied .edc files augment the static registry
+palettes with byte-exact theme colours via that consumer.
 
 Graceful fallback: on missing file, non-file path, empty content, or
-parse failure, ``load()`` returns None. The compositor can continue
+parse failure, ``load()`` returns None. The compositor continues
 booting without hard-failing when authentic Moksha assets are not
 yet acquired.
 
