@@ -408,22 +408,6 @@ _LLM_IN_FLIGHT_MARKER = Path("/dev/shm/hapax-director/llm-in-flight.json")
 _REFUSAL_BRIEF_LOG = Path("/dev/shm/hapax-refusals/log.jsonl")
 
 
-# Phase 5 RefusalGate metric — counts per-emission outcomes once the
-# gate is live (post 2026-04-25 activation). Optional; absent in test
-# environments without ``prometheus_client`` installed.
-HAPAX_REFUSAL_GATE_REROLLS: Any = None
-try:
-    from prometheus_client import Counter as _RefusalGateCounter
-
-    HAPAX_REFUSAL_GATE_REROLLS = _RefusalGateCounter(
-        "hapax_refusal_gate_rerolls_total",
-        "Phase 5 RefusalGate per-emission outcomes (R-Tuning re-roll path).",
-        ["surface", "outcome"],
-    )
-except Exception:
-    pass
-
-
 def _refusal_brief_log(
     *,
     surface: str,
@@ -3289,10 +3273,10 @@ class DirectorLoop:
                                 f"reroll_outcome={reroll_outcome}"
                             ),
                         )
-                    if HAPAX_REFUSAL_GATE_REROLLS is not None:
-                        HAPAX_REFUSAL_GATE_REROLLS.labels(
-                            surface="director", outcome=reroll_outcome
-                        ).inc()
+                    metrics.record_refusal_gate_reroll(
+                        surface="director",
+                        outcome=reroll_outcome,
+                    )
                 except Exception:
                     log.debug("refusal gate check failed; emission passes", exc_info=True)
 
