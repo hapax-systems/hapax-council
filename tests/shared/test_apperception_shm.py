@@ -1,12 +1,4 @@
-"""Tests for shared.apperception_shm.read_apperception_block.
-
-Pure-stdlib reader for /dev/shm/hapax-apperception/self-band.json
-that formats apperception state into a text block for LLM prompt
-injection. Untested before this commit.
-
-The function takes a ``path`` parameter for test injection so we
-never touch the real /dev/shm state.
-"""
+"""Tests for ``shared.apperception_shm`` prompt-block rendering."""
 
 from __future__ import annotations
 
@@ -15,101 +7,118 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from shared.apperception_shm import read_apperception_block
+from shared.apperception_shm import (
+    _STALENESS_THRESHOLD,
+    APPERCEPTION_SHM_PATH,
+    read_apperception_block,
+)
 
 
-def _write(path: Path, payload: dict) -> None:
+def _write_state(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-# ── Empty / missing / malformed input ──────────────────────────────
+def _fresh_now() -> float:
+    return time.time()
 
 
-class TestEmptyAndMissing:
-    def test_missing_file_returns_empty_string(self, tmp_path: Path) -> None:
-        path = tmp_path / "missing.json"
-        assert read_apperception_block(path=path) == ""
+class TestModuleSurface:
+    def test_canonical_path_under_dev_shm(self) -> None:
+        assert Path("/dev/shm/hapax-apperception/self-band.json") == APPERCEPTION_SHM_PATH
 
-    def test_malformed_json_returns_empty(self, tmp_path: Path) -> None:
-        path = tmp_path / "bad.json"
-        path.write_text("{ not valid json")
-        assert read_apperception_block(path=path) == ""
+    def test_staleness_threshold_30s(self) -> None:
+        assert _STALENESS_THRESHOLD == 30
+
+
+class TestEmptyAndMalformedInput:
+    def test_missing_path_returns_empty(self, tmp_path: Path) -> None:
+        assert read_apperception_block(tmp_path / "missing.json") == ""
+
+    def test_invalid_json_returns_empty(self, tmp_path: Path) -> None:
+        target = tmp_path / "bad.json"
+        target.write_text("{not valid json", encoding="utf-8")
+        assert read_apperception_block(target) == ""
+
+    def test_empty_dict_returns_empty(self, tmp_path: Path) -> None:
+        target = tmp_path / "empty.json"
+        _write_state(target, {})
+        assert read_apperception_block(target) == ""
 
     def test_empty_self_model_returns_empty(self, tmp_path: Path) -> None:
-        """self_model with no dimensions and no observations → no block."""
-        path = tmp_path / "empty.json"
-        _write(path, {"timestamp": time.time(), "self_model": {}})
-        assert read_apperception_block(path=path) == ""
+        target = tmp_path / "empty-self-model.json"
+        _write_state(target, {"timestamp": _fresh_now(), "self_model": {}})
+        assert read_apperception_block(target) == ""
 
-    def test_only_reflections_no_dimensions_returns_empty(self, tmp_path: Path) -> None:
-        """Reflections + pending_actions alone (no dims, no observations)
-        do not satisfy the early-return guard."""
-        path = tmp_path / "reflections.json"
-        _write(
-            path,
+    def test_reflections_without_dimensions_or_observations_return_empty(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "reflections-only.json"
+        _write_state(
+            target,
             {
-                "timestamp": time.time(),
-                "self_model": {"recent_reflections": ["x"]},
-                "pending_actions": ["a"],
+                "timestamp": _fresh_now(),
+                "self_model": {"recent_reflections": ["reflection"]},
+                "pending_actions": ["action"],
             },
         )
-        assert read_apperception_block(path=path) == ""
+        assert read_apperception_block(target) == ""
 
-
-# ── Staleness gate ─────────────────────────────────────────────────
+    def test_no_dimensions_or_observations_returns_empty(self, tmp_path: Path) -> None:
+        target = tmp_path / "empty-content.json"
+        _write_state(
+            target,
+            {
+                "timestamp": _fresh_now(),
+                "self_model": {"dimensions": {}, "recent_observations": []},
+            },
+        )
+        assert read_apperception_block(target) == ""
 
 
 class TestStaleness:
     def test_fresh_data_returned(self, tmp_path: Path) -> None:
-        path = tmp_path / "fresh.json"
-        _write(
-            path,
+        target = tmp_path / "fresh.json"
+        _write_state(
+            target,
             {
-                "timestamp": time.time(),
+                "timestamp": _fresh_now(),
                 "self_model": {"dimensions": {"focus": {"confidence": 0.8}}},
             },
         )
-        block = read_apperception_block(path=path)
+        block = read_apperception_block(target)
         assert "Self-dimensions" in block
         assert "focus" in block
 
     def test_stale_data_returns_empty(self, tmp_path: Path) -> None:
-        """Data older than 30s is filtered out."""
-        path = tmp_path / "stale.json"
+        target = tmp_path / "stale.json"
         with patch("shared.apperception_shm.time") as mock_time:
             mock_time.time.return_value = 10_000.0
-            _write(
-                path,
+            _write_state(
+                target,
                 {
-                    "timestamp": 9_900.0,  # 100s old
+                    "timestamp": 9_900.0,
                     "self_model": {"dimensions": {"focus": {"confidence": 0.8}}},
                 },
             )
-            assert read_apperception_block(path=path) == ""
+            assert read_apperception_block(target) == ""
 
-    def test_no_timestamp_treated_as_fresh(self, tmp_path: Path) -> None:
-        """timestamp == 0 (default in raw.get) bypasses the staleness gate
-        per the `if ts > 0` guard — payload is rendered."""
-        path = tmp_path / "no-ts.json"
-        _write(
-            path,
-            {"self_model": {"dimensions": {"focus": {"confidence": 0.8}}}},
+    def test_no_timestamp_field_treated_as_fresh(self, tmp_path: Path) -> None:
+        target = tmp_path / "no-timestamp.json"
+        _write_state(
+            target,
+            {"self_model": {"dimensions": {"alpha": {"confidence": 0.7}}}},
         )
-        block = read_apperception_block(path=path)
-        assert "focus" in block
-
-
-# ── Section rendering ──────────────────────────────────────────────
+        assert "alpha" in read_apperception_block(target)
 
 
 class TestSectionRendering:
     def test_dimensions_render_with_counts(self, tmp_path: Path) -> None:
-        path = tmp_path / "dims.json"
-        _write(
-            path,
+        target = tmp_path / "dimensions.json"
+        _write_state(
+            target,
             {
-                "timestamp": time.time(),
+                "timestamp": _fresh_now(),
                 "self_model": {
                     "dimensions": {
                         "focus": {
@@ -121,111 +130,146 @@ class TestSectionRendering:
                 },
             },
         )
-        block = read_apperception_block(path=path)
+        block = read_apperception_block(target)
         assert "focus" in block
         assert "confidence=0.92" in block
         assert "(+7/-2)" in block
 
-    def test_observations_render(self, tmp_path: Path) -> None:
-        path = tmp_path / "obs.json"
-        _write(
-            path,
+    def test_dimensions_sorted_alphabetically(self, tmp_path: Path) -> None:
+        target = tmp_path / "sorted-dimensions.json"
+        _write_state(
+            target,
             {
-                "timestamp": time.time(),
+                "timestamp": _fresh_now(),
+                "self_model": {
+                    "dimensions": {
+                        "zeta": {"confidence": 0.5},
+                        "alpha": {"confidence": 0.9},
+                        "mu": {"confidence": 0.7},
+                    }
+                },
+            },
+        )
+        block = read_apperception_block(target)
+        assert block.index("alpha") < block.index("mu") < block.index("zeta")
+
+    def test_observations_render(self, tmp_path: Path) -> None:
+        target = tmp_path / "observations.json"
+        _write_state(
+            target,
+            {
+                "timestamp": _fresh_now(),
                 "self_model": {
                     "dimensions": {"focus": {"confidence": 0.5}},
                     "recent_observations": ["obs-1", "obs-2", "obs-3"],
                 },
             },
         )
-        block = read_apperception_block(path=path)
+        block = read_apperception_block(target)
         assert "Recent self-observations" in block
-        for obs in ["obs-1", "obs-2", "obs-3"]:
-            assert obs in block
+        for observation in ["obs-1", "obs-2", "obs-3"]:
+            assert observation in block
 
-    def test_observations_capped_at_last_five(self, tmp_path: Path) -> None:
-        """Only the most-recent 5 observations are rendered."""
-        path = tmp_path / "many.json"
-        _write(
-            path,
+    def test_observations_truncated_to_last_five(self, tmp_path: Path) -> None:
+        target = tmp_path / "many-observations.json"
+        _write_state(
+            target,
             {
-                "timestamp": time.time(),
+                "timestamp": _fresh_now(),
                 "self_model": {
                     "dimensions": {"focus": {"confidence": 0.5}},
                     "recent_observations": [f"obs-{i}" for i in range(10)],
                 },
             },
         )
-        block = read_apperception_block(path=path)
-        # First 5 should be dropped, last 5 kept
-        assert "obs-0" not in block
-        assert "obs-4" not in block
-        assert "obs-5" in block
-        assert "obs-9" in block
+        block = read_apperception_block(target)
+        for i in range(5):
+            assert f"obs-{i}" not in block
+        for i in range(5, 10):
+            assert f"obs-{i}" in block
 
-    def test_low_coherence_warning(self, tmp_path: Path) -> None:
-        """Coherence < 0.4 surfaces a warning line."""
-        path = tmp_path / "lowcoh.json"
-        _write(
-            path,
+    def test_low_coherence_emits_warning(self, tmp_path: Path) -> None:
+        target = tmp_path / "low-coherence.json"
+        _write_state(
+            target,
             {
-                "timestamp": time.time(),
+                "timestamp": _fresh_now(),
                 "self_model": {
-                    "dimensions": {"focus": {"confidence": 0.5}},
                     "coherence": 0.25,
+                    "dimensions": {"focus": {"confidence": 0.5}},
                 },
             },
         )
-        block = read_apperception_block(path=path)
+        block = read_apperception_block(target)
         assert "Self-coherence low" in block
         assert "0.25" in block
 
     def test_high_coherence_no_warning(self, tmp_path: Path) -> None:
-        """Coherence >= 0.4 → no warning line."""
-        path = tmp_path / "highcoh.json"
-        _write(
-            path,
+        target = tmp_path / "high-coherence.json"
+        _write_state(
+            target,
             {
-                "timestamp": time.time(),
+                "timestamp": _fresh_now(),
                 "self_model": {
-                    "dimensions": {"focus": {"confidence": 0.5}},
                     "coherence": 0.85,
+                    "dimensions": {"focus": {"confidence": 0.5}},
                 },
             },
         )
-        block = read_apperception_block(path=path)
-        assert "Self-coherence low" not in block
+        assert "Self-coherence low" not in read_apperception_block(target)
 
-    def test_pending_actions_capped_at_three(self, tmp_path: Path) -> None:
-        path = tmp_path / "actions.json"
-        _write(
-            path,
+    def test_reflections_truncated_to_last_three(self, tmp_path: Path) -> None:
+        target = tmp_path / "reflections.json"
+        _write_state(
+            target,
             {
-                "timestamp": time.time(),
-                "self_model": {"dimensions": {"focus": {"confidence": 0.5}}},
-                "pending_actions": [f"act-{i}" for i in range(8)],
-            },
-        )
-        block = read_apperception_block(path=path)
-        assert "act-0" in block
-        assert "act-2" in block
-        assert "act-3" not in block
-
-    def test_reflections_capped_at_three(self, tmp_path: Path) -> None:
-        path = tmp_path / "ref.json"
-        _write(
-            path,
-            {
-                "timestamp": time.time(),
+                "timestamp": _fresh_now(),
                 "self_model": {
                     "dimensions": {"focus": {"confidence": 0.5}},
                     "recent_reflections": [f"ref-{i}" for i in range(8)],
                 },
             },
         )
-        block = read_apperception_block(path=path)
-        # Last 3 kept (index 5, 6, 7)
-        assert "ref-5" in block
-        assert "ref-6" in block
-        assert "ref-7" in block
+        block = read_apperception_block(target)
         assert "ref-4" not in block
+        for i in range(5, 8):
+            assert f"ref-{i}" in block
+
+    def test_pending_actions_truncated_to_three(self, tmp_path: Path) -> None:
+        target = tmp_path / "actions.json"
+        _write_state(
+            target,
+            {
+                "timestamp": _fresh_now(),
+                "self_model": {"dimensions": {"focus": {"confidence": 0.5}}},
+                "pending_actions": [f"act-{i}" for i in range(8)],
+            },
+        )
+        block = read_apperception_block(target)
+        assert "act-0" in block
+        assert "act-2" in block
+        assert "act-3" not in block
+
+
+class TestFormat:
+    def test_starts_with_self_awareness_header(self, tmp_path: Path) -> None:
+        target = tmp_path / "header.json"
+        _write_state(
+            target,
+            {
+                "timestamp": _fresh_now(),
+                "self_model": {"dimensions": {"focus": {"confidence": 0.6}}},
+            },
+        )
+        assert read_apperception_block(target).startswith("Self-awareness")
+
+    def test_returns_str_type(self, tmp_path: Path) -> None:
+        target = tmp_path / "type.json"
+        _write_state(
+            target,
+            {
+                "timestamp": _fresh_now(),
+                "self_model": {"dimensions": {"focus": {"confidence": 0.6}}},
+            },
+        )
+        assert isinstance(read_apperception_block(target), str)
