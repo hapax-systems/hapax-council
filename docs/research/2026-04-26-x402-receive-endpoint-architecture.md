@@ -22,15 +22,23 @@ Hapax-side use: agent-to-agent commercial-license rail. When another agent (Clau
 
 All three rails are listener-only — they poll their respective providers and emit `PaymentEvent` instances onto the canonical event bus. There is no outbound `send`/`payout`/`transfer` path (enforced by `tests/payment_processors/test_read_only_contract.py`). x402 fits cleanly: it advertises receive-rails to inbound requesters; it does not initiate outbound payments.
 
-## Spec landscape (as of 2026-04)
+## Spec landscape (as of 2026-04 — superseded 2026-05-01)
 
-**Authoritative source needed:** the x402 protocol does not yet have a stable RFC-style spec. Several discovery surfaces:
+**Update 2026-05-01 — research drop landed.** The current authoritative spec is at:
 
-- Coinbase's x402 launch (Q1 2026) — primary launch surface; spec under `https://x402.org` or similar
-- Lightning Network's existing `LNURL-pay` flow — adjacent prior art for advertising Lightning payment options via HTTP
-- BOLT 11 invoice format — what a Lightning payment requirement looks like under the hood
+- `https://github.com/coinbase/x402/blob/main/specs/x402-specification-v2.md`
+- Local research note: `docs/research/2026-05-01-x402-spec-current.md`
 
-**Action required before endpoint ships:** dispatch a research agent to fetch the current x402 response-shape spec (header names, JSON keys, accepted networks, etc.) from authoritative sources. This architecture doc deliberately defers the response-shape codification to that research drop so the Pydantic model is grounded.
+**Key spec divergences from this April speculation:**
+
+1. The structured fields ride in **headers** (`PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE`, `PAYMENT-RESPONSE`), not in the response body. Body is the resource once settlement succeeds.
+2. Stablecoin-first (EVM via EIP-3009, Solana SVM), not Lightning-first. No Lightning scheme in v2.
+3. Network IDs are CAIP-2 (`eip155:8453` for Base mainnet, etc.), not free-text rail strings.
+4. Facilitator pattern (`/verify`, `/settle`, `/supported`, `/discovery/resources`) is the recommended verifier — Hapax's receive endpoint calls a facilitator rather than verifying signatures in-process.
+
+**Implication:** the preliminary "Hapax-specific response design" below (response body with `payment_required` key + Lightning-first amount_options array) does NOT match the v2 spec. The 2026-05-01 research note details the actual v2 schemas (PaymentRequirements, PaymentPayload, VerifyResponse, SettlementResponse) and the recommended Hapax-side path: add a Base-mainnet USDC receive wallet as a fourth listener-only rail.
+
+The five implementation cc-tasks listed in the 2026-05-01 research note should be filed and claimed before any code touches the receive endpoint surface.
 
 ## Hapax-specific response design (preliminary; pending spec confirmation)
 
