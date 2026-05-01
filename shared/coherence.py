@@ -59,15 +59,19 @@ def check_coherence(*, axioms_path: Path = AXIOMS_PATH) -> CoherenceReport:
     ruleset = ConstitutiveRuleSet.from_yaml(axioms_path)
     axioms = load_axioms(path=axioms_path)
 
-    # Collect all implication IDs. Implications with `linkage: code-direct`
-    # are excluded from the orphan tally — they're enforced via direct
-    # text-reference in agent code rather than via the constitutive-rule →
-    # implication chain. See cc-task `coherence-orphan-implications-catalog`
-    # for the triage strategy.
+    # Collect all implication IDs. Excluded from the orphan tally:
+    #   - `linkage: code-direct` (enforced via direct text-reference)
+    #   - `status: retired` (closed out; not part of active corpus)
+    # See cc-task `coherence-orphan-implications-catalog` for the
+    # triage strategy.
     all_impl_ids: set[str] = set()
     code_direct_impl_ids: set[str] = set()
     for axiom in axioms:
         for impl in load_implications(axiom.id, path=axioms_path):
+            if impl.status == "retired":
+                # Retired implications fall out of the active corpus
+                # entirely — coherence does not flag them at all.
+                continue
             all_impl_ids.add(impl.id)
             if impl.linkage == "code-direct":
                 code_direct_impl_ids.add(impl.id)
