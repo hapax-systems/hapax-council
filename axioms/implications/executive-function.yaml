@@ -60,6 +60,7 @@ implications:
   mode: sufficiency
   level: subsystem
 - id: ex-state-002
+  linkage: code-direct
   tier: T1
   text: State transitions and progress must be visible without the operator having
     to check logs or debug output.
