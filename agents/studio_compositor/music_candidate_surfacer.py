@@ -22,15 +22,19 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 
 from shared.music_repo import DEFAULT_REPO_PATH, LocalMusicRepo, LocalMusicTrack
 
 __all__ = [
     "CANDIDATES_PATH",
+    "DEFAULT_IMPINGEMENT_PATH",
+    "MUSIC_REQUEST_TOKEN",
     "SELECTION_PATH",
     "SOUNDCLOUD_REPO_PATH",
     "MusicCandidateSurfacer",
+    "build_music_request_impingement",
     "load_combined_repo",
 ]
 
@@ -48,6 +52,22 @@ SELECTION_PATH: Path = Path("/dev/shm/hapax-compositor/music-selection.json")
 # Mirror of the SoundCloud adapter default; duplicated here so this
 # module doesn't force-import the agent package.
 SOUNDCLOUD_REPO_PATH: Path = Path.home() / "hapax-state" / "music-repo" / "soundcloud.jsonl"
+
+# Impingement emission targets — Phase 4 of the content-source-registry
+# plan (`docs/superpowers/plans/2026-04-23-content-source-registry-plan.md`)
+# routes operator `play <n>` requests through the volitional impingement
+# path so they enter the same recruitment + governance surface as
+# automatic candidates. The recruitment loop (a follow-up slice) reads
+# the JSONL queue and decides whether/when to dispatch; for now the
+# direct ``music-selection.json`` write below is preserved as a
+# transitional fallback so the existing dispatch chain keeps working.
+DEFAULT_IMPINGEMENT_PATH: Path = Path("/dev/shm/hapax-dmn/impingements.jsonl")
+
+#: Interrupt token tagging operator-initiated music requests. The
+#: future ``OudepodeRateGate`` (Phase 4 of the plan) bypasses its rate
+#: filter when an impingement carries this token (``selection_source``
+#: in content == ``"sidechat"``).
+MUSIC_REQUEST_TOKEN: str = "music.request"
 
 # Only surface one shortlist per cooldown window so a flappy
 # vinyl_playing signal doesn't spam the operator.
@@ -238,11 +258,71 @@ class MusicCandidateSurfacer:
 # track to SELECTION_PATH; Phase 2 will pick it up.
 
 
+def build_music_request_impingement(chosen: dict[str, object]) -> dict[str, object]:
+    """Build a ``music.request`` impingement payload from a chosen track.
+
+    Per Phase 4 of the content-source-registry plan: operator ``play
+    <n>`` requests should enter the affordance recruitment surface as
+    ``pattern_match`` impingements with ``interrupt_token =
+    'music.request'`` and ``content.selection_source = 'sidechat'`` so
+    the future ``OudepodeRateGate`` can bypass the auto-recruit
+    rate-limit on explicit operator requests while keeping automatic
+    candidates subject to the gate.
+
+    The ``content.narrative`` line is what the affordance pipeline
+    will embed for cosine similarity, so it carries the human-readable
+    artist + title + source so the recruitment loop matches it against
+    music-related capabilities rather than something incidental.
+    """
+    title = chosen.get("title") or "unknown title"
+    artist = chosen.get("artist") or "unknown artist"
+    source = chosen.get("source") or "unknown"
+    narrative = f"operator requested via sidechat: play {artist} — {title} (source: {source})"
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "timestamp": time.time(),
+        "source": "operator.sidechat",
+        "type": "pattern_match",
+        "strength": 0.95,
+        "interrupt_token": MUSIC_REQUEST_TOKEN,
+        "content": {
+            "narrative": narrative,
+            "selection_source": "sidechat",
+            "track": chosen,
+            "title": title,
+            "artist": artist,
+            "track_source": source,
+            "music_provenance": chosen.get("music_provenance"),
+            "music_license": chosen.get("music_license"),
+            "provenance_token": chosen.get("provenance_token"),
+        },
+    }
+
+
+def _append_impingement(record: dict[str, object], path: Path) -> bool:
+    """Atomically append one impingement record as a JSONL line.
+
+    Returns ``True`` on success, ``False`` if the write fails. Failures
+    are logged but never raise — the operator's selection should still
+    land in ``music-selection.json`` even when the impingement queue is
+    unavailable (e.g., tmpfs unmounted, filesystem full).
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, default=str) + "\n")
+        return True
+    except OSError:
+        log.debug("music.request impingement append failed (non-fatal)", exc_info=True)
+        return False
+
+
 def handle_play_command(
     text: str,
     *,
     candidates_path: Path | None = None,
     selection_path: Path | None = None,
+    impingement_path: Path | None = None,
 ) -> dict[str, object] | None:
     """Parse a sidechat utterance as ``play <n>`` and resolve to a track.
 
@@ -250,6 +330,13 @@ def handle_play_command(
     utterance does not match or the requested index is out of range.
     A well-formed command with an unknown shortlist also returns
     ``None`` — the caller should surface a gentle error to the operator.
+
+    On a valid request a ``music.request`` impingement is also appended
+    to ``impingement_path`` so the affordance recruitment loop sees the
+    request through the same surface as automatic candidates. The
+    direct ``music-selection.json`` write is preserved as a
+    transitional fallback until the recruitment loop honors the
+    impingement; both paths land on every successful request.
     """
     stripped = text.strip().lower()
     if not stripped.startswith("play "):
@@ -261,6 +348,7 @@ def handle_play_command(
 
     cpath = candidates_path if candidates_path is not None else CANDIDATES_PATH
     spath = selection_path if selection_path is not None else SELECTION_PATH
+    ipath = impingement_path if impingement_path is not None else DEFAULT_IMPINGEMENT_PATH
     if not cpath.exists():
         log.debug("play %d requested but no shortlist at %s", index, cpath)
         return None
@@ -274,6 +362,13 @@ def handle_play_command(
     if chosen is None:
         return None
 
+    # Phase 4 routing: operator request → music.request impingement.
+    # Best-effort — failure here must not block the transitional
+    # selection write below (the operator's request still needs to
+    # dispatch).
+    impingement = build_music_request_impingement(chosen)
+    _append_impingement(impingement, ipath)
+
     payload: dict[str, object] = {
         "ts": time.time(),
         "path": chosen.get("path"),
@@ -286,6 +381,7 @@ def handle_play_command(
         "provenance_token": chosen.get("provenance_token"),
         "selection": chosen,
         "selection_source": "sidechat",
+        "impingement_id": impingement["id"],
     }
     try:
         spath.parent.mkdir(parents=True, exist_ok=True)

@@ -563,6 +563,7 @@ class TestHandlePlayCommand:
             "good morning",
             candidates_path=tmp_path / "c.json",
             selection_path=tmp_path / "s.json",
+            impingement_path=tmp_path / "impingements.jsonl",
         )
         assert result is None
 
@@ -573,6 +574,7 @@ class TestHandlePlayCommand:
             "play 1",
             candidates_path=tmp_path / "missing.json",
             selection_path=tmp_path / "s.json",
+            impingement_path=tmp_path / "impingements.jsonl",
         )
         assert result is None
 
@@ -586,6 +588,7 @@ class TestHandlePlayCommand:
             "play 2",
             candidates_path=cpath,
             selection_path=spath,
+            impingement_path=tmp_path / "impingements.jsonl",
         )
         assert result is not None
         assert result["selection"]["title"] == "B"
@@ -604,6 +607,7 @@ class TestHandlePlayCommand:
             "play 99",
             candidates_path=cpath,
             selection_path=tmp_path / "s.json",
+            impingement_path=tmp_path / "impingements.jsonl",
         )
         assert result is None
 
@@ -616,8 +620,213 @@ class TestHandlePlayCommand:
             "play now",
             candidates_path=cpath,
             selection_path=tmp_path / "s.json",
+            impingement_path=tmp_path / "impingements.jsonl",
         )
         assert result is None
+
+
+class TestPlayCommandImpingementRouting:
+    """Phase 4 routing: ``play <n>`` emits a ``music.request`` impingement
+    so operator requests enter the affordance recruitment surface, while
+    the transitional direct ``music-selection.json`` write keeps the
+    existing dispatch chain working until the recruitment loop honors
+    the impingement (separate slice)."""
+
+    def _seed(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "ts": 1000.0,
+                    "candidates": [
+                        {
+                            "index": 1,
+                            "path": "/tmp/a.mp3",
+                            "title": "Heliotrope",
+                            "artist": "Oudepode",
+                            "source_type": "local",
+                            "source": "local",
+                            "music_provenance": "hapax-pool",
+                            "music_license": "licensed-for-broadcast",
+                            "provenance_token": "music:hapax-pool:a",
+                        }
+                    ],
+                    "note": "",
+                }
+            )
+        )
+
+    def test_emits_impingement_with_music_request_token(self, tmp_path: Path) -> None:
+        from agents.studio_compositor.music_candidate_surfacer import (
+            MUSIC_REQUEST_TOKEN,
+            handle_play_command,
+        )
+
+        cpath = tmp_path / "c.json"
+        spath = tmp_path / "s.json"
+        ipath = tmp_path / "impingements.jsonl"
+        self._seed(cpath)
+
+        result = handle_play_command(
+            "play 1",
+            candidates_path=cpath,
+            selection_path=spath,
+            impingement_path=ipath,
+        )
+        assert result is not None
+        assert ipath.exists()
+
+        lines = ipath.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["interrupt_token"] == MUSIC_REQUEST_TOKEN
+        assert record["source"] == "operator.sidechat"
+        assert record["type"] == "pattern_match"
+        assert 0.0 <= record["strength"] <= 1.0
+        # Bypass-by-content for the future OudepodeRateGate.
+        assert record["content"]["selection_source"] == "sidechat"
+        assert record["content"]["title"] == "Heliotrope"
+        assert record["content"]["artist"] == "Oudepode"
+
+    def test_selection_payload_carries_impingement_id(self, tmp_path: Path) -> None:
+        """The transitional selection write back-references the impingement
+        id so downstream consumers can correlate the two records."""
+        from agents.studio_compositor.music_candidate_surfacer import handle_play_command
+
+        cpath = tmp_path / "c.json"
+        spath = tmp_path / "s.json"
+        ipath = tmp_path / "impingements.jsonl"
+        self._seed(cpath)
+
+        result = handle_play_command(
+            "play 1",
+            candidates_path=cpath,
+            selection_path=spath,
+            impingement_path=ipath,
+        )
+        assert result is not None
+        impingement_id = result["impingement_id"]
+        record = json.loads(ipath.read_text(encoding="utf-8").splitlines()[0])
+        assert record["id"] == impingement_id
+        on_disk_selection = json.loads(spath.read_text(encoding="utf-8"))
+        assert on_disk_selection["impingement_id"] == impingement_id
+
+    def test_non_play_does_not_emit_impingement(self, tmp_path: Path) -> None:
+        from agents.studio_compositor.music_candidate_surfacer import handle_play_command
+
+        cpath = tmp_path / "c.json"
+        ipath = tmp_path / "impingements.jsonl"
+        self._seed(cpath)
+
+        result = handle_play_command(
+            "good morning",
+            candidates_path=cpath,
+            selection_path=tmp_path / "s.json",
+            impingement_path=ipath,
+        )
+        assert result is None
+        assert not ipath.exists()
+
+    def test_unknown_index_does_not_emit_impingement(self, tmp_path: Path) -> None:
+        from agents.studio_compositor.music_candidate_surfacer import handle_play_command
+
+        cpath = tmp_path / "c.json"
+        ipath = tmp_path / "impingements.jsonl"
+        self._seed(cpath)
+
+        result = handle_play_command(
+            "play 99",
+            candidates_path=cpath,
+            selection_path=tmp_path / "s.json",
+            impingement_path=ipath,
+        )
+        assert result is None
+        assert not ipath.exists()
+
+    def test_appends_rather_than_overwrites(self, tmp_path: Path) -> None:
+        """Two consecutive ``play <n>`` requests must produce two JSONL
+        lines so the affordance loop can replay the queue."""
+        from agents.studio_compositor.music_candidate_surfacer import handle_play_command
+
+        cpath = tmp_path / "c.json"
+        spath = tmp_path / "s.json"
+        ipath = tmp_path / "impingements.jsonl"
+        self._seed(cpath)
+
+        for _ in range(2):
+            handle_play_command(
+                "play 1",
+                candidates_path=cpath,
+                selection_path=spath,
+                impingement_path=ipath,
+            )
+        lines = ipath.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 2
+
+    def test_impingement_failure_does_not_block_selection(self, tmp_path: Path) -> None:
+        """If the impingement append fails (e.g., parent dir is a regular
+        file rather than a directory), the operator's selection should
+        still land in ``music-selection.json`` so the request still
+        dispatches via the transitional path."""
+        from agents.studio_compositor.music_candidate_surfacer import handle_play_command
+
+        cpath = tmp_path / "c.json"
+        spath = tmp_path / "s.json"
+        # Make the impingement parent a regular file → mkdir fails.
+        bad_parent = tmp_path / "blocked"
+        bad_parent.write_text("not a directory")
+        ipath = bad_parent / "impingements.jsonl"
+        self._seed(cpath)
+
+        result = handle_play_command(
+            "play 1",
+            candidates_path=cpath,
+            selection_path=spath,
+            impingement_path=ipath,
+        )
+        assert result is not None
+        assert spath.exists()
+
+
+class TestBuildMusicRequestImpingement:
+    def test_carries_canonical_fields(self) -> None:
+        from agents.studio_compositor.music_candidate_surfacer import (
+            MUSIC_REQUEST_TOKEN,
+            build_music_request_impingement,
+        )
+
+        chosen = {
+            "index": 1,
+            "path": "/tmp/a.mp3",
+            "title": "Heliotrope",
+            "artist": "Oudepode",
+            "source": "local",
+            "music_provenance": "hapax-pool",
+            "music_license": "licensed-for-broadcast",
+            "provenance_token": "music:hapax-pool:a",
+        }
+        record = build_music_request_impingement(chosen)
+        assert record["source"] == "operator.sidechat"
+        assert record["type"] == "pattern_match"
+        assert record["interrupt_token"] == MUSIC_REQUEST_TOKEN
+        assert isinstance(record["id"], str) and len(record["id"]) >= 8
+        assert isinstance(record["timestamp"], float)
+        # The narrative must reference both the artist and title so the
+        # affordance pipeline embeds the right music context.
+        narrative = record["content"]["narrative"]
+        assert "Oudepode" in narrative
+        assert "Heliotrope" in narrative
+        assert record["content"]["track"] is chosen
+        assert record["content"]["selection_source"] == "sidechat"
+
+    def test_unknown_metadata_falls_back(self) -> None:
+        from agents.studio_compositor.music_candidate_surfacer import (
+            build_music_request_impingement,
+        )
+
+        record = build_music_request_impingement({})
+        assert "unknown title" in record["content"]["narrative"]
+        assert "unknown artist" in record["content"]["narrative"]
 
 
 # ---------------------------------------------------------------------------
