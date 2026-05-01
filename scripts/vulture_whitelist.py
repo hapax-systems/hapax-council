@@ -661,3 +661,22 @@ aggregate_operator_quality_posterior
 OperatorQualityPosteriorReadModel.cells_for_programme
 OperatorQualityPosteriorReadModel.cells_for_axis
 OperatorQualityPosteriorReadModel.private_summary_lines
+# PerceptualField grounding key registry: registry rows + helpers expose a
+# public API for downstream director / autonomous-narration / public-broadcast
+# consumers. Tests + downstream phases call these dynamically.
+from shared.perceptual_field_grounding_registry import (
+    GroundingDecision,
+    PerceptualFieldGroundingRegistry,
+    RegistryRow,
+    default_registry,
+)
+
+GroundingDecision.hard_blocked
+PerceptualFieldGroundingRegistry.by_key_path
+PerceptualFieldGroundingRegistry.row_for
+PerceptualFieldGroundingRegistry.is_diagnostic_only_path
+PerceptualFieldGroundingRegistry.evaluate
+RegistryRow.is_diagnostic_only
+RegistryRow.allows_consumer
+RegistryRow.public_safe
+default_registry
