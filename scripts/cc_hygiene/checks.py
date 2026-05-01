@@ -49,6 +49,20 @@ REFUSAL_DORMANCY_DAYS = 7
 KNOWN_ROLES: tuple[Role, ...] = ("alpha", "beta", "delta", "epsilon")
 """Permanent Claude worktree slots. Codex cx-* relay files are discovered dynamically."""
 
+# Status values that mean the session is no longer ticking and should not
+# be staleness-checked. A retired/wound-down lane is correctly silent;
+# flagging it as stale is noise. Matched case-insensitively.
+RETIRED_STATUS_VALUES: frozenset[str] = frozenset(
+    {
+        "retired",
+        "superseded",
+        "closed",
+        "idle_wound_down",
+        "wound_down",
+        "antigravity_takeover",
+    }
+)
+
 
 # ----- helpers -----
 
@@ -191,6 +205,37 @@ def _extract_relay_updated(payload: dict[str, Any]) -> datetime | None:
             if raw:
                 return _parse_dt(raw)
     return None
+
+
+def _is_retired_session(payload: dict[str, Any]) -> bool:
+    """Detect a retired / wound-down session whose silence is correct.
+
+    Walks the same shape as ``_extract_relay_updated`` looking for a
+    status / state field whose value is in ``RETIRED_STATUS_VALUES``.
+    Tolerant of either a flat ``status`` key or a nested
+    ``session_status.status`` / ``session_status.state``.
+    """
+    candidates: list[Any] = []
+    for key in ("status", "state", "relay_status", "session_state"):
+        candidates.append(payload.get(key))
+    nested = payload.get("session_status")
+    if isinstance(nested, dict):
+        for key in ("status", "state"):
+            candidates.append(nested.get(key))
+    elif isinstance(nested, str):
+        candidates.append(nested)
+    for raw in candidates:
+        if not isinstance(raw, str):
+            continue
+        normalized = raw.strip().strip("\"'").lower()
+        # session_status: "RETIRED foo bar" — match on the leading word
+        # so multi-line scalars or annotations don't defeat the check.
+        first_word = normalized.split()[0] if normalized.split() else ""
+        if first_word in RETIRED_STATUS_VALUES:
+            return True
+        if normalized in RETIRED_STATUS_VALUES:
+            return True
+    return False
 
 
 def _extract_current_claim(payload: dict[str, Any]) -> tuple[str | None, datetime | None]:
@@ -408,6 +453,10 @@ def check_relay_yaml_staleness(
     events: list[HygieneEvent] = []
     cutoff = now - timedelta(minutes=RELAY_STALE_MIN)
     for role, payload in relay_payloads.items():
+        # Retired / wound-down sessions are correctly silent; their
+        # staleness is the expected steady state, not a hygiene event.
+        if _is_retired_session(payload):
+            continue
         updated = _extract_relay_updated(payload)
         if updated is None:
             events.append(

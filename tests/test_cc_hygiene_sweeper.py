@@ -358,6 +358,71 @@ def test_relay_stale_missing_timestamp_emits_info() -> None:
     assert events[0].severity == "info"
 
 
+def test_relay_stale_skips_retired_session_with_flat_status() -> None:
+    """Retired / wound-down sessions are correctly silent — their
+    staleness is the steady state, not a hygiene event. Operator-
+    reported regression 2026-05-01: cx-amber yaml flagged 90min stale
+    after codex retirement."""
+
+    now = _now()
+    payloads = {
+        "cx-amber": {
+            "status": "idle_wound_down",
+            "updated": (now - timedelta(minutes=RELAY_STALE_MIN + 60)).isoformat(),
+        },
+    }
+    events = check_relay_yaml_staleness(payloads, now=now)
+    assert events == []
+
+
+def test_relay_stale_skips_retired_session_with_nested_session_status() -> None:
+    """Some yamls carry the retirement marker as a multi-line scalar
+    on ``session_status``: ``"RETIRED legacy delta relay; superseded by ..."``.
+    The check must match the leading word of normalized text."""
+
+    now = _now()
+    payloads = {
+        "delta": {
+            "session_status": "RETIRED legacy delta relay; superseded by cx-* lanes",
+            "updated": (now - timedelta(hours=24)).isoformat(),
+        },
+    }
+    events = check_relay_yaml_staleness(payloads, now=now)
+    assert events == []
+
+
+def test_relay_stale_skips_retired_with_nested_dict_status() -> None:
+    """A nested ``session_status: {status: RETIRED, ...}`` shape is
+    also recognized."""
+
+    now = _now()
+    payloads = {
+        "epsilon": {
+            "session_status": {"status": "retired", "ts": now.isoformat()},
+            "updated": (now - timedelta(hours=12)).isoformat(),
+        },
+    }
+    events = check_relay_yaml_staleness(payloads, now=now)
+    assert events == []
+
+
+def test_relay_stale_active_session_still_fires_when_old() -> None:
+    """An ``active`` session whose updated timestamp is past the
+    threshold still emits the warning — the retired-session bypass
+    must not silence live lanes."""
+
+    now = _now()
+    payloads = {
+        "alpha": {
+            "status": "active",
+            "updated": (now - timedelta(minutes=RELAY_STALE_MIN + 5)).isoformat(),
+        },
+    }
+    events = check_relay_yaml_staleness(payloads, now=now)
+    assert len(events) == 1
+    assert events[0].session == "alpha"
+
+
 # ----------------------------------------------------------------------------
 # check_wip_limit (§2.6)
 # ----------------------------------------------------------------------------
