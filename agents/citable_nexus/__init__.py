@@ -48,17 +48,29 @@ from agents.citable_nexus.renderer import (
     RenderedSite,
     render_cite_page,
     render_landing_page,
+    render_manifesto_page,
+    render_refusal_brief_page,
     render_refuse_page,
     render_site,
     render_surfaces_page,
+)
+from agents.citable_nexus.vault_content import (
+    VaultDocument,
+    markdown_to_html,
+    read_vault_document,
 )
 
 __all__ = [
     "PAGE_PATHS",
     "PageMeta",
     "RenderedSite",
+    "VaultDocument",
+    "markdown_to_html",
+    "read_vault_document",
     "render_cite_page",
     "render_landing_page",
+    "render_manifesto_page",
+    "render_refusal_brief_page",
     "render_refuse_page",
     "render_site",
     "render_surfaces_page",

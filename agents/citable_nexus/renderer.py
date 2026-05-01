@@ -29,6 +29,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+from agents.citable_nexus.vault_content import (
+    markdown_to_html,
+    read_vault_document,
+)
 from agents.publication_bus.surface_registry import (
     SURFACE_REGISTRY,
     AutomationStatus,
@@ -53,10 +57,16 @@ class PageMeta:
     body_html: str
 
 
-PAGE_PATHS: Final[tuple[str, ...]] = ("/", "/cite", "/refuse", "/surfaces")
-"""Phase 0 page set. Phase 1+ adds /manifesto, /refusal-brief,
-/deposits, /citation-graph (those depend on vault-sync ingest +
-DataCite snapshot ledger; see __init__.py)."""
+PAGE_PATHS: Final[tuple[str, ...]] = (
+    "/",
+    "/cite",
+    "/refuse",
+    "/surfaces",
+    "/manifesto",
+    "/refusal-brief",
+)
+"""Phase 0 + Phase 1b page set. Phase 1c+ adds /deposits (DataCite
+snapshot ledger) and /citation-graph (Cytoscape.js)."""
 
 CANONICAL_BASE_URL: Final[str] = "https://hapax.research"
 """Canonical base URL the rendered site assumes when emitting
@@ -318,6 +328,76 @@ def _render_surface_row(surface_name: str) -> str:
     return f"                <li><code>{_esc(surface_name)}</code>{api}{note}</li>"
 
 
+# ── Phase 1b: vault-content pages ────────────────────────────────────
+
+
+def _render_vault_page(
+    *,
+    slug: str,
+    path: str,
+    title: str,
+    description: str,
+    placeholder_intro: str,
+) -> PageMeta:
+    """Render one vault-sourced page with safe-fallback for missing files.
+
+    The renderer build environment (CI, ad-hoc) may not have the
+    operator vault mounted. When the source file is absent,
+    ``vault_content.read_vault_document`` returns
+    ``available=False`` and we emit a Phase-1 placeholder rather
+    than failing the build.
+    """
+    doc = read_vault_document(slug)
+    if doc.available:
+        rendered = markdown_to_html(doc.markdown)
+        body = f"""    <header>
+        <h1>{_esc(title)}</h1>
+        <p class="intent">Sourced from the operator vault at build time.</p>
+    </header>
+    <main class="vault-content">
+{rendered}
+    </main>"""
+    else:
+        body = f"""    <header>
+        <h1>{_esc(title)}</h1>
+        <p class="intent">{_esc(placeholder_intro)}</p>
+    </header>
+    <main class="vault-placeholder">
+        <p>The {slug} markdown source is not yet synced into the renderer's build scope. The operator vault path
+            (<code>~/Documents/Personal/30-areas/hapax/{slug}.md</code>) is the canonical authoring surface;
+            this page renders that content directly when the build host has read access to the vault.</p>
+        <p>Set <code>HAPAX_VAULT_HAPAX_DIR</code> to override the source dir.</p>
+    </main>"""
+    return PageMeta(
+        path=path,
+        title=title,
+        description=description,
+        body_html=body,
+    )
+
+
+def render_manifesto_page() -> PageMeta:
+    """``/manifesto`` — Manifesto v0 rendered from the operator vault."""
+    return _render_vault_page(
+        slug="manifesto",
+        path="/manifesto",
+        title="Manifesto — Hapax research",
+        description="Manifesto v0 — the canonical articulation of Hapax's single-operator research-instrument posture.",
+        placeholder_intro="Manifesto v0 is the canonical articulation of Hapax's single-operator research-instrument posture.",
+    )
+
+
+def render_refusal_brief_page() -> PageMeta:
+    """``/refusal-brief`` — Refusal Brief rendered from the operator vault."""
+    return _render_vault_page(
+        slug="refusal-brief",
+        path="/refusal-brief",
+        title="Refusal Brief — Hapax research",
+        description="Refusal Brief — per-surface rationale for the publication-bus's REFUSED catalog.",
+        placeholder_intro="The Refusal Brief enumerates the load-bearing constitutional, technical, and ethical reasons the publication-bus declines each Tier-3 REFUSED surface.",
+    )
+
+
 # ── Site-level renderer ───────────────────────────────────────────────
 
 
@@ -329,15 +409,18 @@ class RenderedSite:
 
 
 def render_site() -> RenderedSite:
-    """Render all Phase-0 pages.
+    """Render all Phase-0 + Phase-1b pages.
 
     Returns a :class:`RenderedSite` mapping URL path → fully-formed
     HTML document. Pages with the long-form non-engagement clause:
-    ``/`` and ``/refuse``. Other pages use the short form.
+    ``/``, ``/refuse``, and ``/refusal-brief``. Other pages use the
+    short form.
     """
     pages: dict[str, str] = {}
     pages["/"] = _wrap(render_landing_page(), footer_long_form=True)
     pages["/cite"] = _wrap(render_cite_page(), footer_long_form=False)
     pages["/refuse"] = _wrap(render_refuse_page(), footer_long_form=True)
     pages["/surfaces"] = _wrap(render_surfaces_page(), footer_long_form=False)
+    pages["/manifesto"] = _wrap(render_manifesto_page(), footer_long_form=False)
+    pages["/refusal-brief"] = _wrap(render_refusal_brief_page(), footer_long_form=True)
     return RenderedSite(pages=pages)
