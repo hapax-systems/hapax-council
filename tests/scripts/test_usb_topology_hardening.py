@@ -88,6 +88,31 @@ def test_witness_accepts_known_good_snapshot(tmp_path: Path) -> None:
     assert status["s4"]["net"]["nmcli_state"] == "unmanaged"
 
 
+def test_witness_accepts_current_nested_s4_caldigit_path(tmp_path: Path) -> None:
+    snapshot = known_good_snapshot()
+    snapshot["s4"]["device"] = "3-1.1.1.3"
+    snapshot["s4"]["path"] = "pci-0000:71:00.0-usb-0:1.1.1.3"
+
+    result = run_witness(tmp_path, snapshot)
+
+    assert result.returncode == 0, result.stdout
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["ok"] is True
+    assert status["issues"] == []
+
+
+def test_witness_rejects_unapproved_s4_path(tmp_path: Path) -> None:
+    snapshot = known_good_snapshot()
+    snapshot["s4"]["device"] = "1-9"
+    snapshot["s4"]["path"] = "pci-0000:09:00.0-usb-0:9"
+
+    result = run_witness(tmp_path, snapshot)
+
+    assert result.returncode == 2
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert "s4_path_drift:pci-0000:09:00.0-usb-0:9" in status["issues"]
+
+
 def test_witness_reports_kernel_policy_and_camera_drift(tmp_path: Path) -> None:
     snapshot = known_good_snapshot()
     snapshot["kernel"] = {"usbfs_memory_mb": "16", "uvcvideo_quirks": "0"}
