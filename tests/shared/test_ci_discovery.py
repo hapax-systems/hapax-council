@@ -34,9 +34,7 @@ class TestDiscoverAgents:
         (tmp_path / "agent_one.py").write_text(
             "def main():\n    pass\n\nif __name__ == '__main__':\n    main()\n"
         )
-        (tmp_path / "agent_two.py").write_text(
-            "if __name__ == '__main__':\n    print('hi')\n"
-        )
+        (tmp_path / "agent_two.py").write_text("if __name__ == '__main__':\n    print('hi')\n")
         result = discover_agents(tmp_path)
         assert sorted(result) == ["agent-one", "agent-two"]
 
@@ -63,8 +61,7 @@ class TestDiscoverTimers:
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = (
-            "hapax-sync.timer enabled enabled\n"
-            "hapax-cleanup.timer disabled disabled\n"
+            "hapax-sync.timer enabled enabled\nhapax-cleanup.timer disabled disabled\n"
         )
         with patch("shared.ci_discovery.subprocess.run", return_value=mock_result):
             assert discover_timers() == ["hapax-sync", "hapax-cleanup"]
