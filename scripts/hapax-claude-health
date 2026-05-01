@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""Report live Hapax Claude Code lane health.
+
+Mirror of scripts/hapax-codex-health for the greek-named Claude Code
+lanes (alpha, beta, delta, epsilon). Same JSON shape, same warning
+taxonomy, same Obsidian dashboard contract — distinct sibling note at
+``_dashboard/claude-session-health.md`` so the codex and claude views
+do not stomp on each other.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+DEFAULT_SESSIONS = (
+    "alpha",
+    "beta",
+    "delta",
+    "epsilon",
+)
+DEFAULT_OBSIDIAN_PATH = (
+    Path.home()
+    / "Documents"
+    / "Personal"
+    / "20-projects"
+    / "hapax-cc-tasks"
+    / "_dashboard"
+    / "claude-session-health.md"
+)
+ROLE_SUMMARY = {
+    "alpha": "primary integrator; cognitive arch, programme layer, HOMAGE invariant review",
+    "beta": "observability (QM family), OMG surfaces, pre-merge audit, spec authoring",
+    "delta": "compositor, video-container, nebulous-scrim, GEAL, lore wards, audio routing",
+    "epsilon": "authentic-asset steward, governance-adjacent, historical (Pi fleet, LRR Phase 6)",
+}
+# Alpha runs on the primary worktree and hosts the vite dev server, so
+# it is the one greek lane that is reasonably expected to be visible.
+# Beta/delta/epsilon may legitimately run headless when their claim
+# files, relay yaml, and PR state stay current.
+SCREEN_REQUIRED = {"alpha"}
+TMUX_PREFIX = "hapax-claude-"
+WINDOW_CLASS_PREFIX = "hapax-claude-"
+
+
+def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, check=False)
+
+
+def _tmux_exists(session: str) -> bool:
+    return _run(["tmux", "has-session", "-t", f"{TMUX_PREFIX}{session}"]).returncode == 0
+
+
+def _hypr_clients() -> list[dict[str, Any]]:
+    result = _run(["hyprctl", "clients", "-j"])
+    if result.returncode != 0:
+        return []
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _relay_summary(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"exists": False}
+    text = path.read_text(encoding="utf-8", errors="replace")
+    age_s = max(0.0, time.time() - path.stat().st_mtime)
+    return {
+        "exists": True,
+        "age_s": round(age_s, 3),
+        "status": _yaml_scalar(text, "status"),
+        "task_id": _yaml_scalar(text, "task_id"),
+        "current_claim": _yaml_scalar(text, "current_claim"),
+        "current_pr": _yaml_scalar(text, "current_pr"),
+        "branch": _yaml_scalar(text, "current_branch")
+        or _yaml_scalar(text, "branch")
+        or _nested_yaml_scalar(text, "worktree", "branch"),
+        "why": _first_relay_note(text),
+    }
+
+
+def _yaml_scalar(text: str, key: str) -> str | None:
+    match = re.search(rf"^{re.escape(key)}:\s*(.*)$", text, flags=re.MULTILINE)
+    if not match:
+        return None
+    value = match.group(1).strip().strip("'\"")
+    if value in {"", "null", "None"}:
+        return None
+    return value
+
+
+def _nested_yaml_scalar(text: str, parent: str, key: str) -> str | None:
+    parent_match = re.search(
+        rf"^{re.escape(parent)}:\s*$((?:\n[ \t]+[^\n]*)*)",
+        text,
+        flags=re.MULTILINE,
+    )
+    if not parent_match:
+        return None
+    block = parent_match.group(1)
+    match = re.search(rf"^[ \t]+{re.escape(key)}:\s*(.*)$", block, flags=re.MULTILINE)
+    if not match:
+        return None
+    value = match.group(1).strip().strip("'\"")
+    if value in {"", "null", "None"}:
+        return None
+    return value
+
+
+def _first_relay_note(text: str) -> str | None:
+    for key in ("why_current_status", "goal", "summary", "mode", "status"):
+        value = _yaml_scalar(text, key)
+        if value:
+            return value
+
+    notes_match = re.search(r"^notes:\s*$((?:\n[ \t]+[^\n]*)*)", text, flags=re.MULTILINE)
+    if notes_match:
+        match = re.search(
+            r"^[ \t]+-\s*\"?([^\"\n].{12,})\"?\s*$", notes_match.group(1), flags=re.MULTILINE
+        )
+        if match:
+            return match.group(1).strip().strip("'\"")
+    return None
+
+
+def _task_index(active_root: Path) -> dict[str, dict[str, str | None]]:
+    tasks: dict[str, dict[str, str | None]] = {}
+    if not active_root.exists():
+        return tasks
+    for path in active_root.glob("*.md"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        task_id = _yaml_scalar(text, "task_id")
+        if not task_id:
+            continue
+        tasks[task_id] = {
+            "path": str(path),
+            "title": _yaml_scalar(text, "title"),
+            "status": _yaml_scalar(text, "status"),
+            "assigned_to": _yaml_scalar(text, "assigned_to"),
+            "priority": _yaml_scalar(text, "priority"),
+            "wsjf": _yaml_scalar(text, "wsjf"),
+        }
+    return tasks
+
+
+def _protected_sessions(relay_dir: Path) -> set[str]:
+    """Read protected lanes out of session-protection.md, if any.
+
+    The same protection registry is shared with the codex side; greek
+    lanes can be listed there as e.g. ``alpha`` or ``beta`` (without the
+    ``cx-`` prefix) for symmetric operator-override semantics.
+    """
+    path = relay_dir / "session-protection.md"
+    if not path.exists():
+        return set()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    # Match bare greek lane names referenced as inline-code (`alpha`).
+    return {m for m in re.findall(r"`([a-z]+)`", text) if m in DEFAULT_SESSIONS}
+
+
+def collect(sessions: list[str]) -> dict[str, Any]:
+    home = Path.home()
+    cache = Path(os.environ.get("XDG_CACHE_HOME", home / ".cache"))
+    relay_dir = cache / "hapax" / "relay"
+    active_root = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    tasks = _task_index(active_root)
+    clients = _hypr_clients()
+    protected = _protected_sessions(relay_dir)
+    lanes: list[dict[str, Any]] = []
+    for session in sessions:
+        foot_matches = [
+            item for item in clients if item.get("class") == f"{WINDOW_CLASS_PREFIX}{session}"
+        ]
+        tmux = _tmux_exists(session)
+        claim_file = cache / "hapax" / f"cc-active-task-{session}"
+        claim = claim_file.read_text(encoding="utf-8").strip() if claim_file.exists() else None
+        relay = _relay_summary(relay_dir / f"{session}.yaml")
+        task_id = claim or relay.get("current_claim") or relay.get("task_id")
+        task = tasks.get(str(task_id), {}) if task_id else {}
+        warnings: list[str] = []
+        if foot_matches and not tmux:
+            warnings.append("legacy_direct_foot_no_tmux_control_plane")
+        if tmux and not foot_matches and session in SCREEN_REQUIRED:
+            warnings.append("screen_required_but_not_visible")
+        if not tmux and session not in SCREEN_REQUIRED and claim:
+            warnings.append("worker_claim_without_tmux_control_plane")
+        if claim and not relay.get("current_claim"):
+            warnings.append("claim_file_without_relay_current_claim")
+        if claim and relay.get("current_claim") and claim != relay.get("current_claim"):
+            warnings.append("claim_file_relay_current_claim_mismatch")
+        if claim and relay.get("task_id") and claim != relay.get("task_id"):
+            warnings.append("claim_file_relay_task_id_mismatch")
+        if session in protected:
+            warnings.append("protected_do_not_relaunch_or_kill")
+        lanes.append(
+            {
+                "session": session,
+                "tmux": tmux,
+                "foot_visible": bool(foot_matches),
+                "foot_count": len(foot_matches),
+                "foot_titles": [str(item.get("title") or "") for item in foot_matches],
+                "active_claim": claim,
+                "task_id": task_id,
+                "task": task,
+                "relay": relay,
+                "role": ROLE_SUMMARY.get(session, "Claude Code lane"),
+                "screen_required": session in SCREEN_REQUIRED,
+                "protected": session in protected,
+                "warnings": warnings,
+            }
+        )
+    return {
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "observability": (
+            "Obsidian dashboard plus relay/claim files; alpha runs on the "
+            "primary worktree (vite host) so it is normally visible. "
+            "Beta/delta/epsilon may run headless when claim files, relay "
+            "yaml, and PR state stay current."
+        ),
+        "lanes": lanes,
+    }
+
+
+def _cell(value: object) -> str:
+    text = "-" if value is None or value == "" else str(value)
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def render_obsidian(report: dict[str, Any]) -> str:
+    checked = str(report["checked_at"])
+    local = datetime.now().astimezone().isoformat(timespec="seconds")
+    lines = [
+        "---",
+        "type: claude-session-health",
+        "title: Claude session health",
+        f"updated_at: {checked}",
+        "tags: [claude, coordination, dashboard]",
+        "---",
+        "",
+        "# Claude session health",
+        "",
+        f"Last generated: `{checked}` UTC / `{local}` local.",
+        "",
+        (
+            "Operator visibility contract: `alpha` runs on the primary worktree "
+            "and hosts the vite dev server, so it is normally visible. "
+            "Beta/delta/epsilon may run headless when this note, cc-task "
+            "claims, relay YAML, and PR state stay current."
+        ),
+        "",
+        (
+            "| Session | Role | Control | Screen | Task | Task status | "
+            "Branch | PR | Why / current status | Warnings |"
+        ),
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for lane in report["lanes"]:
+        relay = lane["relay"]
+        task = lane.get("task") or {}
+        control = "tmux" if lane["tmux"] else "direct-foot" if lane["foot_visible"] else "none"
+        if lane["foot_visible"]:
+            screen = "visible"
+        elif lane["session"] == "alpha":
+            screen = "parent terminal"
+        elif lane["screen_required"]:
+            screen = "required-missing"
+        else:
+            screen = "not required"
+        task_label = lane.get("task_id") or "-"
+        title = task.get("title")
+        if title:
+            task_label = f"{task_label} — {title}"
+        status = task.get("status") or (
+            "claimed" if lane.get("active_claim") else relay.get("status")
+        )
+        why = relay.get("why") or relay.get("status") or "-"
+        warnings = ", ".join(lane["warnings"]) if lane["warnings"] else "-"
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _cell(lane["session"]),
+                    _cell(lane["role"]),
+                    _cell(control),
+                    _cell(screen),
+                    _cell(task_label),
+                    _cell(status),
+                    _cell(relay.get("branch")),
+                    _cell(relay.get("current_pr")),
+                    _cell(why),
+                    _cell(warnings),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Sources",
+            "",
+            "- Active claims: `~/.cache/hapax/cc-active-task-{alpha,beta,delta,epsilon}`",
+            "- Relays: `~/.cache/hapax/relay/{alpha,beta,delta,epsilon}.yaml`",
+            "- Tasks: `~/Documents/Personal/20-projects/hapax-cc-tasks/active/`",
+            "- Regenerate: `scripts/hapax-claude-health --write-obsidian`",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit JSON")
+    parser.add_argument(
+        "--write-obsidian",
+        nargs="?",
+        const=str(DEFAULT_OBSIDIAN_PATH),
+        help="write the operator-facing Obsidian dashboard, optionally to PATH",
+    )
+    parser.add_argument("sessions", nargs="*", default=list(DEFAULT_SESSIONS))
+    args = parser.parse_args()
+    report = collect(args.sessions)
+    if args.write_obsidian:
+        path = Path(args.write_obsidian).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_obsidian(report), encoding="utf-8")
+        print(path)
+        return 0
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        for lane in report["lanes"]:
+            warn = ",".join(lane["warnings"]) if lane["warnings"] else "-"
+            print(
+                f"{lane['session']}: tmux={lane['tmux']} foot={lane['foot_visible']} "
+                f"claim={lane['active_claim'] or '-'} relay={lane['relay'].get('status') or '-'} "
+                f"warnings={warn}"
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

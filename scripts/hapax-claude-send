@@ -1,0 +1,582 @@
+#!/usr/bin/env bash
+# Send an instruction to a live Hapax Claude Code session and optionally submit it.
+#
+# Mirror of scripts/hapax-codex-send for greek-named Claude Code lanes
+# (alpha, beta, delta, epsilon). Same transport and ACK semantics:
+#
+#   - tmux paste-and-submit with token-based ACK file confirmation
+#   - foot-window fallback via wtype/hyprctl when tmux is unavailable
+#   - busy detection (refuses to queue ACK-gated messages while Claude
+#     appears to be mid-tool-call) and auto-nudge when Enter doesn't land
+#
+# Together with hapax-codex-send this gives synchronous parent->child RPC
+# across both interfaces. The default ACK timeout is intentionally short
+# (60s) because the operator's "never stall, revert acceptable" rule
+# means we'd rather fail fast than block on a single peer.
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: hapax-claude-send --session ROLE [--transport auto|foot|tmux]
+                          [--no-submit] [--append] [--require-ack]
+                          [--ack-timeout SECONDS] [--json] [--stdin]
+                          [--] MESSAGE...
+
+ROLE is the greek lane name: alpha, beta, delta, epsilon. Override the
+allowlist via HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST="alpha beta gamma ...".
+
+Sends MESSAGE to a visible Hapax Claude Code session. The default
+transport prefers a tmux session named hapax-claude-ROLE and falls
+back to a visible foot window with class hapax-claude-ROLE. Foot
+delivery targets the window address directly when Hyprland supports
+it, avoiding focus-follow-mouse paste/Return races.
+
+Tunables (env vars):
+  HAPAX_CLAUDE_SEND_ACK_TIMEOUT          ack wait, seconds (default 60)
+  HAPAX_CLAUDE_SEND_ACK_NUDGE_SECONDS    re-press-Enter cadence (default 5)
+  HAPAX_CLAUDE_SEND_ACK_NUDGE_LIMIT      max nudges (default 3)
+  HAPAX_CLAUDE_SEND_BUSY_REGEX           extended grep regex for "busy"
+                                         pane state (default covers
+                                         Claude Code's animated verbs)
+  HAPAX_CLAUDE_SEND_ALLOW_BUSY=1         skip busy-pane refusal
+  HAPAX_CLAUDE_SEND_CLEAR_DELAY          (s) sleep after Ctrl-U
+  HAPAX_CLAUDE_SEND_PASTE_DELAY          (s) sleep after wl-copy
+  HAPAX_CLAUDE_SEND_SUBMIT_DELAY         (s) sleep before Enter
+  HAPAX_CLAUDE_SEND_AFTER_SUBMIT_DELAY   (s) sleep after Enter
+  HAPAX_CLAUDE_SEND_RESTORE_DELAY        (s) sleep before clipboard restore
+  HAPAX_CLAUDE_SEND_RETURN_HOLD_MS       (ms) wtype Return hold time
+  HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST       space-separated greek lanes
+EOF
+}
+
+SESSION=""
+TRANSPORT="auto"
+SUBMIT=1
+CLEAR_INPUT=1
+REQUIRE_ACK=0
+ACK_INSTRUCTION=1
+ACK_TIMEOUT="${HAPAX_CLAUDE_SEND_ACK_TIMEOUT:-60}"
+ACK_NUDGE_SECONDS="${HAPAX_CLAUDE_SEND_ACK_NUDGE_SECONDS:-5}"
+ACK_NUDGE_LIMIT="${HAPAX_CLAUDE_SEND_ACK_NUDGE_LIMIT:-3}"
+ACK_FILE=""
+ACK_TOKEN=""
+ALLOW_LEGACY_ACK=0
+JSON_OUTPUT=0
+USED_TRANSPORT=""
+READ_STDIN=0
+MESSAGE_PARTS=()
+TMP_FILES=()
+
+ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta delta epsilon}"
+
+# Default busy regex covers Claude Code's animated activity verbs and
+# the "Messages to be submitted after next tool call" queue indicator.
+# The verbs change over Claude Code releases; tune via the env var
+# rather than editing the script. Pattern is grep -E.
+DEFAULT_BUSY_REGEX='(Working|Pondering|Thinking|Investigating|Cogitating|Synthesizing|Considering|Reasoning|Generating|Analyzing|Crystallizing|Refining|Reflecting|Deliberating|Deciding|Exploring|Computing)\.\.\.|Messages to be submitted after next tool call|esc to interrupt'
+BUSY_REGEX="${HAPAX_CLAUDE_SEND_BUSY_REGEX:-$DEFAULT_BUSY_REGEX}"
+
+cleanup_tmp_files() {
+  if [ "${#TMP_FILES[@]}" -gt 0 ]; then
+    rm -f "${TMP_FILES[@]}"
+  fi
+}
+trap cleanup_tmp_files EXIT
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session|--thread|--name|--role)
+      SESSION="${2:-}"
+      shift 2
+      ;;
+    --session=*|--thread=*|--name=*|--role=*)
+      SESSION="${1#*=}"
+      shift
+      ;;
+    --transport)
+      TRANSPORT="${2:-}"
+      shift 2
+      ;;
+    --transport=*)
+      TRANSPORT="${1#--transport=}"
+      shift
+      ;;
+    --no-submit)
+      SUBMIT=0
+      shift
+      ;;
+    --append)
+      CLEAR_INPUT=0
+      shift
+      ;;
+    --require-ack)
+      REQUIRE_ACK=1
+      shift
+      ;;
+    --no-ack-instruction)
+      ACK_INSTRUCTION=0
+      shift
+      ;;
+    --ack-timeout)
+      ACK_TIMEOUT="${2:-}"
+      shift 2
+      ;;
+    --ack-timeout=*)
+      ACK_TIMEOUT="${1#--ack-timeout=}"
+      shift
+      ;;
+    --ack-file)
+      ACK_FILE="${2:-}"
+      shift 2
+      ;;
+    --ack-file=*)
+      ACK_FILE="${1#--ack-file=}"
+      shift
+      ;;
+    --ack-token)
+      ACK_TOKEN="${2:-}"
+      shift 2
+      ;;
+    --ack-token=*)
+      ACK_TOKEN="${1#--ack-token=}"
+      shift
+      ;;
+    --allow-legacy-ack)
+      ALLOW_LEGACY_ACK=1
+      shift
+      ;;
+    --json)
+      JSON_OUTPUT=1
+      shift
+      ;;
+    --stdin)
+      READ_STDIN=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      MESSAGE_PARTS+=("$@")
+      break
+      ;;
+    *)
+      MESSAGE_PARTS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$SESSION" ]; then
+  echo "hapax-claude-send: --session is required" >&2
+  exit 2
+fi
+
+# Validate ROLE against allowlist (space-separated, env-tunable).
+ROLE_OK=0
+for r in $ROLE_ALLOWLIST; do
+  if [ "$r" = "$SESSION" ]; then
+    ROLE_OK=1
+    break
+  fi
+done
+if [ "$ROLE_OK" -ne 1 ]; then
+  echo "hapax-claude-send: invalid role '$SESSION' (allowed: $ROLE_ALLOWLIST)" >&2
+  echo "  override via HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST=\"alpha beta gamma ...\"" >&2
+  exit 2
+fi
+
+case "$TRANSPORT" in
+  auto|foot|tmux)
+    ;;
+  *)
+    echo "hapax-claude-send: invalid transport '$TRANSPORT'" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$READ_STDIN" -eq 1 ]; then
+  MESSAGE="$(cat)"
+else
+  if [ "${#MESSAGE_PARTS[@]}" -eq 0 ]; then
+    echo "hapax-claude-send: missing MESSAGE" >&2
+    exit 2
+  fi
+  MESSAGE="${MESSAGE_PARTS[*]}"
+fi
+
+if [ -z "$MESSAGE" ]; then
+  echo "hapax-claude-send: refusing to send an empty message" >&2
+  exit 2
+fi
+
+case "$ACK_TIMEOUT" in
+  ''|*[!0-9.]*)
+    echo "hapax-claude-send: invalid --ack-timeout '$ACK_TIMEOUT'" >&2
+    exit 2
+    ;;
+esac
+
+case "$ACK_NUDGE_SECONDS" in
+  ''|*[!0-9.]*)
+    echo "hapax-claude-send: invalid HAPAX_CLAUDE_SEND_ACK_NUDGE_SECONDS '$ACK_NUDGE_SECONDS'" >&2
+    exit 2
+    ;;
+esac
+
+case "$ACK_NUDGE_LIMIT" in
+  ''|*[!0-9]*)
+    echo "hapax-claude-send: invalid HAPAX_CLAUDE_SEND_ACK_NUDGE_LIMIT '$ACK_NUDGE_LIMIT'" >&2
+    exit 2
+    ;;
+esac
+
+json_string() {
+  python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+ack_setup() {
+  [ "$REQUIRE_ACK" -eq 1 ] || return 0
+  if [ -z "$ACK_TOKEN" ]; then
+    ACK_TOKEN="ack-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+  fi
+  if [ -z "$ACK_FILE" ]; then
+    ACK_FILE="${XDG_RUNTIME_DIR:-/tmp}/hapax-claude-acks/$SESSION-$ACK_TOKEN"
+  fi
+  mkdir -p "$(dirname "$ACK_FILE")"
+  rm -f "$ACK_FILE"
+  export HAPAX_CLAUDE_SEND_ACK_FILE="$ACK_FILE"
+  export HAPAX_CLAUDE_SEND_ACK_TOKEN="$ACK_TOKEN"
+  if [ "$ACK_INSTRUCTION" -eq 1 ]; then
+    MESSAGE="$MESSAGE
+
+ACK REQUIRED: before substantial work, write this exact token to this exact path:
+mkdir -p '$(dirname "$ACK_FILE")' && printf '%s\n' '$ACK_TOKEN' > '$ACK_FILE'"
+  fi
+}
+
+wait_for_ack() {
+  [ "$REQUIRE_ACK" -eq 1 ] || return 0
+  local start now elapsed nudge_after nudges
+  start="$(date +%s)"
+  nudges=0
+  while true; do
+    if [ -f "$ACK_FILE" ] && grep -Fxq "$ACK_TOKEN" "$ACK_FILE" 2>/dev/null; then
+      return 0
+    fi
+    now="$(date +%s)"
+    elapsed=$((now - start))
+    if [ "$USED_TRANSPORT" = "tmux" ] && [ "$SUBMIT" -eq 1 ] && [ "$nudges" -lt "$ACK_NUDGE_LIMIT" ]; then
+      nudge_after="$(awk -v n="$nudges" -v s="$ACK_NUDGE_SECONDS" 'BEGIN { print (n + 1) * s }')"
+      if awk -v elapsed="$elapsed" -v nudge_after="$nudge_after" 'BEGIN { exit !(elapsed >= nudge_after) }'; then
+        tmux send-keys -t "hapax-claude-$SESSION" C-m 2>/dev/null || true
+        nudges=$((nudges + 1))
+      fi
+    fi
+    if awk "BEGIN { exit !($elapsed >= $ACK_TIMEOUT) }"; then
+      echo "hapax-claude-send: ack timeout for $SESSION after ${ACK_TIMEOUT}s ($ACK_FILE)" >&2
+      return 12
+    fi
+    sleep 0.25
+  done
+}
+
+emit_status() {
+  [ "$JSON_OUTPUT" -eq 1 ] || return 0
+  printf '{"session":%s,"transport":%s,"submitted":%s,"cleared_input":%s,"ack_required":%s' \
+    "$(json_string "$SESSION")" \
+    "$(json_string "$USED_TRANSPORT")" \
+    "$SUBMIT" \
+    "$CLEAR_INPUT" \
+    "$REQUIRE_ACK"
+  if [ "$REQUIRE_ACK" -eq 1 ]; then
+    printf ',"ack_file":%s,"ack_token":%s' "$(json_string "$ACK_FILE")" "$(json_string "$ACK_TOKEN")"
+  fi
+  printf '}\n'
+}
+
+ack_setup
+
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+tmux_target_exists() {
+  have_cmd tmux || return 1
+  tmux has-session -t "hapax-claude-$SESSION" 2>/dev/null
+}
+
+foot_window_address() {
+  have_cmd hyprctl || return 1
+  have_cmd jq || return 1
+  local class="hapax-claude-$SESSION"
+  hyprctl clients -j 2>/dev/null \
+    | jq -r --arg class "$class" '[.[]? | select(.class == $class) | .address][0] // empty'
+}
+
+foot_target_exists() {
+  [ -n "$(foot_window_address 2>/dev/null || true)" ]
+}
+
+foot_window_center() {
+  have_cmd hyprctl || return 1
+  have_cmd jq || return 1
+  local class="hapax-claude-$SESSION"
+  hyprctl clients -j 2>/dev/null \
+    | jq -r --arg class "$class" '[.[]? | select(.class == $class) | [
+        (.at[0] + ((.size[0] / 2) | floor)),
+        (.at[1] + ((.size[1] / 2) | floor))
+      ] | @tsv][0] // empty'
+}
+
+send_tmux() {
+  local target="hapax-claude-$SESSION"
+  local tmp buffer
+  if [ "$REQUIRE_ACK" -eq 1 ] && [ "${HAPAX_CLAUDE_SEND_ALLOW_BUSY:-0}" != "1" ]; then
+    if tmux capture-pane -pt "$target" -S -30 2>/dev/null \
+      | grep -Eq "$BUSY_REGEX"; then
+      echo "hapax-claude-send: $SESSION appears busy; refusing to queue ACK-gated message" >&2
+      echo "  override with HAPAX_CLAUDE_SEND_ALLOW_BUSY=1, or wait for the pane to idle" >&2
+      exit 14
+    fi
+  fi
+
+  tmp="$(mktemp)"
+  buffer="hapax-claude-send-$SESSION-$$-$RANDOM"
+  TMP_FILES+=("$tmp")
+  printf '%s' "$MESSAGE" >"$tmp"
+
+  tmux load-buffer -b "$buffer" "$tmp"
+  if [ "$CLEAR_INPUT" -eq 1 ]; then
+    tmux send-keys -t "$target" C-u
+    sleep "${HAPAX_CLAUDE_SEND_CLEAR_DELAY:-0.05}"
+  fi
+  tmux paste-buffer -b "$buffer" -t "$target"
+  tmux delete-buffer -b "$buffer" 2>/dev/null || true
+  if [ "$SUBMIT" -eq 1 ]; then
+    sleep "${HAPAX_CLAUDE_SEND_SUBMIT_DELAY:-1.10}"
+    tmux send-keys -t "$target" C-m
+  fi
+}
+
+send_foot_return() {
+  local address="$1"
+  wait_for_focus "$address" || {
+    echo "hapax-claude-send: focus moved before submit for $SESSION" >&2
+    exit 11
+  }
+  wtype -P Return -s "${HAPAX_CLAUDE_SEND_RETURN_HOLD_MS:-80}" -p Return
+  sleep "${HAPAX_CLAUDE_SEND_AFTER_SUBMIT_DELAY:-0.35}"
+}
+
+send_hypr_shortcut() {
+  local address="$1"
+  local modifiers="$2"
+  local key="$3"
+  local out
+  out="$(hyprctl dispatch sendshortcut "$modifiers,$key,address:$address" 2>&1 || true)"
+  [ "$out" = "ok" ]
+}
+
+send_wtype_clear() {
+  [ "$CLEAR_INPUT" -eq 1 ] || return 0
+  wtype -M ctrl -k u -m ctrl
+  sleep "${HAPAX_CLAUDE_SEND_CLEAR_DELAY:-0.05}"
+}
+
+wait_for_focus() {
+  local address="$1"
+  local active=""
+  local _
+  for _ in {1..30}; do
+    active="$(hyprctl activewindow -j 2>/dev/null | jq -r '.address // empty' 2>/dev/null || true)"
+    if [ "$active" = "$address" ]; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
+save_text_clipboard() {
+  local dest="$1"
+  have_cmd wl-paste || return 1
+  if ! wl-paste --list-types 2>/dev/null | grep -Eqx 'text/plain;charset=utf-8|text/plain'; then
+    return 1
+  fi
+  wl-paste --no-newline >"$dest" 2>/dev/null
+}
+
+restore_text_clipboard() {
+  local src="$1"
+  wl-copy --type text/plain <"$src" || true
+}
+
+send_foot_targeted() {
+  local address="$1"
+  have_cmd wl-copy || return 1
+
+  local msg old
+  msg="$(mktemp)"
+  old="$(mktemp)"
+  TMP_FILES+=("$msg" "$old")
+  local restore_clipboard=0
+  printf '%s' "$MESSAGE" >"$msg"
+  if save_text_clipboard "$old"; then
+    restore_clipboard=1
+  fi
+
+  if [ "$CLEAR_INPUT" -eq 1 ]; then
+    if ! send_hypr_shortcut "$address" "CTRL" "U"; then
+      if [ "$restore_clipboard" -eq 1 ]; then
+        restore_text_clipboard "$old"
+      fi
+      return 1
+    fi
+    sleep "${HAPAX_CLAUDE_SEND_CLEAR_DELAY:-0.05}"
+  fi
+
+  wl-copy --type text/plain <"$msg"
+  sleep "${HAPAX_CLAUDE_SEND_PASTE_DELAY:-0.25}"
+  if ! send_hypr_shortcut "$address" "CTRL SHIFT" "V"; then
+    if [ "$restore_clipboard" -eq 1 ]; then
+      restore_text_clipboard "$old"
+    fi
+    return 1
+  fi
+
+  sleep "${HAPAX_CLAUDE_SEND_SUBMIT_DELAY:-0.60}"
+  if [ "$SUBMIT" -eq 1 ]; then
+    if ! send_hypr_shortcut "$address" "" "Return"; then
+      if [ "$restore_clipboard" -eq 1 ]; then
+        restore_text_clipboard "$old"
+      fi
+      return 1
+    fi
+    sleep "${HAPAX_CLAUDE_SEND_AFTER_SUBMIT_DELAY:-0.35}"
+  fi
+
+  sleep "${HAPAX_CLAUDE_SEND_RESTORE_DELAY:-0.35}"
+  if [ "$restore_clipboard" -eq 1 ]; then
+    restore_text_clipboard "$old"
+  fi
+}
+
+move_cursor_to_foot_center() {
+  local center
+  center="$(foot_window_center 2>/dev/null || true)"
+  [ -n "$center" ] || return 0
+  local x y
+  IFS=$'\t' read -r x y <<EOF
+$center
+EOF
+  [ -n "${x:-}" ] && [ -n "${y:-}" ] || return 0
+  hyprctl dispatch movecursor "$x" "$y" >/dev/null 2>&1 || true
+}
+
+send_foot() {
+  have_cmd hyprctl || { echo "hapax-claude-send: hyprctl not found" >&2; exit 10; }
+  have_cmd jq || { echo "hapax-claude-send: jq not found" >&2; exit 10; }
+
+  local address
+  address="$(foot_window_address)"
+  if [ -z "$address" ]; then
+    echo "hapax-claude-send: no visible foot window for $SESSION (class=hapax-claude-$SESSION)" >&2
+    exit 11
+  fi
+
+  if send_foot_targeted "$address"; then
+    return
+  fi
+
+  have_cmd wtype || { echo "hapax-claude-send: targeted delivery failed and wtype not found" >&2; exit 10; }
+
+  local previous_address
+  previous_address="$(hyprctl activewindow -j 2>/dev/null | jq -r '.address // empty' 2>/dev/null || true)"
+
+  move_cursor_to_foot_center
+  hyprctl dispatch focuswindow "address:$address" >/dev/null
+  wait_for_focus "$address" || {
+    echo "hapax-claude-send: failed to focus $SESSION at $address" >&2
+    exit 11
+  }
+
+  if have_cmd wl-copy; then
+    local msg old
+    msg="$(mktemp)"
+    old="$(mktemp)"
+    TMP_FILES+=("$msg" "$old")
+    local restore_clipboard=0
+    printf '%s' "$MESSAGE" >"$msg"
+    if save_text_clipboard "$old"; then
+      restore_clipboard=1
+    fi
+
+    send_wtype_clear
+    wl-copy --type text/plain <"$msg"
+    sleep "${HAPAX_CLAUDE_SEND_PASTE_DELAY:-0.25}"
+    wtype -M ctrl -M shift -k v -m shift -m ctrl
+    sleep "${HAPAX_CLAUDE_SEND_SUBMIT_DELAY:-1.10}"
+    if [ "$SUBMIT" -eq 1 ]; then
+      move_cursor_to_foot_center
+      send_foot_return "$address"
+    fi
+    sleep "${HAPAX_CLAUDE_SEND_RESTORE_DELAY:-0.35}"
+    if [ "$restore_clipboard" -eq 1 ]; then
+      restore_text_clipboard "$old"
+    fi
+  else
+    send_wtype_clear
+    wtype "$MESSAGE"
+    sleep "${HAPAX_CLAUDE_SEND_SUBMIT_DELAY:-1.10}"
+    if [ "$SUBMIT" -eq 1 ]; then
+      move_cursor_to_foot_center
+      send_foot_return "$address"
+    fi
+  fi
+
+  if [ -n "$previous_address" ] && [ "$previous_address" != "$address" ]; then
+    hyprctl dispatch focuswindow "address:$previous_address" >/dev/null 2>&1 || true
+  fi
+}
+
+case "$TRANSPORT" in
+  foot)
+    if [ "$REQUIRE_ACK" -eq 1 ] && [ "$ALLOW_LEGACY_ACK" -ne 1 ]; then
+      echo "hapax-claude-send: --require-ack needs a tmux-backed session; refusing legacy foot transport for $SESSION" >&2
+      exit 13
+    fi
+    USED_TRANSPORT="foot"
+    send_foot
+    ;;
+  tmux)
+    tmux_target_exists || {
+      echo "hapax-claude-send: no tmux session hapax-claude-$SESSION" >&2
+      exit 11
+    }
+    USED_TRANSPORT="tmux"
+    send_tmux
+    ;;
+  auto)
+    if tmux_target_exists; then
+      USED_TRANSPORT="tmux"
+      send_tmux
+    elif foot_target_exists; then
+      if [ "$REQUIRE_ACK" -eq 1 ] && [ "$ALLOW_LEGACY_ACK" -ne 1 ]; then
+        echo "hapax-claude-send: --require-ack needs a tmux-backed session; refusing legacy foot fallback for $SESSION" >&2
+        exit 13
+      fi
+      USED_TRANSPORT="foot"
+      send_foot
+    else
+      echo "hapax-claude-send: no live target for $SESSION (looked for tmux session 'hapax-claude-$SESSION' and foot window class 'hapax-claude-$SESSION')" >&2
+      exit 11
+    fi
+    ;;
+esac
+
+wait_for_ack
+emit_status

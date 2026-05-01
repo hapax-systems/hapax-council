@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# Launch Claude Code as a first-class Hapax coding interface.
+#
+# Lighter sibling of scripts/hapax-codex for the greek-named Claude
+# lanes (alpha/beta/delta/epsilon). Three jobs:
+#
+#   1. Identity: set HAPAX_AGENT_INTERFACE=claude, HAPAX_AGENT_NAME=$role,
+#      CLAUDE_ROLE=$role, HAPAX_WORKTREE_ROLE=$role.
+#   2. Worktree: cd to the role's canonical worktree (alpha = primary
+#      hapax-council/, others = hapax-council--$role/, with a couple of
+#      legacy aliases honored).
+#   3. Visibility: spawn a tmux session named hapax-claude-$role and
+#      optionally a foot window with that class, so hapax-claude-send
+#      can find the lane via either transport.
+#
+# We do NOT bake MCP server config into the spawn — Claude Code reads
+# ~/.claude/settings.json + .claude.json itself. We do NOT hard-fail
+# on a stale relay marker; the cleanup is the operator's call. We do
+# refuse to relaunch a protected lane while it is already alive.
+
+set -euo pipefail
+
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+
+usage() {
+  cat <<'EOF'
+usage: hapax-claude [--role alpha|beta|delta|epsilon] [--cd DIR]
+                    [--terminal none|tmux|foot] [--force]
+                    [--] [claude args...]
+
+Defaults:
+  - role inferred from HAPAX_AGENT_NAME / CLAUDE_ROLE / cwd basename
+  - worktree selected from the role when --cd is omitted
+  - terminal=none: exec claude in the current terminal
+  - terminal=tmux: detach into a tmux session named hapax-claude-<role>
+  - terminal=foot: tmux + a foot window attached to the same session
+EOF
+}
+
+ROLE=""
+WORKDIR=""
+WORKDIR_EXPLICIT=0
+TERMINAL="${HAPAX_CLAUDE_TERMINAL:-none}"
+FORCE=0
+CLAUDE_EXTRA=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --role|--session|--name)
+      ROLE="${2:-}"
+      shift 2
+      ;;
+    --role=*|--session=*|--name=*)
+      ROLE="${1#*=}"
+      shift
+      ;;
+    --cd|-C)
+      WORKDIR="${2:-}"
+      WORKDIR_EXPLICIT=1
+      shift 2
+      ;;
+    --cd=*)
+      WORKDIR="${1#--cd=}"
+      WORKDIR_EXPLICIT=1
+      shift
+      ;;
+    --terminal)
+      TERMINAL="${2:-}"
+      shift 2
+      ;;
+    --terminal=*)
+      TERMINAL="${1#--terminal=}"
+      shift
+      ;;
+    --force)
+      FORCE=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      CLAUDE_EXTRA+=("$@")
+      break
+      ;;
+    alpha|beta|delta|epsilon)
+      if [ -z "$ROLE" ]; then
+        ROLE="$1"
+      else
+        CLAUDE_EXTRA+=("$1")
+      fi
+      shift
+      ;;
+    *)
+      CLAUDE_EXTRA+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$ROLE" ]; then
+  ROLE="${HAPAX_AGENT_NAME:-${CLAUDE_ROLE:-${HAPAX_AGENT_ROLE:-}}}"
+fi
+if [ -z "$ROLE" ]; then
+  case "$(basename "$PWD")" in
+    hapax-council) ROLE="alpha" ;;
+    hapax-council--beta*|*--main-red*) ROLE="beta" ;;
+    hapax-council--delta*) ROLE="delta" ;;
+    hapax-council--epsilon*) ROLE="epsilon" ;;
+  esac
+fi
+
+case "$ROLE" in
+  alpha|beta|delta|epsilon) ;;
+  *)
+    echo "hapax-claude: invalid role '$ROLE' (expected alpha|beta|delta|epsilon)" >&2
+    exit 2
+    ;;
+esac
+
+case "$TERMINAL" in
+  none|tmux|foot) ;;
+  *)
+    echo "hapax-claude: invalid terminal '$TERMINAL'" >&2
+    exit 2
+    ;;
+esac
+
+claude_default_worktree() {
+  local role="$1"
+  local root="${HAPAX_CLAUDE_WORKTREE_ROOT:-$HOME/projects}"
+  case "$role" in
+    alpha) printf '%s\n' "$root/hapax-council" ;;
+    beta)
+      # Honor the legacy hapax-council--main-red alias when --beta worktree
+      # is missing — beta's worktree has been renamed across the project's
+      # lifetime and operator scripts still live in either.
+      if [ -d "$root/hapax-council--beta" ]; then
+        printf '%s\n' "$root/hapax-council--beta"
+      elif [ -d "$root/hapax-council--main-red" ]; then
+        printf '%s\n' "$root/hapax-council--main-red"
+      else
+        printf '%s\n' "$root/hapax-council--beta"
+      fi
+      ;;
+    delta)
+      if [ -d "$root/hapax-council--delta" ]; then
+        printf '%s\n' "$root/hapax-council--delta"
+      elif [ -d "$root/hapax-council--delta-omg" ]; then
+        printf '%s\n' "$root/hapax-council--delta-omg"
+      else
+        printf '%s\n' "$root/hapax-council--delta"
+      fi
+      ;;
+    epsilon) printf '%s\n' "$root/hapax-council--epsilon" ;;
+  esac
+}
+
+if [ -z "$WORKDIR" ]; then
+  WORKDIR="$(claude_default_worktree "$ROLE")"
+fi
+
+if [ ! -d "$WORKDIR" ]; then
+  echo "hapax-claude: worktree not found for role '$ROLE': $WORKDIR" >&2
+  echo "  pass --cd <DIR> to override, or git worktree add it first" >&2
+  exit 3
+fi
+WORKDIR="$(cd "$WORKDIR" && pwd)"
+
+session_is_protected() {
+  local role="$1"
+  local protection_file="${HAPAX_SESSION_PROTECTION_FILE:-$HOME/.cache/hapax/relay/session-protection.md}"
+  [ -f "$protection_file" ] || return 1
+  awk -v role="$role" '
+    {
+      line = tolower($0)
+      needle = "`" role "`"
+      if (index($0, needle) && line ~ /protected/) found = 1
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$protection_file"
+}
+
+live_claude_session_exists() {
+  local role="$1"
+  local class="hapax-claude-$role"
+  local tmux_name="hapax-claude-$role"
+  if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    if hyprctl clients -j 2>/dev/null \
+      | jq -e --arg class "$class" 'any(.[]?; .class == $class)' >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$tmux_name" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+if [ "$FORCE" -ne 1 ] && [ "$TERMINAL" != "none" ]; then
+  if session_is_protected "$ROLE" && live_claude_session_exists "$ROLE"; then
+    echo "hapax-claude: refusing to relaunch protected live role '$ROLE' (pass --force to override)" >&2
+    exit 12
+  fi
+fi
+
+CLAUDE_BIN="$(command -v claude || true)"
+if [ -z "$CLAUDE_BIN" ]; then
+  echo "hapax-claude: claude not found in PATH" >&2
+  exit 4
+fi
+
+TMUX_NAME="hapax-claude-$ROLE"
+
+if [ "$TERMINAL" != "none" ]; then
+  TMUX_BIN="$(command -v tmux || true)"
+  if [ -z "$TMUX_BIN" ]; then
+    echo "hapax-claude: tmux not found; --terminal=$TERMINAL requires tmux" >&2
+    exit 10
+  fi
+  if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+    echo "hapax-claude: tmux session already exists: $TMUX_NAME (pass --force to recreate)" >&2
+    exit 11
+  fi
+fi
+
+# Identity wiring (matches scripts/hapax-codex semantics so shared hooks
+# can read either CLAUDE_ROLE or HAPAX_AGENT_NAME).
+export HAPAX_AGENT_INTERFACE="claude"
+export HAPAX_AGENT_NAME="$ROLE"
+export CLAUDE_ROLE="$ROLE"
+export HAPAX_AGENT_ROLE="$ROLE"
+export HAPAX_WORKTREE_ROLE="$ROLE"
+export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
+
+if [ "$TERMINAL" = "none" ]; then
+  cd "$WORKDIR"
+  exec "$CLAUDE_BIN" "${CLAUDE_EXTRA[@]}"
+fi
+
+# tmux/foot path: build a runner script that re-execs hapax-claude with
+# --terminal none so the inner process inherits identity. Mirrors the
+# codex idiom.
+SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/claude-spawns"
+mkdir -p "$SPAWN_DIR"
+RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'set -euo pipefail'
+  printf 'cd %q\n' "$WORKDIR"
+  printf 'export HAPAX_AGENT_INTERFACE=claude\n'
+  printf 'export HAPAX_AGENT_NAME=%q\n' "$ROLE"
+  printf 'export CLAUDE_ROLE=%q\n' "$ROLE"
+  printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
+  printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
+  printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
+  printf 'exec %q' "$CLAUDE_BIN"
+  for arg in "${CLAUDE_EXTRA[@]}"; do
+    printf ' %q' "$arg"
+  done
+  printf '\n'
+} >"$RUNNER"
+chmod 700 "$RUNNER"
+
+case "$TERMINAL" in
+  tmux)
+    "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    printf '%s\n' "$TMUX_NAME"
+    ;;
+  foot)
+    FOOT_BIN="$(command -v footclient || command -v foot || true)"
+    if [ -z "$FOOT_BIN" ]; then
+      echo "hapax-claude: footclient/foot not found" >&2
+      exit 10
+    fi
+    if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
+      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    fi
+    case "$(basename "$FOOT_BIN")" in
+      footclient)
+        "$FOOT_BIN" -E -N \
+          --app-id "hapax-claude-$ROLE" \
+          --title "$ROLE" \
+          --working-directory "$WORKDIR" \
+          "$TMUX_BIN" attach-session -t "$TMUX_NAME"
+        ;;
+      *)
+        setsid -f "$FOOT_BIN" \
+          --app-id "hapax-claude-$ROLE" \
+          --title "$ROLE" \
+          --working-directory "$WORKDIR" \
+          "$TMUX_BIN" attach-session -t "$TMUX_NAME" >/dev/null 2>&1
+        ;;
+    esac
+    ;;
+esac
