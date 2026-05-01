@@ -848,3 +848,15 @@ from shared.axiom_registry import Precedent, load_precedents
 
 Precedent
 load_precedents
+
+# FFT marker-probe detector — runtime-witness layer for the existing
+# fixture/policy harness (PR #1897). Whitelisted because the live
+# runner that calls into it lands as a follow-up; the helpers ship
+# pure-logic + tested first per cc-task `audio-marker-probe-fft-detector`.
+from shared.audio_marker_probe_fft import (
+    detect_marker_in_capture,
+    generate_marker_tone,
+)
+
+detect_marker_in_capture
+generate_marker_tone
