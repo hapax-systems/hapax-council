@@ -96,6 +96,18 @@ class Implication:
     mode: str = "compatibility"  # "compatibility" | "sufficiency"
     level: str = "component"  # "component" | "subsystem" | "system"
     scope: ImplicationScope | None = None  # E-1: optional scope for sufficiency implications
+    linkage: str = ""  # "" (default; expects constitutive rule) | "code-direct"
+    """Optional: explicitly declares how the implication is enforced.
+
+    Default empty string means the implication SHOULD be backed by a
+    constitutive rule (path/frontmatter pattern → institutional fact)
+    feeding it; coherence reports flag missing links as orphans.
+
+    ``code-direct`` declares the implication is enforced by direct
+    text-reference in agent code paths rather than via a constitutive
+    rule. Coherence checks SKIP these in orphan-implication tallies.
+    See cc-task ``coherence-orphan-implications-catalog`` for the
+    triage strategy."""
 
 
 @dataclass(frozen=True)
@@ -231,6 +243,7 @@ def _build_implication(entry: dict, *, default_axiom_id: str) -> Implication:
         mode=entry.get("mode", "compatibility"),
         level=entry.get("level", "component"),
         scope=scope,
+        linkage=str(entry.get("linkage", "")).strip(),
     )
 
 

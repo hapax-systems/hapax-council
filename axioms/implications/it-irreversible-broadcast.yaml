@@ -1,5 +1,6 @@
 implication_id: it-irreversible-broadcast
 axiom_id: interpersonal_transparency
+linkage: code-direct
 version: 1
 tier: T0
 enforcement: block

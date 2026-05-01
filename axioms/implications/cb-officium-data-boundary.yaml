@@ -1,5 +1,6 @@
 implication_id: cb-officium-data-boundary
 axiom_id: corporate_boundary
+linkage: code-direct
 version: 1
 tier: T0
 enforcement: block

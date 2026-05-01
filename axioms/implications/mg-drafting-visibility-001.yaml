@@ -1,5 +1,6 @@
 implication_id: mg-drafting-visibility-001
 axiom_id: management_governance
+linkage: code-direct
 version: 1
 tier: T0
 enforcement: block
