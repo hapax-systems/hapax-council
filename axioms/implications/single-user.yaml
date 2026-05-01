@@ -192,6 +192,7 @@ implications:
   mode: sufficiency
   level: system
 - id: su-paths-001
+  linkage: code-direct
   tier: T2
   text: File paths and database queries must not dynamically construct user-specific
     paths or apply user-based filters.
