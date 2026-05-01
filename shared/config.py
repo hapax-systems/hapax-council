@@ -98,6 +98,13 @@ MODELS: dict[str, str] = {
     "coding": "coding",
     "local-fast": "local-fast",
     "local-research-instruct": "local-research-instruct",
+    # Gemini 3 family — Phase A substrate, ADD-ONLY (do not migrate
+    # `fast`/`long-context` until smoke + 14d observability shows parity).
+    # Per docs/research/2026-05-01-litellm-gemini-3-route-evaluation.md.
+    "fast-3": "gemini-3-flash-preview",
+    "long-context-3": "gemini-3-flash-preview",
+    "extraction": "gemini-3.1-flash-lite-preview",
+    "scouting": "gemini-3.1-flash-lite-preview",
 }
 
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
@@ -153,7 +160,16 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
             return get_model("local-fast")
 
         if resource > 0.7:
-            downgraded = {"balanced": "fast", "fast": "local-fast", "reasoning": "local-fast"}
+            downgraded = {
+                "balanced": "fast",
+                "fast": "local-fast",
+                "reasoning": "local-fast",
+                # Gemini 3 family degradation, per the route-evaluation doc.
+                "fast-3": "fast",
+                "long-context-3": "long-context",
+                "extraction": "fast-3",
+                "scouting": "fast-3",
+            }
             if alias in downgraded:
                 _log.debug(
                     "Resource pressure %.2f → %s downgraded to %s",
