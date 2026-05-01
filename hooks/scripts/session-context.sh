@@ -404,9 +404,15 @@ except Exception:
   fi
 fi
 
-# Open PRs in this repo
+# Open PRs in this repo. Normalize empty/null/non-numeric to 0 BEFORE the
+# numeric comparison so missing gh, invalid JSON, jq-returns-null, and
+# empty-output paths all degrade to a quiet "0 open PRs" rather than
+# emitting `[: -gt: integer expression expected` noise into operator output.
 OPEN_PRS="$(gh pr list --state open --json number,title,headRefName 2>/dev/null | jq -r 'length' 2>/dev/null || echo 0)"
-if [ "$OPEN_PRS" -gt 0 ] && [ "$OPEN_PRS" != "null" ]; then
+case "$OPEN_PRS" in
+    ''|null|*[!0-9]*) OPEN_PRS=0 ;;
+esac
+if [ "$OPEN_PRS" -gt 0 ]; then
   PR_SUMMARY="$(gh pr list --state open --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>/dev/null | head -3)"
   echo "Open PRs ($OPEN_PRS):"
   echo "$PR_SUMMARY" | while read -r line; do echo "  $line"; done
