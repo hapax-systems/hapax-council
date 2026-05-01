@@ -96,6 +96,42 @@ class TestNondestructiveClampsCounter:
         assert after == before + 1.0
 
 
+class TestDirectorRefusalGateCounter:
+    """Phase 5 RefusalGate outcome counter must live on the :9482 registry."""
+
+    def test_counter_registered_with_director_outcomes(self) -> None:
+        assert metrics.HAPAX_REFUSAL_GATE_REROLLS is not None
+        text = _registry_text()
+        assert "# HELP hapax_refusal_gate_rerolls_total" in text
+        assert "# TYPE hapax_refusal_gate_rerolls_total counter" in text
+        for outcome in (
+            "accepted_first_pass",
+            "accepted_after_reroll",
+            "dropped_after_reroll",
+        ):
+            assert (
+                metrics.REGISTRY.get_sample_value(
+                    "hapax_refusal_gate_rerolls_total",
+                    {"surface": "director", "outcome": outcome},
+                )
+                is not None
+            )
+
+    def test_record_refusal_gate_reroll_increments(self) -> None:
+        labels = {"surface": "director", "outcome": "dropped_after_reroll"}
+        before = metrics.REGISTRY.get_sample_value(
+            "hapax_refusal_gate_rerolls_total",
+            labels,
+        )
+        metrics.record_refusal_gate_reroll(**labels)
+        after = metrics.REGISTRY.get_sample_value(
+            "hapax_refusal_gate_rerolls_total",
+            labels,
+        )
+        assert before is not None
+        assert after == before + 1.0
+
+
 class TestAudioDuckingGauge:
     """CVS #145 — bidirectional 24c ducker state gauge."""
 

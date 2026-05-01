@@ -103,6 +103,7 @@ V4L2SINK_LAST_FRAME_AGE: Any = None
 V4L2SINK_FRAMES_TOTAL: Any = None
 DIRECTOR_LAST_INTENT_AGE: Any = None
 DIRECTOR_INTENT_TOTAL: Any = None
+HAPAX_REFUSAL_GATE_REROLLS: Any = None
 COMP_CAMERAS_TOTAL: Any = None
 COMP_CAMERAS_HEALTHY: Any = None
 COMP_PIPELINE_RESTARTS_TOTAL: Any = None
@@ -231,6 +232,7 @@ def _init_metrics() -> None:
     global V4L2SINK_FRAMES_TOTAL
     global DIRECTOR_LAST_INTENT_AGE
     global DIRECTOR_INTENT_TOTAL
+    global HAPAX_REFUSAL_GATE_REROLLS
     global COMP_CAMERAS_TOTAL
     global COMP_CAMERAS_HEALTHY
     global COMP_PIPELINE_RESTARTS_TOTAL
@@ -558,6 +560,21 @@ def _init_metrics() -> None:
         "Cumulative parsed LLM intents emitted",
         registry=REGISTRY,
     )
+    HAPAX_REFUSAL_GATE_REROLLS = Counter(
+        "hapax_refusal_gate_rerolls_total",
+        "Phase 5 RefusalGate per-emission outcomes (R-Tuning re-roll path).",
+        ["surface", "outcome"],
+        registry=REGISTRY,
+    )
+    for _outcome in (
+        "accepted_first_pass",
+        "accepted_after_reroll",
+        "dropped_after_reroll",
+    ):
+        HAPAX_REFUSAL_GATE_REROLLS.labels(
+            surface="director",
+            outcome=_outcome,
+        ).inc(0)
     COMP_CAMERAS_TOTAL = Gauge(
         "studio_compositor_cameras_total",
         "Total registered cameras",
@@ -922,6 +939,14 @@ def set_broadcast_mode(mode: str) -> None:
         return
     value = {"desktop": 0, "mobile": 1, "dual": 2}.get(mode, 2)
     HAPAX_BROADCAST_MODE.set(value)
+
+
+def record_refusal_gate_reroll(*, surface: str, outcome: str) -> None:
+    """Increment the Phase 5 RefusalGate outcome counter."""
+
+    if HAPAX_REFUSAL_GATE_REROLLS is None:
+        return
+    HAPAX_REFUSAL_GATE_REROLLS.labels(surface=surface, outcome=outcome).inc()
 
 
 def register_camera(role: str, model: str) -> None:
