@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 DEFAULT_LOGOS_API_BASE_URL = "http://127.0.0.1:8051"
 
-Transport = Literal["logos-api", "local-vinyl", "compositor-uds"]
+Transport = Literal["logos-api", "local-vinyl", "local-quality-feedback", "compositor-uds"]
 HttpRequest = Callable[[str, str, dict[str, Any]], Awaitable[Any]]
 
 
@@ -99,6 +99,13 @@ def route_logos_control_command(command: str, args: dict[str, Any]) -> LogosCont
             payload={"preset": _require_str_arg(command, args, "preset")},
         )
 
+    if command == "operator.quality.rate":
+        return LogosControlAction(
+            transport="local-quality-feedback",
+            command=command,
+            payload=dict(args),
+        )
+
     if command in {"degraded.activate", "degraded.deactivate"} or command.startswith("compositor."):
         return LogosControlAction(
             transport="compositor-uds",
@@ -141,6 +148,15 @@ async def dispatch_logos_control(
         from agents.stream_deck.commands.vinyl import handle_vinyl_rate_preset
 
         return handle_vinyl_rate_preset(action.payload or {})
+
+    if action.transport == "local-quality-feedback":
+        from shared.operator_quality_feedback import append_operator_quality_rating_from_args
+
+        event = append_operator_quality_rating_from_args(
+            action.payload or {},
+            default_source_surface="streamdeck",
+        )
+        return event.model_dump(mode="json")
 
     if action.transport == "compositor-uds":
         if compositor_client is None:

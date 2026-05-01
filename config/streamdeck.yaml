@@ -63,3 +63,31 @@ bindings:
     command: attention_bid.dismiss
     args: {}
     label: Not Now
+
+  - key: 12
+    command: operator.quality.rate
+    args:
+      rating: 3
+      rating_axis: overall
+      source_surface: streamdeck
+      evidence_refs: ["control:stream_deck.key.12", "task:ytb-QM5"]
+      note: "quick post-session quality rating"
+    label: Q3
+  - key: 13
+    command: operator.quality.rate
+    args:
+      rating: 4
+      rating_axis: overall
+      source_surface: streamdeck
+      evidence_refs: ["control:stream_deck.key.13", "task:ytb-QM5"]
+      note: "quick post-session quality rating"
+    label: Q4
+  - key: 14
+    command: operator.quality.rate
+    args:
+      rating: 5
+      rating_axis: overall
+      source_surface: streamdeck
+      evidence_refs: ["control:stream_deck.key.14", "task:ytb-QM5"]
+      note: "quick post-session quality rating"
+    label: Q5

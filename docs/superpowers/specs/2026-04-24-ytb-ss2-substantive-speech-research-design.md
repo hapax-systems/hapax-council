@@ -58,6 +58,28 @@ Each emission is scored on five binary axes (0/1 each):
 
 Scoring procedure: operator (or delegated audit run) opens a random sample of N=20 emissions from the cycle's chronicle window, scores each, computes mean. Sample selection: uniform random over the 48h cycle window, NOT cherry-picked.
 
+### §3.1. QM5 operator-quality feedback handoff
+
+`ytb-QM5-operator-quality-feedback-interface` supplies the private input path
+for the subjective side of this rubric. Producers append JSONL to:
+
+- `~/hapax-state/operator-quality-feedback/ratings.jsonl`
+
+The sink event is `operator_quality_rating` with `schema_version: 1`,
+`occurred_at`, `rating` (1-5), `rating_axis`, `source_surface`, optional
+`programme_id` / `condition_id` / `run_id` / `emission_ref`, and
+`evidence_refs[]`. The two operator surfaces are:
+
+- CLI/dry-run: `scripts/log-operator-quality-rating.py 4 --axis overall`
+- Stream Deck: `operator.quality.rate` bindings in `config/streamdeck.yaml`
+
+SS2 cycle scoring should join ratings to sampled emissions via `emission_ref`
+when present. Ratings without an `emission_ref` are cycle/session-level
+operator verdicts and should be aggregated by `programme_id`, `condition_id`,
+or observation window. SS3 may consume only these cycle-level summaries until
+SS2 has converged; the raw QM5 JSONL remains a private research signal and must
+not become a public attribution, chat, or viewer-facing feedback surface.
+
 ## §4. Cycle 1 — first hypothesis (proposed)
 
 ### §4.1. Hypothesis
