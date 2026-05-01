@@ -36,9 +36,7 @@ class TestSuccessEvent:
         client = MagicMock()
         _install_fake_langfuse(client)
         cb = RateLimitScoreCallback()
-        cb.async_log_success_event(
-            _kwargs(model="anthropic/claude-opus"), None, None, None
-        )
+        cb.async_log_success_event(_kwargs(model="anthropic/claude-opus"), None, None, None)
         client.score_current_trace.assert_called_once()
         kwargs = client.score_current_trace.call_args.kwargs
         assert kwargs["name"] == "rate_limited"
