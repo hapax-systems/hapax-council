@@ -26,6 +26,8 @@ import logging
 from pathlib import Path
 from typing import ClassVar
 
+from prometheus_client import Counter
+
 from agents.publication_bus.publisher_kit import (
     Publisher,
     PublisherPayload,
@@ -42,6 +44,22 @@ except ImportError:  # pragma: no cover
     requests = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
+
+
+graph_publisher_total = Counter(
+    "hapax_publication_bus_graph_publisher_total",
+    "Citation-graph DOI mint + version outcomes per result.",
+    ["outcome"],
+)
+"""Outcomes:
+
+- ``mint-ok`` — first-version concept-DOI minted successfully.
+- ``version-ok`` — new version-DOI minted successfully.
+- ``mint-error`` — first-version mint failed (transport/API/missing-deps).
+- ``version-error`` — new-version mint failed.
+
+The ``no-token`` case is recorded by the caller
+(``self_citation_graph_doi``) before reaching this module."""
 
 
 GRAPH_PUBLISHER_SURFACE: str = "datacite-graphql-mirror"
@@ -87,6 +105,7 @@ def mint_or_version(
     error result.
     """
     if requests is None:
+        graph_publisher_total.labels(outcome="mint-error").inc()
         raise GraphPublisherError("requests library not available")
 
     concept_doi_path = graph_dir / "concept-doi.txt"
@@ -112,6 +131,8 @@ def mint_or_version(
             try:
                 prev_id = int(prev_id_text)
             except ValueError as exc:
+                # Counter increment happens in the outer GraphPublisherError catch;
+                # this raises into that handler rather than double-counting.
                 raise GraphPublisherError(f"corrupt last-deposit-id.txt: {prev_id_text!r}") from exc
             deposit_id, version_doi = _create_new_version(
                 headers=headers,
@@ -120,8 +141,17 @@ def mint_or_version(
             )
             concept_doi = prev_concept
     except requests.RequestException as exc:
+        graph_publisher_total.labels(
+            outcome="mint-error" if is_first_version else "version-error"
+        ).inc()
         raise GraphPublisherError(f"Zenodo transport failure: {exc}") from exc
+    except GraphPublisherError:
+        graph_publisher_total.labels(
+            outcome="mint-error" if is_first_version else "version-error"
+        ).inc()
+        raise
 
+    graph_publisher_total.labels(outcome="mint-ok" if is_first_version else "version-ok").inc()
     return concept_doi, version_doi, deposit_id
 
 

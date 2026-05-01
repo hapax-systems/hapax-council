@@ -30,7 +30,32 @@ import os
 import sys
 from pathlib import Path
 
+from prometheus_client import Counter
+
 log = logging.getLogger(__name__)
+
+
+self_citation_graph_doi_total = Counter(
+    "hapax_publication_bus_self_citation_graph_doi_total",
+    "Self-citation-graph DOI scan + commit-decision outcomes per result.",
+    ["outcome"],
+)
+"""Outcomes:
+
+- ``no-snapshot`` — no DataCite mirror snapshot yet exists.
+- ``no-fingerprint`` — snapshot present but graph topology
+  fingerprint cannot be computed (empty graph or parse failure).
+- ``no-change`` — snapshot fingerprint matches last-deposited
+  fingerprint; nothing to mint.
+- ``material-change-detected`` — fingerprint differs; ``--commit``
+  would mint a new version (or first-version concept-DOI).
+- ``commit-skipped-no-token`` — ``--commit`` invoked without
+  ``HAPAX_ZENODO_TOKEN``; cred-blocked.
+- ``commit-attempted`` — ``--commit`` invoked with token, mint
+  delegated to graph_publisher (which records its own outcome).
+- ``commit-failed`` — graph_publisher raised an error.
+- ``dry-run-ok`` — dry-run path completed without committing.
+"""
 
 
 DEFAULT_MIRROR_DIR = Path.home() / "hapax-state/datacite-mirror"
@@ -189,11 +214,13 @@ def _run_commit(
 ) -> int:
     """Phase 2 commit path: mint via graph_publisher + persist state."""
     if not has_change:
+        self_citation_graph_doi_total.labels(outcome="no-change").inc()
         sys.stdout.write("(no material change since last deposit; skipping mint)\n")
         return 0
 
     token = os.environ.get("HAPAX_ZENODO_TOKEN", "").strip()
     if not token:
+        self_citation_graph_doi_total.labels(outcome="commit-skipped-no-token").inc()
         sys.stderr.write(
             "# --commit: HAPAX_ZENODO_TOKEN not set; skipping mint (operator action: "
             "configure pass zenodo/api-token; hapax-secrets.service exports it)\n"
@@ -206,6 +233,7 @@ def _run_commit(
         persist_graph_state,
     )
 
+    self_citation_graph_doi_total.labels(outcome="commit-attempted").inc()
     try:
         concept_doi, version_doi, deposit_id = mint_or_version(
             zenodo_token=token,
@@ -215,6 +243,7 @@ def _run_commit(
             metadata=dict(metadata or {}),
         )
     except GraphPublisherError as exc:
+        self_citation_graph_doi_total.labels(outcome="commit-failed").inc()
         sys.stderr.write(f"# --commit: mint failed: {exc}\n")
         return 1
 
@@ -254,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
 
     snapshot = _latest_mirror_snapshot(args.mirror_dir)
     if snapshot is None:
+        self_citation_graph_doi_total.labels(outcome="no-snapshot").inc()
         sys.stdout.write(
             render_dry_run_report(
                 snapshot_path=None, fingerprint=None, has_change=False, metadata=None
@@ -263,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
 
     fingerprint = graph_topology_fingerprint(snapshot)
     if fingerprint is None:
+        self_citation_graph_doi_total.labels(outcome="no-fingerprint").inc()
         sys.stdout.write(
             render_dry_run_report(
                 snapshot_path=snapshot, fingerprint=None, has_change=False, metadata=None
@@ -271,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     has_change = material_change_detected(args.graph_dir, fingerprint)
+    if has_change:
+        self_citation_graph_doi_total.labels(outcome="material-change-detected").inc()
     metadata = (
         assemble_deposit_metadata(
             snapshot_path=snapshot,
@@ -290,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
             graph_dir=args.graph_dir,
         )
 
+    self_citation_graph_doi_total.labels(outcome="dry-run-ok").inc()
     sys.stdout.write(
         render_dry_run_report(
             snapshot_path=snapshot,
