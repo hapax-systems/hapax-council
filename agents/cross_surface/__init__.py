@@ -1,15 +1,21 @@
 """Cross-surface federation (ytb-010).
 
-Phase 1: Discord webhook poster (PR #1319).
-Phase 2: Bluesky client (atproto, PR #1320).
-Phase 3: Mastodon client (Mastodon.py).
+Five publishing adapters live in this package:
 
-Bluesky and Mastodon consume canonical ``ResearchVehiclePublicEvent`` records
-from ``/dev/shm/hapax-public-events/events.jsonl``. Discord remains a bounded
-legacy ``broadcast_rotated`` consumer until its public-event adapter task lands.
-All cross-surface adapters use
+- :mod:`agents.cross_surface.discord_webhook` — Discord webhook poster (PR #1319).
+- :mod:`agents.cross_surface.bluesky_post` — Bluesky atproto client (PR #1320).
+- :mod:`agents.cross_surface.mastodon_post` — Mastodon.py client.
+- :mod:`agents.cross_surface.arena_post` — Are.na PAT/channels client (PR #1953).
+- :mod:`agents.cross_surface.alphaxiv_post` — alphaXiv comments adapter.
+
+Bluesky / Mastodon / Arena consume canonical ``ResearchVehiclePublicEvent``
+records from ``/dev/shm/hapax-public-events/events.jsonl``. Discord remains
+a bounded legacy ``broadcast_rotated`` consumer until its public-event
+adapter task lands. alphaXiv is a comment-side surface (not a livestream
+fanout target) and runs against arXiv-deposited artefact threads. All
+cross-surface adapters use
 ``agents.metadata_composer.composer.compose_metadata(scope="cross_surface")``
 to draft the post text. Per-surface allowlist contracts at
-``axioms/contracts/publication/{discord-webhook,bluesky-post,mastodon-post}.yaml``
+``axioms/contracts/publication/{discord-webhook,bluesky-post,mastodon-post,arena-post,alphaxiv-comments}.yaml``
 gate the write.
 """
