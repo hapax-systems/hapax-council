@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax assets publisher — long-running watch loop syncs aesthetic-library to ryanklee/hapax-assets CDN
+After=hapax-secrets.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.hapax_assets_publisher --watch
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=default.target

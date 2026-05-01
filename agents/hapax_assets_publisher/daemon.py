@@ -50,6 +50,32 @@ def _git(checkout: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _normalize_remote(url: str) -> str:
+    """Reduce a git remote URL to ``host/owner/repo`` for scheme-agnostic comparison.
+
+    Both ``git@github.com:ryanklee/hapax-assets.git`` and
+    ``https://github.com/ryanklee/hapax-assets.git`` are valid remotes for
+    the same repo; the bootstrap script clones HTTPS by default but
+    operators may switch to SSH. Comparing on the normalized form avoids a
+    spurious "remote mismatch" warning that would prevent the daemon from
+    publishing despite a fully-functional checkout.
+    """
+    s = url.strip().removesuffix(".git")
+    if s.startswith("git@"):
+        # git@github.com:owner/repo  →  github.com/owner/repo
+        host, _, path = s[len("git@") :].partition(":")
+        return f"{host}/{path}"
+    if s.startswith("https://") or s.startswith("http://"):
+        return s.split("://", 1)[1]
+    if s.startswith("ssh://"):
+        rest = s[len("ssh://") :]
+        # ssh://git@github.com/owner/repo
+        if rest.startswith("git@"):
+            rest = rest[len("git@") :]
+        return rest
+    return s
+
+
 def ensure_checkout_ready(cfg: PublisherConfig) -> bool:
     """Verify the checkout directory is a git working tree pointing at the
     configured remote. Returns True if ready; logs diagnostics and returns
@@ -68,7 +94,10 @@ def ensure_checkout_ready(cfg: PublisherConfig) -> bool:
         )
         return False
     probe = _git(cfg.checkout_dir, "remote", "get-url", "origin")
-    if probe.returncode != 0 or cfg.remote_url not in probe.stdout:
+    if probe.returncode != 0:
+        log.warning("checkout has no origin remote: %s", probe.stderr.strip())
+        return False
+    if _normalize_remote(probe.stdout) != _normalize_remote(cfg.remote_url):
         log.warning(
             "checkout remote does not match %s (got %s)",
             cfg.remote_url,
