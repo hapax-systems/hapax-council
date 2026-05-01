@@ -637,3 +637,13 @@ render_compact_prompt_block
 # The evaluator is the sole public path from private to public.
 BridgeResult._no_public_without_authorization
 evaluate_bridge
+
+# Awareness-digest watcher loop is the public entrypoint wired into
+# `run_loops_aux` by the daemon's voice path in a follow-up; per the
+# cc-task `awareness-digest-fortress-watcher-loop` it ships standalone
+# (testable in isolation) ahead of the daemon hookup.
+from agents.hapax_daimonion.awareness_digest_watcher import (
+    awareness_digest_watcher_loop,
+)
+
+awareness_digest_watcher_loop
