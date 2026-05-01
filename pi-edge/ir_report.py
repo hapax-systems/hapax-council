@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import numpy as np
-from ir_models import IrBiometrics, IrDetectionReport, IrHand, IrPerson, IrScreen
+from ir_models import (
+    HandSemantics,
+    IrBiometrics,
+    IrDetectionReport,
+    IrHand,
+    IrPerson,
+    IrScreen,
+)
 
 
 def build_report(
@@ -20,8 +27,23 @@ def build_report(
     biometrics_snapshot: dict,
     cadence_state: str = "IDLE",
     cadence_interval_s: float = 3.0,
+    hand_semantics: dict | None = None,
 ) -> IrDetectionReport:
-    """Build detection report from inference results."""
+    """Build detection report from inference results.
+
+    ``hand_semantics`` carries the optional VLM-classifier output
+    (Phase 3 of ``ir-perception-replace-zones-with-vlm-classification``);
+    ``None`` when the motion gate / cache / failure paths declined to
+    call the VLM this tick — the council fuser falls back to
+    ``hands[*].zone`` in that case.
+    """
+    semantics: HandSemantics | None = None
+    if hand_semantics is not None:
+        try:
+            semantics = HandSemantics.model_validate(hand_semantics)
+        except Exception:
+            semantics = None
+
     return IrDetectionReport(
         pi=hostname,
         role=role,
@@ -53,4 +75,5 @@ def build_report(
         biometrics=IrBiometrics(**biometrics_snapshot),
         cadence_state=cadence_state,
         cadence_interval_s=cadence_interval_s,
+        hand_semantics=semantics,
     )

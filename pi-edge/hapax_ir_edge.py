@@ -123,6 +123,15 @@ class IrEdgeDaemon:
         self._latest_album_detection: dict | None = None
         self._latest_jpeg_lock = __import__("threading").Lock()
 
+        # Phase 3 of `ir-perception-replace-zones-with-vlm-classification` —
+        # frame-level rich-vocabulary classifier. Replaces the fixed
+        # five-zone enum at the producer source. The runner's motion gate
+        # + cache cap the actual VLM call rate to roughly one per minute
+        # on a static desk.
+        from vlm_classifier import MotionGatedVlmRunner
+
+        self._vlm_runner = MotionGatedVlmRunner()
+
     def request_debug_frame(self) -> None:
         """Flag the daemon to save the next frame for debugging."""
         self._save_debug_frame = True
@@ -265,8 +274,22 @@ class IrEdgeDaemon:
             now = time.monotonic()
             cadence_interval_s = self._cadence.get_sleep_duration()
             if now - last_post >= cadence_interval_s:
+                # Phase 3: classify hand semantics via VLM (motion-gated).
+                # Pass the latest cached JPEG so the runner sees the same
+                # frame the report references; ``None`` is returned when
+                # the runner's motion gate / cache / failure paths
+                # decline to call the VLM this tick.
+                with self._latest_jpeg_lock:
+                    latest_jpeg = self._latest_jpeg
+                tick = self._vlm_runner.tick(latest_jpeg)
                 report = self._build_report(
-                    motion_delta, persons, hands, screens, grey, inference_ms
+                    motion_delta,
+                    persons,
+                    hands,
+                    screens,
+                    grey,
+                    inference_ms,
+                    hand_semantics=tick.semantics,
                 )
                 await self._post_report(report)
                 last_post = now
@@ -319,7 +342,14 @@ class IrEdgeDaemon:
                 self._biometrics.update_rppg_intensity(float(np.mean(forehead)))
 
     def _build_report(
-        self, motion_delta, persons, hands, screens, grey, inference_ms
+        self,
+        motion_delta,
+        persons,
+        hands,
+        screens,
+        grey,
+        inference_ms,
+        hand_semantics: dict | None = None,
     ) -> IrDetectionReport:
         return build_report(
             self._hostname,
@@ -333,6 +363,7 @@ class IrEdgeDaemon:
             self._biometrics.snapshot(),
             cadence_state=self._cadence.state,
             cadence_interval_s=self._cadence.get_sleep_duration(),
+            hand_semantics=hand_semantics,
         )
 
     def _write_cadence_metric(self) -> None:
