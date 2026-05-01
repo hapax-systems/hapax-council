@@ -860,3 +860,14 @@ from shared.audio_marker_probe_fft import (
 
 detect_marker_in_capture
 generate_marker_tone
+
+# Voice role router — ``known_roles`` is the operator-dashboard helper
+# for the audio-routing blocker stack. Lands ahead of the dashboard
+# surface that will read it (separate cc-task); the route() method is
+# the primary consumer surface for the director rewrite (separate
+# cc-task: director-loop-semantic-audio-route). Note: the second
+# commit on this branch renames the import path from voice_role_router
+# to voice_output_router; the rename commit's edit corrects this entry.
+from shared.voice_role_router import VoiceOutputRouter
+
+VoiceOutputRouter.known_roles
