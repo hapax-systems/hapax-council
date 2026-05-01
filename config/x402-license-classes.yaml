@@ -1,0 +1,52 @@
+# x402 license-class registry — operator-curated.
+#
+# Maps Hapax license-class identifiers to default x402 v2 ``Accept``
+# fields. Loaded by ``agents.payment_processors.x402.license_registry``
+# at import time and applied via ``apply_to_accept(accept, cls)`` —
+# which embeds ``hapax_license_class`` into the per-accept ``extra``
+# dict and sets the per-class amount when the caller hasn't already.
+#
+# Per the V5 weave + the 2026-05-01 x402 spec research drop
+# (``docs/research/2026-05-01-x402-spec-current-research.md``), the
+# class metadata rides in ``Accept.extra`` because x402 v2 has no
+# native license-class field. Standard x402 clients are not required
+# to interpret this field — it's advisory at best — but operator-side
+# downstream surfaces (refusal annex, repo-pres-license matrix) read
+# it for per-class billing decisions.
+#
+# Three operator-defined classes:
+#
+# - ``commercial`` — for-profit redistribution / agent-to-agent
+#   commercial use of operator-licensed resources. Highest tier;
+#   amounts are operator-curated per surface.
+# - ``research`` — academic / non-commercial research use. Mid tier;
+#   intended to clear at-cost or token-amount.
+# - ``review`` — peer review or audit access. Lowest tier; intended
+#   to clear at zero or trivial amount as a documentation gate
+#   rather than a paywall.
+#
+# Operator-only edits. Runtime mutation forbidden per single_user.
+# The default amounts are placeholders; the operator updates them
+# per resource as the receive-rail decision A/B/C lands.
+
+classes:
+  - id: commercial
+    default_amount: "10000000"       # USDC base units (10 USDC at 6 decimals)
+    default_asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # USDC on Base Sepolia
+    default_network: "eip155:8453"   # Base mainnet (Decision B)
+    description: "For-profit redistribution / agent-to-agent commercial use."
+    notes: "Highest tier. Operator updates per-resource overrides via apply_to_accept caller."
+
+  - id: research
+    default_amount: "1000000"        # 1 USDC at 6 decimals
+    default_asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+    default_network: "eip155:8453"
+    description: "Academic / non-commercial research use of operator-licensed resources."
+    notes: "Mid tier. Intended to clear at token-amount as a documentation gate."
+
+  - id: review
+    default_amount: "0"              # Documentation gate, not a paywall
+    default_asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+    default_network: "eip155:8453"
+    description: "Peer review or audit access."
+    notes: "Lowest tier. Zero amount makes the 402 a documentation surface, not a paywall."
