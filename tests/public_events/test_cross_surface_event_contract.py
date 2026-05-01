@@ -111,6 +111,10 @@ def test_contract_payload_is_schema_valid_and_covers_required_apertures() -> Non
         "archive",
         "replay",
     }
+    realities = {
+        aperture.aperture_id: aperture.current_reality for aperture in CROSS_SURFACE_APERTURES
+    }
+    assert realities["mastodon"] == "active_canonical"
 
 
 def test_publish_decision_allows_policy_matching_mastodon_event() -> None:

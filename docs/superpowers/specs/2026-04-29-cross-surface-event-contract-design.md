@@ -122,7 +122,7 @@ Health states:
 | `omg_statuslog` | `omg_statuslog` | credential-blocked awareness fanout; statuslog unit missing | `omg-statuslog-public-event-adapter` |
 | `omg_weblog` | `omg_weblog` | publication path active; operator-reviewed | `omg-weblog-rss-public-event-adapter` |
 | `arena` | `arena` | code exists; missing unit | `arena-public-event-unit-and-block-shape` |
-| `mastodon` | `mastodon` | mounted active legacy input | `mastodon-public-event-adapter` |
+| `mastodon` | `mastodon` | mounted active canonical public-event input | `mastodon-public-event-adapter` |
 | `bluesky` | `bluesky` | mounted active legacy input | `bluesky-public-event-adapter` |
 | `discord` | `discord` | linked inactive legacy input | `discord-public-event-activation-or-retire` |
 | `shorts` | `youtube_shorts` | unavailable/missing pipeline | `shorts-public-event-adapter` |
