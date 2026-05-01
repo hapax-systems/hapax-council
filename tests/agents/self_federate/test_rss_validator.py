@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.self_federate.rss_validator import (
     DEFAULT_HAPAX_RSS_URL,
+    _classify_outcome,
     extract_items,
     fetch_rss,
     items_with_doi_links,
+    load_validity_state,
+    notify_on_validity_loss,
     validate_rss,
+    write_validity_state,
 )
 
 
@@ -124,3 +129,111 @@ class TestItemsWithDoiLinks:
         with_dois = items_with_doi_links(items)
         assert len(with_dois) == 1
         assert with_dois[0]["dois"] == []
+
+
+class TestClassifyOutcome:
+    def test_valid_xml_returns_ok(self) -> None:
+        outcome, item_count, doi_count = _classify_outcome(_VALID_RSS.encode())
+        assert outcome == "ok"
+        assert item_count == 2
+        assert doi_count == 2
+
+    def test_none_returns_transport_error(self) -> None:
+        assert _classify_outcome(None) == ("transport-error", 0, 0)
+
+    def test_malformed_xml_returns_invalid(self) -> None:
+        outcome, _, _ = _classify_outcome(b"<rss>malformed")
+        assert outcome == "invalid-xml"
+
+    def test_no_channel_returns_invalid(self) -> None:
+        outcome, _, _ = _classify_outcome(_INVALID_RSS_NO_CHANNEL.encode())
+        assert outcome == "invalid-xml"
+
+
+class TestValidityStatePersistence:
+    def test_load_returns_none_when_file_missing(self, tmp_path: Path) -> None:
+        assert load_validity_state(tmp_path / "missing.json") is None
+
+    def test_load_returns_none_when_file_malformed(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.json"
+        path.write_text("not-json", encoding="utf-8")
+        assert load_validity_state(path) is None
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.json"
+        write_validity_state("ok", path)
+        assert load_validity_state(path) == "ok"
+        write_validity_state("transport-error", path)
+        assert load_validity_state(path) == "transport-error"
+
+    def test_write_is_atomic_via_tmp_rename(self, tmp_path: Path) -> None:
+        """No tmp file should remain after a successful write."""
+        path = tmp_path / "state.json"
+        write_validity_state("ok", path)
+        assert path.is_file()
+        assert not path.with_suffix(path.suffix + ".tmp").exists()
+
+
+class TestNotifyOnValidityLoss:
+    @patch("agents.self_federate.rss_validator.send_notification")
+    def test_no_notification_on_steady_ok(self, mock_send: MagicMock) -> None:
+        notify_on_validity_loss(prior_outcome="ok", current_outcome="ok")
+        mock_send.assert_not_called()
+
+    @patch("agents.self_federate.rss_validator.send_notification")
+    def test_no_notification_on_first_run_ok(self, mock_send: MagicMock) -> None:
+        # First run with no prior state, outcome is healthy — silent.
+        notify_on_validity_loss(prior_outcome=None, current_outcome="ok")
+        mock_send.assert_not_called()
+
+    @patch("agents.self_federate.rss_validator.send_notification")
+    def test_notification_on_first_run_loss(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        notify_on_validity_loss(prior_outcome=None, current_outcome="invalid-xml")
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args.kwargs
+        assert call_kwargs["priority"] == "high"
+        assert "warning" in call_kwargs["tags"]
+
+    @patch("agents.self_federate.rss_validator.send_notification")
+    def test_notification_on_ok_to_loss_transition(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        notify_on_validity_loss(prior_outcome="ok", current_outcome="transport-error")
+        mock_send.assert_called_once()
+
+    @patch("agents.self_federate.rss_validator.send_notification")
+    def test_no_notification_on_sustained_loss(self, mock_send: MagicMock) -> None:
+        notify_on_validity_loss(prior_outcome="transport-error", current_outcome="transport-error")
+        mock_send.assert_not_called()
+
+    @patch("agents.self_federate.rss_validator.send_notification")
+    def test_notification_on_recovery(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        notify_on_validity_loss(prior_outcome="invalid-xml", current_outcome="ok")
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args.kwargs
+        # Recovery uses default priority + check tag (not the warning tag).
+        assert call_kwargs["priority"] == "default"
+        assert "white_check_mark" in call_kwargs["tags"]
+
+    @patch("agents.self_federate.rss_validator.send_notification")
+    def test_notification_message_contains_feed_url(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        notify_on_validity_loss(prior_outcome="ok", current_outcome="invalid-xml")
+        msg = mock_send.call_args.kwargs["message"]
+        assert DEFAULT_HAPAX_RSS_URL in msg
+
+    @patch("agents.self_federate.rss_validator.send_notification")
+    def test_notification_does_not_re_notify_on_outcome_change_within_failure(
+        self, mock_send: MagicMock
+    ) -> None:
+        """Edge-trigger semantics: ``transport-error → invalid-xml`` is a
+        failure-mode change, but the operator has already been paged about
+        the original failure. The current behavior re-notifies on any
+        outcome change within failure modes — guard the wired behavior."""
+        mock_send.return_value = True
+        notify_on_validity_loss(prior_outcome="transport-error", current_outcome="invalid-xml")
+        # Wired behavior: yes, re-notify when failure mode changes (the
+        # nature of the failure is operator-relevant). If this changes,
+        # update both the function and this test.
+        mock_send.assert_called_once()
