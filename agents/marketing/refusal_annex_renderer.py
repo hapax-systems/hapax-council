@@ -1,11 +1,24 @@
-"""Refusal annex series renderer — Phase 1.
+"""Refusal annex series renderer.
 
 Per cc-task ``leverage-mktg-refusal-annex-series``. Each refusal is
 its own publishable micro-artifact: citable, referenceable,
-constitutive of the academic-spectacle strategy. Phase 1 ships the
+constitutive of the academic-spectacle strategy. Module ships the
 pure-function renderer + log-grouping discovery + per-annex/index
-markdown writes. Phase 2 wires Zenodo DOI minting + weblog publish
-+ Bridgy fan-out.
+markdown writes + the orchestrator-side fanout helper
+:func:`publish_all_annexes`.
+
+Cross-surface fanout (was previously called "Phase 2"):
+
+- ``zenodo-refusal-deposit`` — V5 RefusalBriefPublisher (#1676 wired);
+  mints refusal-deposit DOIs.
+- ``omg-weblog`` — operator-owned hapax.weblog.lol (legacy adapter,
+  WIRED).
+- Bridgy fan-out — BLOCKED on the source-URL witness path (see
+  :data:`BRIDGY_FANOUT_BLOCKER` and the module-level discussion at the
+  ``Bridgy fanout source-URL witness path`` section). The
+  ``refusal_annex_bridgy_daemon`` is a dry-run inventory daemon, not a
+  publisher; ``--commit`` fails closed with the witness-path blocker
+  rather than POSTing webmentions.
 
 Render pipeline:
 
