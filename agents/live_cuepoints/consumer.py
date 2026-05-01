@@ -11,9 +11,18 @@ validates against the ``Impingement`` schema and broadcast events are
 a different shape. A restart resumes from the saved cursor so prior
 rotations do not re-emit.
 
-Programme-boundary cuepoints are deferred to a follow-up because the
-programme_manager currently emits only Prometheus counters, not a
-JSONL surface. See ytb-004 implementation notes for the deferred path.
+Programme-boundary cuepoints are deferred to a follow-up. The
+programme_manager DOES emit per-programme lifecycle JSONL via
+``shared/programme_outcome_log.py`` at
+``~/hapax-state/programmes/<show_id>/<programme_id>.jsonl`` (Phase 9
+Critical #5 / B3 audit), so the "no JSONL surface" framing this
+docstring previously carried is superseded. The remaining gap is on
+the consumer side: this module tails a single broadcast-orchestrator
+JSONL file at a fixed path, but per-programme outcome logs live under
+a tree of ``<show>/<programme>.jsonl`` files that needs a multi-file
+walker + per-file cursor + start/end-event dedup. See
+``docs/governance/ytb-004-programme-boundary-cuepoints-status.md``
+for the reconciled split.
 """
 
 from __future__ import annotations
@@ -243,9 +252,13 @@ class CuepointConsumer:
 def _is_chapter_worthy(event: dict[str, Any]) -> bool:
     """Return True when the event should fire a cuepoint.
 
-    Today: ``broadcast_rotated`` only. Future: programme-boundary events
-    once programme_manager gains a JSONL surface (deferred — see ytb-004
-    impl notes).
+    Today: ``broadcast_rotated`` only. Future: programme-boundary
+    ``started`` / ``ended_*`` events once this consumer learns to walk
+    the per-show / per-programme JSONL tree under
+    ``~/hapax-state/programmes/`` (the JSONL emission already exists
+    via ``shared/programme_outcome_log.py``; only the consumer-side
+    multi-file walker + per-file cursor + dedup remains). See
+    ``docs/governance/ytb-004-programme-boundary-cuepoints-status.md``.
     """
     return event.get("event_type") == "broadcast_rotated"
 
