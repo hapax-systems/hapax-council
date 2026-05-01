@@ -37,6 +37,18 @@ implications:
   canon: purposivist
   mode: sufficiency
   level: component
+  status: retired
+  retirement_rationale: |
+    Superseded by ex-depend-001 (broader scope). Both T1/review/
+    component dependency-handling rules under executive_function.
+    ex-err-002 ("Agents must gracefully handle missing dependencies
+    and provide clear installation instructions") covers the reactive
+    missing-dependency path only; ex-depend-001 ("Agent dependencies
+    must be automatically resolved or clearly documented with
+    installation scripts") covers both the auto-resolve prevention
+    path AND the documented-with-scripts path. ex-depend-001 subsumes
+    ex-err-002 because auto-resolve covers the prevention case that
+    ex-err-002 misses entirely.
 - id: ex-state-001
   linkage: code-direct
   tier: T1
