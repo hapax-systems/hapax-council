@@ -769,13 +769,24 @@ def test_check_coherence_real_tree_drops_su_and_it_cluster_orphans():
         assert not_orphan not in orphan_ids, (
             f"{not_orphan} should be excluded as code-direct, but appears in orphan tally"
         )
-    paper_rules = (
+    # As of Phase 7 (PR with this comment), the 5 it-* paper rules
+    # have been wired via natural-mapping constitutive rules in
+    # axioms/constitutive-rules.yaml — they're no longer orphans.
+    # If a future PR retires those rules without replacement, this
+    # assertion will fail and the disposition needs to be revisited.
+    formerly_orphans_now_wired = (
         "it-inspect-001",
         "it-revoke-001",
         "it-scope-001",
         "it-backend-001",
         "it-inference-001",
     )
+    for wired in formerly_orphans_now_wired:
+        assert wired not in orphan_ids, (
+            f"{wired} was wired in Phase 7 via constitutive rules; should not appear as orphan"
+        )
+    # Old assertion preserved (commented) for the original paper-rule check:
+    paper_rules: tuple[str, ...] = ()
     for orphan in paper_rules:
         assert orphan in orphan_ids, (
             f"{orphan} has no code references; should remain orphan but doesn't appear"
