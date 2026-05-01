@@ -143,6 +143,19 @@ implications:
   canon: textualist
   mode: sufficiency
   level: subsystem
+  status: retired
+  retirement_rationale: |
+    Superseded by ex-error-006 (same scope, broader coverage). Both
+    are T1/review error-handling rules under executive_function
+    covering "system failures should auto-recover without operator
+    diagnosis." ex-error-002 ("System failures must provide automatic
+    recovery or graceful degradation without operator diagnosis")
+    is the narrower form; ex-error-006 ("Error handling must auto-
+    recover or auto-escalate rather than leaving operator in undefined
+    states requiring diagnosis") is the broader form — it includes
+    the auto-escalate option and the "undefined states" framing
+    which captures more failure modes. Broader rule subsumes the
+    narrower duplicate.
 - id: ex-config-001
   tier: T1
   text: Configuration files must have comprehensive defaults that work in the operator's
