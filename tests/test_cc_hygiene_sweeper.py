@@ -406,6 +406,43 @@ def test_relay_stale_skips_retired_with_nested_dict_status() -> None:
     assert events == []
 
 
+def test_relay_stale_skips_wind_down_idle_variant() -> None:
+    """Empirical regression: post-codex cx-blue / cx-green carry the
+    word-swapped spelling ``wind_down_idle`` (vs ``idle_wound_down``
+    for cx-amber). The recognizer must treat both as retired."""
+
+    now = _now()
+    payloads = {
+        "cx-blue": {
+            "status": "wind_down_idle",
+            "updated": (now - timedelta(minutes=RELAY_STALE_MIN + 100)).isoformat(),
+        },
+        "cx-green": {
+            "status": "wind_down_idle",
+            "updated": (now - timedelta(hours=2)).isoformat(),
+        },
+    }
+    events = check_relay_yaml_staleness(payloads, now=now)
+    assert events == [], (
+        "wind_down_idle is the spelling cx-blue / cx-green actually carry — "
+        "must be recognized as retired alongside idle_wound_down"
+    )
+
+
+def test_relay_stale_skips_winding_down_progressive_variant() -> None:
+    """`winding_down` is the progressive form some lanes use mid-handoff."""
+
+    now = _now()
+    payloads = {
+        "cx-foo": {
+            "status": "winding_down",
+            "updated": (now - timedelta(hours=1)).isoformat(),
+        },
+    }
+    events = check_relay_yaml_staleness(payloads, now=now)
+    assert events == []
+
+
 def test_relay_stale_active_session_still_fires_when_old() -> None:
     """An ``active`` session whose updated timestamp is past the
     threshold still emits the warning — the retired-session bypass
