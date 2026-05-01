@@ -187,6 +187,18 @@ implications:
   canon: purposivist
   mode: sufficiency
   level: subsystem
+  status: retired
+  retirement_rationale: |
+    Superseded by ex-state-003 (broader scope, stronger tier). Both
+    cover persistence/checkpointing across interruptions to enable
+    resumption. ex-ui-002 (T2/warn, "Multi-step workflows must
+    checkpoint progress to allow resumption after interruption") is
+    the workflow-specific narrow form; ex-state-003 (T1/review,
+    "System must persist task context across interruptions to
+    eliminate restart cognitive overhead") is the system-wide broad
+    form — covers all task contexts (not only multi-step workflows)
+    AND has stronger enforcement (T1 review vs T2 warn). Broader,
+    stronger-tier rule subsumes the narrower duplicate.
 - id: ex-doc-001
   tier: T3
   text: Documentation must focus on "what this does for you" rather than "how this
