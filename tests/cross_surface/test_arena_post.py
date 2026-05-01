@@ -8,18 +8,117 @@ from unittest import mock
 from prometheus_client import CollectorRegistry
 
 from agents.cross_surface.arena_post import (
+    ALLOWED_PUBLIC_EVENT_TYPES,
     ARENA_BLOCK_TEXT_LIMIT,
-    EVENT_TYPE,
     ArenaPoster,
     _credentials_from_env,
 )
+from shared.research_vehicle_public_event import (
+    PublicEventChapterRef,
+    PublicEventFrameRef,
+    PublicEventProvenance,
+    PublicEventSource,
+    PublicEventSurfacePolicy,
+    ResearchVehiclePublicEvent,
+)
 
 
-def _write_events(path, events: list[dict]) -> None:
+def _public_event(**overrides) -> ResearchVehiclePublicEvent:
+    payload = {
+        "schema_version": 1,
+        "event_id": "rvpe:arena_block_candidate:20260430:arena",
+        "event_type": "arena_block.candidate",
+        "occurred_at": "2026-04-30T12:00:00Z",
+        "broadcast_id": "broadcast-123",
+        "programme_id": None,
+        "condition_id": None,
+        "source": PublicEventSource(
+            producer="tests",
+            substrate_id="aesthetic_library",
+            task_anchor="arena-public-event-unit-and-block-shape",
+            evidence_ref="tests#event",
+            freshness_ref="tests.age_s",
+        ),
+        "salience": 0.72,
+        "state_kind": "public_post",
+        "rights_class": "operator_original",
+        "privacy_class": "public_safe",
+        "provenance": PublicEventProvenance(
+            token="public-event-token",
+            generated_at="2026-04-30T12:00:01Z",
+            producer="tests",
+            evidence_refs=["tests.evidence"],
+            rights_basis="operator generated test event",
+            citation_refs=["tests.citation"],
+        ),
+        "public_url": "https://hapax.weblog.lol/2026/04/30/livestream-frame",
+        "frame_ref": None,
+        "chapter_ref": PublicEventChapterRef(
+            kind="chapter",
+            label="Reverie pass 7 — RD step 0.18",
+            timecode="00:00",
+            source_event_id="rvpe:arena_block_candidate:20260430:arena",
+        ),
+        "attribution_refs": ["tests.attribution"],
+        "surface_policy": PublicEventSurfacePolicy(
+            allowed_surfaces=["arena", "archive", "health"],
+            denied_surfaces=[],
+            claim_live=True,
+            claim_archive=True,
+            claim_monetizable=False,
+            requires_egress_public_claim=True,
+            requires_audio_safe=True,
+            requires_provenance=True,
+            requires_human_review=False,
+            rate_limit_key="arena_block.candidate:public_post",
+            redaction_policy="operator_referent",
+            fallback_action="hold",
+            dry_run_reason=None,
+        ),
+    }
+    payload.update(overrides)
+    return ResearchVehiclePublicEvent(**payload)
+
+
+def _surface_policy(**overrides) -> PublicEventSurfacePolicy:
+    payload = {
+        "allowed_surfaces": ["arena", "archive", "health"],
+        "denied_surfaces": [],
+        "claim_live": True,
+        "claim_archive": True,
+        "claim_monetizable": False,
+        "requires_egress_public_claim": True,
+        "requires_audio_safe": True,
+        "requires_provenance": True,
+        "requires_human_review": False,
+        "rate_limit_key": "arena_block.candidate:public_post",
+        "redaction_policy": "operator_referent",
+        "fallback_action": "hold",
+        "dry_run_reason": None,
+    }
+    payload.update(overrides)
+    return PublicEventSurfacePolicy(**payload)
+
+
+def _frame_ref(**overrides) -> PublicEventFrameRef:
+    payload = {
+        "kind": "frame",
+        "uri": "https://hapax.cdn/frames/livestream-2026-04-30.jpg",
+        "captured_at": "2026-04-30T12:00:00Z",
+        "source_event_id": "rvpe:aesthetic_frame_capture:20260430",
+    }
+    payload.update(overrides)
+    return PublicEventFrameRef(**payload)
+
+
+def _write_events(path, events: list[ResearchVehiclePublicEvent | dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
         for event in events:
-            fh.write(json.dumps(event) + "\n")
+            if isinstance(event, ResearchVehiclePublicEvent):
+                fh.write(event.to_json_line())
+            else:
+                fh.write(json.dumps(event) + "\n")
 
 
 def _make_poster(
@@ -45,6 +144,7 @@ def _make_poster(
         client_factory=client_factory,
         event_path=event_path,
         cursor_path=cursor_path,
+        idempotency_path=cursor_path.with_name("posted-event-ids.json"),
         registry=CollectorRegistry(),
         dry_run=dry_run,
     )
@@ -64,27 +164,68 @@ class TestCursor:
 
     def test_persists_cursor(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         cursor = tmp_path / "cursor.txt"
         poster, _ = _make_poster(event_path=bus, cursor_path=cursor)
         poster.run_once()
         assert int(cursor.read_text()) == bus.stat().st_size
+
+    def test_file_shrink_resets_cursor_and_processes_new_event(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        _write_events(bus, [_public_event(event_id="rvpe:arena:long-file")])
+        poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
+        poster.run_once()
+
+        client = factory.return_value
+        client.add_block.reset_mock()
+        _write_events(bus, [_public_event(event_id="rvpe:arena:short")])
+        cursor.write_text(str(bus.stat().st_size + 100), encoding="utf-8")
+
+        assert poster.run_once() == 1
+        assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
+        client.add_block.assert_called_once()
+
+    def test_processed_event_id_prevents_repost_after_cursor_loss(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        event = _public_event(event_id="rvpe:arena:stable-id")
+        _write_events(bus, [event])
+        poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
+        assert poster.run_once() == 1
+
+        cursor.write_text("0", encoding="utf-8")
+        assert poster.run_once() == 0
+        factory.return_value.add_block.assert_called_once()
 
 
 # ── Event filtering ──────────────────────────────────────────────────
 
 
 class TestEventFiltering:
-    def test_skips_non_broadcast_rotated(self, tmp_path):
+    def test_allowed_public_event_types_match_contract(self):
+        assert {
+            "arena_block.candidate",
+            "aesthetic.frame_capture",
+            "chronicle.high_salience",
+            "publication.artifact",
+        } == ALLOWED_PUBLIC_EVENT_TYPES
+
+    def test_skips_unsupported_public_event_type(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         _write_events(
             bus,
             [
-                {"event_type": "stream_started"},
-                {"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"},
+                _public_event(
+                    event_id="rvpe:shorts_upload:ignored",
+                    event_type="shorts.upload",
+                    state_kind="short_form",
+                ),
+                _public_event(event_id="rvpe:arena_block_candidate:posted"),
             ],
         )
         client = mock.Mock()
+        client.add_block.return_value = None
         factory = mock.Mock(return_value=client)
         poster, _ = _make_poster(
             event_path=bus,
@@ -94,16 +235,207 @@ class TestEventFiltering:
         poster.run_once()
         assert client.add_block.call_count == 1
 
+    def test_legacy_broadcast_rotated_record_is_not_consumed(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(bus, [{"event_type": "broadcast_rotated", "incoming_broadcast_id": "vid-A"}])
+        cursor = tmp_path / "cursor.txt"
+        client = mock.Mock()
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=cursor,
+            client_factory=factory,
+        )
+
+        assert poster.run_once() == 0
+        assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
+        client.add_block.assert_not_called()
+
+    def test_rejects_event_without_arena_surface_policy(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    surface_policy=_surface_policy(
+                        allowed_surfaces=["archive"],
+                        denied_surfaces=["arena"],
+                    )
+                )
+            ],
+        )
+        client = mock.Mock()
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            client_factory=factory,
+        )
+        assert poster.run_once() == 1
+        client.add_block.assert_not_called()
+
+    def test_aesthetic_frame_capture_event_passes_grounding(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    event_id="rvpe:aesthetic_frame_capture:arena",
+                    event_type="aesthetic.frame_capture",
+                    state_kind="aesthetic_frame",
+                    frame_ref=_frame_ref(),
+                    public_url=None,
+                )
+            ],
+        )
+        client = mock.Mock()
+        client.add_block.return_value = None
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            client_factory=factory,
+        )
+
+        assert poster.run_once() == 1
+        client.add_block.assert_called_once()
+
+    def test_chronicle_high_salience_event_passes_grounding(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    event_id="rvpe:chronicle_high_salience:arena",
+                    event_type="chronicle.high_salience",
+                    state_kind="research_observation",
+                    chapter_ref=PublicEventChapterRef(
+                        kind="chapter",
+                        label="high-salience observation",
+                        timecode="00:42",
+                        source_event_id="rvpe:chronicle_high_salience:arena",
+                    ),
+                )
+            ],
+        )
+        client = mock.Mock()
+        client.add_block.return_value = None
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            client_factory=factory,
+        )
+
+        assert poster.run_once() == 1
+        client.add_block.assert_called_once()
+
+    def test_publication_artifact_event_passes_grounding(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    event_id="rvpe:publication_artifact:arena",
+                    event_type="publication.artifact",
+                    state_kind="archive_artifact",
+                    public_url="https://doi.org/10.5281/zenodo.example",
+                    chapter_ref=None,
+                    surface_policy=_surface_policy(
+                        rate_limit_key="publication.artifact:archive_artifact",
+                    ),
+                )
+            ],
+        )
+        client = mock.Mock()
+        client.add_block.return_value = None
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            client_factory=factory,
+        )
+
+        assert poster.run_once() == 1
+        client.add_block.assert_called_once()
+
+
+# ── Block source URL by event type ───────────────────────────────────
+
+
+class TestBlockSourceUrl:
+    def test_aesthetic_frame_capture_prefers_frame_ref_uri(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    event_id="rvpe:aesthetic_frame_capture:source",
+                    event_type="aesthetic.frame_capture",
+                    state_kind="aesthetic_frame",
+                    public_url="https://hapax.weblog.lol/post",
+                    frame_ref=_frame_ref(uri="https://hapax.cdn/frame.jpg"),
+                )
+            ],
+        )
+        client = mock.Mock()
+        client.add_block.return_value = None
+        factory = mock.Mock(return_value=client)
+        # Use default composer (no compose_fn) so source URL selection runs.
+        poster = ArenaPoster(
+            token="test-token",
+            channel_slug="hapax-visual-surface",
+            client_factory=factory,
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            idempotency_path=tmp_path / "ids.json",
+            registry=CollectorRegistry(),
+        )
+        with mock.patch("agents.metadata_composer.composer.compose_metadata") as compose:
+            compose.return_value = mock.Mock(arena_block="frame body", bluesky_post=None)
+            poster.run_once()
+        assert client.add_block.call_args.kwargs["source"] == "https://hapax.cdn/frame.jpg"
+
+    def test_chronicle_uses_public_url(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    event_id="rvpe:chronicle_high_salience:source",
+                    event_type="chronicle.high_salience",
+                    state_kind="research_observation",
+                    public_url="https://hapax.weblog.lol/observation",
+                    frame_ref=_frame_ref(),
+                )
+            ],
+        )
+        client = mock.Mock()
+        client.add_block.return_value = None
+        factory = mock.Mock(return_value=client)
+        poster = ArenaPoster(
+            token="test-token",
+            channel_slug="hapax-visual-surface",
+            client_factory=factory,
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            idempotency_path=tmp_path / "ids.json",
+            registry=CollectorRegistry(),
+        )
+        with mock.patch("agents.metadata_composer.composer.compose_metadata") as compose:
+            compose.return_value = mock.Mock(arena_block="chronicle body", bluesky_post=None)
+            poster.run_once()
+        assert client.add_block.call_args.kwargs["source"] == "https://hapax.weblog.lol/observation"
+
 
 # ── Dry run ──────────────────────────────────────────────────────────
 
 
 class TestDryRun:
-    def test_dry_run_does_not_send(self, tmp_path):
+    def test_dry_run_does_not_call_factory(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
-        client = mock.Mock()
-        factory = mock.Mock(return_value=client)
+        _write_events(bus, [_public_event()])
+        factory = mock.Mock()
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
@@ -111,7 +443,15 @@ class TestDryRun:
             dry_run=True,
         )
         poster.run_once()
-        assert client.add_block.call_count == 0
+        factory.assert_not_called()
+
+    def test_dry_run_advances_cursor(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(bus, [_public_event()])
+        cursor = tmp_path / "cursor.txt"
+        poster, _ = _make_poster(event_path=bus, cursor_path=cursor, dry_run=True)
+        poster.run_once()
+        assert int(cursor.read_text()) == bus.stat().st_size
 
 
 # ── Live send ────────────────────────────────────────────────────────
@@ -120,8 +460,11 @@ class TestDryRun:
 class TestSendBlock:
     def test_text_only_block_uses_content(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        # Event has public_url (fanout requires one reference), but the
+        # composer chooses to emit the block as text-only by returning source=None.
+        _write_events(bus, [_public_event()])
         client = mock.Mock()
+        client.add_block.return_value = None
         factory = mock.Mock(return_value=client)
         compose_fn = mock.Mock(return_value=("Reverie pass 7 — RD step 0.18", None))
         poster, _ = _make_poster(
@@ -139,8 +482,9 @@ class TestSendBlock:
 
     def test_link_block_uses_source(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         client = mock.Mock()
+        client.add_block.return_value = None
         factory = mock.Mock(return_value=client)
         compose_fn = mock.Mock(
             return_value=("livestream chronicle moment", "https://hapax.omg.lol/clips/x")
@@ -160,7 +504,7 @@ class TestSendBlock:
 
     def test_no_credentials_skips_send(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         factory = mock.Mock()
         poster, _ = _make_poster(
             event_path=bus,
@@ -174,8 +518,9 @@ class TestSendBlock:
 
     def test_content_truncated_to_limit(self, tmp_path):
         bus = tmp_path / "events.jsonl"
-        _write_events(bus, [{"event_type": EVENT_TYPE, "incoming_broadcast_id": "vid-A"}])
+        _write_events(bus, [_public_event()])
         client = mock.Mock()
+        client.add_block.return_value = None
         factory = mock.Mock(return_value=client)
         oversized = "x" * (ARENA_BLOCK_TEXT_LIMIT + 100)
         compose_fn = mock.Mock(return_value=(oversized, None))
@@ -188,6 +533,31 @@ class TestSendBlock:
         poster.run_once()
         sent_content = client.add_block.call_args.kwargs["content"]
         assert len(sent_content) == ARENA_BLOCK_TEXT_LIMIT
+
+
+# ── Allowlist ────────────────────────────────────────────────────────
+
+
+class TestAllowlist:
+    def test_deny_short_circuits(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(bus, [_public_event()])
+        client = mock.Mock()
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            client_factory=factory,
+        )
+
+        from agents.cross_surface import arena_post as mod
+
+        denied = mock.Mock()
+        denied.decision = "deny"
+        denied.reason = "test override"
+        with mock.patch.object(mod, "allowlist_check", return_value=denied):
+            poster.run_once()
+        client.add_block.assert_not_called()
 
 
 # ── Credentials helper ──────────────────────────────────────────────

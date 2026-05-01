@@ -214,7 +214,7 @@ CROSS_SURFACE_APERTURES: tuple[CrossSurfaceApertureContract, ...] = (
             "publication.artifact",
         ),
         allowed_actions=("publish", "link", "embed", "redact", "hold", "archive"),
-        current_reality="missing_unit",
+        current_reality="credential_blocked",
         publication_contract="arena-post",
         child_task="arena-public-event-unit-and-block-shape",
         health_owner="arena-public-event-unit-and-block-shape",

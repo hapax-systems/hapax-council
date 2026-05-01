@@ -1,8 +1,9 @@
 surface: arena-post
 state_kinds:
-  - broadcast.boundary
-  - chronicle.high_salience
+  - arena_block.candidate
   - aesthetic.frame_capture
+  - chronicle.high_salience
+  - publication.artifact
 redactions:
   - operator_profile.*
   - operator_identity.*
@@ -11,4 +12,4 @@ redactions:
 rate_limit:
   per_hour: 6
   per_day: 30
-cadence_hint: "Daily livestream-frame stills with technique annotations to a Hapax-owned channel; AGR-scene research surface (citation density is the move)"
+cadence_hint: "Daily livestream-frame stills with technique annotations to a Hapax-owned channel; AGR-scene research surface (citation density is the move). Event types match cross-surface aperture contract: arena does not consume raw broadcast.boundary — producers materialize arena_block.candidate events, which arena tails directly alongside aesthetic.frame_capture, chronicle.high_salience, and publication.artifact."
