@@ -848,3 +848,24 @@ from shared.axiom_registry import Precedent, load_precedents
 
 Precedent
 load_precedents
+
+# FFT marker-probe detector — runtime-witness layer for the existing
+# fixture/policy harness (PR #1897). Whitelisted because the live
+# runner that calls into it lands as a follow-up; the helpers ship
+# pure-logic + tested first per cc-task `audio-marker-probe-fft-detector`.
+from shared.audio_marker_probe_fft import (
+    detect_marker_in_capture,
+    generate_marker_tone,
+)
+
+detect_marker_in_capture
+generate_marker_tone
+
+# Voice output router (role-keyed API) — ``known_roles`` is the
+# operator-dashboard helper for the audio-routing blocker stack. Lands
+# ahead of the dashboard surface that will read it (separate cc-task);
+# the route() method is the primary consumer surface for the director
+# rewrite (cc-task: director-loop-semantic-audio-route).
+from shared.voice_output_router import VoiceOutputRouter
+
+VoiceOutputRouter.known_roles
