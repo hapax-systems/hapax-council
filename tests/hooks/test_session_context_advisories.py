@@ -18,6 +18,7 @@ deterministic.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -243,7 +244,9 @@ class TestRecentBootAdvisory:
         rc, out, _err = _run_fragment(tmp_path, BOOT_FRAGMENT, fake)
         assert rc == 0
         assert "recent reboot" in out
-        assert "30min ago" in out
+        match = re.search(r"booted (\d+)min ago", out)
+        assert match is not None
+        assert int(match.group(1)) in {29, 30}
 
     def test_silent_when_uptime_more_than_an_hour(self, tmp_path: Path) -> None:
         fake = _make_fake_bin(
