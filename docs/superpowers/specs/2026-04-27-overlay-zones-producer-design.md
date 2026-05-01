@@ -61,3 +61,51 @@ The generated content must strictly adhere to Hapax's overarching directives:
 1. Select 1-2 pillars (e.g., Git Activity and Objective Tracing) for the Phase 1 implementation.
 2. Draft the `OverlayProducer` class that runs on a 1-minute timer, generating and purging `TextEntry` objects in `shared.text_repo`.
 3. Wire the producer daemon into the `hapax-supervisor` startup sequence.
+
+## 6. Phase 1 implementation status (2026-05-01)
+
+Per cc-task `overlay-zones-producer-implementation`. Phase 1 ships the
+producer framework + the **Git Activity** content pillar (§3.2).
+
+**Shipped entrypoints** (`agents/overlay_producer/`):
+
+- `OverlayProducer` (`producer.py`): orchestrator that holds a list of
+  `ContentSource` instances, dedups candidates by id against the
+  current repo state, applies a default 5-minute TTL when sources omit
+  one, and writes via `TextRepo.add_entry`. Source exceptions are
+  caught + counted in `ProducerTickResult.source_failures`; a bad
+  source does not block remaining sources or the next tick.
+- `ContentSource` Protocol (`producer.py`): structural interface every
+  pillar implements as `def collect(self, now: float) -> list[TextEntry]`.
+- `GitActivitySource` (`git_activity.py`): shells out to `git log` once
+  per `collect`, parses `%H %ct %s` output, emits `[GIT] <hash7>
+  <subject>` entries with `context_keys=["main"]`. Subprocess timeout /
+  non-zero exit / OSError / missing-PATH / missing-`.git` all degrade
+  to an empty list (degraded empty-state).
+- `ProducerTickResult` (`producer.py`): typed `(added, skipped_existing,
+  source_failures)` tuple so daemon health monitors can act on tick
+  outcome counters.
+- `agents.overlay_producer.daemon.main`: argparse-backed CLI with
+  `--once` (single tick + exit) and the daemon loop. Default 60s
+  cadence per spec §5. Run via `uv run python -m agents.overlay_producer`.
+
+**Tests** (`tests/overlay_producer/`):
+
+- `test_producer.py`: construction, no-source / no-candidate / failure
+  isolation paths, default TTL vs source-supplied TTL, dedup-by-id
+  semantics, zone-context propagation through `select_for_context`.
+- `test_git_activity.py`: well-formed and malformed `git log` parsing,
+  subprocess error paths, missing-PATH / missing-`.git` short-circuits,
+  body truncation invariants, end-to-end `collect` shape.
+
+**Explicit deferrals** (separate slices):
+
+- §3.1 (Refusal-as-Data) — needs the refusal-brief consumer; lands as
+  a new `RefusalAnnexSource`.
+- §3.3 (Objective Tracing) — depends on a stable schema for vault
+  objective notes; lands as a new `ObjectiveSource`.
+- §3.4 (Semantic RAG) — Qdrant query path is not yet wired; lands when
+  the conversation-context retriever stabilizes.
+- systemd `hapax-overlay-producer.service` unit definition — operator
+  wires after this module lands; the daemon module is ready to plug in
+  via `ExecStart=uv run python -m agents.overlay_producer`.
