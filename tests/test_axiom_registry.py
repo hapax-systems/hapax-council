@@ -257,3 +257,142 @@ def test_explicit_mode_and_level(tmp_path):
     assert impls[0].level == "system"
     assert impls[1].mode == "compatibility"
     assert impls[1].level == "subsystem"
+
+
+# ── load_precedents (cc-task: axioms-loader-add-load-precedents) ─────
+
+
+@pytest.fixture
+def precedent_registry(tmp_path):
+    """Registry with seed + standalone precedent files for one axiom."""
+    impls = tmp_path / "implications"
+    impls.mkdir()
+    precedents = tmp_path / "precedents"
+    seed = precedents / "seed"
+    seed.mkdir(parents=True)
+    # Seed file with two rows for `target_axiom` + one for `other_axiom`.
+    (seed / "test-seeds.yaml").write_text(
+        "precedents:\n"
+        "  - id: sp-test-001\n"
+        "    axiom_id: target_axiom\n"
+        '    situation: "First seed."\n'
+        "    decision: compliant\n"
+        "    tier: T1\n"
+        '    created: "2026-01-01"\n'
+        "    authority: operator\n"
+        "  - id: sp-test-002\n"
+        "    axiom_id: target_axiom\n"
+        '    situation: "Second seed."\n'
+        "    decision: non-compliant\n"
+        "    tier: T0\n"
+        '    created: "2026-01-02"\n'
+        "    authority: operator\n"
+        "  - id: sp-other-001\n"
+        "    axiom_id: other_axiom\n"
+        '    situation: "Different axiom."\n'
+        "    decision: compliant\n"
+        '    created: "2026-01-03"\n'
+        "    authority: operator\n"
+    )
+    # Standalone-schema file for target_axiom.
+    (precedents / "sp-test-standalone-001.yaml").write_text(
+        "precedent_id: sp-test-standalone-001\n"
+        "axiom_id: target_axiom\n"
+        'short_name: "standalone-test"\n'
+        'situation: "Standalone case."\n'
+        "decision: compliant\n"
+        "tier: T2\n"
+        'created: "2026-02-01"\n'
+        "authority: operator\n"
+        "secondary_axioms: [other_axiom]\n"
+    )
+    # Standalone for a different axiom — must not be returned.
+    (precedents / "sp-other-standalone-001.yaml").write_text(
+        "precedent_id: sp-other-standalone-001\n"
+        "axiom_id: other_axiom\n"
+        'situation: "Different."\n'
+        "decision: compliant\n"
+    )
+    return tmp_path
+
+
+def test_load_precedents_returns_seed_rows_for_axiom(precedent_registry):
+    from shared.axiom_registry import load_precedents
+
+    out = load_precedents("target_axiom", path=precedent_registry)
+    ids = {p.id for p in out}
+    assert "sp-test-001" in ids
+    assert "sp-test-002" in ids
+    assert "sp-test-standalone-001" in ids
+
+
+def test_load_precedents_filters_other_axiom(precedent_registry):
+    from shared.axiom_registry import load_precedents
+
+    out = load_precedents("target_axiom", path=precedent_registry)
+    ids = {p.id for p in out}
+    assert "sp-other-001" not in ids
+    assert "sp-other-standalone-001" not in ids
+    assert all(p.axiom_id == "target_axiom" for p in out)
+
+
+def test_load_precedents_carries_full_metadata(precedent_registry):
+    from shared.axiom_registry import load_precedents
+
+    out = load_precedents("target_axiom", path=precedent_registry)
+    standalone = next(p for p in out if p.id == "sp-test-standalone-001")
+    assert standalone.tier == "T2"
+    assert standalone.decision == "compliant"
+    assert standalone.created == "2026-02-01"
+    assert standalone.authority == "operator"
+    assert standalone.secondary_axioms == ("other_axiom",)
+
+
+def test_load_precedents_skips_rows_without_axiom_id(tmp_path):
+    """A list-schema row without axiom_id is skipped silently."""
+    from shared.axiom_registry import load_precedents
+
+    seed = tmp_path / "precedents" / "seed"
+    seed.mkdir(parents=True)
+    (seed / "broken.yaml").write_text(
+        "precedents:\n"
+        "  - id: sp-good\n"
+        "    axiom_id: target\n"
+        '    situation: "Good."\n'
+        "    decision: compliant\n"
+        "  - id: sp-bad\n"
+        # axiom_id missing
+        '    situation: "Bad."\n'
+        "    decision: compliant\n"
+    )
+    out = load_precedents("target", path=tmp_path)
+    ids = {p.id for p in out}
+    assert "sp-good" in ids
+    assert "sp-bad" not in ids
+
+
+def test_load_precedents_missing_dir(tmp_path):
+    from shared.axiom_registry import load_precedents
+
+    assert load_precedents("anything", path=tmp_path) == []
+
+
+def test_load_precedents_real_tree_resolves_known_ids():
+    """Smoke against the production axioms/precedents/ tree.
+
+    `single_user` and `management_governance` axioms each have at
+    least one standalone precedent file plus seed entries; both
+    must be discoverable via the loader.
+    """
+    from shared.axiom_registry import AXIOMS_PATH, load_precedents
+
+    su = load_precedents("single_user", path=AXIOMS_PATH)
+    su_ids = {p.id for p in su}
+    # The standalone sp-su-005-worktree-isolation must appear.
+    assert "sp-su-005-worktree-isolation" in su_ids
+    # At least one seed-file entry must also appear.
+    assert any(p.id.startswith("sp-arch-") or p.id.startswith("sp-su-") for p in su)
+
+    mg = load_precedents("management_governance", path=AXIOMS_PATH)
+    mg_ids = {p.id for p in mg}
+    assert "sp-hsea-mg-001" in mg_ids
