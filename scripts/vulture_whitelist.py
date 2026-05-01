@@ -697,3 +697,18 @@ CaptionFrame
 RollUpEncoder
 RollUpEncoder.encode_line
 filler_pair
+
+# Phase 5b — audio-to-video clock-offset estimator. The TimingAligner
+# is consumed by the upcoming gst_injector slice; helpers + result
+# dataclass are part of the public API. Whitelisted so Phase 5b can
+# land before its consumer per the same cc-task split as Phase 5a.
+from agents.live_captions.timing_aligner import (
+    AlignmentResult,
+    TimingAligner,
+)
+
+AlignmentResult
+TimingAligner
+TimingAligner.record_pair
+TimingAligner.align
+TimingAligner.reset
