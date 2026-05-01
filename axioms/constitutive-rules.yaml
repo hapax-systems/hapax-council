@@ -121,3 +121,60 @@ rules:
           as personal inference requiring consent (spec gap #1)
     linked_implications: [it-environmental-001, it-consent-001]
     description: "Environmental observations that may cross into personal inference"
+
+  # ── Consent contract substrate (Phase 2 wiring per cc-task ────────
+  # `coherence-orphan-implications-catalog`). The contract YAML files
+  # at `axioms/contracts/contract-*.yaml` ARE the consent-contract
+  # substrate — their schema embodies three it-* implications:
+  #
+  # - `scope:` field → it-scope-001 (enumerated data categories)
+  # - `visibility_mechanism:` field → it-inspect-001 (subject inspection)
+  # - file existence + deletability → it-revoke-001 (revocation surface)
+  #
+  # Removing the file = revoking the contract; downstream consumers
+  # check file presence at runtime.
+  - id: cr-consent-contract-file
+    brute_pattern: "axioms/contracts/contract-*.yaml"
+    institutional_type: consent-contract
+    context: consent
+    match_type: path
+    linked_implications: [it-scope-001, it-inspect-001, it-revoke-001]
+    description: >
+      Files matching `axioms/contracts/contract-*.yaml` count as
+      consent contracts. Their schema embodies the scope (data
+      categories), inspection mechanism, and revocation surface
+      (file deletion = revocation).
+
+  # ── PerceptionBackend → it-backend-001 ────────────────────────────
+  # Modules under `agents/hapax_daimonion/backends/*.py` are the
+  # PerceptionBackend implementations. They count as
+  # data-ingestion-pathways for the purposes of it-backend-001
+  # (consent verification before updating Behaviors).
+  - id: cr-perception-backend-module
+    brute_pattern: "agents/hapax_daimonion/backends/*.py"
+    institutional_type: perception-backend
+    context: perception
+    match_type: path
+    linked_implications: [it-backend-001]
+    description: >
+      Files matching `agents/hapax_daimonion/backends/*.py` count as
+      PerceptionBackend implementations. They must verify an active
+      consent contract before updating Behaviors or persisting state
+      about non-operator persons (it-backend-001).
+
+  # ── Derived/inferred state classification ─────────────────────────
+  # Files with `inferred: true` frontmatter declare derived state
+  # about a non-operator person, requiring consent-contract scope
+  # coverage per it-inference-001.
+  - id: cr-inferred-state-frontmatter
+    brute_pattern: ""
+    institutional_type: inferred-personal-state
+    context: perception
+    match_type: frontmatter
+    match_field: inferred
+    match_value: "true"
+    linked_implications: [it-inference-001, it-consent-001]
+    description: >
+      Files with `inferred: true` count as derived/inferred state
+      about a non-operator person, requiring consent-contract scope
+      coverage (it-inference-001).
