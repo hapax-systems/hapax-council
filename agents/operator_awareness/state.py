@@ -2,8 +2,9 @@
 
 Pydantic types for the 14-category operator-awareness state per the
 ``awareness-state-stream-canonical`` spec. Each block carries a
-``public: bool`` field that ``public_filter.py`` (Phase 3) consults
-when fanning out to the omg.lol public-safe weblog payload.
+``public: bool`` field that
+:mod:`agents.operator_awareness.public_filter` consults when fanning
+out to the omg.lol public-safe weblog payload.
 
 Anti-anthropomorphization: state payload uses neutral category names
 (golden-signal, posterior-decile, count, last-error) — no narrative
@@ -315,9 +316,12 @@ class RefusalEvent(BaseModel):
 class AwarenessState(BaseModel):
     """Top-level operator-awareness state.
 
-    Aggregator (Phase 2) constructs an instance per tick and the
-    runner (Phase 2) writes it atomically. Surfaces (waybar,
-    sidebar, omg.lol fanout — separate tasks) parse the JSON.
+    :class:`agents.operator_awareness.aggregator.Aggregator` constructs
+    an instance per tick and
+    :mod:`agents.operator_awareness.runner` writes it atomically
+    (mounted as ``systemd/units/hapax-operator-awareness.service``).
+    Surfaces (waybar, sidebar, omg.lol fanout — separate tasks) parse
+    the JSON.
 
     Stale-state semantics: consumers compare ``timestamp`` to wall
     clock; if older than ``ttl_seconds``, the consumer dims its
