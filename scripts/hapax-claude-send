@@ -68,7 +68,7 @@ READ_STDIN=0
 MESSAGE_PARTS=()
 TMP_FILES=()
 
-ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta delta epsilon}"
+ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta}"
 
 # Default busy regex covers Claude Code's animated activity verbs and
 # the "Messages to be submitted after next tool call" queue indicator.

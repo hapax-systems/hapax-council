@@ -24,7 +24,7 @@ COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 
 usage() {
   cat <<'EOF'
-usage: hapax-claude [--role alpha|beta|delta|epsilon] [--cd DIR]
+usage: hapax-claude [--role alpha|beta|gamma|delta|epsilon|zeta|eta|theta] [--cd DIR]
                     [--terminal none|tmux|foot] [--force]
                     [--] [claude args...]
 
@@ -85,7 +85,7 @@ while [ $# -gt 0 ]; do
       CLAUDE_EXTRA+=("$@")
       break
       ;;
-    alpha|beta|delta|epsilon)
+    alpha|beta|gamma|delta|epsilon|zeta|eta|theta)
       if [ -z "$ROLE" ]; then
         ROLE="$1"
       else
@@ -113,9 +113,9 @@ if [ -z "$ROLE" ]; then
 fi
 
 case "$ROLE" in
-  alpha|beta|delta|epsilon) ;;
+  alpha|beta|gamma|delta|epsilon|zeta|eta|theta) ;;
   *)
-    echo "hapax-claude: invalid role '$ROLE' (expected alpha|beta|delta|epsilon)" >&2
+    echo "hapax-claude: invalid role '$ROLE' (expected alpha|beta|gamma|delta|epsilon|zeta|eta|theta)" >&2
     exit 2
     ;;
 esac
@@ -155,6 +155,7 @@ claude_default_worktree() {
       fi
       ;;
     epsilon) printf '%s\n' "$root/hapax-council--epsilon" ;;
+    gamma|zeta|eta|theta) printf '%s\n' "$root/hapax-council--$role" ;;
   esac
 }
 
