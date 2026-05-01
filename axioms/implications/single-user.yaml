@@ -112,6 +112,19 @@ implications:
   canon: textualist
   mode: compatibility
   level: component
+  status: retired
+  retirement_rationale: |
+    Superseded by su-notify-001 (same scope, module-concrete + wireable).
+    Both are T2/warn notification rules under single_user covering
+    identical scope (no per-user notification preferences /
+    multi-user delivery). su-notification-001 ("All notifications can
+    be addressed directly to operator without user preference systems")
+    is the abstract form; su-notify-001 ("Notification systems in
+    shared/notify.py must not support user-specific notification
+    preferences or multi-user delivery mechanisms") is the
+    module-concrete form bound to shared/notify.py — wireable to a
+    constitutive rule. The concrete + wireable rule subsumes the
+    abstract duplicate.
 - id: su-deployment-001
   tier: T1
   text: Deployment and infrastructure should optimize for single-instance usage rather
