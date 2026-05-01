@@ -39,6 +39,22 @@ class IrBiometrics(BaseModel):
     face_detected: bool = False
 
 
+class HandSemantics(BaseModel):
+    """Rich-vocabulary hand-activity description from the VLM classifier.
+
+    Produced by ``pi-edge/vlm_classifier.py`` (Phase 3 of cc-task
+    ``ir-perception-replace-zones-with-vlm-classification``). Replaces
+    the noisy fixed five-zone enum in :class:`IrHand` with open
+    vocabulary; consumers that still need the coarse zone fall back to
+    :attr:`IrHand.zone` until the Phase 4 migration retires it.
+    """
+
+    intent: str = ""
+    surface: str = ""
+    hand_position: str = ""
+    confidence: float = 0.0
+
+
 class IrDetectionReport(BaseModel):
     pi: str
     role: str
@@ -55,3 +71,8 @@ class IrDetectionReport(BaseModel):
     # relative to the cadence the Pi is currently running at.
     cadence_state: str = "IDLE"
     cadence_interval_s: float = 3.0
+    # Phase 3 of `ir-perception-replace-zones-with-vlm-classification`
+    # — frame-level rich-vocabulary classification produced by the
+    # Pi-side VLM classifier. ``None`` when the runner's motion gate
+    # / cache / failure paths declined to call the VLM this tick.
+    hand_semantics: HandSemantics | None = None
