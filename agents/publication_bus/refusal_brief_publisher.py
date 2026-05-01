@@ -1,4 +1,4 @@
-"""Refusal Brief Zenodo deposit publisher — Phase 1.
+"""Refusal Brief Zenodo deposit publisher.
 
 Per cc-task ``xprom-refusal-as-related-identifier`` and drop-5 fresh-
 pattern §2: each Refusal Brief gets its own Zenodo deposit whose
@@ -7,7 +7,7 @@ pattern §2: each Refusal Brief gets its own Zenodo deposit whose
 ``IsObsoletedBy`` to sibling refusals). This makes refusal nodes
 first-class participants in the DataCite citation graph.
 
-Phase 1 (this module) ships:
+This module ships the substrate:
 
   - ``RefusalBriefPublisher(Publisher)`` — Zenodo deposit publisher
     specialized for the refusal-brief deposit type
@@ -16,10 +16,22 @@ Phase 1 (this module) ships:
   - ``scan_refused_cc_tasks(active_dir)`` — yields ``RefusedTaskSummary``
     for every cc-task with ``automation_status: REFUSED``
 
-Phase 2 will wire the daemon main() that scans the vault, looks up
-sibling refusal DOIs from prior deposits, mints new Zenodo deposits
-via this publisher, and writes ``refusal_doi`` back into each cc-task
-note's frontmatter.
+Daemon path (was previously called "Phase 2") has shipped:
+
+  - ``agents/publication_bus/refusal_brief_daemon.py`` — vault scanner
+    over ``active/`` + ``closed/`` cc-task dirs with ``--dry-run`` (default)
+    and ``--commit`` (opt-in mint) modes; depends on a ``zenodo/api-token``
+    pass entry to mint live deposits.
+  - ``agents/refusal_brief_zenodo_adapter/`` — orchestrator-side
+    adapter so the publish-orchestrator queue can dispatch refusal
+    artifacts through this publisher.
+
+Open gap: there is no ``hapax-refusal-brief-daemon.{service,timer}``
+mounting the daemon on a cadence today (the existing
+``hapax-refusal-brief-rotate.{service,timer}`` is for log rotation,
+not deposit minting). When the operator wants continuous Phase 2
+minting, a follow-up cc-task should mount the daemon as a systemd
+user unit + timer alongside the other publication-bus daemons.
 
 The deposit shape:
 - type=publication, subtype=other, title="Refused: <slug>"
