@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 import anyio
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Response, status
 
 from agents.mail_monitor.label_bootstrap import LabelBootstrapError, bootstrap_labels
 from agents.mail_monitor.oauth import build_gmail_service, load_credentials
@@ -21,6 +21,13 @@ from agents.mail_monitor.webhook_gmail import (
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Per-route hardening for the public Pub/Sub endpoint: rejected
+# requests must reveal nothing about why they were rejected and must
+# not be cached by intermediaries that might see a 401 once and serve
+# it back to a now-authorised retry. ``Cache-Control: no-store``
+# disables both shared and private caches per RFC 7234 §5.2.
+_NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 
 
 def _process_notification(history_id: str) -> int:
@@ -38,21 +45,27 @@ def _process_notification(history_id: str) -> int:
 async def gmail_webhook(
     payload: dict[str, Any],
     authorization: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> Any:
     """Receive Google Pub/Sub Gmail notifications.
 
     Non-2xx responses intentionally ask Pub/Sub to retry. The route
-    never returns sender, subject, or body content.
+    never returns sender, subject, or body content. Unauthorised
+    requests get an empty 401 with ``Cache-Control: no-store`` so
+    attackers learn nothing from the rejection and intermediaries do
+    not cache the reject.
     """
 
     try:
         verify_authorization(authorization)
-        notification = decode_pubsub_envelope(payload)
-    except WebhookAuthError as exc:
-        raise HTTPException(
+    except WebhookAuthError:
+        return Response(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid Pub/Sub authorization",
-        ) from exc
+            content=b"",
+            headers=_NO_STORE_HEADERS,
+        )
+
+    try:
+        notification = decode_pubsub_envelope(payload)
     except WebhookPayloadError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
