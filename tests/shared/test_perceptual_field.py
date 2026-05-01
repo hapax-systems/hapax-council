@@ -136,6 +136,12 @@ class TestChatNoAuthorLeakage:
 
 class TestAlbum:
     def test_album_populates(self, monkeypatch, tmp_path):
+        # `playing: True` is required for `build_perceptual_field` to
+        # populate AlbumField.artist/title/current_track/year — without
+        # it the populator suppresses those fields per PR #1936's
+        # playing-flag guard. The test asserts that fields surface
+        # under live-playing conditions, so the fixture must mark
+        # playing=True explicitly.
         _redirect_paths_to_empty(monkeypatch, tmp_path)
         album = tmp_path / "album-state.json"
         album.write_text(
@@ -146,6 +152,7 @@ class TestAlbum:
                     "current_track": "track 3",
                     "year": 2023,
                     "confidence": 0.88,
+                    "playing": True,
                 }
             )
         )
