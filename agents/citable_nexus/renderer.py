@@ -29,6 +29,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+from agents.citable_nexus.datacite_snapshot import (
+    DataCiteSnapshot,
+    Work,
+    read_latest_snapshot,
+)
 from agents.citable_nexus.vault_content import (
     markdown_to_html,
     read_vault_document,
@@ -64,9 +69,10 @@ PAGE_PATHS: Final[tuple[str, ...]] = (
     "/surfaces",
     "/manifesto",
     "/refusal-brief",
+    "/deposits",
 )
-"""Phase 0 + Phase 1b page set. Phase 1c+ adds /deposits (DataCite
-snapshot ledger) and /citation-graph (Cytoscape.js)."""
+"""Phase 0 + Phase 1b + Phase 1c page set. Phase 2 adds
+/citation-graph (Cytoscape.js)."""
 
 CANONICAL_BASE_URL: Final[str] = "https://hapax.research"
 """Canonical base URL the rendered site assumes when emitting
@@ -398,6 +404,77 @@ def render_refusal_brief_page() -> PageMeta:
     )
 
 
+# ── Phase 1c: deposits page from DataCite snapshot ───────────────────
+
+
+def _render_work_row(work: Work) -> str:
+    """Render one DataCite-tracked work as an HTML list entry."""
+    related_count = len(work.related_identifiers)
+    related_suffix = (
+        f" &middot; {related_count} related identifier{'s' if related_count != 1 else ''}"
+        if related_count
+        else ""
+    )
+    citations_suffix = (
+        f" &middot; {work.citation_count} citation{'s' if work.citation_count != 1 else ''}"
+        if work.citation_count
+        else ""
+    )
+    return (
+        f'                <li><a href="{_esc(work.landing_page_url)}"><code>{_esc(work.doi)}</code></a>'
+        f"{citations_suffix}{related_suffix}</li>"
+    )
+
+
+def render_deposits_page(snapshot: DataCiteSnapshot | None = None) -> PageMeta:
+    """``/deposits`` — operator's DataCite-tracked authored works.
+
+    Reads the freshest snapshot via :func:`read_latest_snapshot`
+    when ``snapshot`` is None (the build-time path); tests inject
+    a fixture instead. Safe-fallback when no snapshot is available.
+    """
+    snap = snapshot if snapshot is not None else read_latest_snapshot()
+
+    if snap.available:
+        works_html = "\n".join(_render_work_row(w) for w in snap.works) or (
+            "                <li><em>The DataCite mirror tracks zero works for this ORCID iD "
+            "as of the snapshot date. New deposits land here on the next nightly fire.</em></li>"
+        )
+        body = f"""    <header>
+        <h1>Deposits</h1>
+        <p class="intent">Operator's authored works as resolved by the DataCite GraphQL API. Snapshot date: <code>{_esc(snap.snapshot_date or "")}</code>; ORCID iD: <a href="{_esc(snap.orcid_url or "")}"><code>{_esc(snap.orcid_url or "")}</code></a>.</p>
+    </header>
+    <main>
+        <section class="deposits-list">
+            <h2>Tracked works ({len(snap.works)})</h2>
+            <ul>
+{works_html}
+            </ul>
+        </section>
+        <section class="snapshot-provenance">
+            <h2>Snapshot provenance</h2>
+            <p>Source: <code>~/hapax-state/datacite-mirror/{_esc(snap.snapshot_date or "")}.json</code> (updated daily by <code>hapax-datacite-mirror.timer</code>). Schema follows the DataCite Commons GraphQL <code>orcidWorks</code> query; <code>citations.totalCount</code> is the inbound-citation count DataCite knows about, and <code>relatedIdentifiers</code> are operator-or-deposit-asserted relations to other DOIs / URIs.</p>
+        </section>
+    </main>"""
+    else:
+        body = """    <header>
+        <h1>Deposits</h1>
+        <p class="intent">Operator's authored works as resolved by the DataCite GraphQL API.</p>
+    </header>
+    <main class="snapshot-placeholder">
+        <p>No DataCite snapshot found at <code>~/hapax-state/datacite-mirror/</code>. The mirror runs nightly via
+            <code>hapax-datacite-mirror.timer</code>; the first snapshot lands after the operator configures
+            <code>HAPAX_OPERATOR_ORCID</code> (see <code>scripts/configure-orcid.sh</code> from PR #2018).
+            Set <code>HAPAX_DATACITE_MIRROR_DIR</code> to override the source dir for this build.</p>
+    </main>"""
+    return PageMeta(
+        path="/deposits",
+        title="Deposits — Hapax research",
+        description=f"Operator's DataCite-tracked authored works ({len(snap.works) if snap.available else 0} works).",
+        body_html=body,
+    )
+
+
 # ── Site-level renderer ───────────────────────────────────────────────
 
 
@@ -409,7 +486,7 @@ class RenderedSite:
 
 
 def render_site() -> RenderedSite:
-    """Render all Phase-0 + Phase-1b pages.
+    """Render all Phase-0 + Phase-1 pages.
 
     Returns a :class:`RenderedSite` mapping URL path → fully-formed
     HTML document. Pages with the long-form non-engagement clause:
@@ -423,4 +500,5 @@ def render_site() -> RenderedSite:
     pages["/surfaces"] = _wrap(render_surfaces_page(), footer_long_form=False)
     pages["/manifesto"] = _wrap(render_manifesto_page(), footer_long_form=False)
     pages["/refusal-brief"] = _wrap(render_refusal_brief_page(), footer_long_form=True)
+    pages["/deposits"] = _wrap(render_deposits_page(), footer_long_form=False)
     return RenderedSite(pages=pages)
