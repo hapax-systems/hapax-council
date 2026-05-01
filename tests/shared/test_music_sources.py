@@ -62,14 +62,10 @@ class TestDecommissionedSource:
 
 class TestDecommissionedPath:
     def test_path_with_epidemic_segment_flagged(self) -> None:
-        assert music_sources.path_looks_decommissioned_broadcast_source(
-            "music/epidemic/track.mp3"
-        )
+        assert music_sources.path_looks_decommissioned_broadcast_source("music/epidemic/track.mp3")
 
     def test_path_segment_match_is_case_insensitive(self) -> None:
-        assert music_sources.path_looks_decommissioned_broadcast_source(
-            "music/Epidemic/x.mp3"
-        )
+        assert music_sources.path_looks_decommissioned_broadcast_source("music/Epidemic/x.mp3")
 
     def test_path_with_no_decommissioned_segment_passes(self) -> None:
         assert not music_sources.path_looks_decommissioned_broadcast_source(
