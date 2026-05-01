@@ -83,6 +83,12 @@ class AffordanceMetrics:
             from shared.affordance_score_metrics import observe_winner_similarity
 
             observe_winner_similarity(winner_similarity)
+        # Retrieval-pressure histogram: observed on every selection
+        # (including no-winner cases) so Grafana can show how noisy the
+        # candidate set is regardless of whether a winner emerged.
+        from shared.affordance_score_metrics import observe_candidates_count
+
+        observe_candidates_count(candidates_count)
 
     def record_outcome(
         self,

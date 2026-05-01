@@ -1,20 +1,23 @@
-"""Prometheus histogram for AffordancePipeline winner score distribution.
+"""Prometheus histograms for AffordancePipeline score + retrieval distributions.
 
 Pairs with the recruitment / dispatch / outcome counter trio. Those
 counters give Grafana per-domain volume, per-dropout-reason
-breakdowns, and post-recruitment success/failure — but not the
-*confidence* distribution of winning selections.
+breakdowns, and post-recruitment success/failure. This module adds
+two histograms:
 
-``hapax_affordance_winner_similarity`` is observed inside
-``AffordanceMetrics.record_selection`` whenever a non-None winner
-emerged, with the cosine similarity (already in [0, 1]) as the
-observation. Operators can read percentiles in Grafana to tune the
-``THRESHOLD`` constant in ``shared.affordance_pipeline`` and to spot
-drift when an embedding source degrades.
+* ``hapax_affordance_winner_similarity`` — cosine score of the
+  winning candidate; observed only when a non-None winner emerged.
+  Lets operators tune the ``THRESHOLD`` constant by reading the
+  percentile distribution of winners in Grafana.
+* ``hapax_affordance_candidates_count`` — number of candidates the
+  pipeline evaluated before threshold filtering; observed on every
+  ``select()`` call (including no-winner cases). Surfaces retrieval
+  pressure: when this trends from 5 → 50, retrieval got noisier and
+  threshold tuning may be due.
 
 Importing this module is safe even when ``prometheus_client`` is
-unavailable: ``observe_winner_similarity`` is then a no-op and
-``winner_similarity_observation_count`` returns ``None``.
+unavailable: ``observe_*`` calls are no-ops and ``*_total_count``
+helpers return ``None``.
 """
 
 from __future__ import annotations
@@ -142,8 +145,91 @@ def winner_similarity_total_count() -> int | None:
         return None
 
 
+# Geometric-ish cover of small-int candidate counts. Default top-k
+# retrieval is 10, so the densest buckets are at 0..10; higher buckets
+# catch fallback / family-rebroaden cases that pull more candidates.
+CANDIDATES_COUNT_BUCKETS: Final[tuple[float, ...]] = (
+    0.0,
+    1.0,
+    3.0,
+    5.0,
+    10.0,
+    25.0,
+    50.0,
+    100.0,
+)
+
+
+_CANDIDATES_COUNT_HIST: Any = None
+try:
+    from prometheus_client import Histogram as _CandidatesHistogram
+
+    _CANDIDATES_COUNT_HIST = _CandidatesHistogram(
+        "hapax_affordance_candidates_count",
+        "Candidate count per affordance pipeline select() call (pre-threshold).",
+        buckets=CANDIDATES_COUNT_BUCKETS,
+    )
+except ImportError:
+    log.debug("prometheus_client not available — candidates-count histogram disabled")
+except ValueError:
+    try:
+        from prometheus_client import REGISTRY as _R2
+
+        for collector in list(_R2._collector_to_names):  # type: ignore[attr-defined]
+            names = _R2._collector_to_names.get(collector, ())  # type: ignore[attr-defined]
+            if "hapax_affordance_candidates_count" in names:
+                _CANDIDATES_COUNT_HIST = collector
+                break
+    except Exception:
+        log.debug("could not recover existing candidates-count histogram", exc_info=True)
+
+
+def observe_candidates_count(count: int | float) -> None:
+    """Observe one candidate-count value into the histogram.
+
+    No-op when prometheus_client is unavailable. Negative or non-numeric
+    inputs are dropped silently — defensive against upstream bugs that
+    could otherwise corrupt the histogram with out-of-range observations.
+    """
+
+    if _CANDIDATES_COUNT_HIST is None:
+        return
+    try:
+        value = float(count)
+    except (TypeError, ValueError):
+        return
+    if value != value or value < 0:  # NaN or negative
+        return
+    try:
+        _CANDIDATES_COUNT_HIST.observe(value)
+    except Exception:
+        log.debug("candidates-count observe failed", exc_info=True)
+
+
+def candidates_count_total_count() -> int | None:
+    """Return the histogram's total event count (test introspection).
+
+    Returns ``None`` when prometheus_client is unavailable.
+    """
+
+    if _CANDIDATES_COUNT_HIST is None:
+        return None
+    try:
+        for metric in _CANDIDATES_COUNT_HIST.collect():
+            for sample in metric.samples:
+                if sample.name == "hapax_affordance_candidates_count_count":
+                    return int(sample.value)
+        return 0
+    except Exception:
+        log.debug("candidates-count total read failed", exc_info=True)
+        return None
+
+
 __all__ = [
+    "CANDIDATES_COUNT_BUCKETS",
     "WINNER_SIMILARITY_BUCKETS",
+    "candidates_count_total_count",
+    "observe_candidates_count",
     "observe_winner_similarity",
     "winner_similarity_observation_count",
     "winner_similarity_total_count",
