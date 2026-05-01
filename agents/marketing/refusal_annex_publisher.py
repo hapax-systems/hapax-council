@@ -1,7 +1,7 @@
 """Refusal annex Publisher ABC subclass — V5 publication-bus integration.
 
-Per cc-task ``leverage-mktg-refusal-annex-series`` Phase 2. Wraps the
-Phase 1 renderer with the V5 publication-bus invariants:
+Per cc-task ``leverage-mktg-refusal-annex-series``. Wraps the renderer
+with the V5 publication-bus invariants:
 
 1. **AllowlistGate** — only explicitly-registered annex slugs publish.
 2. **Legal-name-leak guard** — annex bodies must never contain the
@@ -13,10 +13,14 @@ The publisher writes one annex per :meth:`publish` call to
 ``{output_dir}/refusal-annex-{target}.md`` where ``target`` is the
 annex slug (e.g., ``declined-bandcamp``).
 
-Phase 2b will integrate this with :func:`agents.marketing.refusal_annex_renderer.publish_all_annexes`
-so the orchestrator runs each annex through the publisher chain;
-Phase 2a (this PR) ships the publisher class + surface registry entry
-+ test coverage.
+Renderer integration is shipped:
+:func:`agents.marketing.refusal_annex_renderer.publish_all_annexes`
+imports and instantiates :class:`RefusalAnnexPublisher` to run each
+annex through the publisher chain. The framing previously called
+"Phase 2a" (this module) and "Phase 2b" (renderer integration) are
+both in main; the orchestrator-side fanout via
+:mod:`agents.marketing.refusal_annex_bridgy_daemon` is the
+follow-on consumer.
 """
 
 from __future__ import annotations
