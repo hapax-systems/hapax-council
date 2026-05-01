@@ -28,7 +28,7 @@ from shared.attribution_block import (
 
 
 class TestPagePaths:
-    def test_phase_0_plus_1_set(self):
+    def test_full_8_path_set(self):
         assert PAGE_PATHS == (
             "/",
             "/cite",
@@ -37,11 +37,8 @@ class TestPagePaths:
             "/manifesto",
             "/refusal-brief",
             "/deposits",
+            "/citation-graph",
         )
-
-    def test_no_phase_2_paths_yet(self):
-        for not_yet in ("/citation-graph",):
-            assert not_yet not in PAGE_PATHS
 
 
 # ── Per-page renderers ───────────────────────────────────────────────
