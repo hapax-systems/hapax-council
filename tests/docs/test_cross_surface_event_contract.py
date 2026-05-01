@@ -77,6 +77,7 @@ def test_schema_and_helper_cover_first_class_apertures() -> None:
     assert schema_apertures == payload_apertures
     assert schema_apertures == {
         "youtube",
+        "youtube_channel_trailer",
         "omg_statuslog",
         "omg_weblog",
         "arena",

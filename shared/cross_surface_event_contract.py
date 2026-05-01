@@ -24,6 +24,7 @@ from shared.research_vehicle_public_event import (
 
 type CrossSurfaceAperture = Literal[
     "youtube",
+    "youtube_channel_trailer",
     "omg_statuslog",
     "omg_weblog",
     "arena",
@@ -179,6 +180,25 @@ CROSS_SURFACE_APERTURES: tuple[CrossSurfaceApertureContract, ...] = (
         child_task="youtube-research-translation-ledger",
         health_owner="youtube-public-event-adapter",
         requires_one_reference=("public_url", "chapter_ref"),
+    ),
+    # Channel trailer is a separate aperture rather than a sub-surface of
+    # `youtube` because it has a strictly narrower action set (link/embed
+    # only — never `publish` of new content; the trailer points at an
+    # already-published live broadcast URL) and an independent reality
+    # gate (channel id + OAuth write scope + quota), distinct from the
+    # rest of YouTube. Keeping it separate prevents the youtube aperture's
+    # `publish` action from inadvertently leaking onto the trailer surface.
+    CrossSurfaceApertureContract(
+        aperture_id="youtube_channel_trailer",
+        display_name="YouTube Channel Trailer",
+        target_surfaces=("youtube_channel_trailer",),
+        allowed_event_types=("broadcast.boundary",),
+        allowed_actions=("link", "embed", "redact", "hold"),
+        current_reality="credential_blocked",
+        publication_contract="channel-trailer",
+        child_task="youtube-channel-trailer-public-event-reconcile",
+        health_owner="youtube-channel-trailer-public-event-reconcile",
+        requires_one_reference=("public_url",),
     ),
     CrossSurfaceApertureContract(
         aperture_id="omg_statuslog",

@@ -6,4 +6,4 @@ redactions:
 rate_limit:
   per_hour: 2
   per_day: 6
-cadence_hint: "Per VOD boundary — trailer points at the current live broadcast"
+cadence_hint: "Per VOD boundary — trailer points at the current live broadcast. Status: NOT-LIVE; aperture current_reality=credential_blocked (cross_surface_event_contract.py). Allowed actions are link/embed only — never publish — because the trailer re-points YouTube's unsubscribedTrailer at an already-published broadcast URL rather than creating new content. Reconcile decision recorded 2026-05-01 in docs/governance/channel-trailer-status.md."
