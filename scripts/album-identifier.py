@@ -324,6 +324,44 @@ def identify_album_vision(image_data: bytes) -> dict | None:
 
 
 # --- Combined vision + audio identification ---
+def _wav_is_silent(wav_path: str, *, rms_threshold: int = 50) -> bool:
+    """True iff the captured WAV's RMS energy is below ``rms_threshold``.
+
+    Operator-reported regression 2026-05-01: the album-identifier was
+    "identifying" tracks at 0.95 confidence while no audio was playing.
+    Root cause: the multimodal LLM call asks "what track is playing?"
+    and given only the album-cover image (audio clip silent), the LLM
+    plausibly guesses a track from the album. The silence gate is the
+    structural fix — if the WAV is silent, we don't ask the LLM about
+    a track at all; vision can still identify the album cover (catalog
+    state), but it cannot invent a track that isn't sounding.
+
+    ``rms_threshold=50`` is conservative: int16 max is 32767, ambient
+    room noise typically reads RMS 100-500, music starts at >1000.
+    Setting the gate at 50 catches "actual silence" while permitting
+    very quiet ambient pickup.
+    """
+    try:
+        import struct
+        import wave
+
+        with wave.open(wav_path, "rb") as w:
+            frames = w.readframes(w.getnframes())
+        if not frames:
+            return True
+        n = len(frames) // 2
+        if n == 0:
+            return True
+        samples = struct.unpack(f"{n}h", frames)
+        rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
+        return rms < rms_threshold
+    except Exception:
+        # On any unexpected error, fall closed: treat as silent so we
+        # don't risk feeding the LLM a corrupt audio clip that produces
+        # another false-positive track name.
+        return True
+
+
 def _capture_audio_mp3() -> str | None:
     """Capture audio from PipeWire (right channel), restore nominal pitch/tempo,
     return mp3 path.
@@ -374,6 +412,15 @@ def _capture_audio_mp3() -> str | None:
         proc.wait(timeout=3)
 
         if not os.path.exists(raw_path) or os.path.getsize(raw_path) < 1000:
+            return None
+
+        # Silence gate (see _wav_is_silent docstring). If the captured
+        # audio is below the silence threshold, return None so the
+        # multimodal call falls back to vision-only album identification
+        # with track=None — the LLM cannot invent a track that isn't
+        # actually sounding.
+        if _wav_is_silent(raw_path):
+            log.info("Audio silent at capture; skipping track-fingerprint path")
             return None
 
         playback_rate = read_vinyl_playback_rate()
@@ -477,12 +524,18 @@ def identify_album_and_track(image_data: bytes) -> tuple[dict | None, str | None
                         {
                             "type": "text",
                             "text": (
-                                "What album is this? What track is playing?"
-                                f"{audio_instruction}\n\n"
+                                "What album is this?"
+                                + (" What track is playing?" if has_audio else "")
+                                + f"{audio_instruction}\n\n"
                                 "Return a JSON object with: is_album_present (boolean), artist (or null), title, year, label, confidence (0.0-1.0), "
                                 "track (specific track, or null), model (your model name). No other text. "
                                 "If the desk is empty and NO album cover is visible in the image, set is_album_present to false and artist to null. "
                                 "Crucially: rely on the IMAGE to determine if an album is present. Do not let the audio trick you into thinking an album is present if the image is empty."
+                                + (
+                                    ""
+                                    if has_audio
+                                    else " NO AUDIO is being captured (or the captured audio is silent). You MUST set track to null — do NOT guess a track from the album cover. The album cover sitting on the deck is catalog state, not a 'now playing' signal. Only return a track when audio is provided AND you can confidently match it."
+                                )
                             ),
                         },
                     ],
