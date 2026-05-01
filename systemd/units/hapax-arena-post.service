@@ -1,0 +1,34 @@
+[Unit]
+Description=Hapax Are.na poster (canonical public-event federation)
+Documentation=https://github.com/ryanklee/council/blob/main/agents/cross_surface/arena_post.py
+After=network-online.target hapax-secrets.service
+Wants=network-online.target
+PartOf=hapax.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=HAPAX_ARENA_METRICS_PORT=9504
+Environment=HAPAX_ARENA_TICK_S=30
+Environment=HAPAX_LOG_LEVEL=INFO
+# Tails canonical ResearchVehiclePublicEvent JSONL records from:
+#   HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH
+#   default: /dev/shm/hapax-public-events/events.jsonl
+# Cursor/idempotency:
+#   HAPAX_ARENA_CURSOR
+#   HAPAX_ARENA_IDEMPOTENCY_PATH
+# Metric:
+#   hapax_broadcast_arena_posts_total{result}
+# Operator must export from hapax-secrets:
+#   HAPAX_ARENA_TOKEN          (PAT from https://dev.are.na/oauth/applications)
+#   HAPAX_ARENA_CHANNEL_SLUG   (e.g. "hapax-visual-surface-auto-curated")
+# Without either, daemon idles + logs "no_credentials" per eligible public event.
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.cross_surface.arena_post
+Restart=on-failure
+RestartSec=15
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target

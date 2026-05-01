@@ -1,9 +1,10 @@
-"""Are.na poster — auto-publish livestream/research artifacts to a Hapax channel.
+"""Are.na public-event poster.
 
-Tails ``/dev/shm/hapax-broadcast/events.jsonl`` and posts to Are.na on
-each ``broadcast_rotated`` event via the ``arena`` Python client. Uses
-the same JSONL-cursor + allowlist-gate + dry-run-default pattern as
-the Bluesky poster (``bluesky_post.py``).
+Tails canonical ``ResearchVehiclePublicEvent`` JSONL records from
+``/dev/shm/hapax-public-events/events.jsonl`` and posts a block to a
+Hapax-owned Are.na channel only when the cross-surface aperture
+contract, the publication allowlist, and the Are.na surface policy all
+permit public fanout.
 
 ## Why Are.na
 
@@ -13,8 +14,8 @@ The *citation-density* posture — every block annotated with technique,
 WGSL preset, livestream timestamp — is the AGR-native legibility
 move. Bot-permissive culture as long as the persona is named and the
 curation has a soul (frnsys/arena patterns + Are.na Community Dev
-Lounge). One block per ``broadcast_rotated`` event lands within
-typical scene cadence (3-6/day).
+Lounge). One block per eligible public event lands within typical
+scene cadence (3-6/day).
 
 ## Auth
 
@@ -24,20 +25,62 @@ Personal Access Token authentication. Operator generates a token at
   HAPAX_ARENA_TOKEN          # PAT, opaque string
   HAPAX_ARENA_CHANNEL_SLUG   # e.g. "hapax-visual-surface-auto-curated"
 
-Without either, the daemon idles + logs ``no_credentials`` per event.
+Without either, daemon idles + logs ``no_credentials`` per eligible
+public event.
 
-## Composition
+## Allowed event types
 
-Reuses ``metadata_composer.compose_metadata(scope="cross_surface")``;
-the ``arena_block`` field carries the post text (≤ 4096 chars per
-Are.na block-content limit, no enforced ceiling here since composer
-is conservative). The block source URL — when present in the
-triggering event — becomes a link-block; otherwise text-block.
+Per the canonical cross-surface aperture contract
+(``shared/cross_surface_event_contract.py::CROSS_SURFACE_APERTURES``),
+arena consumes four event types:
+
+- ``arena_block.candidate`` — producer-materialized block candidate
+  (the canonical replacement for raw ``broadcast.boundary`` on this
+  surface; producers convert rotation events into block candidates so
+  the arena adapter never needs broadcast-rotation knowledge).
+- ``aesthetic.frame_capture`` — frame-centric block; ``frame_ref`` URL
+  becomes the link source.
+- ``chronicle.high_salience`` — high-salience observation block;
+  ``public_url`` becomes the link source.
+- ``publication.artifact`` — published-artifact block (concept-DOI,
+  weblog URL); ``public_url`` becomes the link source.
+
+Any other event type is silently skipped. Note that ``broadcast.boundary``
+is intentionally not accepted directly — producers must materialize an
+``arena_block.candidate`` event from the rotation event so the arena
+sieve stays event-driven and not surface-aware.
+
+## Block composition
+
+Each event type yields a ``(content, source_url)`` pair. ``content``
+defers to ``metadata_composer.compose_metadata(scope="cross_surface")``
+when available (so cross-surface framing stays consistent with
+mastodon, bluesky, etc.), and falls back to an event-type-specific
+fallback that uses ``chapter_ref.label`` when present. ``source_url``
+prefers ``public_url`` for chronicle/publication.artifact, and
+``frame_ref.uri`` for aesthetic.frame_capture; arena_block.candidate
+uses whichever is present.
+
+Content is truncated to ``ARENA_BLOCK_TEXT_LIMIT`` (4096) per Are.na
+block-content limit.
+
+## Idempotency
+
+Two-level: byte cursor at ``HAPAX_ARENA_CURSOR`` (advances on every
+record processed, including malformed/skipped) plus event-id ledger
+at ``HAPAX_ARENA_IDEMPOTENCY_PATH`` (so cursor loss does not double-
+post). Mirrors the mastodon adapter pattern.
 
 ## Rate limit
 
 Are.na has no documented rate limits but the contract caps at
 6/hour, 30/day to mirror Bluesky discipline.
+
+## Metrics
+
+``hapax_broadcast_arena_posts_total{result}`` is preserved for
+dashboard continuity. Results include ``ok``, ``dry_run``, ``denied``,
+``compose_error``, ``no_credentials``, ``auth_error``, and ``error``.
 """
 
 from __future__ import annotations
@@ -50,16 +93,24 @@ import signal as _signal
 import sys
 import threading
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, start_http_server
+from pydantic import ValidationError
 
+from shared.cross_surface_event_contract import decide_cross_surface_fanout
 from shared.governance.publication_allowlist import check as allowlist_check
+from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
 log = logging.getLogger(__name__)
 
 EVENT_PATH = Path(
-    os.environ.get("HAPAX_BROADCAST_EVENT_PATH", "/dev/shm/hapax-broadcast/events.jsonl")
+    os.environ.get(
+        "HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH",
+        "/dev/shm/hapax-public-events/events.jsonl",
+    )
 )
 DEFAULT_CURSOR_PATH = Path(
     os.environ.get(
@@ -67,17 +118,37 @@ DEFAULT_CURSOR_PATH = Path(
         str(Path.home() / ".cache/hapax/arena-post-cursor.txt"),
     )
 )
+DEFAULT_IDEMPOTENCY_PATH = Path(
+    os.environ.get(
+        "HAPAX_ARENA_IDEMPOTENCY_PATH",
+        str(Path.home() / ".cache/hapax/arena-post-event-ids.json"),
+    )
+)
 METRICS_PORT: int = int(os.environ.get("HAPAX_ARENA_METRICS_PORT", "9504"))
 DEFAULT_TICK_S: float = float(os.environ.get("HAPAX_ARENA_TICK_S", "30"))
 ARENA_BLOCK_TEXT_LIMIT = 4096
 
 ALLOWLIST_SURFACE = "arena-post"
-ALLOWLIST_STATE_KIND = "broadcast.boundary"
-EVENT_TYPE = "broadcast_rotated"
+ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
+    {
+        "arena_block.candidate",
+        "aesthetic.frame_capture",
+        "chronicle.high_salience",
+        "publication.artifact",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _TailRecord:
+    byte_start: int
+    byte_after: int
+    event: ResearchVehiclePublicEvent | None
+    error: str | None = None
 
 
 class ArenaPoster:
-    """Tail broadcast events; post to a Hapax-owned Are.na channel per rotation."""
+    """Tail canonical public events; post to a Hapax-owned Are.na channel when policy permits."""
 
     def __init__(
         self,
@@ -88,8 +159,10 @@ class ArenaPoster:
         client_factory=None,
         event_path: Path = EVENT_PATH,
         cursor_path: Path = DEFAULT_CURSOR_PATH,
+        idempotency_path: Path = DEFAULT_IDEMPOTENCY_PATH,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
+        text_limit: int = ARENA_BLOCK_TEXT_LIMIT,
         dry_run: bool = False,
     ) -> None:
         self._token = token
@@ -98,14 +171,17 @@ class ArenaPoster:
         self._client_factory = client_factory
         self._event_path = event_path
         self._cursor_path = cursor_path
+        self._idempotency_path = idempotency_path
         self._tick_s = max(1.0, tick_s)
+        self._text_limit = max(1, text_limit)
         self._dry_run = dry_run
         self._stop_evt = threading.Event()
         self._client = None  # built on first non-dry-run apply
+        self._processed_event_ids: set[str] | None = None
 
         self.posts_total = Counter(
             "hapax_broadcast_arena_posts_total",
-            "Are.na blocks attempted, broken down by outcome.",
+            "Are.na blocks attempted from ResearchVehiclePublicEvent records, broken down by outcome.",
             ["result"],
             registry=registry,
         )
@@ -113,17 +189,28 @@ class ArenaPoster:
     # ── Public API ────────────────────────────────────────────────────
 
     def run_once(self) -> int:
-        cursor = self._read_cursor()
         handled = 0
-        for event, byte_after in self._tail_from(cursor):
-            if event.get("event_type") != EVENT_TYPE:
-                cursor = byte_after
+        for record in self._tail_from():
+            if record.event is None:
+                if record.error:
+                    log.warning(
+                        "skipping malformed public event at byte %d: %s",
+                        record.byte_start,
+                        record.error,
+                    )
+                self._write_cursor(record.byte_after)
+                continue
+            event = record.event
+            if event.event_type not in ALLOWED_PUBLIC_EVENT_TYPES:
+                self._write_cursor(record.byte_after)
+                continue
+            if self._event_already_processed(event.event_id):
+                self._write_cursor(record.byte_after)
                 continue
             self._apply(event)
-            cursor = byte_after
+            self._mark_event_processed(event.event_id)
+            self._write_cursor(record.byte_after)
             handled += 1
-        if handled:
-            self._write_cursor(cursor)
         return handled
 
     def run_forever(self) -> None:
@@ -134,7 +221,7 @@ class ArenaPoster:
                 pass
 
         log.info(
-            "arena poster starting, port=%d tick=%.1fs dry_run=%s channel=%s",
+            "arena public-event poster starting, port=%d tick=%.1fs dry_run=%s channel=%s",
             METRICS_PORT,
             self._tick_s,
             self._dry_run,
@@ -167,37 +254,127 @@ class ArenaPoster:
         except OSError:
             log.warning("cursor write failed at %s", self._cursor_path, exc_info=True)
 
-    def _tail_from(self, byte_offset: int) -> Iterator[tuple[dict, int]]:
-        if not self._event_path.exists():
+    def _tail_from(self) -> Iterator[_TailRecord]:
+        try:
+            size = self._event_path.stat().st_size
+        except OSError:
             return
+
+        byte_offset = self._read_cursor()
+        if byte_offset > size:
+            log.warning(
+                "public-event file shrank from cursor %d to %d bytes; restarting from 0",
+                byte_offset,
+                size,
+            )
+            byte_offset = 0
+            self._write_cursor(0)
+
         try:
             with self._event_path.open("rb") as fh:
                 fh.seek(byte_offset)
                 while True:
+                    byte_start = fh.tell()
                     line = fh.readline()
                     if not line:
                         return
                     new_offset = fh.tell()
                     text = line.decode("utf-8", errors="replace").strip()
                     if not text:
+                        yield _TailRecord(
+                            byte_start=byte_start,
+                            byte_after=new_offset,
+                            event=None,
+                        )
                         continue
                     try:
-                        event = json.loads(text)
+                        raw_event = json.loads(text)
                     except json.JSONDecodeError:
-                        log.warning("malformed event line at offset %d", byte_offset)
+                        yield _TailRecord(
+                            byte_start=byte_start,
+                            byte_after=new_offset,
+                            event=None,
+                            error="json_decode_error",
+                        )
                         continue
-                    yield event, new_offset
+                    if not isinstance(raw_event, dict):
+                        yield _TailRecord(
+                            byte_start=byte_start,
+                            byte_after=new_offset,
+                            event=None,
+                            error="json_not_object",
+                        )
+                        continue
+                    try:
+                        event = ResearchVehiclePublicEvent.model_validate(raw_event)
+                    except ValidationError as exc:
+                        yield _TailRecord(
+                            byte_start=byte_start,
+                            byte_after=new_offset,
+                            event=None,
+                            error=f"schema_validation_error:{exc.errors()[0]['type']}",
+                        )
+                        continue
+                    yield _TailRecord(byte_start=byte_start, byte_after=new_offset, event=event)
                     byte_offset = new_offset
         except OSError:
             log.warning("event file read failed at %s", self._event_path, exc_info=True)
 
+    def _event_already_processed(self, event_id: str) -> bool:
+        if self._processed_event_ids is None:
+            self._processed_event_ids = self._read_processed_event_ids()
+        return event_id in self._processed_event_ids
+
+    def _read_processed_event_ids(self) -> set[str]:
+        try:
+            raw = json.loads(self._idempotency_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return set()
+        if isinstance(raw, dict):
+            ids = raw.get("event_ids")
+        else:
+            ids = raw
+        if not isinstance(ids, list):
+            return set()
+        return {item for item in ids if isinstance(item, str) and item}
+
+    def _mark_event_processed(self, event_id: str) -> None:
+        if self._processed_event_ids is None:
+            self._processed_event_ids = self._read_processed_event_ids()
+        self._processed_event_ids.add(event_id)
+        try:
+            self._idempotency_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._idempotency_path.with_suffix(".tmp")
+            payload = {
+                "schema_version": 1,
+                "event_ids": sorted(self._processed_event_ids),
+            }
+            tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            tmp.replace(self._idempotency_path)
+        except OSError:
+            log.warning(
+                "idempotency write failed at %s",
+                self._idempotency_path,
+                exc_info=True,
+            )
+
     # ── Per-event apply ───────────────────────────────────────────────
 
-    def _apply(self, event: dict) -> None:
+    def _apply(self, event: ResearchVehiclePublicEvent) -> None:
+        fanout = decide_cross_surface_fanout(event, "arena", "publish")
+        if fanout.decision != "allow":
+            log.warning(
+                "arena public-event fanout blocked for %s: %s",
+                event.event_id,
+                ",".join(fanout.reasons),
+            )
+            self.posts_total.labels(result="denied").inc()
+            return
+
         verdict = allowlist_check(
             ALLOWLIST_SURFACE,
-            ALLOWLIST_STATE_KIND,
-            {"event": event},
+            event.event_type,
+            _allowlist_payload(event),
         )
         if verdict.decision == "deny":
             log.warning("allowlist DENY for arena post: %s", verdict.reason)
@@ -211,7 +388,7 @@ class ArenaPoster:
             self.posts_total.labels(result="compose_error").inc()
             return
 
-        content = content[:ARENA_BLOCK_TEXT_LIMIT]
+        content = content[: self._text_limit]
 
         if self._dry_run:
             log.info(
@@ -226,7 +403,7 @@ class ArenaPoster:
         result = self._send_block(content, source_url)
         self.posts_total.labels(result=result).inc()
 
-    def _compose(self, event: dict) -> tuple[str, str | None]:
+    def _compose(self, event: ResearchVehiclePublicEvent) -> tuple[str, str | None]:
         if self._compose_fn is not None:
             return self._compose_fn(event)
         return _default_compose(event)
@@ -260,18 +437,154 @@ class ArenaPoster:
 # ── Default helpers (composer + arena client) ────────────────────────
 
 
-def _default_compose(event: dict) -> tuple[str, str | None]:
-    """Build block content + optional source URL from event metadata."""
+def _default_compose(event: ResearchVehiclePublicEvent) -> tuple[str, str | None]:
+    """Build block content + optional source URL from canonical public-event metadata.
+
+    Defers to ``metadata_composer.compose_metadata(scope="cross_surface")``
+    for the body when available (so framing stays consistent with the
+    mastodon/bluesky adapters); the source URL is derived directly from
+    the event's frame_ref / public_url / chapter_ref per event type.
+    """
     from agents.metadata_composer.composer import compose_metadata
 
-    composed = compose_metadata(triggering_event=event, scope="cross_surface")
+    composed = compose_metadata(
+        triggering_event=_composer_trigger_from_public_event(event),
+        scope="cross_surface",
+    )
     content = (
         getattr(composed, "arena_block", None)
         or getattr(composed, "bluesky_post", None)
-        or "hapax — broadcast rotation"
+        or _fallback_public_event_content(event)
     )
-    source_url = event.get("source_url") or getattr(composed, "broadcast_url", None)
+    source_url = _arena_source_url(event)
     return content, source_url
+
+
+def _composer_trigger_from_public_event(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
+    """Project canonical public events into the metadata composer trigger shape."""
+
+    intent = _event_intent(event)
+    return {
+        "id": event.event_id,
+        "event_type": event.event_type,
+        "ts": event.occurred_at,
+        "payload": {
+            "intent_family": intent,
+            "salience": event.salience,
+            "broadcast_id": event.broadcast_id,
+            "public_url": event.public_url,
+            "frame_uri": event.frame_ref.uri if event.frame_ref else None,
+            "source_event_id": event.event_id,
+        },
+    }
+
+
+def _event_intent(event: ResearchVehiclePublicEvent) -> str:
+    if event.chapter_ref is not None and event.chapter_ref.label:
+        return event.chapter_ref.label
+    if event.event_type == "aesthetic.frame_capture":
+        return "aesthetic frame"
+    if event.event_type == "chronicle.high_salience":
+        return "high-salience observation"
+    if event.event_type == "arena_block.candidate":
+        return "arena block candidate"
+    if event.event_type == "publication.artifact":
+        return "publication artifact"
+    return event.event_type
+
+
+def _fallback_public_event_content(event: ResearchVehiclePublicEvent) -> str:
+    return f"Hapax livestream: {_event_intent(event)}."
+
+
+def _arena_source_url(event: ResearchVehiclePublicEvent) -> str | None:
+    """Pick the most appropriate Are.na block ``source`` URL for this event.
+
+    aesthetic.frame_capture prefers ``frame_ref.uri`` (image block), all
+    other types prefer ``public_url`` (link block). arena_block.candidate
+    falls back to ``frame_ref.uri`` if no ``public_url`` is set.
+    """
+    if event.event_type == "aesthetic.frame_capture":
+        if event.frame_ref is not None:
+            return event.frame_ref.uri
+        return event.public_url
+    if event.public_url:
+        return event.public_url
+    if event.frame_ref is not None:
+        return event.frame_ref.uri
+    return None
+
+
+def _allowlist_payload(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
+    payload: dict[str, Any] = {"event": event.model_dump(mode="json")}
+    if event.event_type in {
+        "chronicle.high_salience",
+        "aesthetic.frame_capture",
+        "publication.artifact",
+    }:
+        payload["grounding_gate_result"] = _grounding_gate_from_public_event(event)
+    return payload
+
+
+def _grounding_gate_from_public_event(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
+    mode = _publication_mode(event)
+    source_refs = _dedupe(
+        [
+            event.source.evidence_ref,
+            *event.provenance.evidence_refs,
+            *event.provenance.citation_refs,
+            *event.attribution_refs,
+        ]
+    )
+    evidence_refs = _dedupe([event.source.evidence_ref, *event.provenance.evidence_refs])
+    publishable = mode in {"public_live", "public_archive", "public_monetizable"} and (
+        event.surface_policy.dry_run_reason is None
+    )
+    return {
+        "schema_version": 1,
+        "public_private_mode": mode,
+        "gate_state": "pass" if publishable else "hold",
+        "claim": {
+            "evidence_refs": evidence_refs,
+            "provenance": {"source_refs": source_refs},
+            "freshness": {"status": "fresh" if publishable else "stale"},
+            "rights_state": event.rights_class,
+            "privacy_state": event.privacy_class,
+            "public_private_mode": mode,
+            "refusal_correction_path": {
+                "refusal_reason": event.surface_policy.dry_run_reason,
+                "correction_event_ref": None,
+                "artifact_ref": None,
+            },
+        },
+        "gate_result": {
+            "may_emit_claim": publishable,
+            "may_publish_live": publishable and mode == "public_live",
+            "may_publish_archive": publishable and mode == "public_archive",
+            "may_monetize": publishable and mode == "public_monetizable",
+        },
+    }
+
+
+def _publication_mode(event: ResearchVehiclePublicEvent) -> str:
+    if event.surface_policy.claim_monetizable:
+        return "public_monetizable"
+    if event.surface_policy.claim_live:
+        return "public_live"
+    if event.surface_policy.claim_archive:
+        return "public_archive"
+    return "dry_run"
+
+
+def _dedupe(values: list[str | None]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 class _ArenaAdapter:
@@ -415,7 +728,7 @@ def _artifact_source_url(artifact) -> str | None:  # type: ignore[no-untyped-def
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agents.cross_surface.arena_post",
-        description="Tail broadcast events and post to a Hapax-owned Are.na channel.",
+        description="Tail canonical public events and post to a Hapax-owned Are.na channel.",
     )
     parser.add_argument(
         "--dry-run",
