@@ -1,5 +1,5 @@
 [Unit]
-Description=Hapax Mastodon poster (ytb-010 Phase 3, cross-surface federation)
+Description=Hapax Mastodon poster (canonical public-event federation)
 Documentation=https://github.com/ryanklee/council/blob/main/agents/cross_surface/mastodon_post.py
 After=network-online.target hapax-secrets.service
 Wants=network-online.target
@@ -13,6 +13,14 @@ Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
 Environment=HAPAX_MASTODON_METRICS_PORT=9502
 Environment=HAPAX_MASTODON_TICK_S=30
 Environment=HAPAX_LOG_LEVEL=INFO
+# Tails canonical ResearchVehiclePublicEvent JSONL records from:
+#   HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH
+#   default: /dev/shm/hapax-public-events/events.jsonl
+# Cursor/idempotency:
+#   HAPAX_MASTODON_CURSOR
+#   HAPAX_MASTODON_IDEMPOTENCY_PATH
+# Metric:
+#   hapax_broadcast_mastodon_posts_total{result}
 # Operator must export from hapax-secrets:
 #   HAPAX_MASTODON_INSTANCE_URL    (e.g. https://mastodon.social)
 #   HAPAX_MASTODON_ACCESS_TOKEN    (from <instance>/settings/applications, scope write:statuses)
