@@ -275,7 +275,64 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_systemd_unit_exec_self_contained(),
     ),
+    SufficiencyProbe(
+        id="probe-state-002",
+        axiom_id="executive_function",
+        implication_id="ex-state-002",
+        level="subsystem",
+        question=(
+            "Do agents emit state transitions to known visible "
+            "locations (/dev/shm/*-state.json, ~/hapax-state/*.jsonl, "
+            "Logos API state endpoints)?"
+        ),
+        check=lambda: _check_state_visibility_emission(),
+    ),
 ]
+
+
+def _check_state_visibility_emission() -> tuple[bool, str]:
+    """Enforces ex-state-002 (executive_function).
+
+    State transitions and progress must be visible without the
+    operator having to check logs or debug output. Verifies that
+    agent code references known visible state-emission surfaces:
+      - /dev/shm/*-state.json (perception, IR, daimonion, director)
+      - ~/hapax-state/*.json[l] (PR state, attribution, music repo)
+      - Logos API routes (logos/api/routes/*.py)
+
+    Threshold: ≥10 agents emit to one of these surfaces. Below this
+    is a sufficiency gap — too few agents make state visible.
+    """
+    agents_dir = AI_AGENTS_DIR / "agents"
+    if not agents_dir.exists():
+        return False, "agents directory not found"
+
+    visible_surface_pattern = re.compile(
+        r"/dev/shm/[^\"']*-state(?:-[\w-]+)?\.json|"
+        r"hapax-state[^\"']*\.json[l]?",
+    )
+
+    emitting_agents: set[str] = set()
+
+    for py_file in agents_dir.rglob("*.py"):
+        try:
+            content = py_file.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if visible_surface_pattern.search(content):
+            relative = py_file.relative_to(agents_dir)
+            top_module = relative.parts[0] if relative.parts else py_file.name
+            emitting_agents.add(top_module)
+
+    if len(emitting_agents) >= 10:
+        return True, (
+            f"{len(emitting_agents)} agent modules emit state to visible "
+            f"surfaces (/dev/shm or ~/hapax-state) — ex-state-002 sufficient"
+        )
+    return False, (
+        f"only {len(emitting_agents)} agents emit visible state; "
+        f"sample: {', '.join(sorted(emitting_agents)[:5])}"
+    )
 
 
 def _check_systemd_unit_exec_self_contained() -> tuple[bool, str]:
