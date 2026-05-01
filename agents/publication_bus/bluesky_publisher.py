@@ -1,4 +1,4 @@
-"""Bluesky ATProto Publisher — Phase 1 stub.
+"""Bluesky ATProto Publisher.
 
 Per cc-task ``pub-bus-bluesky-atproto-multi-identity``. Direct ATProto
 posting to the operator's Bluesky DID. Drop 5 §3 ranked this lower
@@ -6,9 +6,9 @@ than Bridgy (which handles the common case), but the direct path is
 needed for posts that need different framing per identity (academic
 conference threads from operator vs infrastructure-facts from hapax).
 
-Phase 1 (this PR) ships the V5 publication-bus keystone subclass
-with the canonical invariants (allowlist gate + legal-name leak
-guard + Counter) and a 2-step ATProto auth flow:
+This module ships the V5 publication-bus keystone subclass with the
+canonical invariants (allowlist gate + legal-name leak guard +
+Counter) and a 2-step ATProto auth flow:
 
   1. POST createSession with handle + app-password → accessJwt + did
   2. POST createRecord with Bearer accessJwt → at:// URI + cid
@@ -19,9 +19,25 @@ the lib would expand runtime surface for marginal ergonomic gain.
 
 Endpoint: ``https://bsky.social/xrpc/`` (public-facing PDS proxy).
 
-Phase 2: per-identity rate limiting (≤1 post / 5 min); identity →
-DID resolution from ``config/bluesky-identities.yaml``; multi-DID
-dispatch via composed publisher instances.
+Orchestrator dispatch (was previously called part of "Phase 2") has
+shipped: ``agents/bluesky_atproto_adapter/`` is registered in
+``surface_registry`` under the ``bluesky-atproto-multi-identity``
+surface_name as the ``publish_artifact`` entry-point; the
+publish-orchestrator can dispatch a ``PreprintArtifact`` through the
+publisher via the standard surface hand-off.
+
+The remaining (still-deferred) follow-on:
+
+- Per-identity rate limiting (≤1 post / 5 min) — no rate-limit code
+  path exists today.
+- Identity → DID resolution from ``config/bluesky-identities.yaml`` —
+  config file does not exist; the adapter currently dispatches a
+  single configured handle.
+- Multi-DID dispatch via composed publisher instances — depends on
+  the identities config above.
+
+Until those land, the publisher dispatches a single configured DID
+through the adapter.
 """
 
 from __future__ import annotations
