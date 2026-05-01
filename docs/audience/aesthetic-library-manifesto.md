@@ -1,5 +1,7 @@
 ---
 title: "Aesthetic Library and Authentic-Asset Provenance Manifesto"
+slug: aesthetic-library-manifesto
+type: audience-essay
 subtitle: "Provenance-as-architectural-invariant in a deployed single-operator system"
 authors:
   byline_variant: V4
@@ -7,8 +9,15 @@ authors:
   surface: omg_lol_weblog
   surface_deviation_matrix_key: omg_lol_weblog
   rendered_at_publish_time: true  # see agents/authoring/byline.py + shared/attribution_block.py
-status: draft
+status: approved
+approved_by: epsilon
+approved_at: 2026-05-01T01:55:00Z
+review_decision: publish
 target_word_count: 7500
+actual_word_count: 6070
+surfaces_targeted:
+  - zenodo-doi
+  - omg-weblog
 target_surfaces:
   - omg_lol_weblog
   - repeater-books
@@ -64,19 +73,23 @@ asset that ships to the audience is byte-identical to the asset
 registered in the manifest).
 
 This essay reports a deployed instance of the alternative. The Hapax
-aesthetic library has carried SHA-pinned BitchX (BSD-3-Clause), the
-Px437 IBM VGA 8x16 typeface (CC-BY-SA-4.0, unmodified-only), and a
-CC0-1.0 Enlightenment Moksha theme approximation for the operating
-deployment record under discussion. Each layer above is a working
-piece of code or configuration in production today. The argument is
-not that the layers are individually novel — software supply-chain
-literature describes per-asset provenance metadata under the SBOM
-heading; license compliance is a procedural discipline at most
-serious open-source projects; integrity-verified CDN delivery is
-table stakes. The argument is that **all six layers compose in a
-single deployed system without silent failure** because they are
-anchored to a constitutional rule rather than implemented as
-procedural reminders. The essay describes how the layers were
+aesthetic library carries SHA-pinned BitchX (BSD-3-Clause), the Px437
+IBM VGA 8x16 typeface (CC-BY-SA-4.0, unmodified-only), and a CC0-1.0
+Enlightenment Moksha color-class placeholder pending upstream
+extraction. The library landed in production on 2026-04-24 (the
+`ytb-AUTH1` ingest, commit `8918371fc`); the provenance gate, the
+axiom implication, and the CODEOWNERS pin landed the same day under
+`ytb-AUTH2`. The deployment record is short, but the architectural
+shape is fully wired. Each layer below is a working piece of code or
+configuration in production today. The argument is not that the
+layers are individually novel — software supply-chain literature
+describes per-asset provenance metadata under the SBOM heading;
+license compliance is a procedural discipline at most serious
+open-source projects; integrity-verified CDN delivery is table
+stakes. The argument is that **all six layers compose in a single
+deployed system without silent failure** because they are anchored
+to a constitutional rule rather than implemented as procedural
+reminders. The essay describes how the layers were
 constructed, how they fired during a representative ingestion event,
 where their limits are, and why the architectural posture
 generalizes beyond the single-operator deployment context.
@@ -203,28 +216,37 @@ removing any one layer creates a silent failure mode the others
 cannot catch. The six are described in order of their position in
 the redistribution lifecycle.
 
-### Layer 1 — Per-asset `provenance.yaml`
+### Layer 1 — Per-source-group `provenance.yaml`
 
-Every directory under `assets/aesthetic-library/` carries a sibling
-`provenance.yaml` file. The file declares: the source URL where the
-asset was extracted from; the upstream author or authors with
-attribution; the SPDX license identifier (BSD-3-Clause,
-CC-BY-SA-4.0, CC0-1.0, etc.); the extraction date; and any
-per-asset notes (e.g., "unmodified-only constraint" for CC-BY-SA
-assets, "authored approximation" for the Moksha theme).
+Every source group under `assets/aesthetic-library/` carries a
+`provenance.yaml` file at its root (e.g.,
+`assets/aesthetic-library/bitchx/provenance.yaml`,
+`fonts/provenance.yaml`, `enlightenment/provenance.yaml`). One file
+covers all assets that share an upstream provenance: the BitchX
+splash, quotes, and palette assets are one ingest from one upstream
+under one license, so they share one provenance file rather than
+fragmenting into three near-identical metadata stanzas. The file
+declares: the source URL where the assets were extracted from; the
+upstream author or authors with attribution; the SPDX license
+identifier (BSD-3-Clause, CC-BY-SA-4.0, CC0-1.0); the extraction
+date; the canonical attribution line; and per-asset notes (e.g.,
+"unmodified-only constraint" for the CC-BY-SA Px437 typeface,
+"authored placeholder pending upstream extraction" for the Moksha
+EDC, "Europa.c GPL-2 plugin deliberately excluded" for BitchX).
 
 The provenance.yaml file is the constitutive object. Without it, the
-asset is not an attributed-asset — it is an unhandled file. The
-manifest validator, the CI linter, the asset-provenance PreToolUse
-hook, and the runtime loader all check for the sibling file's
+source-group is not redistributable — its assets are unhandled
+files. The manifest validator, the CI linter, the asset-provenance
+PreToolUse hook, and the runtime loader all check for the file's
 presence and fail when it is absent. The hook fires at commit time,
-so an asset cannot enter the repository in a state that violates
-this layer.
+so a source-group cannot enter the repository in a state that
+violates this layer.
 
-The schema is intentionally small. A typical provenance.yaml is six
-to ten lines. The smallness is deliberate: the operator must hand-
-author the file once per asset extraction, and the author overhead
-must be low enough that the discipline does not feel ceremonial.
+The schema is intentionally small. A typical provenance.yaml is
+fifteen to thirty lines including notes. The smallness is
+deliberate: the operator hand-authors the file once per source-group
+ingest, and the author overhead must be low enough that the
+discipline does not feel ceremonial.
 
 ### Layer 2 — `_manifest.yaml`
 
@@ -395,23 +417,27 @@ client startup; an ASCII quotes text emitted at quit; and the
 mIRC-16 color palette (canonical hex/RGB pairings used by the IRC
 ecosystem).
 
-**Layer 1 — provenance.yaml authoring.** Three sibling files were
-written: `assets/aesthetic-library/bitchx/splash/provenance.yaml`,
-`bitchx/quotes/provenance.yaml`, `bitchx/colors/provenance.yaml`.
-Each declared source URL (the github.com/prime001/BitchX repository
-plus the specific path within), upstream author list (the four
-named individuals), license (BSD-3-Clause), extraction date
-(2026-04-24), and a per-asset note about the redistribution
-rationale (the assets are textual artifacts of demoscene-adjacent
-shareware aesthetics that the system uses for in-stream typography
-and overlay design). Each file took roughly three minutes to
+**Layer 1 — provenance.yaml authoring.** A single
+`assets/aesthetic-library/bitchx/provenance.yaml` was written
+covering all three asset groups (splash, quotes, palette) under a
+shared upstream. The file declared source URL
+(github.com/prime001/BitchX), upstream author list (Colten Edwards
+(panasync) plus EPIC Software Labs, Matthew Green, and Michael
+Sandroff), license (BSD-3-Clause), extraction date (2026-04-24), the
+canonical attribution line, per-asset rationale (the splash banner is
+authentic to upstream `source/irc.c:1554`; the quit text is the
+verbatim upstream `BitchX.quit` template; the mIRC-16 palette is
+factual RGB data documented for provenance hygiene), and the
+named exclusion (Europa.c GPL-2 plugin, deliberately not ingested
+because BSD-3 core plus GPL-2 plugin cannot coexist under this
+project's license model). The file took under ten minutes to
 hand-author.
 
 **Hook firing.** When the operator ran `git add` and then `git
 commit`, the asset-provenance-gate.sh PreToolUse hook fired. The
 hook ran `verify-aesthetic-library.py` against the staged changes
-and confirmed that each new asset directory had a sibling
-provenance.yaml file. The commit proceeded.
+and confirmed that the new `bitchx/` source group had a
+`provenance.yaml` at its root. The commit proceeded.
 
 **Layer 2 — manifest regeneration.** The operator ran
 `scripts/generate-aesthetic-manifest.py`. The script read each
@@ -431,19 +457,19 @@ update NOTICES the same way.
 assets ran `verify-aesthetic-library.py` in the lint job. The three
 checks all passed: manifest currency (the new manifest entries
 match the new files); SHA integrity (the recorded hash equals the
-recomputed hash); provenance presence (each new asset directory has
-a sibling provenance.yaml).
+recomputed hash); provenance presence (the new source group has a
+`provenance.yaml` at its root).
 
 **Layer 5 — axiom compliance check.** The
 `it-attribution-001` implication runs in the constitutional gate
 during publish-event evaluation. For BitchX the publish events
-were two: the omg.lol /credits page auto-regeneration (which reads
-NOTICES.md as its input and posts the result via the
-ytb-OMG-CREDITS publisher) and the in-stream credits ward (which
-reads the manifest directly and renders the BSD-3-Clause attribution
-when BitchX assets appear on screen). The implication's review-tier
-enforcement passed because the attribution paths were present at
-both surfaces.
+were two: the omg.lol credits page auto-regeneration (the
+ytb-OMG-CREDITS publisher reads the manifest and renders the
+attribution, posting via `OmgLolClient.set_paste(slug="credits", ...)`)
+and the in-stream credits ward (which reads the manifest directly
+and renders the BSD-3-Clause attribution when BitchX assets appear
+on screen). The implication's review-tier enforcement passed because
+the attribution paths were present at both surfaces.
 
 **Layer 6 — CDN sync.** The
 `agents/hapax_assets_publisher/` daemon detected the new manifest
@@ -459,8 +485,9 @@ The walkthrough makes a single point. The operator did not have to
 remember to update NOTICES.md, regenerate the manifest, post to the
 CDN, or notify any downstream consumer. The layers compose
 mechanically. The operator's only manual actions were extracting
-the assets from the upstream repository and hand-authoring the three
-provenance.yaml files. Everything else cascaded.
+the assets from the upstream repository and hand-authoring the
+single per-source-group provenance.yaml file. Everything else
+cascaded.
 
 The contrast with a procedural approach makes the architectural
 posture's value visible. A procedural approach would require the
@@ -512,14 +539,20 @@ ToS-restricted reverse-engineered API: defeater applies; explicit
 upstream attribution-required-but-prohibited-in-redistribution:
 defeater would apply if encountered, currently no instances).
 
-The exclusion list is operator-ratified and committed under
-`docs/research/aesthetic-library-license-decisions.md` (or the
-equivalent location once the document is canonicalized). Each
-exclusion has a one-paragraph rationale citing the specific license
-clause that precludes inclusion. New asset proposals that match an
-existing exclusion category are auto-rejected without re-deriving
-the rationale; new asset proposals that introduce a new license
-category trigger operator review and may add a new defeater.
+The exclusion list is operator-ratified. Today the exclusions are
+recorded inline in the relevant source-group's `provenance.yaml`
+(e.g., the BitchX provenance.yaml notes the Europa.c GPL-2 plugin
+exclusion alongside the BSD-3-Clause core ingest), and additionally
+referenced from the upstream cc-task notes (e.g., `ytb-AUTH1
+§Notes`). A canonical project-level exclusion register is a future
+work item; the current state is sufficient to preserve the
+defeater-with-rationale pattern, since each exclusion is
+findable from the source-group it applies to. Each exclusion has a
+one-paragraph rationale citing the specific license clause that
+precludes inclusion. New asset proposals that match an existing
+exclusion category are auto-rejected without re-deriving the
+rationale; new asset proposals that introduce a new license category
+trigger operator review and may add a new defeater.
 
 The procedural alternative — re-deriving license compatibility on
 every extraction — would be exhausting and error-prone at any
@@ -607,58 +640,67 @@ CDN serving the byte-identical file via integrity-verified URLs)
 makes the violation impossible to commit silently. Future Px437-
 adjacent typefaces will land under the same precedent.
 
-### 7.2 — Receipt 2: the Enlightenment Moksha theme approximation
+### 7.2 — Receipt 2: the Enlightenment Moksha color-class placeholder
 
 **Provenance.** Enlightenment is a long-running Linux desktop
 window manager. Moksha is one of its theme variants, with rich
-visual aesthetics that the system uses as an aesthetic anchor for
-in-stream chrome design. The upstream Enlightenment project and
-the upstream Moksha theme are both LGPL-licensed; redistributing the
-upstream theme bytes would propagate LGPL terms.
-
-The system's solution is an authored approximation. The asset
-shipped at `assets/aesthetic-library/enlightenment/themes/moksha.edc`
-is *not* a verbatim copy of the upstream Moksha theme. It is an
-operator-authored approximation, released under CC0-1.0 by the
-author (Hapax-the-system, under the no-operator-approval-waits
-mandate of 2026-04-24T19:10Z). The provenance.yaml records the
-ambiguity explicitly: the asset credits "Hapax (authored
-approximation under no-operator-approval-waits mandate
-2026-04-24T19:10Z)" with a link to the upstream Enlightenment
-project for context.
+visual aesthetics the system intends to use as an aesthetic anchor
+for in-stream chrome design. The upstream Moksha EDC bytes were not
+available at ingest time, so the system shipped an authored
+placeholder — a color-class EDC carrying RGB approximations of the
+Moksha aesthetic register (dark grey panels, soft light foreground,
+cornflower blue focus accent) under CC0-1.0. The asset at
+`assets/aesthetic-library/enlightenment/themes/moksha.edc` is
+explicitly a placeholder, not an authored approximation in the
+final-artifact sense; the provenance.yaml notes this status and
+documents the swap-in procedure for when authentic upstream values
+become available (replace the RGB bytes, update the manifest SHA,
+update the provenance to record the real upstream).
 
 **Architectural surfaces involved.** The audit trail in the
 provenance.yaml file makes the asset's status honest. The asset is
-*inspired-by* the upstream, not *taken-from* the upstream. The
-NOTICES surface lists the asset under CC0-1.0 with the Hapax-
-authored attribution; downstream consumers see the CC0 license and
-the Hapax authorship rather than an LGPL inheritance that would be
-incompatible with the system's redistribution model.
+*placeholder-pending-authentic-upstream*, not a finished
+contribution. The NOTICES surface lists the asset under CC0-1.0 with
+the Hapax-authored attribution; downstream consumers see the CC0
+license and the placeholder status rather than an LGPL inheritance
+that would be incompatible with the system's redistribution model.
+The loader contract (`shared.aesthetic_library_loader.MokshaThemeLoader`)
+is byte-value-agnostic, so swapping in the real EDC requires no code
+changes — only the asset bytes, the manifest SHA, and the
+provenance.yaml update.
 
-**Why it was load-bearing.** The CC0-1.0-authored-approximation
-precedent generalizes. Future cases where the system needs aesthetic
-inspiration from an LGPL or GPL upstream can be handled the same
-way: an operator-authored approximation, CC0-licensed, with the
-provenance.yaml recording the inspiration relationship. The
-architectural posture preserves the operator's ability to draw on
-the upstream aesthetics without entangling the system's
-redistribution model in the upstream's license.
+**Why it was load-bearing.** The placeholder-with-explicit-swap-procedure
+precedent generalizes. Future cases where an upstream asset is
+desired but not yet available can ship a placeholder with the same
+shape: CC0 license, provenance.yaml documenting the placeholder
+status, manifest SHA pinning the bytes, and a procedure for
+authentic-upstream substitution. The architectural posture preserves
+the operator's ability to wire the surrounding code paths without
+waiting on the upstream extraction; the discipline makes the
+unsettled status visible rather than allowing the placeholder to
+silently masquerade as a finished contribution.
 
-### 7.3 — Receipt 3: the omg.lol /credits page auto-render
+### 7.3 — Receipt 3: the omg.lol credits page auto-render
 
-**Provenance.** The omg.lol /credits page is a public surface that
+**Provenance.** The omg.lol credits page is a public surface that
 fulfills the system's attribution obligation for redistributed
-visual assets. The page is consumed by anyone visiting the
-operator's omg.lol page; it is the canonical attribution surface
-for the audience.
+visual assets. It is published at `hapax.omg.lol/pastebin/credits`
+(with a future `/credits` PURL alias planned under `ytb-OMG7`), and
+is consumed by anyone visiting the operator's omg.lol page; it is
+the canonical attribution surface for the audience.
 
 **Architectural surfaces involved.** The page is auto-generated by
-the `agents/cross_surface/omg_credits_publisher.py` daemon. The
-daemon reads `_NOTICES.md` directly, re-renders it as omg.lol weblog
-markdown, and pushes the result on every aesthetic-library change.
-The daemon does not hand-edit the credits page; the credits page is
-structurally downstream of the manifest. This closes the loop: the
-audience sees the same provenance the manifest declares.
+the `agents/omg_credits_publisher/` package — a Jinja-rendered HTML
+artifact built from `agents/omg_credits_publisher/data.py`'s
+`build_credits_model`, which reads the aesthetic library's manifest
+through `shared.aesthetic_library` and renders via
+`agents/omg_credits_publisher/templates/credits.html.j2`. The
+publisher posts the result via `OmgLolClient.set_paste(slug="credits", ...)`,
+hash-deduplicating against the previously-published bytes via a
+SHA-256 state file so unchanged content does not burn an upstream
+write. The publisher does not hand-edit the credits page; the page
+is structurally downstream of the manifest. This closes the loop:
+the audience sees the same provenance the manifest declares.
 
 **Why it was load-bearing.** The hand-edit path was the dominant
 silent-failure mode the architecture eliminates. A hand-edited
@@ -765,9 +807,12 @@ contribution is not the SBOM-style metadata, which is described in
 software supply-chain literature; not the per-asset attribution
 discipline, which is required by upstream license terms anyway.
 The contribution is that all six enforcement layers — provenance
-file, manifest, NOTICES, CI linter, axiom anchor, CDN — operate
-together for an eighteen-month deployment record without a single
-silent attribution failure.
+file, manifest, NOTICES, CI linter, axiom anchor, CDN — were
+specified, implemented, and shipped together as a single
+constitutionally-anchored mechanism rather than accumulated
+piecemeal as procedural reminders. The deployment record is short
+(the library landed 2026-04-24); the architectural commitment is
+that the layers stay composed as the library grows.
 
 The discipline is architectural rather than procedural. The
 operator does not have to remember to honor the licenses, because

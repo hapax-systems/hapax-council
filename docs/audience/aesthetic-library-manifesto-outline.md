@@ -395,8 +395,31 @@ acknowledgement override.
   hapax-assets CDN)
 - [x] Decoder stacks identified (4)
 - [x] Section structure outlined (10 sections; ~6,700 words target)
-- [ ] Substrate-to-prose pass (next; aim ~8,000 words full essay)
-- [ ] Operator review (post-substrate-to-prose)
-- [ ] omg.lol /credits + Repeater Books pitch (publish-event time)
+- [x] Substrate-to-prose pass (full draft at
+  `docs/audience/aesthetic-library-manifesto.md`, ~6,070 words)
+- [x] Review decision: **publish** (epsilon, 2026-05-01T01:55Z, cc-task
+  `aesthetic-library-manifesto-review-and-publish`). Drift fixes
+  applied to the prose draft pre-publication: removed
+  "eighteen-month deployment record" claim (library landed
+  2026-04-24); corrected per-source-group provenance.yaml shape
+  (was wrongly framed as per-asset-directory); corrected
+  `agents/omg_credits_publisher/` package path (was wrongly
+  `agents/cross_surface/omg_credits_publisher.py`); reframed Moksha
+  EDC as authored placeholder pending upstream extraction (was
+  wrongly framed as final authored approximation); reframed §5
+  exclusion-list canonical doc as future work (canonical
+  project-level register not yet committed; exclusions live in
+  source-group provenance.yaml today).
+- [x] Publish-bus inbox drop:
+  `~/hapax-state/publish/inbox/aesthetic-library-manifesto.json`
+  (`status: approved`, surfaces: `zenodo-doi`, `omg-weblog`).
+  publish_orchestrator picks up on next 30s tick and fans out.
+- [ ] Repeater Books pitch (manual operator action; out of scope
+  for daemon-side publish-bus per "full automation or no
+  engagement" directive)
+- [ ] Authentic-upstream Moksha EDC swap-in (deferred; loader
+  contract is byte-value-agnostic, see
+  `assets/aesthetic-library/enlightenment/provenance.yaml`)
 
-— epsilon, V5 wk1 follow-on / wk2 lead-with #6 staging draft, 2026-04-25 ~20:13Z
+— epsilon, V5 wk1 follow-on / wk2 lead-with #6 — staging draft
+2026-04-25 ~20:13Z; publish decision 2026-05-01T01:55Z
