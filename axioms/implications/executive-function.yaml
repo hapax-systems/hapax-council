@@ -79,6 +79,20 @@ implications:
   canon: purposivist
   mode: sufficiency
   level: component
+  status: retired
+  retirement_rationale: |
+    Superseded by ex-config-001 (already-wired via cr-config-yaml
+    constitutive rule). Both are T1/review/component-level config-
+    file-defaults rules under executive_function. ex-cogload-001
+    ("Configuration files must use sensible defaults and avoid
+    requiring the operator to make low-stakes decisions") frames
+    the rule via cognitive-load rationale; ex-config-001
+    ("Configuration files must have comprehensive defaults that
+    work in the operator's environment") frames the same rule via
+    implementation requirement. Same scope (config files have
+    operator-friendly defaults), and ex-config-001 is the
+    constitutive-rule-bound form via cr-config-yaml. The wired
+    rule subsumes the rationale-only duplicate.
 - id: ex-cogload-002
   tier: T2
   text: Interactive prompts must not ask questions the system can reasonably answer
