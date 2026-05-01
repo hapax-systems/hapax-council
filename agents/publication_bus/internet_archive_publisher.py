@@ -1,4 +1,4 @@
-"""Internet Archive ias3 (S3-compatible) Publisher — Phase 1 stub.
+"""Internet Archive ias3 (S3-compatible) Publisher.
 
 Per cc-task ``pub-bus-internet-archive-ias3``. Auto-syndicate operator-
 owned (oudepode) musical artefacts to Internet Archive's S3-compatible
@@ -6,16 +6,23 @@ endpoint. Per drop 5's analysis, IA `ias3` is the ONLY daemon-tractable
 academic-credible music syndication path — Bandcamp/Discogs/RYM are all
 REFUSED.
 
-Phase 1 (this PR) ships the Publisher ABC subclass with the V5
-invariants (allowlist gate + legal-name leak guard + canonical Counter)
-and a minimal `requests`-based PUT against the S3 endpoint. The
+This module ships the Publisher ABC subclass with the V5 invariants
+(allowlist gate + legal-name leak guard + canonical Counter) and a
+minimal `requests`-based PUT against the S3 endpoint. The
 ``internetarchive`` Python lib is intentionally NOT a dependency —
 the S3 endpoint is straightforward HTTP and adding the lib would
 expand runtime surface unnecessarily for the daemon path.
 
-Phase 2 will wire the music-publisher daemon (``agents/music_publisher/``)
-that scans the oudepode-mastered queue and dispatches via this
-publisher.
+Orchestrator dispatch path (was previously called part of "Phase 2")
+has shipped: ``agents/internet_archive_ias3_adapter/`` is registered
+in ``surface_registry`` as the ``publish_artifact`` entry-point for
+``internet-archive-ias3``; the publish-orchestrator can dispatch a
+``PreprintArtifact`` through the publisher via the standard surface
+hand-off. The remaining (still-deferred) half is the music-publisher
+daemon — ``agents/music_publisher/`` does NOT exist today; when it
+ships it will scan the oudepode-mastered queue and feed PreprintArtifacts
+into the publish-orchestrator. Until then, the publisher dispatches
+whatever artifacts arrive through the existing orchestrator surface.
 
 Endpoint: ``https://s3.us.archive.org/{item-id}/{filename}``
 Authorization: ``LOW <access>:<secret>`` (IA's S3-compat header style)

@@ -1,4 +1,4 @@
-"""PhilArchive deposit publisher — Phase 1.
+"""PhilArchive deposit publisher.
 
 Per cc-task ``pub-bus-philarchive-deposit`` and V5 weave §2.2.
 PhilArchive (https://philarchive.org/) is the philosophy-of-mind /
@@ -7,8 +7,8 @@ audience-vector authors (Yuk Hui, Wendy Chun, Helen Hester, etc.) and
 is the primary academic-credible deposit surface for Hapax's
 Constitutional Brief and Manifesto class artefacts.
 
-Phase 1 (this module) ships the V5 Publisher ABC subclass with the
-three load-bearing invariants (allowlist gate + canonical Counter; the
+This module ships the V5 Publisher ABC subclass with the three
+load-bearing invariants (allowlist gate + canonical Counter; the
 legal-name guard is *opted into* via ``requires_legal_name=True``
 because PhilArchive's author field formally requires the operator's
 legal name). Transport is form-POST to ``/deposit`` with a session
@@ -20,9 +20,16 @@ account + extracting a session cookie from a logged-in browser) is a
 one-time human action per the surface_registry definition. After
 bootstrap, daemon dispatch is fully automated.
 
-Phase 2 will wire the publish-orchestrator dispatch + Zenodo
-RelatedIdentifier ``IsAlternativeIdentifier`` cross-linkage when a
-Constitutional Brief deposit lands.
+Orchestrator dispatch path (was previously called "Phase 2") has
+shipped: ``agents/philarchive_adapter/`` is registered in
+``surface_registry`` as the ``publish_artifact`` entry-point for
+``philarchive-deposit``; the publish-orchestrator can dispatch a
+``PreprintArtifact`` through the publisher via the standard surface
+hand-off. The remaining (still-deferred) half is the Zenodo
+``RelatedIdentifier`` ``IsAlternativeIdentifier`` cross-linkage —
+when a Constitutional Brief lands at PhilArchive, it should be added
+to the parallel Zenodo deposit's ``related_identifiers`` graph as
+``IsAlternativeIdentifier``. No code path emits that edge today.
 
 Endpoint: ``https://philarchive.org/deposit``
 Authorization: session cookie (PHPSESSID-style) from logged-in browser
