@@ -201,46 +201,131 @@ def get_axiom(axiom_id: str, *, path: Path = AXIOMS_PATH) -> Axiom | None:
     return None
 
 
-def load_implications(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Implication]:
-    """Load derived implications for a specific axiom."""
-    impl_file = path / "implications" / f"{axiom_id.replace('_', '-')}.yaml"
-    if not impl_file.exists():
-        # Try with underscores
-        impl_file = path / "implications" / f"{axiom_id}.yaml"
-        if not impl_file.exists():
-            return []
+def _build_implication(entry: dict, *, default_axiom_id: str) -> Implication:
+    """Build an Implication from a parsed YAML mapping.
 
+    Accepts both the list-schema row shape (``id``, ``axiom_id``
+    optional + inherited from parent doc) and the standalone-doc
+    shape (``implication_id`` at root + ``axiom_id`` carries the
+    parent reference). Callers pre-normalize the entry's ``id``
+    field before invoking; ``default_axiom_id`` is the fallback
+    when the entry omits an explicit ``axiom_id``.
+    """
+    scope_data = entry.get("scope")
+    scope = None
+    if scope_data and isinstance(scope_data, dict):
+        items_raw = scope_data.get("items")
+        items = list(items_raw) if items_raw and isinstance(items_raw, list) else None
+        scope = ImplicationScope(
+            type=scope_data.get("type", ""),
+            rule=scope_data.get("rule", ""),
+            items=items,
+        )
+    return Implication(
+        id=entry["id"],
+        axiom_id=entry.get("axiom_id", default_axiom_id),
+        tier=entry.get("tier", "T2"),
+        text=entry.get("text", ""),
+        enforcement=entry.get("enforcement", "warn"),
+        canon=entry.get("canon", ""),
+        mode=entry.get("mode", "compatibility"),
+        level=entry.get("level", "component"),
+        scope=scope,
+    )
+
+
+def _load_list_schema(impl_file: Path, axiom_id: str) -> list[Implication]:
+    """Load implications from the list-schema file shape.
+
+    File shape: ``axiom_id: <id>`` at root + ``implications: [...]``
+    list of per-implication mappings each carrying ``id``, ``tier``,
+    ``text``, etc.
+    """
     try:
         data = yaml.safe_load(impl_file.read_text())
-    except Exception as e:
+    except Exception as e:  # pragma: no cover — surfaced via log + empty
         log.error("Failed to parse implications for %s: %s", axiom_id, e)
         return []
+    if not isinstance(data, dict):
+        return []
+    parent_axiom = data.get("axiom_id", axiom_id)
+    impls: list[Implication] = []
+    for entry in data.get("implications", []) or []:
+        if not isinstance(entry, dict) or "id" not in entry:
+            continue
+        impls.append(_build_implication(entry, default_axiom_id=parent_axiom))
+    return impls
 
-    impls = []
-    for entry in data.get("implications", []):
-        scope_data = entry.get("scope")
-        scope = None
-        if scope_data and isinstance(scope_data, dict):
-            items_raw = scope_data.get("items")
-            items = list(items_raw) if items_raw and isinstance(items_raw, list) else None
-            scope = ImplicationScope(
-                type=scope_data.get("type", ""),
-                rule=scope_data.get("rule", ""),
-                items=items,
-            )
-        impls.append(
-            Implication(
-                id=entry["id"],
-                axiom_id=data.get("axiom_id", axiom_id),
-                tier=entry.get("tier", "T2"),
-                text=entry.get("text", ""),
-                enforcement=entry.get("enforcement", "warn"),
-                canon=entry.get("canon", ""),
-                mode=entry.get("mode", "compatibility"),
-                level=entry.get("level", "component"),
-                scope=scope,
-            )
-        )
+
+def _load_standalone_schema(impl_file: Path) -> Implication | None:
+    """Load a single-document standalone-schema implication file.
+
+    File shape: ``implication_id: <id>`` at root + ``axiom_id`` +
+    fields (``tier``, ``text``, etc.) at root. Returns ``None`` for
+    list-schema files (which are handled by ``_load_list_schema``)
+    or malformed YAML.
+    """
+    try:
+        data = yaml.safe_load(impl_file.read_text())
+    except Exception as e:  # pragma: no cover
+        log.error("Failed to parse standalone implication %s: %s", impl_file, e)
+        return None
+    if not isinstance(data, dict):
+        return None
+    impl_id = data.get("implication_id")
+    axiom_id = data.get("axiom_id")
+    if not impl_id or not axiom_id:
+        return None
+    # Build via the shared helper, mapping `implication_id` → the
+    # canonical `id` field so _build_implication can consume it.
+    entry = {**data, "id": impl_id}
+    return _build_implication(entry, default_axiom_id=axiom_id)
+
+
+def load_implications(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Implication]:
+    """Load derived implications for a specific axiom.
+
+    Discovers two file shapes under ``axioms/implications/``:
+
+    1. **List schema** — ``<axiom_id>.yaml`` (or ``<axiom-id>.yaml``)
+       with a top-level ``implications:`` list. Historical primary
+       form.
+    2. **Standalone schema** — any ``*.yaml`` with a top-level
+       ``implication_id`` and ``axiom_id`` matching the requested
+       axiom. Used when an implication's namespace doesn't fit
+       cleanly under the per-axiom file (e.g.,
+       ``it-irreversible-broadcast.yaml`` lives alongside
+       ``interpersonal-transparency.yaml`` because it carries
+       distinct enforcement-tier metadata). The audit at
+       ``cc-task axioms-loader-discovers-standalone-impls`` made
+       this path discoverable from the canonical loader.
+
+    Returns the merged list. List-schema entries appear first,
+    followed by standalone-schema discoveries.
+    """
+    impls_dir = path / "implications"
+    if not impls_dir.is_dir():
+        return []
+
+    impls: list[Implication] = []
+
+    # 1. List-schema file (try both kebab + underscore filename).
+    impl_file = impls_dir / f"{axiom_id.replace('_', '-')}.yaml"
+    if not impl_file.exists():
+        impl_file = impls_dir / f"{axiom_id}.yaml"
+    if impl_file.exists():
+        impls.extend(_load_list_schema(impl_file, axiom_id))
+
+    # 2. Standalone-schema files matching this axiom_id. Skip the
+    # list-schema file we already handled (its `implication_id` is
+    # absent, so _load_standalone_schema returns None anyway, but
+    # we elide the read for clarity).
+    for candidate in sorted(impls_dir.glob("*.yaml")):
+        if candidate == impl_file:
+            continue
+        standalone = _load_standalone_schema(candidate)
+        if standalone is not None and standalone.axiom_id == axiom_id:
+            impls.append(standalone)
 
     return impls
 
