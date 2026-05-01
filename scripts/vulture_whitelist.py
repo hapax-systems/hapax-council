@@ -776,3 +776,18 @@ SourceRow.days_until_deadline
 SourceRow._validate_no_false_affiliation
 FundingAmount._validate_range
 default_registry
+
+# Director control-move WCS normalizer: public read-side API for the
+# director loop's move resolution path. Phase 2+ wires the loop to call
+# normalize_director_control_move; Phase 1 ships scaffolding + tests.
+from shared.director_control_move_normalizer import (
+    DirectorControlMoveIntent,
+    NormalizedDirectorControlMove,
+    normalize_director_control_move,
+)
+
+DirectorControlMoveIntent
+NormalizedDirectorControlMove.is_executable
+NormalizedDirectorControlMove.is_public_authoritative
+NormalizedDirectorControlMove._validate_public_carries_evidence
+normalize_director_control_move
