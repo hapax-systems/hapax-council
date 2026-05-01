@@ -34,6 +34,7 @@ implications:
   level: subsystem
 
 - id: mg-selfreport-001
+  status: retired
   tier: T1
   text: Cognitive load assessment must come from operator self-report in
     frontmatter only, never from LLM inference about a person.
