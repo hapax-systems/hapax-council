@@ -19,6 +19,8 @@ import json
 import logging
 import os
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,11 +52,19 @@ DEFAULT_STATE_DIR: Final[Path] = Path.home() / "hapax-state" / "broadcast-audio-
 #: evidence stores (datacite-mirror, attribution).
 RETENTION_DAYS: Final[int] = 7
 
-#: Default capture duration. Long enough to give the FFT a clean
-#: lock on the carrier (well above
-#: :data:`shared.audio_marker_probe_fft.MIN_CAPTURE_DURATION_S`),
-#: short enough that the operator never hears a buzzy tail.
-DEFAULT_CAPTURE_DURATION_S: Final[float] = 0.5
+#: Default capture duration. Sized to comfortably cover the parec
+#: warmup window plus the full inject duration plus tail, with FFT
+#: bin-width gain at this length.
+DEFAULT_CAPTURE_DURATION_S: Final[float] = 3.0
+
+#: parec startup latency before the stream actually delivers audio.
+#: Measured ~1.5–2.0 s on PipeWire on this workstation. The capture
+#: process is started, then the producer waits this long before
+#: dispatching the inject, so the marker tone arrives inside the
+#: capture window rather than ahead of it. Without this overlap the
+#: serial inject→capture pattern misses the tone entirely (root cause
+#: of the 2026-05-02 not_detected investigation).
+CAPTURE_WARMUP_S: Final[float] = 1.5
 
 
 class ProbeOutcome(StrEnum):
@@ -86,11 +96,20 @@ class RouteSpec:
     capture from. By PipeWire convention this is usually
     ``<sink>.monitor`` but the producer accepts an arbitrary source
     so loopback / virtual-routing surfaces can probe end-to-end.
+
+    ``inject_channels`` is the channel count the inject must declare
+    to pw-cat. Defaults to 1 (mono, works for stereo sinks via
+    upmix). Multi-channel sinks like the L-12 ``analog-surround-40``
+    profile (4ch front-left/right + rear-left/right) need an
+    explicit channel count or the mono inject does not appear on
+    the sink monitor at all. The producer replicates the mono tone
+    across all channels at inject time.
     """
 
     name: str
     sink_name: str
     monitor_source: str
+    inject_channels: int = 1
 
 
 @dataclass(frozen=True)
@@ -119,15 +138,23 @@ CaptureFn = Callable[[str, float, int], np.ndarray]
 def _default_inject(sink_name: str, samples: np.ndarray, sample_rate: int) -> None:
     """Pipe int16 PCM to ``pw-cat -p --raw --target <sink>``.
 
-    The data is written to the subprocess's stdin and the process
-    blocks until the buffer is consumed, which gives us a clean
-    "the marker has been emitted" semantic without polling.
+    ``samples`` may be 1D mono or 2D ``(T, C)``. For 2D input the
+    samples are flattened in interleaved (C order) layout and pw-cat
+    is told the matching channel count.
 
     The ``--raw`` (``-a``) flag bypasses libsndfile, which would otherwise
     try to interpret stdin as a recognised audio container (WAV/AIFF/FLAC)
     and fail with "Format not recognised". With ``--raw`` pw-cat treats
     the input as bare PCM matching the declared rate/channels/format.
     """
+    if samples.ndim == 1:
+        channels = 1
+        payload = samples
+    elif samples.ndim == 2:
+        channels = samples.shape[1]
+        payload = np.ascontiguousarray(samples)  # interleaved by C-order layout
+    else:
+        raise ValueError(f"samples must be 1D mono or 2D (T,C); got shape {samples.shape}")
     cmd = [
         "pw-cat",
         "-p",
@@ -135,7 +162,7 @@ def _default_inject(sink_name: str, samples: np.ndarray, sample_rate: int) -> No
         "--rate",
         str(sample_rate),
         "--channels",
-        "1",
+        str(channels),
         "--format",
         "s16",
         "--target",
@@ -144,7 +171,7 @@ def _default_inject(sink_name: str, samples: np.ndarray, sample_rate: int) -> No
     ]
     completed = subprocess.run(  # noqa: S603 — args are an explicit list
         cmd,
-        input=samples.tobytes(),
+        input=payload.tobytes(),
         capture_output=True,
         timeout=5,
         check=True,
@@ -221,15 +248,45 @@ class BroadcastAudioHealthProducer:
     def _probe_route(self, route: RouteSpec) -> ProbeResult:
         ts = self._clock().isoformat()
         try:
-            tone = generate_marker_tone(
+            # Inject duration is shorter than capture: tone fits inside
+            # the warmup-shifted capture window with tail headroom for
+            # FFT bin resolution.
+            tone_duration_s = max(self.capture_duration_s - CAPTURE_WARMUP_S - 0.5, 0.5)
+            mono_tone = generate_marker_tone(
                 self.marker_freq_hz,
-                duration_s=self.capture_duration_s,
+                duration_s=tone_duration_s,
                 sample_rate=self.sample_rate,
             )
+            tone = self._shape_for_channels(mono_tone, route.inject_channels)
+
+            # Start capture FIRST (parec has ~1.5–2.0 s startup latency
+            # before the stream actually delivers audio). Inject runs in
+            # parallel after CAPTURE_WARMUP_S so the marker arrives
+            # inside the parec read window, not before.
+            captured_holder: dict[str, np.ndarray] = {}
+            error_holder: dict[str, BaseException] = {}
+
+            def _capture_thread() -> None:
+                try:
+                    captured_holder["data"] = self._capture(
+                        route.monitor_source, self.capture_duration_s, self.sample_rate
+                    )
+                except BaseException as e:  # noqa: BLE001 — propagate via holder
+                    error_holder["e"] = e
+
+            cap_thread = threading.Thread(target=_capture_thread, daemon=True)
+            cap_thread.start()
+            time.sleep(CAPTURE_WARMUP_S)
             self._inject(route.sink_name, tone, self.sample_rate)
-            captured = self._capture(
-                route.monitor_source, self.capture_duration_s, self.sample_rate
-            )
+            cap_thread.join(timeout=self.capture_duration_s + 5.0)
+            if cap_thread.is_alive():
+                raise RuntimeError(
+                    f"capture thread for {route.name} did not finish within "
+                    f"{self.capture_duration_s + 5.0}s"
+                )
+            if "e" in error_holder:
+                raise error_holder["e"]
+            captured = captured_holder["data"]
         except Exception as exc:
             log.warning("probe failed for %s: %s", route.name, exc)
             return ProbeResult(
@@ -257,6 +314,20 @@ class BroadcastAudioHealthProducer:
             error=None,
             timestamp_utc=ts,
         )
+
+    @staticmethod
+    def _shape_for_channels(mono: np.ndarray, channels: int) -> np.ndarray:
+        """Replicate a mono tone across ``channels`` for multi-channel sinks.
+
+        Returns a 2D ``(T, C)`` array when ``channels > 1`` so
+        :func:`_default_inject` interleaves samples in C order. Mono
+        passthrough returns the input unchanged.
+        """
+        if channels < 1:
+            raise ValueError(f"channels must be >= 1; got {channels}")
+        if channels == 1:
+            return mono
+        return np.tile(mono.reshape(-1, 1), (1, channels))
 
     def _emit(self, result: ProbeResult) -> None:
         record_probe(result.name, result.outcome.value)
@@ -312,7 +383,9 @@ class BroadcastAudioHealthProducer:
 def load_routes_from_env() -> list[RouteSpec]:
     """Load routes from the BROADCAST_AUDIO_HEALTH_ROUTES env var.
 
-    Format: comma-separated triples ``name:sink:monitor_source``.
+    Format: comma-separated entries ``name:sink:monitor_source[:channels]``.
+    The optional 4th ``channels`` field declares how many channels
+    the inject should send to a multi-channel sink (default 1).
     Used by the systemd unit so configuration is declarative without
     a YAML loader dep.
     """
@@ -322,7 +395,25 @@ def load_routes_from_env() -> list[RouteSpec]:
     routes: list[RouteSpec] = []
     for entry in raw.split(","):
         parts = entry.strip().split(":")
-        if len(parts) != 3:
-            raise ValueError(f"invalid route entry {entry!r}; want name:sink:monitor_source")
-        routes.append(RouteSpec(name=parts[0], sink_name=parts[1], monitor_source=parts[2]))
+        if len(parts) == 3:
+            routes.append(RouteSpec(name=parts[0], sink_name=parts[1], monitor_source=parts[2]))
+        elif len(parts) == 4:
+            try:
+                channels = int(parts[3])
+            except ValueError as e:
+                raise ValueError(
+                    f"invalid channels in route entry {entry!r}; want integer >= 1"
+                ) from e
+            routes.append(
+                RouteSpec(
+                    name=parts[0],
+                    sink_name=parts[1],
+                    monitor_source=parts[2],
+                    inject_channels=channels,
+                )
+            )
+        else:
+            raise ValueError(
+                f"invalid route entry {entry!r}; want name:sink:monitor_source[:channels]"
+            )
     return routes
