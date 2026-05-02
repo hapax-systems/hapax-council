@@ -10,6 +10,28 @@ import pytest
 
 from agents import briefing, digest
 from shared import axiom_enforcer
+from shared.axiom_pattern_checker import reload_patterns
+
+
+@pytest.fixture(autouse=True)
+def _reset_pattern_cache() -> None:
+    """Clear the module-level pattern cache before each test.
+
+    ``shared.axiom_pattern_checker`` caches the loaded pattern set in a
+    module-level ``_cached_patterns`` global. Other test files
+    (``tests/shared/test_axiom_pattern_checker.py``) seed that cache
+    with fixture patterns via ``load_patterns(path=tmp_path/"...")``;
+    when those run before this file in the same pytest process, the
+    enforcer's ``check_output()`` reuses the test-fixture cache instead
+    of the canonical ``axioms/enforcement-patterns.yaml``, producing
+    zero violations on the seeded T0 string and tripping the
+    ``audit_only is True`` assertion.
+
+    Resetting the cache before each test forces ``load_patterns()`` to
+    re-read the canonical file. cc-task:
+    stabilize-axiom-enforcer-transition-flake.
+    """
+    reload_patterns()
 
 
 @pytest.mark.parametrize(
