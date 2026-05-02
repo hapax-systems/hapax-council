@@ -107,27 +107,29 @@ def test_studio_m8_lcd_reveal_affordance_registered() -> None:
     )
 
 
-def test_m8_wireplumber_routes_to_livestream_tap_not_l12() -> None:
+def test_m8_wireplumber_routes_through_l12_not_direct_to_stream() -> None:
     """Static check: M8 audio routing config's ``target.object``
-    declarations point at livestream-tap or the M8 USB source, not any
-    L-12 surface. Satisfies feedback_l12_equals_livestream_invariant in
-    spirit (M8 audio bypasses L-12 hardware entirely)."""
+    declarations terminate at the L-12 USB return surface (operator
+    directive 2026-05-02 — nothing goes straight to stream). The prior
+    bypass design (M8 → livestream-tap directly) was inverted; M8 now
+    feeds L-12, and L-12's broadcast-bus path carries it onward."""
     conf_path = REPO_ROOT / "config" / "pipewire" / "hapax-m8-loudnorm.conf"
     assert conf_path.exists(), "M8 pipewire loudnorm config missing"
     text = conf_path.read_text()
-    # M8 loudnorm output must end up in livestream-tap directly.
-    assert 'target.object = "hapax-livestream-tap"' in text
-    # Strip comments + blanks, then assert no `target.object` line
-    # references an L-12 surface (the L-12 USB ALSA node carries
-    # "ZOOM_Corporation_L-12" as a substring; no other config in the M8
-    # path should target any node with that string).
     code_lines = [
         line for line in text.splitlines() if line.strip() and not line.strip().startswith("#")
     ]
     target_lines = [line for line in code_lines if "target.object" in line]
+    # Forward invariant: M8 loudnorm output targets the L-12 USB return.
+    has_l12_target = any("ZOOM_Corporation_L-12" in line for line in target_lines)
+    assert has_l12_target, (
+        "M8 loudnorm must terminate at the L-12 USB return surface "
+        "(operator directive 2026-05-02 — everything wet routes via L-12)"
+    )
+    # Inverse invariant: must NOT bypass L-12 by going straight to broadcast.
     for line in target_lines:
-        assert "ZOOM_Corporation_L-12" not in line, (
-            f"M8 config target.object references L-12: {line.strip()}"
+        assert 'target.object = "hapax-livestream-tap"' not in line, (
+            f"M8 config target.object bypasses L-12 to livestream-tap: {line.strip()}"
         )
         assert "evilpet" not in line, (
             f"M8 config target.object references evilpet capture: {line.strip()}"
