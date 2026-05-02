@@ -23,6 +23,7 @@ from typing import Any
 
 from agents.studio_compositor import metrics
 from agents.studio_compositor.audio_control import SlotAudioControl
+from agents.studio_compositor.programme_context import ProgrammeProvider
 from agents.studio_compositor.tts_client import DaimonionTtsClient
 from shared.claim import Claim
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
@@ -1385,12 +1386,85 @@ ACTIVITY_CAPABILITIES = (
 )
 
 
+def _render_director_programme_context(
+    programme: Any | None,
+    programme_band: tuple[int, int] | None,
+) -> list[str]:
+    """Render active programme context for the narrative director prompt."""
+    if programme is None and programme_band is None:
+        return []
+
+    lines: list[str] = ["## Programme context"]
+    lines.append(
+        "AUDIT-18 programme context is soft-prior director context: it "
+        "biases activity, narrative, and compositional choices while "
+        "grounding provenance and live perceptual pressure stay authoritative."
+    )
+
+    if programme is not None:
+        role = programme.role.value if hasattr(programme.role, "value") else str(programme.role)
+        programme_id = str(getattr(programme, "programme_id", "unknown"))
+        lines.append(f"- active programme: `{programme_id}` with role `{role}`")
+
+        parent_show_id = getattr(programme, "parent_show_id", None)
+        if parent_show_id:
+            lines.append(f"- show ref: `{parent_show_id}`")
+
+        parent_condition_id = getattr(programme, "parent_condition_id", None)
+        if parent_condition_id:
+            lines.append(f"- condition ref: `{parent_condition_id}`")
+
+        beat = (getattr(getattr(programme, "content", None), "narrative_beat", "") or "").strip()
+        if beat:
+            lines.append(f"- programme direction: {beat}")
+
+        constraints = getattr(programme, "constraints", None)
+        if constraints is not None:
+            preset_priors = list(getattr(constraints, "preset_family_priors", []) or [])
+            if preset_priors:
+                lines.append(
+                    "- prefers preset families: "
+                    f"{', '.join(str(value) for value in preset_priors)} (soft prior)"
+                )
+            rotation_modes = list(getattr(constraints, "homage_rotation_modes", []) or [])
+            if rotation_modes:
+                lines.append(
+                    "- bias toward homage rotation modes: "
+                    f"{', '.join(str(value) for value in rotation_modes)} (soft prior)"
+                )
+            positive_bias = dict(getattr(constraints, "capability_bias_positive", {}) or {})
+            if positive_bias:
+                names = ", ".join(sorted(str(name) for name in positive_bias))
+                lines.append(f"- capability preference lift: {names} (soft prior)")
+            negative_bias = dict(getattr(constraints, "capability_bias_negative", {}) or {})
+            if negative_bias:
+                names = ", ".join(sorted(str(name) for name in negative_bias))
+                lines.append(f"- capability preference dampening: {names} (soft prior)")
+
+    if programme_band is not None:
+        low, high = programme_band
+        lines.append(f"- current programme voice tier band: {low}-{high} (soft prior)")
+
+    lines.append(
+        "- override posture: when live evidence points elsewhere, choose "
+        "the grounded move and keep programme state as context."
+    )
+    return lines
+
+
 class DirectorLoop:
     """Orchestrates Hapax's autonomous livestream behavior."""
 
-    def __init__(self, video_slots: list, reactor_overlay) -> None:
+    def __init__(
+        self,
+        video_slots: list,
+        reactor_overlay,
+        *,
+        programme_provider: ProgrammeProvider | None = None,
+    ) -> None:
         self._slots = video_slots
         self._reactor = reactor_overlay
+        self._programme_provider = programme_provider
         self._activity = "react"  # current activity
         self._activity_start = 0.0
         self._state = "IDLE"
@@ -1430,6 +1504,16 @@ class DirectorLoop:
         # referent per _build_unified_prompt call, sticky-per-utterance.
         self._referent_tick: int = 0
         self._load_memory()
+
+    def _active_programme(self) -> Any | None:
+        """Resolve the active Programme for prompt context, if wired."""
+        if self._programme_provider is None:
+            return None
+        try:
+            return self._programme_provider()
+        except Exception:
+            log.debug("director programme lookup failed", exc_info=True)
+            return None
 
     def _load_memory(self) -> None:
         """Load reaction history from SHM snapshot or Qdrant on startup."""
@@ -2448,6 +2532,20 @@ class DirectorLoop:
                     parts.append(f"→ {struct['long_horizon_direction']}")
         except Exception:
             log.debug("structural intent read failed", exc_info=True)
+
+        # AUDIT-18: programme context reaches the narrative director as
+        # soft-prior prompt context. Provider failure is non-fatal; a
+        # missing programme simply preserves legacy director behavior.
+        try:
+            programme_context = _render_director_programme_context(
+                self._active_programme(),
+                self._current_programme_band,
+            )
+            if programme_context:
+                parts.append("")
+                parts.extend(programme_context)
+        except Exception:
+            log.debug("programme context render failed", exc_info=True)
 
         # ─── Layer 2: System state (TOON ~150 tokens, 40% savings) ─
         try:
