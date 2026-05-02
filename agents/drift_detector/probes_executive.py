@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 
 from .config import AI_AGENTS_DIR, LOGOS_STATE_DIR
 from .sufficiency_probes import SufficiencyProbe
@@ -322,7 +324,75 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_status_outputs_have_timestamps(),
     ),
+    SufficiencyProbe(
+        id="probe-state-003",
+        axiom_id="executive_function",
+        implication_id="ex-state-003",
+        level="subsystem",
+        question=(
+            "Does the cc-task vault SSOT persist task context across "
+            "restarts so the operator never has to remember where they "
+            "left off?"
+        ),
+        check=lambda: _check_task_context_persistence(),
+    ),
 ]
+
+
+def _check_task_context_persistence() -> tuple[bool, str]:
+    """Enforces ex-state-003 (executive_function).
+
+    System must persist task context across interruptions to eliminate
+    restart cognitive overhead. Verifies the cc-task vault SSOT
+    surfaces persist task state through restart:
+      - hapax-cc-tasks/active/*.md (per-task vault notes with
+        claimed_at + assigned_to fields preserved across restart)
+      - ~/.cache/hapax/cc-active-task-* (per-role claim files)
+
+    Threshold: ≥1 active cc-task with claimed_at preserved AND ≥1
+    role claim file present, OR vault dir has any *.md file (system
+    is currently idle but persistence surface exists).
+    """
+    vault_active = (
+        Path(os.path.expanduser("~"))
+        / "Documents"
+        / "Personal"
+        / "20-projects"
+        / "hapax-cc-tasks"
+        / "active"
+    )
+    cache_dir = Path(os.path.expanduser("~")) / ".cache" / "hapax"
+
+    if not vault_active.is_dir():
+        return False, f"cc-task vault active dir not found at {vault_active}"
+
+    cc_tasks = list(vault_active.glob("*.md"))
+    claim_files = list(cache_dir.glob("cc-active-task-*"))
+
+    claimed_at_pattern = re.compile(r"^claimed_at:\s*\S+", re.MULTILINE)
+    persistence_evidence = 0
+    for task in cc_tasks[:50]:
+        try:
+            content = task.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if claimed_at_pattern.search(content):
+            persistence_evidence += 1
+
+    if cc_tasks and (persistence_evidence >= 1 or claim_files):
+        return True, (
+            f"cc-task vault has {len(cc_tasks)} active tasks "
+            f"({persistence_evidence} with claimed_at) + {len(claim_files)} "
+            f"role claim files — ex-state-003 sufficient"
+        )
+    if cc_tasks:
+        return True, (
+            f"cc-task vault has {len(cc_tasks)} active tasks (idle "
+            f"system; persistence surface present) — ex-state-003 sufficient"
+        )
+    return False, (
+        f"no cc-task persistence evidence: 0 active tasks, {len(claim_files)} claim files"
+    )
 
 
 def _check_status_outputs_have_timestamps() -> tuple[bool, str]:

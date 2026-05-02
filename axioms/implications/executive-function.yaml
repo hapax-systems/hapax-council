@@ -278,6 +278,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-state-003
+  linkage: code-direct
   tier: T1
   text: System must persist task context across interruptions to eliminate restart
     cognitive overhead.
