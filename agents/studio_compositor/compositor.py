@@ -384,7 +384,12 @@ _FALLBACK_LAYOUT = Layout(
         ),
         SurfaceSchema(
             id="m8-display-surface",
-            geometry=SurfaceGeometry(kind="rect", x=600, y=80, w=1280, h=960),
+            geometry=SurfaceGeometry(kind="rect", x=480, y=80, w=960, h=720),
+            z_order=25,
+        ),
+        SurfaceSchema(
+            id="m8-display-tiny-surface",
+            geometry=SurfaceGeometry(kind="rect", x=440, y=336, w=320, h=240),
             z_order=25,
         ),
         SurfaceSchema(
@@ -430,6 +435,7 @@ _FALLBACK_LAYOUT = Layout(
         Assignment(source="gem", surface="gem-mural-bottom", opacity=0.95),
         Assignment(source="durf", surface="durf-fullframe", opacity=0.96),
         Assignment(source="m8-display", surface="m8-display-surface", opacity=0.0),
+        Assignment(source="m8-display", surface="m8-display-tiny-surface", opacity=0.0),
         Assignment(source="egress_footer", surface="egress-footer-bottom"),
     ],
 )
