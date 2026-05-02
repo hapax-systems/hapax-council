@@ -308,6 +308,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-error-006
+  linkage: code-direct
   tier: T1
   text: Error handling must auto-recover or auto-escalate rather than leaving operator
     in undefined states requiring diagnosis.
