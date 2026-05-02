@@ -68,7 +68,7 @@ jobs:
           test -n "$(ls dist/*.whl 2>/dev/null)" || (echo "ERR: missing wheel" >&2 && exit 1)
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hapax-refusals-dist
           path: packages/hapax-refusals/dist/

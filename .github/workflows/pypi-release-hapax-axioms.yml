@@ -60,7 +60,7 @@ jobs:
           v=$(grep -E '^version\s*=' pyproject.toml | head -1 | sed -E 's/^version *= *"([^"]+)".*/\1/')
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: hapax-axioms-dist
           path: packages/hapax-axioms/dist/
