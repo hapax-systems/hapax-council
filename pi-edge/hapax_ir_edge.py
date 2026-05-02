@@ -238,7 +238,7 @@ class IrEdgeDaemon:
                 if persons:
                     self._last_detection_time = time.monotonic()
 
-                hands = detect_hands_nir(grey)
+                hands = detect_hands_nir(grey, motion_delta=motion_delta)
                 screens = detect_screens_nir(grey)
 
                 # Album cover detection (overhead camera only)
