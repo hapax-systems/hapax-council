@@ -88,7 +88,7 @@ jobs:
           python-version: "3.12"
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: hapax-refusals-dist
           path: dist/
@@ -139,7 +139,7 @@ jobs:
       contents: read
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: hapax-refusals-dist
           path: dist/
