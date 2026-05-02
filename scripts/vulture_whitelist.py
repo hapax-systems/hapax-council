@@ -1104,3 +1104,20 @@ RefusalEnvelopePolicy.governance_capability_learning_allowed
 RefusalEnvelopePolicy.refused_claim_posterior_locked
 RefusalEnvelopePolicy._validate_no_laundering_for_refusal
 learning_adapter_treats_refusal_as_governance_success
+
+# License request price class router — cc-task license-request-price-class-router.
+# Pydantic model_validator hooks invoked at construction; ledger and helper
+# entry-points called by downstream license-routing daemon (separate cc-task).
+from shared.license_request_price_class_router import (
+    Quote,
+    RouteVerdict,
+    evaluate_request,
+    ledger_entry,
+    now_utc,
+)
+
+Quote._validate_price_invariants
+RouteVerdict._exactly_one_branch
+evaluate_request
+ledger_entry
+now_utc
