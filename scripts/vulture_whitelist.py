@@ -879,3 +879,16 @@ VoiceOutputRouter.known_roles
 from agents.health_monitor.checks.m8_firmware import check_m8_firmware
 
 check_m8_firmware
+
+# M8Sequencer — director → M8 MIDI dispatch (cc-task:
+# m8-dmn-mute-solo-transport). Currently invoked only via test fixtures;
+# the director-side recruitment wiring (impingement_consumer dispatch
+# table entry + studio.m8_track_mute/solo/transport affordances) lands
+# in a follow-up task per the cc-task scope (mechanism here, recruitment
+# integration separate). Whitelisted until the recruitment wire-in PR
+# lands.
+from agents.studio_compositor.m8_sequencer import M8Sequencer
+
+M8Sequencer
+M8Sequencer.muted_tracks
+M8Sequencer.soloed_tracks
