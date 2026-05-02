@@ -590,6 +590,137 @@ _FIRST_TRANCHE_ROWS: tuple[RegistryRow, ...] = (
         prompt_rendering="render-bounded-summary",
         allowed_consumers=("director", "affordance-recruitment", "content-programme", "dashboard"),
     ),
+    # Music source (where the bed-music is coming from — soundcloud,
+    # found-sound pool, M8 instrument, etc). High-risk because rights /
+    # provenance vary by source. Producer is content-resolver which
+    # tracks the active source through the routing layer.
+    RegistryRow(
+        key_path="music.source",
+        producer_ref="hapax-content-resolver / album-state.json",
+        wcs_surface_id="audio-music-source",
+        evidence_class="derived-state",
+        temporal_band="impression",
+        evidence_envelope_ref="album_state.AlbumStateEnvelope",
+        span_ref_policy="required",
+        ttl_ms=15_000,
+        witness_kind="state-file",
+        authority_ceiling="public-live",
+        public_scope="public-live-only-with-witness",
+        failure_policy=_common_failure_policy(high_risk=True),
+        prompt_rendering="render-with-age-and-window",
+        allowed_consumers=(
+            "director",
+            "autonomous-narration",
+            "public-broadcast",
+            "content-programme",
+            "dashboard",
+        ),
+    ),
+    # Music confidence (classifier confidence on track/source identification).
+    # Lower-risk because confidence is meta about the underlying claim;
+    # consumers should always cap claims at the floor configured in
+    # the classifier. Surface as diagnostic when below floor.
+    RegistryRow(
+        key_path="music.confidence",
+        producer_ref="hapax-content-resolver classifier",
+        wcs_surface_id="audio-music-confidence",
+        evidence_class="classifier",
+        temporal_band="impression",
+        evidence_envelope_ref="album_state.AlbumStateEnvelope",
+        span_ref_policy="optional",
+        ttl_ms=15_000,
+        witness_kind="classifier-output",
+        authority_ceiling="diagnostic",
+        public_scope="never-public",
+        failure_policy=_common_failure_policy(high_risk=False),
+        prompt_rendering="render-as-diagnostic-block",
+        allowed_consumers=("director", "affordance-recruitment", "dashboard", "diagnostics"),
+    ),
+    # Vinyl state (whether vinyl is actively spinning vs. not). High-
+    # risk because vinyl-source claims have strict authenticity bounds
+    # — autonomous narration must not claim vinyl is playing if the
+    # turntable isn't actually engaged.
+    RegistryRow(
+        key_path="music.vinyl_state",
+        producer_ref="agents/studio_compositor vinyl detector",
+        wcs_surface_id="audio-vinyl-state",
+        evidence_class="derived-state",
+        temporal_band="impression",
+        evidence_envelope_ref="album_state.AlbumStateEnvelope",
+        span_ref_policy="required",
+        ttl_ms=10_000,
+        witness_kind="state-file",
+        authority_ceiling="public-live",
+        public_scope="public-live-only-with-witness",
+        failure_policy=_common_failure_policy(high_risk=True),
+        prompt_rendering="render-with-age-and-window",
+        allowed_consumers=(
+            "director",
+            "autonomous-narration",
+            "public-broadcast",
+            "content-programme",
+            "dashboard",
+        ),
+    ),
+    # Stream mode (research / rnd / fortress). Author of the modal
+    # ceiling for what the stream may show. Cannot be consumed by
+    # public-broadcast as a fact unless the working-mode file is
+    # fresh on disk (otherwise mode could be stale across reboot).
+    RegistryRow(
+        key_path="stream.mode",
+        producer_ref="hapax-working-mode CLI / ~/.cache/hapax/working-mode",
+        wcs_surface_id="livestream-mode",
+        evidence_class="operator-command",
+        temporal_band="impression",
+        evidence_envelope_ref="working_mode.WorkingModeEnvelope",
+        span_ref_policy="required",
+        ttl_ms=60_000,
+        witness_kind="state-file",
+        authority_ceiling="action-authorizing",
+        public_scope="public-live-only-with-witness",
+        failure_policy=_common_failure_policy(high_risk=True),
+        prompt_rendering="render-with-age-and-window",
+        allowed_consumers=("director", "autonomous-narration", "public-broadcast", "dashboard"),
+    ),
+    # Egress state (does broadcast egress actually carry signal). The
+    # downstream witness that gates audibility claims separately from
+    # whether the stream is "live" at the ingest layer. This is the
+    # surface that the broadcast-audio-health-producer probes feed.
+    RegistryRow(
+        key_path="stream.egress",
+        producer_ref="hapax-broadcast-audio-health-producer",
+        wcs_surface_id="audio.broadcast_health",
+        evidence_class="route",
+        temporal_band="impression",
+        evidence_envelope_ref="broadcast_audio_health.BroadcastAudioHealth",
+        span_ref_policy="required",
+        ttl_ms=90_000,
+        witness_kind="state-file",
+        authority_ceiling="public-live",
+        public_scope="public-live-only-with-witness",
+        failure_policy=_common_failure_policy(high_risk=True),
+        prompt_rendering="render-with-age-and-window",
+        allowed_consumers=("director", "autonomous-narration", "public-broadcast", "dashboard"),
+    ),
+    # Broadcast safety (the canonical audio_safe_for_broadcast aggregate).
+    # Action-authorizing because public-audio commands check this gate
+    # before they're allowed to fire. Stale or missing → fail closed.
+    RegistryRow(
+        key_path="stream.broadcast_safety",
+        producer_ref="hapax-broadcast-audio-health (oneshot timer)",
+        wcs_surface_id="audio.broadcast_health",
+        evidence_class="derived-state",
+        temporal_band="impression",
+        evidence_envelope_ref="broadcast_audio_health.BroadcastAudioHealth",
+        span_ref_policy="required",
+        ttl_ms=60_000,
+        witness_kind="state-file",
+        authority_ceiling="action-authorizing",
+        public_scope="public-live-only-with-witness",
+        failure_policy=_common_failure_policy(high_risk=True),
+        prompt_rendering="render-with-age-and-window",
+        allowed_consumers=("director", "autonomous-narration", "public-broadcast", "dashboard"),
+    ),
 )
 
 

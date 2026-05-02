@@ -15,14 +15,22 @@ NOW_MS = 1_777_602_000_000.0  # fixed test instant in ms
 
 def test_default_registry_covers_first_tranche_categories() -> None:
     """The first-tranche fixture must include rows for the high-risk
-    categories the spec calls out: track/music, stream live, chat,
-    operator presence, camera classification, HOMAGE, reactions."""
+    categories the spec calls out: track/music (track + source +
+    confidence + vinyl_state), stream live + mode + egress + broadcast
+    safety, chat, operator presence, camera classification, HOMAGE,
+    reactions."""
 
     reg = default_registry()
     paths = {row.key_path for row in reg.rows}
     expected = {
         "current_track",
+        "music.source",
+        "music.confidence",
+        "music.vinyl_state",
         "stream_live",
+        "stream.mode",
+        "stream.egress",
+        "stream.broadcast_safety",
         "chat.recent_count",
         "presence.operator_present",
         "camera.classifications",
@@ -30,6 +38,47 @@ def test_default_registry_covers_first_tranche_categories() -> None:
         "reactions.recent",
     }
     assert expected.issubset(paths), f"missing: {expected - paths}"
+
+
+def test_music_and_stream_extension_rows_have_required_shape() -> None:
+    """The 6 newly-added music + stream rows must declare full witness
+    shape: TTL, witness_kind, public_scope, failure_policy, allowed
+    consumers. Catches drift if a row is added without the full
+    contract."""
+
+    reg = default_registry()
+    by_path = {row.key_path: row for row in reg.rows}
+    new_paths = (
+        "music.source",
+        "music.confidence",
+        "music.vinyl_state",
+        "stream.mode",
+        "stream.egress",
+        "stream.broadcast_safety",
+    )
+    for path in new_paths:
+        row = by_path[path]
+        assert row.ttl_ms > 0, f"{path}: TTL must be positive"
+        assert row.witness_kind, f"{path}: witness_kind required"
+        assert row.public_scope, f"{path}: public_scope required"
+        assert row.allowed_consumers, f"{path}: at least one consumer required"
+        assert row.failure_policy, f"{path}: failure_policy required"
+        # All high-risk public-live rows fail-closed on synthetic-only
+        if row.public_scope == "public-live-only-with-witness":
+            assert row.failure_policy.get("synthetic-only") == "fail-closed", (
+                f"{path}: public-live rows must fail-closed on synthetic-only"
+            )
+
+
+def test_stream_egress_and_broadcast_safety_share_audio_health_surface() -> None:
+    """Both stream.egress and stream.broadcast_safety project from the
+    audio.broadcast_health WCS substrate registered in #2166. Ensures
+    the registry stays consistent with the WCS row's surface_id."""
+
+    reg = default_registry()
+    by_path = {row.key_path: row for row in reg.rows}
+    assert by_path["stream.egress"].wcs_surface_id == "audio.broadcast_health"
+    assert by_path["stream.broadcast_safety"].wcs_surface_id == "audio.broadcast_health"
 
 
 def test_diagnostic_only_prefixes_block_unconditionally() -> None:
