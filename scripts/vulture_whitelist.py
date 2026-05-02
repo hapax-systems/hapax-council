@@ -240,6 +240,7 @@ from shared.world_surface_health_control_adapter import (
     ControlRouteHealthFixtureSet,
 )
 from shared.world_surface_provider_tool_health import ProviderToolRouteHealth
+from shared.world_surface_temporal_perceptual_health import TemporalPerceptualHealthRow
 
 # FastAPI registers this route by decorator; vulture does not follow APIRouter.
 studio_egress_state
@@ -429,6 +430,10 @@ WorldSurfaceHealthFixtureSet.rows_for_fixture_case
 # Provider/tool route health validators are invoked dynamically by Pydantic
 # while projecting model/search/MCP/publication/local routes into WCS rows.
 ProviderToolRouteHealth._validate_route_claim_authority
+
+# Temporal/perceptual WCS health rows are loaded through Pydantic fixture
+# validation; vulture cannot see model_validator invocation.
+TemporalPerceptualHealthRow._validate_temporal_perceptual_row
 
 # Control-surface route health validators are invoked dynamically by Pydantic
 # while projecting MIDI, desktop, private-device, and blocked-hardware rows into

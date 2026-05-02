@@ -1,0 +1,1216 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "world-surface-health-temporal-perceptual-adapter-20260502",
+  "schema_ref": "schemas/world-surface-temporal-perceptual-health.schema.json",
+  "generated_from": [
+    "vault-spec:2026-04-30-canonical-temporal-grounding-ontology",
+    "vault-audit:2026-04-30-temporal-bands-perceptual-grounding-responsible-synthesis",
+    "schema:temporal-band-evidence-envelope.schema.json",
+    "module:shared.perceptual_field_grounding_registry",
+    "schema:world-surface-health-envelope.schema.json"
+  ],
+  "declared_at": "2026-05-02T11:49:00Z",
+  "producer": "cc-task:world-surface-health-temporal-perceptual-adapter",
+  "required_observation_categories": [
+    "temporal_band",
+    "perception_state",
+    "perceptual_field",
+    "stimmung",
+    "autonomous_narration_context",
+    "impingement_evidence"
+  ],
+  "required_temporal_bands": [
+    "retention",
+    "impression",
+    "protention",
+    "surprise"
+  ],
+  "fail_closed_policy": {
+    "stale_temporal_band_allows_current_claim": false,
+    "missing_temporal_band_allows_claim": false,
+    "unknown_temporal_band_allows_claim": false,
+    "unknown_perception_state_allows_public_live": false,
+    "inferred_perceptual_data_satisfies_witness": false,
+    "spanless_perceptual_data_satisfies_grounded_claim": false,
+    "protention_satisfies_current_claim": false,
+    "autonomous_narration_without_wcs_health_allowed": false,
+    "impingement_without_witness_satisfies_claim": false
+  },
+  "metrics_refs": [
+    "metrics:hapax_wcs_temporal_false_grounding_risk_total{cause}"
+  ],
+  "rows": [
+    {
+      "row_id": "temporal.impression.broadcast_health.fresh",
+      "display_name": "Fresh impression: broadcast health",
+      "category": "temporal_band",
+      "temporal_band": "impression",
+      "status": "healthy",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 30,
+        "observed_age_s": 2,
+        "source_ref": "shm:/dev/shm/hapax-temporal/bands.json",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.93,
+      "authority_ceiling": "public_gate_required",
+      "privacy_state": "public_safe",
+      "rights_state": "public_clear",
+      "public_private_posture": "public_live",
+      "source_refs": [
+        "shm:/dev/shm/hapax-temporal/bands.json",
+        "wcs:audio.broadcast_voice.health"
+      ],
+      "producer_refs": [
+        "producer:temporal-bands"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-live-claim-gate"
+      ],
+      "route_refs": [
+        "route:temporal-band:impression"
+      ],
+      "substrate_refs": [
+        "substrate:temporal-bands",
+        "substrate:audio.broadcast_voice.health"
+      ],
+      "capability_refs": [
+        "capability:temporal-bands",
+        "wcs:audio.broadcast_voice.health"
+      ],
+      "evidence_envelope_refs": [
+        "temporal-evidence:impression.broadcast-health.fresh"
+      ],
+      "witness_refs": [
+        "witness:audio.broadcast_voice:world",
+        "witness:audio_safe_for_broadcast:safe"
+      ],
+      "span_refs": [
+        "span:archive.hls.segment00042",
+        "span:audio.broadcast.window.0042"
+      ],
+      "grounding_gate_refs": [
+        "gate:world-surface-grounding:passed",
+        "gate:temporal-band:impression:fresh"
+      ],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [],
+      "blocker_reason": null,
+      "warnings": [
+        "fresh_impression_still_needs_public_event_or_egress_gate_before_public_claim"
+      ],
+      "fallback": {
+        "mode": "none",
+        "reason_code": "fresh_impression_observed",
+        "operator_visible_reason": "Fresh impression evidence is present but this row does not grant public claim authority.",
+        "safe_state": "inspectable_not_public_claimable"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:30Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "healthy_witnessed"
+    },
+    {
+      "row_id": "temporal.retention.camera_scene.stale",
+      "display_name": "Stale retention: camera scene",
+      "category": "temporal_band",
+      "temporal_band": "retention",
+      "status": "stale",
+      "freshness": {
+        "state": "stale",
+        "ttl_s": 30,
+        "observed_age_s": 120,
+        "source_ref": "shm:/dev/shm/hapax-temporal/bands.json",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.88,
+      "authority_ceiling": "evidence_bound",
+      "privacy_state": "public_safe",
+      "rights_state": "public_clear",
+      "public_private_posture": "public_live",
+      "source_refs": [
+        "shm:/dev/shm/hapax-temporal/bands.json",
+        "scene-detector:studio"
+      ],
+      "producer_refs": [
+        "producer:temporal-bands",
+        "producer:studio-scene-detector"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-current-claim-gate"
+      ],
+      "route_refs": [
+        "route:temporal-band:retention"
+      ],
+      "substrate_refs": [
+        "substrate:temporal-bands",
+        "substrate:perceptual-field"
+      ],
+      "capability_refs": [
+        "capability:temporal-bands",
+        "claim:last-observed-only"
+      ],
+      "evidence_envelope_refs": [
+        "temporal-evidence:retention.camera-scene.stale"
+      ],
+      "witness_refs": [
+        "witness:scene.detector.window.0042"
+      ],
+      "span_refs": [
+        "span:scene.detector.window.0042"
+      ],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "stale_temporal_band"
+      ],
+      "blocker_reason": "stale_retention_cannot_ground_current_or_public_live_claim",
+      "warnings": [
+        "retention_requires_last_observed_age_window_language"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "stale_retention_current_claim",
+        "operator_visible_reason": "Retention is only last-observed evidence and is stale for current/live claims.",
+        "safe_state": "last_observed_only_with_age_window"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:30Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "stale"
+    },
+    {
+      "row_id": "temporal.protention.audio_readiness.expected",
+      "display_name": "Protention: audio readiness expected",
+      "category": "temporal_band",
+      "temporal_band": "protention",
+      "status": "degraded",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 20,
+        "observed_age_s": 0,
+        "source_ref": "shm:/dev/shm/hapax-temporal/bands.json",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.74,
+      "authority_ceiling": "speculative",
+      "privacy_state": "public_safe",
+      "rights_state": "public_clear",
+      "public_private_posture": "dry_run",
+      "source_refs": [
+        "shm:/dev/shm/hapax-temporal/bands.json",
+        "wcs:audio.broadcast_voice.health"
+      ],
+      "producer_refs": [
+        "producer:temporal-bands"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:autonomous-narration-preflight"
+      ],
+      "route_refs": [
+        "route:temporal-band:protention"
+      ],
+      "substrate_refs": [
+        "substrate:temporal-bands",
+        "substrate:audio.broadcast_voice.health"
+      ],
+      "capability_refs": [
+        "capability:temporal-bands",
+        "claim:anticipatory-only"
+      ],
+      "evidence_envelope_refs": [
+        "temporal-evidence:protention.audio-readiness.expected"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "protention_as_current"
+      ],
+      "blocker_reason": "protention_cannot_ground_current_or_action_happened_claim",
+      "warnings": [
+        "protention_may_only_render_hedged_anticipatory_language"
+      ],
+      "fallback": {
+        "mode": "dry_run_badge",
+        "reason_code": "protention_anticipatory_only",
+        "operator_visible_reason": "Protention is prediction, not present-tense evidence.",
+        "safe_state": "anticipatory_language_only"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:20Z",
+      "witness_policy": "inferred",
+      "fixture_case": "inferred"
+    },
+    {
+      "row_id": "temporal.surprise.camera_scene.mismatch",
+      "display_name": "Surprise: camera scene mismatch",
+      "category": "temporal_band",
+      "temporal_band": "surprise",
+      "status": "degraded",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 30,
+        "observed_age_s": 2,
+        "source_ref": "shm:/dev/shm/hapax-temporal/bands.json",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.81,
+      "authority_ceiling": "evidence_bound",
+      "privacy_state": "public_safe",
+      "rights_state": "public_clear",
+      "public_private_posture": "dry_run",
+      "source_refs": [
+        "shm:/dev/shm/hapax-temporal/bands.json",
+        "scene-detector:studio"
+      ],
+      "producer_refs": [
+        "producer:temporal-bands",
+        "producer:studio-scene-detector"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:director-diagnostic"
+      ],
+      "route_refs": [
+        "route:temporal-band:surprise"
+      ],
+      "substrate_refs": [
+        "substrate:temporal-bands",
+        "substrate:perceptual-field"
+      ],
+      "capability_refs": [
+        "capability:temporal-bands",
+        "claim:mismatch-only"
+      ],
+      "evidence_envelope_refs": [
+        "temporal-evidence:surprise.camera-scene.mismatch"
+      ],
+      "witness_refs": [
+        "witness:scene.detector.window.0042"
+      ],
+      "span_refs": [
+        "span:scene.detector.window.0042"
+      ],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "surprise_as_current"
+      ],
+      "blocker_reason": "surprise_can_ground_mismatch_not_current_predicted_state",
+      "warnings": [
+        "surprise_requires_fresh_impression_before_current_claim"
+      ],
+      "fallback": {
+        "mode": "degraded_status",
+        "reason_code": "surprise_mismatch_only",
+        "operator_visible_reason": "Surprise may describe mismatch/change, not the expected state as fact.",
+        "safe_state": "mismatch_diagnostic_only"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:30Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "inferred"
+    },
+    {
+      "row_id": "temporal.producer.missing",
+      "display_name": "Missing temporal producer",
+      "category": "temporal_band",
+      "temporal_band": "impression",
+      "status": "missing",
+      "freshness": {
+        "state": "missing",
+        "ttl_s": null,
+        "observed_age_s": null,
+        "source_ref": null,
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.0,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "unknown",
+      "rights_state": "unknown",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "shm:/dev/shm/hapax-temporal/bands.json"
+      ],
+      "producer_refs": [
+        "producer:temporal-bands"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-current-claim-gate"
+      ],
+      "route_refs": [
+        "route:temporal-band:impression"
+      ],
+      "substrate_refs": [
+        "substrate:temporal-bands"
+      ],
+      "capability_refs": [
+        "capability:temporal-bands",
+        "claim:no-current-temporal-band"
+      ],
+      "evidence_envelope_refs": [
+        "temporal-evidence:producer.missing"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "missing_temporal_band"
+      ],
+      "blocker_reason": "temporal_bands_missing",
+      "warnings": [
+        "producer_failure_is_missing_data_not_positive_world_state"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "temporal_bands_missing",
+        "operator_visible_reason": "Temporal bands are missing; no current/live claim may be made.",
+        "safe_state": "unknown_temporal_ground"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:10Z",
+      "witness_policy": "absent",
+      "fixture_case": "missing"
+    },
+    {
+      "row_id": "temporal.producer.unknown",
+      "display_name": "Unknown temporal producer state",
+      "category": "temporal_band",
+      "temporal_band": "impression",
+      "status": "unknown",
+      "freshness": {
+        "state": "unknown",
+        "ttl_s": null,
+        "observed_age_s": null,
+        "source_ref": null,
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.0,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "unknown",
+      "rights_state": "unknown",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "shm:/dev/shm/hapax-temporal/bands.json"
+      ],
+      "producer_refs": [
+        "producer:temporal-bands"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-current-claim-gate"
+      ],
+      "route_refs": [
+        "route:temporal-band:impression"
+      ],
+      "substrate_refs": [
+        "substrate:temporal-bands"
+      ],
+      "capability_refs": [
+        "capability:temporal-bands",
+        "claim:unknown-current-temporal-band"
+      ],
+      "evidence_envelope_refs": [
+        "evidence:temporal-bands:unknown"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "unknown_temporal_band"
+      ],
+      "blocker_reason": "temporal_bands_unknown",
+      "warnings": [
+        "unknown_temporal_band_blocks_current_public_live_claims"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "temporal_bands_unknown",
+        "operator_visible_reason": "Temporal band state is unknown; no current/live claim may be made.",
+        "safe_state": "unknown_temporal_ground"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:10Z",
+      "witness_policy": "absent",
+      "fixture_case": "unknown"
+    },
+    {
+      "row_id": "perception.state.current",
+      "display_name": "Perception state current",
+      "category": "perception_state",
+      "temporal_band": "impression",
+      "status": "healthy",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 8,
+        "observed_age_s": 1,
+        "source_ref": "state:~/.cache/hapax-daimonion/perception-state.json",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.86,
+      "authority_ceiling": "evidence_bound",
+      "privacy_state": "private_only",
+      "rights_state": "private_only",
+      "public_private_posture": "private_only",
+      "source_refs": [
+        "state:~/.cache/hapax-daimonion/perception-state.json"
+      ],
+      "producer_refs": [
+        "producer:hapax-daimonion-perception-loop"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:perceptual-field"
+      ],
+      "route_refs": [
+        "route:perception-state"
+      ],
+      "substrate_refs": [
+        "substrate:perception-state"
+      ],
+      "capability_refs": [
+        "capability:perception-state"
+      ],
+      "evidence_envelope_refs": [
+        "evidence:perception-state:fresh"
+      ],
+      "witness_refs": [
+        "witness:perception-state:mtime"
+      ],
+      "span_refs": [
+        "span:perception-state.window.0042"
+      ],
+      "grounding_gate_refs": [
+        "gate:perception-state:fresh"
+      ],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [],
+      "blocker_reason": null,
+      "warnings": [
+        "perception_state_is_private_input_not_public_claim_authority"
+      ],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "perception_state_private_only",
+        "operator_visible_reason": "Perception state is fresh but remains private-only evidence.",
+        "safe_state": "private_grounding_input"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:08Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "healthy_witnessed"
+    },
+    {
+      "row_id": "perception.state.unknown",
+      "display_name": "Unknown perception state",
+      "category": "perception_state",
+      "temporal_band": "impression",
+      "status": "unknown",
+      "freshness": {
+        "state": "unknown",
+        "ttl_s": null,
+        "observed_age_s": null,
+        "source_ref": null,
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.0,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "unknown",
+      "rights_state": "unknown",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "state:~/.cache/hapax-daimonion/perception-state.json"
+      ],
+      "producer_refs": [
+        "producer:hapax-daimonion-perception-loop"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-current-claim-gate"
+      ],
+      "route_refs": [
+        "route:perception-state"
+      ],
+      "substrate_refs": [
+        "substrate:perception-state"
+      ],
+      "capability_refs": [
+        "capability:perception-state"
+      ],
+      "evidence_envelope_refs": [
+        "evidence:perception-state:unknown"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "unknown_perception_state"
+      ],
+      "blocker_reason": "perception_state_unknown",
+      "warnings": [
+        "unknown_is_not_neutral_for_public_live_claims"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "perception_state_unknown",
+        "operator_visible_reason": "Perception state is unknown and cannot support public/live/current claims.",
+        "safe_state": "unknown_perceptual_ground"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:08Z",
+      "witness_policy": "absent",
+      "fixture_case": "unknown"
+    },
+    {
+      "row_id": "perceptual_field.registry.available",
+      "display_name": "PerceptualField grounding key registry available",
+      "category": "perceptual_field",
+      "temporal_band": "nonclaimable_diagnostic",
+      "status": "healthy",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 300,
+        "observed_age_s": 0,
+        "source_ref": "module:shared.perceptual_field_grounding_registry",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 1.0,
+      "authority_ceiling": "evidence_bound",
+      "privacy_state": "public_safe",
+      "rights_state": "not_applicable",
+      "public_private_posture": "dry_run",
+      "source_refs": [
+        "module:shared.perceptual_field_grounding_registry"
+      ],
+      "producer_refs": [
+        "producer:perceptual-field-grounding-registry"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:perceptual-field-renderer"
+      ],
+      "route_refs": [
+        "route:perceptual-field-grounding-registry"
+      ],
+      "substrate_refs": [
+        "substrate:perceptual-field"
+      ],
+      "capability_refs": [
+        "capability:perceptual-field-grounding-registry"
+      ],
+      "evidence_envelope_refs": [
+        "registry:perceptual-field-grounding"
+      ],
+      "witness_refs": [
+        "witness:perceptual-field-registry:loaded"
+      ],
+      "span_refs": [
+        "span:registry.snapshot.20260502T114900Z"
+      ],
+      "grounding_gate_refs": [
+        "gate:perceptual-field-registry:available"
+      ],
+      "public_event_refs": [],
+      "grounding_key_paths": [
+        "current_track",
+        "stream_live",
+        "stream.egress",
+        "stream.broadcast_safety"
+      ],
+      "false_grounding_risk_causes": [],
+      "blocker_reason": null,
+      "warnings": [
+        "registry_availability_is_diagnostic_not_claim_authority"
+      ],
+      "fallback": {
+        "mode": "dry_run_badge",
+        "reason_code": "registry_available_diagnostic_only",
+        "operator_visible_reason": "Grounding keys are available but raw values still need evidence.",
+        "safe_state": "diagnostic_registry_available"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:54:00Z",
+      "witness_policy": "fixture_only",
+      "fixture_case": "healthy_witnessed"
+    },
+    {
+      "row_id": "perceptual_field.current_track.spanless",
+      "display_name": "Spanless PerceptualField current_track",
+      "category": "perceptual_field",
+      "temporal_band": "impression",
+      "status": "blocked",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 15,
+        "observed_age_s": 1,
+        "source_ref": "module:shared.perceptual_field",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.61,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "public_safe",
+      "rights_state": "missing",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "module:shared.perceptual_field",
+        "registry-key:current_track"
+      ],
+      "producer_refs": [
+        "producer:perceptual-field"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-broadcast"
+      ],
+      "route_refs": [
+        "route:perceptual-field:current_track"
+      ],
+      "substrate_refs": [
+        "substrate:perceptual-field"
+      ],
+      "capability_refs": [
+        "capability:perceptual-field",
+        "registry-key:current_track"
+      ],
+      "evidence_envelope_refs": [
+        "album_state.AlbumStateEnvelope"
+      ],
+      "witness_refs": [
+        "witness:album-state:value-present"
+      ],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [
+        "current_track"
+      ],
+      "false_grounding_risk_causes": [
+        "spanless_perceptual_data"
+      ],
+      "blocker_reason": "span_ref_required_for_public_current_track",
+      "warnings": [
+        "spanless_perceptual_data_cannot_satisfy_grounded_claim"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "perceptual_field_spanless",
+        "operator_visible_reason": "PerceptualField key requires a span ref before public/current claims.",
+        "safe_state": "drop_from_public_prompt"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:15Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "inferred"
+    },
+    {
+      "row_id": "perceptual_field.camera.classifications.inferred",
+      "display_name": "Inferred camera classifications",
+      "category": "perceptual_field",
+      "temporal_band": "impression",
+      "status": "blocked",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 8,
+        "observed_age_s": 1,
+        "source_ref": "module:shared.perceptual_field",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.52,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "private_only",
+      "rights_state": "private_only",
+      "public_private_posture": "private_only",
+      "source_refs": [
+        "module:shared.perceptual_field",
+        "registry-key:camera.classifications"
+      ],
+      "producer_refs": [
+        "producer:perceptual-field"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:director"
+      ],
+      "route_refs": [
+        "route:perceptual-field:camera.classifications"
+      ],
+      "substrate_refs": [
+        "substrate:perceptual-field",
+        "substrate:camera-classification"
+      ],
+      "capability_refs": [
+        "capability:perceptual-field",
+        "registry-key:camera.classifications"
+      ],
+      "evidence_envelope_refs": [
+        "classification.CameraClassificationEnvelope"
+      ],
+      "witness_refs": [],
+      "span_refs": [
+        "span:camera-classification.window.0042"
+      ],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [
+        "camera.classifications"
+      ],
+      "false_grounding_risk_causes": [
+        "inferred_perceptual_data"
+      ],
+      "blocker_reason": "inferred_perceptual_data_cannot_satisfy_witness",
+      "warnings": [
+        "inferred_camera_classification_is_diagnostic_only"
+      ],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "perceptual_field_inferred_only",
+        "operator_visible_reason": "Inferred PerceptualField data cannot satisfy witness floors.",
+        "safe_state": "private_diagnostic_only"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:08Z",
+      "witness_policy": "inferred",
+      "fixture_case": "inferred"
+    },
+    {
+      "row_id": "perceptual_field.grounding_key.missing",
+      "display_name": "Missing PerceptualField grounding key",
+      "category": "perceptual_field",
+      "temporal_band": "nonclaimable_diagnostic",
+      "status": "missing",
+      "freshness": {
+        "state": "missing",
+        "ttl_s": null,
+        "observed_age_s": null,
+        "source_ref": null,
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.0,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "unknown",
+      "rights_state": "unknown",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "module:shared.perceptual_field_grounding_registry",
+        "registry-key:not.a.real.key"
+      ],
+      "producer_refs": [
+        "producer:perceptual-field-grounding-registry"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:perceptual-field-renderer"
+      ],
+      "route_refs": [
+        "route:perceptual-field-grounding-registry"
+      ],
+      "substrate_refs": [
+        "substrate:perceptual-field"
+      ],
+      "capability_refs": [
+        "capability:perceptual-field-grounding-registry",
+        "registry-key:not.a.real.key"
+      ],
+      "evidence_envelope_refs": [
+        "registry:perceptual-field-grounding:missing-key"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "missing_grounding_key"
+      ],
+      "blocker_reason": "grounding_key_not_registered",
+      "warnings": [
+        "raw_untyped_prompt_fact_cannot_satisfy_claim_floor"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "grounding_key_missing",
+        "operator_visible_reason": "No registry row exists for this PerceptualField key.",
+        "safe_state": "drop_from_prompt"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:54:00Z",
+      "witness_policy": "absent",
+      "fixture_case": "missing"
+    },
+    {
+      "row_id": "stimmung.state.fresh",
+      "display_name": "Fresh stimmung state",
+      "category": "stimmung",
+      "temporal_band": "impression",
+      "status": "healthy",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 30,
+        "observed_age_s": 3,
+        "source_ref": "shm:/dev/shm/hapax-stimmung/state.json",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.9,
+      "authority_ceiling": "evidence_bound",
+      "privacy_state": "private_only",
+      "rights_state": "private_only",
+      "public_private_posture": "private_only",
+      "source_refs": [
+        "shm:/dev/shm/hapax-stimmung/state.json"
+      ],
+      "producer_refs": [
+        "producer:visual-layer-aggregator"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:perceptual-field"
+      ],
+      "route_refs": [
+        "route:stimmung-state"
+      ],
+      "substrate_refs": [
+        "substrate:stimmung"
+      ],
+      "capability_refs": [
+        "capability:stimmung"
+      ],
+      "evidence_envelope_refs": [
+        "evidence:stimmung:fresh"
+      ],
+      "witness_refs": [
+        "witness:stimmung-state:mtime"
+      ],
+      "span_refs": [
+        "span:stimmung.context.0042"
+      ],
+      "grounding_gate_refs": [
+        "gate:stimmung:fresh"
+      ],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [],
+      "blocker_reason": null,
+      "warnings": [
+        "stimmung_state_is_context_not_public_world_claim"
+      ],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "stimmung_private_context",
+        "operator_visible_reason": "Stimmung is fresh private context and not public-world proof.",
+        "safe_state": "private_context_only"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:30Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "healthy_witnessed"
+    },
+    {
+      "row_id": "stimmung.state.stale",
+      "display_name": "Stale stimmung state",
+      "category": "stimmung",
+      "temporal_band": "retention",
+      "status": "stale",
+      "freshness": {
+        "state": "stale",
+        "ttl_s": 30,
+        "observed_age_s": 120,
+        "source_ref": "shm:/dev/shm/hapax-stimmung/state.json",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.3,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "private_only",
+      "rights_state": "private_only",
+      "public_private_posture": "private_only",
+      "source_refs": [
+        "shm:/dev/shm/hapax-stimmung/state.json"
+      ],
+      "producer_refs": [
+        "producer:visual-layer-aggregator"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:autonomous-narration-preflight"
+      ],
+      "route_refs": [
+        "route:stimmung-state"
+      ],
+      "substrate_refs": [
+        "substrate:stimmung"
+      ],
+      "capability_refs": [
+        "capability:stimmung"
+      ],
+      "evidence_envelope_refs": [
+        "evidence:stimmung:stale"
+      ],
+      "witness_refs": [
+        "witness:stimmung-state:mtime"
+      ],
+      "span_refs": [
+        "span:stimmung.context.0041"
+      ],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "stale_stimmung"
+      ],
+      "blocker_reason": "stimmung_state_stale",
+      "warnings": [
+        "stale_stimmung_cannot_ground_current_narration_context"
+      ],
+      "fallback": {
+        "mode": "degraded_status",
+        "reason_code": "stimmung_stale",
+        "operator_visible_reason": "Stimmung state is stale and may only render as degraded context.",
+        "safe_state": "stale_context_caveat"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:30Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "stale"
+    },
+    {
+      "row_id": "autonomous_narration.context.ungated",
+      "display_name": "Autonomous narration context without WCS gate",
+      "category": "autonomous_narration_context",
+      "temporal_band": "impression",
+      "status": "blocked",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 10,
+        "observed_age_s": 1,
+        "source_ref": "agent:hapax-daimonion-autonomous-narrative",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.4,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "blocked",
+      "rights_state": "blocked",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "agent:hapax-daimonion-autonomous-narrative",
+        "context:autonomous-narration"
+      ],
+      "producer_refs": [
+        "producer:autonomous-narration"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:voice-clause-verifier"
+      ],
+      "route_refs": [
+        "route:autonomous-narration-context"
+      ],
+      "substrate_refs": [
+        "substrate:autonomous-narration-context"
+      ],
+      "capability_refs": [
+        "capability:autonomous-narration"
+      ],
+      "evidence_envelope_refs": [
+        "evidence:autonomous-narration:ungated-context"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "autonomous_narration_ungated"
+      ],
+      "blocker_reason": "autonomous_narration_requires_wcs_temporal_health_gate",
+      "warnings": [
+        "selection_or_prompt_context_is_not_witnessed_world_outcome"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "autonomous_narration_ungated",
+        "operator_visible_reason": "Autonomous narration context lacks WCS temporal/perceptual gate evidence.",
+        "safe_state": "suppress_public_clause"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:10Z",
+      "witness_policy": "selected_only",
+      "fixture_case": "selected_only"
+    },
+    {
+      "row_id": "impingement.evidence.inferred_only",
+      "display_name": "Inferred impingement evidence",
+      "category": "impingement_evidence",
+      "temporal_band": "retention",
+      "status": "blocked",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 60,
+        "observed_age_s": 5,
+        "source_ref": "bus:/dev/shm/hapax-dmn/impingements.jsonl",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.35,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "private_only",
+      "rights_state": "private_only",
+      "public_private_posture": "private_only",
+      "source_refs": [
+        "bus:/dev/shm/hapax-dmn/impingements.jsonl"
+      ],
+      "producer_refs": [
+        "producer:dmn-impingement-bus"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:affordance-recruitment"
+      ],
+      "route_refs": [
+        "route:dmn-impingement-bus"
+      ],
+      "substrate_refs": [
+        "substrate:impingement-bus"
+      ],
+      "capability_refs": [
+        "capability:impingement-evidence"
+      ],
+      "evidence_envelope_refs": [
+        "evidence:impingement:inferred-only"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "impingement_without_witness"
+      ],
+      "blocker_reason": "impingement_lacks_temporal_witness_and_span",
+      "warnings": [
+        "impingement_is_intent_context_not_public_world_evidence"
+      ],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "impingement_without_witness",
+        "operator_visible_reason": "Impingement evidence has no witness/span and cannot ground a public claim.",
+        "safe_state": "private_intent_context_only"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:50:00Z",
+      "witness_policy": "inferred",
+      "fixture_case": "inferred"
+    }
+  ]
+}
