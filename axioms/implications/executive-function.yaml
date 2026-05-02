@@ -133,6 +133,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-context-001
+  linkage: code-direct
   tier: T1
   text: Agents must maintain sufficient context to explain their current state and
     recent actions when queried.

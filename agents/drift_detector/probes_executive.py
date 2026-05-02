@@ -299,7 +299,67 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_scheduled_agents_have_timers(),
     ),
+    SufficiencyProbe(
+        id="probe-context-001",
+        axiom_id="executive_function",
+        implication_id="ex-context-001",
+        level="component",
+        question=(
+            "Do canonical agent modules expose a query path "
+            "(def status / def describe / @app.get('/status')) so "
+            "the operator can ask what the agent is doing?"
+        ),
+        check=lambda: _check_agents_have_context_query_path(),
+    ),
 ]
+
+
+def _check_agents_have_context_query_path() -> tuple[bool, str]:
+    """Enforces ex-context-001 (executive_function).
+
+    Agents must maintain sufficient context to explain their current
+    state and recent actions when queried. Verifies that agent modules
+    expose at least one of:
+      - `def status(`            (programmatic status method)
+      - `def get_status(`        (programmatic getter)
+      - `def describe(`          (free-text current-state)
+      - `@app.get("/status")`    (HTTP query endpoint via FastAPI)
+      - `@router.get("/status")` (HTTP query endpoint via APIRouter)
+
+    Threshold: ≥5 agent modules expose a query path. Below this, the
+    operator can't reasonably ask what the system is doing without
+    log-tailing.
+    """
+    query_pattern = re.compile(
+        r"def\s+(?:status|get_status|describe|health|info|state|current_state)\s*\(|"
+        r"@(?:app|router)\.get\("
+    )
+
+    agents_dir = AI_AGENTS_DIR / "agents"
+    if not agents_dir.exists():
+        return False, "agents directory not found"
+
+    matching: set[str] = set()
+    for py_file in agents_dir.rglob("*.py"):
+        try:
+            content = py_file.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if query_pattern.search(content):
+            relative = py_file.relative_to(agents_dir)
+            top_module = relative.parts[0] if relative.parts else py_file.name
+            matching.add(top_module)
+
+    if len(matching) >= 5:
+        return True, (
+            f"{len(matching)} agent modules expose a context query path "
+            f"(def status / describe / FastAPI /status route) — "
+            f"ex-context-001 sufficient"
+        )
+    return False, (
+        f"only {len(matching)} agents have a context query path; "
+        f"sample: {', '.join(sorted(matching)[:5])}"
+    )
 
 
 def _check_scheduled_agents_have_timers() -> tuple[bool, str]:
