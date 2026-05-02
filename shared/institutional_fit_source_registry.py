@@ -386,6 +386,115 @@ def _seed_rows() -> tuple[SourceRow, ...]:
             attestation_need="operator_attestation",
             last_verified=_SEED_VERIFIED,
         ),
+        SourceRow(
+            id="schmidt-sciences-ai-safety",
+            program_name="Schmidt Sciences AI Safety",
+            source_url="https://www.schmidtsciences.org/ai-safety/",
+            organization="Schmidt Sciences",
+            category="ai_safety",
+            cadence="ad_hoc",
+            fit_thesis=FitThesis(
+                summary=(
+                    "Schmidt Sciences funds AI-safety research with strong preference for "
+                    "deployment-time interpretability; Hapax's runtime witness substrate "
+                    "and false-grounding detection map to their explicit interest areas"
+                ),
+                grounded_research_link=(
+                    "hapax-research/briefs/2026-04-29-hapax-monetary-revenue-stakeholder-brief.md"
+                ),
+                n1_alignment_strength=8,
+            ),
+            attestation_need="operator_attestation",
+            refusal_triggers=("requires_publishing_track_record",),
+            last_verified=_SEED_VERIFIED,
+        ),
+        SourceRow(
+            id="foresight-existential-hope",
+            program_name="Foresight Institute Existential Hope",
+            source_url="https://foresight.org/grants/",
+            organization="Foresight Institute",
+            category="ai_safety",
+            cadence="rolling",
+            fit_thesis=FitThesis(
+                summary=(
+                    "Foresight's existential-hope thesis funds beneficial-futures work "
+                    "across AI safety + civilizational resilience; Hapax's grounding-research "
+                    "thesis aligns with their explicit interest in deployment-time alignment"
+                ),
+                grounded_research_link=(
+                    "hapax-research/briefs/2026-04-29-hapax-monetary-revenue-stakeholder-brief.md"
+                ),
+                n1_alignment_strength=7,
+            ),
+            attestation_need="operator_attestation",
+            last_verified=_SEED_VERIFIED,
+        ),
+        SourceRow(
+            id="bluedot-impact",
+            program_name="BlueDot Impact AI Safety",
+            source_url="https://aisafetyfundamentals.com/",
+            organization="BlueDot Impact",
+            category="ai_safety",
+            cadence="ad_hoc",
+            fit_thesis=FitThesis(
+                summary=(
+                    "BlueDot Impact convenes AI-safety researchers with strong preference "
+                    "for runtime/deployment-time interventions; Hapax's witness-bound "
+                    "narration substrate is a deployment-time alignment artifact"
+                ),
+                grounded_research_link=(
+                    "hapax-research/briefs/2026-04-29-hapax-monetary-revenue-stakeholder-brief.md"
+                ),
+                n1_alignment_strength=7,
+            ),
+            attestation_need="operator_attestation",
+            last_verified=_SEED_VERIFIED,
+        ),
+        SourceRow(
+            id="macdowell-residency",
+            program_name="MacDowell Artist Residency",
+            source_url="https://www.macdowell.org/apply",
+            organization="MacDowell",
+            category="arts_media",
+            cadence="biannual",
+            fit_thesis=FitThesis(
+                summary=(
+                    "MacDowell residency supports interdisciplinary artists working at the "
+                    "boundary of media + technology; Hapax's livestream as research "
+                    "instrument, externalized-cognition surface, and operator-as-medium "
+                    "thesis fits their interdisciplinary-arts criterion"
+                ),
+                grounded_research_link=(
+                    "hapax-research/briefs/2026-04-29-hapax-monetary-revenue-stakeholder-brief.md"
+                ),
+                n1_alignment_strength=6,
+            ),
+            attestation_need="operator_attestation",
+            refusal_triggers=("requires_in_person_event",),
+            last_verified=_SEED_VERIFIED,
+        ),
+        SourceRow(
+            id="modal-labs-research-credits",
+            program_name="Modal Labs Research Credits",
+            source_url="https://modal.com/pricing",
+            organization="Modal Labs",
+            category="compute_credit",
+            cadence="rolling",
+            fit_thesis=FitThesis(
+                summary=(
+                    "Modal Labs provides serverless GPU compute credits for research "
+                    "workloads; Hapax's local-first n=1 architecture occasionally needs "
+                    "burst-GPU for fine-tunes / batch evals — Modal credits cover the gap "
+                    "without committing to a long-term cloud contract"
+                ),
+                grounded_research_link=(
+                    "hapax-research/briefs/2026-04-29-hapax-monetary-revenue-stakeholder-brief.md"
+                ),
+                n1_alignment_strength=6,
+            ),
+            attestation_need="none",
+            last_verified=_SEED_VERIFIED,
+        ),
     )
 
 
