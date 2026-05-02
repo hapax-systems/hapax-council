@@ -1,4 +1,4 @@
-"""MidiOutput — thin mido wrapper for sending MIDI CC messages.
+"""MidiOutput — thin mido wrapper for sending MIDI CC + note messages.
 
 Lazy-initializes the MIDI output port on first send. Fails gracefully
 if no MIDI hardware is available (logs warning, becomes a no-op).
@@ -69,6 +69,48 @@ class MidiOutput:
         value = max(0, min(127, value))
         m = _ensure_mido()
         msg = m.Message("control_change", channel=channel, control=cc, value=value)
+        self._port.send(msg)
+
+    def send_note_on(self, channel: int, note: int, velocity: int = 100) -> None:
+        """Send a MIDI Note On message.
+
+        Used by M8Sequencer (cc-task: m8-dmn-mute-solo-transport) to
+        trigger the M8's SONG ROW CUE channel mappings (notes 0-7 =
+        transport buttons, 12-19 = track mutes, 20-27 = track solos).
+
+        Args:
+            channel: MIDI channel (0-indexed, 0-15).
+            note: MIDI note number (0-127).
+            velocity: Note velocity (0-127, clamped).
+        """
+        if self._init_failed:
+            return
+        if self._port is None:
+            self._open_port()
+            if self._port is None:
+                return
+
+        velocity = max(0, min(127, velocity))
+        m = _ensure_mido()
+        msg = m.Message("note_on", channel=channel, note=note, velocity=velocity)
+        self._port.send(msg)
+
+    def send_note_off(self, channel: int, note: int) -> None:
+        """Send a MIDI Note Off message (release latched note).
+
+        Args:
+            channel: MIDI channel (0-indexed, 0-15).
+            note: MIDI note number (0-127).
+        """
+        if self._init_failed:
+            return
+        if self._port is None:
+            self._open_port()
+            if self._port is None:
+                return
+
+        m = _ensure_mido()
+        msg = m.Message("note_off", channel=channel, note=note, velocity=0)
         self._port.send(msg)
 
     def _open_port(self) -> None:
