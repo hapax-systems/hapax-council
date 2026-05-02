@@ -11,8 +11,8 @@
 
 pkgname=m8c-hapax
 pkgver=2.2.3
-pkgrel=1
-pkgdesc="m8c carry-fork with /dev/shm RGBA bridge for the Hapax broadcast composite"
+pkgrel=2
+pkgdesc="m8c carry-fork with /dev/shm RGBA + sidecar bridges for the Hapax broadcast composite"
 arch=('x86_64')
 url="https://github.com/laamaa/m8c"
 license=('MIT')

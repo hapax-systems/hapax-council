@@ -353,6 +353,15 @@ operator_activity_signals:
     estimation_reference: "OXI One MIDI clock pulse rate above tempo threshold; direct artefact of operator action; calibrated 2026-04-25"
     calibration_window_s: null
 
+  m8_button_activity_active:
+    claim_name: operator_activity
+    source_category: physical_model
+    p_true_given_h1: 0.70
+    p_true_given_h0: 0.02
+    positive_only: true
+    estimation_reference: "M8 0xFB SLIP packet press rate; direct artefact of operator action on M8 hardware; M8-side analog of OXI clock pulse"
+    calibration_window_s: null
+
   desk_active:
     claim_name: operator_activity
     source_category: physical_model

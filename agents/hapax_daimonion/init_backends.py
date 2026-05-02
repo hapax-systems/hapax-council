@@ -193,6 +193,13 @@ def register_perception_backends(daemon: VoiceDaemon) -> None:
             "backends", "PhoneAwarenessBackend", "info", "not available"
         )
 
+    try:
+        from agents.hapax_daimonion.backends.m8_buttons import M8ButtonsBackend
+
+        daemon.perception.register_backend(M8ButtonsBackend())
+    except Exception:
+        daemon.degradation_registry.record("backends", "M8ButtonsBackend", "info", "not available")
+
     # Bayesian presence engine (fuses all signals into presence probability)
     if daemon.cfg.presence_bayesian_enabled:
         try:

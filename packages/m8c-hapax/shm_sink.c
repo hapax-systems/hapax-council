@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 /* M8 LCD native resolution (pre-window-scaling). main_texture in
@@ -168,11 +169,99 @@ void shm_sink_publish(void *renderer, void *texture) {
   write_sidecar();
 }
 
+/* Hardware id → human-readable model name (m8c command.c lookup table). */
+static const char *hardware_name_for(uint8_t hardware_id) {
+  switch (hardware_id) {
+  case 0:
+    return "Headless";
+  case 1:
+    return "Beta M8";
+  case 2:
+    return "Production M8";
+  case 3:
+    return "Production M8 Model:02";
+  default:
+    return "Unknown";
+  }
+}
+
+/* Atomic JSON sidecar write helper. tmp + rename so consumers always
+ * see a complete document. */
+static void write_json_sidecar(const char *path, const char *json_body) {
+  char tmp_path[280];
+  int written = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+  if (written <= 0 || (size_t)written >= sizeof(tmp_path)) {
+    return;
+  }
+  FILE *fp = fopen(tmp_path, "w");
+  if (!fp) {
+    return;
+  }
+  fputs(json_body, fp);
+  fclose(fp);
+  rename(tmp_path, path);
+}
+
+/* ISO-8601 UTC timestamp into out (assumed >= 25 bytes). */
+static void iso8601_now(char *out, size_t out_size) {
+  time_t now = time(NULL);
+  struct tm tm_utc;
+  gmtime_r(&now, &tm_utc);
+  strftime(out, out_size, "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+}
+
+void shm_sink_publish_buttons(uint8_t mask, uint8_t indicator) {
+  /* M8 0xFB joypad-keypressed-state — operator-engagement signal.
+   * Spec: agents/hapax_daimonion/backends/m8_buttons.py ingests this. */
+  mkdir(SHM_SINK_DEFAULT_DIR, 0755);
+  char ts[32];
+  iso8601_now(ts, sizeof(ts));
+  char body[256];
+  int n = snprintf(body, sizeof(body),
+                   "{\"mask\":%u,\"indicator\":%u,\"ts\":\"%s\"}\n",
+                   (unsigned)mask, (unsigned)indicator, ts);
+  if (n <= 0 || (size_t)n >= sizeof(body)) {
+    return;
+  }
+  write_json_sidecar(SHM_SINK_DEFAULT_DIR "/m8-buttons.json", body);
+}
+
+void shm_sink_publish_info(uint8_t hardware_id,
+                           uint8_t major,
+                           uint8_t minor,
+                           uint8_t patch,
+                           uint8_t font_mode) {
+  /* M8 0xFF system_info — cockpit firmware-drift surface.
+   * Consumed by agents/health_monitor/checks/m8_firmware.py. */
+  mkdir(SHM_SINK_DEFAULT_DIR, 0755);
+  char ts[32];
+  iso8601_now(ts, sizeof(ts));
+  char body[384];
+  int n = snprintf(body, sizeof(body),
+                   "{\"hardware_id\":%u,\"hardware_name\":\"%s\","
+                   "\"firmware\":\"%u.%u.%u\",\"font_mode\":%u,"
+                   "\"ts\":\"%s\"}\n",
+                   (unsigned)hardware_id, hardware_name_for(hardware_id),
+                   (unsigned)major, (unsigned)minor, (unsigned)patch,
+                   (unsigned)font_mode, ts);
+  if (n <= 0 || (size_t)n >= sizeof(body)) {
+    return;
+  }
+  write_json_sidecar(SHM_SINK_DEFAULT_DIR "/m8-info.json", body);
+}
+
 void shm_sink_shutdown(void) {
   if (sink_fd >= 0) {
     close(sink_fd);
     sink_fd = -1;
   }
+  /* Unlink sidecar JSONs so consumers detect M8 disconnect by file
+   * absence (see m8_buttons.py + m8_firmware.py). The display .rgba
+   * file is intentionally NOT unlinked — its mtime is the disconnect
+   * signal there, matching the existing Reverie external_rgba
+   * pattern. */
+  unlink(SHM_SINK_DEFAULT_DIR "/m8-buttons.json");
+  unlink(SHM_SINK_DEFAULT_DIR "/m8-info.json");
 }
 
 #else /* !USE_SHM_SINK */
@@ -181,6 +270,21 @@ int shm_sink_init(void) { return 0; }
 void shm_sink_publish(void *renderer, void *texture) {
   (void)renderer;
   (void)texture;
+}
+void shm_sink_publish_buttons(uint8_t mask, uint8_t indicator) {
+  (void)mask;
+  (void)indicator;
+}
+void shm_sink_publish_info(uint8_t hardware_id,
+                           uint8_t major,
+                           uint8_t minor,
+                           uint8_t patch,
+                           uint8_t font_mode) {
+  (void)hardware_id;
+  (void)major;
+  (void)minor;
+  (void)patch;
+  (void)font_mode;
 }
 void shm_sink_shutdown(void) {}
 
