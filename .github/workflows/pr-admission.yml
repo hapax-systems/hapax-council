@@ -1,0 +1,99 @@
+name: pr-admission
+
+# Server-side enforcement for the PR admission freeze governor.
+#
+# Spec: hapax-research/specs/2026-05-01-pr-admission-freeze-governor.md
+#
+# Reads .github/pr-admission-state.yaml (the repo-mirrored governor state).
+# When mode is normal: pass.
+# When mode is drain/frozen:
+#   - PRs whose head branch is in the freeze snapshot: pass.
+#   - All other PRs: fail with "PR admission frozen" message.
+#
+# This is the layer that catches detached-HEAD pushes and other ways the
+# local hook can be bypassed.
+#
+# Exception-token-from-PR-body validation is deferred to P3 of the governor
+# task; the local CLI mint-exception command exists but server-side
+# consumption requires careful escaping of PR-body input which lands in a
+# follow-up PR.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-admission:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Read governor state
+        id: state
+        run: |
+          set -euo pipefail
+          state_file=".github/pr-admission-state.yaml"
+          if [ ! -f "$state_file" ]; then
+            echo "mode=normal" >> "$GITHUB_OUTPUT"
+            echo "snapshot=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mode=$(grep -E '^mode:' "$state_file" | awk '{print $2}' | tr -d '"' | head -1)
+          [ -n "$mode" ] || mode="normal"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          # Extract snapshot branches (one per line)
+          snapshot=$(awk '
+            /^allowed_existing_branches:/ { in_list=1; next }
+            in_list && /^[[:space:]]*-[[:space:]]/ {
+              gsub(/^[[:space:]]*-[[:space:]]*/, "")
+              gsub(/^"/, "")
+              gsub(/"$/, "")
+              print
+              next
+            }
+            in_list && /^[^[:space:]-]/ { in_list=0 }
+          ' "$state_file" | tr '\n' ' ')
+          echo "snapshot=$snapshot" >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate admission
+        env:
+          MODE: ${{ steps.state.outputs.mode }}
+          SNAPSHOT: ${{ steps.state.outputs.snapshot }}
+          BRANCH: ${{ github.head_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          echo "Governor mode: $MODE"
+          echo "PR #$PR_NUMBER head branch: $BRANCH"
+          echo "Snapshot branches: ${SNAPSHOT:-<none>}"
+
+          if [ "$MODE" = "normal" ]; then
+            echo "ADMISSION: PASS — governor is normal."
+            exit 0
+          fi
+
+          # Check snapshot membership.
+          for b in $SNAPSHOT; do
+            if [ "$b" = "$BRANCH" ]; then
+              echo "ADMISSION: PASS — branch was in the freeze snapshot."
+              exit 0
+            fi
+          done
+
+          echo ""
+          echo "ADMISSION: FAIL — governor mode is $MODE."
+          echo ""
+          echo "Branch is not in the freeze snapshot."
+          echo ""
+          echo "To resolve:"
+          echo "  - If this is a fix to a PR open at freeze time, push to that branch."
+          echo "  - If this is a critical exception, operator can mint a token."
+          echo "  - Otherwise wait for drain to clear and freeze to lift."
+          exit 1
