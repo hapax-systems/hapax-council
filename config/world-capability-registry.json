@@ -5,7 +5,8 @@
     "vault:20-projects/hapax-research/specs/2026-04-29-world-capability-surface-parent-spec.md",
     "vault:20-projects/hapax-research/specs/2026-04-29-semantic-substrate-registry-generalization.md",
     "vault:20-projects/hapax-research/specs/2026-04-29-capability-grounding-contract-envelope.md",
-    "vault:20-projects/hapax-research/specs/2026-04-29-audio-reference-world-surface.md"
+    "vault:20-projects/hapax-research/specs/2026-04-29-audio-reference-world-surface.md",
+    "vault:20-projects/hapax-research/specs/2026-04-29-world-surface-health-no-false-grounding.md"
   ],
   "records": [
     {
@@ -279,6 +280,148 @@
       },
       "health_signal": "shared.broadcast_audio_health",
       "notes": "Five distinct blocker categories preserved per broadcast-audio-health-world-surface acceptance: unsafe, quiet_off_air, stale, no_leak_failed, unknown. Consumers MUST read this surface_id for audibility decisions; commanded TTS without an egress marker witness is NOT public-audio success."
+    },
+    {
+      "schema_version": 1,
+      "capability_id": "visual.surface_health",
+      "capability_name": "Visual surface health",
+      "description": "Observation surface projecting per-camera frame freshness, lane availability, compositor renderability, public aperture, and archive evidence into a public-claim-bearing world-state row. Director, programme scheduler, and public-event adapters consume this surface_id to gate public-visual claims on fresh, witnessed evidence \u2014 separating rendered, observed, archived, and public-live as distinct evidence classes per the world-surface-health-no-false-grounding spec.",
+      "daemon": "studio-compositor",
+      "realm": "world_state",
+      "domain": "camera",
+      "direction": "observe",
+      "intent_family": "visual_witness",
+      "recruitment_family": "visual_health_witness",
+      "surface_refs": [
+        "substrate:visual.surface_health",
+        "evidence:camera_frame_freshness",
+        "evidence:compositor_renderability",
+        "evidence:visual_lane_availability"
+      ],
+      "substrate_refs": [
+        "visual.surface_health",
+        "camera.studio_compositor_frame",
+        "camera.studio_rgb_fleet"
+      ],
+      "lane_refs": [
+        "lane:studio_visual",
+        "lane:public_event"
+      ],
+      "route_refs": [
+        "route:visual.surface_health"
+      ],
+      "producer": "studio-compositor",
+      "consumer_refs": [
+        "studio-compositor-director",
+        "programme-scheduler",
+        "research-vehicle-public-event"
+      ],
+      "grounding_role": "supplied_evidence_generator",
+      "authority_ceiling": "evidence_bound",
+      "grounding_status": "public_claim_bearing",
+      "freshness_ttl_s": 30,
+      "availability_state": "blocked",
+      "evidence_envelope_requirements": {
+        "required_fields": [
+          "capability_id",
+          "contract_id",
+          "substrate_refs",
+          "grounding_role",
+          "producer",
+          "source_items",
+          "observation_items",
+          "claim_items",
+          "citations",
+          "provenance",
+          "freshness",
+          "rights_state",
+          "privacy_state",
+          "gate_refs",
+          "refusal_or_uncertainty",
+          "tool_errors",
+          "raw_source_hashes",
+          "replay_refs",
+          "witness_refs"
+        ],
+        "required_evidence_classes": [
+          "fresh_state_file",
+          "nonblank_frame",
+          "egress_acceptance"
+        ],
+        "inferred_context_satisfies_witness": false,
+        "missing_evidence_state": "blocked"
+      },
+      "witness_requirements": [
+        {
+          "witness_id": "frame_freshness_witness",
+          "evidence_classes": [
+            "fresh_state_file",
+            "mtime"
+          ],
+          "required_for": [
+            "visual_lane_renderable",
+            "no_stale_frame"
+          ],
+          "freshness_ttl_s": 30,
+          "description": "Per-camera frame freshness from compositor metrics (127.0.0.1:9482); each lane must have a recent frame delivered within the TTL or fall back to fail-closed."
+        },
+        {
+          "witness_id": "compositor_renderability_witness",
+          "evidence_classes": [
+            "nonblank_frame"
+          ],
+          "required_for": [
+            "visual_public_audible",
+            "no_blank_output"
+          ],
+          "freshness_ttl_s": 60,
+          "description": "Compositor produces non-blank composed frames at the current layout \u2014 gates the no-blank-broadcast invariant separately from per-lane freshness."
+        },
+        {
+          "witness_id": "public_aperture_witness",
+          "evidence_classes": [
+            "egress_acceptance"
+          ],
+          "required_for": [
+            "public_visual_safe"
+          ],
+          "freshness_ttl_s": 60,
+          "description": "Public aperture state (HLS / RTMP egress) actually carrying frames downstream; separate evidence class from local renderability."
+        }
+      ],
+      "public_claim_policy": {
+        "claim_private": true,
+        "claim_dry_run": true,
+        "claim_public_live": false,
+        "claim_archive": true,
+        "claim_monetizable": false,
+        "requires_egress_public_claim": true,
+        "requires_audio_safe": false,
+        "requires_grounding_gate": true,
+        "requires_rights_manifest": false,
+        "requires_privacy_public_safe": true,
+        "requires_provenance": true,
+        "requires_operator_action": false,
+        "allowed_surface_refs": [],
+        "denied_surface_refs": [
+          "public:*"
+        ]
+      },
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "visual_freshness_evidence_not_present"
+      ],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "visual_health_witness_missing",
+        "reason": "Public visual claims fail closed when frame freshness is stale, compositor produces blank output, or public aperture rejects egress. Distinct blocker per evidence class preserves diagnostic clarity (rendered vs observed vs archived vs public-live)."
+      },
+      "health_signal": "shared.world_surface_health",
+      "notes": "Four distinct blocker categories preserved per world-surface-health-visual-adapter acceptance: rendered, observed, archived, public-live. Each is a separate evidence class in the witness requirements; commanded compositor render without an egress witness is NOT public-visual success."
     },
     {
       "schema_version": 1,

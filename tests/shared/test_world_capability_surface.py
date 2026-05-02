@@ -230,3 +230,74 @@ def test_audio_broadcast_health_witness_requirements_cover_marker_and_safety() -
         w for w in record.witness_requirements if w.witness_id == "broadcast_egress_marker_witness"
     )
     assert "no_quiet_off_air" in marker.required_for
+
+
+# ── visual.surface_health acceptance criteria ────────────────────────
+
+
+def test_visual_surface_health_registered() -> None:
+    """Acceptance: public visual WCS row exists for camera/lane/frame
+    health. Director / programme / public-event consumers can address
+    it by surface_id."""
+    registry = load_world_capability_registry()
+    record = next(
+        (r for r in registry.records if r.capability_id == "visual.surface_health"),
+        None,
+    )
+    assert record is not None, (
+        "visual.surface_health must be in WCS registry per "
+        "world-surface-health-visual-adapter acceptance"
+    )
+    assert record.realm == "world_state"
+    assert record.direction == "observe"
+    assert record.grounding_status == "public_claim_bearing"
+    assert record.producer == "studio-compositor"
+
+
+def test_visual_surface_health_consumers_include_director_programme_public_event() -> None:
+    """Acceptance: director, programme, public-event consumers can read
+    the same surface id."""
+    registry = load_world_capability_registry()
+    record = next(r for r in registry.records if r.capability_id == "visual.surface_health")
+    consumer_set = set(record.consumer_refs)
+    assert "studio-compositor-director" in consumer_set
+    assert "programme-scheduler" in consumer_set
+    assert "research-vehicle-public-event" in consumer_set
+
+
+def test_visual_surface_health_fails_closed_without_witness() -> None:
+    """Acceptance: surface starts blocked; only fresh frame + non-blank
+    + public aperture witnesses let it claim public visual safety."""
+    registry = load_world_capability_registry()
+    record = next(r for r in registry.records if r.capability_id == "visual.surface_health")
+    assert record.availability_state == "blocked"
+    assert record.public_claim_policy.claim_public_live is False
+    assert record.public_claim_policy.requires_egress_public_claim is True
+    # Notes documents the 4-category blocker invariant
+    notes_lower = record.notes.lower()
+    assert "rendered" in notes_lower
+    assert "observed" in notes_lower
+    assert "archived" in notes_lower
+
+
+def test_visual_surface_health_witness_requirements_separate_render_from_egress() -> None:
+    """Acceptance: rendered, observed, archived, public-live are
+    SEPARATE evidence classes — commanded render without egress witness
+    is NOT public-visual success."""
+    registry = load_world_capability_registry()
+    record = next(r for r in registry.records if r.capability_id == "visual.surface_health")
+    witness_ids = {w.witness_id for w in record.witness_requirements}
+    assert "frame_freshness_witness" in witness_ids, (
+        "per-lane frame freshness must be a distinct witness"
+    )
+    assert "compositor_renderability_witness" in witness_ids, (
+        "non-blank compositor output must be a distinct witness (separate from per-lane freshness)"
+    )
+    assert "public_aperture_witness" in witness_ids, (
+        "public aperture / egress must be a distinct witness (separate from local renderability)"
+    )
+    # The aperture witness gates the public-visual claim specifically
+    aperture = next(
+        w for w in record.witness_requirements if w.witness_id == "public_aperture_witness"
+    )
+    assert "public_visual_safe" in aperture.required_for
