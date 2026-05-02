@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 description: |
   Canonical workstation audio topology for the live L-12 broadcast graph.
 
@@ -14,13 +14,18 @@ description: |
   nodes, params.* records the side that cannot be represented structurally yet
   (for example playback_target, capture_positions, and fail_closed).
 
+  Schema v2 (2026-05-02): hw: fields now use symbolic ALSA card IDs
+  (`hw:CARD=L12`) pinned by config/udev/rules.d/50-hapax-alsa-card-ids.rules,
+  rather than numeric `hw:11` style. Numeric indices drift across reboots
+  and replug order; symbolic names are stable per-device.
+
 nodes:
   # L-12 hardware endpoints.
   - id: l12-capture
     kind: alsa_source
     pipewire_name: alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input
     description: ZOOM LiveTrak L-12 multichannel USB capture
-    hw: hw:11
+    hw: hw:CARD=L12
     channels:
       count: 14
       positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11, AUX12, AUX13]
@@ -32,7 +37,7 @@ nodes:
     kind: alsa_sink
     pipewire_name: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
     description: ZOOM LiveTrak L-12 USB return, FL/FR/RL/RR
-    hw: surround40:11
+    hw: surround40:CARD=L12
     channels:
       count: 4
       positions: [FL, FR, RL, RR]
@@ -43,7 +48,7 @@ nodes:
     kind: alsa_sink
     pipewire_name: alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo
     description: Blue Yeti headphone monitor, off-L-12 private endpoint
-    hw: front:14
+    hw: front:CARD=Yeti
     channels:
       count: 2
       positions: [FL, FR]
@@ -360,7 +365,7 @@ nodes:
     kind: alsa_source
     pipewire_name: alsa_input.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-input
     description: Torso S-4 pro-audio multichannel input
-    hw: hw:1
+    hw: hw:CARD=S4
     channels:
       count: 10
       positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9]
@@ -371,7 +376,7 @@ nodes:
     kind: alsa_sink
     pipewire_name: alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output
     description: Torso S-4 pro-audio multichannel output
-    hw: hw:1
+    hw: hw:CARD=S4
     channels:
       count: 10
       positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9]

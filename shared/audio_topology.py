@@ -194,10 +194,13 @@ class TopologyDescriptor(BaseModel, frozen=True):
 
     Versioning: ``schema_version`` increments on breaking schema
     changes so older descriptors can be migrated explicitly. Current
-    = 1.
+    = 2 (2026-05-02 — symbolic ALSA card-id migration: hw: fields use
+    ``hw:CARD=<id>`` pinned by udev rather than fragile numeric indices).
+    Schema 1 still parses for backward compatibility; new descriptors
+    write 2.
     """
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     description: str = ""
     nodes: list[Node]
     edges: list[Edge] = Field(default_factory=list)
