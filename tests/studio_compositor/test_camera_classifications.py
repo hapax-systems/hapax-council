@@ -15,7 +15,14 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from agents.studio_compositor.config import _DEFAULT_CAMERAS, _default_config
+import yaml
+
+from agents.studio_compositor.config import (
+    _DEFAULT_CAMERAS,
+    _default_config,
+    _enrich_camera_with_defaults,
+    load_config,
+)
 from agents.studio_compositor.models import CameraSpec
 from shared.perceptual_field import PerceptualField
 
@@ -239,3 +246,125 @@ class TestPerceptualFieldRoundtrip:
         with patch.object(pf, "_CAMERA_CLASSIFICATIONS", missing):
             field = pf.build_perceptual_field()
         assert field.camera_classifications == {}
+
+
+# ── Audit QW3: enrich operator yaml from defaults by role ──────────────
+
+
+class TestEnrichCameraWithDefaults:
+    """Operator yaml configs authored before task #135 omit semantic_role
+    et al. The CameraSpec model defaults silently downgrade them to
+    "unspecified" — which leaves camera-classifications.json
+    uninformative and breaks FollowModeController's semantic biases.
+    `_enrich_camera_with_defaults` fills missing fields per role; this
+    suite pins the contract.
+
+    Audit: /tmp/effect-cam-orchestration-audit-2026-05-02.md §R3 / §QW3
+    cc-task: scene-classifier-publish-restore
+    """
+
+    def test_yaml_without_semantics_enriched(self) -> None:
+        """A yaml-style camera spec (role+device only) gains semantic
+        metadata from _DEFAULT_CAMERAS."""
+        spec = {
+            "role": "brio-operator",
+            "device": "/dev/v4l/by-id/something",
+            "width": 1280,
+            "height": 720,
+            "input_format": "mjpeg",
+        }
+        enriched = _enrich_camera_with_defaults(spec)
+        assert enriched["semantic_role"] == "operator-face"
+        assert enriched["subject_ontology"] == ["person"]
+        assert enriched["angle"] == "front"
+        assert enriched["operator_visible"] is True
+        assert enriched["ambient_priority"] == 7
+        # Original fields preserved.
+        assert enriched["device"] == spec["device"]
+        assert enriched["width"] == 1280
+
+    def test_explicit_operator_value_preserved(self) -> None:
+        """Operator overrides win — defaults only fill MISSING fields."""
+        spec = {
+            "role": "brio-operator",
+            "device": "/dev/v4l/by-id/something",
+            "semantic_role": "custom-override",
+            "ambient_priority": 9,
+        }
+        enriched = _enrich_camera_with_defaults(spec)
+        assert enriched["semantic_role"] == "custom-override"
+        assert enriched["ambient_priority"] == 9
+        # Non-overridden fields still get filled.
+        assert enriched["subject_ontology"] == ["person"]
+        assert enriched["angle"] == "front"
+
+    def test_unknown_role_no_enrichment(self) -> None:
+        """No matching default → spec returned unchanged (no semantics added)."""
+        spec = {"role": "ghost-camera-role", "device": "/dev/null"}
+        enriched = _enrich_camera_with_defaults(spec)
+        # No semantic fields added (caller relies on CameraSpec defaults).
+        assert "semantic_role" not in enriched
+        assert "subject_ontology" not in enriched
+
+    def test_missing_role_no_enrichment(self) -> None:
+        """A spec without role can't be matched to defaults; return as-is."""
+        spec = {"device": "/dev/null"}
+        enriched = _enrich_camera_with_defaults(spec)
+        assert enriched == spec
+
+    def test_load_config_enriches_operator_yaml(self, tmp_path: Path) -> None:
+        """The audit's specific failure mode: a yaml that lists 6 cameras
+        with role+device only must produce 6 CameraSpec instances with
+        correct semantic_role per role, NOT all 'unspecified'."""
+        yaml_payload = {
+            "cameras": [
+                {"role": "brio-operator", "device": "/dev/v4l/brio-op"},
+                {"role": "c920-desk", "device": "/dev/v4l/c920-desk"},
+                {"role": "c920-room", "device": "/dev/v4l/c920-room"},
+                {"role": "c920-overhead", "device": "/dev/v4l/c920-oh"},
+                {"role": "brio-room", "device": "/dev/v4l/brio-rm"},
+                {"role": "brio-synths", "device": "/dev/v4l/brio-syn"},
+            ]
+        }
+        cfg_path = tmp_path / "compositor.yaml"
+        cfg_path.write_text(yaml.safe_dump(yaml_payload))
+        config = load_config(cfg_path)
+        roles_to_semantic = {cam.role: cam.semantic_role for cam in config.cameras}
+        assert roles_to_semantic == {
+            "brio-operator": "operator-face",
+            "c920-desk": "operator-hands",
+            "c920-room": "room-wide",
+            "c920-overhead": "operator-desk-topdown",
+            "brio-room": "outboard-gear",
+            "brio-synths": "turntables",
+        }
+        # And NONE of them is the unspecified default.
+        for cam in config.cameras:
+            assert cam.semantic_role != "unspecified"
+
+    def test_load_config_preserves_operator_override_per_camera(self, tmp_path: Path) -> None:
+        """If the operator EXPLICITLY sets a semantic_role in the yaml,
+        load_config must not overwrite it with the default."""
+        yaml_payload = {
+            "cameras": [
+                {
+                    "role": "brio-operator",
+                    "device": "/dev/v4l/brio-op",
+                    "semantic_role": "custom-operator-face-role",
+                },
+            ]
+        }
+        cfg_path = tmp_path / "compositor.yaml"
+        cfg_path.write_text(yaml.safe_dump(yaml_payload))
+        config = load_config(cfg_path)
+        assert config.cameras[0].semantic_role == "custom-operator-face-role"
+
+    def test_load_config_default_path_still_works(self, tmp_path: Path) -> None:
+        """When no yaml exists, _default_config (which already has full
+        semantics) is used — enrichment is a no-op safety net."""
+        missing = tmp_path / "does-not-exist.yaml"
+        config = load_config(missing)
+        # Should equal the in-memory defaults (full 6 cameras with semantics).
+        assert len(config.cameras) == len(_DEFAULT_CAMERAS)
+        for cam, default in zip(config.cameras, _DEFAULT_CAMERAS, strict=True):
+            assert cam.semantic_role == default["semantic_role"]

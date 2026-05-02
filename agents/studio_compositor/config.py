@@ -135,6 +135,53 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
 ]
 
 
+# Semantic-classification fields added in task #135 (post-yaml-format).
+# Operator yaml configs authored before that task omit these and the
+# CameraSpec model defaults silently downgrade them to "unspecified",
+# which leaves /dev/shm/hapax-compositor/camera-classifications.json
+# uninformative and breaks FollowModeController's semantic biases. The
+# load path enriches missing fields from _DEFAULT_CAMERAS (keyed by
+# role) so existing operator yamls keep working without editing.
+_SEMANTIC_CAMERA_FIELDS: tuple[str, ...] = (
+    "semantic_role",
+    "subject_ontology",
+    "angle",
+    "operator_visible",
+    "ambient_priority",
+)
+
+
+def _enrich_camera_with_defaults(spec: dict[str, Any]) -> dict[str, Any]:
+    """Fill missing semantic-classification fields from _DEFAULT_CAMERAS by role.
+
+    Operator overrides win — only fields ABSENT from ``spec`` are filled.
+    Unknown roles (no matching default) get no enrichment and keep the
+    CameraSpec model defaults. See cc-task
+    ``scene-classifier-publish-restore`` (audit QW3) for context.
+    """
+    role = spec.get("role")
+    if not role:
+        return spec
+    for default in _DEFAULT_CAMERAS:
+        if default.get("role") != role:
+            continue
+        enriched = dict(spec)
+        filled: list[str] = []
+        for key in _SEMANTIC_CAMERA_FIELDS:
+            if key in enriched or key not in default:
+                continue
+            enriched[key] = default[key]
+            filled.append(key)
+        if filled:
+            log.info(
+                "compositor config: enriched camera %r from defaults (%s)",
+                role,
+                ", ".join(filled),
+            )
+        return enriched
+    return spec
+
+
 def _default_config() -> CompositorConfig:
     return CompositorConfig(cameras=[CameraSpec(**c) for c in _DEFAULT_CAMERAS])
 
@@ -144,6 +191,11 @@ def load_config(path: Path | None = None) -> CompositorConfig:
     if config_path.exists():
         try:
             data = yaml.safe_load(config_path.read_text()) or {}
+            cameras = data.get("cameras")
+            if isinstance(cameras, list):
+                data["cameras"] = [
+                    _enrich_camera_with_defaults(c) if isinstance(c, dict) else c for c in cameras
+                ]
             return CompositorConfig(**data)
         except Exception as exc:
             log.warning("Failed to load config from %s: %s -- using defaults", config_path, exc)
