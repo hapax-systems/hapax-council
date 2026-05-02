@@ -246,6 +246,7 @@ implications:
     AND has stronger enforcement (T1 review vs T2 warn). Broader,
     stronger-tier rule subsumes the narrower duplicate.
 - id: ex-doc-001
+  linkage: code-direct
   tier: T3
   text: Documentation must focus on "what this does for you" rather than "how this
     works internally".

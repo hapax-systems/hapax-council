@@ -360,7 +360,61 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_agent_outputs_have_next_actions(),
     ),
+    SufficiencyProbe(
+        id="probe-doc-001",
+        axiom_id="executive_function",
+        implication_id="ex-doc-001",
+        level="component",
+        question=(
+            "Do agent docstrings + READMEs use operator-focused language "
+            "('for the operator', 'you can', 'operator-physical') rather "
+            "than internal-implementation jargon?"
+        ),
+        check=lambda: _check_docs_operator_focused(),
+    ),
 ]
+
+
+def _check_docs_operator_focused() -> tuple[bool, str]:
+    """Enforces ex-doc-001 (executive_function).
+
+    Documentation must focus on "what this does for you" rather than
+    "how this works internally". Scans agent files for operator-
+    focused language patterns (for the operator, you can,
+    operator-physical, what this does for you).
+
+    Threshold: >= 10 modules use operator-focused docstring language.
+    """
+    operator_focused_pattern = re.compile(
+        r"for the operator|"
+        r"\byou can\b|"
+        r"\byour\b|"
+        r"operator-physical|"
+        r"what this does for you",
+        re.IGNORECASE,
+    )
+
+    agents_dir = AI_AGENTS_DIR / "agents"
+    if not agents_dir.exists():
+        return False, "agents directory not found"
+
+    matching: set[str] = set()
+    for py_file in agents_dir.rglob("*.py"):
+        try:
+            content = py_file.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if operator_focused_pattern.search(content):
+            matching.add(py_file.name)
+
+    if len(matching) >= 10:
+        return True, (
+            f"{len(matching)} agent files use operator-focused doc language - ex-doc-001 sufficient"
+        )
+    return False, (
+        f"only {len(matching)} files have operator-focused docs; "
+        f"sample: {', '.join(sorted(matching)[:5])}"
+    )
 
 
 def _check_agent_outputs_have_next_actions() -> tuple[bool, str]:
