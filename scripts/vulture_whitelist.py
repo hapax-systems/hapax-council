@@ -1214,6 +1214,22 @@ PaymentEvent._handle_is_stripe_id
 PaymentEvent._currency_is_iso_4217
 StripePaymentLinkRailReceiver.ingest_webhook
 
+# Patreon receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Patreon rail).
+# Pydantic field_validator hooks (Patreon vanity slug + ISO 4217 currency)
+# invoked at construction; ingest_webhook is the public receiver entry-point
+# called by the downstream FastAPI webhook handler bridging Patreon deliveries
+# (separate cc-task). HMAC MD5 + JSON:API included[] resource walking are the
+# new shapes this rail introduces vs the prior four.
+from shared.patreon_receive_only_rail import (
+    PatreonRailReceiver,
+    PledgeEvent,
+)
+
+PledgeEvent._handle_is_vanity_only
+PledgeEvent._currency_is_iso_4217
+PatreonRailReceiver.ingest_webhook
+
 # Ko-fi receive-only rail — cc-task
 # publication-bus-monetization-rails-surfaces (Phase 0, Ko-fi rail).
 # Pydantic field_validator hooks (display-name + ISO 4217 currency) invoked at
