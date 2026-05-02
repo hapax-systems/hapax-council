@@ -206,6 +206,10 @@ from shared.tier_ranking_bracket_engine import (
     can_feed_grounding_evaluator,
     emit_deterministic_boundaries,
 )
+from shared.tool_provider_outcome import (
+    ToolProviderOutcomeEnvelope,
+    ToolProviderOutcomeFixtureSet,
+)
 from shared.trend_current_event_gate import evaluate_candidate, validate_policy
 from shared.wcs_browser_mcp_file_surface import (
     SourceSurfaceRecord,
@@ -528,6 +532,19 @@ CapabilityOutcomeEnvelope.allows_claim_posterior_update
 CapabilityOutcomeFixtureSet._validate_contract_coverage
 CapabilityOutcomeFixtureSet.require_outcome
 CapabilityOutcomeFixtureSet.rows_for_fixture_case
+
+# Tool/provider outcome envelope helpers are the public contract for downstream
+# action-receipt grounding. Pydantic invokes validators dynamically; the
+# action-receipt bridge consumes the read helpers after this schema/fixture
+# contract lands.
+ToolProviderOutcomeEnvelope._validate_source_acquisition_mode
+ToolProviderOutcomeEnvelope._validate_status_error_and_authority
+ToolProviderOutcomeEnvelope._validate_claim_support
+ToolProviderOutcomeEnvelope._validate_redaction_and_public_claims
+ToolProviderOutcomeEnvelope.action_receipt_consumption_refs
+ToolProviderOutcomeFixtureSet._validate_fixture_set_contract
+ToolProviderOutcomeFixtureSet.require_outcome
+ToolProviderOutcomeFixtureSet.rows_for_fixture_case
 
 # Capability-classification inventory helpers are the public contract for
 # downstream WCS registry adapters, director snapshots, and tool/provider
