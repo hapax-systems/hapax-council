@@ -17,17 +17,21 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Auto-approve minor/patch
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr review --approve "${{ github.event.pull_request.html_url }}"
-
       - name: Auto-merge minor/patch
         if: steps.metadata.outputs.update-type != 'version-update:semver-major'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
+
+      - name: Ensure needs-human label exists
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create needs-human \
+            --description "Major-version dependency bump or other change requiring human review" \
+            --color FBCA04 \
+            --force
 
       - name: Label major updates
         if: steps.metadata.outputs.update-type == 'version-update:semver-major'
