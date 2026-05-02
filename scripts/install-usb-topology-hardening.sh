@@ -125,6 +125,8 @@ system_installs=(
     "$REPO_DIR/config/modprobe.d/99-hapax-usb-reliability-override.conf|$(system_path /etc/modprobe.d/99-hapax-usb-reliability-override.conf)|0644"
     "$REPO_DIR/scripts/hapax-usb-bandwidth-watchdog|$(system_path /usr/local/bin/hapax-usb-bandwidth-watchdog)|0755"
     "$REPO_DIR/systemd/units/hapax-usb-bandwidth-watchdog.service|$(system_path /etc/systemd/system/hapax-usb-bandwidth-watchdog.service)|0644"
+    "$REPO_DIR/scripts/hapax-xhci-death-watchdog|$(system_path /usr/local/bin/hapax-xhci-death-watchdog)|0755"
+    "$REPO_DIR/systemd/units/hapax-xhci-death-watchdog.service|$(system_path /etc/systemd/system/hapax-xhci-death-watchdog.service)|0644"
 )
 
 user_installs=(
@@ -154,6 +156,7 @@ if [[ "$MODE" == "apply" ]]; then
         run_privileged udevadm trigger --subsystem-match=usb --action=change || true
         run_privileged systemctl daemon-reload
         run_privileged systemctl enable --now hapax-usb-bandwidth-watchdog.service
+        run_privileged systemctl enable --now hapax-xhci-death-watchdog.service
     fi
     systemctl --user daemon-reload
     systemctl --user enable --now hapax-usb-topology-witness.timer
