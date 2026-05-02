@@ -1,0 +1,22 @@
+[Unit]
+Description=Hapax broadcast egress loopback witness producer (PR #2209 evaluator counterpart)
+Documentation=https://github.com/ryanklee/hapax-council/pull/2209
+After=pipewire.service pipewire-pulse.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.broadcast_egress_loopback_producer
+Restart=always
+RestartSec=2s
+MemoryHigh=128M
+MemoryMax=256M
+Environment=CUDA_VISIBLE_DEVICES=
+StandardOutput=journal
+StandardError=journal
+Slice=app.slice
+Nice=10
+
+[Install]
+WantedBy=default.target
