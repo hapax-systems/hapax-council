@@ -10,6 +10,6 @@ Type=oneshot
 User=hapax
 ExecStart=/usr/bin/python3 hapax-heartbeat.py
 WorkingDirectory=%h/hapax-edge
-Environment=WORKSTATION_URL=http://hapax-podium-2.local:8051
+Environment=WORKSTATION_URL=http://hapax-podium.local:8051
 Environment=HEARTBEAT_ROLE=ir-desk
 Environment=HEARTBEAT_SERVICES=hapax-ir-edge
