@@ -39,7 +39,61 @@ TWIN_PAIRS = [
         "agents._axiom_enforcement",
         {"_STOPWORDS"},
     ),
+    # Apperception twin pair — cc-task r18-qdrant-twin-collapse-reconcile
+    # (2026-05-02 reconcile pass). 5 ruminative-loop tuning constants
+    # appear in both modules; drift would silently bias the imagination
+    # ↔ apperception coupling on one side.
+    (
+        "shared.apperception",
+        "agents._apperception",
+        {
+            "COHERENCE_FLOOR",
+            "COHERENCE_CEILING",
+            "DEFAULT_RELEVANCE_THRESHOLD",
+            "RUMINATION_LIMIT",
+            "RUMINATION_GATE_SECONDS",
+        },
+    ),
+    # Dimensions twin pair has a STRUCTURAL twin (two distinct
+    # DimensionDef classes) so the DIMENSIONS tuple cannot compare
+    # equal across twins via value identity even when the data is
+    # byte-identical. Drift detection for the dimension schema is
+    # better expressed as a normalized name-list pin (see
+    # ``test_dimension_name_parity_across_twins`` below) than as a
+    # value-equality entry in TWIN_PAIRS. cc-task
+    # ``r18-qdrant-twin-collapse-reconcile`` documents this in
+    # ``docs/governance/r18-qdrant-twin-collapse-2026-04-26-reconcile.md``.
 ]
+
+
+def test_dimension_name_parity_across_twins() -> None:
+    """Pin dimension-name + kind parity across the two dimensions modules.
+
+    ``shared.dimensions.DIMENSIONS`` and ``agents._dimensions.DIMENSIONS``
+    are tuples of two DISTINCT ``DimensionDef`` dataclasses (each module
+    defines its own). Tuple equality fails on class identity even when
+    fields match. This pin uses a normalized projection
+    ``(name, kind, interview_eligible)`` per entry so value-drift in the
+    canonical 11-dimension profile schema is caught without false-
+    failing on the twin's structural class duplication.
+
+    Per cc-task ``r18-qdrant-twin-collapse-reconcile`` (2026-05-02
+    reconcile pass).
+    """
+    import importlib
+
+    shared_mod = importlib.import_module("shared.dimensions")
+    agents_mod = importlib.import_module("agents._dimensions")
+    shared_proj = [(d.name, d.kind, d.interview_eligible) for d in shared_mod.DIMENSIONS]
+    agents_proj = [(d.name, d.kind, d.interview_eligible) for d in agents_mod.DIMENSIONS]
+    assert shared_proj == agents_proj, (
+        "Dimension schema drift: shared.dimensions.DIMENSIONS vs "
+        "agents._dimensions.DIMENSIONS differ on (name, kind, "
+        "interview_eligible) projection. Update both modules in the "
+        "same PR — drift here partitions profile-fact writes across "
+        "two divergent dimension definitions and silently corrupts the "
+        "dimension index."
+    )
 
 
 @pytest.mark.parametrize(
@@ -70,7 +124,19 @@ def test_twin_shared_constants_match(canonical: str, vendored: str, constants: s
 
 
 def test_twin_pair_count_pinned() -> None:
-    """Pin the cardinality so adding a new pair forces a deliberate test update."""
-    assert len(TWIN_PAIRS) == 2, (
+    """Pin the cardinality so adding a new pair forces a deliberate test update.
+
+    Extended 2026-05-02 from 2 → 3 value-pair pins per cc-task
+    ``r18-qdrant-twin-collapse-reconcile`` (axiom_precedents +
+    axiom_enforcement + apperception). The dimensions pair has a
+    structural-twin shape (two DimensionDef classes) and is pinned
+    via a separate ``test_dimension_name_parity_across_twins``
+    projection test. The 5th known pair (``shared.impingement`` /
+    ``agents._impingement``) is excluded because
+    ``agents/_impingement.py`` is a re-export shim
+    (``from shared.impingement import *``), not a vendored copy —
+    drift is structurally impossible there.
+    """
+    assert len(TWIN_PAIRS) == 3, (
         "TWIN_PAIRS changed — extend the registry deliberately and update this pin."
     )
