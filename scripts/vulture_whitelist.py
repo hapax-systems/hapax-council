@@ -923,3 +923,23 @@ ActivityRevealMixin.mark_visible_window
 ActivityRevealMixin.poll_once
 ActivityRevealMixin.state
 ActivityRevealMixin.stop
+
+# ChronicleEvent evidence-envelope helpers — public surface for
+# downstream consumers (director snapshot, autonomous narration WCS
+# gate, public-claim gate) that enforce authority downgrade based on
+# trace/span zero-fill and explicit valid/transaction times. P0 ships
+# the schema; the consumers land in follow-on PRs. Per cc-task
+# ``chronicle-event-evidence-envelope-migration``.
+from shared.chronicle import (
+    EVIDENCE_CLASSES,
+    PUBLIC_SCOPES,
+)
+from shared.chronicle import (
+    ChronicleEvent as _ChronicleEvent,
+)
+
+EVIDENCE_CLASSES
+PUBLIC_SCOPES
+_ChronicleEvent.effective_valid_time
+_ChronicleEvent.effective_transaction_time
+_ChronicleEvent.has_full_provenance
