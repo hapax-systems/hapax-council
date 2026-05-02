@@ -108,4 +108,80 @@ SINGLE_USER_PROBES: list[SufficiencyProbe] = [
         ),
         check=_check_no_user_keyed_paths,
     ),
+    SufficiencyProbe(
+        id="probe-su-cache-001",
+        axiom_id="single_user",
+        implication_id="su-cache-001",
+        level="component",
+        question=(
+            "Are caching strategies free of user-specific cache keys "
+            "or user-scoped invalidation patterns?"
+        ),
+        check=lambda: _check_no_user_keyed_caches(),
+    ),
 ]
+
+
+def _check_no_user_keyed_caches() -> tuple[bool, str]:
+    """Enforces su-cache-001 (single_user).
+
+    Caching strategies must not implement user-specific cache keys or
+    user-scoped cache invalidation patterns. Scans the project's cache
+    modules for user-keyed cache patterns:
+      - cache.set(user_id, ...) / cache.get(user_id, ...)
+      - cache_key=f"...{user_id}..."
+      - per_user_cache, user_cache_key, cache_by_user
+      - @lru_cache decorating functions with user_id parameters
+
+    External-API client modules that cache third-party data are
+    excluded (e.g. soundcloud_adapter caches third-party user data,
+    not operator data).
+    """
+    user_keyed_cache_patterns = (
+        r"cache\.[gs]et\([^)]*\buser_id\b",
+        r"cache_key\s*=\s*[fr]?[\"'][^\"']*\{user_id\}",
+        r"per_user_cache",
+        r"user_cache_key",
+        r"cache_by_user",
+        r"\.cache_user\(",
+    )
+
+    excluded_substrings = (
+        "soundcloud_adapter",
+        "drift_detector/probes_single_user",
+    )
+
+    cache_modules = (
+        AI_AGENTS_DIR / "shared" / "embed_cache.py",
+        AI_AGENTS_DIR / "agents" / "predictive_cache.py",
+        AI_AGENTS_DIR / "agents" / "studio_compositor" / "frame_cache.py",
+        AI_AGENTS_DIR / "agents" / "hapax_daimonion" / "cpal" / "signal_cache.py",
+    )
+
+    found: list[str] = []
+    checked = 0
+    for module in cache_modules:
+        if any(excl in str(module) for excl in excluded_substrings):
+            continue
+        if not module.exists():
+            continue
+        checked += 1
+        try:
+            content = module.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for pattern in user_keyed_cache_patterns:
+            if re.search(pattern, content):
+                found.append(f"{module.name}: {pattern}")
+                break
+
+    if checked == 0:
+        return False, "no canonical cache modules found"
+
+    if not found:
+        return True, (
+            f"no user-keyed cache patterns in {checked} canonical cache "
+            f"modules — su-cache-001 sufficient"
+        )
+    summary = "; ".join(found[:3])
+    return False, f"user-keyed cache patterns found: {summary}"

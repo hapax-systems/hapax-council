@@ -209,6 +209,7 @@ implications:
   mode: compatibility
   level: subsystem
 - id: su-cache-001
+  linkage: code-direct
   tier: T2
   text: Caching strategies must not implement user-specific cache keys or user-scoped
     cache invalidation patterns.
