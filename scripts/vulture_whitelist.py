@@ -1229,3 +1229,19 @@ from shared.patreon_receive_only_rail import (
 PledgeEvent._handle_is_vanity_only
 PledgeEvent._currency_is_iso_4217
 PatreonRailReceiver.ingest_webhook
+
+# Ko-fi receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Ko-fi rail).
+# Pydantic field_validator hooks (display-name + ISO 4217 currency) invoked at
+# construction; ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging Ko-fi form-encoded deliveries
+# (separate cc-task). Verification-token auth (in lieu of HMAC) is the new
+# shape this rail introduces vs the prior four.
+from shared.ko_fi_receive_only_rail import (
+    KoFiEvent,
+    KoFiRailReceiver,
+)
+
+KoFiEvent._handle_is_display_name_only
+KoFiEvent._currency_is_iso_4217
+KoFiRailReceiver.ingest_webhook
