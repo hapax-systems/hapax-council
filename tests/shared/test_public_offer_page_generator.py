@@ -12,7 +12,10 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from shared.conversion_target_readiness import REQUIRED_GATE_DIMENSIONS, GateDimension
 from shared.monetization_readiness_ledger import (
+    GateDimensionEvidence,
+    MonetizationReadinessLedger,
     MonetizationReadinessSnapshot,
     evaluate_default_monetization_readiness,
 )
@@ -27,18 +30,41 @@ from shared.public_offer_page_generator import (
     generate_offer_page,
     render_offer_page_markdown,
 )
-from shared.support_surface_registry import load_support_surface_registry
+from shared.support_surface_registry import SupportSurfaceRegistry, load_support_surface_registry
 
 NOW = datetime(2026, 5, 2, 7, 30, tzinfo=UTC)
+ALL_DIMS: frozenset[GateDimension] = frozenset(REQUIRED_GATE_DIMENSIONS)
 
 
-def _empty_ledger() -> object:
+def _empty_ledger() -> MonetizationReadinessLedger:
     snap = MonetizationReadinessSnapshot.empty(captured_at=NOW)
     return evaluate_default_monetization_readiness(snap)
 
 
-def _registry() -> object:
+def _full_ledger() -> MonetizationReadinessLedger:
+    snap = MonetizationReadinessSnapshot(
+        captured_at=NOW,
+        snapshot_source="test",
+        evidence={
+            dim: GateDimensionEvidence(
+                dimension=dim,
+                satisfied=dim in ALL_DIMS,
+                evidence_refs=(f"evidence:{dim}",),
+                operator_visible_reason=f"{dim} satisfied",
+            )
+            for dim in REQUIRED_GATE_DIMENSIONS
+        },
+    )
+    return evaluate_default_monetization_readiness(snap)
+
+
+def _registry() -> SupportSurfaceRegistry:
     return load_support_surface_registry()
+
+
+def _all_registry_refs() -> dict[str, bool]:
+    registry = load_support_surface_registry()
+    return {gate: True for surface in registry.surfaces for gate in surface.readiness_gates}
 
 
 # ── Refusal-page path (default fail-closed) ─────────────────────────
@@ -56,7 +82,7 @@ class TestRefusalPagePath:
         page = generate_offer_page(_registry(), _empty_ledger(), now=NOW)
         assert isinstance(page, RefusalPage)
         assert "support_prompt" in page.blocked_reason
-        assert "public-monetizable" in page.blocked_reason  # mentions required state
+        assert "public-safe" in page.blocked_reason  # mentions required support-copy state
 
     def test_refusal_page_missing_evidence_dimensions_is_a_tuple(self) -> None:
         # When the entry's decision falls back to "blocked" without a
@@ -175,6 +201,27 @@ class TestStateGating:
                 aggregate_receipt_summary=None,
                 artifact_links=(),
             )
+
+    def test_full_ledger_without_support_refs_still_refuses(self) -> None:
+        page = generate_offer_page(_registry(), _full_ledger(), now=NOW)
+
+        assert isinstance(page, RefusalPage)
+        assert "bootstrap-needed" in page.blocked_reason
+        assert "support_surface_registry.no_perk_copy_valid" in page.missing_evidence_dimensions
+
+    def test_full_ledger_with_support_refs_renders_offer(self) -> None:
+        page = generate_offer_page(
+            _registry(),
+            _full_ledger(),
+            support_readiness_refs=_all_registry_refs(),
+            now=NOW,
+        )
+
+        assert isinstance(page, OfferPage)
+        assert page.readiness_state == "public-monetizable"
+        assert page.rails
+        assert page.aggregate_receipt_summary is not None
+        assert "No access" in page.no_perk_doctrine_summary
 
     def test_offer_page_requires_at_least_one_rail_or_refusal(self) -> None:
         with pytest.raises(ValidationError, match="at least one rail OR one refusal"):
