@@ -142,7 +142,101 @@ SINGLE_USER_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_config_hardcodes_operator_prefs(),
     ),
+    SufficiencyProbe(
+        id="probe-su-feature-001",
+        axiom_id="single_user",
+        implication_id="su-feature-001",
+        level="component",
+        question=(
+            "Is the project free of multi-user collaboration features "
+            "(invite_user_to / add_team_member / share_with_user / etc.)?"
+        ),
+        check=lambda: _check_no_collab_features(),
+    ),
+    SufficiencyProbe(
+        id="probe-su-admin-001",
+        axiom_id="single_user",
+        implication_id="su-admin-001",
+        level="component",
+        question=(
+            "Is the project free of administrative interfaces, user "
+            "management UIs, or role assignment systems?"
+        ),
+        check=lambda: _check_no_admin_ui(),
+    ),
 ]
+
+
+def _check_no_collab_features() -> tuple[bool, str]:
+    """Enforces su-feature-001 (single_user, T0/block, absurdity).
+
+    Features for user collaboration, sharing between users, or
+    multi-user coordination must not be developed. Verifies absence
+    of SaaS-style collab patterns:
+      - def invite_user_to* / add_team_member / share_with_user
+      - class TeamWorkspace / OrgChannel / UserGroup
+      - bcrypt.hashpw, jwt.encode (multi-user auth primitives)
+    """
+    forbidden_patterns = (
+        r"def invite_user_to|def add_team_member|def share_with_user|"
+        r"class TeamWorkspace|class OrgChannel|class UserGroup|"
+        r"bcrypt\.hashpw|jwt\.encode"
+    )
+    pattern = re.compile(forbidden_patterns)
+
+    found: list[str] = []
+    for glob in _PROBE_SCAN_GLOBS:
+        for py_file in AI_AGENTS_DIR.glob(glob):
+            try:
+                content = py_file.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if pattern.search(content):
+                rel = py_file.relative_to(AI_AGENTS_DIR)
+                found.append(str(rel))
+
+    if not found:
+        return True, (
+            "no multi-user collaboration features anywhere in agents / "
+            "shared / logos source trees - su-feature-001 sufficient"
+        )
+    return False, f"collab feature patterns found: {', '.join(found[:3])}"
+
+
+def _check_no_admin_ui() -> tuple[bool, str]:
+    """Enforces su-admin-001 (single_user, T0/block, absurdity).
+
+    Administrative interfaces, user management UIs, or role assignment
+    systems must not exist since the single user is the admin by
+    default. Verifies absence of admin/role/permission patterns:
+      - def admin_panel / def manage_users / def assign_role
+      - class UserManagement / class AdminUI / class RoleAssignment
+      - permission.grant / role.assign / user.deactivate
+    """
+    forbidden_patterns = (
+        r"def admin_panel|def manage_users|def assign_role|"
+        r"class UserManagement|class AdminUI|class RoleAssignment|"
+        r"\.permission\.grant|\.role\.assign|\.user\.deactivate"
+    )
+    pattern = re.compile(forbidden_patterns)
+
+    found: list[str] = []
+    for glob in _PROBE_SCAN_GLOBS:
+        for py_file in AI_AGENTS_DIR.glob(glob):
+            try:
+                content = py_file.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if pattern.search(content):
+                rel = py_file.relative_to(AI_AGENTS_DIR)
+                found.append(str(rel))
+
+    if not found:
+        return True, (
+            "no administrative interfaces / user-management UIs / "
+            "role-assignment systems - su-admin-001 sufficient"
+        )
+    return False, f"admin UI patterns found: {', '.join(found[:3])}"
 
 
 def _check_config_hardcodes_operator_prefs() -> tuple[bool, str]:

@@ -177,6 +177,7 @@ implications:
   mode: compatibility
   level: subsystem
 - id: su-feature-001
+  linkage: code-direct
   tier: T0
   text: Features for user collaboration, sharing between users, or multi-user coordination
     must not be developed.
@@ -220,6 +221,7 @@ implications:
   mode: compatibility
   level: component
 - id: su-admin-001
+  linkage: code-direct
   tier: T0
   text: Administrative interfaces, user management UIs, or role assignment systems
     must not exist since the single user is the admin by default.
