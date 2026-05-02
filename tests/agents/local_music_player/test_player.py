@@ -135,12 +135,16 @@ def test_build_url_pipeline_three_stage() -> None:
     # No `-x --audio-format wav` — that path was broken
     assert "-x" not in yt
     assert ffmpeg[0] == "ffmpeg"
-    # ffmpeg outputs s16le 44.1k stereo — required by pw-cat --raw
+    # ffmpeg outputs s16le 48k stereo — required by pw-cat --raw and matches sink rate
     assert "s16le" in ffmpeg
-    assert "44100" in ffmpeg
+    assert "48000" in ffmpeg
     assert pw[0] == "pw-cat"
     assert pw[2:4] == ["--target", "my-sink"]
     assert "--raw" in pw
+    # pw-cat --rate must match the sink's native rate (48000Hz on
+    # hapax-music-loudnorm) or PipeWire's auto-resampler accumulates
+    # errors and the filter chain produces zero output.
+    assert "48000" in pw
 
 
 def test_build_url_pipeline_normalization_sink() -> None:
