@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax PR admission governor — auto-cycle timer (every 5 min)
+Documentation=file://%h/projects/hapax-council/scripts/hapax-pr-admission
+
+[Timer]
+# Fire 30s after boot to give other services time to settle.
+OnBootSec=30s
+# Then every 5 min thereafter.
+OnUnitActiveSec=5min
+# Persistent so missed boots don't accumulate; AccuracySec slightly loose.
+Persistent=true
+AccuracySec=15s
+Unit=hapax-pr-admission-auto.service
+
+[Install]
+WantedBy=timers.target
