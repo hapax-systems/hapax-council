@@ -1039,3 +1039,22 @@ from shared.livestream_role_state import (
 LivestreamRoleState._validate_invariants
 SpeechAct._validate_speech_act_invariants
 is_speech_act_authorized_by_role
+
+# Artifact catalog helpers — cc-task artifact-catalog-release-workflow.
+# Render/checksum/gate functions called by downstream catalog-publisher
+# PRs (separate cc-tasks). Whitelisted until publisher lands.
+from shared.artifact_catalog import (
+    ArtifactCatalog,
+    ArtifactRecord,
+    compute_bundle_checksum,
+    evaluate_export_gate,
+    render_catalog_page,
+)
+
+evaluate_export_gate
+render_catalog_page
+compute_bundle_checksum
+ArtifactCatalog.by_stream
+ArtifactCatalog.by_price_class
+ArtifactCatalog.exportable
+ArtifactRecord._validate_price_class_invariants
