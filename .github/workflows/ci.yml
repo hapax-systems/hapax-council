@@ -396,7 +396,7 @@ jobs:
       # vs base) and push (diff vs before-SHA) automatically.
       - name: Detect homage-vr input changes
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             homage_inputs:
@@ -505,7 +505,7 @@ jobs:
       # success when skipped so branch protection sees an honest status.
       - name: Detect Rust crate changes
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             rust_crates:
