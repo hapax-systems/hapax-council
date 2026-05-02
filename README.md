@@ -1,163 +1,113 @@
 # hapax-council
 
-An implementation of Clark & Brennan's (1991) conversational grounding theory in a production voice AI, evaluated via Single Case Experimental Design (SCED) with Bayesian analysis.
+Externalized executive function infrastructure for a single operator. Research apparatus published as artifact, not a product, not a service, not seeking contributors. Constituent of the Hapax operating environment.
 
 [![CI](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-## Background
+## Project spine
 
-Current voice AI systems implement memory as profile-gated retrieval. Clark & Brennan's (1991) contribution-acceptance cycle, repair sequences, and effort calibration have not been implemented in production systems. Shaikh et al. (ACL 2025) report that frontier LLMs score 23.23% on grounding tasks. Shaikh et al. (NAACL 2024) identify RLHF as a factor suppressing grounding acts in trained models.
+`hapax-council` is the primary runtime of the Hapax operating environment — the single-operator development and research instrument the system itself helps build. The runtime is organized around the following commitments:
 
-This project implements grounding mechanics external to the LLM: a discourse unit state machine (Traum 1994), concern-aware repair thresholds, acceptance classification, Grounding Quality Index (GQI), and 2D effort calibration. These are injected as directives into the system prompt rather than trained into model weights.
+- **Single-operator infrastructure**: one operator, one workstation. No auth, no roles, no multi-user code anywhere. Constitutional axiom `single_user`.
+- **Externalized executive function**: agents track open loops, maintain context, and surface what needs attention so the operator does not have to.
+- **Semantic recruitment**: perception, expression, recall, action, communication, and regulation are recruited through a single `AffordancePipeline`, not statically wired.
+- **Perceptual + temporal grounding**: Husserlian temporal bands, Bayesian presence fusion, apperception cascade, and a no-false-grounding discipline gating every public claim.
+- **Livestream as primary research instrument**: the studio compositor, ward family, and broadcast-substrate decisions treat the public livestream as the load-bearing surface for the work.
+- **Refusal as data**: declined surfaces are preserved as first-class artifacts (Refusal Brief, refusal annexes) rather than removed from the record.
+- **Value-braid loop**: runtime evidence flows into deposits, citation graph, support rails, grants, and posteriors via the publication-bus surface registry.
 
-## Research Design
+Conversational grounding (Clark & Brennan 1991), the Single Case Experimental Design (SCED) Cycle 1 pilot, and the voice daemon stay present as **research evidence**, not as the whole identity of the project.
 
-**Methodology:** ABA reversal SCED (Single Case Experimental Design) with Bayesian Estimation Supersedes the t-Test (BEST). Sequential stopping rules. HDI+ROPE decision criteria.
+## Status disclosure
 
-**Independent variable:** Grounding system (3 treatment components + 1 diagnostic sentinel):
-1. Conversation thread with conceptual pact preservation (Brennan & Clark 1996)
-2. Grounding ledger with DU state machine and strategy directives
-3. Memory integration with cross-session DU persistence
-4. Sentinel fact (diagnostic only — tests retrieval, not grounding)
-
-**Dependent variables:** Turn-pair coherence (embedding-based), GQI, acceptance rate, monologic score, directive compliance.
-
-**Current status:**
-- Cycle 1 (pilot): Complete. 37 sessions, BF=3.66 (inconclusive). Word overlap metric replaced by embedding-based turn-pair coherence.
-- Cycle 2: Implementation complete (Batches 1-4, 76 tests). Pre-registration and OSF registration pending.
-
-See [`research/`](research/) for the research compendium and [`agents/hapax_daimonion/proofs/`](agents/hapax_daimonion/proofs/) for theoretical foundations.
+| Surface | Posture |
+|---|---|
+| Code release | Source-available archive at this repository. Not seeking contributors; pull requests, issues, and discussions are not accepted (see [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`NOTICE.md`](NOTICE.md)). |
+| Empirical claims | Research compendium under [`research/`](research/). Cycle 1 pilot complete (37 sessions, BF=3.66, inconclusive); Cycle 2 implementation complete, pre-registration pending. |
+| Governance | Five constitutional axioms enforced via [`hapax-constitution`](https://github.com/ryanklee/hapax-constitution) and the local [`axioms/`](axioms/) registry. |
+| License authority | [`NOTICE.md`](NOTICE.md), [`CITATION.cff`](CITATION.cff), and [`codemeta.json`](codemeta.json) are the canonical license statement. The [`LICENSE`](LICENSE) file is currently in transition; the reconciliation status is tracked at [`docs/governance/license-reconciliation-status.md`](docs/governance/license-reconciliation-status.md). |
 
 ## Ecosystem
 
 This research spans six repositories (plus one external dependency):
 
-| Repository | Role | Description |
-|-----------|------|-------------|
-| **hapax-council** (this repo) | Primary research artifact | 45+ agents, voice daemon, grounding system, experiment infrastructure |
-| [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Governance specification | Axioms, implications, canons. Publishes `hapax-sdlc` package |
-| [hapax-officium](https://github.com/ryanklee/hapax-officium) | Supporting software | Management decision support (17 agents) |
-| [hapax-watch](https://github.com/ryanklee/hapax-watch) | Research instrument | Wear OS biometric companion (HR, HRV, skin temp) |
-| [hapax-mcp](https://github.com/ryanklee/hapax-mcp) | Infrastructure | MCP server bridging logos APIs to Claude Code (40 tools) |
-| [tabbyAPI](https://github.com/theroyallab/tabbyAPI) | Infrastructure (external) | ExllamaV2/V3 LLM inference backend (upstream, not forked) |
-| [distro-work](https://github.com/ryanklee/distro-work) | System maintenance | Scripts and configuration |
+| Repository | Role |
+|-----------|------|
+| **hapax-council** (this repo) | Primary runtime + research artifact |
+| [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Governance specification (axioms, implications, canons; publishes `hapax-sdlc` package) |
+| [hapax-officium](https://github.com/ryanklee/hapax-officium) | Management decision support |
+| [hapax-watch](https://github.com/ryanklee/hapax-watch) | Wear OS biometric companion |
+| [hapax-mcp](https://github.com/ryanklee/hapax-mcp) | MCP server bridging Logos APIs to Claude Code |
+| [tabbyAPI](https://github.com/theroyallab/tabbyAPI) | LLM inference backend (upstream, not forked) |
+| [distro-work](https://github.com/ryanklee/distro-work) | System maintenance scripts |
 
-## Quick Start
+## Architecture
+
+Three independent loops communicate through the filesystem and `/dev/shm`:
+
+```
+Loop 1 — Perception (voice daemon, 2.5s tick)
+  Sensors → Bayesian presence → Governor → Consent → perception-state.json
+
+Loop 2 — Visual aggregator (3s tick, adaptive 0.5–5s)
+  Perception → Stimmung → Temporal bands → Apperception → /dev/shm
+
+Loop 3 — Reactive engine (inotify, event-driven)
+  profiles/ + axioms/ → Rule evaluation → Phased execution
+```
+
+### Studio + ward family
+
+A GStreamer compositor reads camera and audio inputs, composites them with shader effects and overlays, and writes a single livestream output. Activity-reveal wards (DURF coding-session reveal, M8 instrument reveal, Polyend variant, Steam Deck variant) inherit from `ActivityRevealMixin` for visibility-ceiling enforcement, claim contracts, and HARDM hooks. See [`agents/studio_compositor/`](agents/studio_compositor/) and [`hapax-research/specs/`](hapax-research/specs/) (private) for the family unification spec.
+
+### Affordance pipeline
+
+Impingement → narrative embedding → cosine similarity against the affordance registry → score → governance veto → recruited capabilities activate. Tools, content, voice, and visual surfaces are all recruited through the same pipeline. See [`shared/affordance_registry.py`](shared/affordance_registry.py) and [`docs/superpowers/specs/2026-04-02-unified-semantic-recruitment-design.md`](docs/superpowers/specs/2026-04-02-unified-semantic-recruitment-design.md).
+
+### Voice daemon
+
+Wake word → VAD → STT (faster-whisper, GPU) → salience routing → LLM (via LiteLLM) → streaming TTS (Kokoro) → audio output.
+
+### Constitutional governance
+
+Five axioms (`single_user`, `executive_function`, `corporate_boundary`, `interpersonal_transparency`, `management_governance`) produce ~90 implications via four interpretive canons. Enforced at four tiers (T0 blocked → T3 lint). Novel cases produce precedents.
+
+### Phenomenological perception
+
+Husserlian temporal bands (retention/impression/protention/surprise), 8-signal Bayesian presence engine, 7-step apperception cascade with Qdrant persistence (768-dim cosine), six-dimension SystemStimmung.
+
+## Quick start
 
 ```bash
 git clone git@github.com:ryanklee/hapax-council.git && cd hapax-council
 uv sync
-uv run pytest tests/ -q          # 470+ test files
-uv run ruff check .               # lint
-uv run --no-project --with pyrefly==0.62.0 pyrefly check  # CI typecheck
-uv run pyright                    # weekly typecheck safety net
+uv run pytest tests/ -q
+uv run ruff check .
+uv run pyright
 ```
 
-For production use (agents, logos API, voice daemon), see [Architecture](#architecture).
+For production deployment (agents, Logos API, voice daemon, studio compositor), the build chain runs through `pnpm tauri dev` for the desktop surface and systemd user units for daemons; see [`systemd/README.md`](systemd/README.md).
 
-## Architecture
+## Computational requirements
 
-Three independent loops communicate through the filesystem and /dev/shm:
-
-```
-Loop 1: Perception (voice daemon, 2.5s tick)
-  Sensors → Bayesian presence → Governor → Consent → perception-state.json
-
-Loop 2: Visual Aggregator (3s tick, adaptive 0.5-5s)
-  Perception → Stimmung → Temporal Bands → Apperception → /dev/shm
-
-Loop 3: Reactive Engine (inotify, event-driven)
-  profiles/ + axioms/ → Rule evaluation → Phased execution (deterministic → GPU → cloud)
-```
-
-### Grounding system (research core)
-
-```
-Operator utterance
-  → Acceptance classifier (ACCEPT/CLARIFY/IGNORE/REJECT)
-  → Grounding ledger (DU state: PENDING → GROUNDED/REPAIR/ABANDONED/CONTESTED)
-  → Concern-aware repair threshold ("sufficient for current purposes")
-  → GQI computation (50% EWMA acceptance + 25% trend + 15% neg penalty + 10% engagement)
-  → 2D effort calibration (activation × GQI discount → EFFICIENT/BASELINE/ELABORATIVE)
-  → Strategy directive (advance/rephrase/elaborate/present_reasoning/move_on)
-  → Injected into VOLATILE band of system prompt
-```
-
-### Voice daemon
-
-Wake word → VAD → STT (faster-whisper, GPU) → Salience routing → LLM (via LiteLLM) → Streaming TTS (Kokoro) → Audio output. Phenomenal context renderer injects temporal bands and stimmung, scaled per tier.
-
-### Constitutional governance
-
-Five axioms produce 90 implications via four interpretive canons. Enforced at four tiers (T0 blocked → T3 lint). Novel cases produce precedents with authority hierarchy.
-
-### Consent framework
-
-ConsentLabel (DLM join-semilattice), Labeled[T] (LIO functor), Says monad (Abadi DCC), PosBool(X) provenance semirings, GateToken (linear discipline). Properties verified via Hypothesis.
-
-### Phenomenological perception
-
-Husserlian temporal bands (retention/impression/protention/surprise), Bayesian presence engine (8-signal fusion), apperception cascade (7-step, 6 safeguards, 7/7 event sources wired), ApperceptionStore (Qdrant persistence, 768-dim cosine), SystemStimmung (6 dimensions).
-
-## Computational Requirements
-
-- **OS:** Linux (tested on CachyOS/Arch)
-- **GPU:** NVIDIA RTX 3090 (24GB VRAM) for local inference + GPU effects
-- **RAM:** 32GB recommended
-- **Docker:** 13 containers (Qdrant, PostgreSQL, LiteLLM, Langfuse, Prometheus, Grafana, etc.)
-- **Python:** 3.12+, managed via uv
-
-## Proofs and Evidence
-
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| ConsentLabel is a join-semilattice | **Proven** | 10 Hypothesis properties |
-| Labeled[T] is a functor | **Proven** | 5 Hypothesis properties |
-| Says monad laws | **Proven** | 3 laws + functor + authority |
-| Provenance semiring laws | **Proven** | 10 Hypothesis properties |
-| Perception type system (L0-L9) | **Proven** | 192 matrix tests + 62 Hypothesis |
-| Apperception cascade safeguards | **Proven** | 253 tests (119 cascade + 28 I/O + 66 health + 40 events) |
-| Grounding ledger DU state machine | **Built** | 76 tests (Batches 1-4) |
-| Turn-pair coherence metric | **Built** | Embedding-based, replaces word overlap |
-| Conversational grounding (Cycle 1) | **Pilot** | 37 sessions, BF=3.66 (inconclusive) |
-
-## Infrastructure
-
-All services managed by systemd user units (no process-compose in production). See `systemd/units/` for unit files and `docs/compendium.md` §14 for full lifecycle documentation.
-
-| Service | Port | Purpose | Manager |
-|---------|------|---------|---------|
-| Logos API | :8051 | FastAPI (20+ routes, SSE streaming) | systemd |
-| LiteLLM | :4000 | LLM gateway → Claude/Gemini/Ollama | Docker |
-| Qdrant | :6333 | Vector DB (6 collections, 768d nomic-embed) | Docker |
-| Ollama | :11434 | Local inference (RTX 3090) | systemd (system) |
-| Langfuse | :3000 | LLM observability | Docker |
-| PostgreSQL | :5432 | Audit/operational DB | Docker |
-| Prometheus | :9090 | Metrics collection | Docker |
-| node_exporter | :9100 | Host metrics | systemd (system) |
-| nvidia-gpu-exporter | :9835 | GPU metrics | systemd (system) |
-
-## Project Structure
-
-```
-hapax-council/
-├── agents/           45+ agents including hapax_daimonion
-│   └── hapax_daimonion/  Voice daemon + grounding system + proofs/
-├── research/         Research compendium (protocols, data, analysis, results)
-├── lab-journal/      Quarto lab journal (GitHub Pages)
-├── shared/           83 modules (governance, consent, perception, config)
-├── logos/          43 modules (FastAPI API, reactive engine)
-├── hapax-logos/      Tauri 2 desktop app (wgpu + React)
-├── axioms/           5 axioms, 90 implications, precedents, contracts
-├── tests/            470+ test files
-└── docs/             Research documents, design plans
-```
+- **OS**: Linux (developed on CachyOS / Arch).
+- **GPU**: NVIDIA RTX 3090 (24GB VRAM) for local inference + GPU effects; secondary RTX 5060 Ti for embedding routes.
+- **RAM**: 32GB recommended.
+- **Docker**: 13 containers (LiteLLM, Qdrant, PostgreSQL, Langfuse, Prometheus, Grafana, etc.).
+- **Python**: 3.12+, managed via `uv`.
 
 ## Citation
 
-If you use this software in your research, please cite it using the [CITATION.cff](CITATION.cff) file.
+Cite via [`CITATION.cff`](CITATION.cff). The Zenodo concept-DOI is in [`.zenodo.json`](.zenodo.json) when published; consult [`NOTICE.md`](NOTICE.md) for the authorship-indeterminacy stance per the Hapax Manifesto.
 
-## License
+## Refusal and governance surfaces
 
-Apache 2.0 — see [LICENSE](LICENSE).
+- [`NOTICE.md`](NOTICE.md) — canonical project posture, license statement, linked artifacts.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — refusal of contributions (single-operator axiom).
+- [`docs/governance/`](docs/governance/) — governance status documents and refusal records.
+- [Refusal Brief](https://hapax.weblog.lol/refusal-brief) — public refusal-as-data artifact.
+- [Hapax Manifesto v0](https://hapax.weblog.lol/hapax-manifesto-v0) — authorship-indeterminacy + research-as-artifact stance.
+
+---
+
+This README is the public entry point. It does not authorize public claims about live system health, monetization readiness, public artifact release, or empirical validation; those flow through [`agents/publication_bus/`](agents/publication_bus/) per the world-capability surface registry.
