@@ -1,0 +1,688 @@
+#!/usr/bin/env python3
+"""Hapax USB bandwidth preflight checker.
+
+Surfaces "you're about to plug into a saturated bus" BEFORE the next
+plug fails. Reads the live USB topology from sysfs, sums per-device
+bandwidth requirements from the static lookup table in
+``shared/usb_bandwidth_table.py``, and reports headroom per host
+controller. Optionally simulates plugging a known device into a
+controller (``--device <vid>:<pid>``) so the operator can ask
+"would adding the L-12 here saturate this chain?" before doing it.
+
+Motivated by the 2026-05-02 incident: the L-12 (14-channel UAC2 multitrack)
+was repeatedly rejected with::
+
+    Not enough bandwidth for new device state.
+    Not enough bandwidth for altsetting 1.
+    usb_set_interface failed (-28)
+
+on ``usb 1-3.1`` (asmedia hub via ``09:00.0``) because that hub already
+carried 3 BRIO webcams + a C920 + the dock peripherals — no headroom for
+a high-bandwidth UAC2 device. Moving the L-12 to the front-case host
+controller (also ``09:00.0`` but a different USB bus) cleared it. A
+preflight check would have made the saturation visible BEFORE the plug.
+
+Research: ``/tmp/usb-hardening-research-2026-05-02.md`` §3 (recommendation #3).
+
+Modes:
+
+* default — report current bandwidth state per controller
+* ``--device <vid>:<pid>`` — simulate adding that device, report whether
+  any controller would saturate as a result
+* ``--monitor`` — long-running mode; periodically writes a Prometheus
+  textfile for node_exporter scraping. Suitable for systemd timer
+  invocation.
+
+Out of scope (per research §3.4):
+
+* Parsing ``/sys/kernel/debug/usb/devices`` for live xHCI bandwidth
+  reservations — needs root + debugfs and is not portable across
+  kernel versions.
+* Automatic device→port assignment recommendation. The static lookup
+  table is the first-pass surface; a future revision can compute "where
+  should I plug this device?" by inverting the saturation calculation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+# Allow running as a script without installing the package.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from shared.usb_bandwidth_table import (  # noqa: E402  (sys.path manipulation above)
+    USB_2_0_HIGH_SPEED_MBPS,
+    UsbDeviceProfile,
+    capacity_for_speed,
+    lookup,
+    synthesise_unknown,
+)
+
+# Per USB-IF spec, the host reserves at most 80% of high-speed isoc
+# bandwidth. The same fraction is a defensible upper bound at SuperSpeed —
+# real-world isochronous reservations cluster well below this. We treat
+# >80% as SATURATED (red) and >70% as WARNING (yellow). The thresholds
+# are operator-tunable via CLI flags but the defaults reflect the
+# research drop's recommendation.
+DEFAULT_WARN_USAGE = 0.70
+DEFAULT_SATURATED_USAGE = 0.80
+
+DEFAULT_PROM_PATH = Path("/var/lib/node-exporter/textfile/hapax-usb-bandwidth.prom")
+DEFAULT_MONITOR_INTERVAL_SEC = 60
+
+EXIT_OK = 0
+EXIT_WARNING = 1
+EXIT_SATURATED = 2
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UsbDeviceObservation:
+    """A live USB device discovered under a controller."""
+
+    sysfs_path: str
+    vid: str
+    pid: str
+    speed_mbps: float
+    profile: UsbDeviceProfile
+    is_known: bool
+
+
+@dataclass
+class ControllerReport:
+    """Bandwidth report for a single USB host controller."""
+
+    bdf: str
+    bus_number: int
+    capacity_mbps: float
+    devices: list[UsbDeviceObservation] = field(default_factory=list)
+    simulated_added: list[UsbDeviceProfile] = field(default_factory=list)
+
+    @property
+    def used_mbps(self) -> float:
+        live = sum(d.profile.bandwidth_mbps for d in self.devices)
+        sim = sum(p.bandwidth_mbps for p in self.simulated_added)
+        return live + sim
+
+    @property
+    def headroom_mbps(self) -> float:
+        return max(self.capacity_mbps - self.used_mbps, 0.0)
+
+    @property
+    def usage_ratio(self) -> float:
+        if self.capacity_mbps <= 0:
+            return 0.0
+        return self.used_mbps / self.capacity_mbps
+
+    def severity(self, *, warn: float, saturated: float) -> str:
+        ratio = self.usage_ratio
+        if ratio >= saturated:
+            return "SATURATED"
+        if ratio >= warn:
+            return "WARNING"
+        return "OK"
+
+
+# ---------------------------------------------------------------------------
+# Sysfs walking
+# ---------------------------------------------------------------------------
+
+
+def _read(path: Path, default: str = "") -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return default
+
+
+def _is_root_hub_dir(entry: Path) -> bool:
+    """A USB root-hub sysfs entry is a directory whose name matches ``usbN``."""
+
+    if not entry.is_dir():
+        return False
+    name = entry.name
+    if not name.startswith("usb"):
+        return False
+    return name[3:].isdigit()
+
+
+def _device_directories(root_hub: Path) -> list[Path]:
+    """All non-interface device dirs under a root hub.
+
+    USB device dirs match the form ``<bus>-<port>[.<port>...]``. Interface
+    dirs add ``:<config>.<interface>`` and must be skipped.
+    """
+
+    devices: list[Path] = []
+    for child in root_hub.iterdir():
+        if not child.is_dir():
+            continue
+        name = child.name
+        if ":" in name:
+            continue  # interface dir
+        if not name[0].isdigit():
+            continue
+        devices.append(child)
+        devices.extend(_device_directories(child))
+    return devices
+
+
+def _scan_controllers(sys_pci_root: Path) -> list[tuple[str, Path]]:
+    """Return every PCI BDF that owns at least one xHCI root hub.
+
+    The result is ``(bdf, root_hub_path)`` per (controller, root-hub) pair —
+    one xHCI controller commonly exposes two root hubs (USB2 and USB3
+    sides) under the same PCI BDF, and we want a separate report per bus.
+    """
+
+    out: list[tuple[str, Path]] = []
+    devices_root = sys_pci_root / "devices"
+    if not devices_root.is_dir():
+        return out
+    for bdf_dir in sorted(devices_root.iterdir()):
+        if not bdf_dir.is_dir():
+            continue
+        # Only consider entries that own a root hub.
+        for child in sorted(bdf_dir.iterdir()):
+            if _is_root_hub_dir(child):
+                out.append((bdf_dir.name, child))
+    return out
+
+
+def _observe_devices(root_hub: Path) -> list[UsbDeviceObservation]:
+    observations: list[UsbDeviceObservation] = []
+    for dev_dir in _device_directories(root_hub):
+        vid = _read(dev_dir / "idVendor")
+        pid = _read(dev_dir / "idProduct")
+        speed_text = _read(dev_dir / "speed")
+        if not vid or not pid:
+            continue  # not a real device entry
+        try:
+            speed_mbps = float(speed_text) if speed_text else 480.0
+        except ValueError:
+            speed_mbps = 480.0
+        profile = lookup(vid, pid)
+        if profile is None:
+            profile = synthesise_unknown(vid, pid)
+            is_known = False
+        else:
+            is_known = True
+        observations.append(
+            UsbDeviceObservation(
+                sysfs_path=str(dev_dir),
+                vid=vid.lower(),
+                pid=pid.lower(),
+                speed_mbps=speed_mbps,
+                profile=profile,
+                is_known=is_known,
+            )
+        )
+    return observations
+
+
+def _root_hub_capacity(root_hub: Path) -> float:
+    """Return the bus capacity for a root hub.
+
+    The root hub itself reports the speed of the slowest port it owns; we
+    walk its devices and pick the maximum negotiated speed, falling back
+    to 480 Mbps (USB 2.0 high-speed) when no devices are bound.
+    """
+
+    speeds: list[float] = []
+    speed_text = _read(root_hub / "speed")
+    if speed_text:
+        try:
+            speeds.append(float(speed_text))
+        except ValueError:
+            pass
+    for dev_dir in _device_directories(root_hub):
+        text = _read(dev_dir / "speed")
+        if not text:
+            continue
+        try:
+            speeds.append(float(text))
+        except ValueError:
+            continue
+    if not speeds:
+        return USB_2_0_HIGH_SPEED_MBPS
+    return capacity_for_speed(max(speeds))
+
+
+def _bus_number(root_hub: Path) -> int:
+    raw = _read(root_hub / "busnum")
+    try:
+        return int(raw) if raw else int(root_hub.name[3:])
+    except ValueError:
+        return 0
+
+
+def collect_reports(*, sys_pci_root: Path) -> list[ControllerReport]:
+    reports: list[ControllerReport] = []
+    for bdf, root_hub in _scan_controllers(sys_pci_root):
+        report = ControllerReport(
+            bdf=bdf,
+            bus_number=_bus_number(root_hub),
+            capacity_mbps=_root_hub_capacity(root_hub),
+            devices=_observe_devices(root_hub),
+        )
+        reports.append(report)
+    return reports
+
+
+# ---------------------------------------------------------------------------
+# Simulation
+# ---------------------------------------------------------------------------
+
+
+def _resolve_target_bdf(
+    reports: list[ControllerReport], spec: str | None
+) -> ControllerReport | None:
+    """Resolve ``--device <vid>:<pid>[/<port-path>]`` target to a controller.
+
+    The optional port-path suffix is an ID_PATH-style string like
+    ``pci-0000:71:00.0-usb-0:1.1.2.2``. We match by prefix on the BDF.
+    Without a suffix, the simulation pretends the device is plugged into
+    the first controller that would saturate (or, if none would, the
+    least-loaded controller).
+    """
+
+    if not spec or "/" not in spec:
+        return None
+    suffix = spec.split("/", 1)[1].strip()
+    # Accept both raw BDF (``0000:71:00.0``) and ID_PATH form.
+    if suffix.startswith("pci-"):
+        suffix = suffix[len("pci-") :]
+    bdf_part = suffix.split("-", 1)[0]
+    for report in reports:
+        if report.bdf == bdf_part:
+            return report
+    return None
+
+
+def parse_device_spec(spec: str) -> tuple[str, str, str | None]:
+    """Parse ``vid:pid[/port-path]`` into its components."""
+
+    head, _, tail = spec.partition("/")
+    head = head.strip()
+    if ":" not in head:
+        raise ValueError(f"--device must be vid:pid[/port-path], got {spec!r}")
+    vid, pid = head.split(":", 1)
+    vid = vid.strip().lower()
+    pid = pid.strip().lower()
+    if not vid or not pid:
+        raise ValueError(f"--device vid and pid must both be present, got {spec!r}")
+    return vid, pid, tail.strip() or None
+
+
+def apply_simulation(
+    reports: list[ControllerReport], spec: str
+) -> tuple[ControllerReport, UsbDeviceProfile]:
+    """Mutate ``reports`` in place to add the simulated device.
+
+    Returns ``(controller, profile)``. The controller is the chosen
+    target; the profile is the resolved (possibly unknown) device profile.
+    """
+
+    vid, pid, _port = parse_device_spec(spec)
+    profile = lookup(vid, pid) or synthesise_unknown(vid, pid)
+    target = _resolve_target_bdf(reports, spec)
+    if target is None:
+        # Pick the first controller that would saturate if this device
+        # landed there; fall back to the least-loaded.
+        candidates = sorted(reports, key=lambda r: r.usage_ratio)
+        for candidate in candidates:
+            projected = candidate.used_mbps + profile.bandwidth_mbps
+            if projected / max(candidate.capacity_mbps, 1.0) >= DEFAULT_WARN_USAGE:
+                target = candidate
+                break
+        if target is None and candidates:
+            target = candidates[0]
+    if target is None:
+        raise RuntimeError("no USB host controllers detected — cannot simulate")
+    target.simulated_added.append(profile)
+    return target, profile
+
+
+# ---------------------------------------------------------------------------
+# Output formatting
+# ---------------------------------------------------------------------------
+
+
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_RED = "\033[31m"
+_RESET = "\033[0m"
+
+
+def _colour(severity: str, *, use_colour: bool) -> str:
+    if not use_colour:
+        return ""
+    if severity == "SATURATED":
+        return _RED
+    if severity == "WARNING":
+        return _YELLOW
+    return _GREEN
+
+
+def render_human(
+    reports: list[ControllerReport],
+    *,
+    warn: float,
+    saturated: float,
+    use_colour: bool,
+    target: ControllerReport | None = None,
+    simulated: UsbDeviceProfile | None = None,
+) -> str:
+    lines: list[str] = []
+    if simulated and target:
+        lines.append(
+            f"Simulating: add {simulated.name} ({simulated.bandwidth_mbps:.1f} Mbps) to {target.bdf}",
+        )
+        lines.append("")
+    for report in reports:
+        severity = report.severity(warn=warn, saturated=saturated)
+        prefix = _colour(severity, use_colour=use_colour)
+        suffix = _RESET if use_colour else ""
+        lines.append(
+            f"{prefix}[{severity:<9}]{suffix} "
+            f"{report.bdf} bus {report.bus_number}: "
+            f"used {report.used_mbps:8.1f} Mbps / cap {report.capacity_mbps:8.1f} Mbps "
+            f"(headroom {report.headroom_mbps:8.1f} Mbps, {report.usage_ratio * 100:5.1f}%)"
+        )
+        if not report.devices and not report.simulated_added:
+            lines.append("    (no devices)")
+            continue
+        for dev in report.devices:
+            tag = "" if dev.is_known else " [unknown]"
+            lines.append(
+                f"    {dev.vid}:{dev.pid} {dev.profile.name:<32} "
+                f"{dev.profile.bandwidth_mbps:6.1f} Mbps{tag}"
+            )
+        for sim in report.simulated_added:
+            lines.append(
+                f"    + {sim.vid}:{sim.pid} {sim.name:<32} "
+                f"{sim.bandwidth_mbps:6.1f} Mbps  [SIMULATED]"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def render_json(
+    reports: list[ControllerReport],
+    *,
+    warn: float,
+    saturated: float,
+    target: ControllerReport | None = None,
+    simulated: UsbDeviceProfile | None = None,
+) -> str:
+    payload: dict[str, Any] = {
+        "controllers": [
+            {
+                "bdf": r.bdf,
+                "bus_number": r.bus_number,
+                "capacity_mbps": r.capacity_mbps,
+                "used_mbps": r.used_mbps,
+                "headroom_mbps": r.headroom_mbps,
+                "usage_ratio": r.usage_ratio,
+                "severity": r.severity(warn=warn, saturated=saturated),
+                "devices": [
+                    {
+                        "vid": d.vid,
+                        "pid": d.pid,
+                        "name": d.profile.name,
+                        "bandwidth_mbps": d.profile.bandwidth_mbps,
+                        "speed_mbps": d.speed_mbps,
+                        "known": d.is_known,
+                        "sysfs_path": d.sysfs_path,
+                    }
+                    for d in r.devices
+                ],
+                "simulated": [
+                    {
+                        "vid": s.vid,
+                        "pid": s.pid,
+                        "name": s.name,
+                        "bandwidth_mbps": s.bandwidth_mbps,
+                    }
+                    for s in r.simulated_added
+                ],
+            }
+            for r in reports
+        ],
+        "thresholds": {"warn": warn, "saturated": saturated},
+    }
+    if simulated and target:
+        payload["simulation"] = {
+            "added_to": target.bdf,
+            "device": {
+                "vid": simulated.vid,
+                "pid": simulated.pid,
+                "name": simulated.name,
+                "bandwidth_mbps": simulated.bandwidth_mbps,
+            },
+        }
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def render_prometheus(reports: list[ControllerReport]) -> str:
+    """Prometheus textfile format for ``node_exporter`` scraping."""
+
+    lines = [
+        "# HELP hapax_usb_bandwidth_capacity_bps Total nominal bus capacity",
+        "# TYPE hapax_usb_bandwidth_capacity_bps gauge",
+        "# HELP hapax_usb_bandwidth_used_bps Estimated used bandwidth",
+        "# TYPE hapax_usb_bandwidth_used_bps gauge",
+        "# HELP hapax_usb_bandwidth_headroom_bps Remaining bandwidth",
+        "# TYPE hapax_usb_bandwidth_headroom_bps gauge",
+        "# HELP hapax_usb_bandwidth_headroom_ratio Headroom as fraction of capacity",
+        "# TYPE hapax_usb_bandwidth_headroom_ratio gauge",
+    ]
+    for r in reports:
+        labels = f'bdf="{r.bdf}",bus="{r.bus_number}"'
+        cap_bps = r.capacity_mbps * 1_000_000
+        used_bps = r.used_mbps * 1_000_000
+        headroom_bps = r.headroom_mbps * 1_000_000
+        ratio = r.headroom_mbps / r.capacity_mbps if r.capacity_mbps > 0 else 0.0
+        lines.append(f"hapax_usb_bandwidth_capacity_bps{{{labels}}} {cap_bps:.0f}")
+        lines.append(f"hapax_usb_bandwidth_used_bps{{{labels}}} {used_bps:.0f}")
+        lines.append(f"hapax_usb_bandwidth_headroom_bps{{{labels}}} {headroom_bps:.0f}")
+        lines.append(f"hapax_usb_bandwidth_headroom_ratio{{{labels}}} {ratio:.4f}")
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Exit code
+# ---------------------------------------------------------------------------
+
+
+def compute_exit_code(reports: list[ControllerReport], *, warn: float, saturated: float) -> int:
+    code = EXIT_OK
+    for r in reports:
+        sev = r.severity(warn=warn, saturated=saturated)
+        if sev == "SATURATED":
+            return EXIT_SATURATED
+        if sev == "WARNING":
+            code = EXIT_WARNING
+    return code
+
+
+# ---------------------------------------------------------------------------
+# Monitor mode
+# ---------------------------------------------------------------------------
+
+
+def write_prom_textfile(reports: list[ControllerReport], path: Path) -> None:
+    """Atomic-write the Prometheus textfile."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(render_prometheus(reports), encoding="utf-8")
+    tmp.replace(path)
+
+
+def monitor_loop(
+    *,
+    sys_pci_root: Path,
+    interval_sec: int,
+    prom_path: Path,
+    warn: float,
+    saturated: float,
+    iterations: int | None = None,
+    sleep_fn: Any = time.sleep,
+) -> int:
+    completed = 0
+    last_code = EXIT_OK
+    while iterations is None or completed < iterations:
+        reports = collect_reports(sys_pci_root=sys_pci_root)
+        write_prom_textfile(reports, prom_path)
+        last_code = compute_exit_code(reports, warn=warn, saturated=saturated)
+        completed += 1
+        if iterations is not None and completed >= iterations:
+            break
+        sleep_fn(interval_sec)
+    return last_code
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Estimate USB bandwidth headroom per host controller. "
+            "Surfaces saturation BEFORE the next plug fails."
+        ),
+    )
+    parser.add_argument(
+        "--device",
+        metavar="VID:PID[/PORT-PATH]",
+        help="Simulate plugging the given device. PORT-PATH is the BDF (or ID_PATH) of the target controller.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of the human-readable table.",
+    )
+    parser.add_argument(
+        "--prometheus",
+        action="store_true",
+        help="Emit Prometheus textfile output to stdout.",
+    )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Long-running monitor: periodically write prom textfile to --prom-path.",
+    )
+    parser.add_argument(
+        "--prom-path",
+        type=Path,
+        default=DEFAULT_PROM_PATH,
+        help=f"Prometheus textfile destination in --monitor mode (default: {DEFAULT_PROM_PATH})",
+    )
+    parser.add_argument(
+        "--monitor-interval",
+        type=int,
+        default=DEFAULT_MONITOR_INTERVAL_SEC,
+        help=f"Seconds between --monitor iterations (default: {DEFAULT_MONITOR_INTERVAL_SEC})",
+    )
+    parser.add_argument(
+        "--monitor-iterations",
+        type=int,
+        default=None,
+        help="Run --monitor only this many iterations (test hook).",
+    )
+    parser.add_argument(
+        "--warn",
+        type=float,
+        default=DEFAULT_WARN_USAGE,
+        help=f"Usage ratio at which to flag WARNING (default: {DEFAULT_WARN_USAGE})",
+    )
+    parser.add_argument(
+        "--saturated",
+        type=float,
+        default=DEFAULT_SATURATED_USAGE,
+        help=f"Usage ratio at which to flag SATURATED (default: {DEFAULT_SATURATED_USAGE})",
+    )
+    parser.add_argument(
+        "--sys-pci-root",
+        type=Path,
+        default=Path("/sys/bus/pci"),
+        help="Root of the PCI sysfs tree (test fixture hook).",
+    )
+    parser.add_argument(
+        "--no-colour",
+        action="store_true",
+        help="Disable ANSI colour even when stdout is a TTY.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    if args.monitor:
+        return monitor_loop(
+            sys_pci_root=args.sys_pci_root,
+            interval_sec=args.monitor_interval,
+            prom_path=args.prom_path,
+            warn=args.warn,
+            saturated=args.saturated,
+            iterations=args.monitor_iterations,
+        )
+
+    reports = collect_reports(sys_pci_root=args.sys_pci_root)
+
+    target: ControllerReport | None = None
+    simulated: UsbDeviceProfile | None = None
+    if args.device:
+        try:
+            target, simulated = apply_simulation(reports, args.device)
+        except (ValueError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 64  # EX_USAGE
+
+    if args.prometheus:
+        sys.stdout.write(render_prometheus(reports))
+        return compute_exit_code(reports, warn=args.warn, saturated=args.saturated)
+
+    if args.json:
+        sys.stdout.write(
+            render_json(
+                reports,
+                warn=args.warn,
+                saturated=args.saturated,
+                target=target,
+                simulated=simulated,
+            )
+        )
+        return compute_exit_code(reports, warn=args.warn, saturated=args.saturated)
+
+    use_colour = sys.stdout.isatty() and not args.no_colour
+    sys.stdout.write(
+        render_human(
+            reports,
+            warn=args.warn,
+            saturated=args.saturated,
+            use_colour=use_colour,
+            target=target,
+            simulated=simulated,
+        )
+    )
+    return compute_exit_code(reports, warn=args.warn, saturated=args.saturated)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
