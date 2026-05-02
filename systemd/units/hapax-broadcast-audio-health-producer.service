@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax broadcast audio health producer — egress audibility witness
+Wants=hapax-secrets.service
+After=hapax-secrets.service pipewire.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/broadcast-audio-health.env
+ExecStart=%h/.local/bin/uv run python -m agents.broadcast_audio_health_producer
+Nice=10
+Slice=app.slice
+
+[Install]
+WantedBy=default.target
