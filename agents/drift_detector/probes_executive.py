@@ -383,7 +383,56 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_no_interactive_prompts(),
     ),
+    SufficiencyProbe(
+        id="probe-error-006",
+        axiom_id="executive_function",
+        implication_id="ex-error-006",
+        level="subsystem",
+        question=(
+            "Do agent error handlers either auto-recover (@retry/tenacity) "
+            "or auto-escalate (notify/log.error) rather than leaving the "
+            "operator in undefined states?"
+        ),
+        check=lambda: _check_error_handlers_auto_recover_or_escalate(),
+    ),
 ]
+
+
+def _check_error_handlers_auto_recover_or_escalate() -> tuple[bool, str]:
+    """Enforces ex-error-006 (executive_function).
+
+    Error handling must auto-recover or auto-escalate rather than
+    leaving operator in undefined states requiring diagnosis. Scans
+    agent modules for either:
+      - Auto-recovery: @retry, @tenacity, retry loops
+      - Auto-escalation: notify(), log.error(), notify_failure
+    Threshold: ≥10 agent files have auto-recover or auto-escalate paths.
+    """
+    recover_or_escalate_pattern = re.compile(
+        r"@retry|@tenacity|"
+        r"notify\(|notify_failure|"
+        r"log\.error\(|logger\.error\("
+    )
+
+    agents_dir = AI_AGENTS_DIR / "agents"
+    if not agents_dir.exists():
+        return False, "agents directory not found"
+
+    matching: set[str] = set()
+    for py_file in agents_dir.rglob("*.py"):
+        try:
+            content = py_file.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if recover_or_escalate_pattern.search(content):
+            matching.add(py_file.name)
+
+    if len(matching) >= 10:
+        return True, (
+            f"{len(matching)} agent files have auto-recover or "
+            f"auto-escalate paths - ex-error-006 sufficient"
+        )
+    return False, (f"only {len(matching)} agents have recovery/escalation paths")
 
 
 def _check_no_interactive_prompts() -> tuple[bool, str]:
