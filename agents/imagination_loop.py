@@ -51,6 +51,58 @@ _DIMENSION_KEYS = (
 _MATERIAL_CHOICES = ("water", "fire", "earth", "air", "void")
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Strip surrounding ```...``` fences from an LLM response.
+
+    Mirrors the fix in agents/studio_compositor/director_loop.py for the
+    same root cause: Command-R 35B and similar instruction-tuned models
+    wrap JSON in ```json fences even when prompted for bare JSON. Without
+    stripping, pydantic-ai validation fails 50% of ticks per audit
+    /tmp/effect-cam-orchestration-audit-2026-05-02.md §R1.
+
+    Tolerates: leading whitespace, ```json / ``` / ```<lang> opening,
+    trailing closing fence, leading/trailing blank lines. Returns the
+    original text unchanged if no fence prefix is present so non-fenced
+    bare JSON passes through.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+    parts = stripped.split("\n", 1)
+    if len(parts) < 2:
+        return text
+    body = parts[1].rsplit("```", 1)[0]
+    return body.strip()
+
+
+def _try_parse_fragment_json(text: str) -> ImaginationFragment | None:
+    """Recover an ImaginationFragment when the LLM emitted JSON wrapped in fences.
+
+    The dominant failure mode behind the audit-flagged 50% pydantic-ai
+    structured-output failure rate: the LLM is producing well-formed JSON
+    but wrapping it in ```json...``` fences. pydantic-ai sees the fenced
+    text, fails to parse, and the text-fallback path defaults salience to
+    0.2, suppressing material variety + dimensional spread + downstream
+    stimmung modulation.
+
+    This recovery path strips fences then tries
+    ``ImaginationFragment.model_validate_json``. On success, we get the
+    model's actual salience (typically 0.4-0.7) instead of the markdown
+    fallback's 0.2 default. On any parse / validation failure, returns
+    None so the caller falls through to the markdown extractor (which
+    handles the residual free-form-prose failure mode).
+    """
+    if not text or not text.strip():
+        return None
+    candidate = _strip_markdown_fences(text)
+    if not candidate.startswith("{"):
+        return None
+    try:
+        return ImaginationFragment.model_validate_json(candidate)
+    except Exception:
+        return None
+
+
 def _extract_fragment_from_markdown(text: str) -> ImaginationFragment | None:
     """Reconstruct an ImaginationFragment from free-form markdown output.
 
@@ -345,14 +397,25 @@ class ImaginationLoop:
                 text_agent = self._get_text_agent()
                 text_result = await text_agent.run(context)
                 raw_text = str(getattr(text_result, "output", text_result) or "")
-                fragment = _extract_fragment_from_markdown(raw_text)
+                # Audit QW1 (2026-05-02): try the JSON-with-fences
+                # recovery path first. This catches the dominant
+                # failure mode (LLM emitted valid JSON but pydantic-ai
+                # rejected the ```json wrapper). On success, salience
+                # comes from the model's actual emission (~0.4-0.7),
+                # not the markdown fallback's 0.2 default. Failure
+                # falls through to the existing markdown extractor.
+                fragment = _try_parse_fragment_json(raw_text)
+                recovery_path = "json_fence_strip"
+                if fragment is None:
+                    fragment = _extract_fragment_from_markdown(raw_text)
+                    recovery_path = "markdown_extraction"
                 if fragment is None:
                     log.warning("Imagination tick failed: markdown fallback empty")
                     self.freshness.mark_failed()
                     return None
                 log.info(
-                    "imagination: recovered fragment via markdown fallback "
-                    "(salience=%.2f, material=%s, dims=%d)",
+                    "imagination: recovered fragment via %s (salience=%.2f, material=%s, dims=%d)",
+                    recovery_path,
                     fragment.salience,
                     fragment.material,
                     len(fragment.dimensions),
