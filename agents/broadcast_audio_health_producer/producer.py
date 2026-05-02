@@ -117,15 +117,21 @@ CaptureFn = Callable[[str, float, int], np.ndarray]
 
 
 def _default_inject(sink_name: str, samples: np.ndarray, sample_rate: int) -> None:
-    """Pipe int16 PCM to ``pw-cat -p --target <sink>``.
+    """Pipe int16 PCM to ``pw-cat -p --raw --target <sink>``.
 
     The data is written to the subprocess's stdin and the process
     blocks until the buffer is consumed, which gives us a clean
     "the marker has been emitted" semantic without polling.
+
+    The ``--raw`` (``-a``) flag bypasses libsndfile, which would otherwise
+    try to interpret stdin as a recognised audio container (WAV/AIFF/FLAC)
+    and fail with "Format not recognised". With ``--raw`` pw-cat treats
+    the input as bare PCM matching the declared rate/channels/format.
     """
     cmd = [
         "pw-cat",
         "-p",
+        "--raw",
         "--rate",
         str(sample_rate),
         "--channels",
