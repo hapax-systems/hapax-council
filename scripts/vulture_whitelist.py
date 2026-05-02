@@ -1138,3 +1138,21 @@ AestheticConditionEditionsLedger.by_rights
 AestheticConditionEditionsLedger.by_condition
 auto_capture_edition_from_input
 evaluate_edition_eligibility_from_input
+
+# Payment aggregator v2 support normalizer — cc-task
+# payment-aggregator-v2-support-normalizer.
+# Pydantic model_validator hooks + public emit / render entrypoints called
+# by the downstream support-aggregation daemon (separate cc-task).
+from shared.payment_aggregator_v2_support_normalizer import (
+    NormalizedSupportReceipt,
+    PublicAggregateEmission,
+    PublicEmitDecision,
+    evaluate_public_emit,
+    render_public_aggregate_text,
+)
+
+NormalizedSupportReceipt._validate_rail_currency_match
+PublicAggregateEmission._validate_window
+PublicEmitDecision._exactly_emit_or_refuse
+evaluate_public_emit
+render_public_aggregate_text
