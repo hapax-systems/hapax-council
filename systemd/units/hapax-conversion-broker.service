@@ -1,0 +1,20 @@
+[Unit]
+Description=hapax — content programme conversion broker
+Documentation=file:///home/hapax/projects/hapax-council/agents/conversion_broker/runner.py
+After=default.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.conversion_broker
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-conversion-broker
+
+[Install]
+WantedBy=default.target
