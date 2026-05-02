@@ -1197,3 +1197,19 @@ from shared.open_collective_receive_only_rail import (
 CollectiveEvent._handle_is_slug_only
 CollectiveEvent._currency_is_iso_4217
 OpenCollectiveRailReceiver.ingest_webhook
+
+# Stripe Payment Link receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Stripe Payment Link rail).
+# Pydantic field_validator hooks (Stripe object-ID + ISO 4217 currency) invoked
+# at construction; ingest_webhook is the public receiver entry-point called by
+# the downstream FastAPI webhook handler bridging Stripe deliveries (separate
+# cc-task). Timestamped HMAC + 300s replay tolerance are the new shapes this
+# rail introduces vs the prior three.
+from shared.stripe_payment_link_receive_only_rail import (
+    PaymentEvent,
+    StripePaymentLinkRailReceiver,
+)
+
+PaymentEvent._handle_is_stripe_id
+PaymentEvent._currency_is_iso_4217
+StripePaymentLinkRailReceiver.ingest_webhook
