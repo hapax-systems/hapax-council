@@ -62,14 +62,17 @@ restart_pi() {
   echo "" >&2
   echo "=== ${pi} (${hostname}, role=${role}, ${ip}) ===" >&2
 
-  if ! ssh -o ConnectTimeout=3 -o BatchMode=yes "hapax@${ip}" "true" 2>/dev/null; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "  [dry-run] would ssh-check hapax@${ip}" >&2
+  elif ! ssh -o ConnectTimeout=3 -o BatchMode=yes "hapax@${ip}" "true" 2>/dev/null; then
     echo "FAIL: ${pi} ssh unreachable — operator must restart Pi directly" >&2
     if [ "$pi" = "pi6" ]; then
       echo "      Pi-6 has known sshd/firewall issue. Operator action: power-cycle or local console." >&2
     fi
     return 1
+  else
+    echo "PASS: ${pi} ssh reachable" >&2
   fi
-  echo "PASS: ${pi} ssh reachable" >&2
 
   local repo_root
   repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
