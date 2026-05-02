@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Hapax private->broadcast leak guard every 30s
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
