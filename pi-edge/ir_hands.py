@@ -5,15 +5,38 @@ from __future__ import annotations
 import cv2
 import numpy as np  # noqa: TC002 — Pi-side code, no TYPE_CHECKING guard needed
 
+# Motion-delta floor below which the contour pipeline is skipped entirely and
+# detect_hands_nir returns []. The contour gates (NIR threshold + area + aspect)
+# fire on stationary IR-bright objects (LED indicators on synths/MPC, mixer
+# fader caps, illuminated buttons) when no hand is moving. Cross-correlating
+# with frame-diff motion suppresses these false positives without degrading
+# real-hand recall: actual hand motion produces motion_delta well above sensor
+# noise (≈0.013-0.015 observed during the 2026-05-02 IR fleet revival), so a
+# floor a few hundredths above the noise band rejects the FP class while
+# leaving real hands well within margin.
+HAND_MOTION_FLOOR = 0.020
+
 
 def detect_hands_nir(
-    grey_frame: np.ndarray, min_area: int = 2000, max_area_pct: float = 0.25
+    grey_frame: np.ndarray,
+    min_area: int = 2000,
+    max_area_pct: float = 0.25,
+    motion_delta: float | None = None,
 ) -> list[dict]:
     """Detect hands on instrument surfaces using NIR skin/plastic contrast.
 
     In NIR, skin has lower reflectance than most plastics. Adaptive
     thresholding segments skin regions, filtered by area and shape.
+
+    When ``motion_delta`` is supplied and is below ``HAND_MOTION_FLOOR``, the
+    contour pipeline is skipped and ``[]`` is returned — the assumption is
+    that any "hand-shaped" contour found in a near-static frame is a static
+    IR-bright object, not a real hand. Callers that pass ``None`` (or omit
+    the arg) get the legacy single-frame behavior.
     """
+    if motion_delta is not None and motion_delta < HAND_MOTION_FLOOR:
+        return []
+
     blurred = cv2.GaussianBlur(grey_frame, (11, 11), 0)
     thresh = cv2.adaptiveThreshold(
         blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 8

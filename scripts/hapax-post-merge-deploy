@@ -7,7 +7,14 @@
 #
 # Automated (by rebuild-services.timer, 5-min cadence):
 #   agents/**/*.py, shared/**/*.py, logos/**/*.py  → Python service rebuild
-#   hapax-logos/**                                  → rebuild-logos.timer
+#   hapax-logos/crates/hapax-imagination/**         → hapax-rebuild-logos.timer
+#                                                     (timer name retained for
+#                                                     compat; only builds and
+#                                                     installs hapax-imagination
+#                                                     — the Tauri/WebKit
+#                                                     hapax-logos preview is
+#                                                     decommissioned and is
+#                                                     never built or restarted)
 #
 # Manual (this script):
 #   config/pipewire/*.conf         → cp + restart pipewire stack

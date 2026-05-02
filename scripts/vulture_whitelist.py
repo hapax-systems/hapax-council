@@ -1363,3 +1363,13 @@ IncomingAchEvent._handle_is_display_name_only
 IncomingAchEvent._currency_is_iso_4217
 TreasuryPrimeRailReceiver.ingest_webhook
 IncomingAchEventKind
+
+# Activity-router family-pool ceiling eviction order — used by P4 router
+# policy when the family pool is exhausted and a higher-priority ward
+# wants to enter. P3 (cc-task activity-reveal-ward-p3-governance) ships
+# the helper as observability scaffolding so P4 has the eviction
+# contract ready; the actual eviction call-site lands when P4's
+# mutex/priority/hysteresis algorithm replaces the classify-only logic.
+from agents.studio_compositor.activity_family_ceiling import FamilyCeilingTracker as _FCT
+
+_FCT.evictable_order
