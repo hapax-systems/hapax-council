@@ -287,7 +287,66 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_state_visibility_emission(),
     ),
+    SufficiencyProbe(
+        id="probe-routine-002",
+        axiom_id="executive_function",
+        implication_id="ex-routine-002",
+        level="system",
+        question=(
+            "Do canonical scheduled agents (health_monitor, drift_detector, "
+            "scout, briefing) each have a paired .timer alongside the "
+            ".service?"
+        ),
+        check=lambda: _check_scheduled_agents_have_timers(),
+    ),
 ]
+
+
+def _check_scheduled_agents_have_timers() -> tuple[bool, str]:
+    """Enforces ex-routine-002 (executive_function).
+
+    Agents like health_monitor and drift_detector must self-schedule.
+    Verifies that each canonical scheduled-agent service in
+    `systemd/units/*.service` has a paired `.timer` file alongside it
+    so it actually runs without manual triggering by the operator.
+
+    Threshold: every canonical agent must have a timer (no exceptions).
+    """
+    canonical_scheduled = (
+        "health-monitor",
+        "drift-detector",
+        "scout",
+        "daily-briefing",
+    )
+
+    units_dir = AI_AGENTS_DIR / "systemd" / "units"
+    if not units_dir.exists():
+        return False, "systemd/units directory not found"
+
+    paired = 0
+    missing: list[str] = []
+
+    for name in canonical_scheduled:
+        service = units_dir / f"{name}.service"
+        timer = units_dir / f"{name}.timer"
+        if not service.exists():
+            missing.append(f"{name}.service (absent)")
+            continue
+        if not timer.exists():
+            missing.append(f"{name}.timer (absent)")
+            continue
+        paired += 1
+
+    total = len(canonical_scheduled)
+    if paired == total:
+        return True, (
+            f"all {total} canonical scheduled agents have paired "
+            f".service + .timer (ex-routine-002 sufficient)"
+        )
+    return False, (
+        f"only {paired}/{total} canonical scheduled agents paired; "
+        f"missing: {', '.join(missing[:3])}"
+    )
 
 
 def _check_state_visibility_emission() -> tuple[bool, str]:

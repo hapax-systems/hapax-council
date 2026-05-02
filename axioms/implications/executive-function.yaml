@@ -78,6 +78,7 @@ implications:
   mode: sufficiency
   level: system
 - id: ex-routine-002
+  linkage: code-direct
   tier: T1
   text: Agents like health_monitor and drift_detector must self-schedule and report
     completion status.
