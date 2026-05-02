@@ -311,7 +311,71 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_agents_have_context_query_path(),
     ),
+    SufficiencyProbe(
+        id="probe-context-002",
+        axiom_id="executive_function",
+        implication_id="ex-context-002",
+        level="component",
+        question=(
+            "Do canonical status surfaces emit ISO-8601 timestamps so "
+            "the operator can correlate events without parsing log timing?"
+        ),
+        check=lambda: _check_status_outputs_have_timestamps(),
+    ),
 ]
+
+
+def _check_status_outputs_have_timestamps() -> tuple[bool, str]:
+    """Enforces ex-context-002 (executive_function).
+
+    Status outputs must include timestamps and be human-readable
+    without additional parsing. Verifies that canonical status-emitting
+    modules thread an ISO-8601 timestamp field through their data shape.
+
+    Patterns matched:
+      - `ts:` / `timestamp:` field declarations
+      - `isoformat()` calls
+      - `strftime("%Y-%m-%dT...)` patterns
+    """
+    timestamp_pattern = re.compile(
+        r'\b(ts|timestamp)\s*[:=]\s*|isoformat\(|strftime\(["\']%Y-%m-%dT'
+    )
+
+    canonical_status_surfaces = (
+        AI_AGENTS_DIR / "shared" / "chronicle.py",
+        AI_AGENTS_DIR / "agents" / "health_monitor",
+        AI_AGENTS_DIR / "agents" / "consent_audit.py",
+        AI_AGENTS_DIR / "agents" / "stimmung_sync.py",
+        AI_AGENTS_DIR / "agents" / "drift_detector" / "freshness.py",
+    )
+
+    matching = 0
+    matched_names: list[str] = []
+    for path in canonical_status_surfaces:
+        if path.is_dir():
+            files = list(path.rglob("*.py"))
+        elif path.exists():
+            files = [path]
+        else:
+            continue
+        for f in files:
+            try:
+                content = f.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if timestamp_pattern.search(content):
+                matching += 1
+                matched_names.append(f.relative_to(AI_AGENTS_DIR).as_posix())
+                break
+
+    if matching >= 3:
+        return True, (
+            f"{matching} status surfaces emit timestamps "
+            f"({', '.join(matched_names)}) — ex-context-002 sufficient"
+        )
+    return False, (
+        f"only {matching} status surfaces emit timestamps; matched: {', '.join(matched_names)}"
+    )
 
 
 def _check_agents_have_context_query_path() -> tuple[bool, str]:
