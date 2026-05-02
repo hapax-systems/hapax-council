@@ -1261,3 +1261,26 @@ from shared.buy_me_a_coffee_receive_only_rail import (
 CoffeeEvent._handle_is_display_name_only
 CoffeeEvent._currency_is_iso_4217
 BuyMeACoffeeRailReceiver.ingest_webhook
+
+# omg.lol support-directory composer — cc-task
+# omg-lol-support-directory-publisher. Pure typed composer that renders the
+# seven receive-only rails' canonical public URLs to deterministic markdown
+# suitable for an OmgLolWeblogPublisher.publish() call (which lives in a
+# separate downstream cc-task). Pydantic model_validator hooks
+# (entry/directory invariants) invoked at construction; render_directory_markdown
+# is the public renderer entry-point called by the downstream weblog-driver
+# script. RailId / SupportDirectory / SupportDirectoryEntry are exported as the
+# typed public schema.
+from shared.omg_lol_support_directory import (
+    RailId,
+    SupportDirectory,
+    SupportDirectoryEntry,
+    SupportDirectoryError,
+    render_directory_markdown,
+)
+
+SupportDirectoryEntry._validate_entry
+SupportDirectory._validate_directory
+render_directory_markdown
+RailId
+SupportDirectoryError
