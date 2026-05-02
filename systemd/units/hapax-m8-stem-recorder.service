@@ -1,0 +1,26 @@
+[Unit]
+Description=Hapax M8 stem archive recorder — always-on 24-bit FLAC capture
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/scripts/m8-stem-recorder.sh
+# Pulled into the active graph by the udev rule at systemd/udev/99-hapax-m8.rules
+# (TAG+="systemd" + SYSTEMD_USER_WANTS) when the M8 USB device appears.
+# StopWhenUnneeded ensures clean teardown when the M8 is unplugged.
+After=graphical-session.target pipewire.service wireplumber.service
+PartOf=hapax.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+ExecStart=%h/projects/hapax-council/scripts/m8-stem-recorder.sh
+# Recorder restarts on every failure — parec/sox can exit on transient
+# PipeWire reconfigure (sample-rate negotiation, M8 USB topology change)
+# and we want the recorder back up immediately so the gap stays small.
+Restart=on-failure
+RestartSec=2
+# Pipeline normally returns within 1s of M8 disappearing; cap startup
+# so we don't sit in a stalled state if PipeWire isn't yet up.
+TimeoutStartSec=30
+# Encoder uses ~30 MB resident; cap at 256M for sox encoding peaks.
+MemoryMax=256M
+
+[Install]
+WantedBy=hapax.target

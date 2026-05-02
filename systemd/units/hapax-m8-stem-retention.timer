@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax M8 stem retention sweep — daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target
