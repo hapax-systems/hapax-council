@@ -1,48 +1,31 @@
-"""Read temporal bands from shared memory for prompt injection.
+"""Render WCS-gated temporal prompt context.
 
 Single implementation used by all operator prompt builders
 (shared/operator.py, logos/_operator.py, agents/_operator.py).
+
+Temporal prompt context used to read raw shared-memory XML directly. The WCS
+gate now renders only temporal/perceptual ``WorldSurfaceHealthRecord`` rows so
+prompt text can orient a model without becoming unverified temporal authority.
 """
 
 from __future__ import annotations
 
-import json
-import time
 from pathlib import Path
 
+from shared.temporal_prompt_wcs_gate import render_default_temporal_prompt_block
+
 TEMPORAL_FILE = Path("/dev/shm/hapax-temporal/bands.json")
-_STALE_THRESHOLD_S = 30.0
 
 
 def read_temporal_block() -> str:
-    """Read temporal bands from /dev/shm and format for prompt injection.
+    """Render the temporal prompt block through WCS health rows.
 
-    Provides Husserlian temporal context: retention (fading past),
-    impression (vivid present), protention (anticipated future),
-    and surprise (prediction mismatches).
-
-    Returns empty string if temporal data is missing or stale (>30s).
+    The ``TEMPORAL_FILE`` constant is retained for compatibility with older
+    tests and importers, but this function no longer treats raw shared-memory
+    XML as prompt authority. Missing or invalid WCS health data fails closed to
+    an empty block.
     """
     try:
-        raw = json.loads(TEMPORAL_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return render_default_temporal_prompt_block()
+    except Exception:
         return ""
-
-    ts = raw.get("timestamp", 0)
-    if ts > 0 and (time.time() - ts) > _STALE_THRESHOLD_S:
-        return ""
-
-    xml = raw.get("xml", "")
-    if not xml or xml == "<temporal_context>\n</temporal_context>":
-        return ""
-
-    max_surprise = raw.get("max_surprise", 0.0)
-    preamble = (
-        "Temporal context (retention = fading past, impression = vivid present, "
-        "protention = anticipated near-future"
-    )
-    if max_surprise > 0.3:
-        preamble += f", SURPRISE detected: {max_surprise:.2f}"
-    preamble += "):"
-
-    return preamble + "\n" + xml
