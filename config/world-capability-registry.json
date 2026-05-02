@@ -4,7 +4,8 @@
   "generated_from": [
     "vault:20-projects/hapax-research/specs/2026-04-29-world-capability-surface-parent-spec.md",
     "vault:20-projects/hapax-research/specs/2026-04-29-semantic-substrate-registry-generalization.md",
-    "vault:20-projects/hapax-research/specs/2026-04-29-capability-grounding-contract-envelope.md"
+    "vault:20-projects/hapax-research/specs/2026-04-29-capability-grounding-contract-envelope.md",
+    "vault:20-projects/hapax-research/specs/2026-04-29-audio-reference-world-surface.md"
   ],
   "records": [
     {
@@ -18,12 +19,27 @@
       "direction": "communicate",
       "intent_family": "public_narration",
       "recruitment_family": "voice_egress",
-      "surface_refs": ["substrate:audio.broadcast_voice", "route:broadcast.voice", "egress:obs"],
-      "substrate_refs": ["audio.broadcast_voice", "audio.obs_egress"],
-      "lane_refs": ["lane:captions", "lane:studio_audio"],
-      "route_refs": ["route:broadcast.voice"],
+      "surface_refs": [
+        "substrate:audio.broadcast_voice",
+        "route:broadcast.voice",
+        "egress:obs"
+      ],
+      "substrate_refs": [
+        "audio.broadcast_voice",
+        "audio.obs_egress"
+      ],
+      "lane_refs": [
+        "lane:captions",
+        "lane:studio_audio"
+      ],
+      "route_refs": [
+        "route:broadcast.voice"
+      ],
       "producer": "hapax-daimonion",
-      "consumer_refs": ["studio-compositor", "research-vehicle-public-event"],
+      "consumer_refs": [
+        "studio-compositor",
+        "research-vehicle-public-event"
+      ],
       "grounding_role": "expression_only",
       "authority_ceiling": "public_gate_required",
       "grounding_status": "public_claim_bearing",
@@ -63,15 +79,26 @@
       "witness_requirements": [
         {
           "witness_id": "broadcast_route_marker",
-          "evidence_classes": ["route_binding", "signal_presence", "egress_acceptance"],
-          "required_for": ["public_voice_happened", "no_private_leak"],
+          "evidence_classes": [
+            "route_binding",
+            "signal_presence",
+            "egress_acceptance"
+          ],
+          "required_for": [
+            "public_voice_happened",
+            "no_private_leak"
+          ],
           "freshness_ttl_s": 5,
           "description": "Broadcast semantic route plus marker or audio energy observed at broadcast egress."
         },
         {
           "witness_id": "public_claim_gate",
-          "evidence_classes": ["grounding_gate_result"],
-          "required_for": ["factual_public_narration"],
+          "evidence_classes": [
+            "grounding_gate_result"
+          ],
+          "required_for": [
+            "factual_public_narration"
+          ],
           "freshness_ttl_s": 60,
           "description": "Factual narration has a grounding gate result before public use."
         }
@@ -90,10 +117,18 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "broadcast_audio_egress_not_proven"],
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "broadcast_audio_egress_not_proven"
+      ],
       "fallback": {
         "mode": "private_only",
         "reason_code": "broadcast_witness_missing",
@@ -101,6 +136,149 @@
       },
       "health_signal": "shared.broadcast_audio_health",
       "notes": "Audio is the reference slice for no-false-grounding route truth."
+    },
+    {
+      "schema_version": 1,
+      "capability_id": "audio.broadcast_health",
+      "capability_name": "Broadcast audio health surface",
+      "description": "Observation surface projecting the canonical audio_safe_for_broadcast decision and marker/egress witnesses into a public-claim-bearing world-state row. Director, programme scheduler, and public-event adapters consume this surface_id to gate public-audio success on fresh, witnessed audibility evidence.",
+      "daemon": "hapax-broadcast-audio-health",
+      "realm": "world_state",
+      "domain": "audio",
+      "direction": "observe",
+      "intent_family": "audibility_witness",
+      "recruitment_family": "broadcast_health_witness",
+      "surface_refs": [
+        "substrate:audio.broadcast_health",
+        "evidence:audio_safe_for_broadcast",
+        "evidence:broadcast_audio_marker"
+      ],
+      "substrate_refs": [
+        "audio.broadcast_health",
+        "audio.no_private_leak",
+        "audio.l12_capture"
+      ],
+      "lane_refs": [
+        "lane:studio_audio",
+        "lane:public_event"
+      ],
+      "route_refs": [
+        "route:broadcast.health"
+      ],
+      "producer": "hapax-broadcast-audio-health",
+      "consumer_refs": [
+        "studio-compositor-director",
+        "programme-scheduler",
+        "research-vehicle-public-event",
+        "broadcast-audio-health-producer"
+      ],
+      "grounding_role": "supplied_evidence_generator",
+      "authority_ceiling": "evidence_bound",
+      "grounding_status": "public_claim_bearing",
+      "freshness_ttl_s": 60,
+      "availability_state": "blocked",
+      "evidence_envelope_requirements": {
+        "required_fields": [
+          "capability_id",
+          "contract_id",
+          "substrate_refs",
+          "grounding_role",
+          "producer",
+          "source_items",
+          "observation_items",
+          "claim_items",
+          "citations",
+          "provenance",
+          "freshness",
+          "rights_state",
+          "privacy_state",
+          "gate_refs",
+          "refusal_or_uncertainty",
+          "tool_errors",
+          "raw_source_hashes",
+          "replay_refs",
+          "witness_refs"
+        ],
+        "required_evidence_classes": [
+          "fresh_state_file",
+          "signal_presence",
+          "egress_acceptance"
+        ],
+        "inferred_context_satisfies_witness": false,
+        "missing_evidence_state": "blocked"
+      },
+      "witness_requirements": [
+        {
+          "witness_id": "broadcast_audio_safety_witness",
+          "evidence_classes": [
+            "fresh_state_file",
+            "mtime"
+          ],
+          "required_for": [
+            "public_audio_safe",
+            "audibility_claim"
+          ],
+          "freshness_ttl_s": 60,
+          "description": "Fresh audio_safe_for_broadcast envelope from /dev/shm/hapax-broadcast/audio-safe-for-broadcast.json with explicit safe/status, blocking reasons, and evidence refs."
+        },
+        {
+          "witness_id": "broadcast_egress_marker_witness",
+          "evidence_classes": [
+            "signal_presence",
+            "egress_acceptance"
+          ],
+          "required_for": [
+            "public_audio_audible",
+            "no_quiet_off_air"
+          ],
+          "freshness_ttl_s": 90,
+          "description": "FFT marker probe (~17.5 kHz) detected on broadcast egress monitor source by hapax-broadcast-audio-health-producer, with snr_db above the safety threshold."
+        },
+        {
+          "witness_id": "no_private_leak_witness",
+          "evidence_classes": [
+            "tool_response"
+          ],
+          "required_for": [
+            "public_audio_safe"
+          ],
+          "freshness_ttl_s": 60,
+          "description": "audio-leak-guard.sh pass state for assistant/private/notification isolation; failure becomes a distinct blocker category separate from generic unsafe."
+        }
+      ],
+      "public_claim_policy": {
+        "claim_private": true,
+        "claim_dry_run": true,
+        "claim_public_live": false,
+        "claim_archive": true,
+        "claim_monetizable": false,
+        "requires_egress_public_claim": true,
+        "requires_audio_safe": true,
+        "requires_grounding_gate": true,
+        "requires_rights_manifest": false,
+        "requires_privacy_public_safe": true,
+        "requires_provenance": true,
+        "requires_operator_action": false,
+        "allowed_surface_refs": [],
+        "denied_surface_refs": [
+          "public:*"
+        ]
+      },
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "audio_safe_for_broadcast_not_present"
+      ],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "broadcast_health_witness_missing",
+        "reason": "Public audio claims fail closed when health envelope is missing, stale, unsafe, marker-undetected, or leak-guard-failed. Distinct blocker category per state preserves diagnostic clarity."
+      },
+      "health_signal": "shared.broadcast_audio_health",
+      "notes": "Five distinct blocker categories preserved per broadcast-audio-health-world-surface acceptance: unsafe, quiet_off_air, stale, no_leak_failed, unknown. Consumers MUST read this surface_id for audibility decisions; commanded TTS without an egress marker witness is NOT public-audio success."
     },
     {
       "schema_version": 1,
@@ -113,12 +291,27 @@
       "direction": "observe",
       "intent_family": "visual_presence",
       "recruitment_family": "camera_frame",
-      "surface_refs": ["camera:studio", "substrate:video.compositor_output"],
-      "substrate_refs": ["video.camera_desk", "video.camera_room", "video.compositor_output"],
-      "lane_refs": ["lane:camera_hero", "lane:homage"],
-      "route_refs": ["route:studio_compositor.frame"],
+      "surface_refs": [
+        "camera:studio",
+        "substrate:video.compositor_output"
+      ],
+      "substrate_refs": [
+        "video.camera_desk",
+        "video.camera_room",
+        "video.compositor_output"
+      ],
+      "lane_refs": [
+        "lane:camera_hero",
+        "lane:homage"
+      ],
+      "route_refs": [
+        "route:studio_compositor.frame"
+      ],
       "producer": "studio-compositor",
-      "consumer_refs": ["director-world-surface-read-model", "programme-world-surface-integration"],
+      "consumer_refs": [
+        "director-world-surface-read-model",
+        "programme-world-surface-integration"
+      ],
       "grounding_role": "raw_observation",
       "authority_ceiling": "evidence_bound",
       "grounding_status": "grounding_candidate",
@@ -146,15 +339,26 @@
           "replay_refs",
           "witness_refs"
         ],
-        "required_evidence_classes": ["fresh_state_file", "nonblank_frame", "privacy_policy"],
+        "required_evidence_classes": [
+          "fresh_state_file",
+          "nonblank_frame",
+          "privacy_policy"
+        ],
         "inferred_context_satisfies_witness": false,
         "missing_evidence_state": "blocked"
       },
       "witness_requirements": [
         {
           "witness_id": "fresh_nonblank_camera_frame",
-          "evidence_classes": ["fresh_state_file", "nonblank_frame", "privacy_policy"],
-          "required_for": ["camera_can_be_used", "director_visual_claim"],
+          "evidence_classes": [
+            "fresh_state_file",
+            "nonblank_frame",
+            "privacy_policy"
+          ],
+          "required_for": [
+            "camera_can_be_used",
+            "director_visual_claim"
+          ],
           "freshness_ttl_s": 3,
           "description": "A fresh nonblank frame with camera role and privacy/egress posture."
         }
@@ -173,10 +377,18 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "camera_frame_freshness_not_proven"],
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "camera_frame_freshness_not_proven"
+      ],
       "fallback": {
         "mode": "dry_run_badge",
         "reason_code": "camera_witness_missing",
@@ -196,12 +408,27 @@
       "direction": "observe",
       "intent_family": "visual_presence",
       "recruitment_family": "camera_frame",
-      "surface_refs": ["camera:brio-overhead", "camera:c920-desk", "camera:c920-room"],
-      "substrate_refs": ["video.camera_rgb_fleet", "video.camera_role_snapshot"],
-      "lane_refs": ["lane:camera_hero", "lane:camera_grid"],
-      "route_refs": ["route:studio_compositor.camera_snapshots"],
+      "surface_refs": [
+        "camera:brio-overhead",
+        "camera:c920-desk",
+        "camera:c920-room"
+      ],
+      "substrate_refs": [
+        "video.camera_rgb_fleet",
+        "video.camera_role_snapshot"
+      ],
+      "lane_refs": [
+        "lane:camera_hero",
+        "lane:camera_grid"
+      ],
+      "route_refs": [
+        "route:studio_compositor.camera_snapshots"
+      ],
       "producer": "studio-compositor",
-      "consumer_refs": ["director-world-surface-read-model", "bayesian-camera-salience-world-surface"],
+      "consumer_refs": [
+        "director-world-surface-read-model",
+        "bayesian-camera-salience-world-surface"
+      ],
       "grounding_role": "raw_observation",
       "authority_ceiling": "internal_only",
       "grounding_status": "grounding_candidate",
@@ -229,15 +456,26 @@
           "replay_refs",
           "witness_refs"
         ],
-        "required_evidence_classes": ["fresh_state_file", "nonblank_frame", "privacy_policy"],
+        "required_evidence_classes": [
+          "fresh_state_file",
+          "nonblank_frame",
+          "privacy_policy"
+        ],
         "inferred_context_satisfies_witness": false,
         "missing_evidence_state": "blocked"
       },
       "witness_requirements": [
         {
           "witness_id": "camera_role_fresh_nonblank_frame",
-          "evidence_classes": ["fresh_state_file", "nonblank_frame", "privacy_policy"],
-          "required_for": ["internal_camera_visible", "camera_salience_candidate"],
+          "evidence_classes": [
+            "fresh_state_file",
+            "nonblank_frame",
+            "privacy_policy"
+          ],
+          "required_for": [
+            "internal_camera_visible",
+            "camera_salience_candidate"
+          ],
           "freshness_ttl_s": 3,
           "description": "Each used camera role has a fresh nonblank frame and privacy posture evidence."
         }
@@ -256,10 +494,18 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "camera_frame_freshness_not_proven"],
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "camera_frame_freshness_not_proven"
+      ],
       "fallback": {
         "mode": "private_only",
         "reason_code": "camera_witness_missing",
@@ -279,12 +525,27 @@
       "direction": "express",
       "intent_family": "visual_public_output",
       "recruitment_family": "camera_public_output",
-      "surface_refs": ["video_surface:studio_compositor.public_output", "public:youtube_live_video"],
-      "substrate_refs": ["video.compositor_output", "video.public_egress_frame"],
-      "lane_refs": ["lane:livestream_output", "lane:hls_preview"],
-      "route_refs": ["route:studio_compositor.public_output", "route:livestream.egress"],
+      "surface_refs": [
+        "video_surface:studio_compositor.public_output",
+        "public:youtube_live_video"
+      ],
+      "substrate_refs": [
+        "video.compositor_output",
+        "video.public_egress_frame"
+      ],
+      "lane_refs": [
+        "lane:livestream_output",
+        "lane:hls_preview"
+      ],
+      "route_refs": [
+        "route:studio_compositor.public_output",
+        "route:livestream.egress"
+      ],
       "producer": "studio-compositor",
-      "consumer_refs": ["livestream-egress-state-resolver", "programme-world-surface-integration"],
+      "consumer_refs": [
+        "livestream-egress-state-resolver",
+        "programme-world-surface-integration"
+      ],
       "grounding_role": "derived_observation",
       "authority_ceiling": "public_gate_required",
       "grounding_status": "public_claim_bearing",
@@ -326,15 +587,29 @@
       "witness_requirements": [
         {
           "witness_id": "viewer_visible_frame_public_gate",
-          "evidence_classes": ["fresh_state_file", "nonblank_frame", "egress_acceptance", "public_event_ref"],
-          "required_for": ["live_visible_public_output", "public_live_claim"],
+          "evidence_classes": [
+            "fresh_state_file",
+            "nonblank_frame",
+            "egress_acceptance",
+            "public_event_ref"
+          ],
+          "required_for": [
+            "live_visible_public_output",
+            "public_live_claim"
+          ],
           "freshness_ttl_s": 3,
           "description": "Composed frame, public egress resolver, and public-event evidence agree within the live output TTL."
         },
         {
           "witness_id": "public_output_privacy_rights_floor",
-          "evidence_classes": ["privacy_policy", "rights_manifest", "grounding_gate_result"],
-          "required_for": ["public_safe_visual_output"],
+          "evidence_classes": [
+            "privacy_policy",
+            "rights_manifest",
+            "grounding_gate_result"
+          ],
+          "required_for": [
+            "public_safe_visual_output"
+          ],
           "freshness_ttl_s": 60,
           "description": "Face/privacy, consent, rights, and provenance floors are attached before public visual claims."
         }
@@ -353,10 +628,19 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "egress_unknown", "public_event_acceptance_missing"],
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "egress_unknown",
+        "public_event_acceptance_missing"
+      ],
       "fallback": {
         "mode": "dry_run_badge",
         "reason_code": "public_output_witness_missing",
@@ -376,12 +660,23 @@
       "direction": "recall",
       "intent_family": "replay_reference",
       "recruitment_family": "archive_artifact",
-      "surface_refs": ["archive:vod_sidecar", "artifact:replay"],
-      "substrate_refs": ["archive.vod_sidecar", "archive.refusal_artifact"],
+      "surface_refs": [
+        "archive:vod_sidecar",
+        "artifact:replay"
+      ],
+      "substrate_refs": [
+        "archive.vod_sidecar",
+        "archive.refusal_artifact"
+      ],
       "lane_refs": [],
-      "route_refs": ["route:archive.sidecar_read"],
+      "route_refs": [
+        "route:archive.sidecar_read"
+      ],
       "producer": "conversion-broker",
-      "consumer_refs": ["research-artifact-dataset-card-generator", "public-event-to-artifact-release-state-machine"],
+      "consumer_refs": [
+        "research-artifact-dataset-card-generator",
+        "public-event-to-artifact-release-state-machine"
+      ],
       "grounding_role": "supplied_evidence_generator",
       "authority_ceiling": "evidence_bound",
       "grounding_status": "grounding_candidate",
@@ -409,15 +704,28 @@
           "replay_refs",
           "witness_refs"
         ],
-        "required_evidence_classes": ["hash", "mtime", "rights_manifest", "programme_boundary_event"],
+        "required_evidence_classes": [
+          "hash",
+          "mtime",
+          "rights_manifest",
+          "programme_boundary_event"
+        ],
         "inferred_context_satisfies_witness": false,
         "missing_evidence_state": "unavailable"
       },
       "witness_requirements": [
         {
           "witness_id": "archive_hash_mtime",
-          "evidence_classes": ["hash", "mtime", "rights_manifest", "programme_boundary_event"],
-          "required_for": ["archive_replay_exists", "artifact_conversion_candidate"],
+          "evidence_classes": [
+            "hash",
+            "mtime",
+            "rights_manifest",
+            "programme_boundary_event"
+          ],
+          "required_for": [
+            "archive_replay_exists",
+            "artifact_conversion_candidate"
+          ],
           "freshness_ttl_s": null,
           "description": "Replay sidecar has path or object id, hash, mtime, programme/run ids, and rights/provenance refs."
         }
@@ -436,10 +744,18 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["archive", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "archive_hash_mtime_not_supplied"],
+      "public_private_posture": [
+        "archive",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "archive_hash_mtime_not_supplied"
+      ],
       "fallback": {
         "mode": "archive_only",
         "reason_code": "archive_evidence_missing",
@@ -459,12 +775,25 @@
       "direction": "recall",
       "intent_family": "hls_archive_reference",
       "recruitment_family": "archive_artifact",
-      "surface_refs": ["archive:hls.sidecar", "archive:hls.segment"],
-      "substrate_refs": ["archive.hls_sidecar", "archive.hls_segment"],
-      "lane_refs": ["lane:hls_archive"],
-      "route_refs": ["route:archive.hls_sidecar_read"],
+      "surface_refs": [
+        "archive:hls.sidecar",
+        "archive:hls.segment"
+      ],
+      "substrate_refs": [
+        "archive.hls_sidecar",
+        "archive.hls_segment"
+      ],
+      "lane_refs": [
+        "lane:hls_archive"
+      ],
+      "route_refs": [
+        "route:archive.hls_sidecar_read"
+      ],
       "producer": "studio-compositor.hls-archive",
-      "consumer_refs": ["archive-replay-public-event-link-adapter", "programme-world-surface-integration"],
+      "consumer_refs": [
+        "archive-replay-public-event-link-adapter",
+        "programme-world-surface-integration"
+      ],
       "grounding_role": "supplied_evidence_generator",
       "authority_ceiling": "evidence_bound",
       "grounding_status": "grounding_candidate",
@@ -492,15 +821,30 @@
           "replay_refs",
           "witness_refs"
         ],
-        "required_evidence_classes": ["hash", "mtime", "rights_manifest", "privacy_policy", "programme_boundary_event"],
+        "required_evidence_classes": [
+          "hash",
+          "mtime",
+          "rights_manifest",
+          "privacy_policy",
+          "programme_boundary_event"
+        ],
         "inferred_context_satisfies_witness": false,
         "missing_evidence_state": "unavailable"
       },
       "witness_requirements": [
         {
           "witness_id": "hls_sidecar_hash_mtime_span",
-          "evidence_classes": ["hash", "mtime", "rights_manifest", "privacy_policy", "programme_boundary_event"],
-          "required_for": ["archived_segment_exists", "archive_replay_candidate"],
+          "evidence_classes": [
+            "hash",
+            "mtime",
+            "rights_manifest",
+            "privacy_policy",
+            "programme_boundary_event"
+          ],
+          "required_for": [
+            "archived_segment_exists",
+            "archive_replay_candidate"
+          ],
           "freshness_ttl_s": 300,
           "description": "HLS sidecar has segment path, hash, mtime, temporal span, rights, privacy, and programme boundary refs."
         }
@@ -519,10 +863,18 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["archive", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "archive_hash_mtime_not_supplied"],
+      "public_private_posture": [
+        "archive",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "archive_hash_mtime_not_supplied"
+      ],
       "fallback": {
         "mode": "archive_only",
         "reason_code": "archive_evidence_missing",
@@ -542,12 +894,25 @@
       "direction": "communicate",
       "intent_family": "public_replay_reference",
       "recruitment_family": "archive_public_replay",
-      "surface_refs": ["archive:vod.public_url", "public:archive.replay_url"],
-      "substrate_refs": ["archive.hls_sidecar", "research_vehicle_public_event.archive_segment"],
-      "lane_refs": ["lane:archive_replay"],
-      "route_refs": ["route:archive_replay_public_event_adapter"],
+      "surface_refs": [
+        "archive:vod.public_url",
+        "public:archive.replay_url"
+      ],
+      "substrate_refs": [
+        "archive.hls_sidecar",
+        "research_vehicle_public_event.archive_segment"
+      ],
+      "lane_refs": [
+        "lane:archive_replay"
+      ],
+      "route_refs": [
+        "route:archive_replay_public_event_adapter"
+      ],
       "producer": "shared.archive_replay_public_events",
-      "consumer_refs": ["public-event-to-artifact-release-state-machine", "programme-world-surface-integration"],
+      "consumer_refs": [
+        "public-event-to-artifact-release-state-machine",
+        "programme-world-surface-integration"
+      ],
       "grounding_role": "supplied_evidence_generator",
       "authority_ceiling": "public_gate_required",
       "grounding_status": "public_claim_bearing",
@@ -591,15 +956,29 @@
       "witness_requirements": [
         {
           "witness_id": "archive_replay_public_link_gate",
-          "evidence_classes": ["public_url", "public_event_ref", "egress_acceptance", "grounding_gate_result"],
-          "required_for": ["public_archive_replay_claim"],
+          "evidence_classes": [
+            "public_url",
+            "public_event_ref",
+            "egress_acceptance",
+            "grounding_gate_result"
+          ],
+          "required_for": [
+            "public_archive_replay_claim"
+          ],
           "freshness_ttl_s": 300,
           "description": "Archive replay adapter emitted a public URL through RVPE with fresh egress and gate evidence."
         },
         {
           "witness_id": "archive_replay_rights_privacy_audio_floor",
-          "evidence_classes": ["hash", "mtime", "rights_manifest", "privacy_policy"],
-          "required_for": ["public_archive_safe"],
+          "evidence_classes": [
+            "hash",
+            "mtime",
+            "rights_manifest",
+            "privacy_policy"
+          ],
+          "required_for": [
+            "public_archive_safe"
+          ],
           "freshness_ttl_s": 300,
           "description": "Archive source refs, rights, privacy, provenance, and audio safety are attached before public replay."
         }
@@ -618,10 +997,19 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["archive", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "public_event_acceptance_missing", "archive_public_url_missing"],
+      "public_private_posture": [
+        "archive",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "public_event_acceptance_missing",
+        "archive_public_url_missing"
+      ],
       "fallback": {
         "mode": "archive_only",
         "reason_code": "archive_public_event_missing",
@@ -651,11 +1039,19 @@
         "public:mastodon",
         "public:discord"
       ],
-      "substrate_refs": ["public.research_vehicle_event", "public.cross_surface_fanout"],
+      "substrate_refs": [
+        "public.research_vehicle_event",
+        "public.cross_surface_fanout"
+      ],
       "lane_refs": [],
-      "route_refs": ["route:public_event_adapter"],
+      "route_refs": [
+        "route:public_event_adapter"
+      ],
       "producer": "shared.format_public_event_adapter",
-      "consumer_refs": ["public-event-to-artifact-release-state-machine", "support-copy-readiness-gate"],
+      "consumer_refs": [
+        "public-event-to-artifact-release-state-machine",
+        "support-copy-readiness-gate"
+      ],
       "grounding_role": "governance_refusal",
       "authority_ceiling": "public_gate_required",
       "grounding_status": "public_claim_bearing",
@@ -696,15 +1092,29 @@
       "witness_requirements": [
         {
           "witness_id": "public_event_acceptance",
-          "evidence_classes": ["public_event_ref", "egress_acceptance", "grounding_gate_result"],
-          "required_for": ["public_event_exists", "public_fanout_allowed"],
+          "evidence_classes": [
+            "public_event_ref",
+            "egress_acceptance",
+            "grounding_gate_result"
+          ],
+          "required_for": [
+            "public_event_exists",
+            "public_fanout_allowed"
+          ],
           "freshness_ttl_s": 60,
           "description": "Public event id plus adapter acceptance or explicit dry-run refusal reason."
         },
         {
           "witness_id": "public_rights_privacy_provenance",
-          "evidence_classes": ["rights_manifest", "privacy_policy", "grounding_gate_result"],
-          "required_for": ["public_claim_safe", "monetization_ready_claim"],
+          "evidence_classes": [
+            "rights_manifest",
+            "privacy_policy",
+            "grounding_gate_result"
+          ],
+          "required_for": [
+            "public_claim_safe",
+            "monetization_ready_claim"
+          ],
           "freshness_ttl_s": 60,
           "description": "Rights, privacy, provenance, and gate evidence are present before public fanout."
         }
@@ -723,10 +1133,18 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "public_event_acceptance_missing"],
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "public_event_acceptance_missing"
+      ],
       "fallback": {
         "mode": "dry_run_badge",
         "reason_code": "public_event_policy_missing",
@@ -746,12 +1164,26 @@
       "direction": "communicate",
       "intent_family": "youtube_live_publication",
       "recruitment_family": "research_vehicle_public_event",
-      "surface_refs": ["public:youtube.live", "public:youtube_metadata"],
-      "substrate_refs": ["publication_endpoint.youtube_live", "research_vehicle_public_event.live_state"],
-      "lane_refs": ["lane:youtube_live"],
-      "route_refs": ["route:livestream.egress", "route:youtube.live_ingest"],
+      "surface_refs": [
+        "public:youtube.live",
+        "public:youtube_metadata"
+      ],
+      "substrate_refs": [
+        "publication_endpoint.youtube_live",
+        "research_vehicle_public_event.live_state"
+      ],
+      "lane_refs": [
+        "lane:youtube_live"
+      ],
+      "route_refs": [
+        "route:livestream.egress",
+        "route:youtube.live_ingest"
+      ],
       "producer": "shared.livestream_egress_state",
-      "consumer_refs": ["programme-world-surface-integration", "youtube-research-translation-ledger"],
+      "consumer_refs": [
+        "programme-world-surface-integration",
+        "youtube-research-translation-ledger"
+      ],
       "grounding_role": "governance_refusal",
       "authority_ceiling": "public_gate_required",
       "grounding_status": "public_claim_bearing",
@@ -793,15 +1225,28 @@
       "witness_requirements": [
         {
           "witness_id": "youtube_live_url_ingest_public_event",
-          "evidence_classes": ["public_url", "egress_acceptance", "public_event_ref", "grounding_gate_result"],
-          "required_for": ["public_live_aperture_current"],
+          "evidence_classes": [
+            "public_url",
+            "egress_acceptance",
+            "public_event_ref",
+            "grounding_gate_result"
+          ],
+          "required_for": [
+            "public_live_aperture_current"
+          ],
           "freshness_ttl_s": 60,
           "description": "Active live URL, YouTube ingest proof, egress resolver, and RVPE refs agree within TTL."
         },
         {
           "witness_id": "youtube_live_rights_privacy_audio_floor",
-          "evidence_classes": ["rights_manifest", "privacy_policy", "grounding_gate_result"],
-          "required_for": ["public_live_aperture_safe"],
+          "evidence_classes": [
+            "rights_manifest",
+            "privacy_policy",
+            "grounding_gate_result"
+          ],
+          "required_for": [
+            "public_live_aperture_safe"
+          ],
           "freshness_ttl_s": 60,
           "description": "Rights, privacy/consent, audio safety, and provenance evidence are attached before public-live use."
         }
@@ -820,10 +1265,19 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "egress_unknown", "public_event_acceptance_missing"],
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "egress_unknown",
+        "public_event_acceptance_missing"
+      ],
       "fallback": {
         "mode": "dry_run_badge",
         "reason_code": "youtube_live_aperture_witness_missing",
@@ -843,12 +1297,25 @@
       "direction": "communicate",
       "intent_family": "archive_replay_publication",
       "recruitment_family": "research_vehicle_public_event",
-      "surface_refs": ["public:archive.replay_url", "public:youtube_archive_link"],
-      "substrate_refs": ["archive.hls_sidecar", "research_vehicle_public_event.archive_segment"],
-      "lane_refs": ["lane:archive_replay"],
-      "route_refs": ["route:archive_replay_public_event_adapter"],
+      "surface_refs": [
+        "public:archive.replay_url",
+        "public:youtube_archive_link"
+      ],
+      "substrate_refs": [
+        "archive.hls_sidecar",
+        "research_vehicle_public_event.archive_segment"
+      ],
+      "lane_refs": [
+        "lane:archive_replay"
+      ],
+      "route_refs": [
+        "route:archive_replay_public_event_adapter"
+      ],
       "producer": "shared.archive_replay_public_events",
-      "consumer_refs": ["programme-world-surface-integration", "content-programme-conversion-state-machine"],
+      "consumer_refs": [
+        "programme-world-surface-integration",
+        "content-programme-conversion-state-machine"
+      ],
       "grounding_role": "governance_refusal",
       "authority_ceiling": "public_gate_required",
       "grounding_status": "public_claim_bearing",
@@ -892,15 +1359,29 @@
       "witness_requirements": [
         {
           "witness_id": "archive_replay_url_rvpe_gate",
-          "evidence_classes": ["public_url", "public_event_ref", "egress_acceptance", "grounding_gate_result"],
-          "required_for": ["public_archive_aperture_current"],
+          "evidence_classes": [
+            "public_url",
+            "public_event_ref",
+            "egress_acceptance",
+            "grounding_gate_result"
+          ],
+          "required_for": [
+            "public_archive_aperture_current"
+          ],
           "freshness_ttl_s": 300,
           "description": "Public replay URL is backed by RVPE and egress/gate evidence."
         },
         {
           "witness_id": "archive_replay_source_rights_privacy",
-          "evidence_classes": ["hash", "mtime", "rights_manifest", "privacy_policy"],
-          "required_for": ["public_archive_aperture_safe"],
+          "evidence_classes": [
+            "hash",
+            "mtime",
+            "rights_manifest",
+            "privacy_policy"
+          ],
+          "required_for": [
+            "public_archive_aperture_safe"
+          ],
           "freshness_ttl_s": 300,
           "description": "Archive source sidecar, temporal span, rights, privacy, audio, and provenance evidence are attached."
         }
@@ -919,10 +1400,19 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["archive", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "public_event_acceptance_missing", "archive_public_url_missing"],
+      "public_private_posture": [
+        "archive",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "public_event_acceptance_missing",
+        "archive_public_url_missing"
+      ],
       "fallback": {
         "mode": "archive_only",
         "reason_code": "archive_replay_public_aperture_missing",
@@ -942,12 +1432,26 @@
       "direction": "recall",
       "intent_family": "local_context",
       "recruitment_family": "file_obsidian_read",
-      "surface_refs": ["file:local_repo", "obsidian:active_task", "obsidian:research_spec"],
-      "substrate_refs": ["file.archive_manifest", "obsidian.active_task", "obsidian.research_spec"],
+      "surface_refs": [
+        "file:local_repo",
+        "obsidian:active_task",
+        "obsidian:research_spec"
+      ],
+      "substrate_refs": [
+        "file.archive_manifest",
+        "obsidian.active_task",
+        "obsidian.research_spec"
+      ],
       "lane_refs": [],
-      "route_refs": ["route:filesystem_read", "route:obsidian_vault_read"],
+      "route_refs": [
+        "route:filesystem_read",
+        "route:obsidian_vault_read"
+      ],
       "producer": "filesystem",
-      "consumer_refs": ["director-world-surface-read-model", "programme-wcs-snapshot-smoke"],
+      "consumer_refs": [
+        "director-world-surface-read-model",
+        "programme-wcs-snapshot-smoke"
+      ],
       "grounding_role": "supplied_evidence_generator",
       "authority_ceiling": "internal_only",
       "grounding_status": "grounding_candidate",
@@ -975,15 +1479,26 @@
           "replay_refs",
           "witness_refs"
         ],
-        "required_evidence_classes": ["hash", "mtime", "privacy_policy"],
+        "required_evidence_classes": [
+          "hash",
+          "mtime",
+          "privacy_policy"
+        ],
         "inferred_context_satisfies_witness": false,
         "missing_evidence_state": "private_only"
       },
       "witness_requirements": [
         {
           "witness_id": "file_path_hash_mtime",
-          "evidence_classes": ["hash", "mtime", "privacy_policy"],
-          "required_for": ["local_evidence_read", "obsidian_task_truth"],
+          "evidence_classes": [
+            "hash",
+            "mtime",
+            "privacy_policy"
+          ],
+          "required_for": [
+            "local_evidence_read",
+            "obsidian_task_truth"
+          ],
           "freshness_ttl_s": null,
           "description": "File or note path, hash, mtime, and privacy classification are captured."
         }
@@ -1002,10 +1517,18 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "file_hash_mtime_not_supplied"],
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "file_hash_mtime_not_supplied"
+      ],
       "fallback": {
         "mode": "private_only",
         "reason_code": "file_evidence_missing",
@@ -1025,12 +1548,26 @@
       "direction": "observe",
       "intent_family": "tool_retrieval",
       "recruitment_family": "browser_mcp",
-      "surface_refs": ["browser:playwright", "mcp:hapax", "tool:web_search"],
-      "substrate_refs": ["browser_surface.playwright", "mcp.hapax", "tool.provider"],
+      "surface_refs": [
+        "browser:playwright",
+        "mcp:hapax",
+        "tool:web_search"
+      ],
+      "substrate_refs": [
+        "browser_surface.playwright",
+        "mcp.hapax",
+        "tool.provider"
+      ],
       "lane_refs": [],
-      "route_refs": ["route:mcp_tool_call", "route:browser_read"],
+      "route_refs": [
+        "route:mcp_tool_call",
+        "route:browser_read"
+      ],
       "producer": "mcp/browser-tools",
-      "consumer_refs": ["grounding-provider-model-router", "director-world-surface-read-model"],
+      "consumer_refs": [
+        "grounding-provider-model-router",
+        "director-world-surface-read-model"
+      ],
       "grounding_role": "source_acquiring_provider",
       "authority_ceiling": "public_gate_required",
       "grounding_status": "grounding_required",
@@ -1071,8 +1608,16 @@
       "witness_requirements": [
         {
           "witness_id": "tool_source_capture",
-          "evidence_classes": ["tool_response", "tool_error", "source_item", "citation"],
-          "required_for": ["tool_found_sources", "source_acquisition_claim"],
+          "evidence_classes": [
+            "tool_response",
+            "tool_error",
+            "source_item",
+            "citation"
+          ],
+          "required_for": [
+            "tool_found_sources",
+            "source_acquisition_claim"
+          ],
           "freshness_ttl_s": 300,
           "description": "Tool output includes source items, retrieval time, tool errors, citations, and replay refs."
         }
@@ -1091,10 +1636,18 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "tool_source_capture_missing"],
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "tool_source_capture_missing"
+      ],
       "fallback": {
         "mode": "no_op_explain",
         "reason_code": "tool_evidence_missing",
@@ -1114,12 +1667,29 @@
       "direction": "act",
       "intent_family": "musical_expression",
       "recruitment_family": "midi_music",
-      "surface_refs": ["midi:s4_control", "midi:evil_pet_cc", "music:player"],
-      "substrate_refs": ["midi.clock_in", "midi.evil_pet_cc", "midi.s4_control", "music.player_state"],
-      "lane_refs": ["lane:music_bed"],
-      "route_refs": ["route:midi_out", "route:music_player_control"],
+      "surface_refs": [
+        "midi:s4_control",
+        "midi:evil_pet_cc",
+        "music:player"
+      ],
+      "substrate_refs": [
+        "midi.clock_in",
+        "midi.evil_pet_cc",
+        "midi.s4_control",
+        "music.player_state"
+      ],
+      "lane_refs": [
+        "lane:music_bed"
+      ],
+      "route_refs": [
+        "route:midi_out",
+        "route:music_player_control"
+      ],
       "producer": "music-midi-control",
-      "consumer_refs": ["studio-director", "capability-outcome-witness-learning"],
+      "consumer_refs": [
+        "studio-director",
+        "capability-outcome-witness-learning"
+      ],
       "grounding_role": "action_only",
       "authority_ceiling": "no_claim",
       "grounding_status": "non_grounding",
@@ -1147,15 +1717,24 @@
           "replay_refs",
           "witness_refs"
         ],
-        "required_evidence_classes": ["route_binding", "signal_presence"],
+        "required_evidence_classes": [
+          "route_binding",
+          "signal_presence"
+        ],
         "inferred_context_satisfies_witness": false,
         "missing_evidence_state": "blocked"
       },
       "witness_requirements": [
         {
           "witness_id": "midi_port_dispatch",
-          "evidence_classes": ["route_binding", "signal_presence"],
-          "required_for": ["midi_command_happened", "music_control_attempted"],
+          "evidence_classes": [
+            "route_binding",
+            "signal_presence"
+          ],
+          "required_for": [
+            "midi_command_happened",
+            "music_control_attempted"
+          ],
           "freshness_ttl_s": 10,
           "description": "Target MIDI/music port binding plus command dispatch outcome; feedback where available."
         }
@@ -1174,10 +1753,18 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private", "dry_run"],
-      "blocked_reasons": ["seed_record_no_live_witness", "midi_port_binding_not_proven"],
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "midi_port_binding_not_proven"
+      ],
       "fallback": {
         "mode": "no_op_explain",
         "reason_code": "midi_witness_missing",
@@ -1197,12 +1784,25 @@
       "direction": "observe",
       "intent_family": "operator_context",
       "recruitment_family": "mobile_watch_context",
-      "surface_refs": ["mobile:phone_context", "watch:biometrics"],
-      "substrate_refs": ["watch.heart_rate", "watch.hrv", "phone.context_summary"],
+      "surface_refs": [
+        "mobile:phone_context",
+        "watch:biometrics"
+      ],
+      "substrate_refs": [
+        "watch.heart_rate",
+        "watch.hrv",
+        "phone.context_summary"
+      ],
       "lane_refs": [],
-      "route_refs": ["route:logos_api.mobile_watch"],
+      "route_refs": [
+        "route:logos_api.mobile_watch"
+      ],
       "producer": "hapax-watch-receiver",
-      "consumer_refs": ["scheduler", "director-world-surface-read-model", "scrim-state-envelope"],
+      "consumer_refs": [
+        "scheduler",
+        "director-world-surface-read-model",
+        "scrim-state-envelope"
+      ],
       "grounding_role": "raw_observation",
       "authority_ceiling": "internal_only",
       "grounding_status": "grounding_candidate",
@@ -1230,15 +1830,24 @@
           "replay_refs",
           "witness_refs"
         ],
-        "required_evidence_classes": ["fresh_state_file", "privacy_policy"],
+        "required_evidence_classes": [
+          "fresh_state_file",
+          "privacy_policy"
+        ],
         "inferred_context_satisfies_witness": false,
         "missing_evidence_state": "private_only"
       },
       "witness_requirements": [
         {
           "witness_id": "mobile_watch_fresh_private_state",
-          "evidence_classes": ["fresh_state_file", "privacy_policy"],
-          "required_for": ["operator_context_available", "scheduler_private_signal"],
+          "evidence_classes": [
+            "fresh_state_file",
+            "privacy_policy"
+          ],
+          "required_for": [
+            "operator_context_available",
+            "scheduler_private_signal"
+          ],
           "freshness_ttl_s": 120,
           "description": "Recent phone/watch state exists and remains private operator telemetry."
         }
@@ -1257,10 +1866,17 @@
         "requires_provenance": true,
         "requires_operator_action": false,
         "allowed_surface_refs": [],
-        "denied_surface_refs": ["public:*"]
+        "denied_surface_refs": [
+          "public:*"
+        ]
       },
-      "public_private_posture": ["private"],
-      "blocked_reasons": ["seed_record_no_live_witness", "mobile_watch_freshness_not_proven"],
+      "public_private_posture": [
+        "private"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "mobile_watch_freshness_not_proven"
+      ],
       "fallback": {
         "mode": "private_only",
         "reason_code": "mobile_watch_private_or_stale",

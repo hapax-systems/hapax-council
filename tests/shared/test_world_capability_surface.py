@@ -152,3 +152,81 @@ def test_duplicate_or_missing_required_domain_rejected() -> None:
     duplicate_payload["records"].append(duplicate_payload["records"][0])
     with pytest.raises(ValueError, match="duplicate WCS capability ids"):
         WorldCapabilityRegistry.model_validate(duplicate_payload)
+
+
+# ── audio.broadcast_health acceptance criteria ───────────────────────
+
+
+def test_audio_broadcast_health_surface_registered() -> None:
+    """Acceptance: public audio WCS row for broadcast health exists in
+    the registry. Director / programme / public-event consumers can
+    address it by surface_id."""
+    registry = load_world_capability_registry()
+    record = next(
+        (r for r in registry.records if r.capability_id == "audio.broadcast_health"),
+        None,
+    )
+    assert record is not None, (
+        "audio.broadcast_health must be in WCS registry per "
+        "broadcast-audio-health-world-surface acceptance criteria"
+    )
+    assert record.domain == "audio"
+    assert record.realm == "world_state"
+    assert record.direction == "observe"
+    assert record.grounding_status == "public_claim_bearing"
+    # Producer is the broadcast health daemon, not director or programme
+    assert record.producer == "hapax-broadcast-audio-health"
+
+
+def test_audio_broadcast_health_consumers_include_director_programme_public_event() -> None:
+    """Acceptance: director, programme, public-event consumers can read
+    the same surface id."""
+    registry = load_world_capability_registry()
+    record = next(r for r in registry.records if r.capability_id == "audio.broadcast_health")
+    consumer_set = set(record.consumer_refs)
+    assert "studio-compositor-director" in consumer_set, (
+        "director must be a registered consumer of audio.broadcast_health"
+    )
+    assert "programme-scheduler" in consumer_set, (
+        "programme scheduler must be a registered consumer of audio.broadcast_health"
+    )
+    assert "research-vehicle-public-event" in consumer_set, (
+        "public-event adapter must be a registered consumer of audio.broadcast_health"
+    )
+
+
+def test_audio_broadcast_health_fails_closed_without_witness() -> None:
+    """Acceptance: surface starts blocked; only fresh evidence + marker
+    + no-leak witness should let it claim public audio safety."""
+    registry = load_world_capability_registry()
+    record = next(r for r in registry.records if r.capability_id == "audio.broadcast_health")
+    assert record.availability_state == "blocked"
+    assert record.public_claim_policy.claim_public_live is False
+    assert record.public_claim_policy.requires_egress_public_claim is True
+    assert record.public_claim_policy.requires_audio_safe is True
+    # 5 distinct blocker categories preserved per acceptance criteria;
+    # implementation lives in shared.audio_world_surface_health._aggregate_health_projection
+    # and is exercised in tests/shared/test_audio_world_surface_health.py
+    # (HEALTHY / STALE / UNSAFE / UNKNOWN). The notes field documents
+    # the 5-category invariant for downstream maintainers.
+    assert "unsafe" in record.notes.lower()
+    assert "stale" in record.notes.lower()
+    assert "unknown" in record.notes.lower()
+
+
+def test_audio_broadcast_health_witness_requirements_cover_marker_and_safety() -> None:
+    """Acceptance: commanded TTS without egress witness is not public
+    audio success — witness requirements must include the marker."""
+    registry = load_world_capability_registry()
+    record = next(r for r in registry.records if r.capability_id == "audio.broadcast_health")
+    witness_ids = {w.witness_id for w in record.witness_requirements}
+    assert "broadcast_audio_safety_witness" in witness_ids
+    assert "broadcast_egress_marker_witness" in witness_ids, (
+        "egress marker witness is the single load-bearing fact that "
+        "distinguishes 'commanded' from 'audible' — it must be required"
+    )
+    # The marker witness gates the no-quiet-off-air invariant
+    marker = next(
+        w for w in record.witness_requirements if w.witness_id == "broadcast_egress_marker_witness"
+    )
+    assert "no_quiet_off_air" in marker.required_for
