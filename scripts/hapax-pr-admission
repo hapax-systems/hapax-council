@@ -278,6 +278,77 @@ def is_admission_allowed(branch: str | None) -> tuple[bool, str]:
     return False, f"mode is {state['mode']} and branch {branch!r} not in snapshot"
 
 
+# Anti-pileup auto-cycle thresholds.
+# When count >= AUTO_FREEZE_THRESHOLD and mode is normal: auto-freeze.
+# When count < AUTO_NORMAL_THRESHOLD for AUTO_NORMAL_STABLE_TICKS: auto-clear.
+AUTO_FREEZE_THRESHOLD = 10
+AUTO_NORMAL_THRESHOLD = 6
+AUTO_NORMAL_STABLE_TICKS = 2
+
+
+def cmd_auto(args: argparse.Namespace) -> int:
+    """Auto-cycle: freeze when too many open PRs; clear when count is stable below threshold.
+
+    Designed for systemd-timer or GitHub-Action invocation every 5 min.
+    No-op (exit 0) for unrelated cases. Only acts when thresholds cross.
+    """
+    state = load_state()
+    open_count = len(query_open_prs())
+    mode = state["mode"]
+
+    # Auto-freeze trigger
+    if mode == "normal" and open_count >= AUTO_FREEZE_THRESHOLD:
+        snapshot = _snapshot_open_branches()
+        state.update(
+            {
+                "mode": "frozen",
+                "set_by": "auto",
+                "reason": f"auto-freeze: {open_count} open PRs >= {AUTO_FREEZE_THRESHOLD}",
+                "entry_open_pr_count": len(snapshot),
+                "stable_ticks_observed": 0,
+                "allowed_existing_branches": snapshot,
+            }
+        )
+        save_state(state)
+        print(
+            f"AUTO-FREEZE: open={open_count} >= {AUTO_FREEZE_THRESHOLD}; snapshot {len(snapshot)} branches"
+        )
+        return 0
+
+    # Auto-clear trigger
+    if mode in ("frozen", "drain"):
+        if open_count < AUTO_NORMAL_THRESHOLD:
+            state["stable_ticks_observed"] = state["stable_ticks_observed"] + 1
+        else:
+            state["stable_ticks_observed"] = 0
+        save_state(state)
+
+        if state["stable_ticks_observed"] >= AUTO_NORMAL_STABLE_TICKS:
+            state.update(
+                {
+                    "mode": "normal",
+                    "set_by": "auto",
+                    "reason": f"auto-clear: count<{AUTO_NORMAL_THRESHOLD} stable for {AUTO_NORMAL_STABLE_TICKS} ticks",
+                    "stable_ticks_observed": 0,
+                    "allowed_existing_branches": [],
+                    "allowed_exception_tokens": [],
+                }
+            )
+            save_state(state)
+            print(
+                f"AUTO-CLEAR: open={open_count} < {AUTO_NORMAL_THRESHOLD} stable for {AUTO_NORMAL_STABLE_TICKS} ticks"
+            )
+            return 0
+        print(
+            f"auto-tick: mode={mode} open={open_count} stable_ticks={state['stable_ticks_observed']}/{AUTO_NORMAL_STABLE_TICKS}"
+        )
+        return 0
+
+    # No-op
+    print(f"auto-tick: mode={mode} open={open_count} (no action)")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="PR admission governor")
     subs = parser.add_subparsers(dest="cmd", required=True)
@@ -297,6 +368,12 @@ def main() -> int:
     sub_normal.add_argument("--reason", default="drain complete", help="Reason text")
     sub_normal.add_argument("--force", action="store_true", help="Override stability check")
     sub_normal.set_defaults(fn=cmd_normal)
+
+    sub_auto = subs.add_parser(
+        "auto",
+        help="Auto-cycle: freeze if PRs >= 10; clear if PRs < 6 for 2 ticks. For systemd timer.",
+    )
+    sub_auto.set_defaults(fn=cmd_auto)
 
     sub_mint = subs.add_parser("mint-exception", help="Create one-shot exception token")
     sub_mint.add_argument("--owner", required=True)

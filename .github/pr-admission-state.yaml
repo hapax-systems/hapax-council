@@ -1,0 +1,25 @@
+# Repo-mirrored PR admission governor state.
+# Read by .github/workflows/pr-admission.yml on every pull_request event.
+#
+# When mode is normal: all PRs pass the pr-admission CI check.
+# When mode is drain or frozen: PRs whose head branch is in
+#   allowed_existing_branches pass; others fail with a "PR admission frozen"
+#   message and cannot merge.
+#
+# To update this file: alpha runs `hapax-pr-admission freeze --reason ...`,
+# which writes ~/.cache/hapax/pr-admission-governor.yaml. The repo mirror
+# is updated in a separate small PR (or via a future systemd-timer that
+# auto-mirrors). Keeping it manual for now to keep the audit trail explicit.
+#
+# Schema mirrors ~/.cache/hapax/pr-admission-governor.yaml (see
+# scripts/hapax-pr-admission load_state()).
+mode: normal
+updated: '2026-05-02T01:00:00Z'
+set_by: default
+reason: 'initial repo mirror; governor active in normal mode'
+entry_open_pr_count: 0
+exit_below_count: 6
+exit_stable_ticks_required: 2
+stable_ticks_observed: 0
+allowed_existing_branches: []
+allowed_exception_tokens: []

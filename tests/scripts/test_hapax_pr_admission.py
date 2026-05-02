@@ -161,3 +161,74 @@ class TestNormalCommand:
         assert rc == 0
         loaded = gov_module.load_state()
         assert loaded["mode"] == "normal"
+
+
+class TestAutoCmd:
+    def test_auto_freezes_when_threshold_crossed(self, gov_module):
+        # Default state is normal; mock 10+ open PRs
+        with patch.object(
+            gov_module,
+            "query_open_prs",
+            return_value=[{"number": i, "headRefName": f"branch-{i}"} for i in range(10)],
+        ):
+            ns = type("NS", (), {})()
+            rc = gov_module.cmd_auto(ns)
+        assert rc == 0
+        loaded = gov_module.load_state()
+        assert loaded["mode"] == "frozen"
+        assert loaded["set_by"] == "auto"
+        assert "auto-freeze" in loaded["reason"]
+        assert len(loaded["allowed_existing_branches"]) == 10
+
+    def test_auto_no_op_when_below_threshold_in_normal(self, gov_module):
+        with patch.object(
+            gov_module,
+            "query_open_prs",
+            return_value=[{"number": i, "headRefName": f"b{i}"} for i in range(5)],
+        ):
+            ns = type("NS", (), {})()
+            rc = gov_module.cmd_auto(ns)
+        assert rc == 0
+        loaded = gov_module.load_state()
+        assert loaded["mode"] == "normal"
+
+    def test_auto_clears_after_stable_ticks(self, gov_module):
+        # Set up in frozen mode with one stable tick already observed
+        state = gov_module.load_state()
+        state["mode"] = "frozen"
+        state["stable_ticks_observed"] = 1  # one tick already
+        gov_module.save_state(state)
+
+        # Mock count below threshold (4 < 6)
+        with patch.object(
+            gov_module,
+            "query_open_prs",
+            return_value=[{"number": i, "headRefName": f"b{i}"} for i in range(4)],
+        ):
+            ns = type("NS", (), {})()
+            rc = gov_module.cmd_auto(ns)
+
+        assert rc == 0
+        loaded = gov_module.load_state()
+        assert loaded["mode"] == "normal"
+        assert loaded["set_by"] == "auto"
+        assert "auto-clear" in loaded["reason"]
+
+    def test_auto_increments_stable_tick_when_below_threshold(self, gov_module):
+        state = gov_module.load_state()
+        state["mode"] = "frozen"
+        state["stable_ticks_observed"] = 0
+        gov_module.save_state(state)
+
+        with patch.object(
+            gov_module,
+            "query_open_prs",
+            return_value=[{"number": i, "headRefName": f"b{i}"} for i in range(4)],
+        ):
+            ns = type("NS", (), {})()
+            rc = gov_module.cmd_auto(ns)
+
+        assert rc == 0
+        loaded = gov_module.load_state()
+        assert loaded["mode"] == "frozen"  # not yet stable enough
+        assert loaded["stable_ticks_observed"] == 1

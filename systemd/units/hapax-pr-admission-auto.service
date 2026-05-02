@@ -1,0 +1,23 @@
+[Unit]
+Description=Hapax PR admission governor — auto-cycle (anti-pileup)
+Documentation=file://%h/projects/hapax-council/scripts/hapax-pr-admission
+# Run after the gh CLI dependencies are present; pipewire/network not required.
+After=network-online.target
+PartOf=hapax.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+Environment=CLAUDE_ROLE=auto
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin
+# Auto-cycle:
+#   - if open PR count >= 10 and mode=normal → freeze
+#   - if open PR count < 6 for 2 consecutive ticks → clear to normal
+# No-op (exit 0) for unrelated cases.
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-pr-admission auto
+TimeoutStartSec=30s
+# Don't restart on failure — the timer drives cadence; one missed tick is harmless.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=default.target
