@@ -1,0 +1,22 @@
+[Unit]
+Description=Hapax parametric modulation heartbeat — constrained per-node parameter walker (supersedes preset-bias unit per operator directive 2026-05-02)
+Documentation=file://%h/Documents/Personal/20-projects/hapax-cc-tasks/active/parametric-modulation-heartbeat.md
+Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-05-02-parametric-modulation-heartbeat.md
+After=studio-compositor.service hapax-imagination.service
+Wants=studio-compositor.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.parametric_modulation_heartbeat
+Restart=always
+RestartSec=5s
+MemoryHigh=64M
+MemoryMax=128M
+Environment=CUDA_VISIBLE_DEVICES=
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-parametric-modulation-heartbeat
+
+[Install]
+WantedBy=default.target
