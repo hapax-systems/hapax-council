@@ -10,6 +10,7 @@ import pytest
 
 from agents import briefing, digest
 from shared import axiom_enforcer
+from shared.axiom_pattern_checker import reload_patterns
 
 
 @pytest.mark.parametrize(
@@ -29,17 +30,22 @@ def test_axiom_enforcer_env_off_then_on_for_agent_outputs(
     audit_log = tmp_path / "audit.jsonl"
     quarantine_dir = tmp_path / "quarantine"
 
+    # Defeat module-level _cached_patterns pollution from other tests
+    # (e.g. test_output_enforcement.py patches load_patterns to return
+    # synthetic pattern sets). Without this reload, CI ordering can leave
+    # the cache populated with patterns that don't match seeded_t0,
+    # causing check_output() to return [] and the off-mode assertion to
+    # fail with audit_only=False.
+    reload_patterns()
+
     with (
         patch("shared.axiom_enforcer.AUDIT_LOG", audit_log),
         patch("shared.axiom_enforcer.QUARANTINE_DIR", quarantine_dir),
     ):
-        # Pass block_enabled explicitly via kwarg instead of monkeypatching
-        # AXIOM_ENFORCE_BLOCK env var. The kwarg path is deterministic; the
-        # env-var path was subject to cross-test pollution (~30% flake rate
-        # observed across alpha PRs #2113 + #2143). enforce_output() already
-        # accepts block_enabled as a keyword override — this test now uses
-        # that contract instead of relying on env-var ordering.
-        # cc-task: stabilize-axiom-enforcer-transition-flake
+        # block_enabled kwarg path is deterministic; env-var path was
+        # subject to AXIOM_ENFORCE_BLOCK pollution (~30% flake rate
+        # observed on alpha PRs #2113 + #2143). cc-task:
+        # stabilize-axiom-enforcer-transition-flake.
         off_result = axiom_enforcer.enforce_output(
             seeded_t0, agent_id, output_path, block_enabled=False
         )
