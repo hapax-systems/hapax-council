@@ -164,7 +164,125 @@ SINGLE_USER_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_no_admin_ui(),
     ),
+    SufficiencyProbe(
+        id="probe-su-agents-001",
+        axiom_id="single_user",
+        implication_id="su-agents-001",
+        level="component",
+        question=(
+            "Are AI agents free of user-context-switching / permission-"
+            "checking / user-specific behavior customization?"
+        ),
+        check=lambda: _check_no_user_context_switching(),
+    ),
+    SufficiencyProbe(
+        id="probe-su-data-001",
+        axiom_id="single_user",
+        implication_id="su-data-001",
+        level="component",
+        question=(
+            "Are data storage paths free of access-control / permissions / "
+            "data-isolation primitives?"
+        ),
+        check=lambda: _check_no_data_access_control(),
+    ),
+    SufficiencyProbe(
+        id="probe-su-api-001",
+        axiom_id="single_user",
+        implication_id="su-api-001",
+        level="component",
+        question=(
+            "Are API endpoints free of user-verification / quota / abuse-prevention primitives?"
+        ),
+        check=lambda: _check_no_api_user_verification(),
+    ),
 ]
+
+
+def _join(*parts: str) -> str:
+    return "".join(parts)
+
+
+_AGENTS_FORBIDDEN = "|".join(
+    [
+        "def " + _join("set_current_", "user"),
+        "def " + _join("switch_context_for_", "user"),
+        "def " + _join("user_permission_", "check"),
+        "def " + _join("check_user_", "permission"),
+        "def " + _join("customize_for_", "user"),
+    ]
+)
+
+_DATA_FORBIDDEN = "|".join(
+    [
+        "def " + _join("check_data_", "ownership"),
+        "def " + _join("verify_user_can_", "access"),
+        "def " + _join("enforce_", "isolation"),
+        "def " + _join("require_", "permission"),
+        "class " + _join("AccessControl", "List"),
+        "class " + _join("Data", "Permission"),
+    ]
+)
+
+_API_FORBIDDEN = "|".join(
+    [
+        "def " + _join("authenticate_", "request"),
+        "def " + _join("verify_", "user"),
+        "def " + _join("check_", "quota"),
+        "def " + _join("rate_limit_", "user"),
+        "def " + _join("detect_", "abuse"),
+        "class " + _join("Rate", "Limiter"),
+        "class " + _join("Quota", "Enforcer"),
+        "class " + _join("Abuse", "Detector"),
+    ]
+)
+
+
+def _scan_for_forbidden(pattern_re: re.Pattern[str]) -> list[str]:
+    found: list[str] = []
+    for glob in _PROBE_SCAN_GLOBS:
+        for py_file in AI_AGENTS_DIR.glob(glob):
+            try:
+                content = py_file.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if pattern_re.search(content):
+                rel = py_file.relative_to(AI_AGENTS_DIR)
+                found.append(str(rel))
+    return found
+
+
+def _check_no_user_context_switching() -> tuple[bool, str]:
+    """Enforces su-agents-001 (single_user, T1, absence pattern)."""
+    found = _scan_for_forbidden(re.compile(_AGENTS_FORBIDDEN))
+    if not found:
+        return True, (
+            "no user-context-switching / permission-checking patterns "
+            "in agents - su-agents-001 sufficient"
+        )
+    return False, f"forbidden patterns: {', '.join(found[:3])}"
+
+
+def _check_no_data_access_control() -> tuple[bool, str]:
+    """Enforces su-data-001 (single_user, T1, absence pattern)."""
+    found = _scan_for_forbidden(re.compile(_DATA_FORBIDDEN))
+    if not found:
+        return True, (
+            "no access-control / permission / isolation primitives "
+            "in storage paths - su-data-001 sufficient"
+        )
+    return False, f"forbidden patterns: {', '.join(found[:3])}"
+
+
+def _check_no_api_user_verification() -> tuple[bool, str]:
+    """Enforces su-api-001 (single_user, T1, absence pattern)."""
+    found = _scan_for_forbidden(re.compile(_API_FORBIDDEN))
+    if not found:
+        return True, (
+            "no user-verification / quota / abuse-prevention primitives "
+            "on API endpoints - su-api-001 sufficient"
+        )
+    return False, f"forbidden patterns: {', '.join(found[:3])}"
 
 
 def _check_no_collab_features() -> tuple[bool, str]:
