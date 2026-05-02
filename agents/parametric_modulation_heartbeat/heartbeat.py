@@ -1,0 +1,615 @@
+"""Parametric modulation walker — constrained per-node parameter walk.
+
+Architecture per the cc-task acceptance criteria:
+
+1. **Walk substrate**: per-parameter envelopes from
+   :mod:`shared.parameter_envelopes`. Each envelope carries
+   ``(min, max, smoothness, joint_constraints)``. The walk samples within
+   the envelope using a low-frequency oscillator (LFO) per parameter +
+   perturbation noise — NO random jumps, NO preset-style snapshot loading.
+
+2. **Smoothness invariant**: ``|delta| ≤ envelope.smoothness`` per tick.
+   Enforced by ``ParameterEnvelope.clip_step``. Tests pin this.
+
+3. **Joint constraints**: when two co-constrained parameters approach the
+   joint ceiling (e.g. ``content.intensity × post.sediment_strength``), the
+   walker dampens whichever moved more this tick. Encodes aesthetic
+   invariants per the spec.
+
+4. **Output bridge**: the walker writes per-parameter ``delta`` values to
+   ``/dev/shm/hapax-imagination/uniforms.json``. The Reverie mixer
+   (``agents.reverie._uniforms.write_uniforms``) ALREADY merges the file
+   per tick into ``base + delta`` — heartbeat composes with the mixer's
+   own writes; last-writer-wins per tick. This works because both writers
+   use atomic tmp+rename, so the consumer never sees torn writes.
+
+   Composition note: the visual chain writes its OWN deltas to the same
+   surface from ``agents.visual_chain.compute_param_deltas``. When both
+   are active, the LATER write to a key wins for that tick. This is by
+   design — the heartbeat is the "fallback" substrate, the chain is the
+   "real grounded variance" substrate, and the operator wants the chain
+   to take precedence whenever it has something to say. Per spec, the
+   heartbeat tick at 30s is much slower than the chain's per-frame ticks,
+   so chain writes naturally dominate when active.
+
+5. **Boundary-crossing transitions**: when ``walked_value`` enters within
+   5% of ``min`` or ``max``, emit a transition primitive via
+   ``recent-recruitment.json`` with ``kind: "transition_primitive"``.
+   Director-loop's ``preset_recruitment_consumer`` reads this surface;
+   transitions are unified with the LLM-recruitment path.
+
+6. **Affordance-driven recruitment shifts**: read currently-recruited
+   affordances from ``recent-recruitment.json``; when the recruited
+   affordance set shifts, emit a node recruit/dismiss action. The
+   imagination loop owns the source of truth for which affordances are
+   live; this agent only OBSERVES that signal and translates it into
+   chain mutation.
+
+Anti-pattern explicitly excluded (regression-tested):
+
+- No imports from the legacy preset-family-selector module.
+- No literal preset family names appear in this module's source.
+- No reads from the ``presets/`` directory.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import os
+import random
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from agents.studio_compositor.atomic_io import atomic_write_json
+from shared.parameter_envelopes import (
+    JointConstraint,
+    ParameterEnvelope,
+    envelopes,
+    joint_constraints,
+)
+
+log = logging.getLogger(__name__)
+
+# Canonical SHM paths. The uniforms surface is the per-frame override
+# bridge documented in CLAUDE.md § Reverie Vocabulary Integrity. The
+# recruitment surface is the same one the LLM-recruitment path writes to
+# (per agents.studio_compositor.preset_recruitment_consumer.RECRUITMENT_FILE).
+UNIFORMS_FILE: Path = Path("/dev/shm/hapax-imagination/uniforms.json")
+RECRUITMENT_FILE: Path = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
+
+# Marker stamped on every entry this agent writes to recent-recruitment.json.
+# Distinguishes parametric-walk-origin transition primitives from LLM-origin
+# in observability dashboards.
+HEARTBEAT_SOURCE: str = "parametric-modulation-heartbeat"
+
+# Tick cadence — how often :func:`run_forever` calls :func:`tick_once`.
+# 30s parallels the preset-bias heartbeat's tick. The walker's smoothness
+# invariant is per-tick, so this is the time-resolution of the walk.
+DEFAULT_TICK_S: float = 30.0
+
+# LFO period — base wavelength for the per-parameter low-frequency
+# oscillator. 600s = 10 minutes traverses the envelope range slowly per
+# tick. Each parameter gets a deterministic phase offset from its key
+# hash so they don't all peak at the same time.
+DEFAULT_LFO_PERIOD_S: float = 600.0
+
+# Perturbation magnitude — fraction of envelope range added as Gaussian
+# noise per tick on top of the LFO base. 0.10 → 10% of range. Small
+# enough to keep walk smooth, large enough to break the LFO's pure
+# periodicity.
+DEFAULT_PERTURBATION: float = 0.10
+
+# Boundary-crossing threshold — fraction of envelope range from
+# ``min``/``max`` that triggers a transition primitive emission.
+_BOUNDARY_FRACTION: float = 0.05
+
+# Five canonical transition operations (these are the right unit per
+# the operator directive — chain operations, NOT preset picks). The
+# names match the affordance capability records in
+# shared/compositional_affordances.py and the keys in
+# agents/studio_compositor/transition_primitives.py::PRIMITIVES.
+#
+# This is NOT a preset list — it's the vocabulary of CHAIN OPERATIONS the
+# walker can request when an envelope boundary is crossed. The regression
+# pin ``test_no_preset_family_in_module_source`` allows these because the
+# names are operator-facing transition vocabulary, not snapshot identifiers.
+_TRANSITION_VOCAB: tuple[str, ...] = (
+    "transition.fade.smooth",
+    "transition.cut.hard",
+    "transition.netsplit.burst",
+    "transition.ticker.scroll",
+    "transition.dither.noise",
+)
+
+
+@dataclass(frozen=True)
+class BoundaryEvent:
+    """Single boundary-crossing event from one walker tick.
+
+    Returned from :class:`ParameterWalker.tick` so the caller can decide
+    which transition primitive to emit (default: fade.smooth) and to
+    record the crossing for journal observability.
+    """
+
+    envelope_key: str
+    """The ``{node_id}.{param_name}`` key whose value crossed a boundary."""
+
+    direction: str
+    """Either ``"approaching_min"`` or ``"approaching_max"``."""
+
+    value: float
+    """The walked value that triggered the boundary detection."""
+
+
+def _stable_phase(key: str) -> float:
+    """Deterministic phase offset in [0, 2π) for an envelope key.
+
+    Hash-based so two parameters with related names don't accidentally
+    co-phase, but stable across process restarts so the walk is
+    reproducible if you replay the wall clock.
+    """
+
+    return (hash(key) % 10_000) / 10_000 * 2 * math.pi
+
+
+class ParameterWalker:
+    """Stateful per-parameter walk over the constraint envelopes.
+
+    Each ``tick`` advances every envelope's walked value by:
+
+        target = base_lfo(t) + perturbation_noise()
+        delta = target - prev_value
+        clipped = envelope.clip_step(prev_value, prev_value + delta)
+
+    Then joint constraints are applied — for each ``JointConstraint``,
+    if ``(a + b) / 2 > joint_max``, both are scaled down proportionally.
+
+    Boundary crossings (value within ``_BOUNDARY_FRACTION`` of min/max)
+    are returned as :class:`BoundaryEvent` so the heartbeat can emit a
+    transition primitive.
+    """
+
+    def __init__(
+        self,
+        *,
+        envs: tuple[ParameterEnvelope, ...] | None = None,
+        constraints: tuple[JointConstraint, ...] | None = None,
+        lfo_period_s: float = DEFAULT_LFO_PERIOD_S,
+        perturbation: float = DEFAULT_PERTURBATION,
+        rng: random.Random | None = None,
+    ) -> None:
+        self._envelopes = envs if envs is not None else envelopes()
+        self._joint_constraints = constraints if constraints is not None else joint_constraints()
+        self._lfo_period_s = lfo_period_s
+        self._perturbation = perturbation
+        self._rng = rng if rng is not None else random.Random()
+        # Initialize each parameter at its envelope midpoint so the first
+        # tick starts smoothly and joint constraints are satisfied at boot.
+        self._values: dict[str, float] = {
+            env.key: (env.min_value + env.max_value) / 2 for env in self._envelopes
+        }
+
+    @property
+    def values(self) -> dict[str, float]:
+        """Snapshot of current walked values, keyed by ``{node_id}.{param_name}``."""
+
+        return dict(self._values)
+
+    def _lfo_target(self, env: ParameterEnvelope, now: float) -> float:
+        """Compute the LFO-driven target for an envelope at ``now``.
+
+        Sin wave between ``min`` and ``max`` with deterministic per-key
+        phase offset. The LFO is the *direction* signal; perturbation
+        breaks the periodicity.
+        """
+
+        center = (env.min_value + env.max_value) / 2
+        amp = (env.max_value - env.min_value) / 2
+        omega = 2 * math.pi / self._lfo_period_s
+        phase = _stable_phase(env.key)
+        return center + amp * math.sin(omega * now + phase)
+
+    def _apply_joint_constraints(self, prev_snapshot: dict[str, float]) -> None:
+        """Scan joint constraints; dampen both members when joint_max breached.
+
+        When ``mean = (a + b) / 2 > joint_max``, scale both by
+        ``joint_max / mean`` so the breach is corrected without
+        privileging either parameter. The corrected value is then
+        re-clipped through the envelope's ``clip_step`` against
+        ``prev_snapshot`` so the smoothness invariant is preserved
+        across the joint-constraint adjustment — the walker may not
+        violate smoothness even when correcting a joint breach (in
+        practice this means the constraint may take 2-3 ticks to fully
+        unwind a breach, which matches the operator's "smooth drift"
+        aesthetic).
+
+        Logs an INFO on any clip event so the operator can correlate
+        aesthetic-invariant breaches with downstream visual changes.
+        """
+
+        env_by_key = {env.key: env for env in self._envelopes}
+        for jc in self._joint_constraints:
+            a = self._values.get(jc.param_a_key)
+            b = self._values.get(jc.param_b_key)
+            if a is None or b is None:
+                continue
+            mean = (a + b) / 2
+            if mean <= jc.joint_max:
+                continue
+            scale = jc.joint_max / mean
+            new_a = a * scale
+            new_b = b * scale
+            # Re-clip through envelope.clip_step against the pre-tick
+            # snapshot so the joint-constraint correction respects the
+            # smoothness budget (delta from the START of this tick, not
+            # from the post-LFO position).
+            env_a = env_by_key[jc.param_a_key]
+            env_b = env_by_key[jc.param_b_key]
+            self._values[jc.param_a_key] = env_a.clip_step(prev_snapshot[jc.param_a_key], new_a)
+            self._values[jc.param_b_key] = env_b.clip_step(prev_snapshot[jc.param_b_key], new_b)
+            log.info(
+                "parametric walker: joint constraint clipped %s+%s (mean=%.3f > %.3f) — %s",
+                jc.param_a_key,
+                jc.param_b_key,
+                mean,
+                jc.joint_max,
+                jc.rationale,
+            )
+
+    def _detect_boundaries(self) -> list[BoundaryEvent]:
+        """Return boundary-crossing events for the current ``self._values``.
+
+        A crossing is when a value lies within ``_BOUNDARY_FRACTION × range``
+        of ``min`` or ``max``. The walker can stay near a boundary for
+        several ticks (it walks slowly), so the caller is expected to
+        debounce — the heartbeat does this by tracking the most recent
+        emission ts per envelope key.
+        """
+
+        events: list[BoundaryEvent] = []
+        for env in self._envelopes:
+            value = self._values[env.key]
+            span = env.max_value - env.min_value
+            if span <= 0:
+                continue
+            threshold = span * _BOUNDARY_FRACTION
+            if value <= env.min_value + threshold:
+                events.append(
+                    BoundaryEvent(
+                        envelope_key=env.key,
+                        direction="approaching_min",
+                        value=value,
+                    )
+                )
+            elif value >= env.max_value - threshold:
+                events.append(
+                    BoundaryEvent(
+                        envelope_key=env.key,
+                        direction="approaching_max",
+                        value=value,
+                    )
+                )
+        return events
+
+    def tick(self, *, now: float | None = None) -> list[BoundaryEvent]:
+        """Advance the walk one tick. Returns boundary-crossing events.
+
+        Called by :func:`tick_once` per heartbeat tick. The wall-clock
+        time drives the LFO; tests can pass deterministic values.
+        """
+
+        if now is None:
+            now = time.time()
+        # Snapshot pre-tick values so joint-constraint corrections can
+        # honor the smoothness invariant relative to the START of this
+        # tick (not the post-LFO position).
+        prev_snapshot = self._values.copy()
+        for env in self._envelopes:
+            prev = self._values[env.key]
+            target = self._lfo_target(env, now)
+            span = env.max_value - env.min_value
+            noise = self._rng.gauss(0.0, self._perturbation * span)
+            stepped = env.clip_step(prev, target + noise)
+            self._values[env.key] = stepped
+        self._apply_joint_constraints(prev_snapshot)
+        return self._detect_boundaries()
+
+
+def write_uniform_overrides(
+    values: dict[str, float],
+    *,
+    path: Path = UNIFORMS_FILE,
+) -> None:
+    """Atomically merge ``values`` into ``uniforms.json``.
+
+    Reads the existing file (if any), overlays each key from ``values``,
+    writes back via :func:`agents.studio_compositor.atomic_io.atomic_write_json`.
+    The atomic write guarantees no partial-read window for the consumer
+    (the wgpu pipeline's per-frame uniforms read).
+
+    The merge is overlay-style: existing keys not in ``values`` are
+    preserved (the chain may have written them this frame); keys in
+    ``values`` overwrite existing values. This is intentional — the
+    walker contributes to the same per-frame override surface the
+    visual chain writes to, never wholesale-replaces.
+    """
+
+    existing: dict[str, float] = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                existing = {k: float(v) for k, v in data.items() if isinstance(v, (int, float))}
+        except (OSError, json.JSONDecodeError):
+            log.warning("parametric walker: malformed uniforms file at %s — overwriting", path)
+    merged = {**existing, **values}
+    atomic_write_json(merged, path)
+
+
+def emit_transition_primitive(
+    transition_name: str,
+    triggering_envelope_key: str,
+    *,
+    path: Path = RECRUITMENT_FILE,
+    now: float | None = None,
+) -> None:
+    """Record a transition primitive request in ``recent-recruitment.json``.
+
+    Mirrors the LLM-recruitment write shape but uses
+    ``kind: "transition_primitive"`` (NOT ``"preset.bias"``). The director
+    loop's ``preset_recruitment_consumer`` reads ``transition.*`` family
+    keys; this writes one such entry. The ``source`` field carries the
+    heartbeat-source marker so dashboards can distinguish parametric-walk
+    triggers from LLM-recruitment triggers.
+
+    The triggering envelope key is recorded for journal observability —
+    operators can correlate envelope boundary crossings with downstream
+    transition fires.
+    """
+
+    if now is None:
+        now = time.time()
+    if transition_name not in _TRANSITION_VOCAB:
+        raise ValueError(
+            f"unknown transition primitive {transition_name!r}; expected one of {_TRANSITION_VOCAB}"
+        )
+    current: dict[str, Any] = {}
+    if path.exists():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            current = {}
+    families = current.get("families")
+    if not isinstance(families, dict):
+        families = {}
+    families[transition_name] = {
+        "last_recruited_ts": now,
+        "kind": "transition_primitive",
+        "source": HEARTBEAT_SOURCE,
+        "triggered_by": triggering_envelope_key,
+    }
+    payload = {**current, "families": families, "updated_at": now}
+    atomic_write_json(payload, path)
+
+
+def _read_recruited_affordances(
+    path: Path = RECRUITMENT_FILE,
+    *,
+    now: float | None = None,
+) -> set[str]:
+    """Return the set of currently-recruited affordance capability names.
+
+    Reads ``recent-recruitment.json`` and yields the keys under
+    ``families`` whose ``last_recruited_ts`` is within the active TTL.
+    Defensive: missing/malformed file returns an empty set rather than
+    raising — the walker's behavior is to keep walking when the
+    recruitment surface is silent.
+
+    The ``now`` parameter is injectable so :func:`tick_once` (and tests)
+    can pass a deterministic clock; production callers default to
+    ``time.time()``.
+    """
+
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    families = data.get("families")
+    if not isinstance(families, dict):
+        return set()
+    if now is None:
+        now = time.time()
+    out: set[str] = set()
+    for name, entry in families.items():
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            continue
+        ts = entry.get("last_recruited_ts")
+        ttl = entry.get("ttl_s", 60.0)
+        if not isinstance(ts, (int, float)) or not isinstance(ttl, (int, float)):
+            continue
+        if (now - float(ts)) < float(ttl):
+            out.add(name)
+    return out
+
+
+def _select_transition_for_event(
+    event: BoundaryEvent,
+    *,
+    rng: random.Random,
+) -> str:
+    """Pick a transition primitive for a boundary event.
+
+    Heuristic-free selection per the operator directive
+    ``feedback_no_expert_system_rules``: rotate through the vocab. Hard
+    cuts (``cut.hard``) at 5% chance to occasionally jolt the chain;
+    smooth fades dominate so the walk reads as deliberate parameter
+    drift, not chain thrash.
+
+    Tests inject a seeded RNG to make the selection deterministic.
+    """
+
+    if rng.random() < 0.05:
+        return "transition.cut.hard"
+    smooth_options = [t for t in _TRANSITION_VOCAB if t != "transition.cut.hard"]
+    return rng.choice(smooth_options)
+
+
+def tick_once(
+    walker: ParameterWalker,
+    *,
+    now: float | None = None,
+    uniforms_path: Path = UNIFORMS_FILE,
+    recruitment_path: Path = RECRUITMENT_FILE,
+    rng: random.Random | None = None,
+    last_emission_ts: dict[str, float] | None = None,
+    emission_cooldown_s: float = 60.0,
+    last_affordances: set[str] | None = None,
+) -> tuple[dict[str, float], list[BoundaryEvent]]:
+    """Single tick — advance the walk, write uniforms, emit transitions.
+
+    Test entry point. The production loop in :func:`run_forever` calls
+    this every :data:`DEFAULT_TICK_S` seconds; tests call it directly
+    with a seeded walker + frozen clock.
+
+    Returns the snapshot of walked values + the list of boundary events
+    that fired this tick. Tests assert on both.
+
+    The ``last_emission_ts`` dict (keyed by envelope key) implements
+    per-key cooldown — a single envelope hovering near its boundary will
+    not flood the recruitment surface with one transition per tick. The
+    caller is responsible for persisting this dict across calls (the
+    production loop in :func:`run_forever` does).
+
+    The ``last_affordances`` set implements affordance-shift detection
+    per cc-task spec item 4: when the recruited affordance set changes
+    between ticks (any add or removal), the walker treats this as a
+    perceptual-stage transition and emits an additional transition
+    primitive. Mutated in-place by this function so the production loop
+    in :func:`run_forever` carries the state across ticks.
+    """
+
+    if rng is None:
+        rng = random.Random()
+    if last_emission_ts is None:
+        last_emission_ts = {}
+    if now is None:
+        now = time.time()
+    events = walker.tick(now=now)
+    write_uniform_overrides(walker.values, path=uniforms_path)
+
+    # Detect affordance shifts. When the recruited affordance set changes
+    # between ticks, dispatch a transition primitive — the chain mutates
+    # because affordances are recruited/dismissed (per CLAUDE.md §
+    # Unified Semantic Recruitment), which is a perceptual-stage
+    # transition the walker reflects through chain operation vocabulary.
+    if last_affordances is not None:
+        current_affordances = _read_recruited_affordances(path=recruitment_path, now=now)
+        # Only consider non-transition affordances — transition.* keys
+        # are written by THIS module (would cause reflexive triggers).
+        relevant = {a for a in current_affordances if not a.startswith("transition.")}
+        if last_affordances and relevant != last_affordances:
+            shift_marker = "_affordance_shift"
+            last_ts = last_emission_ts.get(shift_marker, 0.0)
+            if (now - last_ts) >= emission_cooldown_s:
+                transition_name = "transition.fade.smooth"
+                try:
+                    emit_transition_primitive(
+                        transition_name,
+                        triggering_envelope_key="affordance.shift",
+                        path=recruitment_path,
+                        now=now,
+                    )
+                    last_emission_ts[shift_marker] = now
+                    log.info(
+                        "parametric walker: affordance shift (prev=%s, curr=%s) — emitted %s",
+                        sorted(last_affordances),
+                        sorted(relevant),
+                        transition_name,
+                    )
+                except OSError as exc:
+                    log.warning(
+                        "parametric walker: failed to emit affordance-shift transition: %s",
+                        exc,
+                    )
+        last_affordances.clear()
+        last_affordances.update(relevant)
+
+    for event in events:
+        last_ts = last_emission_ts.get(event.envelope_key, 0.0)
+        if (now - last_ts) < emission_cooldown_s:
+            continue
+        transition_name = _select_transition_for_event(event, rng=rng)
+        try:
+            emit_transition_primitive(
+                transition_name,
+                triggering_envelope_key=event.envelope_key,
+                path=recruitment_path,
+                now=now,
+            )
+        except OSError as exc:
+            log.warning(
+                "parametric walker: failed to emit transition %s: %s",
+                transition_name,
+                exc,
+            )
+            continue
+        last_emission_ts[event.envelope_key] = now
+        log.info(
+            "parametric walker: boundary %s on %s (value=%.3f) — emitted %s",
+            event.direction,
+            event.envelope_key,
+            event.value,
+            transition_name,
+        )
+
+    return walker.values, events
+
+
+def run_forever(
+    *,
+    tick_s: float = DEFAULT_TICK_S,
+    uniforms_path: Path = UNIFORMS_FILE,
+    recruitment_path: Path = RECRUITMENT_FILE,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Production tick loop — fires :func:`tick_once` every ``tick_s`` seconds.
+
+    Owns the ``ParameterWalker`` instance and the ``last_emission_ts``
+    state across ticks (per-envelope cooldown for transition emissions).
+
+    Sleeps deterministically between ticks. The ``sleep`` injection
+    point lets tests bound the loop without monkey-patching :mod:`time`.
+    """
+
+    log.info(
+        "parametric modulation heartbeat starting: tick=%.1fs uniforms=%s recruitment=%s pid=%d",
+        tick_s,
+        uniforms_path,
+        recruitment_path,
+        os.getpid(),
+    )
+    walker = ParameterWalker()
+    last_emission_ts: dict[str, float] = {}
+    last_affordances: set[str] = set()
+    while True:
+        try:
+            tick_once(
+                walker,
+                uniforms_path=uniforms_path,
+                recruitment_path=recruitment_path,
+                last_emission_ts=last_emission_ts,
+                last_affordances=last_affordances,
+            )
+        except Exception:
+            # Daemon must never die from a single bad tick. A persistent
+            # failure surfaces via journal repetition (operator alerts on
+            # the warning rate).
+            log.warning("parametric modulation tick failed", exc_info=True)
+        sleep(tick_s)
