@@ -1,0 +1,12 @@
+[Unit]
+Description=Run hapax-broadcast-audio-health-producer every 60s
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=1s
+Persistent=false
+Unit=hapax-broadcast-audio-health-producer.service
+
+[Install]
+WantedBy=timers.target
