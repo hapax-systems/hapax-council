@@ -1121,3 +1121,20 @@ RouteVerdict._exactly_one_branch
 evaluate_request
 ledger_entry
 now_utc
+
+# Aesthetic condition editions ledger — cc-task aesthetic-condition-editions-ledger.
+# Pydantic model_validator + ledger / dry-run / capture entry-points called by
+# downstream condition-edition selector daemon (separate cc-task).
+from shared.aesthetic_condition_editions_ledger import (
+    AestheticConditionEditionsLedger,
+    EditionMetadata,
+    auto_capture_edition_from_input,
+    evaluate_edition_eligibility_from_input,
+)
+
+EditionMetadata._validate_creation_gate
+AestheticConditionEditionsLedger.by_kind
+AestheticConditionEditionsLedger.by_rights
+AestheticConditionEditionsLedger.by_condition
+auto_capture_edition_from_input
+evaluate_edition_eligibility_from_input
