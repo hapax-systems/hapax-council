@@ -452,3 +452,307 @@ def test_material_rejects_invalid_values():
             narrative="test",
             material="stone",
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 8: JSON-fence-strip parser — fixes Command-R 35B 50% pydantic-ai failure
+# ---------------------------------------------------------------------------
+#
+# Background: imagination_loop.py runs `Agent(reasoning, output_type=
+# ImaginationFragment)`. The `reasoning` alias routes through LiteLLM →
+# TabbyAPI → Command-R 35B EXL3, which wraps every JSON response in
+# ```json ... ``` fences regardless of prompt instructions. pydantic-ai
+# 1.63 cannot strip fences before its internal JSON parse, so it raises
+# UnexpectedModelBehavior on ~50% of ticks (verified live in journalctl
+# 2026-05-02). Pre-fix path fell through directly to the markdown-prose
+# extractor, which yields a degenerate `salience=0.20` floor. The
+# JSON-fence-strip parser recovers the structured fragment with full
+# salience / dimension fidelity, restoring the affordance pipeline's
+# downstream stimmung modulation.
+
+
+class TestJsonFenceStripParser:
+    """Tests for `_extract_fragment_from_json` — the structured-output recovery path."""
+
+    def _full_payload(self, **overrides) -> dict:
+        payload = {
+            "dimensions": {
+                "intensity": 0.6,
+                "tension": 0.4,
+                "depth": 0.5,
+                "coherence": 0.7,
+                "spectral_color": 0.3,
+                "temporal_distortion": 0.2,
+                "degradation": 0.1,
+                "pitch_displacement": 0.4,
+                "diffusion": 0.5,
+            },
+            "salience": 0.55,
+            "continuation": False,
+            "narrative": "soft thunder over open water",
+            "material": "water",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_bare_json(self) -> None:
+        from agents.imagination_loop import _extract_fragment_from_json
+
+        text = json.dumps(self._full_payload())
+        frag = _extract_fragment_from_json(text)
+        assert frag is not None
+        assert frag.salience == 0.55
+        assert frag.material == "water"
+        assert len(frag.dimensions) == 9
+
+    def test_json_fence_wrapped(self) -> None:
+        """Command-R's actual output shape: ```json\\n{...}\\n```"""
+        from agents.imagination_loop import _extract_fragment_from_json
+
+        body = json.dumps(self._full_payload(salience=0.62, material="fire"))
+        text = f"```json\n{body}\n```"
+        frag = _extract_fragment_from_json(text)
+        assert frag is not None
+        assert frag.salience == 0.62
+        assert frag.material == "fire"
+        # Critical: salience preserved from real model output, not 0.20 floor.
+        assert frag.salience > 0.5
+
+    def test_bare_fence_no_lang(self) -> None:
+        from agents.imagination_loop import _extract_fragment_from_json
+
+        body = json.dumps(self._full_payload())
+        text = f"```\n{body}\n```"
+        frag = _extract_fragment_from_json(text)
+        assert frag is not None
+
+    def test_json_inside_prose(self) -> None:
+        """Some Command-R responses prefix narration before the JSON."""
+        from agents.imagination_loop import _extract_fragment_from_json
+
+        body = json.dumps(self._full_payload(salience=0.4))
+        text = f"Sure, here's the imagination fragment you asked for:\n\n{body}"
+        frag = _extract_fragment_from_json(text)
+        assert frag is not None
+        assert frag.salience == 0.4
+
+    def test_returns_none_on_pure_prose(self) -> None:
+        """Pure prose with no JSON object falls through to markdown extractor."""
+        from agents.imagination_loop import _extract_fragment_from_json
+
+        text = "## Imagination\nA gentle drift through quiet thought.\n\nintensity: 0.4"
+        assert _extract_fragment_from_json(text) is None
+
+    def test_returns_none_on_invalid_shape(self) -> None:
+        """JSON that doesn't satisfy ImaginationFragment validation returns None."""
+        from agents.imagination_loop import _extract_fragment_from_json
+
+        text = json.dumps({"foo": "bar"})  # missing required fields
+        assert _extract_fragment_from_json(text) is None
+
+    def test_returns_none_on_empty(self) -> None:
+        from agents.imagination_loop import _extract_fragment_from_json
+
+        assert _extract_fragment_from_json("") is None
+        assert _extract_fragment_from_json("   \n\n  ") is None
+
+    def test_lifts_salience_above_markdown_floor(self) -> None:
+        """The whole point: fence-strip path preserves real salience.
+
+        The pre-fix markdown-prose extractor on fenced JSON cannot find a
+        ``## Salience`` header AND its loose ``salience\\s*[:=]`` regex
+        does not match the JSON-style ``"salience":0.65`` (no space-after
+        colon, dropped in the regex's grouping). It falls back to the
+        ``0.20`` floor — exactly the live audit signal:
+        ``recovered fragment via markdown fallback (salience=0.20, ...)``.
+        The fence-strip path recovers the real model-emitted salience.
+        """
+        from agents.imagination_loop import (
+            _extract_fragment_from_json,
+            _extract_fragment_from_markdown,
+        )
+
+        body = json.dumps(self._full_payload(salience=0.65))
+        fenced_text = f"```json\n{body}\n```"
+
+        # Fence-strip path: recovers real salience from structured JSON.
+        frag_json = _extract_fragment_from_json(fenced_text)
+        assert frag_json is not None
+        assert frag_json.salience == 0.65
+        assert frag_json.material == "water"
+        assert len(frag_json.dimensions) == 9
+        # All 9 dimensions preserved at their actual values (not centred 0.5).
+        assert frag_json.dimensions["intensity"] == 0.6
+        assert frag_json.dimensions["coherence"] == 0.7
+
+        # Old markdown-prose path on the same fenced text: floors salience
+        # at 0.20 because no ``## Salience\\nN`` header is present. This
+        # is the precise live-audit failure mode the fence-strip fix
+        # eliminates.
+        frag_md = _extract_fragment_from_markdown(fenced_text)
+        assert frag_md is not None
+        assert frag_md.salience == 0.20  # the degenerate floor — buggy path
+        # Most dimensions also default to 0.5 in the prose extractor.
+        assert frag_md.dimensions["coherence"] == 0.5
+        # Critical regression marker: the fence-strip path recovers
+        # ~3.25x more salience signal than the prose-fallback path.
+        assert frag_json.salience > frag_md.salience * 3
+
+
+class TestTickFenceStripFallback:
+    """Tests for the structured-fail → JSON-fence-strip → markdown fallback chain."""
+
+    def test_fence_strip_short_circuits_markdown_fallback(self, tmp_path: Path) -> None:
+        """When the text agent returns fenced JSON, recovery stops at fence-strip."""
+        import asyncio
+        import unittest.mock
+
+        loop = ImaginationLoop(
+            current_path=tmp_path / "current.json",
+            stream_path=tmp_path / "stream.jsonl",
+            visual_observation_path=tmp_path / "obs.txt",
+        )
+
+        body = json.dumps(
+            {
+                "dimensions": {
+                    k: 0.5
+                    for k in [
+                        "intensity",
+                        "tension",
+                        "depth",
+                        "coherence",
+                        "spectral_color",
+                        "temporal_distortion",
+                        "degradation",
+                        "pitch_displacement",
+                        "diffusion",
+                    ]
+                },
+                "salience": 0.7,
+                "continuation": False,
+                "narrative": "warm rain over slate",
+                "material": "earth",
+            }
+        )
+        fenced = f"```json\n{body}\n```"
+
+        # Fake structured agent that always blows up (mirrors Command-R's
+        # observed UnexpectedModelBehavior on every other tick).
+        class _BlowupAgent:
+            async def run(self, _ctx):  # noqa: ANN001
+                raise RuntimeError("UnexpectedModelBehavior simulator")
+
+        # Fake text agent that returns the fenced JSON Command-R actually emits.
+        class _FencedJsonAgent:
+            async def run(self, _ctx):  # noqa: ANN001
+                class _R:
+                    output = fenced
+
+                return _R()
+
+        loop._agent = _BlowupAgent()
+        loop._text_agent = _FencedJsonAgent()
+
+        # Bypass cadence/visual observation reads; assemble_context still runs.
+        with unittest.mock.patch("agents.imagination_loop.assemble_context", return_value="ctx"):
+            frag = asyncio.run(loop.tick(observations=[], sensor_snapshot={}))
+
+        assert frag is not None
+        # Critical: salience preserved from JSON, NOT degraded to 0.20 floor.
+        assert frag.salience == 0.7
+        assert frag.material == "earth"
+        # And the fragment was published.
+        assert (tmp_path / "current.json").exists()
+
+    def test_falls_through_to_markdown_for_pure_prose(self, tmp_path: Path) -> None:
+        """When response has no JSON, markdown-prose extractor still runs."""
+        import asyncio
+        import unittest.mock
+
+        loop = ImaginationLoop(
+            current_path=tmp_path / "current.json",
+            stream_path=tmp_path / "stream.jsonl",
+            visual_observation_path=tmp_path / "obs.txt",
+        )
+
+        prose = (
+            "## Imagination Fragment\n"
+            "A slow drift through dappled light.\n\n"
+            "## Expressive Dimensions\n"
+            "intensity: 0.4\n"
+            "tension: 0.1\n\n"
+            "## Material\n"
+            "water\n\n"
+            "## Salience\n"
+            "0.35\n"
+        )
+
+        class _BlowupAgent:
+            async def run(self, _ctx):  # noqa: ANN001
+                raise RuntimeError("UnexpectedModelBehavior simulator")
+
+        class _ProseAgent:
+            async def run(self, _ctx):  # noqa: ANN001
+                class _R:
+                    output = prose
+
+                return _R()
+
+        loop._agent = _BlowupAgent()
+        loop._text_agent = _ProseAgent()
+
+        with unittest.mock.patch("agents.imagination_loop.assemble_context", return_value="ctx"):
+            frag = asyncio.run(loop.tick(observations=[], sensor_snapshot={}))
+
+        assert frag is not None
+        assert frag.material == "water"
+        assert frag.salience == 0.35
+
+    def test_structured_agent_success_skips_fallback(self, tmp_path: Path) -> None:
+        """When the structured agent succeeds, neither fallback path runs.
+
+        Pinned regression: the fence-strip path is *only* a fallback. It
+        must not steal control from a healthy structured tick.
+        """
+        import asyncio
+        import unittest.mock
+
+        loop = ImaginationLoop(
+            current_path=tmp_path / "current.json",
+            stream_path=tmp_path / "stream.jsonl",
+            visual_observation_path=tmp_path / "obs.txt",
+        )
+
+        good = ImaginationFragment(
+            dimensions={"intensity": 0.8, "depth": 0.6},
+            salience=0.85,
+            continuation=False,
+            narrative="bright structured tick",
+            material="fire",
+        )
+
+        class _StructuredAgent:
+            async def run(self, _ctx):  # noqa: ANN001
+                class _R:
+                    output = good
+
+                return _R()
+
+        text_agent_called = []
+
+        class _TextAgent:
+            async def run(self, _ctx):  # noqa: ANN001
+                text_agent_called.append(True)
+                raise AssertionError("text agent must not run on structured success")
+
+        loop._agent = _StructuredAgent()
+        loop._text_agent = _TextAgent()
+
+        with unittest.mock.patch("agents.imagination_loop.assemble_context", return_value="ctx"):
+            frag = asyncio.run(loop.tick(observations=[], sensor_snapshot={}))
+
+        assert frag is not None
+        assert frag.salience == 0.85
+        assert frag.material == "fire"
+        assert text_agent_called == [], "fallback agent ran on structured success"
