@@ -1284,3 +1284,25 @@ SupportDirectory._validate_directory
 render_directory_markdown
 RailId
 SupportDirectoryError
+
+# Mercury receive-only rail — cc-task mercury-receive-only-rail
+# (Phase 0, Mercury bank-rail). Pydantic field_validator hooks
+# (counterparty-display + ISO 4217 currency) invoked at construction;
+# ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging Mercury HMAC-SHA256-signed
+# JSON deliveries (separate cc-task). The first direct-bank rail in the
+# family — adds a direction filter (incoming-only) on the transaction
+# kind enum, alongside the standard HMAC-over-raw-body shape from
+# GitHub Sponsors / Stripe / BMaC.
+from shared.mercury_receive_only_rail import (
+    MercuryEventKind,
+    MercuryRailReceiver,
+    MercuryTransactionDirection,
+    MercuryTransactionEvent,
+)
+
+MercuryTransactionEvent._handle_is_display_name_only
+MercuryTransactionEvent._currency_is_iso_4217
+MercuryRailReceiver.ingest_webhook
+MercuryEventKind
+MercuryTransactionDirection
