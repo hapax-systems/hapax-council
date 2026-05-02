@@ -902,6 +902,18 @@ from shared.audio_marker_probe_fft import (
 detect_marker_in_capture
 generate_marker_tone
 
+# Qdrant FlowEvent-instrumented factory — opt-in entry point for callers
+# that want Logos flow visibility on their qdrant ops. Whitelisted because
+# the wrapper class (InstrumentedQdrantClient) was correctly structured
+# but had no factory for 6 days post-#1660; this factory is the missing
+# wire path. Per the R-16 audit
+# (docs/research/2026-04-26-r16-langfuse-instrumented-qdrant-audit.md
+# § Disposition), migration is opt-in per caller — no bulk migration
+# required, so vulture flags it until the first caller adopts.
+from shared.config import get_qdrant_instrumented
+
+get_qdrant_instrumented
+
 # Voice output router (role-keyed API) — ``known_roles`` is the
 # operator-dashboard helper for the audio-routing blocker stack. Lands
 # ahead of the dashboard surface that will read it (separate cc-task);
@@ -1329,3 +1341,25 @@ IncomingPaymentEvent._currency_is_iso_4217
 ModernTreasuryRailReceiver.ingest_webhook
 IncomingPaymentEventKind
 PaymentMethod
+
+# Treasury Prime receive-only rail (Phase 0, ledger accounts) — cc-task
+# treasury-prime-receive-only-rail. Pydantic field_validator hooks
+# (originating-party-display + ISO 4217 currency) invoked at construction;
+# ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging Treasury Prime
+# HMAC-SHA256-signed JSON deliveries (separate cc-task). Tenth rail in
+# the family — third direct-bank rail, closes the Jr packet's
+# Bank-as-API recommendation set. Phase 0 accepts only
+# ``incoming_ach.create`` (ledger accounts); Phase 1 will extend to
+# ``transaction.create`` (core direct accounts) with the data-level
+# direction filter from Mercury.
+from shared.treasury_prime_receive_only_rail import (
+    IncomingAchEvent,
+    IncomingAchEventKind,
+    TreasuryPrimeRailReceiver,
+)
+
+IncomingAchEvent._handle_is_display_name_only
+IncomingAchEvent._currency_is_iso_4217
+TreasuryPrimeRailReceiver.ingest_webhook
+IncomingAchEventKind
