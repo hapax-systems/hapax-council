@@ -87,6 +87,18 @@ class RedactionResult:
 #: * ``private_key_block`` — PEM private-key headers.
 #: * ``operator_home_path`` — absolute paths under operator's home
 #:   directory; reveals operator identity on a public broadcast surface.
+#: * ``ssh_public_key`` — ``ssh-rsa`` / ``ssh-ed25519`` / ``ssh-ecdsa``
+#:   public-key lines (foot-tmux capture surfaces these from
+#:   ``ssh-keygen``, ``cat ~/.ssh/*.pub``, etc).
+#: * ``other_user_home`` — ``/home/<other>/`` paths; reveals a
+#:   non-operator's identity on a public surface.
+#: * ``claude_cli_chat_marker`` — leading ``Human:`` / ``Assistant:``
+#:   markers from a claude-cli transcript dump in the operator's
+#:   editor. Chat content is private until consent established.
+#: * ``envrc_path`` — ``.envrc`` and ``source .envrc`` lines (likely to
+#:   precede secret material if displayed).
+#: * ``pass_command`` — ``pass show/edit/insert/grep/otp/generate``
+#:   invocations; the next-rendered line is likely a secret.
 RISK_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("anthropic_api_key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}")),
     ("openai_api_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9]{20,}\b")),
@@ -98,6 +110,18 @@ RISK_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("authorization_header", re.compile(r"Authorization:\s*Bearer\s+\S+", re.IGNORECASE)),
     ("private_key_block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("operator_home_path", re.compile(re.escape(_OPERATOR_HOME_PREFIX))),
+    # Per durf-foot-coding-session-reveal cc-task: foot-tmux capture surfaces
+    # additional risk strings the Codex-lane DURF doesn't routinely emit.
+    # Each is a SUPPRESS-on-match (fail-closed); the v1 redaction layer is
+    # binary, normalize-style mitigation deferred to a follow-on PR.
+    (
+        "ssh_public_key",
+        re.compile(r"\bssh-(?:rsa|ed25519|ecdsa(?:-[a-z0-9-]+)?)\s+[A-Za-z0-9+/=]{20,}"),
+    ),
+    ("other_user_home", re.compile(r"/home/(?!hapax/)[A-Za-z0-9_\-]+/")),
+    ("claude_cli_chat_marker", re.compile(r"^\s*(?:Human|Assistant)\s*:\s+", re.MULTILINE)),
+    ("envrc_path", re.compile(r"(?:^|\s)(?:source\s+)?\.envrc\b|/\.envrc\b")),
+    ("pass_command", re.compile(r"\bpass\s+(?:show|edit|insert|grep|otp|generate)\b")),
 )
 
 

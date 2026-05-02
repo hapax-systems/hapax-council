@@ -1,0 +1,56 @@
+# durf-coding-panes.yaml — operator foot-tmux coding session targets
+#
+# Per cc-task durf-foot-coding-session-reveal (WSJF 14.0). Sibling to
+# config/durf-panes.yaml, which lists the Codex driver lanes; this
+# file lists the operator's actual coding tmux sessions inside foot
+# terminals.
+#
+# Discovery priority:
+#   1. HAPAX_DURF_CODING_TARGET env var (single explicit target).
+#   2. The `panes:` list below, when populated.
+#   3. Auto-detect via `tmux ls` filtered by `auto_detect_prefixes`
+#      (or the env override HAPAX_DURF_CODING_PREFIX).
+#
+# Capture is text-only: tmux capture-pane -p -S -<lines> -t <target>.
+# No Wayland pixel capture, no xdg-desktop-portal exposure. The
+# redaction layer in agents/studio_compositor/durf_redaction.py is
+# fail-CLOSED — any pattern match suppresses the entire pane before
+# any render path sees it. Operator opt-out per session via
+# HAPAX_DURF_CODING_OFF=1.
+
+defaults:
+  capture_lines: 80
+  stale_after_seconds: 20
+
+# Operator-curated session list. Empty by default — auto-detect kicks
+# in via the prefix filter below. To pin specific sessions, add entries
+# here:
+#
+#   panes:
+#     - session: coding-hapax
+#       tmux_target: "coding-hapax:0.0"
+#       glyph: "C-//"
+#       enabled: true
+#       capture_lines: 80
+panes: []
+
+# Auto-detect tmux session prefixes. When `panes:` is empty, the ward
+# enumerates `tmux ls` and includes every session whose name starts
+# with one of these prefixes. Override at process scope via env var
+# HAPAX_DURF_CODING_PREFIX="prefix1,prefix2,...".
+auto_detect_prefixes:
+  - "coding-"
+  - "dev-"
+  - "hapax-claude-"
+
+redactions_documented:
+  - "API key prefixes (sk-ant-..., sk-..., gh*_..., AKIA...)"
+  - "AWS_SECRET / ANTHROPIC_API_KEY shell assignments"
+  - "Bearer tokens and Authorization headers"
+  - "PEM private-key block markers"
+  - "Operator home-directory paths"
+  - "SSH public-key lines (ssh-rsa / ssh-ed25519 / ssh-ecdsa)"
+  - "Other-user home paths"
+  - "claude-cli chat markers (Human: / Assistant: line starts)"
+  - "envrc paths and `source` invocations"
+  - "pass invocations (pass show/edit/insert/grep/otp/generate)"
