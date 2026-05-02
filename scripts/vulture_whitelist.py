@@ -986,3 +986,12 @@ from shared.youtube_packaging_claim_policy import PackagingClaim, evaluate_paylo
 
 evaluate_payload
 PackagingClaim._require_public_event_ref
+
+# PublicClaimGateDecision.allows_emission is the public predicate
+# composer / github-claim-gate consumers use to decide whether to emit
+# the original claim copy or swap in correction copy. Phase 0 ships
+# the gate library; Phase 1 wires composer.compose_metadata and the
+# github surface. Per cc-task ``metadata-public-claim-gate``.
+from agents.metadata_composer.public_claim_gate import PublicClaimGateDecision
+
+PublicClaimGateDecision.allows_emission
