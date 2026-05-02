@@ -34,6 +34,14 @@ EDGE_STATE_DIR: Path = HAPAX_HOME / "hapax-state" / "edge"
 
 # Raspberry Pi fleet -- expected nodes and their primary roles
 PI_FLEET: dict[str, dict] = {
+    "hapax-pi1": {
+        "role": "ir-desk",
+        "expected_services": ["hapax-ir-edge"],
+    },
+    "hapax-pi2": {
+        "role": "ir-room",
+        "expected_services": ["hapax-ir-edge"],
+    },
     "hapax-pi4": {
         "role": "sentinel",
         "expected_services": ["hapax-sentinel", "hapax-watch-backup"],
@@ -41,6 +49,10 @@ PI_FLEET: dict[str, dict] = {
     "hapax-pi5": {
         "role": "rag-edge",
         "expected_services": ["hapax-rag-edge", "hapax-gdrive-pull.timer"],
+    },
+    "hapax-pi6": {
+        "role": "ir-overhead",
+        "expected_services": ["hapax-ir-edge"],
     },
 }
 
