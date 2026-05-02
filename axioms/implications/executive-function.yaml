@@ -109,6 +109,7 @@ implications:
     constitutive-rule-bound form via cr-config-yaml. The wired
     rule subsumes the rationale-only duplicate.
 - id: ex-cogload-002
+  linkage: code-direct
   tier: T2
   text: Interactive prompts must not ask questions the system can reasonably answer
     itself.
