@@ -30,9 +30,11 @@ silence incidents**, so the same incidents cannot recur silently:
   - v5 (playback node passive): pinned here — hapax-l12-evilpet-capture.conf
     playback.props MUST declare node.passive = false.
 
-  Plus the M8 vacuous-invariant: hapax-m8-loudnorm.conf MUST NOT write
-  to the L-12 USB analog-surround output (M8 audio bypasses L-12
-  hardware entirely).
+  Plus the M8 forward-invariant (operator directive 2026-05-02 inverted
+  the prior bypass design): hapax-m8-loudnorm.conf MUST write to the
+  L-12 USB analog-surround output and MUST NOT terminate at
+  hapax-livestream-tap. Nothing goes straight to stream — every wet
+  audio source feeding broadcast passes through L-12 first.
 """
 
 from __future__ import annotations
@@ -104,18 +106,20 @@ def test_v5_evilpet_playback_node_is_active_not_passive() -> None:
     )
 
 
-def test_m8_loudnorm_does_not_touch_l12_output() -> None:
-    """M8 vacuous-invariant: hapax-m8-loudnorm.conf must NOT write to the
-    L-12 USB output. The M8 audio path bypasses L-12 hardware entirely
-    per second-pass synthesis decision (re-splay-homage-ward-m8 cc-task)."""
+def test_m8_loudnorm_routes_through_l12_not_direct_to_stream() -> None:
+    """M8 forward-invariant (operator directive 2026-05-02): hapax-m8-loudnorm.conf
+    MUST write to the L-12 USB output and MUST NOT terminate at
+    hapax-livestream-tap directly. The prior bypass design was inverted —
+    nothing goes straight to stream, everything passes through L-12 first."""
     conf_path = PIPEWIRE_DIR / "hapax-m8-loudnorm.conf"
     if not conf_path.exists():
         return  # M8 conf may not be deployed yet on all branches
     code = _strip_comments(_read_conf(conf_path))
-    assert L12_OUTPUT_NODE not in code, (
-        "M8 audio must bypass L-12 hardware; hapax-m8-loudnorm.conf "
-        "must not target the L-12 USB analog-surround output"
+    assert L12_OUTPUT_NODE in code, (
+        "M8 audio must route through L-12; hapax-m8-loudnorm.conf "
+        "must target the L-12 USB analog-surround output (operator directive 2026-05-02)"
     )
-    assert 'target.object = "hapax-livestream-tap"' in code, (
-        "M8 loudnorm must terminate at hapax-livestream-tap"
+    assert 'target.object = "hapax-livestream-tap"' not in code, (
+        "M8 loudnorm must NOT terminate at hapax-livestream-tap directly; "
+        "nothing goes straight to stream (operator directive 2026-05-02)"
     )

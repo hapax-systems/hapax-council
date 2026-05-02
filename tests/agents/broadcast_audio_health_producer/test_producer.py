@@ -235,3 +235,82 @@ class TestRouteLoader:
         monkeypatch.setenv("BROADCAST_AUDIO_HEALTH_ROUTES", "only-one-field")
         with pytest.raises(ValueError, match="invalid route entry"):
             load_routes_from_env()
+
+    def test_loads_4part_with_channels(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(
+            "BROADCAST_AUDIO_HEALTH_ROUTES",
+            "broadcast-l12:hapax-l12-sink:hapax-l12-sink.monitor:4",
+        )
+        routes = load_routes_from_env()
+        assert len(routes) == 1
+        assert routes[0].inject_channels == 4
+
+    def test_loads_default_channels_is_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(
+            "BROADCAST_AUDIO_HEALTH_ROUTES",
+            "broadcast:hapax-broadcast:hapax-broadcast.monitor",
+        )
+        routes = load_routes_from_env()
+        assert routes[0].inject_channels == 1
+
+    def test_invalid_channels_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(
+            "BROADCAST_AUDIO_HEALTH_ROUTES",
+            "broadcast:hapax-broadcast:hapax-broadcast.monitor:not-a-number",
+        )
+        with pytest.raises(ValueError, match="invalid channels"):
+            load_routes_from_env()
+
+
+# ── Multi-channel inject shape ─────────────────────────────────────
+
+
+class TestMultiChannelInject:
+    """Mono inject upmix to N channels for multi-channel sinks like the
+    L-12 ``analog-surround-40`` (4ch front-left/right + rear-left/right).
+    Without channel replication, mono inject does not appear on the
+    sink monitor at all."""
+
+    def test_shape_for_channels_passes_mono_through(self) -> None:
+        mono = np.array([1, 2, 3], dtype=np.int16)
+        out = BroadcastAudioHealthProducer._shape_for_channels(mono, 1)
+        assert out.ndim == 1
+        np.testing.assert_array_equal(out, mono)
+
+    def test_shape_for_channels_replicates_to_4ch_interleaved(self) -> None:
+        mono = np.array([1, 2, 3], dtype=np.int16)
+        out = BroadcastAudioHealthProducer._shape_for_channels(mono, 4)
+        assert out.shape == (3, 4)
+        # Each row carries the same sample replicated across all 4 channels.
+        np.testing.assert_array_equal(out[0], [1, 1, 1, 1])
+        np.testing.assert_array_equal(out[1], [2, 2, 2, 2])
+        np.testing.assert_array_equal(out[2], [3, 3, 3, 3])
+
+    def test_shape_for_channels_rejects_zero(self) -> None:
+        with pytest.raises(ValueError, match="channels must be"):
+            BroadcastAudioHealthProducer._shape_for_channels(np.zeros(3, dtype=np.int16), 0)
+
+    def test_inject_receives_2d_samples_for_multichannel_route(self, tmp_path: Path) -> None:
+        captured_inject_args: list[tuple[str, np.ndarray, int]] = []
+
+        def _spy_inject(sink: str, samples: np.ndarray, sr: int) -> None:
+            captured_inject_args.append((sink, samples, sr))
+
+        producer = BroadcastAudioHealthProducer(
+            routes=[
+                RouteSpec(
+                    name="broadcast-l12",
+                    sink_name="hapax-l12-sink",
+                    monitor_source="hapax-l12-sink.monitor",
+                    inject_channels=4,
+                )
+            ],
+            state_dir=tmp_path,
+            inject=_spy_inject,
+            capture=_passthrough_capture,
+        )
+        producer.run_once()
+        assert len(captured_inject_args) == 1
+        _, samples, _ = captured_inject_args[0]
+        assert samples.ndim == 2, "multi-channel inject must receive 2D samples"
+        assert samples.shape[1] == 4, "must have 4 channels for L-12 surround sink"
