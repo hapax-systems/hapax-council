@@ -902,6 +902,18 @@ from shared.audio_marker_probe_fft import (
 detect_marker_in_capture
 generate_marker_tone
 
+# Qdrant FlowEvent-instrumented factory — opt-in entry point for callers
+# that want Logos flow visibility on their qdrant ops. Whitelisted because
+# the wrapper class (InstrumentedQdrantClient) was correctly structured
+# but had no factory for 6 days post-#1660; this factory is the missing
+# wire path. Per the R-16 audit
+# (docs/research/2026-04-26-r16-langfuse-instrumented-qdrant-audit.md
+# § Disposition), migration is opt-in per caller — no bulk migration
+# required, so vulture flags it until the first caller adopts.
+from shared.config import get_qdrant_instrumented
+
+get_qdrant_instrumented
+
 # Voice output router (role-keyed API) — ``known_roles`` is the
 # operator-dashboard helper for the audio-routing blocker stack. Lands
 # ahead of the dashboard surface that will read it (separate cc-task);
