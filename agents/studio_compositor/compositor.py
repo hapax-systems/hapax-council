@@ -1317,6 +1317,21 @@ class StudioCompositor:
             log.exception("failed to start scene_classifier thread")
             self._scene_classifier_thread = None
 
+        # cc-task scene-classifier-publish-restore (audit R3 / Auditor E
+        # finding #10a, 2026-05-02): re-publish camera-classifications.json
+        # every ~30s so any change to the camera registry (config reload,
+        # PR #2246 loader fill, future dynamic per-camera ML classifier)
+        # reaches FollowModeController without a compositor restart.
+        try:
+            from agents.studio_compositor.camera_classifier_publisher import (
+                maybe_start_camera_classifier_publisher,
+            )
+
+            self._camera_classifier_publisher = maybe_start_camera_classifier_publisher(self)
+        except Exception:
+            log.exception("failed to start camera_classifier_publisher")
+            self._camera_classifier_publisher = None
+
     def start(self) -> None:
         """Build and start the pipeline."""
         self.start_layout_only()
@@ -1334,6 +1349,13 @@ class StudioCompositor:
             except Exception:
                 log.exception("scene_classifier thread stop failed")
             self._scene_classifier_thread = None
+        publisher = getattr(self, "_camera_classifier_publisher", None)
+        if publisher is not None:
+            try:
+                publisher.stop()
+            except Exception:
+                log.exception("camera_classifier_publisher stop failed")
+            self._camera_classifier_publisher = None
         if self._command_server is not None:
             try:
                 self._command_server.stop()
