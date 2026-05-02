@@ -32,23 +32,41 @@ _ROLLING_WINDOW = _PPQN  # average over 1 beat of ticks
 
 
 class MidiClockBackend:
-    """Receives MIDI clock from an ALSA MIDI port via mido.
+    """Receives MIDI clock from one or more ALSA MIDI ports via mido.
+
+    Multi-port behavior (post m8-midi-clock-peer-tempo-source 2026-05-02):
+    pass `port_names=["OXI One", "M8 MIDI 1"]` to subscribe to multiple
+    MIDI clock sources concurrently. The most-recently-PLAYING port wins
+    the canonical timeline_mapping. When neither is PLAYING, the most-
+    recently-active port's last tempo is held. Single-port `port_name`
+    arg is preserved for backward compatibility.
 
     Provides:
       - timeline_mapping: TimelineMapping (tempo + transport state)
       - beat_position: float (current beat)
       - bar_position: float (current bar)
+      - midi_clock_transport: str (transport state name)
     """
 
     def __init__(
         self,
-        port_name: str = "OXI One",
+        port_name: str | None = None,
+        port_names: list[str] | None = None,
         beats_per_bar: int = 4,
     ) -> None:
-        self._port_name = port_name
+        # Single-port backward compat: port_name → single-element port_names.
+        # If both passed, port_names wins (multi-port mode is the new default).
+        if port_names is None:
+            port_names = [port_name or "OXI One"]
+        elif port_name is not None and port_name not in port_names:
+            port_names = [port_name, *port_names]
+        self._port_names: list[str] = port_names
+        # Keep _port_name for log/test back-compat (tracks the most-recently-
+        # active winning port).
+        self._port_name = self._port_names[0]
         self._beats_per_bar = beats_per_bar
 
-        # Thread-safe state
+        # Thread-safe state — owned by whichever port is currently winning.
         self._lock = threading.Lock()
         self._transport = TransportState.STOPPED
         self._tick_count: int = 0
@@ -56,8 +74,14 @@ class MidiClockBackend:
         self._tempo: float = _DEFAULT_TEMPO
         self._reference_time: float = 0.0
         self._reference_beat: float = 0.0
+        # Track which port last received a clock/transport message so we can
+        # break ties when both are running. Set by `_on_message` callbacks.
+        self._active_port: str = self._port_names[0]
+        self._last_msg_time: dict[str, float] = {n: 0.0 for n in self._port_names}
 
-        self._port = None
+        # Open ports list (parallel to _port_names; some entries may be None
+        # if a given port wasn't enumerable at start time).
+        self._ports: list[object] = []
         self._available = False
 
     @property
@@ -83,33 +107,76 @@ class MidiClockBackend:
         return self._available
 
     def start(self) -> None:
-        """Open MIDI input port with callback thread."""
+        """Open all configured MIDI input ports with callback threads.
+
+        Tolerates per-port absence — if a port can't be opened, log INFO
+        and skip; backend is `available` if at least one port opened.
+        """
         if mido is None:
             log.info("mido not installed, MIDI clock backend unavailable")
             self._available = False
             return
-        try:
-            self._port = mido.open_input(self._port_name, callback=self._on_message)
-            self._available = True
-            log.info("MIDI clock listening on port: %s", self._port_name)
-        except Exception as exc:
-            log.info("MIDI port '%s' not available: %s", self._port_name, exc)
-            self._available = False
+        opened: list[str] = []
+        for name in self._port_names:
+            try:
+                # Bind callback with port name so we can track per-port activity.
+                callback = self._make_callback(name)
+                port = mido.open_input(name, callback=callback)
+                self._ports.append(port)
+                opened.append(name)
+                log.info("MIDI clock listening on port: %s", name)
+            except Exception as exc:
+                log.info("MIDI port '%s' not available: %s", name, exc)
+        self._available = bool(opened)
+        if opened:
+            self._port_name = opened[0]  # back-compat reference
 
     def stop(self) -> None:
-        """Close the MIDI port."""
-        if self._port is not None:
+        """Close all MIDI ports."""
+        for port in self._ports:
             try:
-                self._port.close()
+                port.close()
             except Exception:
                 pass
-            self._port = None
+        self._ports = []
         self._available = False
 
-    def _on_message(self, msg) -> None:
-        """Callback from mido's input thread. Updates state behind lock."""
+    def _make_callback(self, port_name: str):
+        """Create a per-port callback closure that tags messages with their source."""
+
+        def _cb(msg) -> None:
+            self._on_message(msg, source_port=port_name)
+
+        return _cb
+
+    def _on_message(self, msg, source_port: str | None = None) -> None:
+        """Callback from mido's input thread. Updates state behind lock.
+
+        Multi-port arbitration: the most-recently-active port wins the
+        canonical state. If the source_port is not the current winner AND
+        the current winner is in PLAY, ignore non-transport messages from
+        the loser to prevent tempo cross-contamination.
+        """
         now = time.monotonic()
+        if source_port is None:
+            source_port = self._port_names[0]
         with self._lock:
+            self._last_msg_time[source_port] = now
+            # Arbitration: transport messages from any port can take over.
+            # Clock messages from non-winning port are ignored while the
+            # winning port is PLAYING (prevents two tempos blending).
+            is_transport = msg.type in ("start", "stop", "continue")
+            if (
+                not is_transport
+                and self._transport is TransportState.PLAYING
+                and source_port != self._active_port
+            ):
+                return  # let the winning port own the clock
+            if is_transport:
+                # Transport messages always promote the source port to active.
+                self._active_port = source_port
+                self._port_name = source_port
+
             if msg.type == "clock":
                 self._tick_times.append(now)
                 if self._transport is TransportState.PLAYING:
