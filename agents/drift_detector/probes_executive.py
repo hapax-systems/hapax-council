@@ -372,7 +372,66 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_docs_operator_focused(),
     ),
+    SufficiencyProbe(
+        id="probe-cogload-002",
+        axiom_id="executive_function",
+        implication_id="ex-cogload-002",
+        level="component",
+        question=(
+            "Do agent modules avoid interactive prompts (input()/raw_input()) "
+            "that ask the operator questions the system could answer itself?"
+        ),
+        check=lambda: _check_no_interactive_prompts(),
+    ),
 ]
+
+
+def _check_no_interactive_prompts() -> tuple[bool, str]:
+    """Enforces ex-cogload-002 (executive_function).
+
+    Interactive prompts must not ask questions the system can
+    reasonably answer itself. Verifies that ≤1% of agent modules
+    use input()/raw_input() — the absence of operator-blocking
+    prompts is the substantive answer to the implication.
+
+    A few files are allowed (research/dev_story/governor sometimes
+    need genuine operator input for their function); the absence-
+    of-pattern threshold is loose.
+    """
+    interactive_pattern = re.compile(
+        r"^\s*\w+\s*=\s*input\(|"
+        r"\braw_input\(",
+        re.MULTILINE,
+    )
+
+    agents_dir = AI_AGENTS_DIR / "agents"
+    if not agents_dir.exists():
+        return False, "agents directory not found"
+
+    total = 0
+    interactive: list[str] = []
+    for py_file in agents_dir.rglob("*.py"):
+        total += 1
+        try:
+            content = py_file.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if interactive_pattern.search(content):
+            interactive.append(py_file.name)
+
+    if total == 0:
+        return False, "no agent files found"
+
+    ratio = len(interactive) / total
+    if ratio <= 0.01:  # ≤1% of agent files use input()
+        return True, (
+            f"only {len(interactive)}/{total} agent files use interactive "
+            f"input prompts ({ratio:.2%}) - ex-cogload-002 sufficient"
+        )
+    return False, (
+        f"{len(interactive)}/{total} agent files use input prompts "
+        f"({ratio:.2%}); too many: {', '.join(interactive[:5])}"
+    )
 
 
 def _check_docs_operator_focused() -> tuple[bool, str]:
