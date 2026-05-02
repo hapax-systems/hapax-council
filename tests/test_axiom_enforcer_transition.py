@@ -33,11 +33,19 @@ def test_axiom_enforcer_env_off_then_on_for_agent_outputs(
         patch("shared.axiom_enforcer.AUDIT_LOG", audit_log),
         patch("shared.axiom_enforcer.QUARANTINE_DIR", quarantine_dir),
     ):
-        monkeypatch.setenv("AXIOM_ENFORCE_BLOCK", "0")
-        off_result = axiom_enforcer.enforce_output(seeded_t0, agent_id, output_path)
-
-        monkeypatch.setenv("AXIOM_ENFORCE_BLOCK", "1")
-        on_result = axiom_enforcer.enforce_output(seeded_t0, agent_id, output_path)
+        # Pass block_enabled explicitly via kwarg instead of monkeypatching
+        # AXIOM_ENFORCE_BLOCK env var. The kwarg path is deterministic; the
+        # env-var path was subject to cross-test pollution (~30% flake rate
+        # observed across alpha PRs #2113 + #2143). enforce_output() already
+        # accepts block_enabled as a keyword override — this test now uses
+        # that contract instead of relying on env-var ordering.
+        # cc-task: stabilize-axiom-enforcer-transition-flake
+        off_result = axiom_enforcer.enforce_output(
+            seeded_t0, agent_id, output_path, block_enabled=False
+        )
+        on_result = axiom_enforcer.enforce_output(
+            seeded_t0, agent_id, output_path, block_enabled=True
+        )
 
     assert off_result.allowed is True
     assert off_result.audit_only is True
