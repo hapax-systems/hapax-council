@@ -1156,3 +1156,15 @@ PublicAggregateEmission._validate_window
 PublicEmitDecision._exactly_emit_or_refuse
 evaluate_public_emit
 render_public_aggregate_text
+
+# GitHub Sponsors receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0).
+# Pydantic field_validator + the public ingest_webhook entrypoint are invoked
+# by the downstream publication_bus rail dispatcher (separate cc-task).
+from shared.github_sponsors_receive_only_rail import (
+    GitHubSponsorsRailReceiver,
+    SponsorshipEvent,
+)
+
+SponsorshipEvent._login_is_handle_only
+GitHubSponsorsRailReceiver.ingest_webhook
