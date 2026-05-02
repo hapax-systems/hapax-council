@@ -221,3 +221,64 @@ Detail in `docs/superpowers/plans/2026-04-23-livestream-audio-unified-architectu
 
 Confirmed by operator 2026-04-23 with:
 > "1. recommended 2. we need to make all pathing dynamic and optional in an easy to manage way for both me and for Hapax. but by default EVERYTHING should go through the evil pet and NOTHING should be dry. 3. y 4. whatever is rec 5. yes, until we have a better solution 6. Yup as long as I am here I don't care about pipewire restarts, just when I am away because I have to manually remove and then re-add the OBS source sink — but maybe we can fix this problem? We DEFINITELY SHOULD."
+
+## §10. USB-IN line-driver — analog-trim substitute (added 2026-05-02)
+
+### Background
+
+Per §3 (master safety-net design) the architecture assumed sources arriving
+at the L-12 mixer would benefit from the L-12's per-channel analog LINE IN
+TRIM/PAD stage before reaching the channel fader. This assumption holds for
+sources connected via TRS/XLR cables to L-12 CH 1-12 analog inputs.
+
+It does NOT hold for sources arriving via USB IN (L-12 USB IN tracks 1-2 →
+physical CH 11/12). USB IN bypasses the analog channel-strip TRIM stage
+entirely. A source pre-normalized to -18 LUFS-I per `PRE_NORM_TARGET_LUFS_I`
+arrives at the operator's "send to AUX (Evil Pet)" rotary at -18 dBFS with
+no boost.
+
+When the operator's hardware controls (USB-IN-to-AUX send, Evil-Pet-to-CH6
+send) are at unity per the operator policy, the broadcast chain inherits
+the -18 dBFS source level minus L-12 wet-path losses (measured 2026-05-02:
+27 dB total loss USB IN to broadcast capture).
+
+Operator framing, verbatim:
+> "If I have all my operative controls at unity, and the signal coming in
+> is incredibly weak, I just killed ALL the headroom."
+
+### Resolution
+
+For each source routed via USB IN, insert a per-source USB line-driver
+filter-chain stage between the source's pre-norm output and the L-12 USB
+IN sink. Calibrate the line-driver's input gain to substitute for the
+missing analog channel-strip trim. Constants live in
+`shared/audio_loudness.py` as `WET_PATH_USB_BIAS_<SOURCE>_DB`.
+
+### Per-source bias table (calibrated 2026-05-02)
+
+| Source       | Constant                          | Calibrated value |
+|--------------|-----------------------------------|------------------|
+| Music        | `WET_PATH_USB_BIAS_MUSIC_DB`      | +27.0 dB         |
+| TTS          | `WET_PATH_USB_BIAS_TTS_DB`        | +27.0 dB (reserved, unmeasured) |
+
+### Phase compatibility
+
+The line-driver is downstream of pre-norm. Phase 3 LV2 LUFS-targeting
+per-source pre-normalizers replace `hapax-music-loudnorm` (and TTS
+equivalent) but DO NOT replace this stage. The bias correction is
+independent of the per-source loudness target.
+
+`MASTER_INPUT_MAKEUP_DB` retains its analog-only semantics: it remains
+calibrated for sources arriving via L-12 analog LINE IN with the analog
+trim active. USB-IN sources route through their per-source line-driver
+FIRST, then sum into the broadcast bus where MASTER_INPUT_MAKEUP_DB
+applies uniformly.
+
+### Acceptance
+
+- Per-source USB IN paths land at the broadcast capture point at the
+  same level as their analog-LINE-IN equivalents would have, when
+  operator hardware controls are at unity.
+- Master safety-net limiter remains a SAFETY NET, not a primary level
+  control.
+- Phase 3 LV2 work proceeds without modification to this stage.
