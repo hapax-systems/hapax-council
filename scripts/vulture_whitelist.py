@@ -943,3 +943,20 @@ PUBLIC_SCOPES
 _ChronicleEvent.effective_valid_time
 _ChronicleEvent.effective_transaction_time
 _ChronicleEvent.has_full_provenance
+
+# Public offer page markdown renderer + generator + validator —
+# exposed for downstream consumers (omg.lol weblog, GitHub README,
+# static-site surfaces). Not yet wired into a daemon producer;
+# first consumer will be the public-offer-page weblog publisher in
+# a follow-up PR.
+from shared.public_offer_page_generator import (
+    OfferPage as _OfferPage,
+)
+from shared.public_offer_page_generator import (
+    generate_offer_page,
+    render_offer_page_markdown,
+)
+
+render_offer_page_markdown
+generate_offer_page
+_OfferPage.validate_offer_invariants
