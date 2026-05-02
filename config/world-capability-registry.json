@@ -425,6 +425,151 @@
     },
     {
       "schema_version": 1,
+      "capability_id": "public_event.surface_health",
+      "capability_name": "Public-event surface health",
+      "description": "Observation surface projecting ResearchVehiclePublicEvent (RVPE), captions, cuepoints, chapters, Shorts/social, archive, replay, and monetization-readiness evidence into a public-claim-bearing world-state row. Director, programme scheduler, and runner-public-mode-refusal-harness consume this surface_id to gate public-event claims on fresh, witnessed evidence \u2014 separating event-binding, captions, monetization-gate, and archive-availability as distinct evidence classes per the world-surface-health-no-false-grounding spec.",
+      "daemon": "research-vehicle-public-event",
+      "realm": "world_state",
+      "domain": "public_aperture",
+      "direction": "observe",
+      "intent_family": "public_event_witness",
+      "recruitment_family": "public_event_health_witness",
+      "surface_refs": [
+        "substrate:public_event.surface_health",
+        "evidence:rvpe_event_binding",
+        "evidence:captions_provenance",
+        "evidence:monetization_readiness"
+      ],
+      "substrate_refs": [
+        "public_event.surface_health",
+        "public.research_vehicle_apertures",
+        "public.youtube_live_aperture"
+      ],
+      "lane_refs": [
+        "lane:public_event",
+        "lane:youtube_live",
+        "lane:archive_replay"
+      ],
+      "route_refs": [
+        "route:public_event.surface_health"
+      ],
+      "producer": "research-vehicle-public-event",
+      "consumer_refs": [
+        "studio-compositor-director",
+        "programme-scheduler",
+        "runner-public-mode-refusal-harness",
+        "research-vehicle-public-event"
+      ],
+      "grounding_role": "supplied_evidence_generator",
+      "authority_ceiling": "evidence_bound",
+      "grounding_status": "public_claim_bearing",
+      "freshness_ttl_s": 60,
+      "availability_state": "blocked",
+      "evidence_envelope_requirements": {
+        "required_fields": [
+          "capability_id",
+          "contract_id",
+          "substrate_refs",
+          "grounding_role",
+          "producer",
+          "source_items",
+          "observation_items",
+          "claim_items",
+          "citations",
+          "provenance",
+          "freshness",
+          "rights_state",
+          "privacy_state",
+          "gate_refs",
+          "refusal_or_uncertainty",
+          "tool_errors",
+          "raw_source_hashes",
+          "replay_refs",
+          "witness_refs"
+        ],
+        "required_evidence_classes": [
+          "public_event_ref",
+          "fresh_state_file",
+          "egress_acceptance"
+        ],
+        "inferred_context_satisfies_witness": false,
+        "missing_evidence_state": "blocked"
+      },
+      "witness_requirements": [
+        {
+          "witness_id": "rvpe_event_binding_witness",
+          "evidence_classes": [
+            "public_event_ref"
+          ],
+          "required_for": [
+            "public_event_safe",
+            "captions_eligible"
+          ],
+          "freshness_ttl_s": 60,
+          "description": "Active ResearchVehiclePublicEvent contract with provenance binding. Without this, captions/cuepoints/Shorts cannot claim public-event provenance and fall back to dry-run."
+        },
+        {
+          "witness_id": "captions_provenance_witness",
+          "evidence_classes": [
+            "fresh_state_file",
+            "tool_response"
+          ],
+          "required_for": [
+            "captions_public_safe"
+          ],
+          "freshness_ttl_s": 90,
+          "description": "Fresh captions evidence (transcript, redaction policy, speaker provenance) \u2014 separate from event-binding so the no-false-captions invariant has its own gate."
+        },
+        {
+          "witness_id": "monetization_readiness_witness",
+          "evidence_classes": [
+            "egress_acceptance",
+            "operator_action"
+          ],
+          "required_for": [
+            "public_monetizable",
+            "shorts_publish_safe"
+          ],
+          "freshness_ttl_s": 120,
+          "description": "Monetization-readiness ledger (per shared.monetization_readiness_ledger). Required separately from event-safe before any monetized publishing path is allowed."
+        }
+      ],
+      "public_claim_policy": {
+        "claim_private": true,
+        "claim_dry_run": true,
+        "claim_public_live": false,
+        "claim_archive": true,
+        "claim_monetizable": false,
+        "requires_egress_public_claim": true,
+        "requires_audio_safe": false,
+        "requires_grounding_gate": true,
+        "requires_rights_manifest": false,
+        "requires_privacy_public_safe": true,
+        "requires_provenance": true,
+        "requires_operator_action": false,
+        "allowed_surface_refs": [],
+        "denied_surface_refs": [
+          "public:*"
+        ]
+      },
+      "public_private_posture": [
+        "private",
+        "dry_run"
+      ],
+      "blocked_reasons": [
+        "seed_record_no_live_witness",
+        "rvpe_event_binding_not_present"
+      ],
+      "fallback": {
+        "mode": "private_only",
+        "reason_code": "public_event_health_witness_missing",
+        "reason": "Public-event claims fail closed when RVPE contract is missing/stale, captions provenance is missing, or monetization readiness isn't witnessed. Distinct blocker per evidence class preserves diagnostic clarity (event-binding vs captions vs monetization vs archive)."
+      },
+      "health_signal": "shared.world_surface_health",
+      "notes": "Four distinct evidence classes preserved per world-surface-health-public-event-adapter acceptance: event-binding, captions, monetization-gate, archive-availability. Each is a separate witness; commanded captions render without an event contract is NOT public-event success."
+    },
+    {
+      "schema_version": 1,
       "capability_id": "camera.studio_compositor_frame",
       "capability_name": "Studio compositor camera frame",
       "description": "Observes camera/compositor frame availability without claiming visibility until fresh nonblank frame and privacy posture are witnessed.",

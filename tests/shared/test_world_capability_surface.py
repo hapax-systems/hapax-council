@@ -301,3 +301,72 @@ def test_visual_surface_health_witness_requirements_separate_render_from_egress(
         w for w in record.witness_requirements if w.witness_id == "public_aperture_witness"
     )
     assert "public_visual_safe" in aperture.required_for
+
+
+# ── public_event.surface_health acceptance criteria ──────────────────
+
+
+def test_public_event_surface_health_registered() -> None:
+    """Acceptance: public WCS row for RVPE / captions / monetization-
+    readiness exists. Director / programme / runner consumers can
+    address it by surface_id."""
+    registry = load_world_capability_registry()
+    record = next(
+        (r for r in registry.records if r.capability_id == "public_event.surface_health"),
+        None,
+    )
+    assert record is not None, (
+        "public_event.surface_health must be in WCS registry per "
+        "world-surface-health-public-event-adapter acceptance"
+    )
+    assert record.realm == "world_state"
+    assert record.direction == "observe"
+    assert record.grounding_status == "public_claim_bearing"
+    assert record.producer == "research-vehicle-public-event"
+    assert record.domain == "public_aperture"
+
+
+def test_public_event_surface_health_consumers_include_runner() -> None:
+    """Acceptance: runner-public-mode-refusal-harness consumes this
+    surface_id (it gates public-mode runs on this evidence). Director +
+    programme also listed."""
+    registry = load_world_capability_registry()
+    record = next(r for r in registry.records if r.capability_id == "public_event.surface_health")
+    consumer_set = set(record.consumer_refs)
+    assert "runner-public-mode-refusal-harness" in consumer_set, (
+        "runner-public-mode-refusal-harness MUST consume public_event.surface_health"
+    )
+    assert "studio-compositor-director" in consumer_set
+    assert "programme-scheduler" in consumer_set
+
+
+def test_public_event_surface_health_witnesses_separate_event_from_captions() -> None:
+    """Acceptance: event-binding, captions, monetization, archive are
+    SEPARATE evidence classes — commanded captions render without an
+    event contract is NOT public-event success."""
+    registry = load_world_capability_registry()
+    record = next(r for r in registry.records if r.capability_id == "public_event.surface_health")
+    witness_ids = {w.witness_id for w in record.witness_requirements}
+    assert "rvpe_event_binding_witness" in witness_ids
+    assert "captions_provenance_witness" in witness_ids, (
+        "captions provenance is a distinct witness from event-binding"
+    )
+    assert "monetization_readiness_witness" in witness_ids, (
+        "monetization readiness is a distinct gate from event-safe"
+    )
+    # Captions witness gates the captions-public-safe specifically
+    captions = next(
+        w for w in record.witness_requirements if w.witness_id == "captions_provenance_witness"
+    )
+    assert "captions_public_safe" in captions.required_for
+
+
+def test_public_event_surface_health_fails_closed_without_witness() -> None:
+    """Acceptance: surface starts blocked; only fresh RVPE + captions +
+    monetization witnesses let it claim public-event safety."""
+    registry = load_world_capability_registry()
+    record = next(r for r in registry.records if r.capability_id == "public_event.surface_health")
+    assert record.availability_state == "blocked"
+    assert record.public_claim_policy.claim_public_live is False
+    assert record.public_claim_policy.claim_monetizable is False  # gated separately
+    assert record.public_claim_policy.requires_egress_public_claim is True
