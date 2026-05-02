@@ -892,3 +892,34 @@ from agents.studio_compositor.m8_sequencer import M8Sequencer
 M8Sequencer
 M8Sequencer.muted_tracks
 M8Sequencer.soloed_tracks
+
+# ActivityRouter — diagnostic-only public surface for ad-hoc operator
+# scripts and the upcoming router observability dashboard (P3 wires the
+# Prometheus exporter to read last_state on a poll cadence). Tests pin
+# the contract; vulture's static call graph doesn't count unittest
+# cases as "real" callsites for production code. Per cc-task
+# ``activity-reveal-ward-p0-base-class``.
+from agents.studio_compositor.activity_router import ActivityRouter
+
+ActivityRouter.describe
+ActivityRouter.last_state
+
+# ActivityRevealMixin — public surface for the P3 governance wiring +
+# router-side ceiling enforcement. P0 ships the contract + 4 regression
+# pins; P3 + P4 are the consumers vulture cannot yet see.
+from agents.studio_compositor.activity_reveal_ward import ActivityRevealMixin
+
+ActivityRevealMixin._ceiling_enforced
+ActivityRevealMixin._claim_source_refs
+ActivityRevealMixin._compute_claim_score
+ActivityRevealMixin._consumed_visible_seconds
+ActivityRevealMixin._describe_source_registration
+ActivityRevealMixin._hardm_check
+ActivityRevealMixin._mandatory_invisible
+ActivityRevealMixin._visibility_ceiling_s
+ActivityRevealMixin._want_visible
+ActivityRevealMixin.current_claim
+ActivityRevealMixin.mark_visible_window
+ActivityRevealMixin.poll_once
+ActivityRevealMixin.state
+ActivityRevealMixin.stop
