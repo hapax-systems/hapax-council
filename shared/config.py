@@ -291,6 +291,39 @@ class InstrumentedQdrantClient:
         return self._client.upsert(collection_name=collection_name, **kwargs)
 
 
+def get_qdrant_instrumented(agent_name: str, event_bus: "EventBus | None" = None):
+    """Return a consent-gated Qdrant client that ALSO emits FlowEvents per op.
+
+    Closes the wire half of cc-task
+    ``r16-langfuse-qdrant-microprobe-agentrunner-wire-delete`` for the
+    ``InstrumentedQdrantClient`` surface. The R-16 audit
+    (``docs/research/2026-04-26-r16-langfuse-instrumented-qdrant-audit.md``)
+    found the wrapper class was correctly structured but had zero
+    production callsites — the factory entry point was missing.
+
+    When ``event_bus is None``, returns the existing ``get_qdrant()``
+    client unchanged (no FlowEvent emission). This makes the factory a
+    safe drop-in: callers that have no bus get the same consent-gated
+    client they would have gotten from ``get_qdrant()``.
+
+    When a bus is provided, wraps the consent-gated client with
+    ``InstrumentedQdrantClient`` so ``search()`` and ``upsert()`` calls
+    emit ``FlowEvent(kind="qdrant.op", source=agent_name, target="qdrant",
+    label="<op>/<collection>")`` to the Logos flow-bus before delegating.
+    The two ``__getattr__`` layers (instrumentation outer, consent gate
+    inner) compose cleanly: instrumented ops go through the gate; non-
+    instrumented attribute access proxies through both layers.
+
+    Migration is opt-in per caller — existing ``get_qdrant()`` callers
+    keep their current behavior. New observability needs can adopt by
+    swapping the factory and passing the agent's bus handle.
+    """
+    base = get_qdrant()
+    if event_bus is None:
+        return base
+    return InstrumentedQdrantClient(client=base, event_bus=event_bus, agent_name=agent_name)
+
+
 _log = logging.getLogger("shared.config")
 _rag_tracer = trace.get_tracer("hapax.rag")
 
