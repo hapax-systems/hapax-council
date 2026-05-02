@@ -97,6 +97,7 @@ implications:
   mode: compatibility
   level: component
 - id: su-storage-001
+  linkage: code-direct
   tier: T2
   text: File paths, database schemas, and data structures can use operator-specific identifiers
     without generalization.

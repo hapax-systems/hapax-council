@@ -119,7 +119,75 @@ SINGLE_USER_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_no_user_keyed_caches(),
     ),
+    SufficiencyProbe(
+        id="probe-su-storage-001",
+        axiom_id="single_user",
+        implication_id="su-storage-001",
+        level="component",
+        question=(
+            "Are storage modules (Qdrant schema, storage arbiter, "
+            "profile facts) free of multi-tenant primitives like "
+            "tenant_id / account_id / org_id?"
+        ),
+        check=lambda: _check_no_multi_tenant_storage(),
+    ),
 ]
+
+
+def _check_no_multi_tenant_storage() -> tuple[bool, str]:
+    """Enforces su-storage-001 (single_user).
+
+    File paths, database schemas, and data structures can use
+    operator-specific identifiers without generalization. The
+    inversion: storage code MUST NOT introduce multi-tenant
+    primitives like tenant_id / account_id / org_id, which would
+    indicate generalization-for-multi-user-future.
+
+    Scans canonical storage modules (Qdrant schema, storage arbiter,
+    profile facts) for forbidden multi-tenant column / payload-key
+    declarations.
+
+    Hyprland `workspace_id` is allowed — it's a Linux desktop
+    workspace concept, not a multi-tenant primitive.
+    """
+    forbidden_patterns = (
+        r"\btenant_id\b",
+        r"\baccount_id\b",
+        r"\borg_id\b",
+        r"\borganization_id\b",
+    )
+
+    storage_modules = (
+        AI_AGENTS_DIR / "shared" / "qdrant_schema.py",
+        AI_AGENTS_DIR / "agents" / "storage_arbiter.py",
+        AI_AGENTS_DIR / "shared" / "governance" / "qdrant_gate.py",
+    )
+
+    found: list[str] = []
+    checked = 0
+    for module in storage_modules:
+        if not module.exists():
+            continue
+        checked += 1
+        try:
+            content = module.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for pattern in forbidden_patterns:
+            if re.search(pattern, content):
+                found.append(f"{module.name}: {pattern}")
+                break
+
+    if checked == 0:
+        return False, "no canonical storage modules found"
+
+    if not found:
+        return True, (
+            f"no multi-tenant primitives in {checked} canonical storage "
+            f"modules — su-storage-001 sufficient"
+        )
+    summary = "; ".join(found[:3])
+    return False, f"multi-tenant primitives found: {summary}"
 
 
 def _check_no_user_keyed_caches() -> tuple[bool, str]:
