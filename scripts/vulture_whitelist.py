@@ -67,6 +67,11 @@ from shared.conversion_target_readiness import (
 )
 from shared.director_control_audit import DirectorControlMoveAuditRecord
 from shared.director_intent import CompositionalImpingement, DirectorIntent
+from shared.director_programme_format_actions import (
+    DirectorProgrammeFormatActionProjection,
+    DirectorProgrammeFormatActionRow,
+    ProgrammeWCSSurfaceRef,
+)
 from shared.director_scrim_gesture_adapter import (
     DirectorControlMoveRef,
     DirectorScrimGestureAuditRecord,
@@ -522,6 +527,15 @@ DirectorWorldSurfaceSnapshot.prompt_projection_payloads
 DirectorWorldSurfaceSnapshotFixtureSet._validate_fixture_set_coverage
 DirectorWorldSurfaceSnapshotFixtureSet.rows_for_status
 DirectorWorldSurfaceSnapshotFixtureSet.rows_for_surface_family
+
+# Director programme format/action rows are a read-model contract for the next
+# WCS prompt block and programme snapshot smoke tasks. Pydantic invokes
+# validators dynamically; production consumers land after this slice.
+ProgrammeWCSSurfaceRef._blocked_or_missing_surfaces_need_reason
+DirectorProgrammeFormatActionRow._validate_fail_closed_programme_action
+DirectorProgrammeFormatActionProjection._validate_projection_coverage
+DirectorProgrammeFormatActionProjection.rows_for_state
+DirectorProgrammeFormatActionProjection.require_action
 
 # Capability outcome envelope helpers are the public contract for downstream
 # affordance outcome adapters, dispatch audits, public-event adapters, and
