@@ -142,6 +142,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-context-002
+  linkage: code-direct
   tier: T2
   text: Status outputs must include timestamps and be human-readable without additional
     parsing.
