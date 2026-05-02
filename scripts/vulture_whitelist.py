@@ -1329,3 +1329,25 @@ IncomingPaymentEvent._currency_is_iso_4217
 ModernTreasuryRailReceiver.ingest_webhook
 IncomingPaymentEventKind
 PaymentMethod
+
+# Treasury Prime receive-only rail (Phase 0, ledger accounts) — cc-task
+# treasury-prime-receive-only-rail. Pydantic field_validator hooks
+# (originating-party-display + ISO 4217 currency) invoked at construction;
+# ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging Treasury Prime
+# HMAC-SHA256-signed JSON deliveries (separate cc-task). Tenth rail in
+# the family — third direct-bank rail, closes the Jr packet's
+# Bank-as-API recommendation set. Phase 0 accepts only
+# ``incoming_ach.create`` (ledger accounts); Phase 1 will extend to
+# ``transaction.create`` (core direct accounts) with the data-level
+# direction filter from Mercury.
+from shared.treasury_prime_receive_only_rail import (
+    IncomingAchEvent,
+    IncomingAchEventKind,
+    TreasuryPrimeRailReceiver,
+)
+
+IncomingAchEvent._handle_is_display_name_only
+IncomingAchEvent._currency_is_iso_4217
+TreasuryPrimeRailReceiver.ingest_webhook
+IncomingAchEventKind
