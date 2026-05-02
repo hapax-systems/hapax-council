@@ -1306,3 +1306,26 @@ MercuryTransactionEvent._currency_is_iso_4217
 MercuryRailReceiver.ingest_webhook
 MercuryEventKind
 MercuryTransactionDirection
+
+# Modern Treasury receive-only rail — cc-task
+# modern-treasury-receive-only-rail (Phase 0). Pydantic field_validator
+# hooks (originating-party-display + ISO 4217 currency) invoked at
+# construction; ingest_webhook is the public receiver entry-point called
+# by the downstream FastAPI webhook handler bridging Modern Treasury
+# HMAC-SHA256-signed JSON deliveries (separate cc-task). Ninth rail in
+# the family — second direct-bank rail after Mercury (#2251). Direction
+# filter is promoted into the event-kind enum here (only accepts
+# ``incoming_payment_detail.created`` / ``.completed``); outgoing
+# ``payment_order.*`` events are rejected.
+from shared.modern_treasury_receive_only_rail import (
+    IncomingPaymentEvent,
+    IncomingPaymentEventKind,
+    ModernTreasuryRailReceiver,
+    PaymentMethod,
+)
+
+IncomingPaymentEvent._handle_is_display_name_only
+IncomingPaymentEvent._currency_is_iso_4217
+ModernTreasuryRailReceiver.ingest_webhook
+IncomingPaymentEventKind
+PaymentMethod
