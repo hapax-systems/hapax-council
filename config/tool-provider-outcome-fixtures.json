@@ -1,0 +1,324 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "tool-provider-outcome-envelope-fixtures-v1",
+  "schema_ref": "schemas/tool-provider-outcome-envelope.schema.json",
+  "generated_from": [
+    "hapax-research/specs/2026-04-29-capability-outcome-witness-learning.md",
+    "hapax-research/audits/2026-04-29-model-developments-grounding-scout.md",
+    "hapax-cc-tasks/active/tool-provider-outcome-envelope.md"
+  ],
+  "declared_at": "2026-05-02T11:55:00Z",
+  "producer": "cx-amber",
+  "outcome_envelope_required_fields": [
+    "schema_version",
+    "outcome_id",
+    "created_at",
+    "provider_id",
+    "provider_kind",
+    "model_id",
+    "tool_id",
+    "route_id",
+    "route_ref",
+    "result_status",
+    "acquisition_mode",
+    "source_acquired",
+    "source_acquisition_evidence_refs",
+    "acquired_source_refs",
+    "supplied_evidence_refs",
+    "evidence_refs",
+    "redaction_privacy_state",
+    "redaction_applied",
+    "redaction_evidence_refs",
+    "error",
+    "authority_ceiling",
+    "claim_support",
+    "fresh_source_claim_supported",
+    "supplied_evidence_claim_supported",
+    "public_claim_supported",
+    "witnessed_world_truth",
+    "unsupported_claim_reasons",
+    "blocked_reasons",
+    "operator_visible_summary",
+    "fixture_case"
+  ],
+  "fixture_cases": [
+    "source_acquired",
+    "supplied_evidence",
+    "redacted",
+    "blocked",
+    "error",
+    "unsupported_claim"
+  ],
+  "outcomes": [
+    {
+      "schema_version": 1,
+      "outcome_id": "tpo:search.tavily:source-acquired",
+      "created_at": "2026-05-02T11:55:00Z",
+      "provider_id": "tavily",
+      "provider_kind": "search_provider",
+      "model_id": null,
+      "tool_id": "tavily.search",
+      "route_id": "route:provider_tool.search.tavily_source_acquisition",
+      "route_ref": "provider_tool.search.tavily_source_acquisition",
+      "result_status": "success",
+      "acquisition_mode": "source_acquired",
+      "source_acquired": true,
+      "source_acquisition_evidence_refs": [
+        "retrieval-event:tavily.search:2026-05-02T115500Z",
+        "source-list:tavily.search:2026-05-02T115500Z"
+      ],
+      "acquired_source_refs": [
+        "source:https://example.test/model-release-notes",
+        "source:https://example.test/provider-docs"
+      ],
+      "supplied_evidence_refs": [],
+      "evidence_refs": [
+        "evidence-envelope:tavily.search:claim-source-map",
+        "raw-source-hash:tavily.search:2b52"
+      ],
+      "redaction_privacy_state": "public_safe",
+      "redaction_applied": false,
+      "redaction_evidence_refs": [],
+      "error": null,
+      "authority_ceiling": "public_gate_required",
+      "claim_support": "fresh_source",
+      "fresh_source_claim_supported": true,
+      "supplied_evidence_claim_supported": false,
+      "public_claim_supported": true,
+      "witnessed_world_truth": false,
+      "unsupported_claim_reasons": [],
+      "blocked_reasons": [],
+      "operator_visible_summary": "Search provider acquired current sources and may feed a public gate; it is not a witnessed world effect.",
+      "fixture_case": "source_acquired"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "tpo:model.command-r:supplied-evidence",
+      "created_at": "2026-05-02T11:55:00Z",
+      "provider_id": "local_supplied_evidence_command_r",
+      "provider_kind": "model_provider",
+      "model_id": "command-r-08-2024-exl3-5.0bpw",
+      "tool_id": "supplied_evidence_citation_envelope",
+      "route_id": "route:provider_tool.model.litellm_supplied_evidence",
+      "route_ref": "provider_tool.model.litellm_supplied_evidence",
+      "result_status": "success",
+      "acquisition_mode": "supplied_evidence",
+      "source_acquired": false,
+      "source_acquisition_evidence_refs": [],
+      "acquired_source_refs": [],
+      "supplied_evidence_refs": [
+        "vault-note:hapax-research/specs/2026-04-29-capability-outcome-witness-learning.md",
+        "evidence-bundle:operator-supplied-grounding-packet"
+      ],
+      "evidence_refs": [
+        "evidence-envelope:command-r.supplied:source-id-citation-map"
+      ],
+      "redaction_privacy_state": "private_only",
+      "redaction_applied": false,
+      "redaction_evidence_refs": [
+        "privacy:local-supplied-evidence-private-only"
+      ],
+      "error": null,
+      "authority_ceiling": "internal_only",
+      "claim_support": "supplied_evidence",
+      "fresh_source_claim_supported": false,
+      "supplied_evidence_claim_supported": true,
+      "public_claim_supported": false,
+      "witnessed_world_truth": false,
+      "unsupported_claim_reasons": [],
+      "blocked_reasons": [],
+      "operator_visible_summary": "Local model grounded in supplied evidence only; it cannot claim fresh source acquisition.",
+      "fixture_case": "supplied_evidence"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "tpo:tool.gmail-summary:redacted",
+      "created_at": "2026-05-02T11:55:00Z",
+      "provider_id": "hapax-daimonion",
+      "provider_kind": "local_tool",
+      "model_id": null,
+      "tool_id": "gmail_recent_summary",
+      "route_id": "route:tool.gmail_recent_summary",
+      "route_ref": "tool.gmail_recent_summary",
+      "result_status": "success",
+      "acquisition_mode": "supplied_evidence",
+      "source_acquired": false,
+      "source_acquisition_evidence_refs": [],
+      "acquired_source_refs": [],
+      "supplied_evidence_refs": [
+        "local-tool-result:gmail_recent_summary:redacted-body"
+      ],
+      "evidence_refs": [
+        "evidence-envelope:gmail_recent_summary:redacted-result"
+      ],
+      "redaction_privacy_state": "redacted",
+      "redaction_applied": true,
+      "redaction_evidence_refs": [
+        "redaction:gmail_recent_summary:body-stripped",
+        "privacy:mail-monitor-content-redaction"
+      ],
+      "error": null,
+      "authority_ceiling": "internal_only",
+      "claim_support": "supplied_evidence",
+      "fresh_source_claim_supported": false,
+      "supplied_evidence_claim_supported": true,
+      "public_claim_supported": false,
+      "witnessed_world_truth": false,
+      "unsupported_claim_reasons": [],
+      "blocked_reasons": [],
+      "operator_visible_summary": "Tool returned a redacted private summary; downstream receipts may cite that redacted result but not publish it.",
+      "fixture_case": "redacted"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "tpo:publication.bridgy:block-missing-source-url",
+      "created_at": "2026-05-02T11:55:00Z",
+      "provider_id": "bridgy-webmention-publish",
+      "provider_kind": "publication_endpoint",
+      "model_id": null,
+      "tool_id": "bridgy.publish_webmention",
+      "route_id": "route:publication.bridgy_webmention",
+      "route_ref": "publication.bridgy_webmention",
+      "result_status": "blocked",
+      "acquisition_mode": "no_source_acquisition",
+      "source_acquired": false,
+      "source_acquisition_evidence_refs": [],
+      "acquired_source_refs": [],
+      "supplied_evidence_refs": [],
+      "evidence_refs": [
+        "policy:block:bridgy-source-url-witness-missing"
+      ],
+      "redaction_privacy_state": "blocked",
+      "redaction_applied": false,
+      "redaction_evidence_refs": [
+        "privacy:publication-held-no-public-egress"
+      ],
+      "error": {
+        "kind": "policy_block",
+        "message": "Required source URL witness is missing.",
+        "retryable": true,
+        "evidence_refs": [
+          "policy:block:bridgy-source-url-witness-missing"
+        ]
+      },
+      "authority_ceiling": "no_claim",
+      "claim_support": "not_claim_bearing",
+      "fresh_source_claim_supported": false,
+      "supplied_evidence_claim_supported": false,
+      "public_claim_supported": false,
+      "witnessed_world_truth": false,
+      "unsupported_claim_reasons": [],
+      "blocked_reasons": [
+        "missing_source_url_witness",
+        "publication_route_health_not_egress_clearance"
+      ],
+      "operator_visible_summary": "Publication route was correctly held; blocked routes are learning signals, not public success.",
+      "fixture_case": "blocked"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "tpo:search.web:error-source-acquisition",
+      "created_at": "2026-05-02T11:55:00Z",
+      "provider_id": "web-search-provider",
+      "provider_kind": "search_provider",
+      "model_id": null,
+      "tool_id": "web.search",
+      "route_id": "route:provider_tool.search.web",
+      "route_ref": "provider_tool.search.web",
+      "result_status": "error",
+      "acquisition_mode": "source_acquisition_failed",
+      "source_acquired": false,
+      "source_acquisition_evidence_refs": [
+        "retrieval-event:web.search:timeout"
+      ],
+      "acquired_source_refs": [],
+      "supplied_evidence_refs": [],
+      "evidence_refs": [
+        "error-envelope:web.search:timeout"
+      ],
+      "redaction_privacy_state": "unknown",
+      "redaction_applied": false,
+      "redaction_evidence_refs": [],
+      "error": {
+        "kind": "source_acquisition_failed",
+        "message": "Provider timed out before returning sources.",
+        "retryable": true,
+        "evidence_refs": [
+          "error-envelope:web.search:timeout"
+        ]
+      },
+      "authority_ceiling": "no_claim",
+      "claim_support": "not_claim_bearing",
+      "fresh_source_claim_supported": false,
+      "supplied_evidence_claim_supported": false,
+      "public_claim_supported": false,
+      "witnessed_world_truth": false,
+      "unsupported_claim_reasons": [],
+      "blocked_reasons": [],
+      "operator_visible_summary": "Search route errored before source acquisition; no claim or action success is supported.",
+      "fixture_case": "error"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "tpo:model.general:unsupported-latest-claim",
+      "created_at": "2026-05-02T11:55:00Z",
+      "provider_id": "frontier-general-reasoning",
+      "provider_kind": "model_provider",
+      "model_id": "general-reasoning-route",
+      "tool_id": null,
+      "route_id": "route:model.general_reasoning",
+      "route_ref": "model.general_reasoning",
+      "result_status": "unsupported_claim",
+      "acquisition_mode": "no_source_acquisition",
+      "source_acquired": false,
+      "source_acquisition_evidence_refs": [],
+      "acquired_source_refs": [],
+      "supplied_evidence_refs": [],
+      "evidence_refs": [
+        "claim-audit:model.general:no-source-acquisition"
+      ],
+      "redaction_privacy_state": "public_safe",
+      "redaction_applied": false,
+      "redaction_evidence_refs": [],
+      "error": null,
+      "authority_ceiling": "no_claim",
+      "claim_support": "unsupported",
+      "fresh_source_claim_supported": false,
+      "supplied_evidence_claim_supported": false,
+      "public_claim_supported": false,
+      "witnessed_world_truth": false,
+      "unsupported_claim_reasons": [
+        "route_did_not_acquire_sources",
+        "no_supplied_evidence_refs",
+        "fresh_claim_requires_source_acquisition_evidence"
+      ],
+      "blocked_reasons": [],
+      "operator_visible_summary": "A model answer without source acquisition or supplied refs is an unsupported claim, even if text generation succeeded.",
+      "fixture_case": "unsupported_claim"
+    }
+  ],
+  "summary": {
+    "total_outcomes": 6,
+    "by_fixture_case": {
+      "blocked": 1,
+      "error": 1,
+      "redacted": 1,
+      "source_acquired": 1,
+      "supplied_evidence": 1,
+      "unsupported_claim": 1
+    },
+    "fresh_source_claim_supported_count": 1,
+    "supplied_evidence_claim_supported_count": 2,
+    "public_claim_supported_count": 1,
+    "blocked_or_error_count": 2,
+    "unsupported_claim_count": 1
+  },
+  "fail_closed_policy": {
+    "model_tool_success_is_witnessed_world_truth": false,
+    "supplied_evidence_counts_as_source_acquisition": false,
+    "source_claim_without_acquisition_evidence_allowed": false,
+    "redacted_output_can_support_public_claim": false,
+    "error_or_blocked_route_counts_as_success": false,
+    "unsupported_claim_can_update_action_receipt": false
+  }
+}

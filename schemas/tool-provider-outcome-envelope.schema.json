@@ -1,0 +1,460 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/tool-provider-outcome-envelope.schema.json",
+  "title": "ToolProviderOutcomeEnvelopeFixtures",
+  "description": "Fixture-backed contract rows for tool/model/provider outcomes. Route success, supplied evidence, source acquisition, redaction, errors, and authority ceilings remain explicit and do not imply witnessed world truth.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "outcome_envelope_required_fields",
+    "fixture_cases",
+    "outcomes",
+    "summary",
+    "fail_closed_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/tool-provider-outcome-envelope.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "declared_at": {"type": "string", "minLength": 1},
+    "producer": {"type": "string", "minLength": 1},
+    "outcome_envelope_required_fields": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/outcome_envelope_field"},
+      "uniqueItems": true,
+      "minItems": 30
+    },
+    "fixture_cases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fixture_case"},
+      "uniqueItems": true,
+      "minItems": 6
+    },
+    "outcomes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/tool_provider_outcome_envelope"},
+      "minItems": 6
+    },
+    "summary": {"$ref": "#/$defs/summary"},
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "model_tool_success_is_witnessed_world_truth",
+        "supplied_evidence_counts_as_source_acquisition",
+        "source_claim_without_acquisition_evidence_allowed",
+        "redacted_output_can_support_public_claim",
+        "error_or_blocked_route_counts_as_success",
+        "unsupported_claim_can_update_action_receipt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "model_tool_success_is_witnessed_world_truth": {"type": "boolean", "const": false},
+        "supplied_evidence_counts_as_source_acquisition": {"type": "boolean", "const": false},
+        "source_claim_without_acquisition_evidence_allowed": {
+          "type": "boolean",
+          "const": false
+        },
+        "redacted_output_can_support_public_claim": {"type": "boolean", "const": false},
+        "error_or_blocked_route_counts_as_success": {"type": "boolean", "const": false},
+        "unsupported_claim_can_update_action_receipt": {"type": "boolean", "const": false}
+      }
+    }
+  },
+  "x-required_fixture_cases": [
+    "source_acquired",
+    "supplied_evidence",
+    "redacted",
+    "blocked",
+    "error",
+    "unsupported_claim"
+  ],
+  "x-outcome_envelope_required_fields": [
+    "schema_version",
+    "outcome_id",
+    "created_at",
+    "provider_id",
+    "provider_kind",
+    "model_id",
+    "tool_id",
+    "route_id",
+    "route_ref",
+    "result_status",
+    "acquisition_mode",
+    "source_acquired",
+    "source_acquisition_evidence_refs",
+    "acquired_source_refs",
+    "supplied_evidence_refs",
+    "evidence_refs",
+    "redaction_privacy_state",
+    "redaction_applied",
+    "redaction_evidence_refs",
+    "error",
+    "authority_ceiling",
+    "claim_support",
+    "fresh_source_claim_supported",
+    "supplied_evidence_claim_supported",
+    "public_claim_supported",
+    "witnessed_world_truth",
+    "unsupported_claim_reasons",
+    "blocked_reasons",
+    "operator_visible_summary",
+    "fixture_case"
+  ],
+  "$defs": {
+    "provider_kind": {
+      "type": "string",
+      "enum": [
+        "model_provider",
+        "search_provider",
+        "mcp_tool",
+        "local_tool",
+        "publication_endpoint",
+        "local_api"
+      ]
+    },
+    "result_status": {
+      "type": "string",
+      "enum": ["success", "blocked", "error", "unsupported_claim"]
+    },
+    "acquisition_mode": {
+      "type": "string",
+      "enum": [
+        "source_acquired",
+        "supplied_evidence",
+        "no_source_acquisition",
+        "source_acquisition_failed"
+      ]
+    },
+    "redaction_privacy_state": {
+      "type": "string",
+      "enum": ["public_safe", "redacted", "redaction_required", "private_only", "blocked", "unknown"]
+    },
+    "provider_error_kind": {
+      "type": "string",
+      "enum": [
+        "policy_block",
+        "tool_error",
+        "timeout",
+        "source_acquisition_failed",
+        "unsupported_claim"
+      ]
+    },
+    "authority_ceiling": {
+      "type": "string",
+      "enum": [
+        "no_claim",
+        "internal_only",
+        "speculative",
+        "evidence_bound",
+        "posterior_bound",
+        "public_gate_required"
+      ]
+    },
+    "claim_support": {
+      "type": "string",
+      "enum": ["not_claim_bearing", "fresh_source", "supplied_evidence", "unsupported"]
+    },
+    "fixture_case": {
+      "type": "string",
+      "enum": [
+        "source_acquired",
+        "supplied_evidence",
+        "redacted",
+        "blocked",
+        "error",
+        "unsupported_claim"
+      ]
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "provider_error": {
+      "type": "object",
+      "required": ["kind", "message", "retryable", "evidence_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"$ref": "#/$defs/provider_error_kind"},
+        "message": {"type": "string", "minLength": 1},
+        "retryable": {"type": "boolean"},
+        "evidence_refs": {"allOf": [{"$ref": "#/$defs/string_array"}, {"minItems": 1}]}
+      }
+    },
+    "tool_provider_outcome_envelope": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "outcome_id",
+        "created_at",
+        "provider_id",
+        "provider_kind",
+        "model_id",
+        "tool_id",
+        "route_id",
+        "route_ref",
+        "result_status",
+        "acquisition_mode",
+        "source_acquired",
+        "source_acquisition_evidence_refs",
+        "acquired_source_refs",
+        "supplied_evidence_refs",
+        "evidence_refs",
+        "redaction_privacy_state",
+        "redaction_applied",
+        "redaction_evidence_refs",
+        "error",
+        "authority_ceiling",
+        "claim_support",
+        "fresh_source_claim_supported",
+        "supplied_evidence_claim_supported",
+        "public_claim_supported",
+        "witnessed_world_truth",
+        "unsupported_claim_reasons",
+        "blocked_reasons",
+        "operator_visible_summary",
+        "fixture_case"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "outcome_id": {"type": "string", "pattern": "^tpo:[a-z0-9_.:-]+$"},
+        "created_at": {"type": "string", "minLength": 1},
+        "provider_id": {"type": "string", "minLength": 1},
+        "provider_kind": {"$ref": "#/$defs/provider_kind"},
+        "model_id": {"type": ["string", "null"]},
+        "tool_id": {"type": ["string", "null"]},
+        "route_id": {"type": "string", "minLength": 1},
+        "route_ref": {"type": "string", "minLength": 1},
+        "result_status": {"$ref": "#/$defs/result_status"},
+        "acquisition_mode": {"$ref": "#/$defs/acquisition_mode"},
+        "source_acquired": {"type": "boolean"},
+        "source_acquisition_evidence_refs": {"$ref": "#/$defs/string_array"},
+        "acquired_source_refs": {"$ref": "#/$defs/string_array"},
+        "supplied_evidence_refs": {"$ref": "#/$defs/string_array"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"},
+        "redaction_privacy_state": {"$ref": "#/$defs/redaction_privacy_state"},
+        "redaction_applied": {"type": "boolean"},
+        "redaction_evidence_refs": {"$ref": "#/$defs/string_array"},
+        "error": {"oneOf": [{"$ref": "#/$defs/provider_error"}, {"type": "null"}]},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "claim_support": {"$ref": "#/$defs/claim_support"},
+        "fresh_source_claim_supported": {"type": "boolean"},
+        "supplied_evidence_claim_supported": {"type": "boolean"},
+        "public_claim_supported": {"type": "boolean"},
+        "witnessed_world_truth": {"type": "boolean", "const": false},
+        "unsupported_claim_reasons": {"$ref": "#/$defs/string_array"},
+        "blocked_reasons": {"$ref": "#/$defs/string_array"},
+        "operator_visible_summary": {"type": "string", "minLength": 1},
+        "fixture_case": {"$ref": "#/$defs/fixture_case"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"acquisition_mode": {"const": "source_acquired"}}},
+          "then": {
+            "properties": {
+              "source_acquired": {"const": true},
+              "source_acquisition_evidence_refs": {"minItems": 1},
+              "acquired_source_refs": {"minItems": 1},
+              "supplied_evidence_refs": {"maxItems": 0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"acquisition_mode": {"const": "supplied_evidence"}}},
+          "then": {
+            "properties": {
+              "source_acquired": {"const": false},
+              "source_acquisition_evidence_refs": {"maxItems": 0},
+              "acquired_source_refs": {"maxItems": 0},
+              "supplied_evidence_refs": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"acquisition_mode": {"const": "no_source_acquisition"}}},
+          "then": {
+            "properties": {
+              "source_acquired": {"const": false},
+              "source_acquisition_evidence_refs": {"maxItems": 0},
+              "acquired_source_refs": {"maxItems": 0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"acquisition_mode": {"const": "source_acquisition_failed"}}},
+          "then": {
+            "properties": {
+              "source_acquired": {"const": false},
+              "acquired_source_refs": {"maxItems": 0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"result_status": {"const": "success"}}},
+          "then": {
+            "properties": {
+              "evidence_refs": {"minItems": 1},
+              "error": {"type": "null"},
+              "blocked_reasons": {"maxItems": 0}
+            },
+            "not": {
+              "anyOf": [
+                {"properties": {"authority_ceiling": {"const": "no_claim"}}},
+                {"properties": {"claim_support": {"const": "not_claim_bearing"}}},
+                {"properties": {"claim_support": {"const": "unsupported"}}}
+              ]
+            }
+          }
+        },
+        {
+          "if": {"properties": {"result_status": {"const": "blocked"}}},
+          "then": {"properties": {"blocked_reasons": {"minItems": 1}}}
+        },
+        {
+          "if": {"properties": {"result_status": {"const": "error"}}},
+          "then": {
+            "properties": {
+              "error": {"$ref": "#/$defs/provider_error"},
+              "public_claim_supported": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"result_status": {"const": "unsupported_claim"}}},
+          "then": {
+            "properties": {
+              "unsupported_claim_reasons": {"minItems": 1},
+              "fresh_source_claim_supported": {"const": false},
+              "public_claim_supported": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"fresh_source_claim_supported": {"const": true}}},
+          "then": {
+            "properties": {
+              "claim_support": {"const": "fresh_source"},
+              "acquisition_mode": {"const": "source_acquired"},
+              "source_acquired": {"const": true},
+              "source_acquisition_evidence_refs": {"minItems": 1},
+              "acquired_source_refs": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"supplied_evidence_claim_supported": {"const": true}}},
+          "then": {
+            "properties": {
+              "claim_support": {"const": "supplied_evidence"},
+              "acquisition_mode": {"const": "supplied_evidence"},
+              "source_acquired": {"const": false},
+              "supplied_evidence_refs": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "redaction_privacy_state": {
+                "enum": ["redacted", "redaction_required", "private_only", "blocked"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "redaction_evidence_refs": {"minItems": 1},
+              "public_claim_supported": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"redaction_applied": {"const": true}}},
+          "then": {"properties": {"redaction_evidence_refs": {"minItems": 1}}}
+        },
+        {
+          "if": {"properties": {"public_claim_supported": {"const": true}}},
+          "then": {
+            "properties": {
+              "redaction_privacy_state": {"const": "public_safe"},
+              "authority_ceiling": {
+                "enum": ["evidence_bound", "posterior_bound", "public_gate_required"]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "outcome_envelope_field": {
+      "type": "string",
+      "enum": [
+        "schema_version",
+        "outcome_id",
+        "created_at",
+        "provider_id",
+        "provider_kind",
+        "model_id",
+        "tool_id",
+        "route_id",
+        "route_ref",
+        "result_status",
+        "acquisition_mode",
+        "source_acquired",
+        "source_acquisition_evidence_refs",
+        "acquired_source_refs",
+        "supplied_evidence_refs",
+        "evidence_refs",
+        "redaction_privacy_state",
+        "redaction_applied",
+        "redaction_evidence_refs",
+        "error",
+        "authority_ceiling",
+        "claim_support",
+        "fresh_source_claim_supported",
+        "supplied_evidence_claim_supported",
+        "public_claim_supported",
+        "witnessed_world_truth",
+        "unsupported_claim_reasons",
+        "blocked_reasons",
+        "operator_visible_summary",
+        "fixture_case"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total_outcomes",
+        "by_fixture_case",
+        "fresh_source_claim_supported_count",
+        "supplied_evidence_claim_supported_count",
+        "public_claim_supported_count",
+        "blocked_or_error_count",
+        "unsupported_claim_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "total_outcomes": {"type": "integer", "minimum": 0},
+        "by_fixture_case": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "fresh_source_claim_supported_count": {"type": "integer", "minimum": 0},
+        "supplied_evidence_claim_supported_count": {"type": "integer", "minimum": 0},
+        "public_claim_supported_count": {"type": "integer", "minimum": 0},
+        "blocked_or_error_count": {"type": "integer", "minimum": 0},
+        "unsupported_claim_count": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}
