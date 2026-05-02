@@ -377,6 +377,11 @@ load_support_surface_registry
 surfaces_by_decision
 public_prompt_allowed
 build_aggregate_receipt_projection
+SupportCopyConsumerReadiness.validate_consumer_policy
+SupportCopyReadinessDecision.validate_decision
+SupportCopyReadinessDecision.consumer_state
+support_copy_doctrine_summary
+evaluate_support_copy_readiness
 
 # World Capability Surface seed loader helpers are the public contract for
 # downstream witness probes, director snapshots, scheduler, runner, and scrim

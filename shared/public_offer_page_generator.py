@@ -18,7 +18,7 @@ Spec: hapax-research/plans/2026-04-29-autonomous-grounding-revenue-doubling-plan
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final, Literal
@@ -27,7 +27,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.conversion_target_readiness import ReadinessState, TargetFamilyId
 from shared.monetization_readiness_ledger import MonetizationReadinessLedger
-from shared.support_surface_registry import SupportSurfaceRegistry
+from shared.support_copy_readiness import evaluate_support_copy_readiness
+from shared.support_surface_registry import SupportSurfaceRegistry, public_prompt_allowed
 
 #: ReadinessStates under which the page may show live / archive support
 #: rails. "blocked", "private-evidence", "dry-run", and "refused" all
@@ -158,6 +159,8 @@ def generate_offer_page(
     ledger: MonetizationReadinessLedger,
     *,
     target_family_id: TargetFamilyId = "support_prompt",
+    support_surface_id: str = "sponsor_support_copy",
+    support_readiness_refs: Mapping[str, bool] | None = None,
     artifact_links: Iterable[str] = (),
     now: datetime | None = None,
 ) -> OfferPage | RefusalPage:
@@ -181,19 +184,36 @@ def generate_offer_page(
         )
 
     state = entry.decision.effective_state
-    if state not in _PUBLIC_RENDER_STATES:
+    support_readiness = evaluate_support_copy_readiness(
+        registry,
+        ledger,
+        readiness_refs=support_readiness_refs,
+        surface_id=support_surface_id,
+        target_family_id=target_family_id,
+    )
+    if state not in _PUBLIC_RENDER_STATES or not support_readiness.public_copy_allowed:
         missing = tuple(sorted(set(entry.relevant_dimensions) - set(entry.satisfied_dimensions)))
+        support_missing = tuple(
+            str(item)
+            for item in (
+                *support_readiness.missing_gate_dimensions,
+                *support_readiness.missing_readiness_refs,
+            )
+        )
+        if support_missing:
+            missing = tuple(dict.fromkeys((*missing, *support_missing)))
         return RefusalPage(
             generated_at=when,
             target_family_id=target_family_id,
             readiness_state=state,
             blocked_reason=(
                 f"target family {target_family_id!r} is in state "
-                f"{state!r}; needs one of "
-                f"{sorted(_PUBLIC_RENDER_STATES)} for public offer rendering"
+                f"{state!r}; support-copy readiness is "
+                f"{support_readiness.state!r}; needs public-safe for public offer rendering"
             ),
             missing_evidence_dimensions=missing,
-            refusal_brief_refs=tuple(
+            refusal_brief_refs=support_readiness.refusal_brief_refs
+            or tuple(
                 ref
                 for surface in registry.surfaces
                 if surface.decision == "refusal_conversion"
@@ -203,8 +223,13 @@ def generate_offer_page(
 
     rails: list[SupportRail] = []
     refusals: list[RefusalEntry] = []
+    readiness_refs = dict(support_readiness_refs or {})
     for surface in registry.surfaces:
-        if surface.decision == "engage":
+        if surface.decision in {"allowed", "guarded"} and public_prompt_allowed(
+            registry,
+            surface.surface_id,
+            readiness_refs,
+        ):
             rails.append(
                 SupportRail(
                     surface_id=surface.surface_id,
@@ -239,7 +264,7 @@ def generate_offer_page(
         generated_at=when,
         target_family_id=target_family_id,
         readiness_state=state,
-        no_perk_doctrine_summary=registry.no_perk_support_doctrine.doctrine_summary,
+        no_perk_doctrine_summary=support_readiness.no_perk_doctrine_summary,
         rails=tuple(rails),
         refusal_entries=tuple(refusals),
         aggregate_receipt_summary=aggregate_summary,
