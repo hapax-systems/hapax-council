@@ -39,6 +39,7 @@ REQUIRED_NO_UPDATE_CASES = frozenset(
         "inferred",
         "stale",
         "missing",
+        "legacy_public_event",
     }
 )
 
@@ -223,6 +224,7 @@ class WitnessPolicy(StrEnum):
     COMMANDED_ONLY = "commanded_only"
     MISSING = "missing"
     STALE = "stale"
+    LEGACY_PUBLIC_EVENT = "legacy_public_event"
     PUBLIC_EVENT_ADAPTER = "public_event_adapter"
     FIXTURE_ONLY = "fixture_only"
 
@@ -239,6 +241,7 @@ class FixtureCase(StrEnum):
     PUBLIC_EVENT_ACCEPTED = "public_event_accepted"
     SELECTED_ONLY = "selected_only"
     COMMANDED_ONLY = "commanded_only"
+    LEGACY_PUBLIC_EVENT = "legacy_public_event"
 
 
 class ExpectedEffect(BaseModel):
