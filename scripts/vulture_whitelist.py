@@ -961,38 +961,19 @@ render_offer_page_markdown
 generate_offer_page
 _OfferPage.validate_offer_invariants
 
-# Task-graph tree-effect scorer — reads vault dependency graph, computes
-# downstream unblock counts, and emits a drift report (declared vs
-# computed). Phase 1 is read-only; downstream consumers (operator
-# dashboard, scheduler) wire in follow-up PRs.
-from shared.task_graph_tree_effect_scorer import (
-    build_score_report,
-    compute_drift,
-    compute_tree_effect_scores,
-    load_task_graph,
-)
+# Visual pool destination routing — cc-task
+# visual-source-pool-homage-routing. select_by_destination() is the
+# query API for downstream homage_video / reverie / gem_ward routing
+# integration, which lands in follow-up PRs (effect graph + studio
+# compositor). Whitelisted until the runtime callers materialize.
+from agents.visual_pool.repository import LocalVisualPool
 
-build_score_report
-compute_drift
-compute_tree_effect_scores
-load_task_graph
+LocalVisualPool.select_by_destination
 
-# Runway Big Pitch contest runner — Gen-3 video generation client + CLI.
-# Phase 1 ships the typed wrapper + dry-run CLI; Phase 2 wires the
-# social-hashtag publisher (#RunwayBigPitchContest via existing
-# publication_bus surfaces — there is no dedicated form-submission
-# endpoint per Runway's 2026 Big Pitch contest mechanics).
-from shared.runway_gen3_client import (
-    GenerateRequest,
-    RunwayClientError,
-    RunwayGen3Client,
-    TaskResponse,
-)
+# Pydantic field validators on VisualPoolSidecar — invoked dynamically
+# by pydantic during model_validate. Vulture can't see the dynamic
+# binding (cc-task: visual-source-pool-homage-routing).
+from agents.visual_pool.repository import VisualPoolSidecar
 
-RunwayGen3Client.generate
-RunwayGen3Client.poll
-RunwayGen3Client.generate_and_wait
-RunwayGen3Client.close
-GenerateRequest
-TaskResponse
-RunwayClientError
+VisualPoolSidecar._validate_public_posture
+VisualPoolSidecar._validate_routable_destinations
