@@ -21,7 +21,6 @@ cc-task: re-splay-homage-ward-m8 (hapax-council)
  2 files changed, 16 insertions(+)
 
 diff --git a/Makefile b/Makefile
-index 0000000..0000000 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -34,6 +34,10 @@ libusb: INCLUDES = $(shell pkg-config --libs sdl3 libusb-1.0)
@@ -36,7 +35,6 @@ index 0000000..0000000 100644
  rtmidi: local_CFLAGS = $(CFLAGS) $(shell pkg-config --cflags sdl3 rtmidi) -Wall -Wextra -O2 -pipe -I. -DUSE_RTMIDI -DNDEBUG
  rtmidi: m8c
 diff --git a/src/render.c b/src/render.c
-index 0000000..0000000 100644
 --- a/src/render.c
 +++ b/src/render.c
 @@ -13,6 +13,7 @@
