@@ -75,6 +75,10 @@ DEFAULT_SIGNAL_WEIGHTS: dict[str, tuple[float, float]] = {
     # music work); weak negative (operator may be writing while clock
     # idle), so positive-only via low p_idle.
     "midi_clock_active": (0.70, 0.02),
+    # M8 button-press density above engagement threshold. Same shape
+    # as OXI MIDI clock — positive-only artefact of operator hands on
+    # M8 hardware (cc-task: m8-button-activity-perception-signal).
+    "m8_button_activity_active": (0.70, 0.02),
     # Cortado contact-mic energy. Bidirectional via tap/click cues.
     "desk_active": (0.75, 0.10),
     # Hyprland focus event within the last poll window — operator

@@ -869,3 +869,13 @@ generate_marker_tone
 from shared.voice_output_router import VoiceOutputRouter
 
 VoiceOutputRouter.known_roles
+
+# M8 firmware health check — registered via @check_group("m8") decorator
+# in agents/health_monitor/registry.py; vulture's first-pass scan misses
+# the registry tie (the check is dispatched dynamically through the
+# group registry by health_monitor's runner). Other check_group-
+# decorated functions in checks/ escape vulture only because they have
+# more reference graph depth (cc-task: m8-system-info-firmware-ingest).
+from agents.health_monitor.checks.m8_firmware import check_m8_firmware
+
+check_m8_firmware
