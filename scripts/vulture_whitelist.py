@@ -1072,3 +1072,13 @@ ArtifactCatalog.by_stream
 ArtifactCatalog.by_price_class
 ArtifactCatalog.exportable
 ArtifactRecord._validate_price_class_invariants
+
+# Audio-source-role → motion-protocol proposals (cc-task
+# audio-reactive-ward-camera-homage-motion-protocols, Phase 0).
+# MotionProtocolRunner and record_witness are the runtime entrypoints
+# for director / studio_compositor consumption; that wiring lands in a
+# follow-up PR. Whitelisted until the runtime callers materialize.
+from shared.audio_motion_protocols import MotionProtocolRunner, record_witness
+
+MotionProtocolRunner
+record_witness
