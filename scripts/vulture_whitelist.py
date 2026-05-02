@@ -995,3 +995,20 @@ PackagingClaim._require_public_event_ref
 from agents.metadata_composer.public_claim_gate import PublicClaimGateDecision
 
 PublicClaimGateDecision.allows_emission
+
+# LivestreamRoleState + SpeechAct — Pydantic model_validator hooks
+# are invoked dynamically at construction, plus the public
+# ``is_speech_act_authorized_by_role`` predicate consumers call
+# before emission. Phase 0 ships the schema; Phase 1+ wires the
+# programme runner, director snapshot, scrim, audio, captions,
+# archive, and public-event adapters. Per cc-task
+# ``livestream-role-speech-programme-binding-contract``.
+from shared.livestream_role_state import (
+    LivestreamRoleState,
+    SpeechAct,
+    is_speech_act_authorized_by_role,
+)
+
+LivestreamRoleState._validate_invariants
+SpeechAct._validate_speech_act_invariants
+is_speech_act_authorized_by_role
