@@ -99,8 +99,13 @@ gate_services_restarted() {
 }
 
 # ── Gate: broadcast-healthy ──────────────────────────────────────────
-# When the diff touches the audio-routing surface, check that the
-# broadcast world-surface row reports audibility=healthy within 30s.
+# When the diff touches the audio-routing surface, verify the broadcast
+# audio-health producer (shared.broadcast_audio_health) is still alive
+# after the deploy — i.e. its state file is fresh (`checked_at` within
+# 60s). This intentionally does NOT gate on `safe == true`; broadcast
+# unsafety is an operator-visibility concern, separate from "did the
+# deploy break the producer." A regressed producer (no fresh writes)
+# blinds every downstream WCS consumer.
 
 gate_broadcast_healthy() {
     local touched=false
@@ -110,6 +115,8 @@ gate_broadcast_healthy() {
             agents/hapax_daimonion/*|\
             shared/voice_output_router.py|\
             shared/voice_role_router.py|\
+            shared/broadcast_audio_health.py|\
+            shared/audio_world_surface_health.py|\
             config/voice-output-routes.yaml)
                 touched=true
                 break
@@ -120,18 +127,23 @@ gate_broadcast_healthy() {
 
     [ "$DRYRUN" = "1" ] && { echo "[dry-run] broadcast-healthy"; return; }
 
-    # Look for the world-surface audio-health JSON the compositor publishes.
-    local health_file="/dev/shm/hapax-audio/world-surface-broadcast.json"
+    # Real path written by shared.broadcast_audio_health.DEFAULT_STATE_PATH.
+    local health_file="/dev/shm/hapax-broadcast/audio-safe-for-broadcast.json"
     local deadline=$(( $(date +%s) + 30 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         if [ -f "$health_file" ]; then
-            if grep -qE '"audibility"\s*:\s*"healthy"' "$health_file" 2>/dev/null; then
+            # Producer must be fresh: file mtime within 60s of now.
+            local mtime now age
+            mtime="$(stat -c %Y "$health_file" 2>/dev/null || echo 0)"
+            now="$(date +%s)"
+            age=$(( now - mtime ))
+            if [ "$age" -le 60 ]; then
                 return
             fi
         fi
         sleep 2
     done
-    record_failure "broadcast-healthy" "$health_file did not report audibility=healthy within 30s"
+    record_failure "broadcast-healthy" "$health_file did not show a fresh write (age ≤60s) within 30s"
 }
 
 # ── Gate: dependent-component ─────────────────────────────────────────

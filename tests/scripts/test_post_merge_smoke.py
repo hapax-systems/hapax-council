@@ -176,6 +176,17 @@ class TestBroadcastHealthyGate:
         result = _run(sha, cwd=repo, extra_env={"HAPAX_SMOKE_DRYRUN": "1"})
         assert "broadcast-healthy" in result.stdout
 
+    def test_broadcast_health_module_diff_triggers_gate(self, tmp_path: Path) -> None:
+        """broadcast_audio_health.py is the producer the gate watches; its
+        own diffs must fire the gate (regression risk to the producer)."""
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"shared/broadcast_audio_health.py": "DEFAULT = 'x'\n"},
+        )
+        result = _run(sha, cwd=repo, extra_env={"HAPAX_SMOKE_DRYRUN": "1"})
+        assert "broadcast-healthy" in result.stdout
+
 
 # ── Gate: dependent-component ──────────────────────────────────────
 
