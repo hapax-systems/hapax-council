@@ -89,6 +89,23 @@ Wiring all three is ≤4h total; deleting is ~30 min but loses substantive
 infrastructure. The audit's "wire-or-delete" framing implies these are
 roughly equivalent; the actual asymmetry favours wire.
 
+## Disposition (2026-05-02 by beta)
+
+cc-task `r16-langfuse-qdrant-microprobe-agentrunner-wire-delete`
+(WSJF 6.8, p2) takes one bite per session per the audit's per-symbol
+estimate. This entry tracks per-symbol shipping.
+
+| Symbol | Decision | Status | Reference |
+|---|---|---|---|
+| `InstrumentedQdrantClient` | WIRE (factory entry point) | SHIPPED | `shared.config.get_qdrant_instrumented(agent_name, event_bus=None)` factory; opt-in per caller; no migration in this PR (callers stay on `get_qdrant()` until they have a bus to wire). 3 new tests in `tests/test_event_bus.py::TestGetQdrantInstrumentedFactory`. |
+| `MicroProbeEngine` | DEFERRED | needs Logos copilot/orientation surface decision (1-2h ship per audit) | Re-claim cc-task or open follow-up after operator confirms copilot probe-surface design. |
+| `AgentRunner` | DEFERRED | wire-vs-delete genuinely symmetric per audit; 15 min for "canonical pattern" docstring or 1-2h migration | Re-claim cc-task or open follow-up. |
+
+**Ratchet rule:** any future PR migrating an existing `get_qdrant()`
+caller to `get_qdrant_instrumented(agent_name=..., event_bus=...)`
+counts as further wire-completion. No bulk migration is required —
+callers adopt as they wire FlowEvent visibility into their lane.
+
 ## Out-of-lane note
 
 R-16 lives in `logos/` (alpha's primary lane). Epsilon (this audit's
