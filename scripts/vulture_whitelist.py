@@ -977,3 +977,12 @@ from agents.visual_pool.repository import VisualPoolSidecar
 
 VisualPoolSidecar._validate_public_posture
 VisualPoolSidecar._validate_routable_destinations
+
+# YouTube packaging claim policy gate — cc-task
+# youtube-packaging-claim-policy. Downstream consumer is the
+# youtube-content-programming-packaging-compiler (separate cc-task,
+# not yet shipped). Whitelisted until compiler lands.
+from shared.youtube_packaging_claim_policy import PackagingClaim, evaluate_payload
+
+evaluate_payload
+PackagingClaim._require_public_event_ref
