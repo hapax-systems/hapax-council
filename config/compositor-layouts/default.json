@@ -662,10 +662,28 @@
       "id": "m8-display-surface",
       "geometry": {
         "kind": "rect",
-        "x": 600,
+        "x": 480,
         "y": 80,
-        "w": 1280,
-        "h": 960,
+        "w": 960,
+        "h": 720,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 25,
+      "update_cadence": "always"
+    },
+    {
+      "id": "m8-display-tiny-surface",
+      "geometry": {
+        "kind": "rect",
+        "x": 440,
+        "y": 336,
+        "w": 320,
+        "h": 240,
         "mask": null,
         "binding_name": null,
         "target": null,
@@ -834,6 +852,15 @@
     {
       "source": "m8-display",
       "surface": "m8-display-surface",
+      "transform": {},
+      "opacity": 0.0,
+      "per_assignment_effects": [],
+      "non_destructive": true,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "m8-display",
+      "surface": "m8-display-tiny-surface",
       "transform": {},
       "opacity": 0.0,
       "per_assignment_effects": [],

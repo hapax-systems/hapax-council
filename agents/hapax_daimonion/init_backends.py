@@ -87,9 +87,17 @@ def register_perception_backends(daemon: VoiceDaemon) -> None:
     try:
         from agents.hapax_daimonion.backends.midi_clock import MidiClockBackend
 
+        # Multi-port MIDI clock (post m8-midi-clock-peer-tempo-source 2026-05-02):
+        # primary + alt ports listened-to concurrently; most-recently-PLAYING
+        # port wins canonical timeline_mapping. M8 hardware tracker is the
+        # default alt port. Per-port absence is tolerated (logged INFO).
+        port_names = [
+            daemon.cfg.midi_port_name,
+            *daemon.cfg.midi_port_names_alt,
+        ]
         daemon.perception.register_backend(
             MidiClockBackend(
-                port_name=daemon.cfg.midi_port_name,
+                port_names=port_names,
                 beats_per_bar=daemon.cfg.midi_beats_per_bar,
             )
         )

@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 log = logging.getLogger(__name__)
 
@@ -215,8 +215,12 @@ class DaimonionConfig(BaseModel):
     mc_sample_rate: int = 44100
     actuation_tick_ms: int = 10
 
-    # MIDI clock
+    # MIDI clock — multi-port (post m8-midi-clock-peer-tempo-source).
+    # Primary port + alt ports listened-to concurrently. Most-recently-PLAYING
+    # port wins canonical timeline_mapping. M8 hardware tracker is the
+    # default alt — operator can extend this list with any MIDI clock source.
     midi_port_name: str = "OXI One"
+    midi_port_names_alt: list[str] = Field(default_factory=lambda: ["M8 MIDI 1"])
     midi_beats_per_bar: int = 4
 
     # MIDI output (vocal chain). Defaults to the Erica Synths MIDI Dispatch

@@ -48,11 +48,38 @@ def test_default_layout_has_m8_surface_at_correct_geometry() -> None:
     surf = surfaces["m8-display-surface"]
     geo = surf["geometry"]
     assert geo["kind"] == "rect"
-    assert (geo["x"], geo["y"], geo["w"], geo["h"]) == (600, 80, 1280, 960), (
-        "M8 surface geometry must be (600,80,1280,960) for 4× pixel-art "
-        "scale per second-pass synthesis"
+    # 3× pixel-art scale per ward-geometry-tuning task (was 4× / 600,80,1280,960
+    # which collided with pip-ur, pip-lr, and the GEM mural at z=30).
+    # New geometry honors scrim breath gap (10px to GEM at y=810).
+    assert (geo["x"], geo["y"], geo["w"], geo["h"]) == (480, 80, 960, 720), (
+        "M8 surface geometry must be (480,80,960,720) for 3× pixel-art "
+        "scale per m8-ward-geometry-tuning research"
     )
     assert surf["z_order"] == 25, "M8 z=25 (one above impingement-cascade-midright at z=24)"
+
+
+def test_default_layout_has_m8_tiny_surface() -> None:
+    """Tiny mode: 1× native pixel-art peek at center-left mid-canvas."""
+    layout = json.loads((REPO_ROOT / "config" / "compositor-layouts" / "default.json").read_text())
+    surfaces = {s["id"]: s for s in layout["surfaces"]}
+    assert "m8-display-tiny-surface" in surfaces, "M8 tiny surface missing"
+    surf = surfaces["m8-display-tiny-surface"]
+    geo = surf["geometry"]
+    assert geo["kind"] == "rect"
+    assert (geo["x"], geo["y"], geo["w"], geo["h"]) == (440, 336, 320, 240), (
+        "M8 tiny surface geometry must be (440,336,320,240) for 1× native "
+        "pixel-art peek per m8-ward-geometry-tuning research"
+    )
+    assert surf["z_order"] == 25
+    # Affordance pipeline picks tiny vs default by opacity-flipping; both
+    # start at opacity 0.0 in the layout.
+    matched = [
+        a
+        for a in layout["assignments"]
+        if a["source"] == "m8-display" and a["surface"] == "m8-display-tiny-surface"
+    ]
+    assert len(matched) == 1, "exactly one m8 → tiny-surface Assignment expected"
+    assert matched[0]["opacity"] == 0.0
 
 
 def test_default_layout_has_m8_source_to_surface_assignment() -> None:
