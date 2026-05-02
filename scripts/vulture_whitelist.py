@@ -960,3 +960,19 @@ from shared.public_offer_page_generator import (
 render_offer_page_markdown
 generate_offer_page
 _OfferPage.validate_offer_invariants
+
+# Task-graph tree-effect scorer — reads vault dependency graph, computes
+# downstream unblock counts, and emits a drift report (declared vs
+# computed). Phase 1 is read-only; downstream consumers (operator
+# dashboard, scheduler) wire in follow-up PRs.
+from shared.task_graph_tree_effect_scorer import (
+    build_score_report,
+    compute_drift,
+    compute_tree_effect_scores,
+    load_task_graph,
+)
+
+build_score_report
+compute_drift
+compute_tree_effect_scores
+load_task_graph
