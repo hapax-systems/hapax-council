@@ -13,7 +13,7 @@
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
     "@fontsource/jetbrains-mono": "^5.2.8",
-    "@tanstack/react-query": "^5.100.1",
+    "@tanstack/react-query": "^5.100.7",
     "@tauri-apps/api": "^2.10.1",
     "@xyflow/react": "^12.10.2",
     "dompurify": "^3.3.2",
@@ -41,14 +41,14 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "eslint": "^9.39.1",
-    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^16.5.0",
     "jsdom": "^29.0.2",
     "tailwindcss": "^4.2.1",
     "typescript": "~5.9.3",
-    "typescript-eslint": "^8.58.1",
+    "typescript-eslint": "^8.59.1",
     "vite": "^7.3.1",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.5"
   }
 }
