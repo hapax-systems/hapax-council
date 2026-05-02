@@ -34,7 +34,22 @@ def _paths(tmp_path: Path) -> BroadcastAudioHealthPaths:
         audio_safety_state=tmp_path / "audio-safety-state.json",
         audio_ducker_state=tmp_path / "audio-ducker-state.json",
         voice_output_witness=tmp_path / "voice-output-witness.json",
+        egress_loopback_witness=tmp_path / "egress-loopback.json",
     )
+
+
+def _live_loopback_witness(**overrides: object) -> dict:
+    payload = {
+        "checked_at": "2026-05-02T14:00:00Z",
+        "rms_dbfs": -18.0,
+        "peak_dbfs": -3.0,
+        "silence_ratio": 0.05,
+        "window_seconds": 5.0,
+        "target_sink": "hapax-livestream",
+        "error": None,
+    }
+    payload.update(overrides)
+    return payload
 
 
 def _audio_ducker_state(**overrides: object) -> dict:
@@ -68,6 +83,7 @@ def _audio_ducker_state(**overrides: object) -> dict:
 def _write_clear_runtime_states(paths: BroadcastAudioHealthPaths) -> None:
     _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
     _write_json(paths.audio_ducker_state, _audio_ducker_state())
+    _write_json(paths.egress_loopback_witness, _live_loopback_witness())
 
 
 def _runner(
@@ -627,3 +643,153 @@ def test_loudness_command_failure_blocks_as_missing_measurement(tmp_path: Path) 
 
     assert health.safe is False
     assert "loudness_measurement_failed" in _codes(health)
+
+
+# ── Egress loopback witness gate ─────────────────────────────────────
+
+
+def test_egress_loopback_witness_missing_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    paths.egress_loopback_witness.unlink()
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_loopback_missing" in _codes(health)
+
+
+def test_egress_loopback_witness_malformed_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    paths.egress_loopback_witness.write_text("not valid json", encoding="utf-8")
+    os.utime(paths.egress_loopback_witness, (NOW, NOW))
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_loopback_malformed" in _codes(health)
+
+
+def test_egress_loopback_witness_stale_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(paths.egress_loopback_witness, _live_loopback_witness(), age_s=120.0)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_loopback_stale" in _codes(health)
+
+
+def test_egress_loopback_witness_schema_invalid_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.egress_loopback_witness,
+        {"checked_at": "2026-05-02T14:00:00Z", "missing": "rms"},
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_loopback_schema_invalid" in _codes(health)
+
+
+def test_egress_loopback_witness_silent_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.egress_loopback_witness,
+        _live_loopback_witness(silence_ratio=0.95, rms_dbfs=-70.0),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_loopback_silent" in _codes(health)
+
+
+def test_egress_loopback_witness_producer_error_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.egress_loopback_witness,
+        _live_loopback_witness(error="pw-cat capture failed"),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_loopback_producer_failed" in _codes(health)
+
+
+def test_egress_loopback_witness_low_signal_warns_not_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.egress_loopback_witness,
+        _live_loopback_witness(rms_dbfs=-60.0, silence_ratio=0.3),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert "egress_loopback_low_signal" in {w.code for w in health.warnings}
+    assert "egress_loopback_low_signal" not in _codes(health)
+    assert health.evidence["egress_loopback"]["status"] == "live"
+
+
+def test_egress_loopback_witness_happy_path_populates_evidence(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    record = health.evidence["egress_loopback"]
+    assert record["status"] == "live"
+    assert record["rms_dbfs"] == -18.0
+    assert record["target_sink"] == "hapax-livestream"
+    assert record["silence_ratio"] == 0.05
+    # No loopback-related contributions to blocking/warnings.
+    assert not any(c.startswith("egress_loopback") for c in _codes(health))
+    assert not any(w.code.startswith("egress_loopback") for w in health.warnings)
