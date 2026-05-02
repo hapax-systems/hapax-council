@@ -1082,3 +1082,25 @@ from shared.audio_motion_protocols import MotionProtocolRunner, record_witness
 
 MotionProtocolRunner
 record_witness
+
+# Governance refusal outcome policy — cc-task governance-refusal-outcome-policy.
+# Pair / wrapper / public artifact policy classes called by the
+# learning adapter and downstream programme refusal/correction artifact
+# emitters (separate cc-tasks). Whitelisted until consumers land.
+from shared.governance_refusal_outcome import (
+    GovernanceRefusalPair,
+    PublicRefusalArtifactPolicy,
+    RefusalEnvelopePolicy,
+    learning_adapter_treats_refusal_as_governance_success,
+)
+
+GovernanceRefusalPair.governance_learning_is_success
+GovernanceRefusalPair.refused_claim_validates_success
+GovernanceRefusalPair.shared_refusal_refs
+GovernanceRefusalPair._validate_no_laundering_invariants
+PublicRefusalArtifactPolicy.cleared_for_public_release
+PublicRefusalArtifactPolicy._validate_public_artifact_invariants
+RefusalEnvelopePolicy.governance_capability_learning_allowed
+RefusalEnvelopePolicy.refused_claim_posterior_locked
+RefusalEnvelopePolicy._validate_no_laundering_for_refusal
+learning_adapter_treats_refusal_as_governance_success
