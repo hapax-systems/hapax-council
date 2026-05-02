@@ -36,11 +36,58 @@ class TestExplorationDeficitSeeking:
 
     def test_deficit_ignored_when_degraded(self):
         collector = StimmungCollector()
-        collector.update_health(3, 10)  # degraded infrastructure
+        collector.update_health(3, 10)  # degraded infrastructure (value=0.7 → DEGRADED)
         collector.update_exploration(0.8)  # high deficit
         snap = collector.snapshot()
-        # Should be degraded/cautious, NOT seeking (SEEKING only when nominal)
+        # Should be degraded/cautious, NOT seeking (SEEKING blocks at DEGRADED+).
+        # Audit R6 / cc-task seeking-stance-gate-relax: SEEKING now ALSO fires
+        # from CAUTIOUS, but DEGRADED+ continues to block — those signal real
+        # infrastructure problems where exploration would compete with recovery.
         assert snap.overall_stance.value != "seeking"
+
+    def test_high_deficit_triggers_seeking_from_cautious(self):
+        """Audit R6 / cc-task seeking-stance-gate-relax (2026-05-02):
+        CAUTIOUS-level operational noise must not block SEEKING. The prior
+        `worst == NOMINAL` gate suppressed SEEKING entirely whenever
+        anything was even slightly off (LLM cost pressure, transient
+        resource pressure, slight perception confidence dip). With the
+        relaxed gate, exploration_deficit above 0.35 fires SEEKING from
+        either NOMINAL or CAUTIOUS — preserving the variance modulation
+        that the surface needs during sustained tolerable degradation."""
+        collector = StimmungCollector()
+        # Hysteresis requires 3 consecutive SEEKING raw stances.
+        for _ in range(3):
+            # Feed a fresh healthy baseline so the control-law staleness
+            # forcing path doesn't fire degraded.
+            self._feed_healthy(collector)
+            # Override health to a CAUTIOUS-level value (INFRA thresholds
+            # 0.30/0.60/0.85; value 0.4 → effective 0.4 → CAUTIOUS).
+            collector.update_health(6, 10)
+            collector.update_exploration(0.5)
+            snap = collector.snapshot()
+        assert snap.overall_stance.value == "seeking", (
+            f"expected SEEKING from CAUTIOUS-level health + high deficit, "
+            f"got {snap.overall_stance.value}"
+        )
+
+    def test_seeking_still_blocked_at_degraded(self):
+        """Regression pin: the relaxed gate must not allow SEEKING from
+        DEGRADED or CRITICAL. Those represent real infrastructure
+        problems where the recruitment-threshold halving would compete
+        with recovery instead of helping."""
+        collector = StimmungCollector()
+        for _ in range(3):
+            self._feed_healthy(collector)
+            # Override health to a DEGRADED-level value (INFRA thresholds
+            # 0.30/0.60/0.85; value 0.65 → effective 0.65 → DEGRADED).
+            collector.update_health(35, 100)
+            collector.update_exploration(0.8)
+            snap = collector.snapshot()
+        assert snap.overall_stance.value != "seeking", (
+            f"DEGRADED stance must block SEEKING; got {snap.overall_stance.value}"
+        )
+        # Specifically: should be DEGRADED (or worse) — not CAUTIOUS or NOMINAL.
+        assert snap.overall_stance.value in ("degraded", "critical")
 
     def test_stale_deficit_ignored(self):
         collector = StimmungCollector()
