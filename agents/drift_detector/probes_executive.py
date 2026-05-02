@@ -348,7 +348,60 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_agents_emit_explicit_success(),
     ),
+    SufficiencyProbe(
+        id="probe-feedback-008",
+        axiom_id="executive_function",
+        implication_id="ex-feedback-008",
+        level="component",
+        question=(
+            "Do agent outputs include clear next-action recommendations "
+            "(Try / Run / Suggest / Action / Next / remediation language) "
+            "to reduce decision paralysis?"
+        ),
+        check=lambda: _check_agent_outputs_have_next_actions(),
+    ),
 ]
+
+
+def _check_agent_outputs_have_next_actions() -> tuple[bool, str]:
+    """Enforces ex-feedback-008 (executive_function).
+
+    Agent outputs must include clear next-action recommendations to
+    reduce decision paralysis. Scans agent files for next-action
+    language patterns:
+      - Try / Run / Suggest / Action / Next / Remediation tokens
+      - remediation= keyword arguments (CheckResult constructor)
+
+    Threshold: ≥10 agent files emit next-action language.
+    """
+    next_action_pattern = re.compile(
+        r"(?:Try|Run|Suggest|Action|Next|Remediat)[:\s]|"
+        r"\bremediation\s*=",
+        re.IGNORECASE,
+    )
+
+    agents_dir = AI_AGENTS_DIR / "agents"
+    if not agents_dir.exists():
+        return False, "agents directory not found"
+
+    matching: set[str] = set()
+    for py_file in agents_dir.rglob("*.py"):
+        try:
+            content = py_file.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if next_action_pattern.search(content):
+            matching.add(py_file.name)
+
+    if len(matching) >= 10:
+        return True, (
+            f"{len(matching)} agent files emit next-action recommendations "
+            f"— ex-feedback-008 sufficient"
+        )
+    return False, (
+        f"only {len(matching)} agents have next-action recommendations; "
+        f"sample: {', '.join(sorted(matching)[:5])}"
+    )
 
 
 def _check_agents_emit_explicit_success() -> tuple[bool, str]:

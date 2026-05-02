@@ -323,6 +323,7 @@ implications:
   mode: sufficiency
   level: system
 - id: ex-feedback-008
+  linkage: code-direct
   tier: T2
   text: Agent outputs must include clear next-action recommendations to reduce decision
     paralysis.
