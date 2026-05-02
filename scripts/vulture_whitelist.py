@@ -1245,3 +1245,19 @@ from shared.ko_fi_receive_only_rail import (
 KoFiEvent._handle_is_display_name_only
 KoFiEvent._currency_is_iso_4217
 KoFiRailReceiver.ingest_webhook
+
+# Buy Me a Coffee receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, BMaC rail). Pydantic
+# field_validator hooks (display-name + ISO 4217 currency) invoked at
+# construction; ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging BMaC HMAC-SHA256-signed JSON
+# deliveries (separate cc-task). Restores HMAC SHA-256 over raw body (vs Ko-fi
+# verification-token + Patreon HMAC-MD5 divergences); 8th rail in the family.
+from shared.buy_me_a_coffee_receive_only_rail import (
+    BuyMeACoffeeRailReceiver,
+    CoffeeEvent,
+)
+
+CoffeeEvent._handle_is_display_name_only
+CoffeeEvent._currency_is_iso_4217
+BuyMeACoffeeRailReceiver.ingest_webhook
