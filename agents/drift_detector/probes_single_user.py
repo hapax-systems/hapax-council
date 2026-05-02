@@ -131,7 +131,69 @@ SINGLE_USER_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_no_multi_tenant_storage(),
     ),
+    SufficiencyProbe(
+        id="probe-su-config-001",
+        axiom_id="single_user",
+        implication_id="su-config-001",
+        level="component",
+        question=(
+            "Does shared/config.py hardcode the operator's preferences "
+            "rather than requiring caller-supplied config?"
+        ),
+        check=lambda: _check_config_hardcodes_operator_prefs(),
+    ),
 ]
+
+
+def _check_config_hardcodes_operator_prefs() -> tuple[bool, str]:
+    """Enforces su-config-001 (single_user).
+
+    Configuration files should hardcode the operator's preferences
+    rather than providing generic defaults or multi-user options.
+    Verifies shared/config.py:
+      - Has >=10 hardcoded operator-specific tokens (Path.home(),
+        model name strings, hapax-prefixed identifiers, etc.)
+      - Most os.environ.get() calls have non-empty default args
+        (caller config is optional, defaults are operator-specific)
+    """
+    config_file = AI_AGENTS_DIR / "shared" / "config.py"
+    if not config_file.exists():
+        return False, "shared/config.py not found"
+
+    content = config_file.read_text()
+
+    hardcoded_patterns = (
+        r"Path\.home\(\)",
+        r'"claude-(?:sonnet|opus|haiku)',
+        r'"gemini-(?:flash|pro)',
+        r'"local-(?:fast|coding|reasoning)',
+        r'"hapax-',
+    )
+    hardcoded_count = 0
+    for pattern in hardcoded_patterns:
+        hardcoded_count += len(re.findall(pattern, content))
+
+    with_defaults = len(re.findall(r"os\.environ\.get\([^)]*,\s*\S", content))
+    no_defaults = len(re.findall(r"os\.environ\[", content))
+    total_env = with_defaults + no_defaults
+
+    if hardcoded_count < 10:
+        return False, (
+            f"only {hardcoded_count} hardcoded operator-specific tokens in "
+            f"shared/config.py (need >=10) - su-config-001 insufficient"
+        )
+
+    if total_env > 0 and (with_defaults / total_env) < 0.8:
+        return False, (
+            f"only {with_defaults}/{total_env} os.environ reads have "
+            f"hardcoded defaults - su-config-001 insufficient"
+        )
+
+    return True, (
+        f"{hardcoded_count} hardcoded operator-specific tokens + "
+        f"{with_defaults}/{total_env} os.environ reads with defaults "
+        f"- su-config-001 sufficient"
+    )
 
 
 def _check_no_multi_tenant_storage() -> tuple[bool, str]:

@@ -14,6 +14,7 @@ implications:
   mode: compatibility
   level: component
 - id: su-config-001
+  linkage: code-direct
   tier: T1
   text: Configuration files should hardcode the operator's preferences rather than providing
     generic defaults or multi-user options.
