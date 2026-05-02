@@ -75,7 +75,7 @@ def test_fixture_catalog_covers_required_statuses_and_no_update_cases() -> None:
 
 @pytest.mark.parametrize(
     "fixture_case",
-    ["selected_only", "commanded_only", "inferred", "stale", "missing"],
+    ["selected_only", "commanded_only", "inferred", "stale", "missing", "legacy_public_event"],
 )
 def test_schema_rejects_success_update_on_no_update_cases(fixture_case: str) -> None:
     fixtures = _json(FIXTURES)
@@ -122,6 +122,26 @@ def test_schema_rejects_public_success_without_public_event_gate_evidence() -> N
     row["public_claim_evidence"]["evidence_envelope_refs"] = []
     row["public_claim_evidence"]["public_event_refs"] = []
     row["public_claim_evidence"]["gate_refs"] = []
+
+    with pytest.raises(jsonschema.ValidationError):
+        _validator().validate(bad)
+
+
+def test_schema_rejects_legacy_public_event_as_verified_public_success() -> None:
+    fixtures = _json(FIXTURES)
+    bad = deepcopy(fixtures)
+    row = next(
+        outcome for outcome in _outcomes(bad) if outcome["fixture_case"] == "legacy_public_event"
+    )
+    row["verified_success"]["capability"] = True
+    row["verified_success"]["public"] = True
+    row["public_event_status"] = "accepted"
+    row["public_claim_evidence"]["present"] = True
+    row["public_claim_evidence"]["evidence_envelope_refs"] = [
+        "evidence-envelope:legacy-public-event:fake"
+    ]
+    row["public_claim_evidence"]["public_event_refs"] = ["legacy-public-event:segment-legacy"]
+    row["public_claim_evidence"]["gate_refs"] = ["gate:fake"]
 
     with pytest.raises(jsonschema.ValidationError):
         _validator().validate(bad)

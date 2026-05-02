@@ -82,6 +82,7 @@ def test_refusal_success_does_not_validate_refused_claim() -> None:
         (FixtureCase.INFERRED, "coe:perception.context:inferred"),
         (FixtureCase.STALE, "coe:archive.replay:stale"),
         (FixtureCase.MISSING, "coe:tool.sources:missing"),
+        (FixtureCase.LEGACY_PUBLIC_EVENT, "coe:public-event.legacy:missing-gate"),
     ],
 )
 def test_no_update_cases_cannot_validate_success_or_public_action_updates(
@@ -112,6 +113,7 @@ def test_no_update_cases_cannot_validate_success_or_public_action_updates(
         "coe:perception.context:inferred",
         "coe:archive.replay:stale",
         "coe:tool.sources:missing",
+        "coe:public-event.legacy:missing-gate",
     ],
 )
 def test_mutated_no_update_rows_raise_explicit_errors(outcome_id: str) -> None:
@@ -126,6 +128,25 @@ def test_mutated_no_update_rows_raise_explicit_errors(outcome_id: str) -> None:
 
     with pytest.raises(ValueError, match="no-update fixture cannot allow learning"):
         CapabilityOutcomeEnvelope.model_validate(payload)
+
+
+def test_legacy_public_event_without_rvpe_gate_cannot_update_public_learning() -> None:
+    fixtures = load_capability_outcome_fixtures()
+    outcome = fixtures.require_outcome("coe:public-event.legacy:missing-gate")
+
+    assert outcome.fixture_case is FixtureCase.LEGACY_PUBLIC_EVENT
+    assert outcome.witness_policy is WitnessPolicy.LEGACY_PUBLIC_EVENT
+    assert outcome.validates_success() is False
+    assert outcome.allows_verified_public_or_action_success_update() is False
+    assert outcome.allows_claim_posterior_update() is False
+    assert outcome.verified_success.public is False
+    assert outcome.verified_success.claim_posterior is False
+    assert "ResearchVehiclePublicEvent:segment-legacy" in (
+        outcome.learning_update.missing_witness_refs
+    )
+    assert "fixture_case:legacy_public_event" in outcome.success_blockers()
+    assert outcome.programme_refs == ["programme:runner-refusal-harness"]
+    assert outcome.health_refs == ["world-surface-health:public-event.legacy.blocked"]
 
 
 def test_claim_posterior_update_without_public_evidence_fails_closed() -> None:

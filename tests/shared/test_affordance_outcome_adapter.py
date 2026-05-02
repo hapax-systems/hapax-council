@@ -15,6 +15,7 @@ from shared.capability_outcome import (
     LearningPolicy,
     LearningTarget,
     OutcomeStatus,
+    WitnessPolicy,
     load_capability_outcome_fixtures,
 )
 
@@ -52,6 +53,7 @@ def test_witnessed_failure_updates_negative_affordance_learning() -> None:
         (FixtureCase.INFERRED, "coe:perception.context:inferred"),
         (FixtureCase.STALE, "coe:archive.replay:stale"),
         (FixtureCase.MISSING, "coe:tool.sources:missing"),
+        (FixtureCase.LEGACY_PUBLIC_EVENT, "coe:public-event.legacy:missing-gate"),
     ],
 )
 def test_no_update_fixtures_do_not_update_verified_success(
@@ -65,6 +67,28 @@ def test_no_update_fixtures_do_not_update_verified_success(
     assert decision.kind is AffordanceOutcomeUpdateKind.NO_UPDATE
     assert decision.should_update is False
     assert decision.success is None
+
+
+def test_only_witness_policy_outcomes_feed_positive_learning() -> None:
+    fixtures = load_capability_outcome_fixtures()
+    positive_decisions = []
+
+    for outcome in fixtures.outcomes:
+        decision = decide_affordance_outcome_update(outcome)
+        if decision.kind is AffordanceOutcomeUpdateKind.SUCCESS:
+            positive_decisions.append((outcome.outcome_id, outcome.witness_policy))
+        if outcome.witness_policy not in {
+            WitnessPolicy.WITNESSED,
+            WitnessPolicy.PUBLIC_EVENT_ADAPTER,
+        }:
+            assert decision.kind is not AffordanceOutcomeUpdateKind.SUCCESS
+            assert decision.should_update is False
+
+    assert positive_decisions == [
+        ("coe:audio.public-tts:witnessed-success", WitnessPolicy.WITNESSED),
+        ("coe:governance.no-expert:refused", WitnessPolicy.WITNESSED),
+        ("coe:public-event.rvpe:accepted", WitnessPolicy.PUBLIC_EVENT_ADAPTER),
+    ]
 
 
 def test_blocked_outcome_does_not_update_verified_success() -> None:
@@ -112,9 +136,14 @@ def test_pipeline_records_allowed_outcome_and_skips_no_update_outcome() -> None:
         _outcome("coe:midi.transport:commanded-only"),
         context={"mode": "public_route_smoke"},
     )
+    legacy_public_event_decision = pipe.record_capability_outcome(
+        _outcome("coe:public-event.legacy:missing-gate"),
+        context={"mode": "public_route_smoke"},
+    )
 
     success_state = pipe.get_activation_state("Public TTS route")
     skipped_state = pipe.get_activation_state("MIDI transport command")
+    legacy_public_event_state = pipe.get_activation_state("Legacy public event adapter")
     assert success_decision.should_update is True
     assert success_state.use_count == 1
     assert success_state.ts_alpha > 2.0
@@ -122,6 +151,12 @@ def test_pipeline_records_allowed_outcome_and_skips_no_update_outcome() -> None:
     assert no_update_decision.should_update is False
     assert skipped_state.use_count == 0
     assert ("public_route_smoke", "MIDI transport command") not in pipe._context_associations
+    assert legacy_public_event_decision.should_update is False
+    assert legacy_public_event_state.use_count == 0
+    assert (
+        "public_route_smoke",
+        "Legacy public event adapter",
+    ) not in pipe._context_associations
 
 
 def test_governance_refusal_success_updates_gate_without_validating_refused_claim() -> None:

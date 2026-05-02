@@ -24,7 +24,8 @@
     "commanded_only",
     "inferred",
     "stale",
-    "missing"
+    "missing",
+    "legacy_public_event"
   ],
   "outcome_envelope_required_fields": [
     "schema_version",
@@ -779,6 +780,84 @@
     },
     {
       "schema_version": 1,
+      "outcome_id": "coe:public-event.legacy:missing-gate",
+      "created_at": "2026-04-29T19:02:10Z",
+      "capability_id": "capability:public_event.legacy_adapter",
+      "capability_name": "Legacy public event adapter",
+      "attempt_kind": "communicate",
+      "selection_ref": "selection:legacy-public-event:segment-legacy",
+      "selection_state": "selected",
+      "command_ref": "command:legacy-public-event.emit:segment-legacy",
+      "route_ref": "route:public-event:legacy",
+      "substrate_refs": ["substrate:public-event:legacy"],
+      "programme_refs": ["programme:runner-refusal-harness"],
+      "director_move_ref": "director-move:programme:legacy-public-event",
+      "evidence_envelope_refs": [],
+      "witness_refs": ["legacy-public-event:segment-legacy"],
+      "expected_effect": {
+        "effect_id": "effect:rvpe-public-event-accepted",
+        "description": "A public event is represented as a ResearchVehiclePublicEvent with policy gate evidence.",
+        "witness_class": "public_event_adapter",
+        "public_claim_bearing": true,
+        "action_bearing": false
+      },
+      "outcome_status": "neutral_defer",
+      "execution_status": "accepted",
+      "manifestation_status": "observed_without_witness",
+      "claim_status": "posterior_not_allowed",
+      "public_event_status": "held",
+      "learning_update": {
+        "policy": "defer",
+        "allowed": false,
+        "target": "none",
+        "reason": "Legacy public events lack RVPE and public gate refs, so they cannot satisfy public success learning.",
+        "required_witness_refs": [],
+        "missing_witness_refs": [
+          "ResearchVehiclePublicEvent:segment-legacy",
+          "gate:public-event-policy:accepted"
+        ],
+        "thompson_delta": null,
+        "context_association_delta": null
+      },
+      "claim_posterior_update": {
+        "allowed": false,
+        "claim_ids": ["claim:legacy-public-event:unsupported"],
+        "evidence_envelope_refs": [],
+        "gate_refs": [],
+        "claim_engine_refs": [],
+        "reason": "A legacy public-event row without RVPE/gate refs cannot update public claim posterior state."
+      },
+      "blocked_reasons": [
+        "legacy_public_event_without_rvpe",
+        "missing_public_event_gate"
+      ],
+      "refusal_or_correction_refs": [],
+      "health_refs": ["world-surface-health:public-event.legacy.blocked"],
+      "privacy_state": "public_safe",
+      "rights_state": "unknown",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 600,
+        "observed_age_s": 10,
+        "source_ref": "legacy-public-event:segment-legacy",
+        "checked_at": "2026-04-29T19:02:10Z"
+      },
+      "authority_ceiling": "public_gate_required",
+      "witness_policy": "legacy_public_event",
+      "verified_success": {"capability": false, "action": false, "public": false, "claim_posterior": false},
+      "public_claim_evidence": {
+        "required": false,
+        "present": false,
+        "evidence_envelope_refs": [],
+        "public_event_refs": [],
+        "gate_refs": [],
+        "note": "A legacy public event is not RVPE/gate evidence for public claims."
+      },
+      "operator_visible_summary": "Legacy public event exists, but without RVPE and gate refs it cannot validate public success or claim learning.",
+      "fixture_case": "legacy_public_event"
+    },
+    {
+      "schema_version": 1,
       "outcome_id": "coe:public-event.rvpe:accepted",
       "created_at": "2026-04-29T19:02:10Z",
       "capability_id": "capability:public_event.adapter",
@@ -851,11 +930,11 @@
     }
   ],
   "summary": {
-    "total_outcomes": 10,
+    "total_outcomes": 11,
     "by_status": {
       "success": 1,
       "failure": 1,
-      "neutral_defer": 2,
+      "neutral_defer": 3,
       "blocked": 1,
       "refused": 1,
       "stale": 1,
