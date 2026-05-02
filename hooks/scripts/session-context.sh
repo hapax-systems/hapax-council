@@ -604,6 +604,15 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
         for note in "$CC_TASKS_VAULT/active/"*.md; do
           [ -f "$note" ] || continue
           grep -q '^status: offered$' "$note" 2>/dev/null || continue
+          # Filter on `kind:` discriminator: build sessions skip
+          # operator_action / recovery_triage / watcher / research_packet /
+          # verification work. Tasks without `kind:` are implicitly
+          # `build` (default) and still appear, preserving prior behavior
+          # for unmigrated notes.
+          KIND=$(grep '^kind:' "$note" | head -1 | sed 's/^kind: *//' | tr -d '[:space:]')
+          if [ -n "$KIND" ] && [ "$KIND" != "build" ]; then
+            continue
+          fi
           WSJF=$(grep '^wsjf:' "$note" | head -1 | sed 's/^wsjf: *//' | tr -d '[:space:]')
           ID=$(grep '^task_id:' "$note" | head -1 | sed 's/^task_id: *//' | tr -d '[:space:]')
           TITLE=$(grep '^title:' "$note" | head -1 | sed 's/^title: *//; s/^"//; s/"$//')
