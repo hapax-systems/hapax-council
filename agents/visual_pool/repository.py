@@ -50,12 +50,42 @@ _CONTENT_RISK_RANK: dict[ContentRisk, int] = {
 _CONTENT_RISK_VALUES = frozenset(_CONTENT_RISK_RANK)
 
 
+_VALID_ROUTABLE_DESTINATIONS = frozenset(
+    {
+        "sierpinski",
+        "reverie",
+        "homage_video",
+        "homage_emissive",
+        "gem_ward",
+        "effect_graph_input",
+        "archive_replay",
+    }
+)
+_PUBLIC_DESTINATIONS = frozenset(
+    {"sierpinski", "reverie", "homage_video", "homage_emissive", "gem_ward"}
+)
+_VALID_PUBLIC_POSTURES = frozenset({"private", "candidate", "live"})
+
+
 class VisualPoolSidecar(BaseModel):
     """Required sidecar metadata for one local visual asset.
 
     Missing or malformed sidecars are not selected. The selector does not infer
     public safety from directory names alone; the directory tier and sidecar
     content-risk must both be coherent.
+
+    Routing-metadata fields (added 2026-05-02 per cc-task
+    visual-source-pool-homage-routing) are optional with defaults:
+      - ``homage_class``: which homage class this asset embodies
+        (e.g. ``"warholian"``, ``"abramovic"``, ``"klein"``)
+      - ``motion_profile``: how the asset moves
+        (e.g. ``"static"``, ``"slow_drift"``, ``"fast"``, ``"rhythmic"``)
+      - ``public_posture``: public-route posture for this asset
+        (``"private"``, ``"candidate"``, or ``"live"``); when None,
+        legacy ``broadcast_safe`` flag governs.
+      - ``wcs_evidence_refs``: WCS witness references for grounding claims
+      - ``routable_destinations``: which destinations this asset can route to;
+        empty tuple = Sierpinski-only legacy behavior preserved.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -70,6 +100,35 @@ class VisualPoolSidecar(BaseModel):
     title: str | None = None
     license: str | None = None
     provenance_url: str | None = None
+    homage_class: str | None = None
+    motion_profile: str | None = None
+    public_posture: str | None = None
+    wcs_evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
+    routable_destinations: tuple[str, ...] = Field(default_factory=tuple)
+
+    @field_validator("public_posture")
+    @classmethod
+    def _validate_public_posture(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in _VALID_PUBLIC_POSTURES:
+            raise ValueError(
+                f"public_posture must be one of {sorted(_VALID_PUBLIC_POSTURES)}; got {value!r}"
+            )
+        return value
+
+    @field_validator("routable_destinations")
+    @classmethod
+    def _validate_routable_destinations(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            return ()
+        unknown = set(value) - _VALID_ROUTABLE_DESTINATIONS
+        if unknown:
+            raise ValueError(
+                f"unknown routable_destinations: {sorted(unknown)}; "
+                f"valid: {sorted(_VALID_ROUTABLE_DESTINATIONS)}"
+            )
+        return tuple(value)
 
     @field_validator("source")
     @classmethod
@@ -258,6 +317,76 @@ class LocalVisualPool:
             matches = len(requested & asset_tags) if requested else 0
             if requested and matches == 0:
                 continue
+            ranked.append((-matches, risk_rank, str(asset.path), asset))
+
+        if not ranked:
+            return None
+        ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+        return ranked[slot_id % len(ranked)][3]
+
+    def select_by_destination(
+        self,
+        destination: str,
+        *,
+        aesthetic_tags: list[str] | tuple[str, ...] = (),
+        max_content_risk: ContentRisk = DEFAULT_MAX_CONTENT_RISK,
+        homage_class: str | None = None,
+        slot_id: int = 0,
+    ) -> VisualPoolAsset | None:
+        """Select an asset routable to a specific destination.
+
+        cc-task: visual-source-pool-homage-routing.
+
+        Filters:
+          - destination must be in the asset's `routable_destinations`
+            (legacy assets with empty list match only `"sierpinski"`)
+          - public destinations require either `broadcast_safe=True` AND
+            `public_posture in (None, "candidate", "live")`, OR
+            `public_posture == "live"` if posture is set
+          - private posture is blocked from all public destinations
+          - homage_class filter when supplied
+          - aesthetic_tags + risk_ceiling per existing select() shape
+        """
+        if destination not in _VALID_ROUTABLE_DESTINATIONS:
+            raise ValueError(
+                f"unknown destination {destination!r}; "
+                f"valid: {sorted(_VALID_ROUTABLE_DESTINATIONS)}"
+            )
+
+        requested = {_normalize_tag(tag) for tag in aesthetic_tags if _normalize_tag(tag)}
+        max_rank = _CONTENT_RISK_RANK[max_content_risk]
+        is_public_destination = destination in _PUBLIC_DESTINATIONS
+
+        ranked: list[tuple[int, int, str, VisualPoolAsset]] = []
+        for asset in self.scan():
+            if not asset.frame_loadable:
+                continue
+            if asset.tier_directory in NEVER_BROADCAST_DIRECTORIES:
+                continue
+
+            md = asset.metadata
+            asset_destinations = md.routable_destinations or ("sierpinski",)
+            if destination not in asset_destinations:
+                continue
+
+            if is_public_destination:
+                if md.public_posture == "private":
+                    continue
+                if md.public_posture is None and not md.broadcast_safe:
+                    continue
+
+            risk_rank = _CONTENT_RISK_RANK[md.content_risk]
+            if risk_rank > max_rank:
+                continue
+
+            if homage_class is not None and md.homage_class != homage_class:
+                continue
+
+            asset_tags = set(md.aesthetic_tags)
+            matches = len(requested & asset_tags) if requested else 0
+            if requested and matches == 0:
+                continue
+
             ranked.append((-matches, risk_rank, str(asset.path), asset))
 
         if not ranked:
