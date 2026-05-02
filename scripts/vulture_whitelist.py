@@ -1181,3 +1181,19 @@ from shared.liberapay_receive_only_rail import (
 
 DonationEvent._handle_is_username_only
 LiberapayRailReceiver.ingest_webhook
+
+# Open Collective receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Open Collective rail).
+# Pydantic field_validator hooks (slug + ISO 4217 currency) invoked at
+# construction; ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging Open Collective deliveries
+# (separate cc-task). Multi-currency preservation is the new shape this rail
+# introduces vs the prior two.
+from shared.open_collective_receive_only_rail import (
+    CollectiveEvent,
+    OpenCollectiveRailReceiver,
+)
+
+CollectiveEvent._handle_is_slug_only
+CollectiveEvent._currency_is_iso_4217
+OpenCollectiveRailReceiver.ingest_webhook
