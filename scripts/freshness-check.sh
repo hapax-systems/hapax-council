@@ -85,13 +85,9 @@ for unit in hapax-imagination.service; do
     fi
 done
 
-for unit in hapax-logos.service hapax-build-reload.path logos-dev.service; do
-    if systemctl --user is-active "$unit" &>/dev/null; then
-        warn "$unit is active but retired"
-    else
-        ok "$unit retired/inactive"
-    fi
-done
+# Decommissioned Tauri/WebKit units (hapax-logos.service, hapax-build-reload.path,
+# logos-dev.service) are validated by scripts/smoke-test.sh and verified
+# masked/absent by systemd/scripts/install-units.sh DECOMMISSIONED_UNITS.
 
 # 4. Shader freshness
 echo "[Shaders]"
