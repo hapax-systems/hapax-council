@@ -336,7 +336,62 @@ EXECUTIVE_PROBES: list[SufficiencyProbe] = [
         ),
         check=lambda: _check_task_context_persistence(),
     ),
+    SufficiencyProbe(
+        id="probe-feedback-002",
+        axiom_id="executive_function",
+        implication_id="ex-feedback-002",
+        level="component",
+        question=(
+            "Do agent modules emit explicit success markers (log.info "
+            "with done/complete/success/finished tokens or print('OK')) "
+            "rather than relying on absence of error?"
+        ),
+        check=lambda: _check_agents_emit_explicit_success(),
+    ),
 ]
+
+
+def _check_agents_emit_explicit_success() -> tuple[bool, str]:
+    """Enforces ex-feedback-002 (executive_function).
+
+    Success states must be explicitly confirmed rather than indicated
+    by absence of error messages. Verifies agent modules emit explicit
+    success markers — log.info with done/complete/success/finished
+    tokens, or print statements with OK/done/finished/checkmark.
+
+    Threshold: at least 5 agent modules emit explicit success markers.
+    Below this, the operator can't tell whether silence means success
+    or stuck.
+    """
+    success_pattern = re.compile(
+        r"log\.info\([^)]*(complete|success|done|finished)|"
+        r"print\([\"\']\s*(OK|done|completed|finished)"
+    )
+
+    agents_dir = AI_AGENTS_DIR / "agents"
+    if not agents_dir.exists():
+        return False, "agents directory not found"
+
+    matching: set[str] = set()
+    for py_file in agents_dir.rglob("*.py"):
+        try:
+            content = py_file.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if success_pattern.search(content):
+            relative = py_file.relative_to(agents_dir)
+            top_module = relative.parts[0] if relative.parts else py_file.name
+            matching.add(top_module)
+
+    if len(matching) >= 5:
+        return True, (
+            f"{len(matching)} agent modules emit explicit success markers "
+            f"— ex-feedback-002 sufficient"
+        )
+    return False, (
+        f"only {len(matching)} agents emit explicit success; "
+        f"sample: {', '.join(sorted(matching)[:5])}"
+    )
 
 
 def _check_task_context_persistence() -> tuple[bool, str]:

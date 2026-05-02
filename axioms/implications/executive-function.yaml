@@ -125,6 +125,7 @@ implications:
   mode: sufficiency
   level: component
 - id: ex-feedback-002
+  linkage: code-direct
   tier: T2
   text: Success states must be explicitly confirmed rather than indicated by absence
     of error messages.
