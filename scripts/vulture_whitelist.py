@@ -1168,3 +1168,16 @@ from shared.github_sponsors_receive_only_rail import (
 
 SponsorshipEvent._login_is_handle_only
 GitHubSponsorsRailReceiver.ingest_webhook
+
+# Liberapay receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Liberapay rail).
+# Pydantic field_validator hook invoked at construction; ingest_webhook is
+# the public receiver entry-point called by the downstream FastAPI handler
+# bridging email-to-webhook / CSV-export deliveries (separate cc-task).
+from shared.liberapay_receive_only_rail import (
+    DonationEvent,
+    LiberapayRailReceiver,
+)
+
+DonationEvent._handle_is_username_only
+LiberapayRailReceiver.ingest_webhook
