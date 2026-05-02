@@ -23,6 +23,7 @@ from shared.temporal_band_evidence import (
     load_temporal_band_evidence_fixtures,
 )
 from shared.world_surface_health import (
+    REQUIRED_CLAIM_BLOCKER_CASES,
     AuthorityCeiling,
     Claimability,
     EnvelopeStatus,
@@ -72,6 +73,13 @@ FAIL_CLOSED_POLICY = {
     "inferred_perceptual_data_satisfies_witness": False,
     "spanless_perceptual_data_satisfies_grounded_claim": False,
     "protention_satisfies_current_claim": False,
+    "protention_as_fact_satisfies_current_claim": False,
+    "stale_temporal_xml_allows_current_claim": False,
+    "fresh_temporal_xml_without_evidence_refs_allows_claim": False,
+    "stale_perceptual_field_allows_current_claim": False,
+    "empty_real_provenance_satisfies_grounded_claim": False,
+    "synthetic_only_provenance_satisfies_witness": False,
+    "contradictory_epochs_allow_current_claim": False,
     "autonomous_narration_without_wcs_health_allowed": False,
     "impingement_without_witness_satisfies_claim": False,
 }
@@ -106,7 +114,14 @@ class FalseGroundingRiskCause(StrEnum):
     INFERRED_PERCEPTUAL_DATA = "inferred_perceptual_data"
     SPANLESS_PERCEPTUAL_DATA = "spanless_perceptual_data"
     PROTENTION_AS_CURRENT = "protention_as_current"
+    PROTENTION_AS_FACT = "protention_as_fact"
     SURPRISE_AS_CURRENT = "surprise_as_current"
+    STALE_TEMPORAL_XML = "stale_temporal_xml"
+    FRESH_TEMPORAL_XML_WITHOUT_EVIDENCE_REFS = "fresh_temporal_xml_without_evidence_refs"
+    STALE_PERCEPTUAL_FIELD = "stale_perceptual_field"
+    EMPTY_REAL_PROVENANCE = "empty_real_provenance"
+    SYNTHETIC_ONLY_PROVENANCE = "synthetic_only_provenance"
+    CONTRADICTORY_PERCEPTION_TEMPORAL_EPOCHS = "contradictory_perception_temporal_epochs"
     STALE_STIMMUNG = "stale_stimmung"
     MISSING_GROUNDING_KEY = "missing_grounding_key"
     AUTONOMOUS_NARRATION_UNGATED = "autonomous_narration_ungated"
@@ -657,16 +672,7 @@ def _overall_status(statuses: list[HealthStatus]) -> EnvelopeStatus:
 
 def _wcs_false_grounding_risk_count(records: list[WorldSurfaceHealthRecord]) -> int:
     return sum(
-        record.fixture_case
-        in {
-            FixtureCase.CANDIDATE,
-            FixtureCase.UNKNOWN,
-            FixtureCase.STALE,
-            FixtureCase.MISSING,
-            FixtureCase.INFERRED,
-            FixtureCase.SELECTED_ONLY,
-            FixtureCase.COMMANDED_ONLY,
-        }
+        record.fixture_case.value in REQUIRED_CLAIM_BLOCKER_CASES
         or record.witness_policy
         in {
             WitnessPolicy.INFERRED,

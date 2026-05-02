@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hapax.council/schemas/world-surface-health-envelope.schema.json",
   "title": "WorldSurfaceHealthEnvelopeFixtures",
-  "description": "Fixture-backed contract rows for World Capability Surface health records and envelopes. Candidate, unknown, stale, missing, inferred, selected-only, and commanded-only rows fail closed.",
+  "description": "Fixture-backed contract rows for World Capability Surface health records and envelopes. Candidate, unknown, stale, missing, inferred, selected-only, commanded-only, wrong-route, leak, unsupported-claim, and false-monetization rows fail closed.",
   "type": "object",
   "required": [
     "schema_version",
@@ -64,7 +64,7 @@
       "type": "array",
       "items": {"$ref": "#/$defs/claim_blocker_case"},
       "uniqueItems": true,
-      "minItems": 7
+      "minItems": 11
     },
     "status_fixtures": {
       "type": "array",
@@ -86,7 +86,11 @@
         "inferred_context_satisfies_witness",
         "stale_source_allows_public_live",
         "missing_source_allows_claim",
-        "monetization_without_public_health"
+        "monetization_without_public_health",
+        "wrong_route_satisfies_action",
+        "leak_allows_public_claim",
+        "unsupported_claim_allows_grounded_success",
+        "false_monetization_allows_monetized_success"
       ],
       "additionalProperties": false,
       "properties": {
@@ -97,7 +101,14 @@
         "inferred_context_satisfies_witness": {"type": "boolean", "const": false},
         "stale_source_allows_public_live": {"type": "boolean", "const": false},
         "missing_source_allows_claim": {"type": "boolean", "const": false},
-        "monetization_without_public_health": {"type": "boolean", "const": false}
+        "monetization_without_public_health": {"type": "boolean", "const": false},
+        "wrong_route_satisfies_action": {"type": "boolean", "const": false},
+        "leak_allows_public_claim": {"type": "boolean", "const": false},
+        "unsupported_claim_allows_grounded_success": {"type": "boolean", "const": false},
+        "false_monetization_allows_monetized_success": {
+          "type": "boolean",
+          "const": false
+        }
       }
     }
   },
@@ -130,7 +141,11 @@
     "missing",
     "inferred",
     "selected_only",
-    "commanded_only"
+    "commanded_only",
+    "wrong_route",
+    "leak",
+    "unsupported_claim",
+    "false_monetization"
   ],
   "x-health_record_required_fields": [
     "schema_version",
@@ -232,7 +247,11 @@
         "missing",
         "inferred",
         "selected_only",
-        "commanded_only"
+        "commanded_only",
+        "wrong_route",
+        "leak",
+        "unsupported_claim",
+        "false_monetization"
       ]
     },
     "fixture_case": {
@@ -251,7 +270,11 @@
         "candidate",
         "inferred",
         "selected_only",
-        "commanded_only"
+        "commanded_only",
+        "wrong_route",
+        "leak",
+        "unsupported_claim",
+        "false_monetization"
       ]
     },
     "health_dimension_id": {
@@ -586,7 +609,11 @@
                   "missing",
                   "inferred",
                   "selected_only",
-                  "commanded_only"
+                  "commanded_only",
+                  "wrong_route",
+                  "leak",
+                  "unsupported_claim",
+                  "false_monetization"
                 ]
               }
             },

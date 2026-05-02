@@ -167,6 +167,56 @@ def test_perceptual_field_false_grounding_risks_block_grounding_dimensions() -> 
     assert inferred.authority_ceiling is AuthorityCeiling.NO_CLAIM
 
 
+@pytest.mark.parametrize(
+    ("cause", "row_id"),
+    [
+        (
+            FalseGroundingRiskCause.STALE_TEMPORAL_XML,
+            "temporal.xml.camera_scene.stale",
+        ),
+        (
+            FalseGroundingRiskCause.FRESH_TEMPORAL_XML_WITHOUT_EVIDENCE_REFS,
+            "temporal.xml.broadcast_health.fresh_without_evidence_refs",
+        ),
+        (
+            FalseGroundingRiskCause.STALE_PERCEPTUAL_FIELD,
+            "perceptual_field.camera.frame.stale",
+        ),
+        (
+            FalseGroundingRiskCause.EMPTY_REAL_PROVENANCE,
+            "perceptual_field.real_provenance.empty",
+        ),
+        (
+            FalseGroundingRiskCause.SYNTHETIC_ONLY_PROVENANCE,
+            "perceptual_field.provenance.synthetic_only",
+        ),
+        (
+            FalseGroundingRiskCause.PROTENTION_AS_FACT,
+            "temporal.protention.audio_readiness.expected",
+        ),
+        (
+            FalseGroundingRiskCause.CONTRADICTORY_PERCEPTION_TEMPORAL_EPOCHS,
+            "temporal.perception_epoch.contradictory",
+        ),
+    ],
+)
+def test_required_temporal_perceptual_negative_fixtures_block_public_success(
+    cause: FalseGroundingRiskCause,
+    row_id: str,
+) -> None:
+    fixture_set = load_temporal_perceptual_health_fixtures()
+    row = next(item for item in fixture_set.rows if item.row_id == row_id)
+    record = row.to_world_surface_health_record()
+
+    assert cause in row.false_grounding_risk_causes
+    assert f"false_grounding_risk:{cause.value}" in record.blocking_reasons
+    assert record.public_claim_allowed is False
+    assert record.claimability.public_live is False
+    assert record.claimability.action is False
+    assert record.claimability.grounded is False
+    assert record.satisfies_claimable_health() is False
+
+
 def test_false_grounding_metrics_count_temporal_causes_by_cause() -> None:
     counts = project_temporal_false_grounding_risk_metrics()
 
@@ -177,6 +227,13 @@ def test_false_grounding_metrics_count_temporal_causes_by_cause() -> None:
     assert counts[FalseGroundingRiskCause.INFERRED_PERCEPTUAL_DATA.value] == 1
     assert counts[FalseGroundingRiskCause.SPANLESS_PERCEPTUAL_DATA.value] == 1
     assert counts[FalseGroundingRiskCause.PROTENTION_AS_CURRENT.value] == 1
+    assert counts[FalseGroundingRiskCause.PROTENTION_AS_FACT.value] == 1
+    assert counts[FalseGroundingRiskCause.STALE_TEMPORAL_XML.value] == 1
+    assert counts[FalseGroundingRiskCause.FRESH_TEMPORAL_XML_WITHOUT_EVIDENCE_REFS.value] == 1
+    assert counts[FalseGroundingRiskCause.STALE_PERCEPTUAL_FIELD.value] == 1
+    assert counts[FalseGroundingRiskCause.EMPTY_REAL_PROVENANCE.value] == 1
+    assert counts[FalseGroundingRiskCause.SYNTHETIC_ONLY_PROVENANCE.value] == 1
+    assert counts[FalseGroundingRiskCause.CONTRADICTORY_PERCEPTION_TEMPORAL_EPOCHS.value] == 1
     assert counts[FalseGroundingRiskCause.IMPINGEMENT_WITHOUT_WITNESS.value] == 1
 
 

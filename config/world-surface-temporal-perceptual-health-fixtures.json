@@ -33,6 +33,13 @@
     "inferred_perceptual_data_satisfies_witness": false,
     "spanless_perceptual_data_satisfies_grounded_claim": false,
     "protention_satisfies_current_claim": false,
+    "protention_as_fact_satisfies_current_claim": false,
+    "stale_temporal_xml_allows_current_claim": false,
+    "fresh_temporal_xml_without_evidence_refs_allows_claim": false,
+    "stale_perceptual_field_allows_current_claim": false,
+    "empty_real_provenance_satisfies_grounded_claim": false,
+    "synthetic_only_provenance_satisfies_witness": false,
+    "contradictory_epochs_allow_current_claim": false,
     "autonomous_narration_without_wcs_health_allowed": false,
     "impingement_without_witness_satisfies_claim": false
   },
@@ -245,7 +252,8 @@
       "public_event_refs": [],
       "grounding_key_paths": [],
       "false_grounding_risk_causes": [
-        "protention_as_current"
+        "protention_as_current",
+        "protention_as_fact"
       ],
       "blocker_reason": "protention_cannot_ground_current_or_action_happened_claim",
       "warnings": [
@@ -926,6 +934,456 @@
       "next_probe_due_at": "2026-05-02T11:54:00Z",
       "witness_policy": "absent",
       "fixture_case": "missing"
+    },
+    {
+      "row_id": "temporal.xml.camera_scene.stale",
+      "display_name": "Stale temporal XML: camera scene",
+      "category": "temporal_band",
+      "temporal_band": "retention",
+      "status": "stale",
+      "freshness": {
+        "state": "stale",
+        "ttl_s": 30,
+        "observed_age_s": 240,
+        "source_ref": "temporal-xml:camera-scene:retention",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.82,
+      "authority_ceiling": "evidence_bound",
+      "privacy_state": "public_safe",
+      "rights_state": "public_clear",
+      "public_private_posture": "public_live",
+      "source_refs": [
+        "temporal-xml:camera-scene:retention",
+        "scene-detector:studio"
+      ],
+      "producer_refs": [
+        "producer:temporal-xml-exporter",
+        "producer:studio-scene-detector"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-current-claim-gate"
+      ],
+      "route_refs": [
+        "route:temporal-xml:retention"
+      ],
+      "substrate_refs": [
+        "substrate:temporal-xml",
+        "substrate:perceptual-field"
+      ],
+      "capability_refs": [
+        "capability:temporal-xml",
+        "claim:last-observed-only"
+      ],
+      "evidence_envelope_refs": [
+        "evidence-envelope:temporal-xml:camera-scene:stale"
+      ],
+      "witness_refs": [
+        "witness:scene.detector.window.0040"
+      ],
+      "span_refs": [
+        "span:scene.detector.window.0040"
+      ],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "stale_temporal_xml"
+      ],
+      "blocker_reason": "stale_temporal_xml_cannot_ground_current_or_public_live_claim",
+      "warnings": [
+        "temporal_xml_age_exceeds_current_claim_ttl"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "stale_temporal_xml",
+        "operator_visible_reason": "Stale temporal XML may only support last-observed language.",
+        "safe_state": "last_observed_only_with_age_window"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:30Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "stale"
+    },
+    {
+      "row_id": "temporal.xml.broadcast_health.fresh_without_evidence_refs",
+      "display_name": "Fresh temporal XML without evidence refs",
+      "category": "temporal_band",
+      "temporal_band": "impression",
+      "status": "blocked",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 30,
+        "observed_age_s": 1,
+        "source_ref": "temporal-xml:broadcast-health:fresh-without-evidence-refs",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.56,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "public_safe",
+      "rights_state": "missing",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "temporal-xml:broadcast-health:fresh-without-evidence-refs",
+        "wcs:audio.broadcast_voice.health"
+      ],
+      "producer_refs": [
+        "producer:temporal-xml-exporter"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-live-claim-gate"
+      ],
+      "route_refs": [
+        "route:temporal-xml:impression"
+      ],
+      "substrate_refs": [
+        "substrate:temporal-xml",
+        "substrate:audio.broadcast_voice.health"
+      ],
+      "capability_refs": [
+        "capability:temporal-xml",
+        "claim:fresh-source-without-evidence-refs"
+      ],
+      "evidence_envelope_refs": [
+        "negative-fixture:temporal-xml:fresh-without-evidence-refs"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "fresh_temporal_xml_without_evidence_refs"
+      ],
+      "blocker_reason": "fresh_temporal_xml_without_evidence_refs_cannot_ground_claim",
+      "warnings": [
+        "freshness_without_embedded_evidence_refs_is_not_grounding"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "fresh_temporal_xml_without_evidence_refs",
+        "operator_visible_reason": "Fresh temporal XML without evidence refs cannot ground a public claim.",
+        "safe_state": "drop_from_public_prompt"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:30Z",
+      "witness_policy": "absent",
+      "fixture_case": "missing"
+    },
+    {
+      "row_id": "perceptual_field.camera.frame.stale",
+      "display_name": "Stale PerceptualField camera frame",
+      "category": "perceptual_field",
+      "temporal_band": "retention",
+      "status": "stale",
+      "freshness": {
+        "state": "stale",
+        "ttl_s": 8,
+        "observed_age_s": 90,
+        "source_ref": "module:shared.perceptual_field",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.68,
+      "authority_ceiling": "evidence_bound",
+      "privacy_state": "public_safe",
+      "rights_state": "public_clear",
+      "public_private_posture": "public_live",
+      "source_refs": [
+        "module:shared.perceptual_field",
+        "registry-key:camera.frame"
+      ],
+      "producer_refs": [
+        "producer:perceptual-field"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:director"
+      ],
+      "route_refs": [
+        "route:perceptual-field:camera.frame"
+      ],
+      "substrate_refs": [
+        "substrate:perceptual-field",
+        "substrate:camera"
+      ],
+      "capability_refs": [
+        "capability:perceptual-field",
+        "registry-key:camera.frame"
+      ],
+      "evidence_envelope_refs": [
+        "evidence-envelope:perceptual-field:camera-frame:stale"
+      ],
+      "witness_refs": [
+        "witness:camera.frame.window.0039"
+      ],
+      "span_refs": [
+        "span:camera.frame.window.0039"
+      ],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "stale_perceptual_field"
+      ],
+      "blocker_reason": "stale_perceptual_field_cannot_ground_current_claim",
+      "warnings": [
+        "perceptual_field_age_exceeds_current_claim_ttl"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "stale_perceptual_field",
+        "operator_visible_reason": "Stale PerceptualField data cannot ground a current public claim.",
+        "safe_state": "last_observed_only_with_age_window"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:08Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "stale"
+    },
+    {
+      "row_id": "perceptual_field.real_provenance.empty",
+      "display_name": "Empty real provenance PerceptualField row",
+      "category": "perceptual_field",
+      "temporal_band": "impression",
+      "status": "blocked",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 15,
+        "observed_age_s": 1,
+        "source_ref": "module:shared.perceptual_field",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.49,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "public_safe",
+      "rights_state": "missing",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "module:shared.perceptual_field",
+        "real-provenance:empty"
+      ],
+      "producer_refs": [
+        "producer:perceptual-field"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-broadcast"
+      ],
+      "route_refs": [
+        "route:perceptual-field:real-provenance"
+      ],
+      "substrate_refs": [
+        "substrate:perceptual-field"
+      ],
+      "capability_refs": [
+        "capability:perceptual-field",
+        "claim:requires-real-provenance"
+      ],
+      "evidence_envelope_refs": [
+        "evidence-envelope:perceptual-field:real-provenance-empty"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "empty_real_provenance"
+      ],
+      "blocker_reason": "empty_real_provenance_cannot_satisfy_grounded_claim",
+      "warnings": [
+        "empty_real_provenance_is_not_a_world_witness"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "empty_real_provenance",
+        "operator_visible_reason": "PerceptualField row has no real provenance witness.",
+        "safe_state": "drop_from_public_prompt"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:15Z",
+      "witness_policy": "absent",
+      "fixture_case": "missing"
+    },
+    {
+      "row_id": "perceptual_field.provenance.synthetic_only",
+      "display_name": "Synthetic-only PerceptualField provenance",
+      "category": "perceptual_field",
+      "temporal_band": "impression",
+      "status": "blocked",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 15,
+        "observed_age_s": 1,
+        "source_ref": "module:shared.perceptual_field",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.54,
+      "authority_ceiling": "speculative",
+      "privacy_state": "public_safe",
+      "rights_state": "aggregate_only",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "module:shared.perceptual_field",
+        "provenance:synthetic-only"
+      ],
+      "producer_refs": [
+        "producer:perceptual-field"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:director"
+      ],
+      "route_refs": [
+        "route:perceptual-field:synthetic-provenance"
+      ],
+      "substrate_refs": [
+        "substrate:perceptual-field"
+      ],
+      "capability_refs": [
+        "capability:perceptual-field",
+        "claim:synthetic-only-provenance"
+      ],
+      "evidence_envelope_refs": [
+        "evidence-envelope:perceptual-field:synthetic-only-provenance"
+      ],
+      "witness_refs": [
+        "synthetic:witness:generated-caption"
+      ],
+      "span_refs": [
+        "span:synthetic-caption.window.0042"
+      ],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "synthetic_only_provenance"
+      ],
+      "blocker_reason": "synthetic_only_provenance_cannot_satisfy_witness",
+      "warnings": [
+        "synthetic_only_provenance_requires_real_witness_before_public_claim"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "synthetic_only_provenance",
+        "operator_visible_reason": "Synthetic-only provenance is not real-world witness evidence.",
+        "safe_state": "private_diagnostic_only"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:15Z",
+      "witness_policy": "inferred",
+      "fixture_case": "inferred"
+    },
+    {
+      "row_id": "temporal.perception_epoch.contradictory",
+      "display_name": "Contradictory perception and temporal epochs",
+      "category": "perception_state",
+      "temporal_band": "impression",
+      "status": "blocked",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 30,
+        "observed_age_s": 2,
+        "source_ref": "epoch:temporal:0042",
+        "checked_at": "2026-05-02T11:49:00Z"
+      },
+      "confidence": 0.72,
+      "authority_ceiling": "no_claim",
+      "privacy_state": "public_safe",
+      "rights_state": "public_clear",
+      "public_private_posture": "blocked",
+      "source_refs": [
+        "epoch:temporal:0042",
+        "epoch:perception:0043"
+      ],
+      "producer_refs": [
+        "producer:temporal-bands",
+        "producer:perception-state"
+      ],
+      "consumer_refs": [
+        "consumer:world-surface-health",
+        "consumer:public-current-claim-gate"
+      ],
+      "route_refs": [
+        "route:temporal-perception-epoch-join"
+      ],
+      "substrate_refs": [
+        "substrate:temporal-bands",
+        "substrate:perception-state"
+      ],
+      "capability_refs": [
+        "capability:temporal-bands",
+        "capability:perception-state",
+        "claim:requires-matching-epoch"
+      ],
+      "evidence_envelope_refs": [
+        "evidence-envelope:temporal-perception:contradictory-epochs"
+      ],
+      "witness_refs": [
+        "witness:perception.epoch.0043"
+      ],
+      "span_refs": [
+        "span:temporal.epoch.0042",
+        "span:perception.epoch.0043"
+      ],
+      "grounding_gate_refs": [],
+      "public_event_refs": [],
+      "grounding_key_paths": [],
+      "false_grounding_risk_causes": [
+        "contradictory_perception_temporal_epochs"
+      ],
+      "blocker_reason": "contradictory_perception_temporal_epochs_cannot_ground_current_claim",
+      "warnings": [
+        "perception_and_temporal_epochs_must_match_before_current_claim"
+      ],
+      "fallback": {
+        "mode": "block_public_claim",
+        "reason_code": "contradictory_epochs",
+        "operator_visible_reason": "Contradictory temporal/perception epochs block current-world claims.",
+        "safe_state": "blocked"
+      },
+      "kill_switch_state": {
+        "state": "clear",
+        "evidence_refs": [
+          "kill-switch:temporal-perceptual:clear"
+        ]
+      },
+      "owner": "world-surface-health-temporal-perceptual-adapter",
+      "next_probe_due_at": "2026-05-02T11:49:30Z",
+      "witness_policy": "witnessed",
+      "fixture_case": "wrong_route"
     },
     {
       "row_id": "stimmung.state.fresh",
