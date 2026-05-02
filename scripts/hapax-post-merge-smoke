@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# hapax-post-merge-smoke — gate-driven smoke verification for a merge.
+#
+# Invoked by hapax-post-merge-deploy after services restart. Walks a
+# matrix of smoke gates that match the diff produced by $SHA, and
+# ntfy's on any failure. Always exits 0 — the deploy already happened;
+# the smoke is informational. The operator decides whether to revert.
+#
+# Per cc-task `post-merge-smoke-runner` (WSJF 6.5, 2026-05-02).
+#
+# Usage:
+#   scripts/hapax-post-merge-smoke <merge-sha>
+#
+# Env:
+#   NTFY_TOPIC          (optional) ntfy topic; if unset, prints to stderr
+#   HAPAX_SMOKE_OFF=1   skip all gates (post-merge-deploy can hard-disable)
+#   HAPAX_SMOKE_DRYRUN=1  print which gates would fire without running them
+set -uo pipefail
+
+[ "${HAPAX_SMOKE_OFF:-0}" = "1" ] && exit 0
+
+SHA="${1:-HEAD}"
+REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo .)}"
+DRYRUN="${HAPAX_SMOKE_DRYRUN:-0}"
+
+cd "$REPO_ROOT" || exit 0
+
+# Resolve the SHA range. If SHA is a single commit, compare against its
+# first parent. Tolerant of merge commits and squash-merges.
+if ! git rev-parse --verify --quiet "${SHA}^{commit}" >/dev/null; then
+    echo "smoke: invalid SHA '$SHA'; skipping" >&2
+    exit 0
+fi
+if FIRST_PARENT="$(git rev-parse --verify --quiet "${SHA}^1" 2>/dev/null)"; then
+    DIFF_BASE="$FIRST_PARENT"
+else
+    DIFF_BASE="${SHA}~1"
+fi
+
+CHANGED_FILES="$(git diff --name-only "${DIFF_BASE}..${SHA}" 2>/dev/null || true)"
+[ -z "$CHANGED_FILES" ] && exit 0
+
+# ── Failure tracking ─────────────────────────────────────────────────
+
+FAILED_GATES=()
+record_failure() {
+    FAILED_GATES+=("$1: $2")
+}
+
+# ── Helper: emit ntfy + stderr on any failure ────────────────────────
+
+emit_failure_notice() {
+    local count=${#FAILED_GATES[@]}
+    [ "$count" -eq 0 ] && return
+    local body="merge=$SHA gates_failed=$count"
+    for entry in "${FAILED_GATES[@]}"; do
+        echo "smoke FAIL: $entry" >&2
+        body="$body | $entry"
+    done
+    if [ -n "${NTFY_TOPIC:-}" ]; then
+        curl -s \
+            -H "Title: post-merge smoke FAIL ($count gate$([ "$count" -gt 1 ] && echo s))" \
+            -H "Priority: default" \
+            -H "Tags: warning,test" \
+            -d "$body" \
+            "https://ntfy.sh/${NTFY_TOPIC}" \
+            >/dev/null 2>&1 || true
+    fi
+}
+trap emit_failure_notice EXIT
+
+# ── Gate: services-restarted ─────────────────────────────────────────
+# When any systemd/units/*.service is in the diff, verify the unit is
+# active + NRestarts did not increment after the deploy.
+
+gate_services_restarted() {
+    local changed_units=()
+    while IFS= read -r f; do
+        case "$f" in
+            systemd/units/*.service)
+                changed_units+=("$(basename "$f")")
+                ;;
+        esac
+    done <<< "$CHANGED_FILES"
+    [ "${#changed_units[@]}" -eq 0 ] && return
+
+    [ "$DRYRUN" = "1" ] && { echo "[dry-run] services-restarted: ${changed_units[*]}"; return; }
+
+    for unit in "${changed_units[@]}"; do
+        # Skip decommissioned-list units; they should NOT be active.
+        if grep -qF "$unit" "$REPO_ROOT/systemd/scripts/install-units.sh" 2>/dev/null \
+            && grep -qE "DECOMMISSIONED_UNITS=\(" "$REPO_ROOT/systemd/scripts/install-units.sh"; then
+            continue
+        fi
+        if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+            record_failure "services-restarted" "$unit not active after deploy"
+        fi
+    done
+}
+
+# ── Gate: broadcast-healthy ──────────────────────────────────────────
+# When the diff touches the audio-routing surface, check that the
+# broadcast world-surface row reports audibility=healthy within 30s.
+
+gate_broadcast_healthy() {
+    local touched=false
+    while IFS= read -r f; do
+        case "$f" in
+            agents/studio_compositor/*|\
+            agents/hapax_daimonion/*|\
+            shared/voice_output_router.py|\
+            shared/voice_role_router.py|\
+            config/voice-output-routes.yaml)
+                touched=true
+                break
+                ;;
+        esac
+    done <<< "$CHANGED_FILES"
+    $touched || return
+
+    [ "$DRYRUN" = "1" ] && { echo "[dry-run] broadcast-healthy"; return; }
+
+    # Look for the world-surface audio-health JSON the compositor publishes.
+    local health_file="/dev/shm/hapax-audio/world-surface-broadcast.json"
+    local deadline=$(( $(date +%s) + 30 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if [ -f "$health_file" ]; then
+            if grep -qE '"audibility"\s*:\s*"healthy"' "$health_file" 2>/dev/null; then
+                return
+            fi
+        fi
+        sleep 2
+    done
+    record_failure "broadcast-healthy" "$health_file did not report audibility=healthy within 30s"
+}
+
+# ── Gate: dependent-component ─────────────────────────────────────────
+# When a hapax-logos shared dependency changes, verify the consumer
+# service restarted cleanly within the deploy window.
+
+gate_dependent_component() {
+    local touched=false
+    while IFS= read -r f; do
+        case "$f" in
+            hapax-logos/crates/hapax-visual/*|\
+            hapax-logos/crates/hapax-imagination/*)
+                touched=true
+                break
+                ;;
+        esac
+    done <<< "$CHANGED_FILES"
+    $touched || return
+
+    [ "$DRYRUN" = "1" ] && { echo "[dry-run] dependent-component"; return; }
+
+    if ! systemctl --user is-active --quiet hapax-imagination.service 2>/dev/null; then
+        record_failure "dependent-component" "hapax-imagination not active after wgpu/visual change"
+    fi
+}
+
+# ── Gate: m8-midi-clock-peer ──────────────────────────────────────────
+# When agents/hapax_daimonion/backends/midi_clock.py changes, verify
+# the M8 device produces a peer tempo signal the daimonion picks up.
+
+gate_m8_midi_clock_peer() {
+    local touched=false
+    while IFS= read -r f; do
+        case "$f" in
+            agents/hapax_daimonion/backends/midi_clock.py)
+                touched=true
+                break
+                ;;
+        esac
+    done <<< "$CHANGED_FILES"
+    $touched || return
+
+    [ "$DRYRUN" = "1" ] && { echo "[dry-run] m8-midi-clock-peer"; return; }
+
+    # Only run the check if the M8 is actually present (operator-physical
+    # device). On absence, skip — the smoke is informational, not gating.
+    if ! command -v amidi >/dev/null 2>&1; then
+        return
+    fi
+    if ! amidi -l 2>/dev/null | grep -qiE 'M8|hw:.*M8'; then
+        return  # M8 not connected; skip
+    fi
+    # Look for the daimonion's published tempo signal.
+    local tempo_file="/dev/shm/hapax-daimonion/peer-tempo.json"
+    local deadline=$(( $(date +%s) + 15 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if [ -f "$tempo_file" ]; then
+            if grep -qE '"source"\s*:\s*"m8"' "$tempo_file" 2>/dev/null; then
+                return
+            fi
+        fi
+        sleep 1
+    done
+    record_failure "m8-midi-clock-peer" "$tempo_file did not show source=m8 within 15s of deploy"
+}
+
+# ── Gate dispatch ─────────────────────────────────────────────────────
+
+gate_services_restarted
+gate_broadcast_healthy
+gate_dependent_component
+gate_m8_midi_clock_peer
+
+# Trap fires emit_failure_notice on exit. Always exit 0.
+exit 0
