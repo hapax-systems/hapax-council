@@ -976,3 +976,23 @@ build_score_report
 compute_drift
 compute_tree_effect_scores
 load_task_graph
+
+# Runway Big Pitch contest runner — Gen-3 video generation client + CLI.
+# Phase 1 ships the typed wrapper + dry-run CLI; Phase 2 wires the
+# social-hashtag publisher (#RunwayBigPitchContest via existing
+# publication_bus surfaces — there is no dedicated form-submission
+# endpoint per Runway's 2026 Big Pitch contest mechanics).
+from shared.runway_gen3_client import (
+    GenerateRequest,
+    RunwayClientError,
+    RunwayGen3Client,
+    TaskResponse,
+)
+
+RunwayGen3Client.generate
+RunwayGen3Client.poll
+RunwayGen3Client.generate_and_wait
+RunwayGen3Client.close
+GenerateRequest
+TaskResponse
+RunwayClientError
