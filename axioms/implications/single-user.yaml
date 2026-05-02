@@ -23,6 +23,7 @@ implications:
   mode: sufficiency
   level: component
 - id: su-data-001
+  linkage: code-direct
   tier: T1
   text: All data storage can assume single-user ownership without access control,
     permissions checks, or data isolation.
@@ -90,6 +91,7 @@ implications:
   mode: compatibility
   level: component
 - id: su-api-001
+  linkage: code-direct
   tier: T1
   text: API endpoints can assume trusted caller and skip user verification, quotas,
     and abuse prevention.
@@ -238,6 +240,7 @@ implications:
   mode: compatibility
   level: component
 - id: su-agents-001
+  linkage: code-direct
   tier: T1
   text: AI agents must not implement user context switching, user permission checking,
     or user-specific behavior customization.
