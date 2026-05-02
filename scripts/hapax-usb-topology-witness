@@ -13,8 +13,15 @@ from typing import Any
 
 S4_SERIAL = "fedcba9876543220"
 S4_EXPECTED_PATHS = {
+    # CalDigit hub paths (legacy primary).
     "pci-0000:71:00.0-usb-0:1.5",
     "pci-0000:71:00.0-usb-0:1.1.1.3",
+    # Front PC case USB-C port (motherboard 0000:09:00.0 root hub).
+    # Promoted to canonical 2026-05-01T22:42Z by operator after the
+    # CalDigit-hub paths could not be re-established post-replug.
+    # Hardening applied per operator directive: "this will be the
+    # standard and default enumeration if it works".
+    "pci-0000:09:00.0-usb-0:1",
 }
 S4_SINK = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 S4_SOURCE = "alsa_input.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-input"

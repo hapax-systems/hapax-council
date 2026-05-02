@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""PR admission governor — controls who can open PRs during drain/frozen periods.
+
+Spec: docs/superpowers/specs/2026-05-01-pr-admission-freeze-governor.md
+       (also at hapax-research/specs/ in operator vault)
+
+Commands
+--------
+status         Print mode + open-PR count + per-state breakdown + admission verdict
+freeze         Set mode=frozen + snapshot current open branches
+drain          Set mode=drain + snapshot (same as freeze, semantic distinction only)
+normal         Clear freeze; requires open-count below threshold for stable_ticks
+mint-exception Create one-shot exception token
+
+Control file
+------------
+~/.cache/hapax/pr-admission-governor.yaml
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+CONTROL_PATH = Path(os.path.expanduser("~/.cache/hapax/pr-admission-governor.yaml"))
+DEFAULT_EXIT_BELOW_COUNT = 6
+DEFAULT_STABLE_TICKS = 2
+ALLOWED_MODES = {"normal", "drain", "frozen"}
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _role_from_env() -> str:
+    return os.environ.get("CLAUDE_ROLE") or os.environ.get("HAPAX_AGENT_NAME") or "unknown"
+
+
+def load_state() -> dict[str, Any]:
+    """Load the control file. Returns a default normal-mode shape if missing."""
+    if not CONTROL_PATH.exists():
+        return {
+            "mode": "normal",
+            "updated": _now_iso(),
+            "set_by": "default",
+            "reason": "no control file present",
+            "entry_open_pr_count": 0,
+            "exit_below_count": DEFAULT_EXIT_BELOW_COUNT,
+            "exit_stable_ticks_required": DEFAULT_STABLE_TICKS,
+            "stable_ticks_observed": 0,
+            "allowed_existing_branches": [],
+            "allowed_exception_tokens": [],
+        }
+    with CONTROL_PATH.open() as fh:
+        data = yaml.safe_load(fh) or {}
+    data.setdefault("mode", "normal")
+    data.setdefault("updated", _now_iso())
+    data.setdefault("set_by", "unknown")
+    data.setdefault("reason", "")
+    data.setdefault("entry_open_pr_count", 0)
+    data.setdefault("exit_below_count", DEFAULT_EXIT_BELOW_COUNT)
+    data.setdefault("exit_stable_ticks_required", DEFAULT_STABLE_TICKS)
+    data.setdefault("stable_ticks_observed", 0)
+    data.setdefault("allowed_existing_branches", [])
+    data.setdefault("allowed_exception_tokens", [])
+    return data
+
+
+def save_state(state: dict[str, Any]) -> None:
+    """Atomic write."""
+    CONTROL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    state["updated"] = _now_iso()
+    tmp = CONTROL_PATH.with_suffix(CONTROL_PATH.suffix + ".tmp")
+    with tmp.open("w") as fh:
+        yaml.safe_dump(state, fh, sort_keys=False)
+    tmp.replace(CONTROL_PATH)
+
+
+def query_open_prs() -> list[dict[str, Any]]:
+    """Returns list of open PRs with number/headRefName/mergeStateStatus/statusCheckRollup."""
+    if not shutil.which("gh"):
+        return []
+    try:
+        out = subprocess.check_output(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "100",
+                "--json",
+                "number,headRefName,mergeStateStatus,statusCheckRollup,title",
+            ],
+            text=True,
+            timeout=15,
+        )
+        return json.loads(out)
+    except (subprocess.SubprocessError, json.JSONDecodeError):
+        return []
+
+
+def classify_pr(pr: dict[str, Any]) -> str:
+    """Classify PR into one of: failed, pending, behind, blocked, green."""
+    rollup = pr.get("statusCheckRollup") or []
+    has_fail = any(c.get("conclusion") == "FAILURE" for c in rollup)
+    has_pending = any(
+        c.get("status") in ("IN_PROGRESS", "QUEUED") or c.get("conclusion") is None for c in rollup
+    )
+    ms = pr.get("mergeStateStatus", "")
+    if has_fail:
+        return "failed"
+    if has_pending:
+        return "pending"
+    if ms == "BEHIND":
+        return "behind"
+    if ms == "BLOCKED":
+        return "blocked"
+    return "green"
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    state = load_state()
+    prs = query_open_prs()
+    open_count = len(prs)
+    by_class: dict[str, list[int]] = {}
+    for pr in prs:
+        by_class.setdefault(classify_pr(pr), []).append(pr["number"])
+
+    print(f"PR admission governor: mode = {state['mode']}")
+    print(f"  Updated: {state['updated']}  set_by: {state['set_by']}")
+    print(f"  Reason:  {state['reason']}")
+    print(f"  Open PRs: {open_count}")
+    for cls in ("failed", "pending", "behind", "blocked", "green"):
+        nums = by_class.get(cls, [])
+        if nums:
+            print(f"    {cls}: {len(nums)}  {nums}")
+    if state["mode"] in ("drain", "frozen"):
+        print(
+            f"  Exit threshold: count < {state['exit_below_count']} for {state['exit_stable_ticks_required']} consecutive ticks"
+        )
+        print(f"  Stable ticks observed: {state['stable_ticks_observed']}")
+        snapshot = state.get("allowed_existing_branches", [])
+        print(f"  Snapshot branches ({len(snapshot)}):")
+        for b in snapshot[:10]:
+            print(f"    {b}")
+        if len(snapshot) > 10:
+            print(f"    ... +{len(snapshot) - 10} more")
+
+    print()
+    if state["mode"] == "normal":
+        print("ADMISSION: ALLOWED — new PRs / new branches OK.")
+        return 0
+    print(f"ADMISSION: BLOCKED — mode is {state['mode']}.")
+    print("  Allowed: pushing to snapshot branches; gh pr update-branch; failed-check fixes;")
+    print("           closing duplicates; vault/relay updates; valid one-shot exception tokens.")
+    print(f"  To clear: open PR count must drop below {state['exit_below_count']}")
+    print(f"            for {state['exit_stable_ticks_required']} consecutive ticks, then run:")
+    print("            hapax-pr-admission normal --reason 'drain complete'")
+    return 0
+
+
+def _snapshot_open_branches() -> list[str]:
+    return sorted({pr["headRefName"] for pr in query_open_prs()})
+
+
+def cmd_freeze_or_drain(args: argparse.Namespace, mode: str) -> int:
+    state = load_state()
+    snapshot = _snapshot_open_branches()
+    state.update(
+        {
+            "mode": mode,
+            "set_by": _role_from_env(),
+            "reason": args.reason,
+            "entry_open_pr_count": len(snapshot),
+            "stable_ticks_observed": 0,
+            "allowed_existing_branches": snapshot,
+        }
+    )
+    save_state(state)
+    print(f"PR admission governor: mode set to {mode} by {state['set_by']}")
+    print(f"  Reason: {args.reason}")
+    print(f"  Snapshot of {len(snapshot)} open branches:")
+    for b in snapshot:
+        print(f"    {b}")
+    return 0
+
+
+def cmd_freeze(args: argparse.Namespace) -> int:
+    return cmd_freeze_or_drain(args, "frozen")
+
+
+def cmd_drain(args: argparse.Namespace) -> int:
+    return cmd_freeze_or_drain(args, "drain")
+
+
+def cmd_normal(args: argparse.Namespace) -> int:
+    state = load_state()
+    open_count = len(query_open_prs())
+    threshold = state["exit_below_count"]
+    required_stable = state["exit_stable_ticks_required"]
+
+    if open_count < threshold:
+        state["stable_ticks_observed"] = state["stable_ticks_observed"] + 1
+    else:
+        state["stable_ticks_observed"] = 0
+
+    can_clear = state["stable_ticks_observed"] >= required_stable
+    if not can_clear and not args.force:
+        save_state(state)
+        print(f"PR admission governor: cannot clear — open={open_count} threshold={threshold}")
+        print(f"  Stable ticks observed: {state['stable_ticks_observed']}/{required_stable}")
+        print("  Override with --force (operator only)")
+        return 1
+
+    state.update(
+        {
+            "mode": "normal",
+            "set_by": _role_from_env(),
+            "reason": args.reason,
+            "stable_ticks_observed": 0,
+            "allowed_existing_branches": [],
+            "allowed_exception_tokens": [],
+        }
+    )
+    save_state(state)
+    flag = " (forced)" if args.force else ""
+    print(f"PR admission governor: mode set to normal by {state['set_by']}{flag}")
+    print(f"  Reason: {args.reason}")
+    print(f"  Open PRs at clear: {open_count}")
+    return 0
+
+
+def cmd_mint_exception(args: argparse.Namespace) -> int:
+    state = load_state()
+    token = "prfix-" + secrets.token_hex(8)
+    expires = args.expires or _now_iso()
+    state.setdefault("allowed_exception_tokens", []).append(
+        {
+            "token": token,
+            "owner": args.owner,
+            "branch": args.branch,
+            "target_pr": args.target_pr,
+            "allowed_paths": args.paths,
+            "expires_at": expires,
+            "consumed": False,
+        }
+    )
+    save_state(state)
+    print(f"Exception token minted: {token}")
+    print(f"  Owner: {args.owner}  Branch: {args.branch}  Target PR: {args.target_pr}")
+    print(f"  Allowed paths: {args.paths}")
+    print(f"  Expires: {expires}")
+    return 0
+
+
+def is_admission_allowed(branch: str | None) -> tuple[bool, str]:
+    """Library entry point used by hooks and CI.
+
+    Returns (allowed, reason). branch=None tests admission of new PR creation.
+    """
+    state = load_state()
+    if state["mode"] == "normal":
+        return True, "normal mode"
+    if branch is not None and branch in state.get("allowed_existing_branches", []):
+        return True, f"branch {branch} in snapshot"
+    return False, f"mode is {state['mode']} and branch {branch!r} not in snapshot"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="PR admission governor")
+    subs = parser.add_subparsers(dest="cmd", required=True)
+
+    sub_status = subs.add_parser("status", help="Print current state")
+    sub_status.set_defaults(fn=cmd_status)
+
+    sub_freeze = subs.add_parser("freeze", help="Set mode=frozen + snapshot branches")
+    sub_freeze.add_argument("--reason", default="freeze requested", help="Reason text")
+    sub_freeze.set_defaults(fn=cmd_freeze)
+
+    sub_drain = subs.add_parser("drain", help="Set mode=drain + snapshot branches")
+    sub_drain.add_argument("--reason", default="drain in progress", help="Reason text")
+    sub_drain.set_defaults(fn=cmd_drain)
+
+    sub_normal = subs.add_parser("normal", help="Clear to normal mode")
+    sub_normal.add_argument("--reason", default="drain complete", help="Reason text")
+    sub_normal.add_argument("--force", action="store_true", help="Override stability check")
+    sub_normal.set_defaults(fn=cmd_normal)
+
+    sub_mint = subs.add_parser("mint-exception", help="Create one-shot exception token")
+    sub_mint.add_argument("--owner", required=True)
+    sub_mint.add_argument("--target-pr", required=True, type=int)
+    sub_mint.add_argument("--branch", required=True)
+    sub_mint.add_argument("--paths", required=True, nargs="+")
+    sub_mint.add_argument("--expires", default=None)
+    sub_mint.set_defaults(fn=cmd_mint_exception)
+
+    args = parser.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
