@@ -34,6 +34,7 @@ verdict.
 | `skill-trigger-advisory.sh` | session | ADVISORY: suggest skills matching context |
 | `sprint-tracker.sh` | session | ADVISORY: sprint progress |
 | `branch-switch-guard.sh` | Bash | BLOCK cross-session branch switches |
+| `canonical-worktree-protect.sh` | Bash | BLOCK `git checkout/switch/reset --hard` to non-main refs in canonical worktree (`/home/hapax/projects/hapax-council`); allows main-targeting commands, file restores, fetches, pulls, worktree-add. Operator escape: `HAPAX_CANONICAL_PROTECT_BYPASS=1` |
 | `gemini-session-adapter.sh` / `gemini-tool-adapter.sh` | session | Adapter bridges for Gemini subagents |
 | `conductor-*.sh` | session | Session-conductor protocol |
 | `cargo-check-rust.sh` | Edit / Write | PostToolUse: run cargo check on .rs edits |
