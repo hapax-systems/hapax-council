@@ -3152,11 +3152,37 @@ async def test_treasury_prime_signed_incoming_ach_writes_manifest(
 
 
 @pytest.mark.asyncio
-async def test_treasury_prime_phase_1_event_rejected(
-    tp_output_dir: Path, tp_secret_env: str
+async def test_treasury_prime_phase_1_transaction_create_credit_accepted(
+    tp_output_dir: Path,
+    tp_secret_env: str,
+    tp_idempotency_isolated: Path,
 ) -> None:
-    """Phase 0 rejects core-direct-account events (Phase 1 scope)."""
-    payload = _treasury_prime_payload(event="transaction.create")
+    """Phase 1: transaction.create with direction=credit is accepted."""
+    payload = _treasury_prime_payload(event="transaction.create", ach_id="tp-phase1-credit-test")
+    payload["data"]["direction"] = "credit"
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["event_kind"] == "transaction.create"
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_phase_1_transaction_create_debit_rejected(
+    tp_output_dir: Path,
+    tp_secret_env: str,
+    tp_idempotency_isolated: Path,
+) -> None:
+    """Phase 1: transaction.create with direction=debit (outgoing) is refused."""
+    payload = _treasury_prime_payload(event="transaction.create", ach_id="tp-phase1-debit-test")
+    payload["data"]["direction"] = "debit"
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -3168,7 +3194,32 @@ async def test_treasury_prime_phase_1_event_rejected(
         )
 
     assert response.status_code == 400
-    assert "out of Phase 0 scope" in response.json()["detail"]
+    assert "refusing outgoing" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_phase_1_transaction_create_missing_direction_rejected(
+    tp_output_dir: Path,
+    tp_secret_env: str,
+    tp_idempotency_isolated: Path,
+) -> None:
+    """Phase 1: transaction.create without data.direction is refused."""
+    payload = _treasury_prime_payload(
+        event="transaction.create", ach_id="tp-phase1-missing-direction-test"
+    )
+    # No direction field set
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "data.direction" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
