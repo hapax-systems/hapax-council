@@ -38,6 +38,18 @@ signature header is verified against ``GITHUB_SPONSORS_WEBHOOK_SECRET``
 (``os.environ.get``; never hardcoded). Validation, signature, or
 unknown-event failures fail-closed via :class:`ReceiveOnlyRailError`.
 
+**REST → GraphQL deprecation (2026-03-10).** GitHub deprecated the
+REST sponsors endpoint in favor of GraphQL on 2026-03-10. The
+*webhook delivery path* — which is the only path this rail uses — is
+unaffected: GitHub continues to ship `sponsorship.*` events with
+HMAC SHA-256 over the raw body, and the payload schema fields the
+rail extracts (``sponsorship.sponsor.login``, ``sponsorship.tier.
+monthly_price_in_dollars`` / ``monthly_price_in_cents``,
+``sponsorship.created_at`` / ``effective_date``) are stable across
+both API surfaces. The deprecation only affects code that *queries*
+the Sponsors API — which our receive-only invariant forbids by
+design. No code change required.
+
 **Canonicalization.** Module-private :func:`_canonical_bytes` produces
 the byte stream the receiver hashes for the SHA-256 echo (and would
 hash for HMAC verification when no ``raw_body`` is supplied). This is

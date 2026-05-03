@@ -10,8 +10,8 @@ For governance status (egress posture, refusal behavior, V5 publisher invariants
 
 | Rail | Auth | Cost | API endpoint | Webhook event(s) | 2026 changes | Status |
 |---|---|---|---|---|---|---|
-| **GitHub Sponsors** | HMAC SHA-256 (`X-Hub-Signature-256`) + `X-GitHub-Delivery` UUID | $0 webhook; 0–6% platform fee on tiers | `https://api.github.com/sponsors/<org>` (REST, deprecated → GraphQL) | `sponsorship.{created,cancelled,tier_changed,pending_cancellation}` | **REST → GraphQL deprecation 2026-03-10** (read-side only; webhook unaffected) | wired ✓ |
-| **Stripe Payment Link** | HMAC SHA-256 timestamped (`Stripe-Signature: t=…,v1=…`) + 300s replay window | 2.9% + $0.30 / charge; $0 platform fee | `https://api.stripe.com/v1/...` | `payment_intent.succeeded`, `checkout.session.completed`, `customer.subscription.{created,deleted}` | **`2026-03-25.dahlia` API version + `Stripe.Decimal` migration**[^stripe-dahlia] (breaking; pin to `2024-04-10` for now). Thin-payload mode rejected by rail (would force outbound fetch). | wired ✓ |
+| **GitHub Sponsors** | HMAC SHA-256 (`X-Hub-Signature-256`) + `X-GitHub-Delivery` UUID | $0 webhook; 0–6% platform fee on tiers | `https://api.github.com/sponsors/<org>` (REST, deprecated → GraphQL) | `sponsorship.{created,cancelled,tier_changed,pending_cancellation}` | REST → GraphQL deprecation 2026-03-10 — **rail unaffected** (webhook path stable; rail's receive-only invariant forbids API queries by design) | wired ✓ |
+| **Stripe Payment Link** | HMAC SHA-256 timestamped (`Stripe-Signature: t=…,v1=…`) + 300s replay window | 2.9% + $0.30 / charge; $0 platform fee | `https://api.stripe.com/v1/...` | `payment_intent.succeeded`, `checkout.session.completed`, `customer.subscription.{created,deleted}` | `2026-03-25.dahlia` API version + `Stripe.Decimal` migration[^stripe-dahlia] — **rail forward-compat'd** (#2380 accepts integer + decimal-string forms). Thin-payload mode rejected by rail (would force outbound fetch). | wired ✓ |
 | **Open Collective** | HMAC SHA-256 (`X-Open-Collective-Signature`) + `X-Open-Collective-Activity-Id` | $0 webhook; 5% platform fee + 2.9% + $0.30 / charge | `https://api.opencollective.com/v2/graphql` | `collective_transaction_created`, `order_processed`, `member_created`, `subscription_*` | API stable; multi-currency native | wired ✓ |
 | **Liberapay** | Bridge-relayed HMAC SHA-256 (`X-Liberapay-Signature`) + bridge `delivery_id` (cloudmailin/mailgun) | €0; donations are weekly batched | **READ-ONLY** `https://liberapay.com/<user>/public.json`[^liberapay-readonly] | `payin_succeeded`, `tip_cancelled`, `pledge_created` (bridge-injected) | No native webhooks (still); bridge-required | wired ✓ |
 | **Patreon** | HMAC **MD5** (`X-Patreon-Signature`)[^patreon-md5] + `X-Patreon-Webhook-Id` | $0 webhook; 8–12% platform fee | `https://www.patreon.com/api/oauth2/v2/...` | `members:create`, `members:update`, `members:pledge:create`, `members:pledge:delete` | OAuth2 flow stable; no breaking changes flagged | wired ✓ |
@@ -64,9 +64,11 @@ V5 publishers in `agents/publication_bus/<rail>_publisher.py`. FastAPI routes in
 ## Suggested follow-ups
 
 - `wise-receive-only-rail-implement` — implement the 11th rail per `docs/research/2026-05-03-wise-ach-receive-only-rail-design.md`.
-- `stripe-dahlia-decimal-migration` — adopt `2026-03-25.dahlia` Stripe API version when the operator's Stripe Dashboard is migrated.
-- `github-sponsors-graphql-migration` — replace REST endpoint with GraphQL for any read-side (webhook unaffected).
 - `omg-lol-pay-annual-recheck` — re-evaluate annually until shipped or formally deprecated.
+
+**Resolved:**
+- ~~`stripe-dahlia-decimal-migration`~~ — shipped as #2380. Receiver accepts integer minor units, integer-string, and decimal-string forms transparently.
+- ~~`github-sponsors-graphql-migration`~~ — no migration needed; the deprecation only affects API-query code, which our receive-only rail forbids by design. Docstring updated to record this.
 
 ## Provenance
 
