@@ -239,3 +239,250 @@ class TestPerceptualFieldRoundtrip:
         with patch.object(pf, "_CAMERA_CLASSIFICATIONS", missing):
             field = pf.build_perceptual_field()
         assert field.camera_classifications == {}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Round-robin degeneracy regression — semantic-recruitment audit 2026-05-02
+#
+# The audit observed 322 ``hero-camera-override`` events in 15 min, every
+# single one tagged ``priority=5, repetition-3.0``: pure round-robin via
+# the recency penalty because every camera scored identically (all
+# ``subject_ontology=[]`` and ``operator_visible=false``). Root cause: a
+# user-side YAML (``~/.config/hapax-compositor/config.yaml``) listed the
+# six cameras without classification fields, so pydantic filled them with
+# ``CameraSpec`` model defaults (``"unspecified"``/``[]``/``False``). The
+# ``_merge_camera_classifications`` overlay in ``load_config`` carries the
+# ``_DEFAULT_CAMERAS`` classifications through to such deployments. These
+# tests pin the data invariants this fix relies on so the round-robin
+# degeneracy can't drift back in via any future config-loading path.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+# Open-vocab tags used in ``subject_ontology`` across the production
+# fleet. New terms must be added here and to at least one camera spec —
+# the controlled vocabulary keeps the FollowModeController's
+# ``_LOCATION_ONTOLOGY_HINTS`` matching predictable.
+KNOWN_ONTOLOGY_TERMS: frozenset[str] = frozenset(
+    {
+        "person",
+        "hands",
+        "mpc",
+        "room",
+        "desk",
+        "eurorack",
+        "outboard",
+        "turntable",
+        "vinyl",
+    }
+)
+
+# Per the studio inventory (memory project_studio_cameras / audit §1):
+# 6 USB cameras, two physical-position groups per camera class.
+EXPECTED_ROLES: frozenset[str] = frozenset(
+    {
+        "brio-operator",
+        "brio-room",
+        "brio-synths",
+        "c920-desk",
+        "c920-room",
+        "c920-overhead",
+    }
+)
+
+
+class TestSemanticClassificationRegression:
+    """Regression: every production camera carries non-empty semantic
+    metadata so ``FollowModeController._score_camera`` does not collapse
+    to round-robin via the recency penalty.
+    """
+
+    def test_no_camera_has_empty_subject_ontology(self) -> None:
+        """The audit's hard data: every camera scoring at ``priority=5``
+        with ``subject_ontology=[]`` defeats the location-match bonus.
+        At least one ontology tag per camera is the load-bearing
+        invariant — without it, ``_LOCATION_MATCH_BONUS`` (3.0) cannot
+        ever fire and the controller falls through to round-robin."""
+        cfg = _default_config()
+        for cam in cfg.cameras:
+            assert cam.subject_ontology, (
+                f"{cam.role} has empty subject_ontology — round-robin "
+                f"degeneracy regression. Audit 2026-05-02 §F2."
+            )
+
+    def test_every_role_has_a_classification(self) -> None:
+        """All 6 production cameras present and accounted for."""
+        cfg = _default_config()
+        roles = {cam.role for cam in cfg.cameras}
+        assert roles == EXPECTED_ROLES, (
+            f"Production camera fleet mismatch: missing {EXPECTED_ROLES - roles}, "
+            f"unexpected {roles - EXPECTED_ROLES}"
+        )
+
+    def test_subject_ontology_terms_are_known(self) -> None:
+        """Vocabulary discipline: every ontology tag must be in
+        ``KNOWN_ONTOLOGY_TERMS``. Adding a term requires touching this
+        list, which makes the audit trail visible at PR time."""
+        cfg = _default_config()
+        for cam in cfg.cameras:
+            for term in cam.subject_ontology:
+                assert term in KNOWN_ONTOLOGY_TERMS, (
+                    f"{cam.role} uses unknown ontology term {term!r}; "
+                    f"add it to KNOWN_ONTOLOGY_TERMS or correct the spec"
+                )
+
+    def test_at_least_one_operator_visible_camera(self) -> None:
+        """Privacy + scoring invariant: at least one camera flags
+        ``operator_visible=True`` so the operator-visible bonus (0.3)
+        ever has the opportunity to fire and so the privacy-aware code
+        paths (face-obscure pipeline) have at least one consumer."""
+        cfg = _default_config()
+        n_visible = sum(1 for cam in cfg.cameras if cam.operator_visible)
+        assert n_visible >= 1, "no operator-visible camera; privacy + scoring degenerate"
+
+    def test_each_physical_position_present(self) -> None:
+        """The studio inventory has cameras at desk, room, and overhead
+        positions (memory project_studio_cameras). Each position must
+        be reachable so the FollowModeController has somewhere to cut
+        for each inferred operator location."""
+        cfg = _default_config()
+        roles = {cam.role for cam in cfg.cameras}
+        # ``c920-desk`` is the operator-hands close shot.
+        assert "c920-desk" in roles, "missing desk camera"
+        # ``c920-room`` and ``brio-room`` between them cover the room.
+        assert {"c920-room", "brio-room"} <= roles, "missing room camera"
+        # ``c920-overhead`` is the canonical top-down shot.
+        assert "c920-overhead" in roles, "missing overhead camera"
+
+    def test_ambient_priority_spans_a_meaningful_range(self) -> None:
+        """Audit §F2: when all cameras score at ``priority=5`` the
+        repetition penalty is the only differentiator. Real spread
+        in ``ambient_priority`` is what gives ``FollowModeController``
+        something to score against once the location-match bonus
+        and operator-visible bonus apply."""
+        cfg = _default_config()
+        priorities = [cam.ambient_priority for cam in cfg.cameras]
+        assert max(priorities) - min(priorities) >= 3, (
+            f"ambient_priority range too narrow ({min(priorities)}..{max(priorities)}): "
+            f"score variance reduces to recency-penalty round-robin"
+        )
+
+
+class TestUserYamlClassificationOverlay:
+    """``load_config`` must carry ``_DEFAULT_CAMERAS`` classification
+    fields through onto YAML cameras whose YAML omits them. This is
+    what fixed the live-system bug (audit §F2): user YAML at
+    ``~/.config/hapax-compositor/config.yaml`` listed the cameras
+    without classification fields, so pydantic filled them with
+    bare-``CameraSpec`` defaults of ``unspecified``/``[]``/false.
+    """
+
+    def _write_classifications_free_yaml(self, path: Path) -> None:
+        """Replicate the production user YAML failure mode: real
+        cameras keyed by role, but no classification fields."""
+        path.write_text(
+            "cameras:\n"
+            "- device: /dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index0\n"
+            "  height: 720\n"
+            "  hero: true\n"
+            "  input_format: mjpeg\n"
+            "  role: brio-operator\n"
+            "  width: 1280\n"
+            "- device: /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_2657DFCF-video-index0\n"
+            "  height: 720\n"
+            "  input_format: mjpeg\n"
+            "  role: c920-desk\n"
+            "  width: 1280\n"
+            "- device: /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_86B6B75F-video-index0\n"
+            "  height: 720\n"
+            "  input_format: mjpeg\n"
+            "  role: c920-room\n"
+            "  width: 1280\n"
+            "- device: /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_7B88C71F-video-index0\n"
+            "  height: 720\n"
+            "  input_format: mjpeg\n"
+            "  role: c920-overhead\n"
+            "  width: 1280\n"
+            "- device: /dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0\n"
+            "  height: 720\n"
+            "  input_format: mjpeg\n"
+            "  role: brio-room\n"
+            "  width: 1280\n"
+            "- device: /dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0\n"
+            "  height: 720\n"
+            "  input_format: mjpeg\n"
+            "  role: brio-synths\n"
+            "  width: 1280\n",
+            encoding="utf-8",
+        )
+
+    def test_load_config_overlays_classifications_for_known_roles(self, tmp_path: Path) -> None:
+        """The whole point of the fix: a user YAML that lists known
+        role names without classification fields must end up with the
+        ``_DEFAULT_CAMERAS`` classifications for each role."""
+        from agents.studio_compositor.config import load_config
+
+        yaml_path = tmp_path / "config.yaml"
+        self._write_classifications_free_yaml(yaml_path)
+        cfg = load_config(path=yaml_path)
+
+        by_role = {cam.role: cam for cam in cfg.cameras}
+        # The audit's failure case: every camera was unspecified/[]/false.
+        # The overlay must lift them to real values.
+        for cam in cfg.cameras:
+            assert cam.semantic_role != "unspecified", (
+                f"{cam.role} still 'unspecified' after overlay"
+            )
+            assert cam.subject_ontology, (
+                f"{cam.role} still has empty subject_ontology after overlay"
+            )
+
+        # Spot-check specific values match _DEFAULT_CAMERAS so we know
+        # the merge actually picked them up by role.
+        assert by_role["brio-operator"].semantic_role == "operator-face"
+        assert by_role["brio-operator"].subject_ontology == ["person"]
+        assert by_role["brio-operator"].operator_visible is True
+        assert by_role["c920-overhead"].subject_ontology == ["hands", "mpc", "desk"]
+        assert by_role["c920-overhead"].angle == "top-down"
+        assert by_role["brio-synths"].subject_ontology == ["turntable", "vinyl"]
+
+    def test_yaml_classification_wins_over_default(self, tmp_path: Path) -> None:
+        """The overlay is fill-the-blanks, not clobber: when the YAML
+        DOES specify a classification field, its value wins."""
+        from agents.studio_compositor.config import load_config
+
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(
+            "cameras:\n"
+            "- role: brio-operator\n"
+            "  device: /dev/video0\n"
+            "  semantic_role: custom-override\n"
+            "  subject_ontology: [custom-tag]\n"
+            "  operator_visible: false\n"
+            "  ambient_priority: 9\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(path=yaml_path)
+
+        cam = cfg.cameras[0]
+        assert cam.semantic_role == "custom-override"
+        assert cam.subject_ontology == ["custom-tag"]
+        assert cam.operator_visible is False
+        assert cam.ambient_priority == 9
+
+    def test_unknown_role_leaves_classifications_unspecified(self, tmp_path: Path) -> None:
+        """Cameras whose role isn't in ``_DEFAULT_CAMERAS`` get the
+        bare ``CameraSpec`` defaults — the overlay only matches by
+        role and never fabricates classifications for unknown cameras."""
+        from agents.studio_compositor.config import load_config
+
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(
+            "cameras:\n- role: experimental-pi-cam\n  device: /dev/video99\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(path=yaml_path)
+
+        cam = cfg.cameras[0]
+        assert cam.semantic_role == "unspecified"
+        assert cam.subject_ontology == []
+        assert cam.operator_visible is False

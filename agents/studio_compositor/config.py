@@ -139,11 +139,63 @@ def _default_config() -> CompositorConfig:
     return CompositorConfig(cameras=[CameraSpec(**c) for c in _DEFAULT_CAMERAS])
 
 
+# Fields that fall back to ``_DEFAULT_CAMERAS`` (keyed by ``role``) when
+# absent from the user YAML. Without this overlay, a YAML file that names
+# the cameras but omits classification fields produces an entire fleet of
+# ``semantic_role="unspecified", subject_ontology=[], operator_visible=False``
+# cameras — which collapses ``FollowModeController._score_camera`` to a
+# pure round-robin (every camera scores ``priority=5`` and the only
+# differentiator becomes the recency penalty). The semantic-recruitment
+# audit on 2026-05-02 documented the resulting degeneracy: 322
+# hero-camera-override events in 15 min, every single one tagged
+# ``priority=5, repetition-3.0``. The 6 production cameras already carry
+# correct classifications in ``_DEFAULT_CAMERAS``; this overlay is what
+# carries them through to deployments whose YAML predates Task #135.
+_CLASSIFICATION_FIELDS: tuple[str, ...] = (
+    "semantic_role",
+    "subject_ontology",
+    "angle",
+    "operator_visible",
+    "ambient_priority",
+)
+
+
+def _merge_camera_classifications(
+    yaml_cameras: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Overlay ``_DEFAULT_CAMERAS`` classification fields onto YAML cameras.
+
+    For each camera in ``yaml_cameras`` that matches a known ``role`` in
+    ``_DEFAULT_CAMERAS``, fill in classification fields the YAML omitted.
+    YAML-supplied values always win — this is a fill-the-blanks merge,
+    not a clobber.
+    """
+    by_role = {cam["role"]: cam for cam in _DEFAULT_CAMERAS if "role" in cam}
+    merged: list[dict[str, Any]] = []
+    for cam in yaml_cameras:
+        if not isinstance(cam, dict):
+            merged.append(cam)
+            continue
+        role = cam.get("role")
+        defaults = by_role.get(role)
+        if defaults is None:
+            merged.append(cam)
+            continue
+        filled = dict(cam)
+        for field in _CLASSIFICATION_FIELDS:
+            if field not in filled and field in defaults:
+                filled[field] = defaults[field]
+        merged.append(filled)
+    return merged
+
+
 def load_config(path: Path | None = None) -> CompositorConfig:
     config_path = path or DEFAULT_CONFIG_PATH
     if config_path.exists():
         try:
             data = yaml.safe_load(config_path.read_text()) or {}
+            if isinstance(data, dict) and isinstance(data.get("cameras"), list):
+                data["cameras"] = _merge_camera_classifications(data["cameras"])
             return CompositorConfig(**data)
         except Exception as exc:
             log.warning("Failed to load config from %s: %s -- using defaults", config_path, exc)
