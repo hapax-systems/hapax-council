@@ -1364,6 +1364,16 @@ IncomingAchEvent._currency_is_iso_4217
 TreasuryPrimeRailReceiver.ingest_webhook
 IncomingAchEventKind
 
+# cc-task u8-stream-mode-delta-amplification (Phase 0): get_visual_mode_bias
+# is the consumer-facing accessor; consumers (compositor preset selector,
+# imagination colorgrade, reverie satellite recruit) wire in Phase 1.
+# Whitelisted until Phase 1 lands so vulture doesn't flag the unused
+# function in the substrate-only PR.
+from shared.visual_mode_bias import VisualModeBias, get_visual_mode_bias
+
+get_visual_mode_bias
+VisualModeBias.family_weight
+
 # Activity-family visibility-window tracker — singleton accessors used
 # by the recruitment-bias bridge. Per cc-task
 # `p3-governance-recruitment-bias-replacement`: the prior
