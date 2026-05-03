@@ -33,6 +33,16 @@ METRIC_PREFIX = "hapax_novelty_shift_impingement"
 DEFAULT_RECENT_RECRUITMENT_PATH = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
 ABSORPTION_WINDOW_S: float = 5.0
 
+# u3-per-camera-novelty-fusion — visual-novelty signal aggregated by
+# `agents/visual_chain.py` from `signal_mappers.py` per-camera detections,
+# published to `/dev/shm/hapax-exploration/visual_chain.json` as
+# `ExplorationSignal.max_novelty_score`. The fusion is OR-composed with
+# GQI rising-edge so a fresh detection (e.g. a person walking into frame)
+# triggers an exploration impulse even when GQI itself is flat.
+DEFAULT_EXPLORATION_DIR = Path("/dev/shm/hapax-exploration")
+VISUAL_NOVELTY_LOW_THRESHOLD: float = 0.3
+VISUAL_NOVELTY_HIGH_THRESHOLD: float = 0.7
+
 
 @dataclass(frozen=True)
 class NoveltyShiftReading:
@@ -64,21 +74,25 @@ def read_gqi(path: Path = DEFAULT_GQI_PATH) -> NoveltyShiftReading | None:
 
 def _load_prev_state(
     state_path: Path,
-) -> tuple[float | None, int, int, list[float]]:
-    """Return (prev_gqi, dispatched_total, absorbed_total, pending_dispatches).
+) -> tuple[float | None, int, int, list[float], float | None]:
+    """Return (prev_gqi, dispatched_total, absorbed_total, pending_dispatches,
+    prev_max_novelty).
 
     Defaults on miss / parse failure. ``pending_dispatches`` is the list
     of timestamps of dispatched impingements awaiting outcome attribution
-    (recruitment-window resolution at next tick).
+    (recruitment-window resolution at next tick). ``prev_max_novelty`` is
+    the rising-edge anchor for visual-novelty fusion (u3-per-camera-novelty-
+    fusion); pre-fusion state files lack the field and load as None.
     """
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return None, 0, 0, []
+        return None, 0, 0, [], None
     prev = data.get("prev_gqi")
     dispatched = data.get("dispatched_total", 0)
     absorbed = data.get("absorbed_total", 0)
     pending = data.get("pending_dispatches", [])
+    prev_novelty = data.get("prev_max_novelty")
     try:
         prev_f = float(prev) if prev is not None else None
     except (TypeError, ValueError):
@@ -98,7 +112,11 @@ def _load_prev_state(
                 pending_list.append(float(x))
             except (TypeError, ValueError):
                 continue
-    return prev_f, dispatched_i, absorbed_i, pending_list
+    try:
+        prev_novelty_f = float(prev_novelty) if prev_novelty is not None else None
+    except (TypeError, ValueError):
+        prev_novelty_f = None
+    return prev_f, dispatched_i, absorbed_i, pending_list, prev_novelty_f
 
 
 def _save_state(
@@ -107,6 +125,7 @@ def _save_state(
     dispatched_total: int,
     absorbed_total: int = 0,
     pending_dispatches: list[float] | None = None,
+    prev_max_novelty: float | None = None,
 ) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = state_path.with_suffix(".json.tmp")
@@ -115,6 +134,7 @@ def _save_state(
         "dispatched_total": dispatched_total,
         "absorbed_total": absorbed_total,
         "pending_dispatches": list(pending_dispatches or []),
+        "prev_max_novelty": prev_max_novelty,
     }
     tmp.write_text(json.dumps(payload))
     tmp.replace(state_path)
@@ -199,6 +219,58 @@ def detect_rising_shift(
     return prev_gqi < low and current_gqi > high
 
 
+def read_max_visual_novelty(
+    exploration_dir: Path = DEFAULT_EXPLORATION_DIR,
+) -> tuple[float, str | None]:
+    """Aggregate `max_novelty_score` across all components in
+    ``/dev/shm/hapax-exploration/*.json``.
+
+    Returns ``(max_score, edge_label_of_max)``. Defaults to ``(0.0, None)``
+    when the directory is missing or all components are absent — the
+    fusion treats absence as no novelty (vs ``None`` for GQI which means
+    "skip the tick"; the visual-novelty signal is auxiliary so absence
+    must not block the GQI path).
+    """
+    if not exploration_dir.exists():
+        return 0.0, None
+    max_score = 0.0
+    max_edge: str | None = None
+    for path in exploration_dir.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        score = data.get("max_novelty_score")
+        try:
+            score_f = float(score) if score is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+        if score_f > max_score:
+            max_score = score_f
+            edge = data.get("max_novelty_edge")
+            max_edge = str(edge) if isinstance(edge, str) else None
+    return max_score, max_edge
+
+
+def detect_rising_visual_novelty_shift(
+    prev_novelty: float | None,
+    current_novelty: float,
+    *,
+    low: float = VISUAL_NOVELTY_LOW_THRESHOLD,
+    high: float = VISUAL_NOVELTY_HIGH_THRESHOLD,
+) -> bool:
+    """True iff visual-novelty crossed from below `low` to above `high`.
+
+    Mirrors `detect_rising_shift` semantics. None prev → no shift (first
+    tick after restart can't have a rising-edge yet).
+    """
+    if prev_novelty is None:
+        return False
+    return prev_novelty < low and current_novelty > high
+
+
 def build_impingement_payload(
     reading: NoveltyShiftReading,
     prev_gqi: float | None,
@@ -233,6 +305,54 @@ def build_impingement_payload(
             "gqi": round(reading.gqi, 3),
             "prev_gqi": round(prev_gqi, 3) if prev_gqi is not None else None,
             "delta": round(delta, 3),
+            "narrative": narrative,
+        },
+        "context": {},
+        "intent_family": "novelty.shift",
+        "embedding": None,
+        "interrupt_token": None,
+        "parent_id": None,
+        "trace_id": None,
+        "span_id": None,
+    }
+
+
+def build_visual_novelty_impingement_payload(
+    current_novelty: float,
+    prev_novelty: float | None,
+    edge_label: str | None,
+    *,
+    now: float | None = None,
+) -> dict:
+    """Build the JSONL-bus payload for a visual-novelty rising-edge dispatch.
+
+    Distinguished from the GQI payload by ``content.metric =
+    "visual_novelty_rising_shift"`` and ``source = "agents.novelty_emitter.
+    visual_novelty_shift"`` so downstream consumers can tell which signal
+    drove the dispatch.
+    """
+    timestamp = now if now is not None else time.time()
+    delta = current_novelty - (prev_novelty if prev_novelty is not None else 0.0)
+    edge_descr = f" via {edge_label}" if edge_label else ""
+    prev_str = f"{prev_novelty:.2f}" if prev_novelty is not None else "0.00"
+    narrative = (
+        f"Visual novelty crossed {VISUAL_NOVELTY_HIGH_THRESHOLD:.2f}{edge_descr} "
+        f"(was {prev_str}, now {current_novelty:.2f}, delta {delta:+.2f}) — "
+        f"fresh signal in the visual field; widen the perceptual register and "
+        f"reach for a novel preset family."
+    )
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "timestamp": timestamp,
+        "source": "agents.novelty_emitter.visual_novelty_shift",
+        "type": "novelty",
+        "strength": min(1.0, max(0.0, current_novelty)),
+        "content": {
+            "metric": "visual_novelty_rising_shift",
+            "max_novelty_score": round(current_novelty, 3),
+            "prev_max_novelty": round(prev_novelty, 3) if prev_novelty is not None else None,
+            "delta": round(delta, 3),
+            "edge": edge_label,
             "narrative": narrative,
         },
         "context": {},
@@ -293,8 +413,11 @@ class NoveltyShiftEmitter:
     textfile: Path = DEFAULT_TEXTFILE
     state_path: Path = DEFAULT_STATE_PATH
     recent_recruitment_path: Path = DEFAULT_RECENT_RECRUITMENT_PATH
+    exploration_dir: Path = DEFAULT_EXPLORATION_DIR
     low: float = GQI_LOW_THRESHOLD
     high: float = GQI_HIGH_THRESHOLD
+    visual_novelty_low: float = VISUAL_NOVELTY_LOW_THRESHOLD
+    visual_novelty_high: float = VISUAL_NOVELTY_HIGH_THRESHOLD
     absorption_window_s: float = ABSORPTION_WINDOW_S
 
     def tick(self) -> dict:
@@ -310,8 +433,8 @@ class NoveltyShiftEmitter:
         if reading is None:
             return {"status": "skipped", "reason": "gqi file missing or unparseable"}
 
-        prev_gqi, dispatched_total, absorbed_total, pending_dispatches = _load_prev_state(
-            self.state_path
+        prev_gqi, dispatched_total, absorbed_total, pending_dispatches, prev_max_novelty = (
+            _load_prev_state(self.state_path)
         )
 
         # Resolve pending dispatches against current recruitment state.
@@ -325,19 +448,38 @@ class NoveltyShiftEmitter:
         )
         absorbed_total += newly_absorbed
 
-        shifted = detect_rising_shift(prev_gqi, reading.gqi, low=self.low, high=self.high)
+        # Detect both signal paths. GQI is primary; visual-novelty fusion
+        # is auxiliary (u3-per-camera-novelty-fusion). Either rising-edge
+        # is sufficient — single dispatch per tick.
+        gqi_shifted = detect_rising_shift(prev_gqi, reading.gqi, low=self.low, high=self.high)
+        current_max_novelty, max_novelty_edge = read_max_visual_novelty(self.exploration_dir)
+        novelty_shifted = detect_rising_visual_novelty_shift(
+            prev_max_novelty,
+            current_max_novelty,
+            low=self.visual_novelty_low,
+            high=self.visual_novelty_high,
+        )
+        shifted = gqi_shifted or novelty_shifted
         # outcome categorises THIS tick: "dispatched" if impingement
         # emitted, else "absorbed" (no-shift or write_failed). Backward-
-        # compat with pre-u3 callers. The precise absorbed-counter
-        # semantic (impingement was emitted but not recruited within
-        # window) is on `absorbed_total` and `newly_absorbed`.
+        # compat with pre-u3 callers.
         outcome = "absorbed"
+        trigger = None
         if shifted:
-            payload = build_impingement_payload(reading, prev_gqi)
+            # GQI takes precedence when both fire — its narrative is
+            # already what downstream consumers know how to read; the
+            # visual-novelty payload is the additive trigger path.
+            if gqi_shifted:
+                payload = build_impingement_payload(reading, prev_gqi)
+                trigger = "gqi"
+            else:
+                payload = build_visual_novelty_impingement_payload(
+                    current_max_novelty, prev_max_novelty, max_novelty_edge
+                )
+                trigger = "visual_novelty"
             if append_impingement(payload, self.bus_path):
                 dispatched_total += 1
                 outcome = "dispatched"
-                # Track this dispatch for outcome attribution at next tick.
                 pending_dispatches.append(now)
             else:
                 outcome = "write_failed"
@@ -349,6 +491,7 @@ class NoveltyShiftEmitter:
             dispatched_total,
             absorbed_total=absorbed_total,
             pending_dispatches=pending_dispatches,
+            prev_max_novelty=current_max_novelty,
         )
 
         return {
@@ -356,6 +499,11 @@ class NoveltyShiftEmitter:
             "gqi": round(reading.gqi, 3),
             "prev_gqi": round(prev_gqi, 3) if prev_gqi is not None else None,
             "shifted": shifted,
+            "trigger": trigger,
+            "max_novelty": round(current_max_novelty, 3),
+            "prev_max_novelty": round(prev_max_novelty, 3)
+            if prev_max_novelty is not None
+            else None,
             "dispatched_total": dispatched_total,
             "absorbed_total": absorbed_total,
             "newly_absorbed": newly_absorbed,
