@@ -46,8 +46,14 @@ unavailable producers.
 
 The closed YouTube surface reconcile found:
 
-- captions have reader/writer/routing tests, but no production STT callsite, no
-  GStreamer in-band path, and no live caption JSONL evidence;
+- captions have reader/writer/routing tests, the production STT callsite is wired
+  by `ytb-009-production-wire` (PR #1901), and the substrate adapter
+  (`shared/caption_substrate_adapter.py`, cc-task `caption-substrate-adapter`)
+  projects fresh `CaptionEvent` records into `caption.segment` RVPE candidates;
+  the GStreamer in-band CEA-708 path remains explicitly retired, and captions
+  may be claimed publicly only when both producer freshness and a non-rejected
+  adapter candidate (av_offset evidence present, not stale, not denied by
+  routing) coexist;
 - live cuepoints are active only through a legacy broadcast-rotation consumer
   and still need programme-boundary event input plus operator-supervised
   live-player smoke;
