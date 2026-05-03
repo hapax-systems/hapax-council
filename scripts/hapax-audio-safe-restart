@@ -1,0 +1,380 @@
+#!/usr/bin/env bash
+# hapax-audio-safe-restart — pre-flight gate + atomic rollback wrapper
+# for restarting any audio-touching systemd service.
+#
+# Hardening H2 from
+# docs/research/2026-05-03-audio-config-hardening-unthought-of-solutions.md.
+#
+# What it does
+# ============
+# 1. Snapshots topology (pactl sinks/sources/modules + pw-link) and a
+#    1s loudness baseline at all 4 broadcast stages, into a JSON file
+#    at /tmp/hapax-audio-snapshot-<service>-<ts>.{pre,post}.json.
+# 2. Performs the restart (or reload via --reload).
+# 3. Sleeps SETTLE_SECONDS (default 12s) so transient gaps during the
+#    legitimate restart window are not mistaken for steady-state-bad.
+# 4. Re-snapshots and probes. If the post probe says any broadcast
+#    stage went silent (RMS < -75 dBFS) or noisy/clipping (crest in
+#    [2.5, 5.0] or RMS > -1 dBFS) — the operator's two unacceptable
+#    steady states — we attempt rollback.
+# 5. Rollback strategy: one retry of the restart. If still bad,
+#    rebuild any module-loopback rows present in the pre snapshot
+#    that are missing from the post snapshot via `pactl load-module`,
+#    re-establish links via `pw-link`, and ntfy the operator.
+#
+# Operator's two unacceptable steady states (verbatim, source: research
+# doc + 2026-05-03 directive):
+#   - +20dB clipping noise pumped into livestream
+#   - Absolute silence at OBS
+# Brief gaps during the legitimate 1–10s restart window are FINE; the
+# rollback only fires AFTER the SETTLE_SECONDS window.
+#
+# Usage:
+#   hapax-audio-safe-restart [--reload] [--settle SECONDS]
+#                            [--snapshot-dir DIR] [--no-rollback]
+#                            [--audio-safe] [--dry-run] SERVICE
+#
+#   --reload          Use `systemctl --user reload` instead of `restart`.
+#   --settle N        Wait N seconds after restart before verifying
+#                     (default 12, range 1–60).
+#   --snapshot-dir D  Where to drop snapshot JSON (default /tmp).
+#   --no-rollback     Verify only; never attempt restart-the-restart
+#                     or topology rebuild even on degraded post probe.
+#   --audio-safe      No-op flag; allows --audio-safe to be passed by
+#                     callers that mix safe/unsafe restart paths in
+#                     the same script (e.g. a future rebuild-services
+#                     integration). Honored unconditionally because
+#                     this binary is the safe path by definition.
+#   --dry-run         Run snapshot + verify but do NOT actually restart
+#                     or roll back. Useful for testing the wrapper
+#                     against a healthy chain.
+#
+# Exit codes:
+#   0 = restart clean (post-probe matches expected; or dry-run OK)
+#   1 = post-probe degraded; rollback attempted and SUCCESSFUL
+#   2 = post-probe degraded; rollback attempted and FAILED (operator paged)
+#   3 = post-probe topology-drift; rollback attempted (success or failure
+#       reflected in the page)
+#   4 = invocation error / probe infrastructure missing
+#   5 = systemctl restart itself returned non-zero
+#
+# This script is the safe path. Any audio-touching systemd service
+# should call it instead of plain `systemctl --user restart NAME`.
+# The wrapper is per-restart only; it is NOT a daemon.
+set -uo pipefail
+
+SERVICE=""
+RESTART_MODE="restart"
+SETTLE_SECONDS=12
+SNAPSHOT_DIR="${HAPAX_AUDIO_SNAPSHOT_DIR:-/tmp}"
+DO_ROLLBACK=1
+DRY_RUN=0
+NTFY_BASE="${NTFY_BASE_URL:-http://localhost:8090}"
+NTFY_TOPIC="${HAPAX_AUDIO_RESTART_NTFY_TOPIC:-audio-restart-rolled-back}"
+
+# Where the verifier + snapshot live; allow override for tests.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SNAPSHOT_BIN="${HAPAX_AUDIO_SNAPSHOT_BIN:-$SCRIPT_DIR/hapax-audio-snapshot}"
+VERIFY_BIN="${HAPAX_AUDIO_VERIFY_BIN:-$SCRIPT_DIR/hapax-audio-verify-broadcast-clean}"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reload)              RESTART_MODE="reload" ;;
+    --settle=*)            SETTLE_SECONDS="${1#*=}" ;;
+    --settle)              shift; SETTLE_SECONDS="${1:-$SETTLE_SECONDS}" ;;
+    --snapshot-dir=*)      SNAPSHOT_DIR="${1#*=}" ;;
+    --snapshot-dir)        shift; SNAPSHOT_DIR="${1:-$SNAPSHOT_DIR}" ;;
+    --no-rollback)         DO_ROLLBACK=0 ;;
+    --audio-safe)          : ;;  # no-op; documented in --help
+    --dry-run)             DRY_RUN=1 ;;
+    -h|--help)
+      sed -n '2,/^set -uo pipefail/p' "$0" | sed 's/^# \?//' | head -n -1
+      exit 0
+      ;;
+    -*)
+      echo "audio-safe-restart: unknown flag: $1" >&2
+      exit 4
+      ;;
+    *)
+      if [ -z "$SERVICE" ]; then
+        SERVICE="$1"
+      else
+        echo "audio-safe-restart: unexpected positional arg: $1 (service already set to $SERVICE)" >&2
+        exit 4
+      fi
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$SERVICE" ]; then
+  echo "audio-safe-restart: SERVICE is required (try --help)" >&2
+  exit 4
+fi
+
+# Validate settle window — 1s minimum, 60s ceiling. The operator
+# tolerates 1–10s transients; we default to 12 to leave headroom.
+if ! [[ "$SETTLE_SECONDS" =~ ^[0-9]+$ ]] || [ "$SETTLE_SECONDS" -lt 1 ] || [ "$SETTLE_SECONDS" -gt 60 ]; then
+  echo "audio-safe-restart: --settle must be 1..60 seconds (got '$SETTLE_SECONDS')" >&2
+  exit 4
+fi
+
+if [ ! -x "$SNAPSHOT_BIN" ]; then
+  echo "audio-safe-restart: snapshot binary missing or not executable: $SNAPSHOT_BIN" >&2
+  exit 4
+fi
+if [ ! -x "$VERIFY_BIN" ]; then
+  echo "audio-safe-restart: verify binary missing or not executable: $VERIFY_BIN" >&2
+  exit 4
+fi
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "audio-safe-restart: systemctl missing" >&2
+  exit 4
+fi
+
+mkdir -p "$SNAPSHOT_DIR" 2>/dev/null || {
+  echo "audio-safe-restart: cannot create snapshot dir $SNAPSHOT_DIR" >&2
+  exit 4
+}
+
+ts=$(date -u +%Y%m%dT%H%M%SZ)
+PRE_SNAP="${SNAPSHOT_DIR}/hapax-audio-snapshot-${SERVICE}-${ts}.pre.json"
+POST_SNAP="${SNAPSHOT_DIR}/hapax-audio-snapshot-${SERVICE}-${ts}.post.json"
+PRE_VERIFY="${SNAPSHOT_DIR}/hapax-audio-verify-${SERVICE}-${ts}.pre.json"
+POST_VERIFY="${SNAPSHOT_DIR}/hapax-audio-verify-${SERVICE}-${ts}.post.json"
+
+log() {
+  echo "[audio-safe-restart $SERVICE] $*"
+}
+
+ntfy_page() {
+  local title="$1" body="$2"
+  command -v curl >/dev/null 2>&1 || return 0
+  curl -s -o /dev/null \
+    -H "Title: $title" \
+    -H "Priority: urgent" \
+    -H "Tags: warning,sound,audio-incident" \
+    -d "$body" \
+    "${NTFY_BASE%/}/${NTFY_TOPIC}" 2>/dev/null || true
+}
+
+# ── Pre-flight: snapshot + baseline verify ─────────────────────────
+log "phase=pre snapshot=$PRE_SNAP"
+"$SNAPSHOT_BIN" --service "$SERVICE" --phase pre --output "$PRE_SNAP" >/dev/null 2>&1 || {
+  log "pre-snapshot failed (continuing — H2 errs on the side of capturing what we can)"
+}
+"$VERIFY_BIN" --service "$SERVICE" --snapshot "$PRE_SNAP" --duration 1 \
+  > "$PRE_VERIFY" 2>/dev/null
+pre_rc=$?
+log "phase=pre verify_exit=$pre_rc"
+
+# Pre-restart sanity: if the chain was already broken before we touched
+# anything, restarting is unlikely to help but isn't this script's
+# fault. We log + still proceed; the operator gets the data via the
+# snapshot files.
+
+# ── Restart ───────────────────────────────────────────────────────
+if [ "$DRY_RUN" -eq 1 ]; then
+  log "DRY-RUN: would systemctl --user $RESTART_MODE $SERVICE; skipping"
+else
+  log "phase=restart action=$RESTART_MODE"
+  if ! systemctl --user "$RESTART_MODE" "$SERVICE" 2>&1; then
+    log "systemctl --user $RESTART_MODE $SERVICE FAILED — exiting 5"
+    ntfy_page "audio-safe-restart: $SERVICE restart command failed" \
+      "systemctl --user $RESTART_MODE $SERVICE returned non-zero. Pre-snapshot at $PRE_SNAP. Runbook: docs/runbooks/audio-safe-restart.md"
+    exit 5
+  fi
+fi
+
+# ── Settle window ─────────────────────────────────────────────────
+log "phase=settle seconds=$SETTLE_SECONDS"
+sleep "$SETTLE_SECONDS"
+
+# ── Post-flight: snapshot + verify ────────────────────────────────
+log "phase=post snapshot=$POST_SNAP"
+"$SNAPSHOT_BIN" --service "$SERVICE" --phase post --output "$POST_SNAP" >/dev/null 2>&1 || {
+  log "post-snapshot failed (continuing to verify probe)"
+}
+"$VERIFY_BIN" --service "$SERVICE" --snapshot "$PRE_SNAP" --duration 2 \
+  > "$POST_VERIFY" 2>/dev/null
+post_rc=$?
+log "phase=post verify_exit=$post_rc"
+
+# ── Decide ────────────────────────────────────────────────────────
+if [ "$post_rc" -eq 0 ]; then
+  log "phase=done status=clean"
+  exit 0
+fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  log "DRY-RUN: post probe reported degradation rc=$post_rc; in real run this would trigger rollback"
+  exit "$post_rc"
+fi
+
+if [ "$DO_ROLLBACK" -eq 0 ]; then
+  log "phase=done status=degraded rollback=disabled rc=$post_rc"
+  ntfy_page "audio-safe-restart: $SERVICE post-probe degraded (no rollback)" \
+    "Post-restart probe rc=$post_rc; rollback disabled by --no-rollback. Pre=$PRE_SNAP Post=$POST_SNAP Verify=$POST_VERIFY. Runbook: docs/runbooks/audio-safe-restart.md"
+  exit "$post_rc"
+fi
+
+# ── Rollback: retry the restart once ──────────────────────────────
+log "phase=rollback step=retry-restart"
+if systemctl --user "$RESTART_MODE" "$SERVICE" 2>&1; then
+  log "phase=rollback retry-restart succeeded; settling"
+  sleep "$SETTLE_SECONDS"
+  RETRY_VERIFY="${SNAPSHOT_DIR}/hapax-audio-verify-${SERVICE}-${ts}.retry.json"
+  "$VERIFY_BIN" --service "$SERVICE" --snapshot "$PRE_SNAP" --duration 2 \
+    > "$RETRY_VERIFY" 2>/dev/null
+  retry_rc=$?
+  log "phase=rollback retry-verify_exit=$retry_rc"
+  if [ "$retry_rc" -eq 0 ]; then
+    log "phase=done status=recovered-on-retry"
+    ntfy_page "audio-safe-restart: $SERVICE recovered on retry" \
+      "Initial restart degraded broadcast (rc=$post_rc); single retry restored clean state. Snapshots: $PRE_SNAP $POST_SNAP $RETRY_VERIFY."
+    exit 1
+  fi
+fi
+
+# ── Rollback step 2: replay missing module-loopback loads ─────────
+log "phase=rollback step=module-loopback-replay"
+replayed=0
+replay_log="${SNAPSHOT_DIR}/hapax-audio-rollback-${SERVICE}-${ts}.log"
+{
+  echo "# audio-safe-restart rollback replay log"
+  echo "# service=$SERVICE ts=$ts"
+} > "$replay_log"
+
+# Cross-reference the pre-snapshot's module list vs the post snapshot's.
+# Any module-loopback present pre but missing post gets replayed via
+# `pactl load-module module-loopback <argument>`.
+if [ -r "$PRE_SNAP" ] && [ -r "$POST_SNAP" ] && command -v pactl >/dev/null 2>&1; then
+  to_replay=$(python3 - "$PRE_SNAP" "$POST_SNAP" <<'PY' 2>/dev/null
+import json
+import sys
+
+with open(sys.argv[1]) as f:
+    pre = json.load(f)
+with open(sys.argv[2]) as f:
+    post = json.load(f)
+
+# Index post modules by (name, argument) so we can detect "this exact
+# loopback came back fine" — argument identity is the canonical key
+# for module-loopback (source=… sink=…).
+post_loopback_args = {m.get("argument", "") for m in post.get("modules", [])
+                      if m.get("name") == "module-loopback"}
+
+for m in pre.get("modules", []):
+    name = m.get("name", "")
+    arg = m.get("argument", "")
+    if name != "module-loopback":
+        continue
+    if arg in post_loopback_args:
+        continue
+    # Reconstruct a re-load command. We escape only the basics.
+    print(arg)
+PY
+)
+  while IFS= read -r arg; do
+    [ -z "$arg" ] && continue
+    log "phase=rollback replay-module-loopback arg=$arg"
+    echo "REPLAY: module-loopback $arg" >> "$replay_log"
+    if pactl load-module module-loopback $arg >> "$replay_log" 2>&1; then
+      replayed=$((replayed + 1))
+    else
+      echo "REPLAY-FAILED: module-loopback $arg" >> "$replay_log"
+    fi
+  done <<< "$to_replay"
+fi
+
+log "phase=rollback replayed=$replayed"
+
+# ── Rollback step 3: re-establish links from snapshot ─────────────
+# This one is best-effort: pw-link's argument shape varies across
+# pipewire versions and we don't want to thrash. We replay only the
+# subset of pre links whose endpoint nodes exist post; mismatches are
+# left for the operator to resolve.
+relinked=0
+if [ -r "$PRE_SNAP" ] && [ -r "$POST_SNAP" ] && command -v pw-link >/dev/null 2>&1; then
+  to_relink=$(python3 - "$PRE_SNAP" "$POST_SNAP" <<'PY' 2>/dev/null
+import json
+import sys
+
+with open(sys.argv[1]) as f:
+    pre = json.load(f)
+with open(sys.argv[2]) as f:
+    post = json.load(f)
+
+# Build sets of post nodes we know about (sinks + sources by name).
+post_nodes = set()
+for s in post.get("sinks", []):
+    post_nodes.add(s.get("name", ""))
+for s in post.get("sources", []):
+    post_nodes.add(s.get("name", ""))
+
+# Find pre-links whose endpoints are still present post-restart but
+# whose link itself is gone. We don't know post-links exactly because
+# pw-link output is shape-variable; only re-establish if the node
+# endpoints are still in the topology.
+post_links = {(l["from_node"], l["from_port"], l["to_node"], l["to_port"])
+              for l in post.get("links", [])}
+
+for l in pre.get("links", []):
+    fn = l.get("from_node", "")
+    fp = l.get("from_port", "")
+    tn = l.get("to_node", "")
+    tp = l.get("to_port", "")
+    if not (fn and tn):
+        continue
+    if (fn, fp, tn, tp) in post_links:
+        continue
+    if fn not in post_nodes or tn not in post_nodes:
+        continue
+    print(f"{fn}:{fp}\t{tn}:{tp}")
+PY
+)
+  while IFS=$'\t' read -r src dst; do
+    [ -z "$src" ] || [ -z "$dst" ] && continue
+    log "phase=rollback re-link $src -> $dst"
+    echo "RELINK: $src -> $dst" >> "$replay_log"
+    if pw-link "$src" "$dst" >> "$replay_log" 2>&1; then
+      relinked=$((relinked + 1))
+    else
+      echo "RELINK-FAILED: $src -> $dst" >> "$replay_log"
+    fi
+  done <<< "$to_relink"
+fi
+
+log "phase=rollback relinked=$relinked"
+
+# ── Final probe ────────────────────────────────────────────────
+sleep 2
+FINAL_VERIFY="${SNAPSHOT_DIR}/hapax-audio-verify-${SERVICE}-${ts}.final.json"
+"$VERIFY_BIN" --service "$SERVICE" --snapshot "$PRE_SNAP" --duration 2 \
+  > "$FINAL_VERIFY" 2>/dev/null
+final_rc=$?
+log "phase=final verify_exit=$final_rc replayed=$replayed relinked=$relinked"
+
+if [ "$final_rc" -eq 0 ]; then
+  log "phase=done status=recovered-on-rollback"
+  ntfy_page "audio-safe-restart: $SERVICE recovered (rollback)" \
+    "Restart degraded broadcast; rollback replayed $replayed loopback(s) and $relinked link(s); chain clean. Pre=$PRE_SNAP Post=$POST_SNAP Final=$FINAL_VERIFY Replay=$replay_log."
+  exit 1
+fi
+
+# ── Page operator ─────────────────────────────────────────────
+case "$final_rc" in
+  3) classification="topology-drift" ;;
+  2) classification="noise-or-clipping" ;;
+  1) classification="silent" ;;
+  *) classification="probe-failure" ;;
+esac
+
+log "phase=done status=rollback-failed final_rc=$final_rc"
+ntfy_page "audio-safe-restart: $SERVICE rollback FAILED ($classification)" \
+  "Restart of $SERVICE degraded broadcast and rollback could not restore. classification=$classification replayed=$replayed relinked=$relinked. Snapshots: $PRE_SNAP $POST_SNAP $FINAL_VERIFY $replay_log. Runbook: docs/runbooks/audio-safe-restart.md#rollback-failed"
+
+if [ "$final_rc" -eq 3 ]; then
+  exit 3
+fi
+exit 2
