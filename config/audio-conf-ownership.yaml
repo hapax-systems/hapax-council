@@ -1,0 +1,60 @@
+# Audio config-file ownership (cc-task audio-audit-E-audio-conf-mtime-watcher).
+#
+# Each config file the audio stack reads has an owning systemd user unit.
+# When the conf-watcher daemon (Phase 1) sees an mtime change on the file,
+# it validates the new content and runs `systemctl --user reload-or-restart`
+# on the named unit. Phase 0 ships only the ownership schema + parser; the
+# inotify daemon + systemctl reload land in Phase 1.
+#
+# Edit policy: only the operator changes this file. Each entry is a hard
+# link between a config artifact and the live process that consumes it;
+# adding entries widens the auto-reload surface.
+
+schema_version: 1
+
+# Each entry:
+#   path: filesystem path to the config artifact (absolute or
+#         relative to the repo root)
+#   owning_unit: systemd --user unit that consumes the config; the
+#                Phase 1 watcher will `reload-or-restart` this unit
+#                on a validated mtime change
+#   validator_schema: optional canonical schema name (Pydantic model) the
+#           Phase 1 validator uses; "none" = pass-through, no
+#           pre-reload validation (use sparingly; defeats the
+#           "valid edit only" guard)
+#   description: human-readable purpose
+
+ownerships:
+  - path: config/audio-topology.yaml
+    owning_unit: hapax-audio-graph-up.target
+    validator_schema: audio_topology
+    description: >-
+      Source-of-truth audio graph. Owns every PipeWire link the broadcast
+      stack uses. Watcher must validate against TopologyDescriptor before
+      restarting the graph; an invalid yaml here CAN'T be allowed to
+      reload, or the broadcast goes silent.
+
+  - path: config/pipewire/hapax-music-loudnorm.conf
+    owning_unit: hapax-music-loudnorm.service
+    validator_schema: none
+    description: >-
+      LADSPA loudnorm filter-chain conf. PipeWire-native syntax (no
+      Pydantic model yet; "none" until audit-E typed-params lands).
+      Reload reapplies the chain to the music graph.
+
+  - path: config/pipewire/hapax-music-duck.conf
+    owning_unit: hapax-audio-ducker.service
+    validator_schema: none
+    description: >-
+      Duck filter-chain conf. Same shape as loudnorm; reload reapplies
+      duck params on the live ducker without restarting the daemon.
+
+  - path: config/pipewire/hapax-broadcast-master.conf
+    owning_unit: hapax-broadcast-orchestrator.service
+    validator_schema: none
+    description: >-
+      Broadcast-master limiter + remap. Reload reapplies on the broadcast
+      orchestrator. Risk: a malformed conf here could mute egress.
+      Validation gate (audit-E typed-params, separate cc-task) is the
+      remediation; until then, keep the operator's manual restart workflow
+      as a fallback.

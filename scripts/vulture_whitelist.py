@@ -1861,3 +1861,31 @@ _audit_D_audio_edge_ref
 _audit_D_private_to_public_edge_error
 _audit_D_is_private_to_public_edge
 _audit_D_validate_no_private_to_public_edges
+
+# Audio conf-mtime-watcher substrate (cc-task audio-audit-E-audio-conf-mtime-
+# watcher Phase 0): ownership schema + lookup helpers + reload counter.
+# Phase 1 wires inotify-driven mtime watcher + systemctl reload-or-restart.
+from shared.audio_conf_ownership import (
+    ConfOwnership as _audit_E_conf_ownership,
+)
+from shared.audio_conf_ownership import (
+    ConfOwnershipRegistry as _audit_E_conf_ownership_registry,
+)
+from shared.audio_conf_ownership import (
+    hapax_audio_conf_reload_total as _audit_E_audio_conf_reload_total,
+)
+from shared.audio_conf_ownership import (
+    load_conf_ownership as _audit_E_load_conf_ownership,
+)
+
+_audit_E_conf_ownership
+_audit_E_conf_ownership_registry
+_audit_E_conf_ownership_registry.unit_for_path
+_audit_E_conf_ownership_registry.schema_for_path
+_audit_E_audio_conf_reload_total
+_audit_E_load_conf_ownership
+
+# Pydantic validator methods on ConfOwnership / ConfOwnershipRegistry are
+# invoked dynamically by pydantic at model construction.
+_audit_E_conf_ownership._unit_must_have_systemd_suffix
+_audit_E_conf_ownership_registry._no_duplicate_paths
