@@ -47,7 +47,18 @@ EXPECTED_MIXER_GAINS: dict[str, set[float]] = {
     # per-channel makeup gains were over-driving the bus. Now: every
     # input lands at unity; makeup happens downstream in the L12 sink
     # filter chain.
-    "hapax-l12-evilpet-capture.conf": {1.0},
+    # NOTE 2026-05-03: gain_samp default-muted (Gain 1 = 0.0) per task
+    # audio-l12-bleed-mitigation-narrow-aware. AUX3 (CH4 sampler chain)
+    # bleeds white-noise into broadcast at idle through the +14 dB
+    # downstream master makeup; default-mute is the safe broadcast
+    # posture. The accepted set is now {0.0, 1.0} — 1.0 for the
+    # evilpet/contact/rode pre-fader stages plus the L+R sum-bus inputs,
+    # 0.0 for the muted sampler stage. Operator manually re-enables
+    # gain_samp to 1.0 when actively running the sampler chain.
+    # Supersedes closed PR #2422's 14-channel widening attempt; this
+    # mitigation preserves the constitutional narrow [AUX1 AUX3 AUX4 AUX5]
+    # binding while removing the broadcast-noise leak path.
+    "hapax-l12-evilpet-capture.conf": {0.0, 1.0},
     # Audio Phase 4 sidechain ducking (PRs #1271-#1273): two mono mixers
     # per chain with controllable Gain 1. Both default 1.0 (passthrough);
     # hapax-audio-ducker.service writes attenuated values at runtime
