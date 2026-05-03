@@ -1,0 +1,182 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Director moves — surfaces the goal-defining metrics that let the operator tell at a glance whether director moves are happening. Cc-task: director-moves-grafana-panel. Pairs with the H3 audio-recovery dashboard (#2340), per-stage RMS dashboard (#2357), and the cadence-bump stale-intent timer (#2367). Some panels render empty until upstream consumers ship: u4-micromove-advance-tick-consumer (panel 3), u5-verb-prometheus-counter-and-consumer (panel 4), u8-compositor-preset-bias-consumer (no metric directly — surfaces via random_mode_transition picks). Folder routing is operator-managed in Grafana DB; tags route to Hapax/Director.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Random-mode chain-change transition picks per capability name. Source: shared/director_observability.py::emit_transition_pick (Phase 7 of #166). Each tick that the random_mode chain-changer recruits a transition writes one increment here. Sustained zero rate means the director isn't recruiting transitions — either chain-change is suppressed or the capability gate is rejecting picks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_random_mode_transition_total[5m])",
+          "legendFormat": "{{transition}}",
+          "refId": "A"
+        }
+      ],
+      "title": "transition picks (5m rate, per capability)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Active compositor layout. Source: agents/studio_compositor/metrics.py — value 1.0 for the currently-active layout, 0 for others. Sum over label set = 1 at all times (modulo a microsecond gap during swap). Operator can see at-a-glance which layout is live; layout flips show up as the high-bar moving across labels.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 30 },
+          "mappings": [],
+          "max": 1.1,
+          "min": 0,
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_compositor_layout_active",
+          "legendFormat": "{{layout}}",
+          "refId": "A"
+        }
+      ],
+      "title": "compositor layout active (per layout)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Per-slot micromove tick advances. Source: u4-micromove-advance-tick-consumer (cc-task pending — panel renders empty until u4 ships). When live, sustained per-slot rate confirms the slot's micromove cycle is advancing in lockstep with director ticks; gaps signal that the consumer is suppressing advance for some condition.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "noValue": "no data — u4 consumer not yet shipped",
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_micromove_advance_total[5m])",
+          "legendFormat": "slot {{slot}}",
+          "refId": "A"
+        }
+      ],
+      "title": "micromove advances (5m rate, per slot — pending u4)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Semantic verb consumption per verb × outcome. Source: u5-verb-prometheus-counter-and-consumer (cc-task pending — panel renders empty until u5 ships). When live, the verb labels (\"contemplate\", \"juxtapose\", etc.) tell the operator which director vocabulary is being recruited; the outcome label (\"applied\" / \"refused\" / \"deferred\") tells whether downstream consumers honored the verb.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "noValue": "no data — u5 consumer not yet shipped",
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_semantic_verb_consumed_total[5m])",
+          "legendFormat": "{{verb}} ({{outcome}})",
+          "refId": "A"
+        }
+      ],
+      "title": "semantic verb consumption (5m rate — pending u5)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Novelty-shift impingement emissions per outcome. Source: agents/novelty_emitter — already shipped via u3-novelty-shift-impingement-emitter (closed). \"dispatched\" = the gqi-shift detector fired a novelty.shift impingement and the consumer accepted it. \"absorbed\" = detector fired but the consumer chose to suppress (e.g. inside hold-open window). Sustained zero on both means the gqi signal is flat — operator can verify the detector is alive by checking the gqi feed.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "id": 5,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_novelty_shift_impingement_total[5m])",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "title": "novelty-shift impingement emissions (5m rate, per outcome)",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["hapax", "director", "moves", "observability", "u-series"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Hapax / Director / Moves",
+  "uid": "hapax-director-moves",
+  "version": 1,
+  "weekStart": ""
+}

@@ -47,7 +47,12 @@ def test_generated_output_contract_is_dry_run_only() -> None:
     assert output["manifest_path"]["const"] == (
         "config/pipewire/generated/audio-routing-policy.manifest.json"
     )
-    assert policy_output["generated_conf_writes_allowed"] is False
+    # Audit F#8 (2026-05-02): generated_conf_writes_allowed is now a free
+    # boolean (no `const`) — the generator gained LADSPA chain templates
+    # so writes are supported. The other two flags stay locked to keep
+    # PipeWire host-reload operator-driven.
+    assert "const" not in output["generated_conf_writes_allowed"]
+    assert isinstance(policy_output["generated_conf_writes_allowed"], bool)
     assert policy_output["live_reload_allowed"] is False
     assert policy_output["dry_run_only"] is True
 
@@ -95,9 +100,9 @@ def test_policy_maps_current_policy_bearing_artifacts() -> None:
         "config/pipewire/hapax-notification-private.conf",
         "config/wireplumber/50-hapax-voice-duck.conf",
         "config/pipewire/hapax-l12-evilpet-capture.conf",
-        "config/pipewire/voice-fx-chain.conf",
+        "config/pipewire/hapax-voice-fx-chain.conf",
         "config/pipewire/hapax-music-loudnorm.conf",
-        "config/pipewire/yt-loudnorm.conf",
+        "config/pipewire/hapax-yt-loudnorm.conf",
         "config/pipewire/hapax-s4-loopback.conf",
         "config/pipewire/hapax-m8-loudnorm.conf",
     ):

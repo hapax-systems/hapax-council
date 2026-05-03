@@ -250,6 +250,26 @@ Detection module: `shared/audio_pin_glitch.py`. CLI subcommand:
 `scripts/hapax-audio-topology pin-check`. Memory:
 `reference_ryzen_codec_pin_glitch`.
 
+### Webcam USB-audio suppression (cc-task audio-audit-O1)
+
+All council webcams (Logitech BRIO `046d:085e`, C920 PRO `046d:08e5`, C920 HD
+Pro `046d:082d`) expose a USB-audio interface that the studio never uses —
+video is ingested via V4L2 only and the operator's mic chain is the Studio
+24c plus the Cortado MKIII contact mic. Auditor A (audit-2026-05-02 finding
+#9) flagged the unused `alsa_card.usb-…Logi` cards as an xhci-jitter and
+USB-isoc-bandwidth tax (overlaps with O3b territory).
+
+Suppression is via `config/udev/rules.d/56-hapax-webcam-audio-suppress.rules`,
+which scopes `ENV{PULSE_IGNORE}=1` to `bInterfaceClass==01` (USB-Audio
+class) only — the video interface (class `0e`) is untouched, so studio-
+compositor V4L2 ingest is unaffected. Each rule line carries an
+`ENV{ID_HAPAX_AUDIO_SUPPRESSED}` marker (`brio`, `c920-pro`, `c920-hd-pro`)
+so `udevadm info /dev/...` reports which device a suppression came from.
+
+Install: `bash scripts/install-webcam-audio-suppress-udev.sh` (sudo). Verify
+with `pactl list cards short | grep -i 'alsa_card\.usb.*Logi'` — empty output
+means the rule is live. Regression pin: `tests/scripts/test_webcam_audio_suppress_udev.py`.
+
 ### CLAUDE.md Audit (`claude-md-audit.timer` — monthly)
 
 Runs `scripts/monthly-claude-md-audit.sh` on a monthly cadence. Sweeps every workspace CLAUDE.md (council beta worktree + sibling repos + workspace root + dotfiles symlinks) through `check-claude-md-rot.sh` (default + `--strict`) and `check-vscode-sister-extensions.sh`. Posts to ntfy on findings; silent on success. Operator can run by hand at any time. Spec: `docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md`.

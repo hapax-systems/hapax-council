@@ -1,8 +1,8 @@
 [Unit]
 Description=Hapax broadcast audio safety truth producer
 Documentation=file:///home/hapax/projects/hapax-council/docs/superpowers/specs/2026-04-28-broadcast-audio-safety-ssot-design.md
-After=pipewire.service pipewire-pulse.service wireplumber.service hapax-audio-safety.service
-Wants=pipewire.service pipewire-pulse.service wireplumber.service hapax-audio-safety.service
+After=pipewire.service pipewire-pulse.service wireplumber.service hapax-audio-safety.service hapax-private-broadcast-leak-guard.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service hapax-audio-safety.service hapax-private-broadcast-leak-guard.service
 OnFailure=notify-failure@%n.service
 
 [Service]

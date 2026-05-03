@@ -1,0 +1,200 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Hapax / Audio / Recovery Events. xHCI controller recovery events, BT firmware reload events, and broadcast-master integrated LUFS gauge. Sources: scripts/hapax-xhci-death-watchdog + scripts/hapax-bt-firmware-watchdog (textfile collector under /var/lib/node_exporter/textfile_collector/) and shared/broadcast_audio_health.py per-tick LUFS measurement. Cc-task: audio-audit-H3-prometheus-recovery-counters.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Cumulative xHCI controller recovery events per controller BDF. Each increment fires after the watchdog completes a successful PCIe remove+rescan sequence in response to a kernel xHCI death pattern (HC died / Abort failed to stop command ring).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_xhci_recovery_total",
+          "legendFormat": "{{controller}}",
+          "refId": "A"
+        }
+      ],
+      "title": "xHCI controller recovery (cumulative)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Cumulative BT firmware reload attempts per HCI device, split by verify-result. `verified` = USB rebind succeeded and the canonical MT7921 success line appeared in the kernel log. `escalated` = rebind insufficient; operator action (cold poweroff) required.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_bt_firmware_reload_total",
+          "legendFormat": "{{hci}} ({{result}})",
+          "refId": "A"
+        }
+      ],
+      "title": "BT firmware reload (cumulative)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Integrated loudness (LUFS-I) at the broadcast master stage, measured every tick of hapax-broadcast-audio-health.timer. Target band is YouTube-aligned -14 LUFS-I per shared/audio_loudness.py::EGRESS_TARGET_LUFS_I; tolerance ±LUFS_TOLERANCE_LU. Drift outside the band is the upstream cause of the 2026-05-02 audit finding 'broadcast egress 13.9 dB below target'.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -20 },
+              { "color": "green", "value": -16 },
+              { "color": "yellow", "value": -12 },
+              { "color": "red", "value": -8 }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_egress_lufs_dbfs",
+          "legendFormat": "{{stage}} LUFS-I",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_egress_true_peak_dbtp",
+          "legendFormat": "{{stage}} dBTP",
+          "refId": "B"
+        }
+      ],
+      "title": "Broadcast-master integrated loudness (LUFS-I) + true-peak (dBTP)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Recovery rate alert source. The Grafana alert 'hapax_xhci_recovery_total rate > 0.1/min' fires when the xHCI controller is flapping (which suggests a flaky USB cable or PCIe contact issue rather than a one-off transient). Each pulse on this panel is one data point of the rate computation.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.05 },
+              { "color": "red", "value": 0.1 }
+            ]
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "id": 4,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_xhci_recovery_total[5m])",
+          "legendFormat": "{{controller}} (events/sec, 5m rate)",
+          "refId": "A"
+        }
+      ],
+      "title": "xHCI recovery rate (5m) — alert > 0.1/min sustained",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["hapax", "audio", "recovery", "observability", "h3"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Hapax / Audio / Recovery Events",
+  "uid": "hapax-audio-recovery",
+  "version": 1,
+  "weekStart": ""
+}

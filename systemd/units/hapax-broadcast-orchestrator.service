@@ -1,8 +1,8 @@
 [Unit]
 Description=Hapax YouTube Broadcast Boundary Orchestrator (CRITICAL — ytb-007)
 Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/broadcast_orchestrator/__init__.py
-After=network-online.target hapax-secrets.service
-Wants=network-online.target
+After=network-online.target hapax-secrets.service hapax-private-broadcast-leak-guard.service
+Wants=network-online.target hapax-private-broadcast-leak-guard.service
 PartOf=hapax.target
 
 [Service]

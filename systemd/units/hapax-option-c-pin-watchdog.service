@@ -1,0 +1,13 @@
+[Unit]
+Description=Hapax Option-C HDA pin-watchdog (Auditor A O3c)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/docs/runbooks/audio-incidents.md#ryzen-hda-pin-glitch
+After=pipewire.service wireplumber.service pipewire-pulse.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/projects/hapax-council/scripts/option-c-repin.sh
+TimeoutStartSec=10
+SuccessExitStatus=0
+
+[Install]
+WantedBy=default.target

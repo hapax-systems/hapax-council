@@ -59,6 +59,8 @@ from agents.publication_bus.stripe_payment_link_publisher import (
 from agents.publication_bus.treasury_prime_publisher import (
     TreasuryPrimePublisher,
 )
+from shared._rail_idempotency import IdempotencyStore as _RailIdempotencyStore
+from shared._rail_idempotency import default_idempotency_db_path
 from shared.buy_me_a_coffee_receive_only_rail import (
     BuyMeACoffeeRailReceiver,
 )
@@ -108,6 +110,9 @@ from shared.patreon_receive_only_rail import (
     ReceiveOnlyRailError as PatreonReceiveOnlyRailError,
 )
 from shared.stripe_payment_link_receive_only_rail import (
+    IdempotencyStore as StripePaymentLinkIdempotencyStore,
+)
+from shared.stripe_payment_link_receive_only_rail import (
     ReceiveOnlyRailError as StripePaymentLinkReceiveOnlyRailError,
 )
 from shared.stripe_payment_link_receive_only_rail import (
@@ -123,6 +128,184 @@ from shared.treasury_prime_receive_only_rail import (
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/payment-rails", tags=["payment-rails"])
+
+_stripe_payment_link_idempotency_store: StripePaymentLinkIdempotencyStore | None = None
+_patreon_idempotency_store: _RailIdempotencyStore | None = None
+_ko_fi_idempotency_store: _RailIdempotencyStore | None = None
+_buy_me_a_coffee_idempotency_store: _RailIdempotencyStore | None = None
+_liberapay_idempotency_store: _RailIdempotencyStore | None = None
+_open_collective_idempotency_store: _RailIdempotencyStore | None = None
+_mercury_idempotency_store: _RailIdempotencyStore | None = None
+_modern_treasury_idempotency_store: _RailIdempotencyStore | None = None
+_treasury_prime_idempotency_store: _RailIdempotencyStore | None = None
+_github_sponsors_idempotency_store: _RailIdempotencyStore | None = None
+
+
+def _get_treasury_prime_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Treasury Prime.
+
+    Keyed on the in-payload ``data.id`` (incoming_ach uuid).
+    """
+    global _treasury_prime_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _treasury_prime_idempotency_store is None:
+        _treasury_prime_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("treasury-prime"),
+        )
+    return _treasury_prime_idempotency_store
+
+
+def _get_github_sponsors_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for GitHub Sponsors.
+
+    Keyed on ``X-GitHub-Delivery`` header (per-delivery UUID).
+    """
+    global _github_sponsors_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _github_sponsors_idempotency_store is None:
+        _github_sponsors_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("github-sponsors"),
+        )
+    return _github_sponsors_idempotency_store
+
+
+GITHUB_SPONSORS_DELIVERY_ID_HEADER: str = "X-GitHub-Delivery"
+"""GitHub webhook per-delivery identifier header (UUID per delivery)."""
+
+
+def _get_modern_treasury_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Modern Treasury.
+
+    Keyed on the in-payload ``data.id`` (IPD payment_id).
+    """
+    global _modern_treasury_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _modern_treasury_idempotency_store is None:
+        _modern_treasury_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("modern-treasury"),
+        )
+    return _modern_treasury_idempotency_store
+
+
+def _get_mercury_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Mercury.
+
+    Keyed on the in-payload ``data.id`` Mercury transaction identifier.
+    """
+    global _mercury_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _mercury_idempotency_store is None:
+        _mercury_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("mercury"),
+        )
+    return _mercury_idempotency_store
+
+
+def _get_open_collective_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Open Collective.
+
+    Keyed on the per-delivery header ``X-Open-Collective-Activity-Id``.
+    """
+    global _open_collective_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _open_collective_idempotency_store is None:
+        _open_collective_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("open-collective"),
+        )
+    return _open_collective_idempotency_store
+
+
+OPEN_COLLECTIVE_DELIVERY_ID_HEADER: str = "X-Open-Collective-Activity-Id"
+"""Open Collective per-delivery activity identifier header."""
+
+
+def _get_liberapay_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Liberapay.
+
+    Keyed on a bridge-supplied `delivery_id` (resolved from one of:
+    ``X-Liberapay-Delivery-Id``, ``X-Cloudmailin-Message-Id``,
+    ``X-Mailgun-Variables`` JSON's ``message-id``, ``Message-Id``).
+    """
+    global _liberapay_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _liberapay_idempotency_store is None:
+        _liberapay_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("liberapay"),
+        )
+    return _liberapay_idempotency_store
+
+
+_LIBERAPAY_DELIVERY_ID_HEADERS: tuple[str, ...] = (
+    "X-Liberapay-Delivery-Id",
+    "X-Cloudmailin-Message-Id",
+    "Message-Id",
+)
+
+
+def _resolve_liberapay_delivery_id(headers) -> str | None:
+    """Walk the bridge-header fallback chain for a per-delivery identifier.
+
+    Returns the first non-empty value found across the documented
+    bridge contracts (cloudmailin, mailgun, n8n, generic SMTP). Returns
+    ``None`` if no bridge header is present — the route returns 400
+    so the bridge layer fails-loud.
+    """
+    for header_name in _LIBERAPAY_DELIVERY_ID_HEADERS:
+        value = headers.get(header_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _get_buy_me_a_coffee_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Buy Me a Coffee.
+
+    Keyed on top-level ``event_id`` (BMaC's per-delivery UUID).
+    """
+    global _buy_me_a_coffee_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _buy_me_a_coffee_idempotency_store is None:
+        _buy_me_a_coffee_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("buy-me-a-coffee"),
+        )
+    return _buy_me_a_coffee_idempotency_store
+
+
+def _get_ko_fi_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Ko-fi.
+
+    Keyed on ``kofi_transaction_id`` (in-payload UUID per delivery).
+    Tests can swap the singleton by assigning to
+    ``_ko_fi_idempotency_store`` directly.
+    """
+    global _ko_fi_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _ko_fi_idempotency_store is None:
+        _ko_fi_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("ko-fi"),
+        )
+    return _ko_fi_idempotency_store
+
+
+def _get_patreon_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Patreon.
+
+    First call materializes the store + parent dir. Tests can swap the
+    singleton by assigning to ``_patreon_idempotency_store`` directly.
+    """
+    global _patreon_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _patreon_idempotency_store is None:
+        _patreon_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("patreon"),
+        )
+    return _patreon_idempotency_store
+
+
+def _get_stripe_payment_link_idempotency_store() -> StripePaymentLinkIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Stripe Payment Link.
+
+    First-call creates the store + parent directory. Subsequent calls
+    reuse the same instance (sqlite connections are short-lived per
+    `record_or_skip` call). Tests can swap the singleton by assigning
+    to ``_stripe_payment_link_idempotency_store`` directly.
+    """
+    global _stripe_payment_link_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _stripe_payment_link_idempotency_store is None:
+        _stripe_payment_link_idempotency_store = StripePaymentLinkIdempotencyStore()
+    return _stripe_payment_link_idempotency_store
+
 
 GITHUB_SPONSORS_SIGNATURE_HEADER: str = "X-Hub-Signature-256"
 """GitHub Sponsors webhook signature header. Documented at
@@ -221,15 +404,26 @@ async def receive_github_sponsors_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
     signature = request.headers.get(GITHUB_SPONSORS_SIGNATURE_HEADER)
+    delivery_id = request.headers.get(GITHUB_SPONSORS_DELIVERY_ID_HEADER)
 
-    receiver = GitHubSponsorsRailReceiver()
+    receiver = GitHubSponsorsRailReceiver(
+        idempotency_store=_get_github_sponsors_idempotency_store(),
+    )
     try:
-        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+        event = receiver.ingest_webhook(
+            payload,
+            signature,
+            raw_body=raw_body,
+            delivery_id=delivery_id,
+        )
     except GitHubSponsorsReceiveOnlyRailError as exc:
         log.warning("github_sponsors webhook rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        if payload and isinstance(delivery_id, str) and delivery_id:
+            log.info("github_sponsors webhook duplicate: %s", delivery_id)
+            return JSONResponse({"status": "duplicate", "delivery_id": delivery_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = GitHubSponsorsPublisher()
@@ -299,15 +493,27 @@ async def receive_liberapay_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
     signature = request.headers.get(LIBERAPAY_SIGNATURE_HEADER)
+    delivery_id = _resolve_liberapay_delivery_id(request.headers)
 
-    receiver = LiberapayRailReceiver()
+    receiver = LiberapayRailReceiver(
+        idempotency_store=_get_liberapay_idempotency_store(),
+    )
     try:
-        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+        event = receiver.ingest_webhook(
+            payload,
+            signature,
+            raw_body=raw_body,
+            delivery_id=delivery_id,
+        )
     except LiberapayReceiveOnlyRailError as exc:
         log.warning("liberapay webhook rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate delivery_id — both 200 OK.
+        if payload and isinstance(delivery_id, str) and delivery_id:
+            log.info("liberapay webhook duplicate: %s", delivery_id)
+            return JSONResponse({"status": "duplicate", "delivery_id": delivery_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = LiberapayPublisher()
@@ -363,15 +569,26 @@ async def receive_open_collective_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
     signature = request.headers.get(OPEN_COLLECTIVE_SIGNATURE_HEADER)
+    delivery_id = request.headers.get(OPEN_COLLECTIVE_DELIVERY_ID_HEADER)
 
-    receiver = OpenCollectiveRailReceiver()
+    receiver = OpenCollectiveRailReceiver(
+        idempotency_store=_get_open_collective_idempotency_store(),
+    )
     try:
-        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+        event = receiver.ingest_webhook(
+            payload,
+            signature,
+            raw_body=raw_body,
+            delivery_id=delivery_id,
+        )
     except OpenCollectiveReceiveOnlyRailError as exc:
         log.warning("open_collective webhook rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        if payload and isinstance(delivery_id, str) and delivery_id:
+            log.info("open_collective webhook duplicate: %s", delivery_id)
+            return JSONResponse({"status": "duplicate", "delivery_id": delivery_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = OpenCollectivePublisher()
@@ -429,7 +646,9 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(STRIPE_PAYMENT_LINK_SIGNATURE_HEADER)
 
-    receiver = StripePaymentLinkRailReceiver()
+    receiver = StripePaymentLinkRailReceiver(
+        idempotency_store=_get_stripe_payment_link_idempotency_store(),
+    )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except StripePaymentLinkReceiveOnlyRailError as exc:
@@ -437,6 +656,12 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping (empty payload) or duplicate event id —
+        # both shapes return 200 OK so Stripe stops retrying.
+        if payload:
+            event_id = payload.get("id", "<missing>")
+            log.info("stripe_payment_link webhook duplicate: %s", event_id)
+            return JSONResponse({"status": "duplicate", "event_id": event_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = StripePaymentLinkPublisher()
@@ -493,7 +718,7 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
-    receiver = KoFiRailReceiver()
+    receiver = KoFiRailReceiver(idempotency_store=_get_ko_fi_idempotency_store())
     try:
         event = receiver.ingest_webhook(payload, verify_token=True)
     except KoFiReceiveOnlyRailError as exc:
@@ -501,6 +726,11 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate kofi_transaction_id — both 200 OK.
+        transaction_id = payload.get("kofi_transaction_id") if payload else None
+        if payload and isinstance(transaction_id, str) and transaction_id:
+            log.info("ko_fi webhook duplicate: %s", transaction_id)
+            return JSONResponse({"status": "duplicate", "kofi_transaction_id": transaction_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = KoFiPublisher()
@@ -558,15 +788,26 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(PATREON_SIGNATURE_HEADER)
     event_header = request.headers.get(PATREON_EVENT_HEADER)
+    webhook_id = request.headers.get("X-Patreon-Webhook-Id")
 
-    receiver = PatreonRailReceiver()
+    receiver = PatreonRailReceiver(idempotency_store=_get_patreon_idempotency_store())
     try:
-        event = receiver.ingest_webhook(payload, signature, event_header, raw_body=raw_body)
+        event = receiver.ingest_webhook(
+            payload,
+            signature,
+            event_header,
+            raw_body=raw_body,
+            webhook_id=webhook_id,
+        )
     except PatreonReceiveOnlyRailError as exc:
         log.warning("patreon webhook rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate webhook id — both 200 OK.
+        if payload and webhook_id:
+            log.info("patreon webhook duplicate: %s", webhook_id)
+            return JSONResponse({"status": "duplicate", "webhook_id": webhook_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = PatreonPublisher()
@@ -623,7 +864,9 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(BUY_ME_A_COFFEE_SIGNATURE_HEADER)
 
-    receiver = BuyMeACoffeeRailReceiver()
+    receiver = BuyMeACoffeeRailReceiver(
+        idempotency_store=_get_buy_me_a_coffee_idempotency_store(),
+    )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except BuyMeACoffeeReceiveOnlyRailError as exc:
@@ -631,6 +874,11 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate event_id — both 200 OK.
+        event_id = payload.get("event_id") if payload else None
+        if payload and isinstance(event_id, str) and event_id:
+            log.info("buy_me_a_coffee webhook duplicate: %s", event_id)
+            return JSONResponse({"status": "duplicate", "event_id": event_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = BuyMeACoffeePublisher()
@@ -693,7 +941,7 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
         MERCURY_LEGACY_SIGNATURE_HEADER
     )
 
-    receiver = MercuryRailReceiver()
+    receiver = MercuryRailReceiver(idempotency_store=_get_mercury_idempotency_store())
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except MercuryReceiveOnlyRailError as exc:
@@ -701,6 +949,11 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate transaction id — both 200 OK.
+        txn_id = (payload.get("data") or {}).get("id") if isinstance(payload, dict) else None
+        if payload and isinstance(txn_id, str) and txn_id:
+            log.info("mercury webhook duplicate: %s", txn_id)
+            return JSONResponse({"status": "duplicate", "transaction_id": txn_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = MercuryPublisher()
@@ -760,7 +1013,9 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(MODERN_TREASURY_SIGNATURE_HEADER)
 
-    receiver = ModernTreasuryRailReceiver()
+    receiver = ModernTreasuryRailReceiver(
+        idempotency_store=_get_modern_treasury_idempotency_store(),
+    )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except ModernTreasuryReceiveOnlyRailError as exc:
@@ -768,6 +1023,11 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate payment id — both 200 OK.
+        payment_id = (payload.get("data") or {}).get("id") if isinstance(payload, dict) else None
+        if payload and isinstance(payment_id, str) and payment_id:
+            log.info("modern_treasury webhook duplicate: %s", payment_id)
+            return JSONResponse({"status": "duplicate", "payment_id": payment_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = ModernTreasuryPublisher()
@@ -827,7 +1087,9 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(TREASURY_PRIME_SIGNATURE_HEADER)
 
-    receiver = TreasuryPrimeRailReceiver()
+    receiver = TreasuryPrimeRailReceiver(
+        idempotency_store=_get_treasury_prime_idempotency_store(),
+    )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except TreasuryPrimeReceiveOnlyRailError as exc:
@@ -835,6 +1097,10 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        ach_id = (payload.get("data") or {}).get("id") if isinstance(payload, dict) else None
+        if payload and isinstance(ach_id, str) and ach_id:
+            log.info("treasury_prime webhook duplicate: %s", ach_id)
+            return JSONResponse({"status": "duplicate", "ach_id": ach_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = TreasuryPrimePublisher()

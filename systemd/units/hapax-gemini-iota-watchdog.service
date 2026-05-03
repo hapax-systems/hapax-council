@@ -1,0 +1,23 @@
+[Unit]
+Description=Hapax Gemini iota lane watchdog (Flash-downgrade detection + respawn)
+Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-gemini-watchdog
+After=default.target
+PartOf=hapax-control-plane.target
+
+[Service]
+Type=notify
+WatchdogSec=120s
+Restart=always
+RestartSec=10s
+ExecStart=%h/projects/hapax-council/scripts/hapax-gemini-watchdog iota
+Environment=GEMINI_ROLE=iota
+Environment=HAPAX_GEMINI_PIPE_LOG=/tmp/hapax-gemini-iota.pipe.log
+Environment=HAPAX_GEMINI_WATCHDOG_INTERVAL=60
+NotifyAccess=main
+
+# Resource bounds — watchdog is a thin shell loop, should never need much
+MemoryMax=64M
+CPUQuota=5%
+
+[Install]
+WantedBy=default.target

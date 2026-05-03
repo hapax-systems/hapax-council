@@ -35,10 +35,14 @@ wired publisher.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import ClassVar
 
+from agents.publication_bus._rail_publisher_helpers import (
+    default_output_dir,
+    safe_filename_for_event,
+    write_manifest_entry,
+)
 from agents.publication_bus.publisher_kit import (
     Publisher,
     PublisherPayload,
@@ -58,12 +62,6 @@ log = logging.getLogger(__name__)
 KO_FI_PUBLISHER_SURFACE: str = "ko-fi-receiver"
 
 
-def _default_output_dir() -> Path:
-    home_env = os.environ.get("HAPAX_HOME")
-    base = Path(home_env) if home_env else Path.home()
-    return base / "hapax-state" / "publications" / "ko-fi"
-
-
 DEFAULT_KO_FI_ALLOWLIST: AllowlistGate = load_allowlist(
     KO_FI_PUBLISHER_SURFACE,
     [k.value for k in KoFiEventKind],
@@ -78,7 +76,7 @@ class KoFiPublisher(Publisher):
     requires_legal_name: ClassVar[bool] = False
 
     def __init__(self, *, output_dir: Path | None = None) -> None:
-        self.output_dir = output_dir if output_dir is not None else _default_output_dir()
+        self.output_dir = output_dir if output_dir is not None else default_output_dir("ko-fi")
 
     def publish_event(self, event: KoFiEvent) -> PublisherResult:
         body = self._render_manifest_body(event)
@@ -110,15 +108,7 @@ class KoFiPublisher(Publisher):
         return "\n".join(lines)
 
     def _emit(self, payload: PublisherPayload) -> PublisherResult:
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        sha = str(payload.metadata.get("raw_payload_sha256", ""))[:16] or "unknown"
-        path = self.output_dir / f"event-{payload.target}-{sha}.md"
-        try:
-            path.write_text(payload.text, encoding="utf-8")
-        except OSError as exc:
-            log.warning("ko_fi manifest write failed: %s", exc)
-            return PublisherResult(error=True, detail=f"write failed: {exc}")
-        return PublisherResult(ok=True, detail=str(path))
+        return write_manifest_entry(self.output_dir, payload, log=log)
 
 
 def manifest_path_for_event(
@@ -126,9 +116,8 @@ def manifest_path_for_event(
     *,
     output_dir: Path | None = None,
 ) -> Path:
-    base = output_dir if output_dir is not None else _default_output_dir()
-    sha = event.raw_payload_sha256[:16]
-    return base / f"event-{event.event_kind.value}-{sha}.md"
+    base = output_dir if output_dir is not None else default_output_dir("ko-fi")
+    return base / safe_filename_for_event(event.event_kind.value, event.raw_payload_sha256)
 
 
 def event_to_manifest_record(event: KoFiEvent) -> dict[str, object]:

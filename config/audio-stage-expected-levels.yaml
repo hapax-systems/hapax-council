@@ -1,0 +1,86 @@
+# Canonical per-stage expected RMS levels for the boot-time audio
+# stage check (cc-task audio-audit-B-startup-stage-check, Auditor B).
+#
+# The boot-time oneshot plays a known -14 LUFS test tone through
+# hapax-music-loudnorm.playback for 5 seconds, captures monitor RMS
+# at each of the 4 stages below, and compares to expected_dbfs.
+# Divergence > tolerance_db triggers an ntfy alert.
+#
+# Schema (each stage entry):
+#   monitor: PipeWire monitor source name
+#   expected_dbfs: target RMS in dBFS at the operator's canonical
+#                  -14 LUFS reference tone (negative number)
+#   tolerance_db: ± window for "in range" (positive number)
+#   description: human-readable purpose
+#
+# Edit policy: only the operator changes these values. Each change
+# should be committed with the calibration session log (date + which
+# tone + measured value + new expected_dbfs) so a future regression
+# investigation can recover the rationale.
+
+schema_version: 1
+
+stages:
+  - monitor: hapax-music-loudnorm.monitor
+    expected_dbfs: -20.0
+    tolerance_db: 3.0
+    description: >-
+      Loudnorm output stage. EBU R128 normalisation lands at the
+      pre-norm target (PRE_NORM_TARGET_LUFS_I = -18 LUFS-I per
+      shared/audio_loudness.py) which corresponds to ~-20 dBFS RMS
+      on the canonical sine reference.
+  - monitor: hapax-music-duck.monitor
+    expected_dbfs: -20.0
+    tolerance_db: 3.0
+    description: >-
+      Post-ducker monitor. With no operator-VAD trigger active the
+      ducker is bypass; the level matches loudnorm output.
+  - monitor: hapax-usb-line-driver.monitor
+    expected_dbfs: -18.0
+    tolerance_db: 3.0
+    description: >-
+      USB line-driver to S-4 / L-12. Adds ~+2 dB make-up gain on
+      the canonical analog-LINE-out path.
+  - monitor: hapax-obs-broadcast-remap.monitor
+    expected_dbfs: -14.0
+    tolerance_db: 3.0
+    description: >-
+      Final broadcast egress. EGRESS_TARGET_LUFS_I = -14 LUFS-I per
+      shared/audio_loudness.py. This is the master limiter output and
+      what reaches OBS / YouTube.
+
+  # Audit-B-grafana-per-stage-rms-dashboard extension (cc-task
+  # 2026-05-03): four additional stages the boot-time check also
+  # measures, surfaced for the per-stage RMS dashboard.
+  - monitor: hapax-l12-mixed.monitor
+    expected_dbfs: -16.0
+    tolerance_db: 3.0
+    description: >-
+      L-12 mixed-bus capture monitor. The L-12 master analog mix
+      lands at roughly mid-band level after the deck's onboard
+      mixer; this is the bus the broadcast tap consumes. Operator
+      adjusts the L-12 master fader to land here.
+  - monitor: hapax-broadcast-master.monitor
+    expected_dbfs: -16.0
+    tolerance_db: 3.0
+    description: >-
+      Broadcast master sink monitor — pre-loudnorm. Per the
+      2026-05-03 PipeWire monitor-port semantics research (PR #2353),
+      this monitor carries pre-process audio (what's being summed
+      INTO the master), so the level here reflects the L-12
+      mixed-bus output arriving at the safety-net limiter's input.
+  - monitor: hapax-broadcast-normalized.monitor
+    expected_dbfs: -14.0
+    tolerance_db: 3.0
+    description: >-
+      Post-loudnorm broadcast egress source (Audio/Source per the
+      2026-05-03 pw-dump verification, PR #2355). Capturing here
+      gets the post-LADSPA limiter output. Should equal
+      EGRESS_TARGET_LUFS_I = -14 dBFS RMS on the canonical sine.
+  - monitor: hapax-private-monitor.monitor
+    expected_dbfs: -23.0
+    tolerance_db: 3.0
+    description: >-
+      Private monitor (operator-only feedback path). Lower target
+      because the private monitor is for the operator's headphone
+      mix, not the broadcast egress.

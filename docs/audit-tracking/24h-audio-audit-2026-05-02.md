@@ -56,3 +56,58 @@ parallel this session. Operator updates the `pr:` field as each PR merges.
 - Constitutional: `feedback_l12_equals_livestream_invariant` (L-12 = livestream invariant — no carve-outs)
 - Working mode: `~/.cache/hapax/working-mode` SSOT
 - L-12 scenes: `docs/audio/l12-scenes.md`
+
+## Resolved follow-up — broadcast-egress LUFS probe target
+
+`docs/research/2026-05-03-pipewire-filter-chain-monitor-semantics.md`
+(PR #2353) established that PipeWire filter-chain monitor ports carry
+**pre-chain** (input-side) audio, not post-process. This raised the
+question of whether the broadcast-egress LUFS probe captures the
+intended post-loudnorm stage.
+
+**Resolved 2026-05-03T11:14Z by `pw-dump`** (non-destructive live
+inspection):
+
+```
+id=92 name='hapax-broadcast-normalized'
+  media.class: Audio/Source
+  node.description: Hapax Broadcast Safety-Net Limiter
+```
+
+`hapax-broadcast-normalized` resolves to **`Audio/Source`** — it is
+the *output* of the safety-net limiter chain, not a sink whose
+monitor would tap pre-process audio. Capturing from this node (or its
+PulseAudio `.monitor` alias) gets the post-LADSPA limiter output.
+
+Implications:
+
+* `shared/broadcast_audio_health.py::_evaluate_loudness` probe target
+  is **correct**. The integrated LUFS-I value the evaluator publishes
+  reflects the post-loudnorm broadcast-master stage as intended.
+* `_emit_lufs_gauge()` from #2340 inherits the same correct probe.
+  The `hapax_audio_egress_lufs_dbfs{stage="broadcast-master"}`
+  Prometheus gauge accurately tracks egress LUFS-I; the dashboard
+  panel from the H3 dashboard JSON is reading the right stage.
+* No shipped regression. Finding #3 ("Broadcast egress 13.9 dB below
+  -14 LUFS target") was a real measurement of real drift — not a
+  probe-target mis-aim.
+
+The pre-chain monitor semantics finding from #2353 still applies as a
+general invariant for new code. Any future probe wiring against a
+filter-chain `capture.props` (Audio/Sink) monitor port must remember
+the input-side semantics, but every existing council probe verified
+above is correctly aimed.
+
+For audit hygiene: also verified at the same time:
+
+```
+id=88 name='hapax-broadcast-master'                  Audio/Source
+id=89 name='hapax-broadcast-master-capture'          Stream/Input/Audio
+id=91 name='hapax-broadcast-normalized-capture'      Stream/Input/Audio
+id=92 name='hapax-broadcast-normalized'              Audio/Source
+```
+
+The two `*-capture` nodes are the filter-chains' internal
+input-stream sides (Stream/Input/Audio); the two named master /
+normalized nodes are the post-process Audio/Source outputs operator
+code captures from.

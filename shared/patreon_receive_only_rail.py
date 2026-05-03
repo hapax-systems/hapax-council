@@ -141,6 +141,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore,
+)
+
 PATREON_WEBHOOK_SECRET_ENV = "PATREON_WEBHOOK_SECRET"
 
 _ISO_4217_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -495,8 +502,14 @@ class PatreonRailReceiver:
     ``X-Patreon-Signature`` HTTP header.
     """
 
-    def __init__(self, *, secret_env_var: str = PATREON_WEBHOOK_SECRET_ENV) -> None:
+    def __init__(
+        self,
+        *,
+        secret_env_var: str = PATREON_WEBHOOK_SECRET_ENV,
+        idempotency_store: IdempotencyStore | None = None,
+    ) -> None:
         self._secret_env_var = secret_env_var
+        self._idempotency_store = idempotency_store
 
     def _resolve_secret(self) -> str:
         return os.environ.get(self._secret_env_var, "")
@@ -508,6 +521,7 @@ class PatreonRailReceiver:
         event_header: str | None,
         *,
         raw_body: bytes | None = None,
+        webhook_id: str | None = None,
     ) -> PledgeEvent | None:
         """Validate + normalize a single Patreon webhook delivery.
 
@@ -527,6 +541,16 @@ class PatreonRailReceiver:
         against live Patreon deliveries.  When omitted, the receiver
         falls back to canonical-encoding the parsed payload (preserves
         prior behavior the rail's own unit tests rely on).
+
+        ``webhook_id`` is the per-delivery unique identifier from the
+        ``X-Patreon-Webhook-Id`` header.  When the receiver is
+        constructed with an ``idempotency_store`` AND ``webhook_id`` is
+        provided, the store gates duplicate deliveries: second-arrival
+        of the same id short-circuits to ``None`` (caller returns 200
+        OK without re-processing).  When the store is provided but
+        ``webhook_id`` is missing, raises :class:`ReceiveOnlyRailError`
+        (caller misuse — the only correct shape against live deliveries
+        is to pass both).
         """
         if not isinstance(payload, dict):
             raise ReceiveOnlyRailError(f"payload must be a dict, got {type(payload).__name__}")
@@ -556,6 +580,18 @@ class PatreonRailReceiver:
         currency = _extract_currency(payload)
         occurred_at = _extract_occurred_at(attributes, event_kind)
 
+        if self._idempotency_store is not None:
+            if not webhook_id:
+                raise ReceiveOnlyRailError(
+                    "idempotency_store provided but webhook_id missing — "
+                    "callers must pass the X-Patreon-Webhook-Id header value"
+                )
+            try:
+                if not self._idempotency_store.record_or_skip(webhook_id):
+                    return None
+            except _SharedIdempotencyError as exc:
+                raise ReceiveOnlyRailError(str(exc)) from exc
+
         try:
             return PledgeEvent(
                 patron_handle=patron_handle,
@@ -571,6 +607,7 @@ class PatreonRailReceiver:
 
 __all__ = [
     "PATREON_WEBHOOK_SECRET_ENV",
+    "IdempotencyStore",
     "PatreonRailReceiver",
     "PledgeEvent",
     "PledgeEventKind",

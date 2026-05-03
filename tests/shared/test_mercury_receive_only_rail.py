@@ -588,3 +588,77 @@ def test_secret_env_var_constant_is_canonical() -> None:
 
 def test_receive_only_error_subclasses_exception() -> None:
     assert issubclass(ReceiveOnlyRailError, Exception)
+
+
+# ---------------------------------------------------------------------------
+# jr-mercury-rail-idempotency-pin regression pins
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_store_rejects_duplicate_txn_id(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "mercury-idem.db")
+    receiver = MercuryRailReceiver(idempotency_store=store)
+    payload = _ach_incoming_payload()
+    payload["data"]["id"] = "txn-test-001"
+
+    first = receiver.ingest_webhook(payload, signature=None)
+    second = receiver.ingest_webhook(payload, signature=None)
+
+    assert first is not None
+    assert second is None
+
+
+def test_idempotency_store_distinct_txn_ids_both_processed(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "mercury-idem.db")
+    receiver = MercuryRailReceiver(idempotency_store=store)
+    payload_a = _ach_incoming_payload()
+    payload_a["data"]["id"] = "txn-a"
+    payload_b = _ach_incoming_payload()
+    payload_b["data"]["id"] = "txn-b"
+
+    first = receiver.ingest_webhook(payload_a, signature=None)
+    second = receiver.ingest_webhook(payload_b, signature=None)
+
+    assert first is not None
+    assert second is not None
+
+
+def test_idempotency_store_provided_but_data_id_missing_raises(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "mercury-idem.db")
+    receiver = MercuryRailReceiver(idempotency_store=store)
+    payload = _ach_incoming_payload()
+    del payload["data"]["id"]
+
+    with pytest.raises(ReceiveOnlyRailError, match="data.id"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_no_idempotency_store_means_no_idempotency_check():
+    receiver = MercuryRailReceiver()
+    payload = _ach_incoming_payload()
+    a = receiver.ingest_webhook(payload, signature=None)
+    b = receiver.ingest_webhook(payload, signature=None)
+    assert a is not None
+    assert b is not None
+
+
+def test_idempotency_store_persists_across_receivers(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    db = tmp_path / "mercury-idem.db"
+    payload = _ach_incoming_payload()
+    payload["data"]["id"] = "txn-persist"
+
+    a = MercuryRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+    first = a.ingest_webhook(payload, signature=None)
+    b = MercuryRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+    second = b.ingest_webhook(payload, signature=None)
+
+    assert first is not None
+    assert second is None

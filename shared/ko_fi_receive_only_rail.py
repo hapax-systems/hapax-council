@@ -99,6 +99,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore,
+)
+
 KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV = "KO_FI_WEBHOOK_VERIFICATION_TOKEN"
 
 _ISO_4217_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -318,8 +325,10 @@ class KoFiRailReceiver:
         self,
         *,
         token_env_var: str = KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV,
+        idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._token_env_var = token_env_var
+        self._idempotency_store = idempotency_store
 
     def _resolve_token(self) -> str:
         return os.environ.get(self._token_env_var, "")
@@ -365,6 +374,19 @@ class KoFiRailReceiver:
         amount_cents, currency = _extract_amount_and_currency(payload)
         occurred_at = _extract_occurred_at(payload)
 
+        if self._idempotency_store is not None:
+            transaction_id = payload.get("kofi_transaction_id")
+            if not isinstance(transaction_id, str) or not transaction_id:
+                raise ReceiveOnlyRailError(
+                    "idempotency_store provided but payload missing 'kofi_transaction_id' "
+                    "(required for dedup keying)"
+                )
+            try:
+                if not self._idempotency_store.record_or_skip(transaction_id):
+                    return None
+            except _SharedIdempotencyError as exc:
+                raise ReceiveOnlyRailError(str(exc)) from exc
+
         try:
             return KoFiEvent(
                 sender_handle=sender_handle,
@@ -380,6 +402,7 @@ class KoFiRailReceiver:
 
 __all__ = [
     "KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV",
+    "IdempotencyStore",
     "KoFiEvent",
     "KoFiEventKind",
     "KoFiRailReceiver",

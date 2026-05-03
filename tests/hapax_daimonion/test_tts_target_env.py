@@ -2,7 +2,7 @@
 
 Covers conversation_pipeline._open_audio_output — the single integration point
 between the daimonion conversation loop and the voice FX filter-chain
-(config/pipewire/voice-fx-chain.conf).
+(config/pipewire/hapax-voice-fx-chain.conf).
 """
 
 from __future__ import annotations

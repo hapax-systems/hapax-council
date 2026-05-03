@@ -1,7 +1,7 @@
 [Unit]
 Description=Hapax broadcast audio health producer — egress audibility witness
-Wants=hapax-secrets.service
-After=hapax-secrets.service pipewire.service
+Wants=hapax-secrets.service hapax-private-broadcast-leak-guard.service
+After=hapax-secrets.service pipewire.service hapax-private-broadcast-leak-guard.service
 
 [Service]
 Type=oneshot

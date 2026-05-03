@@ -13,7 +13,13 @@ description: |
 generated_output:
   output_dir: config/pipewire/generated
   manifest_path: config/pipewire/generated/audio-routing-policy.manifest.json
-  generated_conf_writes_allowed: false
+  # Audit F#8 (2026-05-02): generator gained LADSPA loudnorm / duck /
+  # usb-bias chain templates so the descriptor can emit the load-bearing
+  # filter-chain shapes directly. Flipped on so `hapax-audio-topology
+  # generate` can write into config/pipewire/generated/ without operator
+  # override. Live reload + dry-run flags stay conservative — host-side
+  # PipeWire reload is still operator-driven, the generator is no longer.
+  generated_conf_writes_allowed: true
   live_reload_allowed: false
   dry_run_only: true
 
@@ -143,8 +149,8 @@ routes:
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/wireplumber/50-hapax-voice-duck.conf
-      - config/pipewire/voice-fx-chain.conf
-      - config/pipewire/voice-fx-loudnorm.conf
+      - config/pipewire/hapax-voice-fx-chain.conf
+      - config/pipewire/hapax-voice-fx-loudnorm.conf
       - config/pipewire/hapax-tts-duck.conf
 
   - source_id: multimedia-default
@@ -236,9 +242,9 @@ routes:
       - tts
     generated_artifact_owner: hand_mirrored
     artifact_refs:
-      - config/pipewire/yt-loudnorm.conf
+      - config/pipewire/hapax-yt-loudnorm.conf
       - config/pipewire/ytube-over-24c-duck.conf
-      - config/pipewire/yt-over-24c-duck.conf
+      - config/pipewire/hapax-yt-over-24c-duck.conf
 
   - source_id: l12-evilpet-capture
     producer: l12-aux-capture
@@ -364,11 +370,11 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#m8-instrument
     reason: M8 autolink policy is route-policy owned but hardware-optional.
-  - path: config/pipewire/voice-fx-chain.conf
+  - path: config/pipewire/hapax-voice-fx-chain.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: Broadcast voice FX chain mirrors role.broadcast policy.
-  - path: config/pipewire/voice-fx-loudnorm.conf
+  - path: config/pipewire/hapax-voice-fx-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: TTS loudnorm constants must cite shared/audio_loudness.py.
@@ -388,7 +394,7 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#music-bed
     reason: Music ducking mirrors shared ducking constants.
-  - path: config/pipewire/yt-loudnorm.conf
+  - path: config/pipewire/hapax-yt-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
     reason: YouTube bed remains blocked from broadcast eligibility until real-content smoke and provenance pass.
@@ -396,7 +402,7 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
     reason: YouTube duck chain is policy-covered but not broadcast-eligible by default.
-  - path: config/pipewire/yt-over-24c-duck.conf
+  - path: config/pipewire/hapax-yt-over-24c-duck.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
     reason: Legacy YouTube duck artifact remains policy-covered while migration settles.

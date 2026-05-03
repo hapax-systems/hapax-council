@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Detect Gemini CLI Flash-downgrade banners and respawn the lane.
+#
+# Reads the tmux pipe-pane log written by scripts/hapax-gemini at session
+# start (default: /tmp/hapax-gemini-<role>.pipe.log). Every 60s it scans
+# the tail for the catastrophic "forcefully and permanently switched over
+# to Flash" message that Gemini CLI emits when the high-capability route
+# (gemini-3-pro-preview) is downgraded for the duration of the session.
+#
+# On detection it kills the tmux session and re-spawns it via hapax-gemini,
+# which restarts the REPL with --resume latest so context persists across
+# the recovery cycle.
+#
+# This script is invoked as a systemd user unit
+# (hapax-gemini-iota-watchdog.service) with Type=notify so systemd's
+# WatchdogSec=120s heartbeats keep the watchdog itself alive.
+
+set -euo pipefail
+
+ROLE="${1:-${GEMINI_ROLE:-iota}}"
+case "$ROLE" in
+  iota|kappa|lambda|mu) ;;
+  *)
+    echo "hapax-gemini-watchdog: invalid role '$ROLE'" >&2
+    exit 2
+    ;;
+esac
+
+TMUX_NAME="hapax-gemini-$ROLE"
+PIPE_LOG="${HAPAX_GEMINI_PIPE_LOG:-/tmp/hapax-gemini-$ROLE.pipe.log}"
+SCAN_INTERVAL="${HAPAX_GEMINI_WATCHDOG_INTERVAL:-60}"
+SCAN_TAIL_LINES="${HAPAX_GEMINI_WATCHDOG_TAIL_LINES:-200}"
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+LAUNCHER="$COUNCIL_DIR/scripts/hapax-gemini"
+
+# Banners that indicate a non-recoverable session-level downgrade. The first
+# is the Flash-downgrade banner from the research drop; the second covers the
+# generic "model unavailable" terminal state.
+DOWNGRADE_REGEX="${HAPAX_GEMINI_WATCHDOG_REGEX:-forcefully.*switched.*Flash|forcefully and permanently switched|model is unavailable for the rest of this session}"
+
+systemd_notify() {
+  if command -v systemd-notify >/dev/null 2>&1; then
+    systemd-notify "$@" >/dev/null 2>&1 || true
+  fi
+}
+
+systemd_notify --ready --status="watchdog up; scanning $PIPE_LOG"
+
+while true; do
+  # WATCHDOG=1 keepalive for systemd's WatchdogSec=120s
+  systemd_notify WATCHDOG=1
+
+  if [ -f "$PIPE_LOG" ]; then
+    if tail -n "$SCAN_TAIL_LINES" "$PIPE_LOG" 2>/dev/null \
+      | grep -Eiq "$DOWNGRADE_REGEX"; then
+      echo "hapax-gemini-watchdog: Flash-downgrade banner detected in $PIPE_LOG; respawning $TMUX_NAME" >&2
+      systemd_notify --status="downgrade detected; respawning $TMUX_NAME"
+
+      tmux kill-session -t "$TMUX_NAME" 2>/dev/null || true
+      # Truncate the pipe log so the next iteration doesn't re-detect the same banner
+      : > "$PIPE_LOG"
+      sleep 2
+      "$LAUNCHER" --role "$ROLE" --terminal tmux --force >/dev/null || true
+      systemd_notify --status="watchdog up; respawned $TMUX_NAME"
+    fi
+  fi
+
+  sleep "$SCAN_INTERVAL"
+done

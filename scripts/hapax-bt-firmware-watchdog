@@ -507,12 +507,41 @@ def watch_loop(
         # Mark cooldown even on partial failure: we don't want to retry-storm
         # on a controller that genuinely cannot be revived without a poweroff.
         state.mark_recovery(event.hci, now=now)
+        if not dry_run:
+            _emit_recovery_counter(event.hci, outcome)
         try:
             state.to_path(state_path)
         except OSError as exc:
             log(f"state persist failed: {exc}", stream=sys.stderr)
         log(f"recovery outcome for {event.hci}: {json.dumps(outcome)}")
     return recoveries
+
+
+def _emit_recovery_counter(hci: str, outcome: dict[str, Any]) -> None:
+    """Increment ``hapax_bt_firmware_reload_total{hci=<hci>,result=<verified|escalated>}``
+    for node_exporter textfile collector. Errors are logged + swallowed.
+
+    The ``result`` label distinguishes verified-OK reloads from
+    rebind-insufficient escalations so a Grafana panel can split the
+    two without reading the failure-status JSON.
+
+    Cc-task: ``audio-audit-H3-prometheus-recovery-counters``.
+    """
+    try:
+        from shared.recovery_counter_textfile import increment_counter
+    except Exception as exc:
+        log(f"textfile counter import failed: {exc}", stream=sys.stderr)
+        return
+    result_label = "verified" if outcome.get("verify_pattern_seen") else "escalated"
+    try:
+        new_value = increment_counter(
+            metric_name="hapax_bt_firmware_reload_total",
+            labels={"hci": hci, "result": result_label},
+            help_text="Bluetooth firmware reload attempts by HCI and verify-result.",
+        )
+        log(f"hapax_bt_firmware_reload_total{{hci={hci},result={result_label}}} = {new_value:g}")
+    except Exception as exc:
+        log(f"textfile counter increment failed: {exc}", stream=sys.stderr)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

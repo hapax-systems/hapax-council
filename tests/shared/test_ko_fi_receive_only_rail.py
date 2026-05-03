@@ -531,3 +531,100 @@ def test_anonymous_supporter_handle_passthrough():
         event = receiver.ingest_webhook(payload)
     assert event is not None
     assert event.sender_handle == "Anonymous"
+
+
+# ---------------------------------------------------------------------------
+# jr-ko-fi-rail-idempotency-pin regression pins
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_store_rejects_duplicate_kofi_transaction_id(tmp_path):
+    """Replay of the same kofi_transaction_id is short-circuited to None."""
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "ko-fi-idem.db")
+    receiver = KoFiRailReceiver(idempotency_store=store)
+    payload = _donation_payload()
+    payload["kofi_transaction_id"] = "tx-test-001"
+
+    with mock.patch.dict(
+        "os.environ", {KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV: _VALID_TOKEN}, clear=False
+    ):
+        first = receiver.ingest_webhook(payload)
+        second = receiver.ingest_webhook(payload)
+
+    assert first is not None
+    assert second is None  # short-circuit
+
+
+def test_idempotency_store_distinct_transaction_ids_both_processed(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "ko-fi-idem.db")
+    receiver = KoFiRailReceiver(idempotency_store=store)
+
+    payload_a = _donation_payload()
+    payload_a["kofi_transaction_id"] = "tx-a"
+    payload_b = _donation_payload(from_name="Bob")
+    payload_b["kofi_transaction_id"] = "tx-b"
+
+    with mock.patch.dict(
+        "os.environ", {KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV: _VALID_TOKEN}, clear=False
+    ):
+        first = receiver.ingest_webhook(payload_a)
+        second = receiver.ingest_webhook(payload_b)
+
+    assert first is not None
+    assert second is not None
+
+
+def test_idempotency_store_provided_but_transaction_id_missing_raises(tmp_path):
+    """Idempotency store + missing kofi_transaction_id → fail closed."""
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "ko-fi-idem.db")
+    receiver = KoFiRailReceiver(idempotency_store=store)
+    payload = _donation_payload()
+    del payload["kofi_transaction_id"]
+
+    with mock.patch.dict(
+        "os.environ", {KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV: _VALID_TOKEN}, clear=False
+    ):
+        with pytest.raises(ReceiveOnlyRailError, match="kofi_transaction_id"):
+            receiver.ingest_webhook(payload)
+
+
+def test_no_idempotency_store_means_no_idempotency_check():
+    """No store → duplicates processed twice (legacy shape)."""
+    payload = _donation_payload()
+    payload["kofi_transaction_id"] = "ignored-without-store"
+
+    with mock.patch.dict(
+        "os.environ", {KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV: _VALID_TOKEN}, clear=False
+    ):
+        receiver = KoFiRailReceiver()  # no idempotency_store
+        a = receiver.ingest_webhook(payload)
+        b = receiver.ingest_webhook(payload)
+
+    assert a is not None
+    assert b is not None  # no short-circuit
+
+
+def test_idempotency_store_table_persists_on_disk(tmp_path):
+    """Two receivers pointed at the same db share the seen-set."""
+    from shared._rail_idempotency import IdempotencyStore
+
+    db = tmp_path / "ko-fi-idem.db"
+    payload = _donation_payload()
+    payload["kofi_transaction_id"] = "tx-persist"
+
+    with mock.patch.dict(
+        "os.environ", {KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV: _VALID_TOKEN}, clear=False
+    ):
+        a = KoFiRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+        first = a.ingest_webhook(payload)
+        b = KoFiRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+        second = b.ingest_webhook(payload)
+
+    assert first is not None
+    assert second is None  # persisted across receivers

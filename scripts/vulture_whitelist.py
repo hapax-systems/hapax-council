@@ -127,6 +127,11 @@ from shared.operator_quality_posterior import (
     OperatorQualityPosteriorReadModel,
     aggregate_operator_quality_posterior,
 )
+from shared.operator_vad_gate import (
+    DEFAULT_MATCH_THRESHOLD,
+    OperatorVADDecision,
+    OperatorVADGate,
+)
 from shared.private_to_public_bridge import BridgeResult, evaluate_bridge
 from shared.programme_revenue_braid_adapters import (
     BraidSnapshotRowRef,
@@ -711,6 +716,39 @@ aggregate_operator_quality_posterior
 OperatorQualityPosteriorReadModel.cells_for_programme
 OperatorQualityPosteriorReadModel.cells_for_axis
 OperatorQualityPosteriorReadModel.private_summary_lines
+
+# Operator-VAD gate (cc-task audio-audit-D Phase 0): substrate ships
+# without consumer wiring. Phase 1 (separate PR) wires OperatorVADGate.decide
+# into the audio-ducker trigger and supplies a ResemBlyzer-backed match
+# callable. Until then, only the test suite exercises decide() / should_duck /
+# match_threshold. The OperatorVADDecision import keeps the dataclass + Literal
+# alias visible for type-resolution at downstream call sites.
+DEFAULT_MATCH_THRESHOLD
+OperatorVADDecision
+OperatorVADGate.decide
+OperatorVADGate.match_threshold
+OperatorVADDecision.should_duck
+
+# MixerGainWriter Protocol + writer impls (cc-task audio-audit-C Phase 0):
+# substrate ships ahead of the ducker swap PR. Phase 1 will inject the writer
+# into agents.audio_ducker.__main__ and swap the in-place subprocess.run for
+# self._writer.write. Until then the protocol + Subprocess impl + Native
+# placeholder are exercised by tests only.
+from agents.audio_ducker.pw_writer import (
+    MIXER_WRITE_LATENCY_SECONDS,
+    MixerGainWriter,
+    MixerWriteOutcome,
+    NativePWWriter,
+    SubprocessPWWriter,
+)
+
+MixerGainWriter
+SubprocessPWWriter
+SubprocessPWWriter.write
+NativePWWriter
+NativePWWriter.write
+MixerWriteOutcome.succeeded
+MIXER_WRITE_LATENCY_SECONDS
 
 # PerceptualField grounding key registry: registry rows + helpers expose a
 # public API for downstream director / autonomous-narration / public-broadcast
@@ -1364,6 +1402,42 @@ IncomingAchEvent._currency_is_iso_4217
 TreasuryPrimeRailReceiver.ingest_webhook
 IncomingAchEventKind
 
+# cc-task u8-stream-mode-delta-amplification (Phase 0): get_visual_mode_bias
+# is the consumer-facing accessor; consumers (compositor preset selector,
+# imagination colorgrade, reverie satellite recruit) wire in Phase 1.
+# Whitelisted until Phase 1 lands so vulture doesn't flag the unused
+# function in the substrate-only PR.
+from shared.visual_mode_bias import VisualModeBias, get_visual_mode_bias
+
+get_visual_mode_bias
+VisualModeBias.family_weight
+
+# cc-task u5-semantic-verbs-consumer (Phase 0 substrate): the vocabulary
+# accessors are the API consumers (preset_recruitment_consumer, future
+# verb-to-shader-uniform wiring) will hit at Phase 1. Whitelisted until
+# Phase 1 lands.
+from shared.director_semantic_verbs import (
+    consumer_for,
+    no_orphan_verbs,
+    registered_verbs,
+)
+
+registered_verbs
+consumer_for
+no_orphan_verbs
+
+# cc-task u4-eight-slot-micromove-cycle-activate (Phase 0): the cycle +
+# accessors are the API consumers (compositor main loop tick, Prometheus
+# counter wiring) will hit at Phase 1. Whitelisted until Phase 1 lands.
+from shared.micromove_cycle import MicromoveCycle, slot_by_name
+
+MicromoveCycle
+MicromoveCycle.current_slot
+MicromoveCycle.current_action
+MicromoveCycle.tick
+MicromoveCycle.reset
+slot_by_name
+
 # Activity-family visibility-window tracker — singleton accessors used
 # by the recruitment-bias bridge. Per cc-task
 # `p3-governance-recruitment-bias-replacement`: the prior
@@ -1405,7 +1479,6 @@ from logos.api.routes.payment_rails import (
 
 GitHubSponsorsPublisher.publish_event
 GitHubSponsorsPublisher._render_manifest_body
-GitHubSponsorsPublisher._auto_link_cancellation_to_refusal_log
 event_to_manifest_record
 manifest_path_for_event
 GITHUB_SPONSORS_SIGNATURE_HEADER
@@ -1453,7 +1526,6 @@ from logos.api.routes.payment_rails import (
 
 LiberapayPublisher.publish_event
 LiberapayPublisher._render_manifest_body
-LiberapayPublisher._auto_link_cancellation_to_refusal_log
 _lp_event_to_manifest_record
 _lp_manifest_path_for_event
 LIBERAPAY_SIGNATURE_HEADER
@@ -1504,7 +1576,6 @@ from logos.api.routes.payment_rails import (
 
 StripePaymentLinkPublisher.publish_event
 StripePaymentLinkPublisher._render_manifest_body
-StripePaymentLinkPublisher._auto_link_cancellation_to_refusal_log
 _stripe_event_to_manifest_record
 _stripe_manifest_path_for_event
 STRIPE_PAYMENT_LINK_SIGNATURE_HEADER
@@ -1553,7 +1624,6 @@ from logos.api.routes.payment_rails import (
 
 PatreonPublisher.publish_event
 PatreonPublisher._render_manifest_body
-PatreonPublisher._auto_link_cancellation_to_refusal_log
 _patreon_event_to_manifest_record
 _patreon_manifest_path_for_event
 PATREON_EVENT_HEADER
@@ -1580,7 +1650,6 @@ from logos.api.routes.payment_rails import (
 
 BuyMeACoffeePublisher.publish_event
 BuyMeACoffeePublisher._render_manifest_body
-BuyMeACoffeePublisher._auto_link_cancellation_to_refusal_log
 _bmac_event_to_manifest_record
 _bmac_manifest_path_for_event
 BUY_ME_A_COFFEE_SIGNATURE_HEADER
@@ -1669,3 +1738,301 @@ receive_treasury_prime_webhook
 from agents.studio_compositor.layout_switcher import apply_layout_switch as _r9_apply_layout_switch
 
 _r9_apply_layout_switch
+
+# IdempotencyStore.has_seen is a read-only ops/debugging probe for the
+# Stripe Payment Link rail's idempotency table. record_or_skip is the
+# write path; has_seen exists for forensic queries (was this evt_ ever
+# seen before our retention window?). Used by tests but vulture's
+# static scan only sees the rail module.
+# cc-task: jr-stripe-payment-link-replay-idempotency-pin
+from shared.stripe_payment_link_receive_only_rail import (
+    IdempotencyStore as _StripePaymentLinkIdempotencyStore,
+)
+
+_StripePaymentLinkIdempotencyStore.has_seen
+
+# Multi-source duck composition (cc-task audio-audit-C-multi-source-product-
+# composition Phase 0): pure function lives ahead of the call-site swap.
+# Phase 1 will wire compose_attenuations into the ducker's per-source
+# composition path (replacing the implicit max() at the PipeWire mixer
+# layer with an explicit sum-of-dB clamp). Until then, only the test
+# suite exercises these symbols.
+from shared.audio_duck_compose import (
+    MAX_TOTAL_ATTEN_DB as _audit_C_max_total_atten_db,
+)
+from shared.audio_duck_compose import (
+    amplitude_from_db as _audit_C_amplitude_from_db,
+)
+from shared.audio_duck_compose import (
+    compose_attenuations as _audit_C_compose_attenuations,
+)
+
+_audit_C_max_total_atten_db
+_audit_C_amplitude_from_db
+_audit_C_compose_attenuations
+
+# Perceptual dB-domain ramp (cc-task audio-audit-C-perceptual-db-ramp Phase 0):
+# pure interpolator + amplitude conversion ship ahead of the call-site swap.
+# Phase 1 will replace the ducker's linear amplitude lerp with
+# perceptual_ramp_amplitude(start_db, end_db, t). Until then, only the test
+# suite exercises these symbols.
+from shared.audio_perceptual_ramp import (
+    DUCK_FLOOR_DB as _audit_C_db_floor,
+)
+from shared.audio_perceptual_ramp import (
+    amplitude_from_db as _audit_C_perceptual_amplitude_from_db,
+)
+from shared.audio_perceptual_ramp import (
+    lerp_db as _audit_C_lerp_db,
+)
+from shared.audio_perceptual_ramp import (
+    perceptual_ramp_amplitude as _audit_C_perceptual_ramp_amplitude,
+)
+
+_audit_C_db_floor
+_audit_C_perceptual_amplitude_from_db
+_audit_C_lerp_db
+_audit_C_perceptual_ramp_amplitude
+
+# RMS-window substrate (cc-task audio-audit-C-rms-window-50-to-20-ms Phase 0):
+# constants + helper + histogram metric ship ahead of the __main__.py:112
+# constant swap. Phase 1 imports RMS_WINDOW_MS_TARGET in place of the inline
+# 50, validates against hand-clap / chair-creak / mouse-click false positives
+# on the live ducker.
+from shared.audio_ducker_rms_config import (
+    HAPAX_DUCKER_ONSET_DETECTION_LATENCY_MS as _audit_C_onset_latency_hist,
+)
+from shared.audio_ducker_rms_config import (
+    RMS_WINDOW_MS_LEGACY as _audit_C_rms_window_legacy,
+)
+from shared.audio_ducker_rms_config import (
+    RMS_WINDOW_MS_TARGET as _audit_C_rms_window_target,
+)
+from shared.audio_ducker_rms_config import (
+    expected_rms_samples as _audit_C_expected_rms_samples,
+)
+
+_audit_C_onset_latency_hist
+_audit_C_rms_window_legacy
+_audit_C_rms_window_target
+_audit_C_expected_rms_samples
+
+# Typed LADSPA param schema (cc-task audio-audit-E-topology-schema-v3 Phase 0):
+# Phase 1 will wire LADSPAParamSpec into shared/audio_topology.Node.params and
+# bump audio-topology.yaml schema_version. Until then, only the test suite
+# exercises these symbols.
+from shared.audio_topology_typed_params import (
+    LADSPAParamSpec as _audit_E_ladspa_param_spec,
+)
+from shared.audio_topology_typed_params import (
+    validate_param_value as _audit_E_validate_param_value,
+)
+
+_audit_E_ladspa_param_spec
+_audit_E_validate_param_value
+
+# Pydantic validator methods on LADSPAParamSpec are invoked dynamically by
+# pydantic at model construction (cc-task audio-audit-E Phase 0).
+_audit_E_ladspa_param_spec._name_no_internal_whitespace_collapse
+_audit_E_ladspa_param_spec._validate_range_consistency
+
+# Audio-source-class taxonomy (cc-task audio-audit-D-source-class-taxonomy
+# Phase 0): Phase 1 wires AudioSourceClass + validate_no_private_to_public_edges
+# into shared/audio_topology.py + the leak-guard daemon. Until then the
+# taxonomy + edge guard are exercised by tests only.
+from shared.audio_source_class import (
+    ALL_AUDIO_SOURCE_CLASSES as _audit_D_all_source_classes,
+)
+from shared.audio_source_class import (
+    AudioEdgeRef as _audit_D_audio_edge_ref,
+)
+from shared.audio_source_class import (
+    PrivateToPublicEdgeError as _audit_D_private_to_public_edge_error,
+)
+from shared.audio_source_class import (
+    is_private_to_public_edge as _audit_D_is_private_to_public_edge,
+)
+from shared.audio_source_class import (
+    validate_no_private_to_public_edges as _audit_D_validate_no_private_to_public_edges,
+)
+
+_audit_D_all_source_classes
+_audit_D_audio_edge_ref
+_audit_D_private_to_public_edge_error
+_audit_D_is_private_to_public_edge
+_audit_D_validate_no_private_to_public_edges
+
+# Audio conf-mtime-watcher substrate (cc-task audio-audit-E-audio-conf-mtime-
+# watcher Phase 0): ownership schema + lookup helpers + reload counter.
+# Phase 1 wires inotify-driven mtime watcher + systemctl reload-or-restart.
+from shared.audio_conf_ownership import (
+    ConfOwnership as _audit_E_conf_ownership,
+)
+from shared.audio_conf_ownership import (
+    ConfOwnershipRegistry as _audit_E_conf_ownership_registry,
+)
+from shared.audio_conf_ownership import (
+    hapax_audio_conf_reload_total as _audit_E_audio_conf_reload_total,
+)
+from shared.audio_conf_ownership import (
+    load_conf_ownership as _audit_E_load_conf_ownership,
+)
+
+_audit_E_conf_ownership
+_audit_E_conf_ownership_registry
+_audit_E_conf_ownership_registry.unit_for_path
+_audit_E_conf_ownership_registry.schema_for_path
+_audit_E_audio_conf_reload_total
+_audit_E_load_conf_ownership
+
+# Pydantic validator methods on ConfOwnership / ConfOwnershipRegistry are
+# invoked dynamically by pydantic at model construction.
+_audit_E_conf_ownership._unit_must_have_systemd_suffix
+_audit_E_conf_ownership_registry._no_duplicate_paths
+
+# Audio param-bridge schema (cc-task audio-audit-E-runtime-param-bridge Phase 0):
+# Phase 1 wires HTTP daemon at /audio/param/<chain>/<param> + pw-cli backend +
+# JSON persistence. Until then the schema models + lookup helpers + value
+# validator are exercised by tests only.
+from shared.audio_param_bridge_schema import (
+    ParamBridge as _audit_E_param_bridge,
+)
+from shared.audio_param_bridge_schema import (
+    ParamBridgeRegistry as _audit_E_param_bridge_registry,
+)
+from shared.audio_param_bridge_schema import (
+    load_param_bridge_schema as _audit_E_load_param_bridge_schema,
+)
+from shared.audio_param_bridge_schema import (
+    validate_value as _audit_E_validate_value,
+)
+
+_audit_E_param_bridge
+_audit_E_param_bridge_registry
+_audit_E_param_bridge_registry.get
+_audit_E_param_bridge_registry.list_chains
+_audit_E_param_bridge_registry.list_params_for_chain
+_audit_E_load_param_bridge_schema
+_audit_E_validate_value
+
+# Pydantic validators on ParamBridge / ParamBridgeRegistry are invoked
+# dynamically at model construction.
+_audit_E_param_bridge._bool_no_range_default_in_range
+_audit_E_param_bridge_registry._no_duplicate_chain_param_pairs
+
+# Egress loopback witness assertions (cc-task jr-broadcast-chain-integration-
+# tier4-loopback-witness Phase 0): pure-function derivations + assertion
+# helpers ship ahead of the Phase 1 pytest fixture that runs pw-cat playback
+# against hapax-broadcast-normalized.
+from shared.egress_loopback_witness_assertions import (
+    DEFAULT_WITNESS_MAX_AGE_S as _tier4_default_witness_max_age_s,
+)
+from shared.egress_loopback_witness_assertions import (
+    PLAYBACK_PRESENT_MAX_SILENCE_RATIO as _tier4_playback_present_max_silence_ratio,
+)
+from shared.egress_loopback_witness_assertions import (
+    PLAYBACK_PRESENT_RMS_DBFS_THRESHOLD as _tier4_playback_present_rms_dbfs_threshold,
+)
+from shared.egress_loopback_witness_assertions import (
+    StaleWitnessError as _tier4_stale_witness_error,
+)
+from shared.egress_loopback_witness_assertions import (
+    WitnessAssertionError as _tier4_witness_assertion_error,
+)
+from shared.egress_loopback_witness_assertions import (
+    WitnessIndicatesProducerErrorError as _tier4_witness_indicates_producer_error_error,
+)
+from shared.egress_loopback_witness_assertions import (
+    WitnessIndicatesSilenceError as _tier4_witness_indicates_silence_error,
+)
+from shared.egress_loopback_witness_assertions import (
+    assert_witness_fresh as _tier4_assert_witness_fresh,
+)
+from shared.egress_loopback_witness_assertions import (
+    assert_witness_indicates_no_playback as _tier4_assert_witness_indicates_no_playback,
+)
+from shared.egress_loopback_witness_assertions import (
+    assert_witness_indicates_playback as _tier4_assert_witness_indicates_playback,
+)
+from shared.egress_loopback_witness_assertions import (
+    is_playback_present as _tier4_is_playback_present,
+)
+from shared.egress_loopback_witness_assertions import (
+    is_playback_present_with as _tier4_is_playback_present_with,
+)
+from shared.egress_loopback_witness_assertions import (
+    witness_age_s as _tier4_witness_age_s,
+)
+
+_tier4_default_witness_max_age_s
+_tier4_playback_present_max_silence_ratio
+_tier4_playback_present_rms_dbfs_threshold
+_tier4_stale_witness_error
+_tier4_witness_assertion_error
+_tier4_witness_indicates_producer_error_error
+_tier4_witness_indicates_silence_error
+_tier4_assert_witness_fresh
+_tier4_assert_witness_indicates_no_playback
+_tier4_assert_witness_indicates_playback
+_tier4_is_playback_present
+_tier4_is_playback_present_with
+_tier4_witness_age_s
+
+# Micromove advance consumer (cc-task u4-micromove-advance-tick-consumer
+# Phase 1): consumes the 8-slot substrate from PR #2328, advances on tick,
+# emits state JSON for downstream compositor render bridge + Prometheus
+# counter. Phase 2 wires camera-tile transform / shader uniform deltas
+# from the slot hint dict.
+from agents.studio_compositor.micromove_consumer import (
+    DEFAULT_ADVANCE_STATE_PATH as _u4_default_advance_state_path,
+)
+from agents.studio_compositor.micromove_consumer import (
+    DEFAULT_TICK_INTERVAL_S as _u4_default_tick_interval_s,
+)
+from agents.studio_compositor.micromove_consumer import (
+    MicromoveAdvanceConsumer as _u4_micromove_advance_consumer,
+)
+from agents.studio_compositor.micromove_consumer import (
+    all_slot_indices as _u4_all_slot_indices,
+)
+from agents.studio_compositor.micromove_consumer import (
+    hapax_micromove_advance_total as _u4_hapax_micromove_advance_total,
+)
+
+_u4_default_advance_state_path
+_u4_default_tick_interval_s
+_u4_micromove_advance_consumer
+_u4_micromove_advance_consumer.advance
+_u4_micromove_advance_consumer.cycle
+_u4_micromove_advance_consumer.state_path
+_u4_micromove_advance_consumer.latest_state
+_u4_all_slot_indices
+_u4_hapax_micromove_advance_total
+
+# Programme banner ward (cc-task programme-banner-ward): Cairo lower-third
+# subclass that renders active programme state (role + narrative_beat +
+# residual). Phase 1 wires into compositor layout planner + ward registry.
+# Until then, only the test suite exercises render().
+from agents.studio_compositor.programme_banner_ward import (
+    NARRATIVE_BEAT_MAX_CHARS as _banner_ward_narrative_beat_max_chars,
+)
+from agents.studio_compositor.programme_banner_ward import (
+    ProgrammeBannerWard as _banner_ward,
+)
+from agents.studio_compositor.programme_banner_ward import (
+    compute_residual_s as _banner_ward_compute_residual_s,
+)
+from agents.studio_compositor.programme_banner_ward import (
+    format_residual as _banner_ward_format_residual,
+)
+from agents.studio_compositor.programme_banner_ward import (
+    truncate_beat as _banner_ward_truncate_beat,
+)
+
+_banner_ward_narrative_beat_max_chars
+_banner_ward
+_banner_ward.render
+_banner_ward.state
+_banner_ward_compute_residual_s
+_banner_ward_format_residual
+_banner_ward_truncate_beat

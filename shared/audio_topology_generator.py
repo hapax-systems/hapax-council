@@ -11,7 +11,24 @@ Current workstation confs the generator has to match:
   for +12 dB makeup gain on the L6 Main Mix AUX10+11 tap
 - ``hapax-stream-split.conf`` — loopback pair (hapax-livestream +
   hapax-private) → Ryzen
-- ``voice-fx-chain.conf`` — biquad-chain filter-chain targeting Ryzen
+- ``hapax-voice-fx-chain.conf`` — biquad-chain filter-chain targeting Ryzen
+
+LADSPA chain templates (schema v3, audit F#8):
+
+- ``loudnorm`` — single ``fast_lookahead_limiter_1913`` LADSPA stage
+  with ``Input gain (dB) = 0``, configurable ``Limit (dB)`` and
+  ``Release time (s)``. Matches the live shape of
+  ``hapax-music-loudnorm.conf`` / ``hapax-voice-fx-loudnorm.conf``.
+- ``duck`` — paired-mono ``builtin mixer`` (``duck_l`` / ``duck_r``)
+  with ``Gain 1 = 1.0`` default. The audio-ducker daemon writes
+  runtime gain via ``pw-cli``. Matches ``hapax-music-duck.conf`` /
+  ``hapax-tts-duck.conf``.
+- ``usb-bias`` — ``fast_lookahead_limiter_1913`` configured as a
+  USB-IN line-driver: non-zero ``Input gain (dB)`` (clamped to the
+  LADSPA ``[-20, +20]`` range; overshoot raises ``ConfigError``)
+  with optional FL/FR → RL/RR remap on the playback side so the
+  L-12 surround40 sink picks up the bias-driven stream on the rear
+  pair. Matches ``hapax-music-usb-line-driver.conf``.
 
 Scope:
 
@@ -42,6 +59,26 @@ from shared.audio_topology import (
 )
 
 
+class ConfigError(ValueError):
+    """Generator-side configuration error (e.g. LADSPA range violation).
+
+    Subclasses ``ValueError`` so existing callers that catch
+    ``ValueError`` (the CLI's ``_load`` for example) still surface
+    these as configuration errors. Distinct type so tests can assert
+    range-clamp behaviour without false-positive matches against
+    pydantic ``ValidationError`` messages.
+    """
+
+
+# LADSPA fast_lookahead_limiter_1913 ``Input gain (dB)`` is bounded by
+# the upstream plugin to ``[-20, +20]``. Beyond that, the plugin
+# silently saturates and the operator loses headroom budget without
+# warning. The generator clamps explicitly so misconfigurations fail
+# at codegen time, not at PipeWire-load time.
+LADSPA_INPUT_GAIN_MIN_DB = -20.0
+LADSPA_INPUT_GAIN_MAX_DB = 20.0
+
+
 def _gain_db_to_linear(db: float) -> float:
     """Convert dB to PipeWire ``builtin mixer`` ``Gain`` linear scalar."""
     return 10 ** (db / 20.0)
@@ -64,11 +101,50 @@ def _params_lines(node: Node, indent: int = 12) -> str:
     (``makeup_gain_linear``, ``audio.position``). Unknown keys
     round-trip verbatim so operator-supplied PipeWire tunables are
     preserved on regeneration.
+
+    Schema-v3 LADSPA-template keys (``audit_role``, ``audit_classification``,
+    etc.) are pure descriptor metadata — they belong to the YAML
+    audit graph, not to the emitted conf, so they are filtered out
+    at the source. Likewise the descriptor-side annotations used by
+    the inspector / leak guard (``forbidden_target_family``,
+    ``private_monitor_endpoint``, ``audit_role``) never need to land
+    in PipeWire's runtime config.
     """
     reserved = {
         "makeup_gain_linear",
         "audio.channels",
         "audio.position",
+        # Descriptor-only audit metadata — don't pollute the conf with
+        # YAML-side bookkeeping. The inspector + leak guard read these
+        # directly off the Node, never through the generated artifact.
+        "audit_role",
+        "audit_classification",
+        "private_monitor_endpoint",
+        "private_monitor_track",
+        "private_monitor_bridge",
+        "forbidden_target_family",
+        "forbidden_capture_positions",
+        "forbidden_destinations",
+        "forbidden_targets",
+        "fail_closed",
+        "fail_closed_on_target_absent",
+        "option_c_route",
+        "retired_downstream_loopback",
+        "broadcast_forward_path",
+        "playback_target",
+        "playback_source",
+        "playback_node",
+        "playback_node_passive",
+        "playback_positions",
+        "capture_source",
+        "capture_channels",
+        "capture_positions",
+        "bypasses_l12",
+        "fallback_to_l12_is_runtime_drift",
+        "notification_excluded",
+        "l12_return_pair",
+        "limiter",
+        "limit_db",
     }
     pad = " " * indent
     out: list[str] = []
@@ -185,6 +261,229 @@ context.modules = [
 """
 
 
+def _format_loudnorm_chain(node: Node, _incoming: list[Edge]) -> str:
+    """Emit a single ``fast_lookahead_limiter_1913`` LADSPA stage.
+
+    Output ceiling = ``node.limit_db`` (required for ``loudnorm``
+    chains). Release time defaults to 0.20 s when ``node.release_s``
+    is None — matches the live ``hapax-music-loudnorm.conf`` /
+    ``hapax-voice-fx-loudnorm.conf`` values.
+
+    Input gain is hard-coded to 0 dB on this template — loudnorm is a
+    pure ceiling stage; non-zero input gain is the ``usb-bias`` chain
+    template's job.
+    """
+    if node.limit_db is None:
+        raise ConfigError(
+            f"Node {node.id!r} chain_kind='loudnorm' requires limit_db (LADSPA Limit dB)"
+        )
+    cm = node.channels
+    positions_str = " ".join(cm.positions) if cm.positions else ""
+    position_block = f"\n            audio.position = [ {positions_str} ]" if positions_str else ""
+    target_line = (
+        f'                target.object = "{node.target_object}"' if node.target_object else ""
+    )
+    release_s = node.release_s if node.release_s is not None else 0.20
+    name_token = node.id.replace("-", "_")
+    description = node.description or node.pipewire_name
+    return f"""# {description}
+context.modules = [
+    {{  name = libpipewire-module-filter-chain
+        args = {{
+            node.name = "{node.pipewire_name}"
+            node.description = "{description}"
+            media.class = "Audio/Sink"
+            audio.rate = 48000
+            audio.channels = {cm.count}{position_block}
+
+            filter.graph = {{
+                nodes = [
+                    {{ type = ladspa
+                      plugin = "fast_lookahead_limiter_1913"
+                      label = "fastLookaheadLimiter"
+                      name = "{name_token}"
+                      control = {{
+                          "Input gain (dB)" = 0.0
+                          "Limit (dB)"      = {node.limit_db}
+                          "Release time (s)" = {release_s}
+                      }}
+                    }}
+                ]
+                inputs  = [ "{name_token}:Input 1"  "{name_token}:Input 2"  ]
+                outputs = [ "{name_token}:Output 1" "{name_token}:Output 2" ]
+            }}
+
+            capture.props = {{
+                node.name = "{node.pipewire_name}"
+                media.class = "Audio/Sink"
+            }}
+            playback.props = {{
+                node.name = "{node.pipewire_name}-playback"
+{target_line}
+                node.passive = false
+                stream.dont-remix = true
+            }}
+        }}
+    }}
+]
+"""
+
+
+def _format_duck_chain(node: Node, _incoming: list[Edge]) -> str:
+    """Emit a paired-mono ``builtin mixer`` ducker.
+
+    ``duck_l`` and ``duck_r`` mono mixers wired as ``In 1 → Out`` so
+    the daemon can write a single ``Gain 1`` per channel via
+    ``pw-cli``. Default ``Gain 1 = 1.0`` is transparent passthrough;
+    the audio-ducker daemon writes the duck depth (≈0.251 for -12 dB
+    operator-VAD, ≈0.398 for -8 dB TTS) at runtime.
+
+    Sink shape (``media.class = Audio/Sink``) so upstream filter-chain
+    capture sides target it via ``target.object``.
+    """
+    cm = node.channels
+    positions_str = " ".join(cm.positions) if cm.positions else ""
+    position_block = f"\n            audio.position = [ {positions_str} ]" if positions_str else ""
+    target_line = (
+        f'                target.object = "{node.target_object}"' if node.target_object else ""
+    )
+    description = node.description or node.pipewire_name
+    return f"""# {description}
+context.modules = [
+    {{  name = libpipewire-module-filter-chain
+        args = {{
+            node.name = "{node.pipewire_name}"
+            node.description = "{description}"
+            media.class = "Audio/Sink"
+            audio.rate = 48000
+            audio.channels = {cm.count}{position_block}
+
+            filter.graph = {{
+                nodes = [
+                    {{ type = builtin name = duck_l label = mixer
+                      control = {{ "Gain 1" = 1.0 }} }}
+                    {{ type = builtin name = duck_r label = mixer
+                      control = {{ "Gain 1" = 1.0 }} }}
+                ]
+                inputs  = [ "duck_l:In 1" "duck_r:In 1" ]
+                outputs = [ "duck_l:Out"  "duck_r:Out"  ]
+            }}
+
+            capture.props = {{
+                node.name = "{node.pipewire_name}"
+                media.class = "Audio/Sink"
+            }}
+            playback.props = {{
+                node.name = "{node.pipewire_name}-playback"
+{target_line}
+                node.passive = false
+                stream.dont-remix = true
+            }}
+        }}
+    }}
+]
+"""
+
+
+def _format_usb_bias_chain(node: Node, _incoming: list[Edge]) -> str:
+    """Emit a USB-IN line-driver ``fast_lookahead_limiter_1913`` stage.
+
+    ``Input gain (dB)`` carries the bias (typically +9..+12 dB to
+    substitute for the missing analog-trim stage on L-12 USB IN);
+    the LADSPA plugin caps ``Input gain`` at ``[-20, +20]`` so the
+    generator clamps explicitly and raises ``ConfigError`` on
+    overshoot rather than silently saturating.
+
+    When ``remap_to_rear=True``, the playback side's
+    ``audio.position`` is rewritten to ``[ RL RR ]`` so the L-12
+    surround40 sink picks the bias-driven stream up on the rear pair
+    (the L-12 USB return convention). The capture side keeps the
+    descriptor's declared positions.
+    """
+    if node.bias_db is None:
+        raise ConfigError(
+            f"Node {node.id!r} chain_kind='usb-bias' requires bias_db (LADSPA Input gain dB)"
+        )
+    if not (LADSPA_INPUT_GAIN_MIN_DB <= node.bias_db <= LADSPA_INPUT_GAIN_MAX_DB):
+        raise ConfigError(
+            f"Node {node.id!r} chain_kind='usb-bias': "
+            f"bias_db={node.bias_db!r} outside LADSPA "
+            f"fast_lookahead_limiter_1913 Input gain range "
+            f"[{LADSPA_INPUT_GAIN_MIN_DB}, {LADSPA_INPUT_GAIN_MAX_DB}] dB. "
+            "Beyond this range the LADSPA plugin silently saturates; "
+            "fix at descriptor or split the chain into multiple stages."
+        )
+    cm = node.channels
+    positions_str = " ".join(cm.positions) if cm.positions else ""
+    position_block = f"\n            audio.position = [ {positions_str} ]" if positions_str else ""
+    target_line = (
+        f'                target.object = "{node.target_object}"' if node.target_object else ""
+    )
+    # Limit defaults to -1.0 dBFS true-peak when omitted — matches
+    # MASTER_LIMITER_TRUE_PEAK_DBTP convention.
+    limit_db = node.limit_db if node.limit_db is not None else -1.0
+    # Release defaults to 0.05 s — matches MASTER_LIMITER_RELEASE_MS / 1000
+    # for fast transient recovery on a line-driver.
+    release_s = node.release_s if node.release_s is not None else 0.05
+    name_token = node.id.replace("-", "_")
+    description = node.description or node.pipewire_name
+    if node.remap_to_rear:
+        playback_position_block = "\n                audio.position = [ RL RR ]"
+    elif positions_str:
+        playback_position_block = f"\n                audio.position = [ {positions_str} ]"
+    else:
+        playback_position_block = ""
+    return f"""# {description}
+context.modules = [
+    {{  name = libpipewire-module-filter-chain
+        args = {{
+            node.name = "{node.pipewire_name}"
+            node.description = "{description}"
+            media.class = "Audio/Sink"
+            audio.rate = 48000
+            audio.channels = {cm.count}{position_block}
+
+            filter.graph = {{
+                nodes = [
+                    {{ type = ladspa
+                      plugin = "fast_lookahead_limiter_1913"
+                      label = "fastLookaheadLimiter"
+                      name = "{name_token}"
+                      control = {{
+                          "Input gain (dB)" = {node.bias_db}
+                          "Limit (dB)"      = {limit_db}
+                          "Release time (s)" = {release_s}
+                      }}
+                    }}
+                ]
+                inputs  = [ "{name_token}:Input 1"  "{name_token}:Input 2"  ]
+                outputs = [ "{name_token}:Output 1" "{name_token}:Output 2" ]
+            }}
+
+            capture.props = {{
+                node.name = "{node.pipewire_name}"
+                media.class = "Audio/Sink"
+            }}
+            playback.props = {{
+                node.name = "{node.pipewire_name}-playback"
+{target_line}
+                node.passive = false{playback_position_block}
+                stream.dont-remix = true
+            }}
+        }}
+    }}
+]
+"""
+
+
+# Dispatch table for ``chain_kind`` on filter_chain nodes (audit F#8).
+_CHAIN_FORMATTERS = {
+    "loudnorm": _format_loudnorm_chain,
+    "duck": _format_duck_chain,
+    "usb-bias": _format_usb_bias_chain,
+}
+
+
 def _loopback_fragment(node: Node) -> str:
     cm = node.channels
     positions_str = " ".join(cm.positions) if cm.positions else ""
@@ -234,10 +533,24 @@ context.objects = [
 """
 
 
+def _filter_chain_dispatch(node: Node, incoming: list[Edge]) -> str:
+    """Dispatch ``filter_chain`` nodes by ``chain_kind`` (schema v3).
+
+    ``chain_kind`` is None → fall through to the legacy generic
+    ``_filter_chain_fragment`` so existing descriptors keep round-
+    tripping unchanged. When set, the matching LADSPA / builtin
+    template handles the emit (loudnorm, duck, usb-bias).
+    """
+    if node.chain_kind is None:
+        return _filter_chain_fragment(node, incoming)
+    formatter = _CHAIN_FORMATTERS[node.chain_kind]
+    return formatter(node, incoming)
+
+
 _FORMATTERS = {
     NodeKind.ALSA_SOURCE: lambda n, _e: _alsa_source_fragment(n),
     NodeKind.ALSA_SINK: lambda n, _e: _alsa_sink_fragment(n),
-    NodeKind.FILTER_CHAIN: _filter_chain_fragment,
+    NodeKind.FILTER_CHAIN: _filter_chain_dispatch,
     NodeKind.LOOPBACK: lambda n, _e: _loopback_fragment(n),
     NodeKind.TAP: lambda n, _e: _tap_fragment(n),
 }

@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 description: |
   Canonical workstation audio topology for the live L-12 broadcast graph.
 
@@ -18,6 +18,14 @@ description: |
   (`hw:CARD=L12`) pinned by config/udev/rules.d/50-hapax-alsa-card-ids.rules,
   rather than numeric `hw:11` style. Numeric indices drift across reboots
   and replug order; symbolic names are stable per-device.
+
+  Schema v3 (2026-05-02, audit F#8): filter_chain nodes accept typed
+  template params (chain_kind, limit_db, bias_db, release_s,
+  remap_to_rear) so the generator can emit LADSPA loudnorm / builtin
+  duck / LADSPA usb-bias chains directly from YAML, eliminating the
+  hand-mirror gap on respeaker-class new sources. v2 descriptors still
+  parse — chain_kind defaults to None and the generic filter-chain
+  template runs unchanged.
 
 nodes:
   # L-12 hardware endpoints.
@@ -325,6 +333,9 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    chain_kind: loudnorm
+    limit_db: -18.0
+    release_s: 0.20
 
   - id: tts-duck
     kind: filter_chain
@@ -334,6 +345,7 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    chain_kind: duck
     params:
       playback_target: l12-usb-return
       playback_positions: RL RR
@@ -366,6 +378,9 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    chain_kind: loudnorm
+    limit_db: -18.0
+    release_s: 0.20
     params:
       playback_positions: RL RR
       notification_excluded: true
@@ -378,6 +393,9 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    chain_kind: loudnorm
+    limit_db: -18.0
+    release_s: 0.20
 
   - id: music-duck
     kind: filter_chain
@@ -387,6 +405,7 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    chain_kind: duck
     params:
       playback_positions: RL RR
 
@@ -398,6 +417,9 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    chain_kind: loudnorm
+    limit_db: -18.0
+    release_s: 0.20
 
   - id: ytube-ducked
     kind: filter_chain
@@ -406,6 +428,7 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    chain_kind: duck
 
   - id: s4-source
     kind: alsa_source
@@ -490,6 +513,9 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    chain_kind: loudnorm
+    limit_db: -18.0
+    release_s: 0.20
     params:
       bypasses_l12: true
       playback_target: hapax-livestream-tap

@@ -1,0 +1,23 @@
+# cc-task audio-audit-O3b-usb-bandwidth-preflight-udev-hook (Auditor A O3b).
+#
+# When the Solid State Logic L-12 enumerates on a saturated xhci HC, the
+# 12-channel UAC2 endpoint silently drops to 8 channels (or fails). Run a
+# bandwidth preflight at the udev `add` event so the saturated-controller
+# condition is caught before PipeWire's ALSA scan locks in the fallback.
+#
+# Ordered ahead of PipeWire's session-manager rules (default range 90+) so
+# the preflight's textfile metric + ntfy alert land before downstream
+# consumers see the device.
+#
+# Match: SSL L-12 USB MIDI/Audio composite device.
+#   idVendor=0a4a (Solid State Logic)
+#   idProduct=12c0 (L-12) — verify on operator's device with `lsusb`
+#
+# Install: operator install script symlinks the preflight script to
+# /usr/local/bin/hapax-usb-bandwidth-preflight (the path udev sees,
+# since udev rules run as root and don't see operator $HOME). This rule
+# uses that stable absolute path; the symlink target lives in the
+# repo at scripts/usb-bandwidth-preflight.sh.
+
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0a4a", ATTR{idProduct}=="12c0", \
+  RUN+="/usr/local/bin/hapax-usb-bandwidth-preflight --device-name 'Solid State Logic L-12'"

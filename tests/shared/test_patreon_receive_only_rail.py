@@ -528,3 +528,113 @@ def test_negative_amount_normalized_to_absolute():
     event = receiver.ingest_webhook(payload, signature=None, event_header="members:create")
     assert event is not None
     assert event.amount_currency_cents == 500
+
+
+# ---------------------------------------------------------------------------
+# jr-patreon-rail-idempotency-pin regression pins
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_store_rejects_duplicate_webhook_id(tmp_path):
+    """Replay of the same X-Patreon-Webhook-Id is short-circuited to None."""
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "patreon-idem.db")
+    receiver = PatreonRailReceiver(idempotency_store=store)
+
+    payload = _members_create_payload()
+    first = receiver.ingest_webhook(
+        payload,
+        signature=None,
+        event_header="members:create",
+        webhook_id="wh_test_idempotent_001",
+    )
+    assert first is not None
+    assert first.amount_currency_cents == 500
+
+    # Same webhook_id arrives again.
+    second = receiver.ingest_webhook(
+        payload,
+        signature=None,
+        event_header="members:create",
+        webhook_id="wh_test_idempotent_001",
+    )
+    assert second is None  # short-circuit; caller returns 200 OK
+
+
+def test_idempotency_store_distinct_webhook_ids_both_processed(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "patreon-idem.db")
+    receiver = PatreonRailReceiver(idempotency_store=store)
+
+    payload = _members_create_payload()
+    first = receiver.ingest_webhook(
+        payload, signature=None, event_header="members:create", webhook_id="wh_a"
+    )
+    second = receiver.ingest_webhook(
+        payload, signature=None, event_header="members:create", webhook_id="wh_b"
+    )
+    assert first is not None
+    assert second is not None
+
+
+def test_idempotency_store_provided_but_webhook_id_missing_raises(tmp_path):
+    """Receiver constructed with store but caller didn't pass webhook_id → fail closed."""
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "patreon-idem.db")
+    receiver = PatreonRailReceiver(idempotency_store=store)
+
+    payload = _members_create_payload()
+    with pytest.raises(ReceiveOnlyRailError, match="webhook_id missing"):
+        receiver.ingest_webhook(
+            payload,
+            signature=None,
+            event_header="members:create",
+        )
+
+
+def test_no_idempotency_store_means_no_idempotency_check():
+    """Receiver constructed without store: duplicates processed twice (legacy shape)."""
+    receiver = PatreonRailReceiver()  # no idempotency_store
+    payload = _members_create_payload()
+    a = receiver.ingest_webhook(
+        payload, signature=None, event_header="members:create", webhook_id="ignored"
+    )
+    b = receiver.ingest_webhook(
+        payload, signature=None, event_header="members:create", webhook_id="ignored"
+    )
+    assert a is not None
+    assert b is not None  # no store → no short-circuit
+
+
+def test_idempotency_store_table_persists_on_disk(tmp_path):
+    """Two receivers pointed at the same db share the seen-set."""
+    from shared._rail_idempotency import IdempotencyStore
+
+    db_path = tmp_path / "patreon-idem.db"
+    payload = _members_create_payload()
+
+    receiver_a = PatreonRailReceiver(idempotency_store=IdempotencyStore(db_path=db_path))
+    assert (
+        receiver_a.ingest_webhook(
+            payload,
+            signature=None,
+            event_header="members:create",
+            webhook_id="wh_persist",
+        )
+        is not None
+    )
+
+    # Fresh receiver, fresh store, same db path → duplicate short-circuited.
+    receiver_b = PatreonRailReceiver(idempotency_store=IdempotencyStore(db_path=db_path))
+    assert (
+        receiver_b.ingest_webhook(
+            payload,
+            signature=None,
+            event_header="members:create",
+            webhook_id="wh_persist",
+        )
+        is None
+    )

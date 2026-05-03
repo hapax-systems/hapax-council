@@ -85,6 +85,17 @@ def secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 @pytest.fixture
+def gh_sponsors_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's GitHub Sponsors idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._github_sponsors_idempotency_store = None
+    yield tmp_path / "github-sponsors" / "idempotency.db"
+    routes_mod._github_sponsors_idempotency_store = None
+
+
+@pytest.fixture
 def refusal_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Override the refusal-brief log path so cancellation rows go to the test dir.
 
@@ -108,7 +119,9 @@ def refusal_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.mark.asyncio
 async def test_signed_created_event_returns_200_and_writes_manifest(
-    output_dir: Path, secret_env: str
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
 ) -> None:
     payload = _sponsorship_payload(action="created", sponsor_login="alice")
     raw = json.dumps(payload).encode("utf-8")
@@ -120,6 +133,7 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
             content=raw,
             headers={
                 "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-created-test",
                 "Content-Type": "application/json",
             },
         )
@@ -135,11 +149,15 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
     contents = files[0].read_text()
     assert "GitHub Sponsors event — created" in contents
     assert "alice" in contents
-    assert "25.00" in contents
+    assert "2500" in contents  # amount_usd_cents (was "25.00" pre-cents-normalization)
 
 
 @pytest.mark.asyncio
-async def test_signed_tier_changed_event_writes_manifest(output_dir: Path, secret_env: str) -> None:
+async def test_signed_tier_changed_event_writes_manifest(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+) -> None:
     payload = _sponsorship_payload(action="tier_changed", sponsor_login="bob")
     raw = json.dumps(payload).encode("utf-8")
     sig = _sign(raw)
@@ -148,7 +166,10 @@ async def test_signed_tier_changed_event_writes_manifest(output_dir: Path, secre
         response = await client.post(
             "/api/payment-rails/github-sponsors",
             content=raw,
-            headers={"X-Hub-Signature-256": sig},
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-tier-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -158,7 +179,9 @@ async def test_signed_tier_changed_event_writes_manifest(output_dir: Path, secre
 
 @pytest.mark.asyncio
 async def test_signed_pending_cancellation_event_writes_manifest(
-    output_dir: Path, secret_env: str
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
 ) -> None:
     payload = _sponsorship_payload(action="pending_cancellation")
     raw = json.dumps(payload).encode("utf-8")
@@ -168,7 +191,10 @@ async def test_signed_pending_cancellation_event_writes_manifest(
         response = await client.post(
             "/api/payment-rails/github-sponsors",
             content=raw,
-            headers={"X-Hub-Signature-256": sig},
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-pending-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -185,6 +211,7 @@ async def test_cancelled_event_appends_to_refusal_log(
     output_dir: Path,
     secret_env: str,
     refusal_log_dir: Path,
+    gh_sponsors_idempotency_isolated: Path,
 ) -> None:
     """End-to-end auto-link: cancelled event → publisher → refusal log row."""
     payload = _sponsorship_payload(action="cancelled", sponsor_login="charlie")
@@ -195,7 +222,10 @@ async def test_cancelled_event_appends_to_refusal_log(
         response = await client.post(
             "/api/payment-rails/github-sponsors",
             content=raw,
-            headers={"X-Hub-Signature-256": sig},
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-cancel-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -219,6 +249,7 @@ async def test_non_cancellation_does_not_append_to_refusal_log(
     output_dir: Path,
     secret_env: str,
     refusal_log_dir: Path,
+    gh_sponsors_idempotency_isolated: Path,
 ) -> None:
     """Created/tier_changed/pending_cancellation events do NOT auto-link."""
     payload = _sponsorship_payload(action="created")
@@ -229,7 +260,10 @@ async def test_non_cancellation_does_not_append_to_refusal_log(
         response = await client.post(
             "/api/payment-rails/github-sponsors",
             content=raw,
-            headers={"X-Hub-Signature-256": sig},
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-noncancel-test",
+            },
         )
 
     assert response.status_code == 200
@@ -397,6 +431,95 @@ def test_publisher_module_carries_no_send_path() -> None:
 
 
 # ===========================================================================
+# GitHub Sponsors — idempotency hard pin (cc-task jr-github-sponsors-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_route_replays_same_delivery_id_returns_duplicate(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+) -> None:
+    payload = _sponsorship_payload(action="created", sponsor_login="alice")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _sign(raw)
+    headers = {"X-Hub-Signature-256": sig, "X-GitHub-Delivery": "gh-replay-001"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["delivery_id"] == "gh-replay-001"
+    files = list(output_dir.glob("event-created-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_route_distinct_delivery_ids_both_processed(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+) -> None:
+    payload_a = _sponsorship_payload(action="created", sponsor_login="alice")
+    payload_b = _sponsorship_payload(action="created", sponsor_login="bob")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw_a,
+            headers={
+                "X-Hub-Signature-256": _sign(raw_a),
+                "X-GitHub-Delivery": "gh-delivery-a",
+            },
+        )
+        r_b = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw_b,
+            headers={
+                "X-Hub-Signature-256": _sign(raw_b),
+                "X-GitHub-Delivery": "gh-delivery-b",
+            },
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(output_dir.glob("event-created-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_route_missing_delivery_id_returns_400(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+) -> None:
+    payload = _sponsorship_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _sign(raw)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw,
+            headers={"X-Hub-Signature-256": sig},  # NO X-GitHub-Delivery
+        )
+
+    assert response.status_code == 400
+    assert "delivery_id" in response.json()["detail"]
+
+
+# ===========================================================================
 # Liberapay rail integration tests (cc-task liberapay-end-to-end-wiring)
 # ===========================================================================
 
@@ -447,9 +570,22 @@ def liberapay_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return "liberapay-secret-XYZ"
 
 
+@pytest.fixture
+def liberapay_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Liberapay idempotency singleton + point at tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._liberapay_idempotency_store = None
+    yield tmp_path / "liberapay" / "idempotency.db"
+    routes_mod._liberapay_idempotency_store = None
+
+
 @pytest.mark.asyncio
 async def test_liberapay_signed_payin_succeeded_writes_manifest(
-    liberapay_output_dir: Path, liberapay_secret_env: str
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
 ) -> None:
     payload = _liberapay_payload(event="payin_succeeded")
     raw = json.dumps(payload).encode("utf-8")
@@ -459,7 +595,10 @@ async def test_liberapay_signed_payin_succeeded_writes_manifest(
         response = await client.post(
             "/api/payment-rails/liberapay",
             content=raw,
-            headers={"X-Liberapay-Signature": sig},
+            headers={
+                "X-Liberapay-Signature": sig,
+                "X-Liberapay-Delivery-Id": "lp-delivery-payin-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -475,7 +614,9 @@ async def test_liberapay_signed_payin_succeeded_writes_manifest(
 
 @pytest.mark.asyncio
 async def test_liberapay_dotted_form_alias_accepted(
-    liberapay_output_dir: Path, liberapay_secret_env: str
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
 ) -> None:
     """Bridges may forward Liberapay's dotted form (`payin.succeeded`)."""
     payload = _liberapay_payload(event="payin.succeeded")
@@ -486,7 +627,10 @@ async def test_liberapay_dotted_form_alias_accepted(
         response = await client.post(
             "/api/payment-rails/liberapay",
             content=raw,
-            headers={"X-Liberapay-Signature": sig},
+            headers={
+                "X-Liberapay-Signature": sig,
+                "X-Liberapay-Delivery-Id": "lp-delivery-dotted-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -498,6 +642,7 @@ async def test_liberapay_tip_cancelled_appends_to_refusal_log(
     liberapay_output_dir: Path,
     liberapay_secret_env: str,
     refusal_log_dir: Path,
+    liberapay_idempotency_isolated: Path,
 ) -> None:
     payload = _liberapay_payload(event="tip_cancelled", donor="bob-donor")
     raw = json.dumps(payload).encode("utf-8")
@@ -507,7 +652,10 @@ async def test_liberapay_tip_cancelled_appends_to_refusal_log(
         response = await client.post(
             "/api/payment-rails/liberapay",
             content=raw,
-            headers={"X-Liberapay-Signature": sig},
+            headers={
+                "X-Liberapay-Signature": sig,
+                "X-Liberapay-Delivery-Id": "lp-delivery-cancel-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -608,6 +756,123 @@ def test_liberapay_publisher_module_carries_no_send_path() -> None:
 
 
 # ===========================================================================
+# Liberapay — idempotency hard pin (cc-task jr-liberapay-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_liberapay_route_replays_same_delivery_id_returns_duplicate(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs with same X-Liberapay-Delivery-Id → 2nd is duplicate."""
+    payload = _liberapay_payload(event="payin_succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {
+        "X-Liberapay-Signature": sig,
+        "X-Liberapay-Delivery-Id": "lp-replay-001",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/liberapay", content=raw, headers=headers)
+        second = await client.post("/api/payment-rails/liberapay", content=raw, headers=headers)
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["delivery_id"] == "lp-replay-001"
+    files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_liberapay_route_distinct_delivery_ids_both_processed(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+) -> None:
+    payload_a = _liberapay_payload(event="payin_succeeded")
+    payload_b = _liberapay_payload(event="payin_succeeded", donor="bob-donor")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(liberapay_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(liberapay_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw_a,
+            headers={
+                "X-Liberapay-Signature": sig_a,
+                "X-Liberapay-Delivery-Id": "lp-delivery-a",
+            },
+        )
+        r_b = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw_b,
+            headers={
+                "X-Liberapay-Signature": sig_b,
+                "X-Liberapay-Delivery-Id": "lp-delivery-b",
+            },
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_liberapay_route_missing_delivery_id_returns_400(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+) -> None:
+    """No bridge delivery-id header → 400 (bridge fails-loud)."""
+    payload = _liberapay_payload(event="payin_succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={"X-Liberapay-Signature": sig},  # NO delivery_id
+        )
+
+    assert response.status_code == 400
+    assert "delivery_id" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_liberapay_route_accepts_cloudmailin_message_id_header(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+) -> None:
+    """Bridge fallback: X-Cloudmailin-Message-Id is a valid delivery_id."""
+    payload = _liberapay_payload(event="payin_succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={
+                "X-Liberapay-Signature": sig,
+                "X-Cloudmailin-Message-Id": "cm-msg-001",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "received"
+
+
+# ===========================================================================
 # Open Collective rail integration tests (cc-task open-collective-end-to-end-wiring)
 # ===========================================================================
 
@@ -653,9 +918,22 @@ def open_collective_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return "oc-secret-XYZ"
 
 
+@pytest.fixture
+def open_collective_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Open Collective idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._open_collective_idempotency_store = None
+    yield tmp_path / "open-collective" / "idempotency.db"
+    routes_mod._open_collective_idempotency_store = None
+
+
 @pytest.mark.asyncio
 async def test_open_collective_signed_order_processed_writes_manifest(
-    open_collective_output_dir: Path, open_collective_secret_env: str
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
 ) -> None:
     payload = _open_collective_payload(activity="order_processed")
     raw = json.dumps(payload).encode("utf-8")
@@ -665,7 +943,10 @@ async def test_open_collective_signed_order_processed_writes_manifest(
         response = await client.post(
             "/api/payment-rails/open-collective",
             content=raw,
-            headers={"X-Open-Collective-Signature": sig},
+            headers={
+                "X-Open-Collective-Signature": sig,
+                "X-Open-Collective-Activity-Id": "oc-act-order-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -680,7 +961,9 @@ async def test_open_collective_signed_order_processed_writes_manifest(
 
 @pytest.mark.asyncio
 async def test_open_collective_dotted_form_alias_accepted(
-    open_collective_output_dir: Path, open_collective_secret_env: str
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
 ) -> None:
     """OC bridges may forward the dotted form `order.processed`."""
     payload = _open_collective_payload(activity="order.processed")
@@ -691,7 +974,10 @@ async def test_open_collective_dotted_form_alias_accepted(
         response = await client.post(
             "/api/payment-rails/open-collective",
             content=raw,
-            headers={"X-Open-Collective-Signature": sig},
+            headers={
+                "X-Open-Collective-Signature": sig,
+                "X-Open-Collective-Activity-Id": "oc-act-dotted-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -700,7 +986,9 @@ async def test_open_collective_dotted_form_alias_accepted(
 
 @pytest.mark.asyncio
 async def test_open_collective_member_created(
-    open_collective_output_dir: Path, open_collective_secret_env: str
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
 ) -> None:
     payload = _open_collective_payload(activity="member_created", member="bob-member")
     raw = json.dumps(payload).encode("utf-8")
@@ -710,7 +998,10 @@ async def test_open_collective_member_created(
         response = await client.post(
             "/api/payment-rails/open-collective",
             content=raw,
-            headers={"X-Open-Collective-Signature": sig},
+            headers={
+                "X-Open-Collective-Signature": sig,
+                "X-Open-Collective-Activity-Id": "oc-act-member-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -719,7 +1010,9 @@ async def test_open_collective_member_created(
 
 @pytest.mark.asyncio
 async def test_open_collective_eur_currency(
-    open_collective_output_dir: Path, open_collective_secret_env: str
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
 ) -> None:
     """Open Collective is multi-currency; EUR should pass."""
     payload = _open_collective_payload(currency="EUR", amount=2000)
@@ -730,7 +1023,10 @@ async def test_open_collective_eur_currency(
         response = await client.post(
             "/api/payment-rails/open-collective",
             content=raw,
-            headers={"X-Open-Collective-Signature": sig},
+            headers={
+                "X-Open-Collective-Signature": sig,
+                "X-Open-Collective-Activity-Id": "oc-act-eur-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -801,6 +1097,100 @@ def test_open_collective_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Open Collective — idempotency hard pin (cc-task jr-open-collective-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_open_collective_route_replays_same_activity_id_returns_duplicate(
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
+) -> None:
+    payload = _open_collective_payload(activity="order_processed")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(open_collective_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {
+        "X-Open-Collective-Signature": sig,
+        "X-Open-Collective-Activity-Id": "oc-replay-001",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/open-collective", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/open-collective", content=raw, headers=headers
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["delivery_id"] == "oc-replay-001"
+    files = list(open_collective_output_dir.glob("event-order_processed-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_open_collective_route_distinct_activity_ids_both_processed(
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
+) -> None:
+    payload_a = _open_collective_payload(activity="order_processed")
+    payload_b = _open_collective_payload(activity="order_processed", member="bob-supporter")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(open_collective_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(open_collective_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/open-collective",
+            content=raw_a,
+            headers={
+                "X-Open-Collective-Signature": sig_a,
+                "X-Open-Collective-Activity-Id": "oc-act-a",
+            },
+        )
+        r_b = await client.post(
+            "/api/payment-rails/open-collective",
+            content=raw_b,
+            headers={
+                "X-Open-Collective-Signature": sig_b,
+                "X-Open-Collective-Activity-Id": "oc-act-b",
+            },
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(open_collective_output_dir.glob("event-order_processed-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_open_collective_route_missing_activity_id_returns_400(
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
+) -> None:
+    payload = _open_collective_payload(activity="order_processed")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(open_collective_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/open-collective",
+            content=raw,
+            headers={"X-Open-Collective-Signature": sig},  # NO activity_id
+        )
+
+    assert response.status_code == 400
+    assert "delivery_id" in response.json()["detail"]
 
 
 # ===========================================================================
@@ -1039,6 +1429,158 @@ def test_stripe_payment_link_publisher_module_carries_no_send_path() -> None:
 
 
 # ===========================================================================
+# Stripe Payment Link — replay + idempotency hard pins (route-level integration)
+# (cc-task: jr-stripe-payment-link-replay-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.fixture
+def stripe_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's idempotency singleton + point at a tmp sqlite db.
+
+    HAPAX_HOME is set so :func:`_default_idempotency_db_path` lands in
+    a per-test scratch directory; the module-level singleton is reset
+    so the next call materializes a fresh sqlite db pointing into
+    ``tmp_path``.
+    """
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._stripe_payment_link_idempotency_store = None
+    yield tmp_path / "stripe-payment-link" / "idempotency.db"
+    routes_mod._stripe_payment_link_idempotency_store = None
+
+
+@pytest.mark.asyncio
+async def test_stripe_route_replays_same_event_returns_duplicate_status(
+    stripe_output_dir: Path,
+    stripe_secret_env: str,
+    stripe_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs of identical signed payload — second returns status=duplicate."""
+    ts = int(_time.time())
+    payload = _stripe_payload(occurred_at_unix=ts)
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+        second = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["event_id"] == payload["id"]
+
+    # Only ONE manifest file written despite two identical deliveries.
+    files = list(stripe_output_dir.glob("event-payment_intent_succeeded-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+
+
+@pytest.mark.asyncio
+async def test_stripe_route_distinct_event_ids_both_processed(
+    stripe_output_dir: Path,
+    stripe_secret_env: str,
+    stripe_idempotency_isolated: Path,
+) -> None:
+    """Two distinct evt_... ids → both processed end-to-end."""
+    ts = int(_time.time())
+    payload_a = _stripe_payload(occurred_at_unix=ts)
+    payload_b = _stripe_payload(occurred_at_unix=ts)
+    payload_b["id"] = "evt_3NqVe0LAuO3KjPaT0SgXLnY9_distinct"
+    payload_b["data"]["object"]["id"] = "pi_distinct"
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = _stripe_signature(raw_a, stripe_secret_env, ts)
+    sig_b = _stripe_signature(raw_b, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw_a,
+            headers={"Stripe-Signature": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw_b,
+            headers={"Stripe-Signature": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(stripe_output_dir.glob("event-payment_intent_succeeded-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_stripe_route_thin_payload_rejected_400(
+    stripe_secret_env: str,
+    stripe_idempotency_isolated: Path,
+) -> None:
+    """Thin-payload event (data.object only id+object) returns 400."""
+    ts = int(_time.time())
+    thin_payload = {
+        "id": "evt_thin_test",
+        "type": "payment_intent.succeeded",
+        "created": ts,
+        "api_version": "2024-04-10",
+        "data": {"object": {"id": "pi_thin", "object": "payment_intent"}},
+    }
+    raw = json.dumps(thin_payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "thin-payload event rejected" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_stripe_route_replay_attack_outside_tolerance_rejected_400(
+    stripe_secret_env: str,
+    stripe_idempotency_isolated: Path,
+) -> None:
+    """Signed payload with timestamp >300s old returns 400 — replay rejected."""
+    now = int(_time.time())
+    expired_ts = now - 600  # 10 minutes old; default tolerance 300s
+    payload = _stripe_payload(occurred_at_unix=expired_ts)
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, expired_ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "replay rejected" in response.json()["detail"]
+
+
+def test_validate_secret_or_raise_module_export() -> None:
+    """The startup-validator helper is exported and callable."""
+    from shared.stripe_payment_link_receive_only_rail import validate_secret_or_raise
+
+    assert callable(validate_secret_or_raise)
+    # Behavior tested in unit tests; this only pins module-export shape.
+
+
+# ===========================================================================
 # Ko-fi rail integration tests (cc-task ko-fi-end-to-end-wiring)
 # ===========================================================================
 
@@ -1057,11 +1599,13 @@ def _ko_fi_payload(
     currency: str = "USD",
     occurred_at: str = "2026-05-03T00:00:00Z",
     token: str | None = _KO_FI_TOKEN,
+    kofi_transaction_id: str = "ko-fi-tx-test-001",
 ) -> dict:
     """Realistic Ko-fi webhook envelope (Ko-fi sends straight JSON)."""
     payload = {
         "verification_token": token,
         "message_id": "fff-ddd-eee-aaa",
+        "kofi_transaction_id": kofi_transaction_id,
         "timestamp": occurred_at,
         "type": kind,
         "from_name": sender,
@@ -1088,9 +1632,24 @@ def ko_fi_token_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return _KO_FI_TOKEN
 
 
+@pytest.fixture
+def ko_fi_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Ko-fi idempotency singleton + point at tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._ko_fi_idempotency_store = None
+    yield tmp_path / "ko-fi" / "idempotency.db"
+    routes_mod._ko_fi_idempotency_store = None
+
+
 @pytest.mark.asyncio
-async def test_ko_fi_donation_writes_manifest(ko_fi_output_dir: Path, ko_fi_token_env: str) -> None:
-    payload = _ko_fi_payload(kind="Donation")
+async def test_ko_fi_donation_writes_manifest(
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
+) -> None:
+    payload = _ko_fi_payload(kind="Donation", kofi_transaction_id="tx-donation-test")
     raw = json.dumps(payload).encode("utf-8")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1111,9 +1670,13 @@ async def test_ko_fi_donation_writes_manifest(ko_fi_output_dir: Path, ko_fi_toke
 
 @pytest.mark.asyncio
 async def test_ko_fi_subscription_writes_manifest(
-    ko_fi_output_dir: Path, ko_fi_token_env: str
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
 ) -> None:
-    payload = _ko_fi_payload(kind="Subscription", sender="bob-patron")
+    payload = _ko_fi_payload(
+        kind="Subscription", sender="bob-patron", kofi_transaction_id="tx-sub-test"
+    )
     raw = json.dumps(payload).encode("utf-8")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1187,6 +1750,77 @@ def test_ko_fi_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Ko-fi — idempotency hard pin (cc-task jr-ko-fi-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_route_replays_same_transaction_id_returns_duplicate(
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs of identical Ko-fi payload + transaction id → 2nd is duplicate."""
+    payload = _ko_fi_payload(kind="Donation", kofi_transaction_id="tx-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/ko-fi", content=raw)
+        second = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["kofi_transaction_id"] == "tx-replay-001"
+
+    files = list(ko_fi_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_route_distinct_transaction_ids_both_processed(
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
+) -> None:
+    """Two payloads with distinct kofi_transaction_id → both write manifests."""
+    payload_a = _ko_fi_payload(kind="Donation", kofi_transaction_id="tx-distinct-a")
+    payload_b = _ko_fi_payload(
+        kind="Donation", sender="bob-supporter", kofi_transaction_id="tx-distinct-b"
+    )
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post("/api/payment-rails/ko-fi", content=raw_a)
+        r_b = await client.post("/api/payment-rails/ko-fi", content=raw_b)
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(ko_fi_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_route_missing_transaction_id_returns_400(
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
+) -> None:
+    """Idempotency store provided + payload missing kofi_transaction_id → 400."""
+    payload = _ko_fi_payload(kind="Donation")
+    del payload["kofi_transaction_id"]
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert response.status_code == 400
+    assert "kofi_transaction_id" in response.json()["detail"]
 
 
 # ===========================================================================
@@ -1274,9 +1908,27 @@ def patreon_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return _PATREON_VALID_SECRET
 
 
+@pytest.fixture
+def patreon_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Patreon idempotency singleton + point at tmp db.
+
+    HAPAX_HOME is set so :func:`default_idempotency_db_path` lands in
+    a per-test scratch directory; the module-level singleton is reset
+    so the next call materializes a fresh sqlite db.
+    """
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._patreon_idempotency_store = None
+    yield tmp_path / "patreon" / "idempotency.db"
+    routes_mod._patreon_idempotency_store = None
+
+
 @pytest.mark.asyncio
 async def test_patreon_signed_pledge_create_writes_manifest(
-    patreon_output_dir: Path, patreon_secret_env: str
+    patreon_output_dir: Path,
+    patreon_secret_env: str,
+    patreon_idempotency_isolated: Path,
 ) -> None:
     payload = _patreon_payload(patron_vanity="alice-patron")
     raw = json.dumps(payload).encode("utf-8")
@@ -1289,6 +1941,7 @@ async def test_patreon_signed_pledge_create_writes_manifest(
             headers={
                 "X-Patreon-Signature": sig,
                 "X-Patreon-Event": "members:pledge:create",
+                "X-Patreon-Webhook-Id": "wh_test_create_001",
             },
         )
 
@@ -1312,6 +1965,7 @@ async def test_patreon_pledge_delete_appends_to_refusal_log(
     patreon_output_dir: Path,
     patreon_secret_env: str,
     refusal_log_dir: Path,
+    patreon_idempotency_isolated: Path,
 ) -> None:
     payload = _patreon_payload(patron_vanity="bob-patron")
     raw = json.dumps(payload).encode("utf-8")
@@ -1324,6 +1978,7 @@ async def test_patreon_pledge_delete_appends_to_refusal_log(
             headers={
                 "X-Patreon-Signature": sig,
                 "X-Patreon-Event": "members:pledge:delete",
+                "X-Patreon-Webhook-Id": "wh_test_delete_001",
             },
         )
 
@@ -1425,6 +2080,107 @@ def test_patreon_publisher_module_carries_no_send_path() -> None:
 
 
 # ===========================================================================
+# Patreon — idempotency hard pin (cc-task jr-patreon-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_patreon_route_replays_same_webhook_id_returns_duplicate_status(
+    patreon_output_dir: Path,
+    patreon_secret_env: str,
+    patreon_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs of identical signed payload + webhook_id → 2nd is duplicate."""
+    payload = _patreon_payload(patron_vanity="alice-patron")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _patreon_md5_signature(raw)
+    headers = {
+        "X-Patreon-Signature": sig,
+        "X-Patreon-Event": "members:pledge:create",
+        "X-Patreon-Webhook-Id": "wh_replay_test_001",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/patreon", content=raw, headers=headers)
+        second = await client.post("/api/payment-rails/patreon", content=raw, headers=headers)
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["webhook_id"] == "wh_replay_test_001"
+
+    files = list(patreon_output_dir.glob("event-members_pledge_create-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+
+
+@pytest.mark.asyncio
+async def test_patreon_route_distinct_webhook_ids_both_processed(
+    patreon_output_dir: Path,
+    patreon_secret_env: str,
+    patreon_idempotency_isolated: Path,
+) -> None:
+    """Same payload but distinct X-Patreon-Webhook-Id → both write manifests."""
+    payload_a = _patreon_payload(patron_vanity="alice-patron")
+    payload_b = _patreon_payload(patron_vanity="bob-patron")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = _patreon_md5_signature(raw_a)
+    sig_b = _patreon_md5_signature(raw_b)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw_a,
+            headers={
+                "X-Patreon-Signature": sig_a,
+                "X-Patreon-Event": "members:pledge:create",
+                "X-Patreon-Webhook-Id": "wh_distinct_a",
+            },
+        )
+        r_b = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw_b,
+            headers={
+                "X-Patreon-Signature": sig_b,
+                "X-Patreon-Event": "members:pledge:create",
+                "X-Patreon-Webhook-Id": "wh_distinct_b",
+            },
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(patreon_output_dir.glob("event-members_pledge_create-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_patreon_route_missing_webhook_id_returns_400(
+    patreon_output_dir: Path,
+    patreon_secret_env: str,
+    patreon_idempotency_isolated: Path,
+) -> None:
+    """Idempotency store provided but X-Patreon-Webhook-Id header missing → 400."""
+    payload = _patreon_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _patreon_md5_signature(raw)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw,
+            headers={
+                "X-Patreon-Signature": sig,
+                "X-Patreon-Event": "members:pledge:create",
+                # NO X-Patreon-Webhook-Id
+            },
+        )
+
+    assert response.status_code == 400
+    assert "webhook_id" in response.json()["detail"]
+
+
+# ===========================================================================
 # Buy Me a Coffee rail integration tests (cc-task buy-me-a-coffee-end-to-end-wiring)
 # ===========================================================================
 
@@ -1448,13 +2204,14 @@ def _bmac_payload(
     amount: str = "5.00",
     currency: str = "USD",
     occurred_at: str = "2026-05-03T00:00:00Z",
+    event_id: str = "11111111-1111-1111-1111-111111111111",
 ) -> dict:
     return {
         "type": kind,
         "live_mode": True,
         "attempt": 1,
         "created": occurred_at,
-        "event_id": "11111111-1111-1111-1111-111111111111",
+        "event_id": event_id,
         "data": {
             "id": "donation-id-1",
             "supporter_name": supporter,
@@ -1479,11 +2236,24 @@ def bmac_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return _BMAC_VALID_SECRET
 
 
+@pytest.fixture
+def bmac_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's BMaC idempotency singleton + point at tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._buy_me_a_coffee_idempotency_store = None
+    yield tmp_path / "buy-me-a-coffee" / "idempotency.db"
+    routes_mod._buy_me_a_coffee_idempotency_store = None
+
+
 @pytest.mark.asyncio
 async def test_bmac_signed_donation_writes_manifest(
-    bmac_output_dir: Path, bmac_secret_env: str
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
 ) -> None:
-    payload = _bmac_payload(kind="donation")
+    payload = _bmac_payload(kind="donation", event_id="evt-bmac-donation-test")
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -1509,10 +2279,16 @@ async def test_bmac_signed_donation_writes_manifest(
 
 @pytest.mark.asyncio
 async def test_bmac_membership_started_dotted_form(
-    bmac_output_dir: Path, bmac_secret_env: str
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
 ) -> None:
     """BMaC membership.started uses dotted form (not underscored)."""
-    payload = _bmac_payload(kind="membership.started", supporter="bob-member")
+    payload = _bmac_payload(
+        kind="membership.started",
+        supporter="bob-member",
+        event_id="evt-bmac-mship-started",
+    )
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -1532,8 +2308,13 @@ async def test_bmac_membership_cancelled_appends_to_refusal_log(
     bmac_output_dir: Path,
     bmac_secret_env: str,
     refusal_log_dir: Path,
+    bmac_idempotency_isolated: Path,
 ) -> None:
-    payload = _bmac_payload(kind="membership.cancelled", supporter="charlie-cancelled")
+    payload = _bmac_payload(
+        kind="membership.cancelled",
+        supporter="charlie-cancelled",
+        event_id="evt-bmac-mship-cancelled",
+    )
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -1634,6 +2415,99 @@ def test_bmac_publisher_module_carries_no_send_path() -> None:
 
 
 # ===========================================================================
+# BMaC — idempotency hard pin (cc-task jr-buy-me-a-coffee-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_bmac_route_replays_same_event_id_returns_duplicate(
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs of identical signed payload → second returns status=duplicate."""
+    payload = _bmac_payload(kind="donation", event_id="evt-bmac-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+        second = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["event_id"] == "evt-bmac-replay-001"
+
+    files = list(bmac_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+
+
+@pytest.mark.asyncio
+async def test_bmac_route_distinct_event_ids_both_processed(
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
+) -> None:
+    """Distinct event_ids → both deliveries write manifests."""
+    payload_a = _bmac_payload(kind="donation", event_id="evt-bmac-a")
+    payload_b = _bmac_payload(kind="donation", supporter="bob", event_id="evt-bmac-b")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(bmac_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(bmac_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw_a,
+            headers={"X-Signature-Sha256": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw_b,
+            headers={"X-Signature-Sha256": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(bmac_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_bmac_route_missing_event_id_returns_400(
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
+) -> None:
+    """Idempotency store provided + payload missing event_id → 400."""
+    payload = _bmac_payload(kind="donation")
+    del payload["event_id"]
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+
+    assert response.status_code == 400
+    assert "event_id" in response.json()["detail"]
+
+
+# ===========================================================================
 # Mercury rail integration tests (cc-task mercury-end-to-end-wiring)
 # ===========================================================================
 
@@ -1652,6 +2526,7 @@ def _mercury_payload(
     currency: str = "USD",
     kind: str = "ach_incoming",
     occurred_at: str = "2026-05-03T00:00:00Z",
+    txn_id: str = "txn-mercury-incoming-1",
 ) -> dict:
     """Realistic Mercury delivery for an incoming ACH transfer.
 
@@ -1661,7 +2536,7 @@ def _mercury_payload(
     return {
         "type": event_type,
         "data": {
-            "id": "txn-mercury-incoming-1",
+            "id": txn_id,
             "amount": amount,
             "currency": currency,
             "kind": kind,
@@ -1687,6 +2562,17 @@ def mercury_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def mercury_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(MERCURY_WEBHOOK_SECRET_ENV, _MERCURY_VALID_SECRET)
     return _MERCURY_VALID_SECRET
+
+
+@pytest.fixture
+def mercury_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Mercury idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._mercury_idempotency_store = None
+    yield tmp_path / "mercury" / "idempotency.db"
+    routes_mod._mercury_idempotency_store = None
 
 
 @pytest.mark.asyncio
@@ -1821,6 +2707,88 @@ def test_mercury_publisher_module_carries_no_send_path() -> None:
 
 
 # ===========================================================================
+# Mercury — idempotency hard pin (cc-task jr-mercury-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_mercury_route_replays_same_txn_id_returns_duplicate(
+    mercury_output_dir: Path,
+    mercury_secret_env: str,
+    mercury_idempotency_isolated: Path,
+) -> None:
+    payload = _mercury_payload(txn_id="txn-mercury-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mercury_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {"X-Mercury-Signature": sig}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/mercury", content=raw, headers=headers)
+        second = await client.post("/api/payment-rails/mercury", content=raw, headers=headers)
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["transaction_id"] == "txn-mercury-replay-001"
+    files = list(mercury_output_dir.glob("event-transaction_created-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_mercury_route_distinct_txn_ids_both_processed(
+    mercury_output_dir: Path,
+    mercury_secret_env: str,
+    mercury_idempotency_isolated: Path,
+) -> None:
+    payload_a = _mercury_payload(txn_id="txn-mercury-a")
+    payload_b = _mercury_payload(txn_id="txn-mercury-b", counterparty="Foo Foundation")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(mercury_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(mercury_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw_a,
+            headers={"X-Mercury-Signature": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw_b,
+            headers={"X-Mercury-Signature": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(mercury_output_dir.glob("event-transaction_created-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_mercury_route_missing_data_id_returns_400(
+    mercury_output_dir: Path,
+    mercury_secret_env: str,
+    mercury_idempotency_isolated: Path,
+) -> None:
+    payload = _mercury_payload()
+    del payload["data"]["id"]
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mercury_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw,
+            headers={"X-Mercury-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "data.id" in response.json()["detail"]
+
+
+# ===========================================================================
 # Modern Treasury rail integration tests (cc-task modern-treasury-end-to-end-wiring)
 # ===========================================================================
 
@@ -1839,11 +2807,12 @@ def _modern_treasury_payload(
     currency: str = "USD",
     payment_type: str = "ach",
     created_at: str = "2026-05-03T00:00:00Z",
+    payment_id: str = "ipd-uuid-1111",
 ) -> dict:
     return {
         "event": event,
         "data": {
-            "id": "ipd-uuid-1111",
+            "id": payment_id,
             "object": "incoming_payment_detail",
             "amount": amount,
             "currency": currency,
@@ -1870,6 +2839,17 @@ def mt_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def mt_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(MODERN_TREASURY_WEBHOOK_SECRET_ENV, _MT_VALID_SECRET)
     return _MT_VALID_SECRET
+
+
+@pytest.fixture
+def mt_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Modern Treasury idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._modern_treasury_idempotency_store = None
+    yield tmp_path / "modern-treasury" / "idempotency.db"
+    routes_mod._modern_treasury_idempotency_store = None
 
 
 @pytest.mark.asyncio
@@ -1924,8 +2904,12 @@ async def test_modern_treasury_outgoing_event_rejected(
 
 
 @pytest.mark.asyncio
-async def test_modern_treasury_wire_payment_method(mt_output_dir: Path, mt_secret_env: str) -> None:
-    payload = _modern_treasury_payload(payment_type="wire")
+async def test_modern_treasury_wire_payment_method(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload = _modern_treasury_payload(payment_type="wire", payment_id="ipd-wire-test")
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -1941,8 +2925,14 @@ async def test_modern_treasury_wire_payment_method(mt_output_dir: Path, mt_secre
 
 
 @pytest.mark.asyncio
-async def test_modern_treasury_completed_event(mt_output_dir: Path, mt_secret_env: str) -> None:
-    payload = _modern_treasury_payload(event="incoming_payment_detail.completed")
+async def test_modern_treasury_completed_event(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload = _modern_treasury_payload(
+        event="incoming_payment_detail.completed", payment_id="ipd-completed-test"
+    )
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -2001,6 +2991,92 @@ def test_modern_treasury_publisher_module_carries_no_send_path() -> None:
 
 
 # ===========================================================================
+# Modern Treasury — idempotency hard pin (cc-task jr-modern-treasury-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_route_replays_same_payment_id_returns_duplicate(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload = _modern_treasury_payload(payment_id="ipd-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {"X-Signature": sig}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/modern-treasury", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/modern-treasury", content=raw, headers=headers
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["payment_id"] == "ipd-replay-001"
+    files = list(mt_output_dir.glob("event-incoming_payment_detail_created-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_route_distinct_payment_ids_both_processed(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload_a = _modern_treasury_payload(payment_id="ipd-a")
+    payload_b = _modern_treasury_payload(payment_id="ipd-b")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(mt_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(mt_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw_a,
+            headers={"X-Signature": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw_b,
+            headers={"X-Signature": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(mt_output_dir.glob("event-incoming_payment_detail_created-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_route_missing_data_id_returns_400(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload = _modern_treasury_payload()
+    del payload["data"]["id"]
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "data.id" in response.json()["detail"]
+
+
+# ===========================================================================
 # Treasury Prime rail integration tests (cc-task treasury-prime-end-to-end-wiring)
 # ===========================================================================
 
@@ -2018,11 +3094,12 @@ def _treasury_prime_payload(
     amount: object = 10000,
     currency: str = "USD",
     created_at: str = "2026-05-03T00:00:00Z",
+    ach_id: str = "tp-incoming-ach-uuid",
 ) -> dict:
     return {
         "event": event,
         "data": {
-            "id": "tp-incoming-ach-uuid",
+            "id": ach_id,
             "amount": amount,
             "currency": currency,
             "originating_party_name": originating_party_name,
@@ -2047,6 +3124,17 @@ def tp_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def tp_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(TREASURY_PRIME_WEBHOOK_SECRET_ENV, _TP_VALID_SECRET)
     return _TP_VALID_SECRET
+
+
+@pytest.fixture
+def tp_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Treasury Prime idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._treasury_prime_idempotency_store = None
+    yield tmp_path / "treasury-prime" / "idempotency.db"
+    routes_mod._treasury_prime_idempotency_store = None
 
 
 @pytest.mark.asyncio
@@ -2157,3 +3245,87 @@ def test_treasury_prime_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Treasury Prime — idempotency hard pin (cc-task jr-treasury-prime-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_route_replays_same_ach_id_returns_duplicate(
+    tp_output_dir: Path,
+    tp_secret_env: str,
+    tp_idempotency_isolated: Path,
+) -> None:
+    payload = _treasury_prime_payload(ach_id="tp-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {"X-Signature": sig}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/treasury-prime", content=raw, headers=headers)
+        second = await client.post(
+            "/api/payment-rails/treasury-prime", content=raw, headers=headers
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["ach_id"] == "tp-replay-001"
+    files = list(tp_output_dir.glob("event-incoming_ach_create-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_route_distinct_ach_ids_both_processed(
+    tp_output_dir: Path,
+    tp_secret_env: str,
+    tp_idempotency_isolated: Path,
+) -> None:
+    payload_a = _treasury_prime_payload(ach_id="tp-a")
+    payload_b = _treasury_prime_payload(ach_id="tp-b", originating_party_name="Foo")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(tp_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(tp_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw_a,
+            headers={"X-Signature": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw_b,
+            headers={"X-Signature": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(tp_output_dir.glob("event-incoming_ach_create-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_route_missing_data_id_returns_400(
+    tp_output_dir: Path,
+    tp_secret_env: str,
+    tp_idempotency_isolated: Path,
+) -> None:
+    payload = _treasury_prime_payload()
+    del payload["data"]["id"]
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "data.id" in response.json()["detail"]
