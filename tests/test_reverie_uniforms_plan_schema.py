@@ -422,8 +422,8 @@ def test_write_uniforms_end_to_end_produces_expected_keys(tmp_path: Path):
     # Plan defaults: noise(2) + rd(2) + color(2) + fb(1) + content(3) + post(1) = 11
     # Plus signal.stance + signal.color_warmth + fb.trace_* (4 new since fb
     # node only had decay) = 11 + 2 + 4 = 17.
-    # Plus color.hue_rotate written by U8 imagination-tint (#2378) = 18.
-    assert len(result) == 18
+    # U8 mode tint is patched out above; dedicated tint tests pin color.hue_rotate.
+    assert len(result) == 17
 
 
 def test_write_uniforms_silence_attenuation_when_imagination_stale(tmp_path: Path):
