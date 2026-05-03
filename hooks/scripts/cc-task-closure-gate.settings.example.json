@@ -1,0 +1,16 @@
+{
+  "_comment": "Snippet for ~/.claude/settings.json — merge into the existing hooks.PreToolUse array. Registers the cc-task closure-discipline gate (cc-task `cc-task-closure-hook-acceptance-criteria-gate`). Blocks `mv` / `git mv` of cc-task .md files from active/ to closed/ when any `## Acceptance criteria` checkbox is unchecked. Bypass via HAPAX_CC_TASK_CLOSURE_GATE_OFF=1.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/hapax/projects/hapax-council/hooks/scripts/cc-task-closure-gate.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
