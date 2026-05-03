@@ -1,0 +1,822 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "bayesian-camera-salience-world-surface-fixtures-2026-05-02",
+  "schema_ref": "schemas/bayesian-camera-salience-world-surface.schema.json",
+  "declared_at": "2026-05-02T14:00:00Z",
+  "generated_from": [
+    "cc-task:bayesian-camera-salience-world-surface-broker",
+    "spec:2026-04-29-bayesian-camera-salience-world-surface"
+  ],
+  "required_aperture_kinds": [
+    "studio_rgb_camera",
+    "studio_ir_camera",
+    "livestream_composed_frame",
+    "archive_video_window",
+    "semantic_surface_state",
+    "future_sensor"
+  ],
+  "required_evidence_classes": [
+    "frame",
+    "object_track",
+    "composed_livestream",
+    "archive_window",
+    "ir_presence",
+    "cross_camera_tracklet",
+    "semantic_state"
+  ],
+  "required_consumers": [
+    "director",
+    "affordance",
+    "content_opportunity",
+    "voice",
+    "wcs_health",
+    "archive",
+    "visual_variance"
+  ],
+  "apertures": [
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:studio-rgb.brio-operator",
+      "kind": "studio_rgb_camera",
+      "modality": "rgb",
+      "source_id": "brio-operator",
+      "display_name": "BRIO operator camera",
+      "semantic_role": "operator-desk",
+      "supported_evidence_classes": [
+        "frame",
+        "object_track",
+        "cross_camera_tracklet"
+      ],
+      "resource_cost": 0.2,
+      "latency_cost_ms": 80,
+      "privacy_mode": "private",
+      "public_claim_ceiling": "evidence_bound",
+      "wcs_surface_refs": [
+        "wcs-surface:camera.brio-operator",
+        "wcs-health:temporal-perceptual:camera-scene"
+      ],
+      "topology_refs": [
+        "camera-topology:brio-operator->c920-desk"
+      ],
+      "producer_refs": [
+        "agents.hapax_daimonion.backends.vision:VisionBackend"
+      ],
+      "route_refs": [
+        "route:/dev/shm/hapax-compositor/brio-operator.jpg"
+      ],
+      "freshness_ttl_s": 10
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:studio-rgb.c920-desk",
+      "kind": "studio_rgb_camera",
+      "modality": "rgb",
+      "source_id": "c920-desk",
+      "display_name": "C920 desk camera",
+      "semantic_role": "desk-overview",
+      "supported_evidence_classes": [
+        "frame",
+        "object_track",
+        "cross_camera_tracklet"
+      ],
+      "resource_cost": 0.2,
+      "latency_cost_ms": 80,
+      "privacy_mode": "private",
+      "public_claim_ceiling": "evidence_bound",
+      "wcs_surface_refs": [
+        "wcs-surface:camera.c920-desk"
+      ],
+      "topology_refs": [
+        "camera-topology:brio-operator->c920-desk"
+      ],
+      "producer_refs": [
+        "agents.hapax_daimonion.backends.vision:VisionBackend"
+      ],
+      "route_refs": [
+        "route:/dev/shm/hapax-compositor/c920-desk.jpg"
+      ],
+      "freshness_ttl_s": 10
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:studio-ir.noir-desk",
+      "kind": "studio_ir_camera",
+      "modality": "infrared",
+      "source_id": "pi-noir-desk",
+      "display_name": "Pi NoIR desk hand zone",
+      "semantic_role": "desk-hand-zone",
+      "supported_evidence_classes": [
+        "ir_presence"
+      ],
+      "resource_cost": 0.08,
+      "latency_cost_ms": 30,
+      "privacy_mode": "private",
+      "public_claim_ceiling": "private_only",
+      "wcs_surface_refs": [
+        "wcs-surface:ir.noir-desk"
+      ],
+      "topology_refs": [
+        "ir-topology:desk-zone"
+      ],
+      "producer_refs": [
+        "agents.hapax_daimonion.backends.ir_presence"
+      ],
+      "route_refs": [
+        "route:/dev/shm/hapax-ir/presence.json"
+      ],
+      "freshness_ttl_s": 8
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:livestream.composed-frame",
+      "kind": "livestream_composed_frame",
+      "modality": "rgb-composited",
+      "source_id": "hapax-compositor-output",
+      "display_name": "Composed livestream frame",
+      "semantic_role": "viewer-visible-surface",
+      "supported_evidence_classes": [
+        "composed_livestream"
+      ],
+      "resource_cost": 0.35,
+      "latency_cost_ms": 140,
+      "privacy_mode": "public_safe",
+      "public_claim_ceiling": "public_gate_required",
+      "wcs_surface_refs": [
+        "wcs-surface:livestream.composed-frame",
+        "wcs-public-aperture:youtube-live"
+      ],
+      "topology_refs": [
+        "compositor-topology:pre-fx->public-output"
+      ],
+      "producer_refs": [
+        "agents.studio_compositor.snapshots:add_snapshot_branch"
+      ],
+      "route_refs": [
+        "route:/dev/shm/hapax-compositor/snapshot.jpg"
+      ],
+      "freshness_ttl_s": 10
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:archive.video-window",
+      "kind": "archive_video_window",
+      "modality": "video-window",
+      "source_id": "stream-archive-window",
+      "display_name": "Archive comparison window",
+      "semantic_role": "retrospective-reference",
+      "supported_evidence_classes": [
+        "archive_window"
+      ],
+      "resource_cost": 0.55,
+      "latency_cost_ms": 300,
+      "privacy_mode": "private",
+      "public_claim_ceiling": "public_gate_required",
+      "wcs_surface_refs": [
+        "wcs-surface:archive.video-window",
+        "temporal-span-registry:stream-archive"
+      ],
+      "topology_refs": [
+        "archive-topology:current->reference-window"
+      ],
+      "producer_refs": [
+        "shared.stream_archive"
+      ],
+      "route_refs": [
+        "route:hapax-state/archives"
+      ],
+      "freshness_ttl_s": 3600
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:semantic.wcs-health",
+      "kind": "semantic_surface_state",
+      "modality": "state",
+      "source_id": "world-surface-health",
+      "display_name": "WCS semantic state",
+      "semantic_role": "claimability-context",
+      "supported_evidence_classes": [
+        "semantic_state"
+      ],
+      "resource_cost": 0.02,
+      "latency_cost_ms": 5,
+      "privacy_mode": "private",
+      "public_claim_ceiling": "internal_only",
+      "wcs_surface_refs": [
+        "world-surface-health:temporal-perceptual"
+      ],
+      "topology_refs": [
+        "semantic-topology:wcs"
+      ],
+      "producer_refs": [
+        "shared.world_surface_temporal_perceptual_health"
+      ],
+      "route_refs": [
+        "route:config/world-surface-temporal-perceptual-health-fixtures.json"
+      ],
+      "freshness_ttl_s": 60
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:future.depth-camera",
+      "kind": "future_sensor",
+      "modality": "depth",
+      "source_id": "future-depth-camera",
+      "display_name": "Future depth camera registration",
+      "semantic_role": "future-sensor-contract",
+      "supported_evidence_classes": [
+        "frame"
+      ],
+      "resource_cost": 0.6,
+      "latency_cost_ms": 160,
+      "privacy_mode": "blocked",
+      "public_claim_ceiling": "no_claim",
+      "wcs_surface_refs": [
+        "wcs-surface:future.depth-camera"
+      ],
+      "topology_refs": [
+        "future-sensor-topology:uninstalled"
+      ],
+      "producer_refs": [
+        "future-sensor-adapter"
+      ],
+      "route_refs": [
+        "route:future"
+      ],
+      "freshness_ttl_s": 0
+    }
+  ],
+  "observations": [
+    {
+      "schema_version": 1,
+      "envelope_id": "camera-observation:vision.brio-operator.frame",
+      "aperture_id": "aperture:studio-rgb.brio-operator",
+      "aperture_kind": "studio_rgb_camera",
+      "producer": "vision_backend",
+      "evidence_class": "frame",
+      "observation_state": "observed",
+      "temporal_window": {
+        "window_id": "camera-window:vision.brio-operator.frame",
+        "kind": "current_frame",
+        "aperture_id": "aperture:studio-rgb.brio-operator",
+        "observed_at": "2026-05-02T14:00:00Z",
+        "duration_s": 0.0,
+        "span_ref": "span:frame:brio-operator:2026-05-02T14:00:00Z",
+        "start_ref": null,
+        "end_ref": null
+      },
+      "freshness": {
+        "state": "fresh",
+        "checked_at": "2026-05-02T14:00:00Z",
+        "ttl_s": 10,
+        "observed_age_s": 2,
+        "source_ref": "vision-backend:camera-classifications:brio-operator"
+      },
+      "confidence": 0.82,
+      "semantic_labels": [
+        "operator_at_desk",
+        "desk_activity"
+      ],
+      "evidence_rows": [
+        {
+          "evidence_ref": "camera-evidence:frame.brio-operator.operator-attention",
+          "evidence_class": "frame",
+          "hypothesis": "operator_attention_desk",
+          "likelihood": 0.78,
+          "confidence": 0.82,
+          "observation_state": "observed",
+          "supports_hypothesis": true,
+          "source_refs": [
+            "vision-backend:camera-classifications:brio-operator"
+          ],
+          "witness_refs": [
+            "witness:vision-backend:brio-operator:frame"
+          ],
+          "span_refs": [
+            "span:frame:brio-operator:2026-05-02T14:00:00Z"
+          ],
+          "wcs_refs": [
+            "wcs-surface:camera.brio-operator"
+          ],
+          "metadata": {
+            "semantic_role": "operator-desk"
+          }
+        }
+      ],
+      "source_refs": [
+        "vision-backend:camera-classifications:brio-operator"
+      ],
+      "wcs_surface_refs": [
+        "wcs-surface:camera.brio-operator"
+      ],
+      "witness_refs": [
+        "witness:vision-backend:brio-operator:frame"
+      ],
+      "span_refs": [
+        "span:frame:brio-operator:2026-05-02T14:00:00Z"
+      ],
+      "public_event_refs": [],
+      "authority_ceiling": "evidence_bound",
+      "privacy_mode": "private",
+      "image_ref": "image-ref:brio-operator-frame",
+      "blocked_reasons": [],
+      "stale_refs": [],
+      "negative_evidence_refs": [],
+      "classification_public_claim_allowed": false
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "camera-observation:vision.brio-operator.track",
+      "aperture_id": "aperture:studio-rgb.brio-operator",
+      "aperture_kind": "studio_rgb_camera",
+      "producer": "vision_backend",
+      "evidence_class": "object_track",
+      "observation_state": "observed",
+      "temporal_window": {
+        "window_id": "camera-window:vision.brio-operator.track",
+        "kind": "activity_window",
+        "aperture_id": "aperture:studio-rgb.brio-operator",
+        "observed_at": "2026-05-02T14:00:02Z",
+        "duration_s": 6.0,
+        "span_ref": "span:track:brio-operator:operator:2026-05-02T14:00:02Z",
+        "start_ref": "frame:brio-operator:0001",
+        "end_ref": "frame:brio-operator:0018"
+      },
+      "freshness": {
+        "state": "fresh",
+        "checked_at": "2026-05-02T14:00:02Z",
+        "ttl_s": 10,
+        "observed_age_s": 3,
+        "source_ref": "vision-backend:person-detection:brio-operator"
+      },
+      "confidence": 0.84,
+      "semantic_labels": [
+        "person_track",
+        "operator_present"
+      ],
+      "evidence_rows": [
+        {
+          "evidence_ref": "camera-evidence:track.brio-operator.operator-present",
+          "evidence_class": "object_track",
+          "hypothesis": "operator_present",
+          "likelihood": 0.83,
+          "confidence": 0.84,
+          "observation_state": "observed",
+          "supports_hypothesis": true,
+          "source_refs": [
+            "vision-backend:person-detection:brio-operator"
+          ],
+          "witness_refs": [
+            "witness:vision-backend:brio-operator:track"
+          ],
+          "span_refs": [
+            "span:track:brio-operator:operator:2026-05-02T14:00:02Z"
+          ],
+          "wcs_refs": [
+            "wcs-surface:camera.brio-operator"
+          ],
+          "metadata": {
+            "track_id": "operator-track"
+          }
+        }
+      ],
+      "source_refs": [
+        "vision-backend:person-detection:brio-operator"
+      ],
+      "wcs_surface_refs": [
+        "wcs-surface:camera.brio-operator"
+      ],
+      "witness_refs": [
+        "witness:vision-backend:brio-operator:track"
+      ],
+      "span_refs": [
+        "span:track:brio-operator:operator:2026-05-02T14:00:02Z"
+      ],
+      "public_event_refs": [],
+      "authority_ceiling": "evidence_bound",
+      "privacy_mode": "private",
+      "image_ref": "image-ref:brio-operator-track",
+      "blocked_reasons": [],
+      "stale_refs": [],
+      "negative_evidence_refs": [],
+      "classification_public_claim_allowed": false
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "camera-observation:cross-camera.operator-tracklet",
+      "aperture_id": "aperture:studio-rgb.brio-operator",
+      "aperture_kind": "studio_rgb_camera",
+      "producer": "cross_camera_stitcher",
+      "evidence_class": "cross_camera_tracklet",
+      "observation_state": "observed",
+      "temporal_window": {
+        "window_id": "camera-window:cross-camera.operator-tracklet",
+        "kind": "cross_camera_delta",
+        "aperture_id": "aperture:studio-rgb.brio-operator",
+        "observed_at": "2026-05-02T14:00:04Z",
+        "duration_s": 3.5,
+        "span_ref": "span:tracklet:brio-operator-to-c920-desk:2026-05-02T14:00:04Z",
+        "start_ref": "track:brio-operator:operator-disappeared",
+        "end_ref": "track:c920-desk:operator-appeared"
+      },
+      "freshness": {
+        "state": "fresh",
+        "checked_at": "2026-05-02T14:00:04Z",
+        "ttl_s": 10,
+        "observed_age_s": 4,
+        "source_ref": "cross-camera:merge-suggestion:operator"
+      },
+      "confidence": 0.76,
+      "semantic_labels": [
+        "cross_camera_tracklet"
+      ],
+      "evidence_rows": [
+        {
+          "evidence_ref": "camera-evidence:cross-camera.operator-tracklet",
+          "evidence_class": "cross_camera_tracklet",
+          "hypothesis": "operator_present",
+          "likelihood": 0.76,
+          "confidence": 0.76,
+          "observation_state": "observed",
+          "supports_hypothesis": true,
+          "source_refs": [
+            "cross-camera:merge-suggestion:operator"
+          ],
+          "witness_refs": [
+            "witness:cross-camera:operator-tracklet"
+          ],
+          "span_refs": [
+            "span:tracklet:brio-operator-to-c920-desk:2026-05-02T14:00:04Z"
+          ],
+          "wcs_refs": [
+            "wcs-surface:camera.brio-operator",
+            "wcs-surface:camera.c920-desk"
+          ],
+          "metadata": {
+            "topology_path": "brio-operator>c920-desk",
+            "time_delta_s": 3.5,
+            "similarity": 0.76,
+            "uncertainty": 0.24
+          }
+        }
+      ],
+      "source_refs": [
+        "cross-camera:merge-suggestion:operator"
+      ],
+      "wcs_surface_refs": [
+        "wcs-surface:camera.brio-operator",
+        "wcs-surface:camera.c920-desk"
+      ],
+      "witness_refs": [
+        "witness:cross-camera:operator-tracklet"
+      ],
+      "span_refs": [
+        "span:tracklet:brio-operator-to-c920-desk:2026-05-02T14:00:04Z"
+      ],
+      "public_event_refs": [],
+      "authority_ceiling": "evidence_bound",
+      "privacy_mode": "private",
+      "image_ref": null,
+      "blocked_reasons": [],
+      "stale_refs": [],
+      "negative_evidence_refs": [],
+      "classification_public_claim_allowed": false
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "camera-observation:ir.noir-desk.hand-zone",
+      "aperture_id": "aperture:studio-ir.noir-desk",
+      "aperture_kind": "studio_ir_camera",
+      "producer": "ir_presence_backend",
+      "evidence_class": "ir_presence",
+      "observation_state": "observed",
+      "temporal_window": {
+        "window_id": "camera-window:ir.noir-desk.hand-zone",
+        "kind": "activity_window",
+        "aperture_id": "aperture:studio-ir.noir-desk",
+        "observed_at": "2026-05-02T14:00:03Z",
+        "duration_s": 5.0,
+        "span_ref": "span:ir:noir-desk:hand-zone:2026-05-02T14:00:03Z",
+        "start_ref": "ir:noir-desk:hand-zone-start",
+        "end_ref": "ir:noir-desk:hand-zone-end"
+      },
+      "freshness": {
+        "state": "fresh",
+        "checked_at": "2026-05-02T14:00:03Z",
+        "ttl_s": 8,
+        "observed_age_s": 2,
+        "source_ref": "ir-presence:desk-hand-zone"
+      },
+      "confidence": 0.88,
+      "semantic_labels": [
+        "hands_active",
+        "ir_motion"
+      ],
+      "evidence_rows": [
+        {
+          "evidence_ref": "camera-evidence:ir.noir-desk.hands-active",
+          "evidence_class": "ir_presence",
+          "hypothesis": "hands_on_instrument_or_controller",
+          "likelihood": 0.86,
+          "confidence": 0.88,
+          "observation_state": "observed",
+          "supports_hypothesis": true,
+          "source_refs": [
+            "ir-presence:desk-hand-zone"
+          ],
+          "witness_refs": [
+            "witness:ir:noir-desk"
+          ],
+          "span_refs": [
+            "span:ir:noir-desk:hand-zone:2026-05-02T14:00:03Z"
+          ],
+          "wcs_refs": [
+            "wcs-surface:ir.noir-desk"
+          ],
+          "metadata": {
+            "zone": "desk",
+            "motion": true
+          }
+        }
+      ],
+      "source_refs": [
+        "ir-presence:desk-hand-zone"
+      ],
+      "wcs_surface_refs": [
+        "wcs-surface:ir.noir-desk"
+      ],
+      "witness_refs": [
+        "witness:ir:noir-desk"
+      ],
+      "span_refs": [
+        "span:ir:noir-desk:hand-zone:2026-05-02T14:00:03Z"
+      ],
+      "public_event_refs": [],
+      "authority_ceiling": "private_only",
+      "privacy_mode": "private",
+      "image_ref": null,
+      "blocked_reasons": [],
+      "stale_refs": [],
+      "negative_evidence_refs": [],
+      "classification_public_claim_allowed": false
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "camera-observation:livestream.composed.viewer-mismatch",
+      "aperture_id": "aperture:livestream.composed-frame",
+      "aperture_kind": "livestream_composed_frame",
+      "producer": "compositor_snapshot",
+      "evidence_class": "composed_livestream",
+      "observation_state": "contradictory",
+      "temporal_window": {
+        "window_id": "camera-window:livestream.composed.viewer-mismatch",
+        "kind": "current_frame",
+        "aperture_id": "aperture:livestream.composed-frame",
+        "observed_at": "2026-05-02T14:00:05Z",
+        "duration_s": 0.0,
+        "span_ref": "span:livestream:composed-frame:2026-05-02T14:00:05Z",
+        "start_ref": null,
+        "end_ref": null
+      },
+      "freshness": {
+        "state": "fresh",
+        "checked_at": "2026-05-02T14:00:05Z",
+        "ttl_s": 10,
+        "observed_age_s": 1,
+        "source_ref": "compositor-snapshot:snapshot.jpg"
+      },
+      "confidence": 0.79,
+      "semantic_labels": [
+        "viewer_visible_idle_surface",
+        "physical_activity_not_visible"
+      ],
+      "evidence_rows": [
+        {
+          "evidence_ref": "camera-evidence:livestream.composed.viewer-mismatch",
+          "evidence_class": "composed_livestream",
+          "hypothesis": "livestream_viewer_visible_mismatch",
+          "likelihood": 0.79,
+          "confidence": 0.79,
+          "observation_state": "contradictory",
+          "supports_hypothesis": true,
+          "source_refs": [
+            "compositor-snapshot:snapshot.jpg"
+          ],
+          "witness_refs": [
+            "witness:compositor:snapshot"
+          ],
+          "span_refs": [
+            "span:livestream:composed-frame:2026-05-02T14:00:05Z"
+          ],
+          "wcs_refs": [
+            "wcs-surface:livestream.composed-frame"
+          ],
+          "metadata": {
+            "physical_vs_public_mismatch": true
+          }
+        }
+      ],
+      "source_refs": [
+        "compositor-snapshot:snapshot.jpg"
+      ],
+      "wcs_surface_refs": [
+        "wcs-surface:livestream.composed-frame"
+      ],
+      "witness_refs": [
+        "witness:compositor:snapshot"
+      ],
+      "span_refs": [
+        "span:livestream:composed-frame:2026-05-02T14:00:05Z"
+      ],
+      "public_event_refs": [],
+      "authority_ceiling": "public_gate_required",
+      "privacy_mode": "public_safe",
+      "image_ref": "image-ref:livestream-composed-frame",
+      "blocked_reasons": [],
+      "stale_refs": [],
+      "negative_evidence_refs": [],
+      "classification_public_claim_allowed": false
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "camera-observation:archive.reference-window.novelty",
+      "aperture_id": "aperture:archive.video-window",
+      "aperture_kind": "archive_video_window",
+      "producer": "archive_replay_index",
+      "evidence_class": "archive_window",
+      "observation_state": "observed",
+      "temporal_window": {
+        "window_id": "camera-window:archive.reference-window.novelty",
+        "kind": "archive_reference",
+        "aperture_id": "aperture:archive.video-window",
+        "observed_at": "2026-05-02T14:00:06Z",
+        "duration_s": 120.0,
+        "span_ref": "span:archive:reference-window:2026-05-02T13:00Z",
+        "start_ref": "archive:stream-window:start:2026-05-02T13:00:00Z",
+        "end_ref": "archive:stream-window:end:2026-05-02T13:02:00Z"
+      },
+      "freshness": {
+        "state": "fresh",
+        "checked_at": "2026-05-02T14:00:06Z",
+        "ttl_s": 3600,
+        "observed_age_s": 240,
+        "source_ref": "archive-index:reference-window:2026-05-02T13:00Z"
+      },
+      "confidence": 0.72,
+      "semantic_labels": [
+        "new_scene_arrangement",
+        "archive_comparison"
+      ],
+      "evidence_rows": [
+        {
+          "evidence_ref": "camera-evidence:archive.reference-window.novelty",
+          "evidence_class": "archive_window",
+          "hypothesis": "visual_spectacle_opportunity",
+          "likelihood": 0.72,
+          "confidence": 0.72,
+          "observation_state": "observed",
+          "supports_hypothesis": true,
+          "source_refs": [
+            "archive-index:reference-window:2026-05-02T13:00Z"
+          ],
+          "witness_refs": [
+            "witness:archive:index"
+          ],
+          "span_refs": [
+            "span:archive:reference-window:2026-05-02T13:00Z"
+          ],
+          "wcs_refs": [
+            "wcs-surface:archive.video-window"
+          ],
+          "metadata": {
+            "archive_delta": "new-arrangement"
+          }
+        }
+      ],
+      "source_refs": [
+        "archive-index:reference-window:2026-05-02T13:00Z"
+      ],
+      "wcs_surface_refs": [
+        "wcs-surface:archive.video-window"
+      ],
+      "witness_refs": [
+        "witness:archive:index"
+      ],
+      "span_refs": [
+        "span:archive:reference-window:2026-05-02T13:00Z"
+      ],
+      "public_event_refs": [],
+      "authority_ceiling": "public_gate_required",
+      "privacy_mode": "private",
+      "image_ref": null,
+      "blocked_reasons": [],
+      "stale_refs": [],
+      "negative_evidence_refs": [],
+      "classification_public_claim_allowed": false
+    },
+    {
+      "schema_version": 1,
+      "envelope_id": "camera-observation:semantic.wcs-health.visual-lane",
+      "aperture_id": "aperture:semantic.wcs-health",
+      "aperture_kind": "semantic_surface_state",
+      "producer": "wcs_semantic_surface",
+      "evidence_class": "semantic_state",
+      "observation_state": "observed",
+      "temporal_window": {
+        "window_id": "camera-window:semantic.wcs-health.visual-lane",
+        "kind": "context_window",
+        "aperture_id": "aperture:semantic.wcs-health",
+        "observed_at": "2026-05-02T14:00:06Z",
+        "duration_s": 30.0,
+        "span_ref": "span:wcs-health:visual-lane:2026-05-02T14:00:06Z",
+        "start_ref": null,
+        "end_ref": null
+      },
+      "freshness": {
+        "state": "fresh",
+        "checked_at": "2026-05-02T14:00:06Z",
+        "ttl_s": 60,
+        "observed_age_s": 6,
+        "source_ref": "world-surface-health:temporal-perceptual:visual-lane"
+      },
+      "confidence": 0.9,
+      "semantic_labels": [
+        "wcs_visual_lane_fresh"
+      ],
+      "evidence_rows": [
+        {
+          "evidence_ref": "camera-evidence:semantic.wcs-health.visual-lane",
+          "evidence_class": "semantic_state",
+          "hypothesis": "public_claim_risk",
+          "likelihood": 0.62,
+          "confidence": 0.9,
+          "observation_state": "observed",
+          "supports_hypothesis": true,
+          "source_refs": [
+            "world-surface-health:temporal-perceptual:visual-lane"
+          ],
+          "witness_refs": [],
+          "span_refs": [],
+          "wcs_refs": [
+            "world-surface-health:temporal-perceptual"
+          ],
+          "metadata": {
+            "semantic_surface": "visual-lane"
+          }
+        }
+      ],
+      "source_refs": [
+        "world-surface-health:temporal-perceptual:visual-lane"
+      ],
+      "wcs_surface_refs": [
+        "world-surface-health:temporal-perceptual"
+      ],
+      "witness_refs": [],
+      "span_refs": [],
+      "public_event_refs": [],
+      "authority_ceiling": "internal_only",
+      "privacy_mode": "private",
+      "image_ref": null,
+      "blocked_reasons": [],
+      "stale_refs": [],
+      "negative_evidence_refs": [],
+      "classification_public_claim_allowed": false
+    }
+  ],
+  "queries": [
+    {
+      "schema_version": 1,
+      "query_id": "camera-salience-query:director.public-summary",
+      "consumer": "director",
+      "decision_context": "livestream camera/layout decision",
+      "candidate_action": "select viewer-safe camera or hold",
+      "time_budget_ms": 450,
+      "privacy_mode": "public_safe",
+      "public_claim_mode": "public_summary",
+      "evidence_classes": [
+        "frame",
+        "object_track",
+        "composed_livestream",
+        "archive_window",
+        "ir_presence",
+        "cross_camera_tracklet",
+        "semantic_state"
+      ],
+      "max_images": 2,
+      "max_tokens": 600,
+      "min_expected_value": 0.03,
+      "min_posterior": 0.35,
+      "min_confidence": 0.3
+    }
+  ],
+  "fail_closed_policy": {
+    "classification_alone_authorizes_public_truth": false,
+    "classifier_label_authorizes_clip_label": false,
+    "classifier_label_authorizes_caption_or_title": false,
+    "classifier_label_authorizes_director_success": false,
+    "stale_observation_affects_current_claim": false,
+    "unknown_evidence_counts_as_absence": false,
+    "low_voi_recruits_expensive_model": false,
+    "private_frame_attached_to_public_query": false,
+    "parallel_vision_stack_allowed": false
+  }
+}

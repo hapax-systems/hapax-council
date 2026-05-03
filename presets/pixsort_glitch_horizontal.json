@@ -1,0 +1,47 @@
+{
+  "name": "Pixsort Glitch Horizontal",
+  "description": "Pixsort-glitch lineage (1/2): pixsort + slitscan + chromatic_aberration creates a horizontal pixel-sort glitch — image breaks down by luminance bands. Lineage: pixsort-glitch.",
+  "lineage": "pixsort-glitch",
+  "transition_ms": 800,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.0,
+        "contrast": 1.18,
+        "saturation": 1.18,
+        "hue_rotate": 0
+      }
+    },
+    "pixsort_h": {
+      "type": "pixsort",
+      "params": {
+        "axis": "horizontal",
+        "threshold": 0.3,
+        "amount": 0.55
+      }
+    },
+    "slitscan_h": {
+      "type": "slitscan",
+      "params": {
+        "amount": 0.18,
+        "frequency": 12
+      }
+    },
+    "chroma_pixsort": {
+      "type": "chromatic_aberration",
+      "params": {
+        "offset_x": 4,
+        "offset_y": 2
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
