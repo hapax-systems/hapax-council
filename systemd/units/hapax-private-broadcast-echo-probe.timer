@@ -1,0 +1,11 @@
+[Unit]
+Description=Hapax private→broadcast echo probe (every 30s)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=hapax-private-broadcast-echo-probe.service
+
+[Install]
+WantedBy=timers.target
