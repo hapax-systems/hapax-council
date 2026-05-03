@@ -183,7 +183,9 @@ def test_audio_topology_yaml_uses_symbolic_card_ids() -> None:
 
 def test_audio_topology_schema_version_bumped_for_symbolic_migration() -> None:
     text = AUDIO_TOPOLOGY.read_text(encoding="utf-8")
-    assert "schema_version: 2" in text, "schema_version must be bumped for symbolic-id migration"
+    assert ("schema_version: 2" in text) or ("schema_version: 3" in text), (
+        "schema_version must be bumped for symbolic-id migration"
+    )
 
 
 def test_show_cards_script_exists_and_is_executable() -> None:

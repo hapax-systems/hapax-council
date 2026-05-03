@@ -40,7 +40,7 @@
   ],
   "default_sink_fallback_broadcast_eligible": false,
   "dry_run_only": true,
-  "generated_conf_writes_allowed": false,
+  "generated_conf_writes_allowed": true,
   "generated_from": "config/audio-routing.yaml",
   "live_reload_allowed": false,
   "policy_id": "audio-routing-policy-phase6-bootstrap-2026-04-29",
