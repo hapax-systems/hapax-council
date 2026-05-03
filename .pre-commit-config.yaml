@@ -43,3 +43,9 @@ repos:
         language: system
         files: ^shared/(claim\.py|lr_registry\.yaml|prior_provenance\.yaml)$
         pass_filenames: false
+      - id: audio-conf-consistency
+        name: Audio yaml ↔ conf consistency gate (audit F)
+        entry: uv run python scripts/check-audio-conf-consistency.py
+        language: system
+        files: ^(config/audio-topology\.yaml|config/audio-conf-allowlist\.yaml|config/pipewire/.*\.conf)$
+        pass_filenames: false

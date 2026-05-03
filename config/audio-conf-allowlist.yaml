@@ -1,0 +1,72 @@
+# Allowlist for `scripts/check-audio-conf-consistency.py`.
+#
+# Two sections:
+#
+#   * `orphans`        — conf basenames on disk that the gate accepts
+#                        as legitimately yaml-unbacked (legacy confs
+#                        kept for rollback, voice-fx variants the
+#                        yaml doesn't model yet, numbered modules).
+#
+#   * `known_missing`  — conf basenames the gate accepts as missing
+#                        even though yaml declares the chain. These
+#                        are tracked under separate audit follow-on
+#                        tasks; the gate's job is only to catch NEW
+#                        drift, not existing-known.
+#
+# Both sections are operator-curated. New entries should carry a
+# trailing comment explaining why the orphan / missing is acceptable
+# (or what task tracks fixing it). The gate itself never auto-adds
+# entries — it only consults this file.
+#
+# Cc-task: `audio-audit-F-precommit-yaml-conf-gate`.
+
+orphans:
+  # Numbered PipeWire modules — load-order convention, not chain-modeled.
+  - 10-contact-mic.conf
+  - 99-hapax-quantum.conf
+
+  # Stream-routing wraps that the yaml represents as filter_chain
+  # nodes with chain_kind=None (no LADSPA conf needed). The conf
+  # exists because some upstream operator workflow requires the
+  # pipewire-format file even when yaml carries the params inline.
+  - hapax-broadcast-master.conf
+  - hapax-l12-evilpet-capture.conf
+  - hapax-livestream-duck.conf
+  - hapax-livestream-tap.conf
+  - hapax-notification-private.conf
+  - hapax-obs-broadcast-remap.conf
+  - hapax-private-monitor-bridge.conf
+  - hapax-stream-split.conf
+
+  # USB line-driver — see audit finding #4 (WET_PATH_USB_BIAS).
+  - hapax-music-usb-line-driver.conf
+
+  # Legacy L-6 confs kept for rollback; superseded by L-12 nodes.
+  - hapax-l6-evilpet-capture.conf
+
+  # S-4 routing confs (s4-loopback, s4-usb-sink) — operator-monitor
+  # path, not part of the yaml-modeled broadcast graph.
+  - hapax-s4-loopback.conf
+  - s4-usb-sink.conf
+
+  # voice-fx variants — operator-curated voice-FX presets, not
+  # yaml-modeled (the yaml has a single `voice-fx` chain stub).
+  - voice-fx-chain.conf
+  - voice-fx-loudnorm.conf
+  - voice-fx-radio.conf
+
+  # YouTube + tube-over-24c rate-routing helpers.
+  - voice-over-ytube-duck.conf
+  - yt-loudnorm.conf  # naming-outlier; tracked under audit-E-conf-naming-unification
+  - yt-over-24c-duck.conf
+  - ytube-over-24c-duck.conf
+
+known_missing:
+  # tts-loudnorm + ytube-ducked + yt-loudnorm are declared in
+  # audio-topology.yaml with chain_kind set, but no `hapax-*.conf`
+  # exists yet. Tracked under separate audit follow-on tasks; the
+  # gate accepts them as known-missing so the gate ships clean,
+  # but the underlying audit findings remain open.
+  - hapax-tts-loudnorm.conf
+  - hapax-yt-loudnorm.conf  # naming-outlier; tracked under audit-E-conf-naming-unification
+  - hapax-ytube-ducked.conf
