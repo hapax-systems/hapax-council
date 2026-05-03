@@ -853,6 +853,27 @@ PERCEPTION_INTERVAL: float = float(os.environ.get("HAPAX_NARRATIVE_CADENCE_S", "
 MIN_VIDEO_DURATION = 15.0  # minimum seconds before allowing CUT
 MAX_VIDEO_DURATION = 60.0  # force CUT after this
 
+# audit R4 (cc-task `director-loop-cadence-bump`): the LLM tick fires
+# every PERCEPTION_INTERVAL (~30s default; operator env may stretch
+# to 70-110s in practice). Between LLM ticks the loop has no fresh
+# director intent, leaving the surface without semantic guidance for
+# >70s at a stretch on slow runs. Option (b) — add a "stale-intent"
+# timer that fires the existing micromove cycle every
+# STALE_INTENT_MICROMOVE_S seconds when the next LLM tick is still
+# pending. The micromove path is non-LLM (no extra cost) and writes
+# to the same DMN impingement stream as a real tick, so downstream
+# consumers (compositional_consumer, affordance pipeline) see fresh
+# movement at perceptible cadence even on slow LLM runs. Option (a)
+# from the cc-task (lower the LLM call interval) was rejected here
+# in favor of (b) because (b) adds zero LLM cost and is purely
+# additive — no regression risk.
+#
+# Override via HAPAX_DIRECTOR_STALE_INTENT_MICROMOVE_S=0 to disable
+# the timer entirely (legacy behavior).
+STALE_INTENT_MICROMOVE_S: float = float(
+    os.environ.get("HAPAX_DIRECTOR_STALE_INTENT_MICROMOVE_S", "15.0")
+)
+
 # LRR Phase 1 item 2 + 3: every reaction is tagged with the current
 # research condition_id so the JSONL + Qdrant writes carry an experimental
 # context tag. Source of truth = /dev/shm/hapax-compositor/research-marker.json
@@ -1505,6 +1526,12 @@ class DirectorLoop:
         self._active_slot = 0
         self._video_start_time = 0.0
         self._last_perception = 0.0
+        # audit R4 stale-intent micromove timer — see STALE_INTENT_MICROMOVE_S
+        # docstring at module top. Initialised to monotonic-now so the first
+        # micromove fires STALE_INTENT_MICROMOVE_S seconds after construction
+        # rather than immediately at startup (avoids a startup spam burst
+        # before the cold-cache LLM produces its first intent).
+        self._last_stale_micromove_at: float = time.monotonic()
         self._accumulated_reacts: list[str] = []
         self._reaction_history: list[str] = []  # persists across turns
         self._reaction_count: int = 0
@@ -1790,6 +1817,7 @@ class DirectorLoop:
                 # state file should reflect the latest tier promptly).
                 self._consume_voice_tier_impingements()
                 if now - self._last_perception < PERCEPTION_INTERVAL:
+                    self._maybe_emit_stale_intent_micromove(now)
                     time.sleep(0.5)
                     continue
                 self._last_perception = now
@@ -2001,6 +2029,40 @@ class DirectorLoop:
     # answer; variety comes from the impingement side, not a post-hoc
     # categorical rewrite. See
     # docs/research/2026-04-19-expert-system-blinding-audit.md §A6.
+
+    def _maybe_emit_stale_intent_micromove(self, now_monotonic: float) -> None:
+        """Fire a micromove if no fresh director intent in STALE_INTENT_MICROMOVE_S.
+
+        audit R4 (cc-task ``director-loop-cadence-bump``): between LLM
+        ticks (every PERCEPTION_INTERVAL ~30s default; operator env may
+        stretch to 70-110s) the surface had no fresh compositional
+        impingement. This timer fires the existing micromove cycle
+        every STALE_INTENT_MICROMOVE_S (default 15s) when waiting for
+        the next LLM tick, so the surface always has movement at
+        perceptible cadence. The micromove path is non-LLM (zero
+        extra cost) and writes to the same DMN impingement stream as
+        a real tick.
+
+        Set HAPAX_DIRECTOR_STALE_INTENT_MICROMOVE_S=0 to disable.
+
+        ``now_monotonic`` is passed in (rather than re-read here) so
+        the caller's notion of "now" is consistent with the
+        perception-interval check this method sits inside.
+        """
+        if STALE_INTENT_MICROMOVE_S <= 0:
+            return
+        if (now_monotonic - self._last_stale_micromove_at) < STALE_INTENT_MICROMOVE_S:
+            return
+        condition_id = _read_research_marker() or "none"
+        try:
+            self._emit_micromove_fallback(
+                reason="stale_intent",
+                condition_id=condition_id,
+            )
+        except Exception:
+            log.debug("stale-intent micromove emission failed", exc_info=True)
+            return
+        self._last_stale_micromove_at = now_monotonic
 
     def _emit_micromove_fallback(self, *, reason: str, condition_id: str) -> None:
         """Emit a pre-composed micromove when the LLM tick produces nothing.
