@@ -1,0 +1,46 @@
+{
+  "name": "Paper Fold Crumple",
+  "description": "Paper-fold lineage (2/2): emboss + displacement_map + grain creates a crumpled-paper texture aesthetic — softer, more organic than origami. Lineage: paper-fold.",
+  "lineage": "paper-fold",
+  "transition_ms": 2100,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 0.98,
+        "contrast": 1.12,
+        "saturation": 0.65,
+        "hue_rotate": -2
+      }
+    },
+    "emboss_crumple": {
+      "type": "emboss",
+      "params": {
+        "amount": 0.42,
+        "angle": 30
+      }
+    },
+    "displacement_crumple": {
+      "type": "displacement_map",
+      "params": {
+        "amount": 0.14,
+        "scale": 0.65
+      }
+    },
+    "grain_paper": {
+      "type": "grain_bump",
+      "params": {
+        "amount": 0.28,
+        "scale": 1100
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
