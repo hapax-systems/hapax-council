@@ -76,6 +76,32 @@ _PIPEWIRE_NODE = "PipeWire:Interface:Node"
 _PIPEWIRE_LINK = "PipeWire:Interface:Link"
 
 
+# Runtime-edge classification taxonomy.
+#
+# When the live PipeWire graph contains edges that are not present in the
+# declared `config/audio-topology.yaml`, the audit (`hapax-audio-topology
+# verify`) classifies each extra edge against this taxonomy. Anything
+# unclassified surfaces as drift (`+ edges only in right`) and fails the
+# audit. The actual classifier function lives in
+# `scripts/hapax-audio-topology._classify_live_extra_edge`; this constant
+# is the public-facing list so downstream tools (and tests) can reason
+# about the allowed set.
+#
+# Adding a new classification here is necessary but not sufficient — the
+# classifier function in the script must also produce the new label.
+ALLOWED_RUNTIME_EDGE_CLASSIFICATIONS: tuple[str, ...] = (
+    # Pre-Option C: legacy Yeti pin private-monitor binding.
+    "private-monitor-runtime-output-binding",
+    # Option C (2026-05-02 spec amendment): track-fenced private monitor
+    # via S-4. Architectural compliance edge for the Option C resolution
+    # of the NO-DRY-HAPAX vs PRIVATE-NEVER-BROADCASTS contradiction.
+    # See `docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md`.
+    "private-track-fenced-via-s4-out-1",
+    # Runtime fallback when the M8 hardware source is absent.
+    "runtime-fallback-m8-source-absent",
+)
+
+
 @dataclass(frozen=True)
 class TtsBroadcastPathCheck:
     """Result of the TTS-to-livestream forward-path health check."""
@@ -169,15 +195,26 @@ _PRIVATE_FORBIDDEN_REACHABILITY = {
     "tts-broadcast-playback",
 }
 _PRIVATE_MONITOR_BRIDGES = {
+    # Option C (2026-05-02 spec amendment): private-monitor bridges target
+    # the S-4 USB IN sink (`s4-output` carries the `option_c_route =
+    # private-track-fenced-via-s4-out-1` annotation). The Yeti endpoint is
+    # preserved as a valid alternative target for backward compatibility
+    # (operator can revert via the disabled
+    # `56-hapax-private-pin-yeti.conf.disabled-*` WirePlumber conf). See
+    # `docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md`.
+    #
+    # The third element of each tuple is the SET of allowed endpoint IDs.
+    # `check_l12_forward_invariant` accepts any one of them; the WirePlumber
+    # pin determines which is live.
     "private-monitor-output": (
         "private-monitor-capture",
         "private-sink",
-        "yeti-headphone-output",
+        ("s4-output", "yeti-headphone-output"),
     ),
     "notification-private-monitor-output": (
         "notification-private-monitor-capture",
         "notification-private-sink",
-        "yeti-headphone-output",
+        ("s4-output", "yeti-headphone-output"),
     ),
 }
 _PRIVATE_MONITOR_CAPTURE_NODES = {
@@ -564,18 +601,25 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                 )
             )
 
-    for bridge_id, (capture_id, source_id, endpoint_id) in _PRIVATE_MONITOR_BRIDGES.items():
+    for bridge_id, (capture_id, source_id, endpoint_ids) in _PRIVATE_MONITOR_BRIDGES.items():
         bridge = node(bridge_id)
-        endpoint = node(endpoint_id)
-        if bridge is None or endpoint is None:
+        # Resolve allowed endpoints. Each entry can be either a single id
+        # (legacy schema) or a tuple of allowed alternatives (Option C).
+        if isinstance(endpoint_ids, str):
+            allowed_endpoint_ids = (endpoint_ids,)
+        else:
+            allowed_endpoint_ids = endpoint_ids
+        endpoints = [n for n in (node(eid) for eid in allowed_endpoint_ids) if n is not None]
+        if bridge is None or not endpoints:
             continue
-        if ref_to_id.get(bridge.target_object or "") != endpoint_id:
+        resolved_target_id = ref_to_id.get(bridge.target_object or "")
+        if resolved_target_id not in allowed_endpoint_ids:
+            allowed_names = " or ".join(repr(e.pipewire_name) for e in endpoints)
             violations.append(
                 L12ForwardInvariantViolation(
                     code="private_monitor_bridge_target_not_allowed_endpoint",
                     message=(
-                        f"{bridge_id} targets {bridge.target_object!r}; "
-                        f"expected {endpoint.pipewire_name!r}"
+                        f"{bridge_id} targets {bridge.target_object!r}; expected {allowed_names}"
                     ),
                 )
             )
