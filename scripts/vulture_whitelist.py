@@ -127,6 +127,11 @@ from shared.operator_quality_posterior import (
     OperatorQualityPosteriorReadModel,
     aggregate_operator_quality_posterior,
 )
+from shared.operator_vad_gate import (
+    DEFAULT_MATCH_THRESHOLD,
+    OperatorVADDecision,
+    OperatorVADGate,
+)
 from shared.private_to_public_bridge import BridgeResult, evaluate_bridge
 from shared.programme_revenue_braid_adapters import (
     BraidSnapshotRowRef,
@@ -711,6 +716,18 @@ aggregate_operator_quality_posterior
 OperatorQualityPosteriorReadModel.cells_for_programme
 OperatorQualityPosteriorReadModel.cells_for_axis
 OperatorQualityPosteriorReadModel.private_summary_lines
+
+# Operator-VAD gate (cc-task audio-audit-D Phase 0): substrate ships
+# without consumer wiring. Phase 1 (separate PR) wires OperatorVADGate.decide
+# into the audio-ducker trigger and supplies a ResemBlyzer-backed match
+# callable. Until then, only the test suite exercises decide() / should_duck /
+# match_threshold. The OperatorVADDecision import keeps the dataclass + Literal
+# alias visible for type-resolution at downstream call sites.
+DEFAULT_MATCH_THRESHOLD
+OperatorVADDecision
+OperatorVADGate.decide
+OperatorVADGate.match_threshold
+OperatorVADDecision.should_duck
 
 # PerceptualField grounding key registry: registry rows + helpers expose a
 # public API for downstream director / autonomous-narration / public-broadcast
