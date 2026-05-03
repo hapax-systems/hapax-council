@@ -159,3 +159,45 @@ class LayoutSwitcher:
                 ).inc()
         except Exception:
             log.debug("layout-switch counter increment failed", exc_info=True)
+
+
+def apply_layout_switch(
+    layout_state: object,
+    loader: object,
+    switcher: LayoutSwitcher,
+    *,
+    consent_safe_active: bool = False,
+    vinyl_playing: bool = False,
+    director_activity: str | None = None,
+    stream_mode: str | None = None,
+    now: float | None = None,
+) -> bool:
+    """One-call adapter: select → gate → load → mutate → record.
+
+    ``layout_state`` must expose ``mutate(fn: Callable[[Layout], Layout])``
+    and ``loader`` must expose ``load(name: str) -> Layout`` — typed as
+    ``object`` here so callers don't pay an import cycle (the
+    layout_state and compositor-model modules import this through a
+    different chain in production).
+
+    Returns ``True`` iff a switch was applied. ``False`` covers two
+    cases: same-layout no-op, or cooldown-blocked. Unknown layout names
+    propagate ``KeyError`` from the loader — the caller decides whether
+    to log + skip or escalate. Pipeline-side validation errors
+    (pydantic on the loaded JSON) propagate too; an invalid layout file
+    on disk is a deploy-side bug, not a runtime fallback.
+
+    Cc-task: ``dynamic-compositor-layout-switching-followup``.
+    """
+    selection = select_layout(
+        consent_safe_active=consent_safe_active,
+        vinyl_playing=vinyl_playing,
+        director_activity=director_activity,
+        stream_mode=stream_mode,
+    )
+    if not switcher.should_switch(selection, now=now):
+        return False
+    new_layout = loader.load(selection.layout_name)  # type: ignore[attr-defined]
+    layout_state.mutate(lambda _previous: new_layout)  # type: ignore[attr-defined]
+    switcher.record_switch(selection, now=now)
+    return True

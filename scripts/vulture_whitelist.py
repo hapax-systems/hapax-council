@@ -1509,3 +1509,11 @@ _stripe_event_to_manifest_record
 _stripe_manifest_path_for_event
 STRIPE_PAYMENT_LINK_SIGNATURE_HEADER
 receive_stripe_payment_link_webhook
+
+# R9 follow-up: apply_layout_switch adapter (cc-task
+# dynamic-compositor-layout-switching-followup). Ships ahead of any
+# caller; whitelisted until director-loop / systemd-timer wiring lands
+# in a 3rd-slice PR.
+from agents.studio_compositor.layout_switcher import apply_layout_switch as _r9_apply_layout_switch
+
+_r9_apply_layout_switch
