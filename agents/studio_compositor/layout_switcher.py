@@ -203,6 +203,66 @@ def apply_layout_switch(
     return True
 
 
+def apply_layout_switch_via_store(
+    store: object,
+    switcher: LayoutSwitcher,
+    *,
+    consent_safe_active: bool = False,
+    vinyl_playing: bool = False,
+    director_activity: str | None = None,
+    stream_mode: str | None = None,
+    now: float | None = None,
+) -> bool:
+    """Production binding for the R9 switcher (cc-task
+    ``dynamic-compositor-layout-switching-followup-phase-2``).
+
+    Operates directly on ``LayoutStore`` (in
+    ``agents/studio_compositor/layout_loader.py``) — the production
+    layout authority that loads ``~/.config/hapax-compositor/layouts/``,
+    exposes ``set_active(name)``, and is wired into the compositor at
+    startup. Distinct from :func:`apply_layout_switch` which takes
+    generic (loader+state) shapes for tests.
+
+    ``store`` must expose:
+      - ``get(name: str) -> Layout | None`` — read a loaded layout.
+      - ``set_active(name: str) -> bool`` — switch the active layout.
+
+    Flow:
+      1. ``select_layout(...)`` (existing).
+      2. ``switcher.should_switch(selection, now=now)`` — gate.
+      3. ``store.get(selection.layout_name)`` — KeyError if not loaded.
+      4. ``store.set_active(selection.layout_name)``.
+      5. ``switcher.record_switch(selection, now=now)``.
+
+    Returns ``True`` iff the switch was applied. ``False`` covers
+    same-layout no-op and cooldown-blocked. Unknown layout names raise
+    ``KeyError`` so the caller decides between log+skip and escalate.
+
+    Phase-3 (separate slice): periodic-tick driver that calls this
+    with live state (stream_mode, director_activity, vinyl_playing,
+    consent_safe_active).
+    """
+    selection = select_layout(
+        consent_safe_active=consent_safe_active,
+        vinyl_playing=vinyl_playing,
+        director_activity=director_activity,
+        stream_mode=stream_mode,
+    )
+    if not switcher.should_switch(selection, now=now):
+        return False
+    layout = store.get(selection.layout_name)  # type: ignore[attr-defined]
+    if layout is None:
+        raise KeyError(
+            f"layout {selection.layout_name!r} not loaded by LayoutStore "
+            f"(trigger={selection.trigger}). Install the JSON template "
+            "into ~/.config/hapax-compositor/layouts/ or call "
+            "store.reload_changed() before retrying."
+        )
+    store.set_active(selection.layout_name)  # type: ignore[attr-defined]
+    switcher.record_switch(selection, now=now)
+    return True
+
+
 # u6-periodic-tick-driver — periodic driver wrapping apply_layout_switch.
 # The compositor's layout selector previously needed a callsite (director-
 # loop tick or dedicated timer) to drive it; this is that timer. Runs in
