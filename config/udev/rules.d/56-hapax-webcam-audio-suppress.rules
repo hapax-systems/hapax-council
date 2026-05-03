@@ -1,0 +1,38 @@
+# Suppress unused webcam USB-audio interfaces (cc-task audio-audit-O1).
+#
+# All council webcams (Logitech BRIO 046d:085e, C920 PRO 046d:08e5,
+# C920 HD Pro 046d:082d) expose a USB-audio interface that we never use:
+# studio-compositor ingests video via V4L2 only and the operator's mic chain
+# is the Studio 24c (PreSonus) plus the Cortado MKIII contact mic.
+#
+# Auditor A finding #9 (audit-2026-05-02): leaving these alsa_card.* devices
+# active adds jitter to xhci enumeration, costs USB isoc bandwidth (audit O3b
+# territory), and pollutes `pactl list cards short`.
+#
+# This rule sets PULSE_IGNORE=1 on the USB interface descriptor at the
+# audio-control class layer (bInterfaceClass==1) so PipeWire / WirePlumber
+# never registers a card for it. The video interface (bInterfaceClass==14)
+# remains untouched, so V4L2 ingest is unaffected.
+#
+# Install: copy this file into /etc/udev/rules.d/ (or run
+# scripts/install-webcam-audio-suppress-udev.sh), then
+# `sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=usb`
+# OR replug the cameras / reboot.
+#
+# Verify: `pactl list cards short | grep -i 'alsa_card\.usb.*Logi'` returns
+# empty post-reload.
+
+ACTION=="add", SUBSYSTEM=="usb", \
+  ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", \
+  ATTR{bInterfaceClass}=="01", ENV{PULSE_IGNORE}="1", \
+  ENV{ID_HAPAX_AUDIO_SUPPRESSED}="brio"
+
+ACTION=="add", SUBSYSTEM=="usb", \
+  ATTRS{idVendor}=="046d", ATTRS{idProduct}=="08e5", \
+  ATTR{bInterfaceClass}=="01", ENV{PULSE_IGNORE}="1", \
+  ENV{ID_HAPAX_AUDIO_SUPPRESSED}="c920-pro"
+
+ACTION=="add", SUBSYSTEM=="usb", \
+  ATTRS{idVendor}=="046d", ATTRS{idProduct}=="082d", \
+  ATTR{bInterfaceClass}=="01", ENV{PULSE_IGNORE}="1", \
+  ENV{ID_HAPAX_AUDIO_SUPPRESSED}="c920-hd-pro"
