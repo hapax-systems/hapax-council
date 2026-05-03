@@ -808,25 +808,37 @@ SHADER_NODE_AFFORDANCES = [
     ),
     CapabilityRecord(
         name="node.fluid_sim",
-        description=("Propel directional flow with inertia and viscous vorticity"),
+        description=(
+            "Propel directional flow with inertia and viscous vorticity for "
+            "Navier-Stokes liquid-current and smoke-plume register"
+        ),
         daemon="reverie",
         operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.trail",
-        description=("Accumulate motion history as temporal thickness from velocity"),
+        description=(
+            "Accumulate motion history as temporal thickness from velocity for "
+            "comet-tail brush-stroke and persistence-of-vision register"
+        ),
         daemon="reverie",
         operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.voronoi_overlay",
-        description=("Partition space into organic cellular boundaries and territories"),
+        description=(
+            "Partition space into organic cellular boundaries and territories for "
+            "geological-strata mosaic-tessellation and cellular-membrane register"
+        ),
         daemon="reverie",
         operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
     CapabilityRecord(
         name="node.echo",
-        description=("Replicate discrete temporal copies as ghosting and fading repetition"),
+        description=(
+            "Replicate discrete temporal copies as ghosting and fading repetition for "
+            "afterimage spectral-trace and dub-delay register"
+        ),
         daemon="reverie",
         operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
