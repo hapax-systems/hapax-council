@@ -460,6 +460,21 @@ if [ "$DID_ANYTHING" -eq 0 ]; then
     echo "merge $SHA: no manual deploys needed (only auto-rebuild paths changed)"
 fi
 
+# Smoke-runner gate (cc-task post-merge-smoke-deploy-wiring, 2026-05-02).
+# DRY_RUN and REPORT_COVERAGE modes exited earlier so this only fires
+# in real-deploy mode. The smoke runner inspects the diff for $SHA,
+# fires gates that match, ntfy's on failure, and ALWAYS exits 0 — the
+# deploy already happened; the smoke is informational. The script
+# itself enforces the 0-exit contract; we still wrap with `|| true`
+# defensively so a smoke-side bug can never block trace recording or
+# the deploy script's normal exit. Rationale: shipping in #2148
+# without a deploy-chain caller meant every smoke-side fix lived as
+# dead code (zeta audit finding 2026-05-02, severity HIGH).
+SMOKE_SCRIPT="$REPO/scripts/hapax-post-merge-smoke"
+if [ -x "$SMOKE_SCRIPT" ]; then
+    "$SMOKE_SCRIPT" "$SHA" || true
+fi
+
 if record_post_merge_trace "completed" "0"; then
     TRACE_WRITTEN=1
 else

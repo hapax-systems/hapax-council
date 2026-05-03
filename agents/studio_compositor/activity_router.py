@@ -1,34 +1,53 @@
 """ActivityRouter — coordination layer over ActivityRevealMixin wards.
 
-Per cc-task ``activity-reveal-ward-p0-base-class`` (WSJF 7.5). P0 shipped
-a **stub** router whose ``tick()`` iterates registered wards and
-produces a router-state snapshot. P3 (cc-task
-``activity-reveal-ward-p3-governance``, WSJF 7.5) layers in:
+P0 (cc-task ``activity-reveal-ward-p0-base-class``) shipped a stub
+router that classifies claims into mandatory-invisible / want-visible /
+nominal. P3-phase-3a (cc-task ``activity-reveal-ward-p3-governance``,
+PR #2259) added a hardcoded family-ceiling table + per-ward eviction
+priorities. **That table was a static expert-system rule and violated
+``feedback_no_expert_system_rules`` per the 2026-05-02 24h
+independent-auditor batch (Auditor B finding #8).**
 
-  * **Family-pool ceiling** (R3 §1) — 25% family budget shared across
-    all members + per-ward sub-ceilings (DURF 15%, M8 12%, Polyend 10%,
-    Steam Deck 8%) with priority-based eviction.
-  * **Suppression wiring** — per-tick projection of every visible ward's
-    ``SUPPRESS_WHEN_ACTIVE`` set into the ward-properties SHM file so
-    suppression no longer waits for render time.
-  * **WCS row writer** — per-tick atomic write to
-    ``/dev/shm/hapax-compositor/routing-state.json`` for the family
-    observability dashboard.
-  * **7 Prometheus metrics** registered with the compositor's REGISTRY
-    via the ``**_metric_kwargs`` splat per
-    ``project_compositor_metrics_registry`` memory.
+Per cc-task ``p3-governance-recruitment-bias-replacement``
+(this ship): the table + ceiling decisions + eviction priorities are
+**deleted**. The router still records visible-windows into the shared
+:class:`WardVisibilityWindowTracker`, but **the decision** about
+which ward gets to be visible is moved into the recruitment cascade
+inside :func:`shared.affordance_pipeline.AffordancePipeline.select`,
+where a soft-prior bias multiplier (proportional to consumed
+visible-time) competes with all other affordance scoring inputs.
+Constraint emerges from the same pipeline that selects everything
+else — no fixed ceilings.
 
-Three concerns from the cc-task scope are deferred to follow-ups:
-HARDM static commit-time hook, HARDM runtime 4-axis detector, and
-consent-SHM canonicalization (operator decision per audit OQ-6).
+What this module still does:
 
-The full mutex/priority/hysteresis algorithm is still P4 work — this
-P3 lift is observability + governance scaffolding around the existing
-classify-only logic.
+  * Snapshots ward claims per tick.
+  * Classifies into ``mandatory_invisible_ids`` / ``want_visible_ids``
+    (no ceiling-eviction reclassification).
+  * Projects ``SUPPRESS_WHEN_ACTIVE`` from currently-visible wards
+    into ``ward_properties.json`` per tick (closes audit-flagged
+    "DURF suppression at render time only" gap).
+  * Writes a WCS row to ``/dev/shm/hapax-compositor/routing-state.json``
+    per tick.
+  * Updates Prometheus metrics.
 
-Spec reference:
+What this module no longer does (per governance correction):
+
+  * No family-pool ceiling consultation.
+  * No per-ward sub-ceiling table or registration.
+  * No priority-based eviction order.
+  * No ``ceiling_decisions`` map in ``RouterState``.
+
+The visible-window data the router writes feeds the recruitment-bias
+read in ``AffordancePipeline.select`` via the shared
+:func:`get_default_tracker` singleton. The router is a writer; the
+pipeline is a reader; both share one tracker instance per process.
+
+Spec reference (updated):
 ``hapax-research/specs/2026-05-01-activity-reveal-ward-family-spec.md``
-§2 (ActivityRouter Contract).
+§1.5 (Shared concerns) + §2.6 (Observability) — family-pool ceiling
+table is removed; recruitment-bias governance is described in its
+place. Supersession doc: see commit log of this PR.
 """
 
 from __future__ import annotations
@@ -44,11 +63,9 @@ from pathlib import Path
 from typing import Any
 
 from agents.studio_compositor.activity_family_ceiling import (
-    DEFAULT_FAMILY_CEILING_PCT,
-    DEFAULT_FAMILY_WINDOW_S,
-    DEFAULT_WARD_SUB_CEILINGS,
-    FamilyCeilingDecision,
-    FamilyCeilingTracker,
+    DEFAULT_VISIBILITY_WINDOW_S,
+    WardVisibilityWindowTracker,
+    get_default_tracker,
 )
 from agents.studio_compositor.activity_reveal_ward import (
     ActivityRevealMixin,
@@ -70,13 +87,6 @@ SUPPRESSION_TTL_S: float = 5.0
 
 
 # ── Prometheus metrics (registry-bound per memory project_compositor_metrics_registry) ──
-#
-# The compositor's :mod:`agents.studio_compositor.metrics` module owns
-# its own ``CollectorRegistry`` exported on :9482. Metrics on the default
-# registry are silently invisible to that scrape surface. We use the
-# splat pattern: ``_metric_kwargs`` resolves to ``{"registry": REGISTRY}``
-# when the compositor module is importable, else ``{}`` (so officium /
-# tests don't crash on missing optional dependency).
 
 try:
     from agents.studio_compositor import metrics as _compositor_metrics
@@ -91,8 +101,15 @@ except Exception:  # pragma: no cover — defensive
 
 
 def _build_metrics() -> dict[str, Any]:
-    """Construct the 7 P3 metrics with the splat. Returns ``{}`` if
-    prometheus_client is missing."""
+    """Construct the P3 metrics with the splat. Returns ``{}`` if
+    prometheus_client is missing.
+
+    Per cc-task ``p3-governance-recruitment-bias-replacement``: the
+    ``ceiling_enforced_total`` and ``family_pool_consumed_fraction``
+    metrics from the prior phase 3a are removed (no longer applicable
+    under recruitment-bias governance). Everything else stays for
+    observability of router-tick behavior.
+    """
     try:
         from prometheus_client import Counter, Gauge
     except ImportError:  # pragma: no cover — prometheus_client always installed
@@ -104,20 +121,15 @@ def _build_metrics() -> dict[str, Any]:
             ["ward_id"],
             **_metric_kwargs,
         ),
-        "ceiling_enforced_total": Counter(
-            "activity_reveal_ward_ceiling_enforced_total",
-            "Times the per-ward sub-ceiling or family-pool ceiling denied a visible request.",
-            ["ward_id"],
-            **_metric_kwargs,
-        ),
         "active_wards": Gauge(
             "activity_reveal_router_active_wards",
             "Wards with want_visible=True and not mandatory_invisible at last tick.",
             **_metric_kwargs,
         ),
-        "family_pool_consumed_fraction": Gauge(
-            "activity_reveal_family_pool_consumed_fraction",
-            "Fraction of the family pool consumed inside the rolling window (0.0-1.0+).",
+        "ward_visible_time_bias": Gauge(
+            "activity_reveal_ward_visible_time_bias",
+            "Per-ward recruitment-bias multiplier from visible-time tracker [BIAS_FLOOR, BIAS_CEILING].",
+            ["ward_id"],
             **_metric_kwargs,
         ),
         "transitions_total": Counter(
@@ -133,7 +145,7 @@ def _build_metrics() -> dict[str, Any]:
         ),
         "forced_exits_total": Counter(
             "activity_reveal_router_forced_exits_total",
-            "Forced exits (mandatory_invisible or ceiling-eviction) per ward per reason.",
+            "Forced exits per ward per reason (mandatory_invisible only — no ceiling-eviction).",
             ["ward_id", "reason"],
             **_metric_kwargs,
         ),
@@ -145,25 +157,22 @@ _METRICS: dict[str, Any] = _build_metrics()
 
 @dataclass
 class RouterConfig:
-    """Router policy. P0 honored ``tick_hz`` only; P3 adds family-pool
-    ceiling fields (``family_ceiling_pct``, ``rolling_window_s``,
-    ``sub_ceilings``); P4 wires the rest."""
+    """Router policy.
+
+    P0 honored ``tick_hz`` only. P3-phase-3a added family-pool ceiling
+    fields; cc-task ``p3-governance-recruitment-bias-replacement``
+    removed them (no static thresholds; bias emerges from recruitment).
+    P4 wires the rest.
+    """
 
     tick_hz: float = 2.0
     visibility_ceiling_pct: float = 0.15
-    rolling_window_s: float = DEFAULT_FAMILY_WINDOW_S
-    ceiling_cooldown_s: float = 600.0
+    rolling_window_s: float = DEFAULT_VISIBILITY_WINDOW_S
     mutex: bool = True
     entry_debounce_s: float = 5.0
     mandatory_exit_transition: str = "zero-cut-out"
     normal_exit_transition: str = "ticker-scroll-out"
     normal_entry_transition: str = "ticker-scroll-in"
-
-    # P3 family-pool ceiling fields.
-    family_ceiling_pct: float = DEFAULT_FAMILY_CEILING_PCT
-    sub_ceilings: dict[str, tuple[float, int]] = field(
-        default_factory=lambda: dict(DEFAULT_WARD_SUB_CEILINGS)
-    )
 
     # P3 observability — write the WCS row each tick.
     routing_state_path: Path = ROUTING_STATE_PATH
@@ -171,20 +180,27 @@ class RouterConfig:
 
 @dataclass
 class RouterState:
-    """One-tick snapshot of router-side observability state."""
+    """One-tick snapshot of router-side observability state.
+
+    Per cc-task ``p3-governance-recruitment-bias-replacement``: the
+    ``ceiling_decisions`` field and ``family_pool_consumed_fraction``
+    field from the prior phase 3a are removed. The new
+    ``ward_visible_time_bias`` map is informational only — it mirrors
+    the bias values the affordance pipeline reads via
+    :func:`get_default_tracker`.
+    """
 
     tick_ts: float
     claims: dict[str, VisibilityClaim] = field(default_factory=dict)
     mandatory_invisible_ids: tuple[str, ...] = ()
     want_visible_ids: tuple[str, ...] = ()
-    # P3 additions.
     suppressed_by_other_ward: dict[str, tuple[str, ...]] = field(default_factory=dict)
     """Map of suppressed ward_id -> tuple of suppressor ward IDs that
     forced this ward to invisible this tick."""
-    ceiling_decisions: dict[str, FamilyCeilingDecision] = field(default_factory=dict)
-    """Per-ward ceiling consultation result for this tick."""
-    family_pool_consumed_fraction: float = 0.0
-    """Family pool consumption as a fraction of the pool ceiling (0.0-1.0+)."""
+    ward_visible_time_bias: dict[str, float] = field(default_factory=dict)
+    """Per-ward recruitment-bias multiplier from the shared
+    visibility-window tracker. Informational mirror of what the
+    affordance pipeline reads; not a decision input on the router side."""
 
 
 class ActivityRouter:
@@ -195,12 +211,10 @@ class ActivityRouter:
       - ``__init__``: register wards.
       - ``tick``: snapshot every ward's claim, classify into
         mandatory-invisible / want-visible / nominal. Never raises.
-      - ``start`` / ``stop``: lifecycle. ``start`` spawns a daemon
-        tick thread at ``tick_hz``; ``stop`` is idempotent.
+      - ``start`` / ``stop``: lifecycle.
       - ``last_state``: thread-safe snapshot of the most recent tick.
 
-    P4 will replace the trivial classify-only logic with the
-    mutex/priority/hysteresis algorithm in spec §2.
+    P4 will add the mutex/priority/hysteresis algorithm in spec §2.
     """
 
     def __init__(
@@ -208,7 +222,7 @@ class ActivityRouter:
         wards: Sequence[ActivityRevealMixin],
         config: RouterConfig | None = None,
         *,
-        ceiling_tracker: FamilyCeilingTracker | None = None,
+        visibility_tracker: WardVisibilityWindowTracker | None = None,
     ) -> None:
         self._wards: tuple[ActivityRevealMixin, ...] = tuple(wards)
         self._config = config if config is not None else RouterConfig()
@@ -217,24 +231,12 @@ class ActivityRouter:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._stopped = False
-        # P3: family-pool ceiling tracker. Inject for tests; otherwise
-        # construct from config + register every ward whose WARD_ID is
-        # in ``sub_ceilings``.
-        self._ceiling = (
-            ceiling_tracker
-            if ceiling_tracker is not None
-            else FamilyCeilingTracker(
-                window_s=self._config.rolling_window_s,
-                family_ceiling_pct=self._config.family_ceiling_pct,
-            )
+        # Per cc-task p3-governance-recruitment-bias-replacement:
+        # use the process-shared tracker by default. Tests inject a
+        # private tracker to isolate state.
+        self._tracker = (
+            visibility_tracker if visibility_tracker is not None else get_default_tracker()
         )
-        if ceiling_tracker is None:
-            for ward_id, (ceiling_pct, priority) in self._config.sub_ceilings.items():
-                self._ceiling.register_ward(
-                    ward_id=ward_id,
-                    ceiling_pct=ceiling_pct,
-                    eviction_priority=priority,
-                )
         # Track per-ward visible-window starts so we can mark intervals
         # closed when the ward exits (or this router stops).
         self._open_windows: dict[str, float] = {}
@@ -276,12 +278,6 @@ class ActivityRouter:
             return self._state
 
     def describe(self) -> dict[str, Any]:
-        """Return a JSON-friendly snapshot of registered wards.
-
-        Diagnostic-only — used by ad-hoc operator scripts and the
-        upcoming router observability dashboard. Tests pin the shape so
-        the contract is stable for those callers.
-        """
         return {
             "tick_hz": self._config.tick_hz,
             "ward_count": len(self._wards),
@@ -289,16 +285,15 @@ class ActivityRouter:
         }
 
     def tick(self, *, now: float | None = None) -> RouterState:
-        """One tick of the router. Snapshots claims and classifies.
+        """One tick of the router. Snapshots claims, projects suppression,
+        records visibility windows for the bias tracker, writes WCS row.
 
-        P3 layers in family-pool ceiling consultation, suppression
-        wiring (per-tick projection of ``SUPPRESS_WHEN_ACTIVE``),
-        Prometheus metric updates, and the WCS row write.
-
-        Per the spec's failure-mode invariants: a tick that raises is
-        caught, logged WARNING, and the next tick continues. The state
-        we return is always self-consistent — partial claim sets
-        (caused by an exception mid-iteration) never escape this method.
+        Per cc-task ``p3-governance-recruitment-bias-replacement``:
+        the router does NOT make ceiling decisions or evict wards. It
+        only writes to the shared visibility-window tracker and emits
+        observability state. The decision about which ward gets
+        visible time is made downstream by AffordancePipeline.select
+        applying the bias.
         """
         ts = time.monotonic() if now is None else now
         claims: dict[str, VisibilityClaim] = {}
@@ -323,24 +318,13 @@ class ActivityRouter:
             sorted(wid for wid, c in claims.items() if c.want_visible and not c.mandatory_invisible)
         )
 
-        # ── P3: family-pool ceiling consultation ───────────────────
-        ceiling_decisions: dict[str, FamilyCeilingDecision] = {}
-        for ward_id in claims:
-            decision = self._ceiling.consult(ward_id, now=ts)
-            ceiling_decisions[ward_id] = decision
-
-        # ── P3: project SUPPRESS_WHEN_ACTIVE ───────────────────────
-        # Every ward that is currently want_visible (and not
-        # mandatory_invisible, and not ceiling-enforced) projects its
+        # ── Project SUPPRESS_WHEN_ACTIVE ───────────────────────────
+        # Every ward that is currently want_visible projects its
         # SUPPRESS_WHEN_ACTIVE set onto the suppression map. Multiple
-        # suppressors compose: a ward can be suppressed by several at
-        # once.
+        # suppressors compose: a ward can be suppressed by several at once.
         suppressed_by_other_ward: dict[str, list[str]] = {}
         ward_classes = {type(w).WARD_ID: type(w) for w in self._wards}
         for ward_id in want_visible_ids:
-            decision = ceiling_decisions.get(ward_id)
-            if decision is not None and decision.enforced:
-                continue
             cls = ward_classes.get(ward_id)
             if cls is None:
                 continue
@@ -350,21 +334,14 @@ class ActivityRouter:
             wid: tuple(sorted(suppressors)) for wid, suppressors in suppressed_by_other_ward.items()
         }
 
-        # ── P3: write suppression to ward_properties on every tick ──
+        # ── Write suppression to ward_properties on every tick ─────
         if suppressed_by_other_ward_tuples:
             self._project_suppression_to_ward_properties(suppressed_by_other_ward_tuples)
 
-        # ── P3: WCS row + metrics ──────────────────────────────────
-        family_consumed_s = (
-            ceiling_decisions[want_visible_ids[0]].family_consumed_s
-            if want_visible_ids
-            else self._ceiling.family_consumed_seconds(now=ts)
-        )
-        family_pool_consumed_fraction = (
-            family_consumed_s / self._ceiling.family_ceiling_s
-            if self._ceiling.family_ceiling_s > 0
-            else 0.0
-        )
+        # ── Compute visibility-time bias per ward (informational mirror) ──
+        ward_visible_time_bias: dict[str, float] = {
+            ward_id: self._tracker.bias_score(ward_id, now=ts) for ward_id in claims
+        }
 
         state = RouterState(
             tick_ts=ts,
@@ -372,8 +349,7 @@ class ActivityRouter:
             mandatory_invisible_ids=mandatory_invisible_ids,
             want_visible_ids=want_visible_ids,
             suppressed_by_other_ward=suppressed_by_other_ward_tuples,
-            ceiling_decisions=ceiling_decisions,
-            family_pool_consumed_fraction=family_pool_consumed_fraction,
+            ward_visible_time_bias=ward_visible_time_bias,
         )
         with self._state_lock:
             self._state = state
@@ -383,18 +359,13 @@ class ActivityRouter:
 
         return state
 
-    # ── P3 internal helpers ──────────────────────────────────────────
+    # ── Internal helpers ─────────────────────────────────────────────
 
     def _project_suppression_to_ward_properties(
         self, suppressed: dict[str, tuple[str, ...]]
     ) -> None:
         """Write ``visible=False`` to ward_properties.json for every
         suppressed ward.
-
-        Per cc-task acceptance criterion: "DURF's
-        ``SUPPRESS_WHEN_ACTIVE = frozenset({'album', 'gem', 'grounding_provenance_ticker'})``
-        emits to ``ward_properties`` on every router tick, not just at
-        render time."
 
         Defensive: ward_properties depends on an SHM dir that may not
         exist in unit tests. On any failure, log WARNING and continue —
@@ -417,26 +388,19 @@ class ActivityRouter:
             )
 
     def _update_metrics(self, state: RouterState) -> None:
-        """Publish the 7 P3 metrics for this tick."""
+        """Publish the P3 metrics for this tick."""
         if not _METRICS:
             return
         try:
             _METRICS["active_wards"].set(len(state.want_visible_ids))
-            _METRICS["family_pool_consumed_fraction"].set(state.family_pool_consumed_fraction)
             if not state.want_visible_ids:
                 _METRICS["idle_ticks_total"].inc()
-            for ward_id, decision in state.ceiling_decisions.items():
-                if decision.enforced and ward_id in state.want_visible_ids:
-                    _METRICS["ceiling_enforced_total"].labels(ward_id=ward_id).inc()
             for ward_id in state.mandatory_invisible_ids:
                 _METRICS["forced_exits_total"].labels(
                     ward_id=ward_id, reason="mandatory_invisible"
                 ).inc()
-            for ward_id, decision in state.ceiling_decisions.items():
-                if decision.enforced and ward_id in state.want_visible_ids:
-                    _METRICS["forced_exits_total"].labels(
-                        ward_id=ward_id, reason="ceiling_eviction"
-                    ).inc()
+            for ward_id, bias in state.ward_visible_time_bias.items():
+                _METRICS["ward_visible_time_bias"].labels(ward_id=ward_id).set(bias)
         except Exception as exc:  # pragma: no cover — defensive
             log.warning("activity-router: metric update failed: %s", exc, exc_info=True)
 
@@ -460,21 +424,8 @@ class ActivityRouter:
                     wid: list(suppressors)
                     for wid, suppressors in state.suppressed_by_other_ward.items()
                 },
-                "ceiling_decisions": {
-                    wid: {
-                        "consumed_s": d.consumed_s,
-                        "ceiling_s": d.ceiling_s,
-                        "would_exceed_self": d.would_exceed_self,
-                        "would_exceed_family": d.would_exceed_family,
-                        "reason": d.reason,
-                    }
-                    for wid, d in state.ceiling_decisions.items()
-                },
-                "family_pool_consumed_fraction": state.family_pool_consumed_fraction,
-                "family_pool_consumed_s": (
-                    state.family_pool_consumed_fraction * self._ceiling.family_ceiling_s
-                ),
-                "family_pool_ceiling_s": self._ceiling.family_ceiling_s,
+                "ward_visible_time_bias": dict(state.ward_visible_time_bias),
+                "rolling_window_s": self._tracker.window_s,
             }
             tmp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}")
             tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")

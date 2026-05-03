@@ -1,162 +1,115 @@
-"""Family-pool ceiling tracker for ActivityRevealMixin members.
+"""Per-ward rolling-window visible-seconds tracker (recruitment-bias source).
 
-P3 governance per cc-task ``activity-reveal-ward-p3-governance`` (audit
-``hapax-research/audits/2026-05-01-activity-reveal-ward-family-unification.md``
-§R3 §1). The per-ward ``VISIBILITY_CEILING_PCT`` (15% default in the P0
-mixin) is insufficient at the family scale: with N members each at 15%,
-the family could consume up to ``N * 15% = 60%+`` of the rolling window.
-The R3 governance design caps the family pool at 25% and assigns
-per-ward sub-ceilings inside that pool with priority-based eviction.
+Per cc-task ``p3-governance-recruitment-bias-replacement``: this module
+**replaced** the prior FamilyCeilingTracker (#2259) which carried a
+hardcoded threshold table (DURF 15%, M8 12%, Polyend 10%, Steam Deck 8%)
+plus per-ward eviction priorities. That table was a static expert-system
+rule and violated ``feedback_no_expert_system_rules`` per the
+2026-05-02 24h independent-auditor batch (Auditor B finding #8).
 
-Sub-ceilings (R3 §1.3):
+Current shape: **bias-only**. Records visible-seconds per ward in a
+rolling 60-min window. Exposes a multiplicative score adjustment via
+``visible_time_bias_score()`` that the affordance pipeline applies to
+ward-tagged candidates so a ward dominating recent visible-time loses
+recruitment score proportionally — a competitor wins the next cycle
+without any expert-rule ceiling fixed in advance.
 
-| Ward         | Sub-ceiling (60-min window) | Priority (lower = more evictable) |
-|--------------|-----------------------------|-----------------------------------|
-| DURF         | 15%                         | 4 (least evictable)               |
-| M8           | 12%                         | 3                                 |
-| Polyend      | 10%                         | 2                                 |
-| Steam Deck   |  8%                         | 1 (most evictable)                |
+Design constraints (non-negotiable per the governance correction):
 
-The tracker is a pure logic module — no I/O, no threading. It records
-visibility intervals via :func:`mark_visible_window` and answers
-:func:`would_exceed_ceiling` queries deterministically. The
-:class:`ActivityRouter` wires the tracker into its tick loop.
+- NO static threshold table / per-ward percentage constants.
+- NO eviction priorities.
+- NO ``consult(...)`` returning ceiling decisions.
+- NO ``evictable_order(...)``.
+- NO per-ward ``register_ward(...)`` policy registration.
 
-Spec reference:
-``hapax-research/specs/2026-05-01-activity-reveal-ward-family-spec.md``
-§1.5 (Shared concerns) + §2.6 (Observability).
+What stays:
+
+- :class:`WardVisibilityWindowTracker` — pure-logic rolling-window
+  recorder. ``mark_visible_window`` + ``consumed_seconds``.
+- :func:`visible_time_bias_score` — a stateless function over
+  ``(consumed_s, window_s)`` returning a multiplicative score
+  adjustment in ``[BIAS_FLOOR, BIAS_CEILING]``.
+
+The AffordancePipeline (``shared/affordance_pipeline.py``) reads from
+a process-shared :func:`get_default_tracker` singleton when scoring
+ward candidates so the bias source is accessible from both the router
+(writer) and the pipeline (reader) without a coupling import cycle.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass
 
 #: Rolling window the tracker observes. Matches
 #: :data:`agents.studio_compositor.activity_reveal_ward.DEFAULT_ROLLING_WINDOW_S`
-#: so per-ward ceilings and family-pool ceiling agree on the same epoch.
-DEFAULT_FAMILY_WINDOW_S: float = 3600.0
+#: so the per-ward visibility window the mixin already records and the
+#: recruitment-bias window agree on the same epoch.
+DEFAULT_VISIBILITY_WINDOW_S: float = 3600.0
 
-#: Family-pool ceiling as a fraction of the rolling window. 25% per
-#: R3 §1.2 — chosen so the family of four wards collectively cannot
-#: occupy more than 15min/hour of broadcast surface.
-DEFAULT_FAMILY_CEILING_PCT: float = 0.25
+#: At zero consumption the bias is the multiplicative identity (no
+#: penalty). Recruitment scoring is unaffected for inactive wards.
+BIAS_CEILING: float = 1.0
 
-#: Default per-ward sub-ceilings (fraction of the rolling window) and
-#: eviction priority. Lower priority = more evictable when the family
-#: pool is exhausted. These are R3 §1.3 starting values; subclasses
-#: that need different ceilings register via
-#: :meth:`FamilyCeilingTracker.register_ward`.
-DEFAULT_WARD_SUB_CEILINGS: dict[str, tuple[float, int]] = {
-    "durf": (0.15, 4),
-    "m8": (0.12, 3),
-    "polyend": (0.10, 2),
-    "steam_deck": (0.08, 1),
-}
+#: At full-window saturation (consumed == window_s) the bias scales
+#: composed scores to half. The bias is intentionally bounded ABOVE
+#: zero so a ward never loses its recruitability outright via
+#: visible-time penalty alone — competing capabilities can still pull
+#: it back down through the normal score-composition cascade, but a
+#: ward saturated in the trailing window remains a viable choice for
+#: cases where no competitor exceeds its biased score.
+BIAS_FLOOR: float = 0.5
 
 
-@dataclass(frozen=True)
-class WardCeilingPolicy:
-    """Per-ward ceiling + eviction priority within the family pool."""
+def visible_time_bias_score(
+    consumed_s: float, *, window_s: float = DEFAULT_VISIBILITY_WINDOW_S
+) -> float:
+    """Return a multiplicative recruitment-score adjustment in
+    ``[BIAS_FLOOR, BIAS_CEILING]`` for a ward that consumed
+    ``consumed_s`` visible-seconds in the trailing ``window_s`` window.
 
-    ward_id: str
-    ceiling_pct: float
-    eviction_priority: int
-    """Lower priority is more evictable. The router picks the
-    lowest-priority ward to deny when the family pool is exhausted."""
+    Linear interpolation between ``BIAS_CEILING`` (zero consumption)
+    and ``BIAS_FLOOR`` (full-window saturation). Half-window
+    consumption (30 min in 60 min) → bias = 0.75. The bias is the
+    same shape regardless of which ward; the recruitment cascade
+    decides who wins after applying it (vs the deleted table that
+    pre-decided ceiling order outside the recruitment loop).
 
-
-@dataclass
-class FamilyCeilingDecision:
-    """Result of a ceiling consultation for one ward at one tick."""
-
-    ward_id: str
-    consumed_s: float
-    """Visible-seconds this ward has consumed inside the rolling window."""
-    family_consumed_s: float
-    """Total visible-seconds across the family inside the rolling window."""
-    ceiling_s: float
-    """This ward's per-ward sub-ceiling in seconds."""
-    family_ceiling_s: float
-    """Family-pool ceiling in seconds."""
-    would_exceed_self: bool
-    """True iff visible NOW would push this ward past its sub-ceiling."""
-    would_exceed_family: bool
-    """True iff visible NOW would push the family past the pool ceiling."""
-
-    @property
-    def enforced(self) -> bool:
-        return self.would_exceed_self or self.would_exceed_family
-
-    @property
-    def reason(self) -> str:
-        if self.would_exceed_self and self.would_exceed_family:
-            return "self+family ceiling exceeded"
-        if self.would_exceed_self:
-            return "self ceiling exceeded"
-        if self.would_exceed_family:
-            return "family ceiling exceeded"
-        return "within ceilings"
+    Stateless helper — pure function over its arguments. The tracker
+    below is the only piece carrying mutable state.
+    """
+    if window_s <= 0:
+        return BIAS_CEILING
+    consumption = min(1.0, max(0.0, consumed_s / window_s))
+    return BIAS_CEILING - (BIAS_CEILING - BIAS_FLOOR) * consumption
 
 
-class FamilyCeilingTracker:
-    """Rolling-window family-pool ceiling tracker.
+class WardVisibilityWindowTracker:
+    """Rolling-window per-ward visible-seconds recorder.
 
-    Records closed visibility intervals per ward and answers
-    "would visible-now exceed the ward's sub-ceiling or the family
-    pool?" The tracker stores intervals as ``(start_ts, end_ts)``
-    tuples in per-ward deques and evicts entries whose ``end_ts`` is
-    older than the rolling window.
+    Pure logic: no I/O, no threading, deterministic. Records intervals
+    via :meth:`mark_visible_window` and answers "how many visible
+    seconds in the rolling window ending at ``now``?"
 
-    Thread safety: not thread-safe by itself. The router is single-
-    threaded inside its tick loop, so the tracker doesn't need locking.
-    Callers that want concurrent updates must serialize externally.
+    The tracker stores intervals as ``(start_ts, end_ts)`` tuples per
+    ward and evicts entries whose ``end_ts`` is older than the rolling
+    window on every read. No policies, no ceilings, no priorities —
+    those would be expert-system rules and were removed per cc-task
+    ``p3-governance-recruitment-bias-replacement``.
+
+    Thread safety: not thread-safe by itself. The router writes from
+    one tick loop; the pipeline reads from one select() call at a
+    time. Callers wanting concurrent updates serialize externally.
     """
 
-    def __init__(
-        self,
-        *,
-        window_s: float = DEFAULT_FAMILY_WINDOW_S,
-        family_ceiling_pct: float = DEFAULT_FAMILY_CEILING_PCT,
-    ) -> None:
+    def __init__(self, *, window_s: float = DEFAULT_VISIBILITY_WINDOW_S) -> None:
         if window_s <= 0:
             raise ValueError(f"window_s must be > 0, got {window_s}")
-        if not 0.0 < family_ceiling_pct <= 1.0:
-            raise ValueError(f"family_ceiling_pct must be in (0.0, 1.0], got {family_ceiling_pct}")
         self._window_s = window_s
-        self._family_ceiling_pct = family_ceiling_pct
         self._intervals: dict[str, deque[tuple[float, float]]] = defaultdict(deque)
-        self._policies: dict[str, WardCeilingPolicy] = {}
 
     @property
     def window_s(self) -> float:
         return self._window_s
-
-    @property
-    def family_ceiling_s(self) -> float:
-        return self._family_ceiling_pct * self._window_s
-
-    def register_ward(self, ward_id: str, ceiling_pct: float, eviction_priority: int) -> None:
-        """Register a ward's sub-ceiling and eviction priority.
-
-        Idempotent: calling with the same ``ward_id`` overwrites the
-        prior policy. ``ceiling_pct`` is a fraction of the rolling
-        window; ``eviction_priority`` is the priority within the
-        family pool (lower = more evictable).
-        """
-        if not 0.0 <= ceiling_pct <= self._family_ceiling_pct:
-            raise ValueError(
-                f"ward {ward_id}: ceiling_pct must be in [0.0, family_ceiling_pct={self._family_ceiling_pct}], "
-                f"got {ceiling_pct}"
-            )
-        self._policies[ward_id] = WardCeilingPolicy(
-            ward_id=ward_id,
-            ceiling_pct=ceiling_pct,
-            eviction_priority=eviction_priority,
-        )
-
-    def policy(self, ward_id: str) -> WardCeilingPolicy | None:
-        return self._policies.get(ward_id)
 
     def mark_visible_window(self, ward_id: str, start_ts: float, end_ts: float) -> None:
         """Record a closed visibility interval for ``ward_id``.
@@ -171,7 +124,8 @@ class FamilyCeilingTracker:
 
     def consumed_seconds(self, ward_id: str, *, now: float) -> float:
         """Visible-seconds for ``ward_id`` inside the rolling window
-        ending at ``now``."""
+        ending at ``now``. Properly trims intervals that overlap the
+        window edge."""
         self._evict_expired(ward_id, now=now)
         cutoff = now - self._window_s
         total = 0.0
@@ -182,45 +136,11 @@ class FamilyCeilingTracker:
                 total += trimmed_end - trimmed_start
         return total
 
-    def family_consumed_seconds(self, *, now: float) -> float:
-        """Total visible-seconds across all wards inside the rolling
-        window ending at ``now``."""
-        return sum(
-            self.consumed_seconds(ward_id, now=now) for ward_id in list(self._intervals.keys())
+    def bias_score(self, ward_id: str, *, now: float) -> float:
+        """Convenience: visible_time_bias_score for this ward at now."""
+        return visible_time_bias_score(
+            self.consumed_seconds(ward_id, now=now), window_s=self._window_s
         )
-
-    def consult(self, ward_id: str, *, now: float) -> FamilyCeilingDecision:
-        """Compute the ceiling decision for ``ward_id`` at ``now``.
-
-        The decision returns ``would_exceed_self`` / ``would_exceed_family``
-        as advisory flags. The router decides what to do (deny entry,
-        evict another ward, etc) based on the decision.
-
-        For wards without a registered policy, ``ceiling_s`` falls
-        back to the family ceiling — i.e., an unregistered ward is
-        only blocked by family-pool exhaustion.
-        """
-        policy = self._policies.get(ward_id)
-        ceiling_s = (policy.ceiling_pct * self._window_s) if policy else self.family_ceiling_s
-        consumed = self.consumed_seconds(ward_id, now=now)
-        family_consumed = self.family_consumed_seconds(now=now)
-        return FamilyCeilingDecision(
-            ward_id=ward_id,
-            consumed_s=consumed,
-            family_consumed_s=family_consumed,
-            ceiling_s=ceiling_s,
-            family_ceiling_s=self.family_ceiling_s,
-            would_exceed_self=consumed >= ceiling_s,
-            would_exceed_family=family_consumed >= self.family_ceiling_s,
-        )
-
-    def evictable_order(self, *, now: float) -> list[WardCeilingPolicy]:
-        """Wards eligible for eviction, sorted from most-evictable
-        (lowest priority) to least-evictable. Used by the router when
-        the family pool is exhausted and a higher-priority ward wants
-        to enter."""
-        del now  # priority is policy-based, not consumption-based
-        return sorted(self._policies.values(), key=lambda p: p.eviction_priority)
 
     def _evict_expired(self, ward_id: str, *, now: float) -> None:
         cutoff = now - self._window_s
@@ -229,11 +149,44 @@ class FamilyCeilingTracker:
             intervals.popleft()
 
 
+# ── Process-shared singleton (read-side bridge from AffordancePipeline) ──
+#
+# The tracker is written by ActivityRouter on every tick and read by
+# AffordancePipeline.select() on every recruitment cycle. Both run in
+# the same compositor process. A module-level singleton (lazy-init)
+# is sufficient and avoids passing the tracker through 6 layers of
+# call sites. The router and the pipeline both call get_default_tracker.
+
+_DEFAULT_TRACKER: WardVisibilityWindowTracker | None = None
+
+
+def get_default_tracker() -> WardVisibilityWindowTracker:
+    """Process-singleton accessor for the visibility-window tracker.
+
+    Lazy-init on first call. The router writes via
+    ``mark_visible_window``; the affordance pipeline reads via
+    ``bias_score``. Tests can swap the singleton via :func:`set_default_tracker`.
+    """
+    global _DEFAULT_TRACKER
+    if _DEFAULT_TRACKER is None:
+        _DEFAULT_TRACKER = WardVisibilityWindowTracker()
+    return _DEFAULT_TRACKER
+
+
+def set_default_tracker(tracker: WardVisibilityWindowTracker | None) -> None:
+    """Replace the process-singleton (test seam). Pass ``None`` to
+    reset; the next :func:`get_default_tracker` call lazy-inits a
+    fresh tracker."""
+    global _DEFAULT_TRACKER
+    _DEFAULT_TRACKER = tracker
+
+
 __all__ = [
-    "DEFAULT_FAMILY_CEILING_PCT",
-    "DEFAULT_FAMILY_WINDOW_S",
-    "DEFAULT_WARD_SUB_CEILINGS",
-    "FamilyCeilingDecision",
-    "FamilyCeilingTracker",
-    "WardCeilingPolicy",
+    "BIAS_CEILING",
+    "BIAS_FLOOR",
+    "DEFAULT_VISIBILITY_WINDOW_S",
+    "WardVisibilityWindowTracker",
+    "get_default_tracker",
+    "set_default_tracker",
+    "visible_time_bias_score",
 ]

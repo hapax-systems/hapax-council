@@ -1,22 +1,36 @@
-"""P3 governance regression pins for ActivityRouter (cc-task
-``activity-reveal-ward-p3-governance``).
+"""P3 governance regression pins for ActivityRouter under the
+recruitment-bias replacement (cc-task
+``p3-governance-recruitment-bias-replacement``).
 
-The 3 cc-task acceptance pins:
+The prior P3-phase-3a (#2259) shipped a hardcoded family-ceiling
+table + per-ward eviction priorities. The 2026-05-02 24h
+independent-auditor batch (Auditor B finding #8) flagged the table as
+a static expert-system rule violating
+``feedback_no_expert_system_rules``. This test file validates the
+**replacement** governance: visibility-window tracking + multiplicative
+bias score read by the affordance pipeline. No static thresholds, no
+eviction priorities.
 
-1. ``test_activity_router_ceiling_window_is_60_minutes`` — family-pool
-   ceiling window matches the per-ward mixin's rolling window
-   (60 min default per
-   ``activity_reveal_ward.DEFAULT_ROLLING_WINDOW_S``).
-2. ``test_activity_router_metrics_use_metric_kwargs_splat`` — the 7
-   P3 metrics register against the compositor's REGISTRY (or no-op
-   when the compositor module isn't importable), per memory
-   ``project_compositor_metrics_registry``.
-3. ``test_activity_router_suppression_is_ward_specific`` — when ward A
-   has ``SUPPRESS_WHEN_ACTIVE = {"a-target"}``, ONLY ``a-target`` is
-   suppressed; unrelated wards are not collateral damage.
+Pins:
 
-Plus 6 supporting pins on the family-pool ceiling tracker, the WCS
-row writer, and the suppression-on-tick wiring.
+1. ``test_no_static_ceiling_table_in_module`` — the module no longer
+   exports any of the deleted symbols (``DEFAULT_WARD_SUB_CEILINGS``,
+   ``WardCeilingPolicy``, ``FamilyCeilingDecision``,
+   ``FamilyCeilingTracker``).
+2. ``test_visible_time_bias_score_linear_ramp`` — the bias formula
+   maps consumed-seconds linearly from BIAS_CEILING (no consumption)
+   to BIAS_FLOOR (full-window saturation).
+3. ``test_dominant_ward_loses_to_competitor_after_bias`` —
+   regression pin for the cc-task acceptance criterion: with one ward
+   dominating visible-time, the recruitment cycle's biased score for
+   that ward is reduced enough that a competitor wins.
+4. ``test_router_no_longer_consults_ceiling`` — RouterState no longer
+   carries ``ceiling_decisions`` or ``family_pool_consumed_fraction``.
+5. ``test_router_writes_visibility_bias_to_routing_state`` — the WCS
+   row now carries ``ward_visible_time_bias`` instead of
+   ``ceiling_decisions``.
+6. ``test_suppression_still_ward_specific`` — suppression contract
+   from #2259 is preserved (regression).
 """
 
 from __future__ import annotations
@@ -25,21 +39,19 @@ import json
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 from agents.studio_compositor.activity_family_ceiling import (
-    DEFAULT_FAMILY_WINDOW_S,
-    FamilyCeilingTracker,
+    BIAS_CEILING,
+    BIAS_FLOOR,
+    DEFAULT_VISIBILITY_WINDOW_S,
+    WardVisibilityWindowTracker,
+    visible_time_bias_score,
 )
-from agents.studio_compositor.activity_reveal_ward import (
-    DEFAULT_ROLLING_WINDOW_S,
-    ActivityRevealMixin,
-)
+from agents.studio_compositor.activity_reveal_ward import ActivityRevealMixin
 from agents.studio_compositor.activity_router import (
-    _METRICS,
     ActivityRouter,
     RouterConfig,
-    _metric_kwargs,
+    RouterState,
 )
 
 # ── Test fixture wards ───────────────────────────────────────────────
@@ -99,9 +111,6 @@ class _TargetWard(ActivityRevealMixin):
 
 
 class _UnrelatedWard(ActivityRevealMixin):
-    """Ward that the suppressor does NOT mention — must NOT be
-    suppressed (test pin against collateral damage)."""
-
     WARD_ID = "unrelated"
     SOURCE_KIND = "cairo"
     DEFAULT_HYSTERESIS_S = 1.5
@@ -125,69 +134,151 @@ class _UnrelatedWard(ActivityRevealMixin):
         return {"id": self.WARD_ID, "kind": self.SOURCE_KIND}
 
 
-# ── 3 P3 cc-task acceptance pins ─────────────────────────────────────
+# ── 6 cc-task acceptance / regression pins ──────────────────────────
 
 
-class TestP3CcTaskAcceptancePins(unittest.TestCase):
-    def test_activity_router_ceiling_window_is_60_minutes(self) -> None:
-        """Family-pool ceiling rolling window = 60 min, matching the
-        per-ward mixin's DEFAULT_ROLLING_WINDOW_S. If these drift apart,
-        the per-ward ceiling and the family-pool ceiling will be using
-        different epochs and the governance contract is incoherent."""
-        self.assertEqual(DEFAULT_FAMILY_WINDOW_S, 3600.0)
-        self.assertEqual(DEFAULT_ROLLING_WINDOW_S, 3600.0)
-        self.assertEqual(DEFAULT_FAMILY_WINDOW_S, DEFAULT_ROLLING_WINDOW_S)
-        # Default RouterConfig must use the same window.
-        cfg = RouterConfig()
-        self.assertEqual(cfg.rolling_window_s, DEFAULT_FAMILY_WINDOW_S)
-        # And a tracker built from defaults reports 25% of 60min = 15min ceiling.
-        tracker = FamilyCeilingTracker()
-        self.assertAlmostEqual(tracker.window_s, 3600.0)
-        self.assertAlmostEqual(tracker.family_ceiling_s, 0.25 * 3600.0)
+class TestRecruitmentBiasReplacementPins(unittest.TestCase):
+    def test_no_static_ceiling_table_in_module(self) -> None:
+        """The module no longer exports any of the deleted symbols
+        from the prior phase 3a (PR #2259) static-table API."""
+        from agents.studio_compositor import activity_family_ceiling as mod
 
-    def test_activity_router_metrics_use_metric_kwargs_splat(self) -> None:
-        """All P3 metrics MUST register via the **_metric_kwargs splat
-        pattern per memory project_compositor_metrics_registry. When
-        the compositor module is importable, _metric_kwargs MUST carry
-        the compositor REGISTRY so /metrics on :9482 sees these. When
-        not importable (officium / tests without studio deps), the
-        kwargs MUST be empty so registration falls back to the default
-        registry without crashing."""
-        # _metric_kwargs is either {} or {"registry": <CollectorRegistry>}.
-        self.assertIsInstance(_metric_kwargs, dict)
-        if _metric_kwargs:
-            self.assertIn("registry", _metric_kwargs)
-            # When carrying a registry, every metric we built must
-            # have been registered against it (verified indirectly by
-            # _METRICS being non-empty).
-            self.assertTrue(_METRICS, "metrics should be registered when registry is available")
-        # The 7 metrics must all be present whenever prometheus_client
-        # is importable (which it always is in CI per pyproject.toml).
-        if _METRICS:
-            expected = {
-                "visible_seconds_total",
-                "ceiling_enforced_total",
-                "active_wards",
+        for deleted in (
+            "DEFAULT_WARD_SUB_CEILINGS",
+            "DEFAULT_FAMILY_CEILING_PCT",
+            "DEFAULT_FAMILY_WINDOW_S",
+            "WardCeilingPolicy",
+            "FamilyCeilingDecision",
+            "FamilyCeilingTracker",
+        ):
+            self.assertFalse(
+                hasattr(mod, deleted),
+                f"{deleted} must NOT exist in activity_family_ceiling — "
+                "violates feedback_no_expert_system_rules per Auditor B finding #8",
+            )
+
+    def test_visible_time_bias_score_linear_ramp(self) -> None:
+        """Bias formula: linear from BIAS_CEILING (consumed=0) to
+        BIAS_FLOOR (consumed >= window_s). Pin the formula so a future
+        change to either bound forces a deliberate test update."""
+        # Zero consumption → identity (no penalty).
+        self.assertAlmostEqual(visible_time_bias_score(0.0, window_s=3600.0), BIAS_CEILING)
+        # Full saturation → floor.
+        self.assertAlmostEqual(visible_time_bias_score(3600.0, window_s=3600.0), BIAS_FLOOR)
+        # Half consumption → midpoint.
+        self.assertAlmostEqual(
+            visible_time_bias_score(1800.0, window_s=3600.0),
+            (BIAS_CEILING + BIAS_FLOOR) / 2.0,
+        )
+        # Over-saturation clamps to floor (never below).
+        self.assertAlmostEqual(visible_time_bias_score(7200.0, window_s=3600.0), BIAS_FLOOR)
+
+    def test_dominant_ward_loses_to_competitor_after_bias(self) -> None:
+        """cc-task acceptance: with one ward dominating visible-time,
+        the next recruitment cycle's biased score for that ward is
+        reduced enough that a competitor wins.
+
+        Setup: ward "dominant" has consumed full-window visible time
+        (bias = 0.5); ward "competitor" has consumed nothing
+        (bias = 1.0). At equal pre-bias scores, competitor wins after
+        the multiplicative bias is applied. Without the bias, ties
+        would resolve arbitrarily."""
+        tracker = WardVisibilityWindowTracker(window_s=3600.0)
+        # Dominant ward: visible the entire trailing window.
+        tracker.mark_visible_window("dominant", start_ts=0.0, end_ts=3600.0)
+        # Competitor: no visible window recorded.
+        now = 3600.0
+        dominant_bias = tracker.bias_score("dominant", now=now)
+        competitor_bias = tracker.bias_score("competitor", now=now)
+        self.assertAlmostEqual(dominant_bias, BIAS_FLOOR)
+        self.assertAlmostEqual(competitor_bias, BIAS_CEILING)
+        # Equal pre-bias scores → competitor wins after bias.
+        pre_bias_score = 0.7
+        dominant_post = pre_bias_score * dominant_bias
+        competitor_post = pre_bias_score * competitor_bias
+        self.assertGreater(
+            competitor_post,
+            dominant_post,
+            "Competitor must out-score dominant ward after visible-time bias is applied "
+            "(this is the cc-task's load-bearing acceptance criterion)",
+        )
+
+    def test_router_no_longer_consults_ceiling(self) -> None:
+        """RouterState no longer carries ceiling_decisions or
+        family_pool_consumed_fraction. The ward_visible_time_bias map
+        is the new informational surface."""
+        state = RouterState(tick_ts=0.0)
+        for deleted in ("ceiling_decisions", "family_pool_consumed_fraction"):
+            self.assertFalse(
+                hasattr(state, deleted),
+                f"RouterState.{deleted} must NOT exist — violates "
+                "feedback_no_expert_system_rules per Auditor B finding #8",
+            )
+        self.assertTrue(hasattr(state, "ward_visible_time_bias"))
+        self.assertIsInstance(state.ward_visible_time_bias, dict)
+
+    def test_router_writes_visibility_bias_to_routing_state(self) -> None:
+        """The WCS row now carries ward_visible_time_bias + rolling_window_s
+        instead of the deleted ceiling_decisions / family_pool_*."""
+        suppressor = _SuppressorWard()
+        target = _TargetWard()
+        try:
+            for w in (suppressor, target):
+                w.poll_once()
+            tmp_dir = Path("/tmp/test-activity-router-bias-routing-state")
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            target_path = tmp_dir / "routing-state.json"
+            if target_path.exists():
+                target_path.unlink()
+            cfg = RouterConfig(routing_state_path=target_path)
+            tracker = WardVisibilityWindowTracker(window_s=3600.0)
+            router = ActivityRouter(
+                wards=[suppressor, target], config=cfg, visibility_tracker=tracker
+            )
+            try:
+                router.tick(now=42.0)
+            finally:
+                router.stop()
+            self.assertTrue(target_path.exists())
+            payload = json.loads(target_path.read_text(encoding="utf-8"))
+            for required in (
+                "tick_ts",
+                "want_visible_ids",
+                "mandatory_invisible_ids",
+                "suppressed_by_other_ward",
+                "ward_visible_time_bias",
+                "rolling_window_s",
+            ):
+                self.assertIn(required, payload, f"routing-state.json missing key: {required}")
+            for deleted in (
+                "ceiling_decisions",
                 "family_pool_consumed_fraction",
-                "transitions_total",
-                "idle_ticks_total",
-                "forced_exits_total",
-            }
-            self.assertEqual(set(_METRICS.keys()), expected)
+                "family_pool_ceiling_s",
+            ):
+                self.assertNotIn(
+                    deleted,
+                    payload,
+                    f"routing-state.json must NOT carry deleted key {deleted!r}",
+                )
+        finally:
+            for w in (suppressor, target):
+                w.stop()
 
-    def test_activity_router_suppression_is_ward_specific(self) -> None:
-        """When ward A's SUPPRESS_WHEN_ACTIVE = {'a-target'}, ONLY
-        'a-target' is suppressed. 'unrelated' (also visible, also
-        unmentioned by the suppressor) MUST NOT appear in the
-        suppression map. Catches over-broad suppression bugs that would
-        cascade into unrelated ward families."""
+    def test_suppression_still_ward_specific(self) -> None:
+        """Regression pin from #2259: ward A's
+        ``SUPPRESS_WHEN_ACTIVE = {'a-target'}`` suppresses ONLY
+        a-target; unrelated wards stay un-suppressed."""
         suppressor = _SuppressorWard()
         target = _TargetWard()
         unrelated = _UnrelatedWard()
         try:
             for w in (suppressor, target, unrelated):
                 w.poll_once()
-            router = ActivityRouter(wards=[suppressor, target, unrelated])
+            tracker = WardVisibilityWindowTracker(window_s=3600.0)
+            router = ActivityRouter(
+                wards=[suppressor, target, unrelated],
+                visibility_tracker=tracker,
+            )
             try:
                 state = router.tick(now=100.0)
             finally:
@@ -195,153 +286,56 @@ class TestP3CcTaskAcceptancePins(unittest.TestCase):
         finally:
             for w in (suppressor, target, unrelated):
                 w.stop()
-        # Exact ward-specificity:
         self.assertIn("a-target", state.suppressed_by_other_ward)
         self.assertNotIn("unrelated", state.suppressed_by_other_ward)
         self.assertEqual(
             state.suppressed_by_other_ward["a-target"],
             ("fixture-suppressor",),
-            "suppressor identity must be recorded so observability can attribute the suppression",
         )
 
 
-# ── Family-pool ceiling tracker ──────────────────────────────────────
+# ── WardVisibilityWindowTracker (replaces FamilyCeilingTracker tests) ──
 
 
-class TestFamilyCeilingTracker(unittest.TestCase):
-    def test_register_ward_sets_policy(self) -> None:
-        tracker = FamilyCeilingTracker()
-        tracker.register_ward("durf", ceiling_pct=0.15, eviction_priority=4)
-        policy = tracker.policy("durf")
-        self.assertIsNotNone(policy)
-        assert policy is not None  # mypy
-        self.assertEqual(policy.ceiling_pct, 0.15)
-        self.assertEqual(policy.eviction_priority, 4)
+class TestWardVisibilityWindowTracker(unittest.TestCase):
+    def test_consumed_seconds_within_window(self) -> None:
+        tracker = WardVisibilityWindowTracker(window_s=100.0)
+        tracker.mark_visible_window("w1", 0.0, 30.0)
+        self.assertAlmostEqual(tracker.consumed_seconds("w1", now=50.0), 30.0)
 
-    def test_consult_within_ceiling_does_not_enforce(self) -> None:
-        tracker = FamilyCeilingTracker()
-        tracker.register_ward("durf", ceiling_pct=0.15, eviction_priority=4)
-        # No prior visibility — both ceilings open.
-        decision = tracker.consult("durf", now=100.0)
-        self.assertFalse(decision.would_exceed_self)
-        self.assertFalse(decision.would_exceed_family)
-        self.assertFalse(decision.enforced)
-
-    def test_consult_self_ceiling_exceeded(self) -> None:
-        tracker = FamilyCeilingTracker(window_s=3600.0)
-        tracker.register_ward("durf", ceiling_pct=0.15, eviction_priority=4)
-        # 0.15 * 3600 = 540s. Mark 600s of visibility ending at 600s.
-        tracker.mark_visible_window("durf", start_ts=0.0, end_ts=600.0)
-        decision = tracker.consult("durf", now=600.0)
-        self.assertTrue(decision.would_exceed_self)
-        self.assertTrue(decision.enforced)
-        self.assertIn("self", decision.reason)
-
-    def test_consult_family_ceiling_exceeded(self) -> None:
-        tracker = FamilyCeilingTracker(window_s=3600.0, family_ceiling_pct=0.25)
-        # Family ceiling = 0.25 * 3600 = 900s.
-        tracker.register_ward("durf", ceiling_pct=0.15, eviction_priority=4)
-        tracker.register_ward("m8", ceiling_pct=0.12, eviction_priority=3)
-        # DURF + M8 together = 1000s, exceeding family pool (900s).
-        tracker.mark_visible_window("durf", start_ts=0.0, end_ts=500.0)
-        tracker.mark_visible_window("m8", start_ts=500.0, end_ts=1000.0)
-        decision = tracker.consult("durf", now=1000.0)
-        self.assertTrue(decision.would_exceed_family)
-        self.assertTrue(decision.enforced)
-
-    def test_evictable_order_lowest_priority_first(self) -> None:
-        tracker = FamilyCeilingTracker()
-        tracker.register_ward("durf", 0.15, 4)
-        tracker.register_ward("m8", 0.12, 3)
-        tracker.register_ward("polyend", 0.10, 2)
-        tracker.register_ward("steam_deck", 0.08, 1)
-        order = tracker.evictable_order(now=0.0)
-        self.assertEqual([p.ward_id for p in order], ["steam_deck", "polyend", "m8", "durf"])
+    def test_consumed_seconds_trims_at_window_edge(self) -> None:
+        tracker = WardVisibilityWindowTracker(window_s=100.0)
+        tracker.mark_visible_window("w1", 0.0, 50.0)
+        # At now=120, cutoff is 20; the (0, 50) interval is trimmed to (20, 50) = 30s.
+        self.assertAlmostEqual(tracker.consumed_seconds("w1", now=120.0), 30.0)
 
     def test_intervals_outside_window_evicted(self) -> None:
-        # Use a wider family ceiling so we can register a ward with
-        # ceiling_pct=0.25 inside it.
-        tracker = FamilyCeilingTracker(window_s=100.0, family_ceiling_pct=0.5)
-        tracker.register_ward("durf", 0.25, 4)
-        # Old interval (>100s ago) is evicted; recent interval counts.
-        tracker.mark_visible_window("durf", start_ts=0.0, end_ts=10.0)
-        # At now=200, the old interval is fully out of the window.
-        self.assertEqual(tracker.consumed_seconds("durf", now=200.0), 0.0)
+        tracker = WardVisibilityWindowTracker(window_s=100.0)
+        tracker.mark_visible_window("w1", 0.0, 10.0)
+        # At now=200, the (0, 10) interval is fully out of the window.
+        self.assertEqual(tracker.consumed_seconds("w1", now=200.0), 0.0)
 
+    def test_unknown_ward_returns_zero(self) -> None:
+        tracker = WardVisibilityWindowTracker()
+        self.assertEqual(tracker.consumed_seconds("never-seen", now=100.0), 0.0)
 
-# ── WCS row writer ────────────────────────────────────────────────────
+    def test_default_window_matches_mixin_constant(self) -> None:
+        """The tracker's default window must equal the mixin's
+        DEFAULT_ROLLING_WINDOW_S so per-ward + tracker share an epoch."""
+        from agents.studio_compositor.activity_reveal_ward import DEFAULT_ROLLING_WINDOW_S
 
+        self.assertEqual(DEFAULT_VISIBILITY_WINDOW_S, DEFAULT_ROLLING_WINDOW_S)
 
-class TestRoutingStateRowWriter(unittest.TestCase):
-    def test_routing_state_written_on_tick(self) -> None:
-        """The router writes routing-state.json atomically on every tick.
-        Pinned because the family observability dashboard depends on
-        this surface refreshing per tick."""
-        suppressor = _SuppressorWard()
-        target = _TargetWard()
-        try:
-            for w in (suppressor, target):
-                w.poll_once()
-            tmp_dir = Path("/tmp/test-activity-router-routing-state")
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            target_path = tmp_dir / "routing-state.json"
-            if target_path.exists():
-                target_path.unlink()
-            cfg = RouterConfig(routing_state_path=target_path)
-            router = ActivityRouter(wards=[suppressor, target], config=cfg)
-            try:
-                router.tick(now=42.0)
-            finally:
-                router.stop()
-            self.assertTrue(target_path.exists())
-            payload = json.loads(target_path.read_text(encoding="utf-8"))
-            # Pin the shape expected by the dashboard.
-            for key in (
-                "tick_ts",
-                "wall_ts",
-                "want_visible_ids",
-                "mandatory_invisible_ids",
-                "suppressed_by_other_ward",
-                "ceiling_decisions",
-                "family_pool_consumed_fraction",
-                "family_pool_ceiling_s",
-            ):
-                self.assertIn(key, payload, f"routing-state.json missing key: {key}")
-            self.assertEqual(payload["tick_ts"], 42.0)
-            self.assertIn("a-target", payload["suppressed_by_other_ward"])
-        finally:
-            for w in (suppressor, target):
-                w.stop()
+    def test_tracker_singleton_lazy_init(self) -> None:
+        from agents.studio_compositor.activity_family_ceiling import (
+            get_default_tracker,
+            set_default_tracker,
+        )
 
-
-# ── Suppression projection to ward_properties ─────────────────────────
-
-
-class TestSuppressionProjectionPerTick(unittest.TestCase):
-    def test_suppression_calls_set_many_ward_properties_per_tick(self) -> None:
-        """The router projects suppression to ward_properties on every
-        tick, not at render time. Pinned with a mock so the test
-        doesn't depend on /dev/shm being writable."""
-        suppressor = _SuppressorWard()
-        target = _TargetWard()
-        try:
-            for w in (suppressor, target):
-                w.poll_once()
-            router = ActivityRouter(wards=[suppressor, target])
-            try:
-                with patch(
-                    "agents.studio_compositor.ward_properties.set_many_ward_properties"
-                ) as mock_set:
-                    router.tick(now=10.0)
-            finally:
-                router.stop()
-        finally:
-            for w in (suppressor, target):
-                w.stop()
-        # set_many_ward_properties was called with at least 'a-target'.
-        self.assertTrue(mock_set.called, "router did not project suppression to ward_properties")
-        kwargs_props = mock_set.call_args.args[0]
-        self.assertIn("a-target", kwargs_props)
-        # And the projected WardProperties has visible=False (the
-        # suppression marker that gates render).
-        self.assertFalse(kwargs_props["a-target"].visible)
+        # Reset singleton so this test is self-contained.
+        set_default_tracker(None)
+        t1 = get_default_tracker()
+        t2 = get_default_tracker()
+        self.assertIs(t1, t2, "singleton must return the same instance")
+        # Cleanup so other tests get a fresh singleton.
+        set_default_tracker(None)

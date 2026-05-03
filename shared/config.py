@@ -252,7 +252,26 @@ def get_qdrant_grpc():
 
 
 class InstrumentedQdrantClient:
-    """Wrapper that emits flow events on Qdrant operations."""
+    """Wrapper that emits flow events on Qdrant operations.
+
+    Per cc-task ``instrumented-qdrant-positional-fix`` (audit Auditor D
+    B3 finding #7): wrapped methods MUST accept ``*args, **kwargs`` and
+    delegate with full positional+keyword pass-through. The earlier
+    shape (``def search(self, collection_name: str, **kwargs)``)
+    silently broke any caller passing ``query_vector`` positionally,
+    falsifying the "drop-in replacement" claim. MagicMock-based tests
+    in #2257 missed this because MagicMock accepts any signature.
+
+    Note on ``query_points`` vs ``search``: modern qdrant-client has
+    REPLACED ``QdrantClient.search`` with ``query_points``. The legacy
+    ``search`` method does not exist on the underlying client at all;
+    invoking it raises ``AttributeError``. Production callers (verified
+    via grep across ``agents/`` + ``shared/``) all use ``query_points``
+    or ``upsert`` — no live ``.search`` callers remain. This class
+    exposes ``query_points`` as the primary read wrapper; the legacy
+    ``search`` method is kept as a deprecation-stub that raises a
+    clear ``AttributeError`` so callers migrate intentionally.
+    """
 
     def __init__(
         self, client: QdrantClient, event_bus: "EventBus", agent_name: str = "unknown"
@@ -262,9 +281,16 @@ class InstrumentedQdrantClient:
         self._agent = agent_name
 
     def __getattr__(self, name: str):
+        # Methods we don't explicitly wrap fall through to the
+        # underlying client unchanged. `__getattr__` is only invoked
+        # for attributes not found via the normal lookup, so wrapped
+        # methods (`query_points`, `upsert`, `search`) are NOT affected
+        # by this proxy. Missing methods on the underlying client raise
+        # `AttributeError` naturally — preserving the underlying API
+        # surface as observed by callers.
         return getattr(self._client, name)
 
-    def search(self, collection_name: str, **kwargs):
+    def _emit(self, op: str, collection: str) -> None:
         from logos.event_bus import FlowEvent
 
         self._bus.emit(
@@ -272,23 +298,62 @@ class InstrumentedQdrantClient:
                 kind="qdrant.op",
                 source=self._agent,
                 target="qdrant",
-                label=f"search/{collection_name}",
+                label=f"{op}/{collection}",
             )
         )
-        return self._client.search(collection_name=collection_name, **kwargs)
 
-    def upsert(self, collection_name: str, **kwargs):
-        from logos.event_bus import FlowEvent
+    @staticmethod
+    def _resolve_collection(args: tuple, kwargs: dict) -> str:
+        """Extract the collection_name for the FlowEvent label. The
+        underlying QdrantClient methods accept ``collection_name`` as
+        the first positional arg or as a kwarg. Both shapes resolve
+        to a stable label."""
+        if "collection_name" in kwargs:
+            return str(kwargs["collection_name"])
+        if args:
+            return str(args[0])
+        return "unknown"
 
-        self._bus.emit(
-            FlowEvent(
-                kind="qdrant.op",
-                source=self._agent,
-                target="qdrant",
-                label=f"upsert/{collection_name}",
-            )
+    def query_points(self, *args, **kwargs):
+        """Modern read API; replaces legacy ``search``.
+
+        Accepts the underlying QdrantClient.query_points signature
+        verbatim — full positional and keyword pass-through. The
+        FlowEvent label uses the resolved collection_name regardless
+        of arg shape.
+        """
+        self._emit("query_points", self._resolve_collection(args, kwargs))
+        return self._client.query_points(*args, **kwargs)
+
+    def upsert(self, *args, **kwargs):
+        """Write API; full positional+keyword pass-through.
+
+        Per audit Auditor D B3 finding #7: the prior shape
+        ``def upsert(self, collection_name: str, **kwargs)`` rejected
+        positional ``points`` calls. This shape preserves the
+        underlying QdrantClient.upsert signature exactly so the
+        wrapper is a true drop-in.
+        """
+        self._emit("upsert", self._resolve_collection(args, kwargs))
+        return self._client.upsert(*args, **kwargs)
+
+    def search(self, *args, **kwargs):
+        """LEGACY method — raises AttributeError matching the underlying
+        client's API.
+
+        Modern qdrant-client has removed ``QdrantClient.search`` in
+        favor of ``query_points``. Production code in ``agents/`` +
+        ``shared/`` has migrated. This stub raises a clear, attributable
+        AttributeError so any straggling caller migrates intentionally
+        rather than getting a confusing wrap-then-attribute-error
+        chain. Bypass: use ``query_points`` directly.
+        """
+        raise AttributeError(
+            "InstrumentedQdrantClient.search has been removed: modern qdrant-client "
+            "has replaced QdrantClient.search with query_points. Use "
+            "InstrumentedQdrantClient.query_points(...) instead. See cc-task "
+            "instrumented-qdrant-positional-fix for context."
         )
-        return self._client.upsert(collection_name=collection_name, **kwargs)
 
 
 def get_qdrant_instrumented(agent_name: str, event_bus: "EventBus | None" = None):
