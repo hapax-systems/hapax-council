@@ -14,10 +14,16 @@ Type=simple
 # patch enabled. Coexists with stock m8c which lives at /usr/bin/m8c.
 ExecStart=/usr/local/bin/m8c-hapax
 # m8c is an SDL3 application; under a systemd user unit with no display
-# attached it will run headless once SDL_VIDEODRIVER is set to dummy.
-# The visible surface comes via /dev/video15 (v4l2-loopback), not via
-# an X/Wayland window.
-Environment=SDL_VIDEODRIVER=dummy
+# attached it must run headless. The `dummy` SDL video driver does NOT
+# provide an OpenGL context — m8c-hapax fails with "OpenGL support is
+# either not configured in SDL or not available in current SDL video
+# driver (dummy)" and crash-loops at ~2s cadence (verified 2026-05-03,
+# restart counter ~16k). The `offscreen` driver provides an EGL
+# surfaceless OpenGL context that the renderer accepts; SDL_RenderReadPixels
+# (the SHM bridge's hot path in packages/m8c-hapax/shm_sink.c) works
+# identically. The visible surface comes via /dev/shm/hapax-sources/
+# m8-display.rgba (compositor external_rgba source), not via a window.
+Environment=SDL_VIDEODRIVER=offscreen
 # v4l2 loopback target for the bridge (override of compile-time default).
 # Matches the pin in /etc/modprobe.d/hapax-m8.conf.
 Environment=M8C_V4L2_SINK_PATH=/dev/video15
