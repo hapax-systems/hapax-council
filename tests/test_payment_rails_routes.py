@@ -1036,3 +1036,154 @@ def test_stripe_payment_link_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Ko-fi rail integration tests (cc-task ko-fi-end-to-end-wiring)
+# ===========================================================================
+
+from shared.ko_fi_receive_only_rail import (
+    KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV,
+)
+
+_KO_FI_TOKEN = "kofi-test-verification-token-XYZ"
+
+
+def _ko_fi_payload(
+    *,
+    kind: str = "Donation",
+    sender: str = "alice-supporter",
+    amount: str = "5.00",
+    currency: str = "USD",
+    occurred_at: str = "2026-05-03T00:00:00Z",
+    token: str | None = _KO_FI_TOKEN,
+) -> dict:
+    """Realistic Ko-fi webhook envelope (Ko-fi sends straight JSON)."""
+    payload = {
+        "verification_token": token,
+        "message_id": "fff-ddd-eee-aaa",
+        "timestamp": occurred_at,
+        "type": kind,
+        "from_name": sender,
+        "amount": amount,
+        "currency": currency,
+        "is_public": True,
+        "message": "thanks for the work",  # PII; rail must NOT extract
+        "email": "leak@example.com",  # PII (Ko-fi sends if marketing-opt-in)
+    }
+    if token is None:
+        del payload["verification_token"]
+    return payload
+
+
+@pytest.fixture
+def ko_fi_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    return tmp_path / "hapax-state" / "publications" / "ko-fi"
+
+
+@pytest.fixture
+def ko_fi_token_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv(KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV, _KO_FI_TOKEN)
+    return _KO_FI_TOKEN
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_donation_writes_manifest(ko_fi_output_dir: Path, ko_fi_token_env: str) -> None:
+    payload = _ko_fi_payload(kind="Donation")
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "received"
+    assert body["event_kind"] == "donation"
+    files = list(ko_fi_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+    contents = files[0].read_text()
+    assert "alice-supporter" in contents
+    # PII must not leak
+    assert "thanks for the work" not in contents
+    assert "leak@example.com" not in contents
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_subscription_writes_manifest(
+    ko_fi_output_dir: Path, ko_fi_token_env: str
+) -> None:
+    payload = _ko_fi_payload(kind="Subscription", sender="bob-patron")
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["event_kind"] == "subscription"
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_token_mismatch_returns_400(
+    ko_fi_output_dir: Path, ko_fi_token_env: str
+) -> None:
+    payload = _ko_fi_payload(token="wrong-token")
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert response.status_code == 400
+    assert "verification_token" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_missing_token_returns_400(
+    ko_fi_output_dir: Path, ko_fi_token_env: str
+) -> None:
+    payload = _ko_fi_payload(token=None)
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_unaccepted_event_kind_returns_400(
+    ko_fi_output_dir: Path, ko_fi_token_env: str
+) -> None:
+    payload = _ko_fi_payload(kind="Unknown Type")
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_empty_body_returns_ping_ok() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/ko-fi", content=b"")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ping_ok"
+
+
+def test_ko_fi_publisher_module_carries_no_send_path() -> None:
+    import inspect
+
+    import agents.publication_bus.ko_fi_publisher as mod
+
+    src = inspect.getsource(mod).lower()
+    forbidden_verbs = (
+        "def send",
+        "def initiate",
+        "def payout",
+        "def transfer",
+        "def origination",
+    )
+    for token in forbidden_verbs:
+        assert token not in src, f"unexpected send-path: {token!r}"
