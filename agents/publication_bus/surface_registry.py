@@ -389,6 +389,17 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "promised subscriber experience."
         ),
     ),
+    "reddit-account": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/reddit-account.md",
+        scope_note=(
+            "Reddit is a multi-moderator community platform. Subreddits enforce "
+            "per-community rules including bot-content prohibitions; comments "
+            "arrive from named accounts with engagement-reciprocity expectations; "
+            "the platform algorithmically penalizes accounts that post without "
+            "engaging."
+        ),
+    ),
 }
 
 

@@ -51,3 +51,8 @@ refusals:
     cc_task: leverage-REFUSED-twitter-linkedin-substack-accounts
     publisher_class: agents.publication_bus.publisher_kit.refused.SubstackRefusedPublisher
     lifecycle_probe: substack-automated-digest-tier
+  reddit-account:
+    brief: docs/refusal-briefs/reddit-account.md
+    cc_task: reddit-refusal-brief
+    publisher_class: agents.publication_bus.publisher_kit.refused.RedditRefusedPublisher
+    lifecycle_probe: reddit-machine-author-broadcast-tier
