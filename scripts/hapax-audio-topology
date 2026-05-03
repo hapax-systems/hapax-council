@@ -732,6 +732,46 @@ def _write_topology_prom(path: Path, payload: dict) -> None:
         ]
     )
 
+    # cc-task audio-audit-E-topology-prometheus-metrics (Auditor E, 2026-05-03):
+    # surface declared / live edge accounting + present|missing|extra split so
+    # Grafana can render drift trends and alert when live > declared (= unexpected
+    # link, possible leak). Existing metrics above cover the classification axis;
+    # these add the topology-as-set axis.
+    declared_edges = int(payload.get("declared_edge_count", 0))
+    live_edges = int(payload.get("live_edge_count", 0))
+    drift = payload.get("drift", {}) or {}
+    missing_count = sum(
+        len(drift.get(key, []) or [])
+        for key in ("classified_missing_edges", "unclassified_missing_edges")
+    )
+    extra_count = sum(
+        len(drift.get(key, []) or [])
+        for key in ("classified_added_edges", "unclassified_added_edges")
+    )
+    # Present = declared edges that ALSO appear live = declared - missing.
+    # Clamp at 0 in the pathological case that the descriptor was tampered
+    # mid-run and the math under-counts.
+    present_count = max(0, declared_edges - missing_count)
+
+    lines.extend(
+        [
+            "# HELP hapax_audio_topology_declared_links_total "
+            "Count of edges in the canonical descriptor (config/audio-topology.yaml)",
+            "# TYPE hapax_audio_topology_declared_links_total gauge",
+            f"hapax_audio_topology_declared_links_total {declared_edges}",
+            "# HELP hapax_audio_topology_live_links_total "
+            "Live PipeWire edges grouped by state vs the canonical descriptor",
+            "# TYPE hapax_audio_topology_live_links_total gauge",
+            f'hapax_audio_topology_live_links_total{{state="present"}} {present_count}',
+            f'hapax_audio_topology_live_links_total{{state="missing"}} {missing_count}',
+            f'hapax_audio_topology_live_links_total{{state="extra"}} {extra_count}',
+            "# HELP hapax_audio_topology_drift_total "
+            "Total drift edges (missing + extra) at this verify tick",
+            "# TYPE hapax_audio_topology_drift_total counter",
+            f"hapax_audio_topology_drift_total {missing_count + extra_count}",
+        ]
+    )
+
     tmp = path.with_name(f"{path.name}.tmp")
     try:
         tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -1,10 +1,15 @@
 [Unit]
-Description=Boot-time + periodic Hapax PipeWire topology drift verifier (audit A#5)
+Description=Boot-time + periodic Hapax PipeWire topology drift verifier (audit A#5 + Auditor E)
 
 [Timer]
+# Auditor E (cc-task audio-audit-E-topology-prometheus-metrics, 2026-05-03):
+# tightened from 120s → 30s so Grafana drift trends + alerts on
+# `hapax_audio_topology_live_links_total{state="extra"} > 0` catch a mid-run
+# topology mutation within the same tick window the operator typically uses
+# to investigate a "did I break something just now?" question.
 OnBootSec=60s
-OnUnitActiveSec=120s
-AccuracySec=10s
+OnUnitActiveSec=30s
+AccuracySec=5s
 Unit=hapax-audio-topology-verify.service
 Persistent=false
 
