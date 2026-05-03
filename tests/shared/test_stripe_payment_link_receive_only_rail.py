@@ -418,11 +418,12 @@ def test_event_type_not_string_raises():
 
 
 def test_amount_not_integer_raises():
+    """Non-numeric strings still fail closed (Dahlia accepts decimal strings only)."""
     receiver = StripePaymentLinkRailReceiver()
     payload = _payment_intent_payload()
     payload["data"]["object"]["amount"] = "twenty-five-bucks"
     payload["data"]["object"]["amount_received"] = "twenty-five-bucks"
-    with pytest.raises(ReceiveOnlyRailError, match="amount must be an integer"):
+    with pytest.raises(ReceiveOnlyRailError, match="not a valid integer"):
         receiver.ingest_webhook(payload, signature=None)
 
 
@@ -765,3 +766,92 @@ def test_default_idempotency_db_path_falls_back_to_home(monkeypatch):
     monkeypatch.delenv("HAPAX_HOME", raising=False)
     p = _default_idempotency_db_path()
     assert p == Path.home() / "hapax-state" / "stripe-payment-link" / "idempotency.db"
+
+
+# ---------------------------------------------------------------------------
+# Stripe API version 2026-03-25.dahlia decimal-string forward-compat
+# (cc-task: stripe-dahlia-decimal-readiness)
+# ---------------------------------------------------------------------------
+
+
+def test_amount_integer_minor_units_still_accepted():
+    """Pre-Dahlia: amount as int (current production shape) still works."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _payment_intent_payload(amount=2500)
+    event = receiver.ingest_webhook(payload, signature=None)
+    assert event is not None
+    assert event.amount_currency_cents == 2500
+
+
+def test_amount_integer_string_dahlia_minor_units_accepted():
+    """Dahlia: amount as integer string ("2500") accepted as minor units."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _payment_intent_payload()
+    payload["data"]["object"]["amount"] = "2500"
+    payload["data"]["object"]["amount_received"] = "2500"
+    event = receiver.ingest_webhook(payload, signature=None)
+    assert event is not None
+    assert event.amount_currency_cents == 2500
+
+
+def test_amount_decimal_string_dahlia_major_units_accepted():
+    """Dahlia: amount as decimal string ("25.00") → 2500 cents."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _payment_intent_payload()
+    payload["data"]["object"]["amount"] = "25.00"
+    payload["data"]["object"]["amount_received"] = "25.00"
+    event = receiver.ingest_webhook(payload, signature=None)
+    assert event is not None
+    assert event.amount_currency_cents == 2500
+
+
+def test_amount_decimal_string_with_one_cent_accepted():
+    """Dahlia: "0.01" → 1 cent, no float drift."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _payment_intent_payload()
+    payload["data"]["object"]["amount"] = "0.01"
+    payload["data"]["object"]["amount_received"] = "0.01"
+    event = receiver.ingest_webhook(payload, signature=None)
+    assert event is not None
+    assert event.amount_currency_cents == 1
+
+
+def test_amount_decimal_string_fractional_cents_rejected():
+    """Dahlia: "1.234" doesn't multiply to integer cents — fail closed."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _payment_intent_payload()
+    payload["data"]["object"]["amount"] = "1.234"
+    payload["data"]["object"]["amount_received"] = "1.234"
+    with pytest.raises(ReceiveOnlyRailError, match="does not multiply to integer cents"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_amount_empty_string_rejected():
+    """Dahlia: empty amount string fails closed."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _payment_intent_payload()
+    payload["data"]["object"]["amount"] = ""
+    payload["data"]["object"]["amount_received"] = ""
+    with pytest.raises(ReceiveOnlyRailError, match="empty"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_amount_bool_rejected():
+    """``True``/``False`` (bool subclasses int) explicitly fails closed."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _payment_intent_payload()
+    payload["data"]["object"]["amount"] = True
+    payload["data"]["object"]["amount_received"] = True
+    with pytest.raises(ReceiveOnlyRailError, match="amount must be"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_subscription_unit_amount_decimal_string_accepted():
+    """Dahlia: subscription line items can ship unit_amount as decimal string."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _subscription_created_payload()
+    # Replace unit_amount int with Dahlia decimal-string form ($10.00).
+    payload["data"]["object"]["items"]["data"][0]["price"]["unit_amount"] = "10.00"
+    event = receiver.ingest_webhook(payload, signature=None)
+    assert event is not None
+    assert event.amount_currency_cents == 1000  # $10.00 → 1000 cents
