@@ -506,6 +506,8 @@ class PatreonRailReceiver:
         payload: dict[str, Any],
         signature: str | None,
         event_header: str | None,
+        *,
+        raw_body: bytes | None = None,
     ) -> PledgeEvent | None:
         """Validate + normalize a single Patreon webhook delivery.
 
@@ -517,6 +519,14 @@ class PatreonRailReceiver:
         treated as a no-op heartbeat (Patreon does not ship a formal
         ping but operators may invoke the receiver with empty input
         for liveness checks).
+
+        ``raw_body`` is the raw HTTP body bytes Patreon signed
+        (Patreon signs ``raw_body`` with HMAC MD5 in the
+        ``X-Patreon-Signature`` header).  When provided, signature
+        verification uses the raw bytes — the only correct shape
+        against live Patreon deliveries.  When omitted, the receiver
+        falls back to canonical-encoding the parsed payload (preserves
+        prior behavior the rail's own unit tests rely on).
         """
         if not isinstance(payload, dict):
             raise ReceiveOnlyRailError(f"payload must be a dict, got {type(payload).__name__}")
@@ -529,7 +539,8 @@ class PatreonRailReceiver:
                 "missing 'X-Patreon-Event' header (event kind is header-borne, not body-borne)"
             )
 
-        payload_bytes = _canonical_bytes(payload)
+        canonical = _canonical_bytes(payload)
+        payload_bytes = raw_body if raw_body is not None else canonical
 
         if signature is not None:
             secret = self._resolve_secret()
