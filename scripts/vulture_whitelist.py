@@ -1532,6 +1532,34 @@ _kofi_event_to_manifest_record
 _kofi_manifest_path_for_event
 receive_ko_fi_webhook
 
+# Patreon V5 publisher + FastAPI route — cc-task patreon-end-to-end-wiring
+# (6th live monetization rail). Patreon uses HMAC MD5 (NOT SHA-256) per
+# their documented wire format; event-kind in X-Patreon-Event header.
+# Pledge-deletion auto-link to refusal log.
+from agents.publication_bus.patreon_publisher import (
+    PatreonPublisher,
+)
+from agents.publication_bus.patreon_publisher import (
+    event_to_manifest_record as _patreon_event_to_manifest_record,
+)
+from agents.publication_bus.patreon_publisher import (
+    manifest_path_for_event as _patreon_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    PATREON_EVENT_HEADER,
+    PATREON_SIGNATURE_HEADER,
+    receive_patreon_webhook,
+)
+
+PatreonPublisher.publish_event
+PatreonPublisher._render_manifest_body
+PatreonPublisher._auto_link_cancellation_to_refusal_log
+_patreon_event_to_manifest_record
+_patreon_manifest_path_for_event
+PATREON_EVENT_HEADER
+PATREON_SIGNATURE_HEADER
+receive_patreon_webhook
+
 # R9 follow-up: apply_layout_switch adapter (cc-task
 # dynamic-compositor-layout-switching-followup). Ships ahead of any
 # caller; whitelisted until director-loop / systemd-timer wiring lands

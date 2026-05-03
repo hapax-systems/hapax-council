@@ -45,6 +45,7 @@ from agents.publication_bus.liberapay_publisher import LiberapayPublisher
 from agents.publication_bus.open_collective_publisher import (
     OpenCollectivePublisher,
 )
+from agents.publication_bus.patreon_publisher import PatreonPublisher
 from agents.publication_bus.stripe_payment_link_publisher import (
     StripePaymentLinkPublisher,
 )
@@ -71,6 +72,12 @@ from shared.open_collective_receive_only_rail import (
 )
 from shared.open_collective_receive_only_rail import (
     ReceiveOnlyRailError as OpenCollectiveReceiveOnlyRailError,
+)
+from shared.patreon_receive_only_rail import (
+    PatreonRailReceiver,
+)
+from shared.patreon_receive_only_rail import (
+    ReceiveOnlyRailError as PatreonReceiveOnlyRailError,
 )
 from shared.stripe_payment_link_receive_only_rail import (
     ReceiveOnlyRailError as StripePaymentLinkReceiveOnlyRailError,
@@ -103,6 +110,15 @@ STRIPE_PAYMENT_LINK_SIGNATURE_HEADER: str = "Stripe-Signature"
 """Stripe canonical signature header — timestamped HMAC SHA-256 with
 the documented ``t=<unix_ts>,v1=<hex_digest>`` format. The rail
 parses this internally and verifies replay-tolerance separately."""
+
+PATREON_SIGNATURE_HEADER: str = "X-Patreon-Signature"
+"""Patreon webhook signature header — hex-encoded HMAC MD5 digest
+(NOT SHA-256, per Patreon's documented wire format)."""
+
+PATREON_EVENT_HEADER: str = "X-Patreon-Event"
+"""Patreon event-kind header — separate from the signature header.
+Carries the colon-delimited event name (e.g. ``members:create``,
+``members:pledge:delete``)."""
 
 
 @router.post("/github-sponsors")
@@ -455,10 +471,78 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/patreon")
+async def receive_patreon_webhook(request: Request) -> JSONResponse:
+    """Receive a Patreon webhook delivery and dispatch.
+
+    Patreon's signature shape is HMAC MD5 (not SHA-256, per their
+    documented wire format) in the ``X-Patreon-Signature`` header.
+    The event-kind ships separately in ``X-Patreon-Event`` (colon-
+    delimited form like ``members:pledge:create``).
+    """
+    raw_body = await request.body()
+
+    if not raw_body:
+        receiver = PatreonRailReceiver()
+        result = receiver.ingest_webhook({}, None, None)
+        if result is None:
+            return JSONResponse({"status": "ping_ok"})
+        raise HTTPException(status_code=500, detail="unexpected non-None result from heartbeat")
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        log.warning("patreon webhook: malformed JSON")
+        raise HTTPException(status_code=400, detail=f"malformed JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+    signature = request.headers.get(PATREON_SIGNATURE_HEADER)
+    event_header = request.headers.get(PATREON_EVENT_HEADER)
+
+    receiver = PatreonRailReceiver()
+    try:
+        event = receiver.ingest_webhook(payload, signature, event_header, raw_body=raw_body)
+    except PatreonReceiveOnlyRailError as exc:
+        log.warning("patreon webhook rejected: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if event is None:
+        return JSONResponse({"status": "ping_ok"})
+
+    publisher = PatreonPublisher()
+    publish_result = publisher.publish_event(event)
+
+    if publish_result.refused:
+        log.info("patreon publish refused: %s", publish_result.detail)
+        return JSONResponse(
+            {"status": "refused", "detail": publish_result.detail},
+            status_code=200,
+        )
+    if publish_result.error:
+        log.error("patreon publish error: %s", publish_result.detail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"publisher transport error: {publish_result.detail}",
+        )
+
+    return JSONResponse(
+        {
+            "status": "received",
+            "event_kind": event.event_kind.value,
+            "publish_detail": publish_result.detail,
+            "raw_payload_sha256": event.raw_payload_sha256,
+        }
+    )
+
+
 __all__ = [
     "GITHUB_SPONSORS_SIGNATURE_HEADER",
     "LIBERAPAY_SIGNATURE_HEADER",
     "OPEN_COLLECTIVE_SIGNATURE_HEADER",
+    "PATREON_EVENT_HEADER",
+    "PATREON_SIGNATURE_HEADER",
     "STRIPE_PAYMENT_LINK_SIGNATURE_HEADER",
     "router",
 ]

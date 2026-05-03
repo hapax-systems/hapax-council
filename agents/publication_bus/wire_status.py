@@ -133,6 +133,22 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.patreon_publisher": WireEntry(
+        module="agents.publication_bus.patreon_publisher",
+        surface_slug="patreon-receiver",
+        status="WIRED",
+        pass_key_required="patreon/webhook-secret",
+        rationale=(
+            "Sixth wired monetization rail (cc-task patreon-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/patreon. HMAC MD5 (not SHA-256, per Patreon's "
+            "documented wire format) via X-Patreon-Signature + "
+            "PATREON_WEBHOOK_SECRET env var. Event-kind in X-Patreon-Event "
+            "header (colon-delimited form). Pledge-deletion events emit a "
+            "RefusalEvent under axiom full_auto_or_nothing for the "
+            "refusal_annex_renderer to aggregate."
+        ),
+    ),
     "agents.publication_bus.ko_fi_publisher": WireEntry(
         module="agents.publication_bus.ko_fi_publisher",
         surface_slug="ko-fi-receiver",
