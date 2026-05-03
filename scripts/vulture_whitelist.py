@@ -1388,6 +1388,18 @@ registered_verbs
 consumer_for
 no_orphan_verbs
 
+# cc-task u4-eight-slot-micromove-cycle-activate (Phase 0): the cycle +
+# accessors are the API consumers (compositor main loop tick, Prometheus
+# counter wiring) will hit at Phase 1. Whitelisted until Phase 1 lands.
+from shared.micromove_cycle import MicromoveCycle, slot_by_name
+
+MicromoveCycle
+MicromoveCycle.current_slot
+MicromoveCycle.current_action
+MicromoveCycle.tick
+MicromoveCycle.reset
+slot_by_name
+
 # Activity-family visibility-window tracker — singleton accessors used
 # by the recruitment-bias bridge. Per cc-task
 # `p3-governance-recruitment-bias-replacement`: the prior
