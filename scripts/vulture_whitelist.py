@@ -1484,3 +1484,11 @@ _oc_event_to_manifest_record
 _oc_manifest_path_for_event
 OPEN_COLLECTIVE_SIGNATURE_HEADER
 receive_open_collective_webhook
+
+# R9 follow-up: apply_layout_switch adapter (cc-task
+# dynamic-compositor-layout-switching-followup). Ships ahead of any
+# caller; whitelisted until director-loop / systemd-timer wiring lands
+# in a 3rd-slice PR.
+from agents.studio_compositor.layout_switcher import apply_layout_switch as _r9_apply_layout_switch
+
+_r9_apply_layout_switch
