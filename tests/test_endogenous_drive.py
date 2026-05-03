@@ -185,10 +185,20 @@ class TestEvaluate:
 
 
 class TestExtremityOverride:
-    def test_extreme_accumulation_breaks_through_ritual(self):
+    def test_extreme_accumulation_breaks_through_ritual(self, monkeypatch: pytest.MonkeyPatch):
         """45 minutes of unnarrated rich chronicle during ritual should
-        produce a non-trivial posterior despite role suppression."""
+        produce a non-trivial posterior despite role suppression.
+
+        Pin the Thompson sample to its prior mean (Beta(2,1) → 0.67) so
+        the assertion is deterministic. Without pinning, the random
+        Beta(2,1) draw can fall low enough (~1% of runs) for the product
+        ``1.0 * 2.2 * 1.2 * 0.35 * 1.3 * sample`` to dip below the 0.12
+        threshold and flake CI.
+        """
         drive = EndogenousDrive(tau=120.0)
+        # Pin Thompson sample to Beta(2,1) prior mean — same idiom used
+        # by ``test_high_pressure_high_chronicle_high_posterior``.
+        monkeypatch.setattr(drive, "_thompson_sample", lambda: 0.67)
         now = time.time()
         drive._last_emission_ts = now - 2700.0  # 45 minutes
         ctx = DriveContext(
@@ -203,8 +213,8 @@ class TestExtremityOverride:
         # stimmung_mod = 1.2
         # role_mod = 0.35 (ritual)
         # presence_mod = 1.3 (absent)
-        # thompson ≈ 0.67 (mean of Beta(2,1))
-        # product ≈ 1.0 * 2.2 * 1.2 * 0.35 * 1.3 * 0.67 ≈ 0.80
+        # thompson = 0.67 (pinned)
+        # product = 1.0 * 2.2 * 1.2 * 0.35 * 1.3 * 0.67 ≈ 0.80
         posterior = drive.evaluate(ctx)
         assert posterior > drive.threshold
 
