@@ -857,6 +857,125 @@ SHADER_NODE_AFFORDANCES = [
             provenance_ref="provenance:youtube-slot-unverified",
         ),
     ),
+    # cc-task wgsl-node-recruitment-investigation (audit U7, 2026-05-03):
+    # Pre-this-PR coverage was 13 of 60 WGSL nodes registered as
+    # affordances — the other 47 lived on disk but were unrecruitable
+    # because the AffordancePipeline cosine-similarity stage had no
+    # Qdrant entries to find. The 12 entries below add the most
+    # thematically-distinct of those 47 so director impingements with
+    # narratives like "lo-fi VHS texture" or "ASCII glitch" can recruit
+    # something instead of falling back to the bare 8-pass core. Each
+    # description is tuned to be cosine-similarity-discoverable for the
+    # impingement vocabulary (visual register, perceptual effect, mood)
+    # rather than being a literal restatement of the shader algorithm.
+    CapabilityRecord(
+        name="node.bloom",
+        description=(
+            "Suffuse the visual field with luminous halation that lifts highlights "
+            "into a soft glowing bloom for warm cinematic atmosphere"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.vhs",
+        description=(
+            "Lay down analog VHS tape texture with chroma bleed scanline noise "
+            "and head-switching artifacts for nostalgic lo-fi register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.halftone",
+        description=(
+            "Reduce the visual field to printed dot-matrix halftone screen "
+            "evoking newsprint comic and risograph publication aesthetics"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.kaleidoscope",
+        description=(
+            "Fold the visual field into kaleidoscopic radial mirror symmetry "
+            "for psychedelic mandala-like patterning"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.scanlines",
+        description=(
+            "Overlay CRT scanlines and phosphor mask to evoke retro television "
+            "broadcast and arcade monitor texture"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.ascii",
+        description=(
+            "Render the visual field as luminance-mapped ASCII typography "
+            "for terminal-aesthetic text-art register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.glitch_block",
+        description=(
+            "Inject blocky datamosh corruption and macroblock displacement "
+            "for digital-decay glitch register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.pixsort",
+        description=(
+            "Sort pixel rows and columns by luminance to produce flowing "
+            "stratified bands of color for generative-art register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.kuwahara",
+        description=(
+            "Smooth the visual field into painterly impressionist regions "
+            "with edge-preserving anisotropic flattening"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.dither",
+        description=(
+            "Quantize the color palette with ordered Bayer dithering "
+            "for limited-palette retro-computing aesthetic"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.palette_remap",
+        description=(
+            "Remap the visual field to a constrained color palette for "
+            "stylized graphic-design register and mood enforcement"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.edge_detect",
+        description=(
+            "Reveal the visual field as line-art contour drawing emphasizing "
+            "structural boundaries for diagrammatic-sketch register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
