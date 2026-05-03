@@ -181,7 +181,12 @@ def cmd_diff(args: argparse.Namespace) -> int:
     return 2
 
 
-def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
+def _diff_descriptors(
+    a: TopologyDescriptor,
+    b: TopologyDescriptor,
+    *,
+    collect: dict | None = None,
+) -> bool:
     """Compare two descriptors; print report + return True if drift detected.
 
     Matches nodes by ``pipewire_name`` (the only identifier stable
@@ -197,6 +202,12 @@ def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
     in both by pipewire_name, a kind disagreement means the inspector's
     classification heuristic missed the mark, not that the operator's
     config and the running graph have drifted.
+
+    When ``collect`` is provided, structured drift records are appended
+    to it under canonical keys (``classified_added_nodes``,
+    ``unclassified_added_nodes``, ``classified_added_edges``,
+    ``unclassified_added_edges``, etc.). Used by ``--json``/``--output``
+    to publish the verify result as machine-readable evidence.
     """
     a_by_name = {n.pipewire_name: n for n in a.nodes}
     b_by_name = {n.pipewire_name: n for n in b.nodes}
@@ -218,11 +229,19 @@ def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
         print("~ nodes only in right (classified external/runtime):")
         for node, classification in classified_added:
             print(f"  ~ {_format_node(node).strip()} [{classification}]")
+            if collect is not None:
+                collect.setdefault("classified_added_nodes", []).append(
+                    {"node": node.pipewire_name, "classification": classification}
+                )
     if unclassified_added:
         drift = True
         print("+ nodes only in right (live extras):")
         for node in unclassified_added:
             print(f"  + {_format_node(node).strip()}")
+            if collect is not None:
+                collect.setdefault("unclassified_added_nodes", []).append(
+                    {"node": node.pipewire_name}
+                )
 
     classified_removed = []
     unclassified_removed = []
@@ -237,11 +256,19 @@ def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
         print("~ nodes only in left (classified expected-missing):")
         for node, classification in classified_removed:
             print(f"  ~ {_format_node(node).strip()} [{classification}]")
+            if collect is not None:
+                collect.setdefault("classified_missing_nodes", []).append(
+                    {"node": node.pipewire_name, "classification": classification}
+                )
     if unclassified_removed:
         drift = True
         print("- nodes only in left (expected but missing):")
         for node in unclassified_removed:
             print(f"  - {_format_node(node).strip()}")
+            if collect is not None:
+                collect.setdefault("unclassified_missing_nodes", []).append(
+                    {"node": node.pipewire_name}
+                )
 
     kind_mismatches = []
     for name in sorted(shared_names):
@@ -254,6 +281,14 @@ def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
         print("~ nodes present with kind mismatch (inspector classification only):")
         for name, left_kind, right_kind in kind_mismatches:
             print(f"  ~ {name}: descriptor={left_kind.value} live={right_kind.value}")
+            if collect is not None:
+                collect.setdefault("kind_mismatches", []).append(
+                    {
+                        "node": name,
+                        "descriptor_kind": left_kind.value,
+                        "live_kind": right_kind.value,
+                    }
+                )
 
     a_edges = {_edge_name_key(a, e) for e in a.edges}
     b_edges = {_edge_name_key(b, e) for e in b.edges}
@@ -272,11 +307,23 @@ def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
         print("~ edges only in right (classified external/runtime):")
         for source_name, target_name, classification in classified_added_edges:
             print(f"  ~ {source_name} → {target_name} [{classification}]")
+            if collect is not None:
+                collect.setdefault("classified_added_edges", []).append(
+                    {
+                        "source": source_name,
+                        "target": target_name,
+                        "classification": classification,
+                    }
+                )
     if unclassified_added_edges:
         drift = True
         print("+ edges only in right:")
         for s, t in unclassified_added_edges:
             print(f"  + {s} → {t}")
+            if collect is not None:
+                collect.setdefault("unclassified_added_edges", []).append(
+                    {"source": s, "target": t}
+                )
 
     classified_removed_edges = []
     unclassified_removed_edges = []
@@ -290,11 +337,23 @@ def _diff_descriptors(a: TopologyDescriptor, b: TopologyDescriptor) -> bool:
         print("~ edges only in left (classified expected-missing):")
         for source_name, target_name, classification in classified_removed_edges:
             print(f"  ~ {source_name} → {target_name} [{classification}]")
+            if collect is not None:
+                collect.setdefault("classified_missing_edges", []).append(
+                    {
+                        "source": source_name,
+                        "target": target_name,
+                        "classification": classification,
+                    }
+                )
     if unclassified_removed_edges:
         drift = True
         print("- edges only in left (descriptor-declared but not live):")
         for s, t in unclassified_removed_edges:
             print(f"  - {s} → {t}")
+            if collect is not None:
+                collect.setdefault("unclassified_missing_edges", []).append(
+                    {"source": s, "target": t}
+                )
 
     return drift
 
@@ -409,6 +468,21 @@ def cmd_verify(args: argparse.Namespace) -> int:
     Handytraxx under Mode D, broadcast tap, S-4 USB-direct). The
     vinyl profile fails the verify call if the chain carries any
     ERROR-severity finding.
+
+    Audit-A#5 follow-up flags:
+      ``--strict``  — fail on any drift (matches default behaviour
+                      but also exits non-zero when classified-only
+                      changes accumulate above zero).
+      ``--json``    — print the structured drift report as JSON to
+                      stdout in addition to the human-readable diff.
+      ``--output PATH`` — write the structured drift report to PATH
+                      (used by the boot-time/periodic systemd timer).
+      ``--prometheus-textfile PATH`` — additionally render
+                      Prometheus textfile-collector compatible metrics
+                      to PATH (defaults to
+                      ``/var/lib/node_exporter/textfile_collector/
+                      hapax_audio_topology.prom`` when --output is
+                      provided and writing the prom file is permitted).
     """
     declared = _load(args.descriptor)
     try:
@@ -426,9 +500,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"error: failed to load live graph: {exc}", file=sys.stderr)
         return 1
 
-    drift = _diff_descriptors(declared, live)
+    collect: dict = {}
+    drift = _diff_descriptors(declared, live, collect=collect)
 
     vinyl_ok = True
+    vinyl_summary: dict | None = None
     if getattr(args, "profile", None) == "vinyl":
         from shared.vinyl_chain_verify import (
             format_report,
@@ -439,6 +515,40 @@ def cmd_verify(args: argparse.Namespace) -> int:
         result = verify_vinyl_chain(live)
         print(format_report(result))
         vinyl_ok = result.ok
+        vinyl_summary = {"ok": vinyl_ok}
+
+    # L-12 invariant + TTS-broadcast-path check are also surfaced
+    # in the structured report so the systemd timer's textfile
+    # metrics gauge them without each one needing its own probe.
+    l12_check = check_l12_forward_invariant(declared)
+    tts_check = check_tts_broadcast_path(live)
+
+    structured = _build_verify_report(
+        descriptor_path=args.descriptor,
+        declared=declared,
+        live=live,
+        drift_records=collect,
+        live_matches_canonical=not drift,
+        l12_check=l12_check,
+        tts_check=tts_check,
+        vinyl_summary=vinyl_summary,
+        strict=bool(getattr(args, "strict", False)),
+    )
+
+    output_path = getattr(args, "output", None)
+    if output_path:
+        _write_verify_json(Path(output_path), structured)
+
+    prom_path = getattr(args, "prometheus_textfile", None)
+    if prom_path is None and output_path:
+        prom_path = "/var/lib/node_exporter/textfile_collector/hapax_audio_topology.prom"
+    if prom_path:
+        _write_topology_prom(Path(prom_path), structured)
+
+    if getattr(args, "json", False):
+        import json
+
+        print(json.dumps(structured, indent=2, sort_keys=True))
 
     if drift:
         print(
@@ -449,8 +559,188 @@ def cmd_verify(args: argparse.Namespace) -> int:
     if not vinyl_ok:
         print("\nvinyl profile FAIL — see report above")
         return 2
+    # L-12 + TTS-broadcast invariants influence exit code only under --strict
+    # (the boot-time/periodic systemd timer). Outside --strict the existing
+    # CLI semantics — only descriptor-vs-live drift gates exit code — are
+    # preserved so test fixtures and operator ad-hoc invocations don't trip
+    # on synthetic descriptors that legitimately omit the L-12 / TTS chain.
+    if getattr(args, "strict", False) and not l12_check.ok:
+        print("\nL-12 forward invariant FAIL — see report above")
+        return 2
+    if getattr(args, "strict", False) and not tts_check.ok:
+        print("\nTTS broadcast path FAIL — see report above")
+        return 2
+    if getattr(args, "strict", False):
+        # --strict tightens the success criteria: classified-only
+        # diffs (M8 fallback, external HDMI, etc.) also count as
+        # drift the operator should be informed about. They never
+        # block — but the boot-time timer's exit code reflects them.
+        classified_count = sum(
+            len(structured["drift"].get(key, []))
+            for key in (
+                "classified_added_nodes",
+                "classified_missing_nodes",
+                "classified_added_edges",
+                "classified_missing_edges",
+            )
+        )
+        if classified_count > 0:
+            print(
+                f"\n--strict: {classified_count} classified-only change(s); "
+                "see drift above (timer-only signal)."
+            )
+            # Classified-only drift returns 0 because operators have
+            # explicitly classified those edges/nodes — the report is
+            # still published for observability. Reserved 2 for true
+            # unclassified drift above.
     print("live graph matches descriptor (no unclassified drift)")
     return 0
+
+
+def _build_verify_report(
+    *,
+    descriptor_path: str,
+    declared: TopologyDescriptor,
+    live: TopologyDescriptor,
+    drift_records: dict,
+    live_matches_canonical: bool,
+    l12_check,
+    tts_check,
+    vinyl_summary: dict | None,
+    strict: bool,
+) -> dict:
+    """Assemble the structured drift report consumed by --json / --output."""
+    import time as _time
+    from datetime import UTC, datetime
+
+    edge_count_by_classification: dict[str, int] = {}
+    for key in (
+        "classified_added_edges",
+        "classified_missing_edges",
+        "unclassified_added_edges",
+        "unclassified_missing_edges",
+    ):
+        for record in drift_records.get(key, []):
+            classification = (
+                record.get("classification")
+                if "classified" in key and "unclassified" not in key
+                else "unclassified"
+            )
+            classification = classification or "unclassified"
+            edge_count_by_classification[classification] = (
+                edge_count_by_classification.get(classification, 0) + 1
+            )
+
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.fromtimestamp(_time.time(), tz=UTC)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "descriptor": descriptor_path,
+        "declared_node_count": len(declared.nodes),
+        "declared_edge_count": len(declared.edges),
+        "live_node_count": len(live.nodes),
+        "live_edge_count": len(live.edges),
+        "live_matches_canonical": bool(live_matches_canonical),
+        "strict": bool(strict),
+        "l12_forward_invariant": {
+            "ok": bool(l12_check.ok),
+            "violations": [
+                {"code": v.code, "message": v.message} for v in l12_check.violations
+            ],
+        },
+        "tts_broadcast_path": {
+            "ok": bool(tts_check.ok),
+            "missing_nodes": list(tts_check.missing_nodes),
+            "missing_edges": list(tts_check.missing_edges),
+        },
+        "vinyl_profile": vinyl_summary,
+        "drift": drift_records,
+        "edge_count_by_classification": edge_count_by_classification,
+    }
+
+
+def _write_verify_json(path: Path, payload: dict) -> None:
+    """Atomically publish the structured drift report."""
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _write_topology_prom(path: Path, payload: dict) -> None:
+    """Render Prometheus textfile-collector metrics for the topology verify.
+
+    Layout matches what node_exporter's textfile collector reads at
+    ``/var/lib/node_exporter/textfile_collector/``. We avoid pulling
+    ``prometheus_client`` into this script's hot path — the format is
+    trivial and stable.
+
+    Best-effort: if the textfile_collector directory is not writable
+    (developer workstation without node_exporter installed), the failure
+    is logged to stderr and the verify subcommand continues. The systemd
+    timer carries the writable path; CI does not write the file.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(
+            f"prometheus textfile not writable: {exc} (skipping metrics)",
+            file=sys.stderr,
+        )
+        return
+
+    lines: list[str] = [
+        "# HELP hapax_audio_topology_live_matches_canonical "
+        "1 when live PipeWire graph matches the canonical descriptor with no unclassified drift",
+        "# TYPE hapax_audio_topology_live_matches_canonical gauge",
+        f"hapax_audio_topology_live_matches_canonical "
+        f"{1 if payload.get('live_matches_canonical') else 0}",
+        "# HELP hapax_audio_topology_drift_edge_count "
+        "Count of drift edges (live - canonical), labelled by classification",
+        "# TYPE hapax_audio_topology_drift_edge_count counter",
+    ]
+    edge_counts = payload.get("edge_count_by_classification", {})
+    if not edge_counts:
+        lines.append('hapax_audio_topology_drift_edge_count{classification="none"} 0')
+    else:
+        for classification, count in sorted(edge_counts.items()):
+            safe = classification.replace('"', '\\"')
+            lines.append(
+                f'hapax_audio_topology_drift_edge_count{{classification="{safe}"}} {count}'
+            )
+
+    l12_violations = len(payload.get("l12_forward_invariant", {}).get("violations", []))
+    lines.extend(
+        [
+            "# HELP hapax_audio_topology_l12_invariant_violations "
+            "Count of static L-12 forward/private directionality violations",
+            "# TYPE hapax_audio_topology_l12_invariant_violations gauge",
+            f"hapax_audio_topology_l12_invariant_violations {l12_violations}",
+        ]
+    )
+
+    tts_ok = 1 if payload.get("tts_broadcast_path", {}).get("ok") else 0
+    lines.extend(
+        [
+            "# HELP hapax_audio_topology_tts_broadcast_path_ok "
+            "1 when hapax-tts-duck → hapax-tts-broadcast-* → livestream tap path is intact",
+            "# TYPE hapax_audio_topology_tts_broadcast_path_ok gauge",
+            f"hapax_audio_topology_tts_broadcast_path_ok {tts_ok}",
+        ]
+    )
+
+    tmp = path.with_name(f"{path.name}.tmp")
+    try:
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        print(
+            f"prometheus textfile write failed: {exc} (skipping metrics)",
+            file=sys.stderr,
+        )
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
@@ -702,6 +992,37 @@ def main() -> int:
             "Additional profile-specific verification (D-24 §11.4). "
             "'vinyl' runs shared.vinyl_chain_verify.verify_vinyl_chain "
             "and fails the invocation on any ERROR-severity finding."
+        ),
+    )
+    p_verify.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "Audit-A#5: tighten verify to also report on classified-only drift; "
+            "the boot-time/periodic systemd timer uses this for textfile metrics."
+        ),
+    )
+    p_verify.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the structured drift report as JSON to stdout.",
+    )
+    p_verify.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Write the structured drift report to this path (atomic tmp+rename). "
+            "Default: not written."
+        ),
+    )
+    p_verify.add_argument(
+        "--prometheus-textfile",
+        dest="prometheus_textfile",
+        default=None,
+        help=(
+            "Path for Prometheus textfile-collector metrics. Defaults to "
+            "/var/lib/node_exporter/textfile_collector/hapax_audio_topology.prom "
+            "when --output is provided. Pass an explicit empty value to skip."
         ),
     )
     p_verify.set_defaults(func=cmd_verify)

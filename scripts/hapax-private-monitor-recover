@@ -2,10 +2,13 @@
 """Recover or report the exact private monitor target.
 
 The private monitor contract is intentionally narrower than "play this on
-whatever sink is available."  This command resolves the explicit private Yeti
-monitor target, installs the repo-managed fail-closed bridge when requested,
-and writes sanitized status evidence.  If the target or bridge is absent, the
-state is ``blocked_absent``; there is never a default-sink fallback.
+whatever sink is available."  This command resolves the explicit private S-4
+USB IN monitor target (Option C, 2026-05-02 spec amendment), installs the
+repo-managed fail-closed bridge when requested, and writes sanitized status
+evidence.  If the target or bridge is absent, the state is ``blocked_absent``;
+there is never a default-sink fallback.
+
+Spec: docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 EXACT_PRIVATE_MONITOR_TARGET = (
-    "alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
+    "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 )
 BRIDGE_REPO_PATH = Path("config/pipewire/hapax-private-monitor-bridge.conf")
 DEFAULT_INSTALL_PATH = (
@@ -33,8 +36,8 @@ REQUIRED_BRIDGE_NODES = (
     "hapax-notification-private-monitor-capture",
     "hapax-notification-private-playback",
 )
-SANITIZED_TARGET_REF = "audio.yeti_monitor"
-ROUTE_REF = "route:private.yeti_monitor"
+SANITIZED_TARGET_REF = "audio.s4_private_monitor"
+ROUTE_REF = "route:private.s4_track_fenced"
 
 
 class BridgeStatus(TypedDict):
@@ -166,7 +169,7 @@ def _status(
         reason = "Exact private monitor target and fail-closed bridge are present."
     return {
         "checked_at": checked_at,
-        "surface_id": "audio.yeti_monitor",
+        "surface_id": "audio.s4_private_monitor",
         "route_id": ROUTE_REF,
         "state": state,
         "reason_code": reason_code,

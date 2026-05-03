@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# hapax-audio-topology-assertion-runner — wraps `hapax-audio-topology verify
+# --strict` and writes the outcome to /dev/shm/hapax-audio/topology-verify.json.
+#
+# Used by hapax-audio-topology-assertion.service (boot-time + every 120s).
+# Exit code mirrors the underlying verify --strict exit code so systemd
+# records the failure as a unit failure (and the operator's status panels
+# pick it up).
+#
+# Outcome JSON shape:
+#   {
+#     "checked_at":  "<iso-8601 UTC>",
+#     "exit_code":   <int>,
+#     "ok":          <bool>,
+#     "output":      "<last 4096 bytes of combined stdout+stderr>"
+#   }
+
+set -uo pipefail
+
+REPO="${HAPAX_REPO:-$HOME/projects/hapax-council}"
+DESCRIPTOR="${HAPAX_AUDIO_TOPOLOGY_DESCRIPTOR:-$REPO/config/audio-topology.yaml}"
+OUT_DIR="${HAPAX_AUDIO_TOPOLOGY_OUT_DIR:-/dev/shm/hapax-audio}"
+OUT_FILE="${OUT_DIR}/topology-verify.json"
+CLI="${HAPAX_AUDIO_TOPOLOGY_CLI:-$HOME/.local/bin/hapax-audio-topology}"
+
+mkdir -p "$OUT_DIR"
+
+OUTPUT="$("$CLI" verify --strict "$DESCRIPTOR" 2>&1)"
+RC=$?
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+OK=false
+if [ "$RC" -eq 0 ]; then
+    OK=true
+fi
+
+# Atomic write via tmp+rename. Truncate output to last 4096 bytes so the
+# file stays tail-friendly and bounded.
+TMP="$(mktemp -p "$OUT_DIR" topology-verify.XXXXXX.json)"
+TRUNCATED="$(printf '%s' "$OUTPUT" | tail -c 4096)"
+HAPAX_OUT="$TRUNCATED" python3 - "$TMP" "$NOW" "$RC" "$OK" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+tmp_path = pathlib.Path(sys.argv[1])
+checked_at = sys.argv[2]
+exit_code = int(sys.argv[3])
+ok = sys.argv[4] == "true"
+output = os.environ.get("HAPAX_OUT", "")
+
+payload = {
+    "checked_at": checked_at,
+    "exit_code": exit_code,
+    "ok": ok,
+    "output": output,
+}
+tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
+mv -f "$TMP" "$OUT_FILE"
+
+exit "$RC"
