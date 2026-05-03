@@ -140,10 +140,16 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   exit 0
 fi
 
-# Session worktree limit during Codex bootstrap: legacy Claude permanent
-# worktrees can coexist with Codex-native hapax-council--cx-* worktrees.
-# Cap: 8 visible session worktrees. Re-tighten after legacy Claude/Antigravity
-# worktrees are retired.
+# Session worktree limit during Codex+Gemini-Interactive bootstrap: legacy
+# Claude permanent worktrees coexist with Codex-native hapax-council--cx-*
+# worktrees AND the Gemini CLI Interactive iota lane (cc-task hello-iota,
+# PR feat(peer-model): hapax-gemini-iota worker lane).
+# Cap: 9 visible session worktrees (8 prior + iota). Re-tighten after
+# legacy Claude/Antigravity worktrees are retired. Known greek/cx/gemini
+# session worktree slots: alpha (primary), beta, gamma, zeta, epsilon,
+# delta-legacy, cx-amber, cx-blue, cx-cyan, cx-red, cx-violet, iota
+# (the iota lane is the first Gemini Interactive peer; if iota proves
+# stable for 24h, follow-up PR adds kappa/lambda/mu).
 #
 # Infrastructure worktrees under ~/.cache/ (e.g. rebuild-scratch at
 # $HOME/.cache/hapax/rebuild/worktree, managed by rebuild-logos.sh via
@@ -151,10 +157,10 @@ fi
 # scratch worktrees are NOT counted — they are not operator-visible session
 # worktrees and exist independently of session work.
 if echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s'; then
-    session_wt_cap=8
+    session_wt_cap=9
     session_wt_count=$(git worktree list 2>/dev/null | grep -Evc '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' || true)
     if [ "$session_wt_count" -ge "$session_wt_cap" ]; then
-        echo "BLOCKED: Max ${session_wt_cap} visible session worktrees during Claude+Codex transition. Clean up before adding another." >&2
+        echo "BLOCKED: Max ${session_wt_cap} visible session worktrees during Claude+Codex+Gemini-Interactive transition. Clean up before adding another." >&2
         echo "  Current visible session worktrees (infrastructure under ~/.cache/, .claude/worktrees/, and .codex/worktrees/ excluded):" >&2
         git worktree list 2>/dev/null | grep -Ev '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' | sed 's/^/    /' >&2
         git worktree list 2>/dev/null | grep -E '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' | sed 's/^/    [infra, not counted] /' >&2 || true

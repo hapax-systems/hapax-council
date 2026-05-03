@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Smoke-test the reliable Hapax Gemini CLI tmux send path.
+#
+# Mirror of scripts/hapax-claude-smoke-send and scripts/hapax-codex-smoke-send.
+# Spawns a throwaway tmux session named hapax-gemini-<role> backed by a plain
+# interactive bash (no Gemini CLI), then exercises hapax-gemini-send
+# --transport tmux --require-ack and verifies:
+#
+#   1. The stale prompt text was cleared before the paste landed.
+#   2. The pasted command executed and wrote the expected ACK token.
+#
+# Use this in CI to catch tmux paste/buffer regressions without launching
+# a real Gemini CLI session (which would consume Google quota + need OAuth).
+
+set -euo pipefail
+
+SESSION="${1:-gemini-smoke}"
+TMUX_NAME="hapax-gemini-$SESSION"
+ACK_DIR="${XDG_RUNTIME_DIR:-/tmp}/hapax-gemini-smoke"
+ACK_FILE="$ACK_DIR/$SESSION.ack"
+TRANSCRIPT="$ACK_DIR/$SESSION.transcript"
+
+mkdir -p "$ACK_DIR"
+rm -f "$ACK_FILE" "$TRANSCRIPT"
+
+cleanup() {
+  tmux kill-session -t "$TMUX_NAME" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+if tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
+  echo "hapax-gemini-smoke-send: refusing to reuse live tmux session $TMUX_NAME" >&2
+  exit 2
+fi
+
+tmux new-session -d -s "$TMUX_NAME" -c "$PWD" \
+  "bash --noprofile --norc -i"
+sleep 0.2
+
+# Seed stale prompt input. The sender should clear this before pasting.
+tmux send-keys -t "$TMUX_NAME" "STALE_PROMPT_TEXT"
+
+# Disable the 10s screen-idle wait for smoke (bash prompt is already idle).
+HAPAX_GEMINI_SEND_ROLE_ALLOWLIST="$SESSION" \
+HAPAX_GEMINI_SEND_STABILITY_SECONDS=0 \
+scripts/hapax-gemini-send \
+  --session "$SESSION" \
+  --transport tmux \
+  --require-ack \
+  --ack-file "$ACK_FILE" \
+  --ack-token "smoke-ok" \
+  --ack-timeout 5 \
+  --ack-mode sentinel \
+  --json \
+  --no-ack-instruction \
+  -- "printf '%s\n' smoke-ok > '$ACK_FILE'"
+
+tmux capture-pane -t "$TMUX_NAME" -p -S -80 >"$TRANSCRIPT"
+
+if grep -q "STALE_PROMPT_TEXT" "$TRANSCRIPT"; then
+  echo "hapax-gemini-smoke-send: stale prompt text was not cleared" >&2
+  exit 1
+fi
+
+if ! grep -Fxq "smoke-ok" "$ACK_FILE"; then
+  echo "hapax-gemini-smoke-send: ack file missing expected token" >&2
+  exit 1
+fi
+
+printf 'ok: %s acked via tmux; transcript=%s\n' "$SESSION" "$TRANSCRIPT"
