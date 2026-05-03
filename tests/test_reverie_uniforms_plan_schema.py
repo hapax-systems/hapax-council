@@ -422,6 +422,7 @@ def test_write_uniforms_end_to_end_produces_expected_keys(tmp_path: Path):
     # Plan defaults: noise(2) + rd(2) + color(2) + fb(1) + content(3) + post(1) = 11
     # Plus signal.stance + signal.color_warmth + fb.trace_* (4 new since fb
     # node only had decay) = 11 + 2 + 4 = 17.
+    # U8 mode tint is patched out above; dedicated tint tests pin color.hue_rotate.
     assert len(result) == 17
 
 
@@ -671,4 +672,7 @@ def test_write_uniforms_passes_normal_values_through(tmp_path: Path):
 
     result = json.loads(uniforms_file.read_text())
     assert result["noise.amplitude"] == pytest.approx(0.7 + 0.1)
-    assert result["color.hue_rotate"] == pytest.approx(70.0)
+    # color.hue_rotate is now derived from PALETTE_HINT[mode][0] by U8
+    # imagination-tint (#2378) — the chain delta is overwritten by the
+    # mode-bias derivation. Just check the key is present.
+    assert "color.hue_rotate" in result
