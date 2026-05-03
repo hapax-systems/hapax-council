@@ -55,6 +55,13 @@
         "inferred_perceptual_data_satisfies_witness",
         "spanless_perceptual_data_satisfies_grounded_claim",
         "protention_satisfies_current_claim",
+        "protention_as_fact_satisfies_current_claim",
+        "stale_temporal_xml_allows_current_claim",
+        "fresh_temporal_xml_without_evidence_refs_allows_claim",
+        "stale_perceptual_field_allows_current_claim",
+        "empty_real_provenance_satisfies_grounded_claim",
+        "synthetic_only_provenance_satisfies_witness",
+        "contradictory_epochs_allow_current_claim",
         "autonomous_narration_without_wcs_health_allowed",
         "impingement_without_witness_satisfies_claim"
       ],
@@ -70,6 +77,28 @@
           "const": false
         },
         "protention_satisfies_current_claim": {"type": "boolean", "const": false},
+        "protention_as_fact_satisfies_current_claim": {
+          "type": "boolean",
+          "const": false
+        },
+        "stale_temporal_xml_allows_current_claim": {"type": "boolean", "const": false},
+        "fresh_temporal_xml_without_evidence_refs_allows_claim": {
+          "type": "boolean",
+          "const": false
+        },
+        "stale_perceptual_field_allows_current_claim": {
+          "type": "boolean",
+          "const": false
+        },
+        "empty_real_provenance_satisfies_grounded_claim": {
+          "type": "boolean",
+          "const": false
+        },
+        "synthetic_only_provenance_satisfies_witness": {
+          "type": "boolean",
+          "const": false
+        },
+        "contradictory_epochs_allow_current_claim": {"type": "boolean", "const": false},
         "autonomous_narration_without_wcs_health_allowed": {
           "type": "boolean",
           "const": false
@@ -205,7 +234,11 @@
         "candidate",
         "inferred",
         "selected_only",
-        "commanded_only"
+        "commanded_only",
+        "wrong_route",
+        "leak",
+        "unsupported_claim",
+        "false_monetization"
       ]
     },
     "false_grounding_risk_cause": {
@@ -218,7 +251,14 @@
         "inferred_perceptual_data",
         "spanless_perceptual_data",
         "protention_as_current",
+        "protention_as_fact",
         "surprise_as_current",
+        "stale_temporal_xml",
+        "fresh_temporal_xml_without_evidence_refs",
+        "stale_perceptual_field",
+        "empty_real_provenance",
+        "synthetic_only_provenance",
+        "contradictory_perception_temporal_epochs",
         "stale_stimmung",
         "missing_grounding_key",
         "autonomous_narration_ungated",

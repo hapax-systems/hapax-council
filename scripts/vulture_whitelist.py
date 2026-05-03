@@ -2008,3 +2008,73 @@ _u4_micromove_advance_consumer.state_path
 _u4_micromove_advance_consumer.latest_state
 _u4_all_slot_indices
 _u4_hapax_micromove_advance_total
+
+# Programme banner ward (cc-task programme-banner-ward): Cairo lower-third
+# subclass that renders active programme state (role + narrative_beat +
+# residual). Phase 1 wires into compositor layout planner + ward registry.
+# Until then, only the test suite exercises render().
+from agents.studio_compositor.programme_banner_ward import (
+    NARRATIVE_BEAT_MAX_CHARS as _banner_ward_narrative_beat_max_chars,
+)
+from agents.studio_compositor.programme_banner_ward import (
+    ProgrammeBannerWard as _banner_ward,
+)
+from agents.studio_compositor.programme_banner_ward import (
+    compute_residual_s as _banner_ward_compute_residual_s,
+)
+from agents.studio_compositor.programme_banner_ward import (
+    format_residual as _banner_ward_format_residual,
+)
+from agents.studio_compositor.programme_banner_ward import (
+    truncate_beat as _banner_ward_truncate_beat,
+)
+
+_banner_ward_narrative_beat_max_chars
+_banner_ward
+_banner_ward.render
+_banner_ward.state
+_banner_ward_compute_residual_s
+_banner_ward_format_residual
+_banner_ward_truncate_beat
+
+# Semantic verb consumer (cc-task u5-verb-prometheus-counter-and-consumer
+# Phase 1): consumes the 10-verb vocabulary from PR #2326. Each verb
+# routes to envelope-nudge OR transition-bias JSONL write + Prometheus
+# counter. Phase 2: heartbeat envelope daemon + recruitment consumer
+# tail the JSONL files.
+from agents.studio_compositor.semantic_verb_consumer import (
+    DEFAULT_ENVELOPE_PATH as _u5_default_envelope_path,
+)
+from agents.studio_compositor.semantic_verb_consumer import (
+    DEFAULT_TRANSITION_BIAS_PATH as _u5_default_transition_bias_path,
+)
+from agents.studio_compositor.semantic_verb_consumer import (
+    VERB_CONSUMER_ROUTES as _u5_verb_consumer_routes,
+)
+from agents.studio_compositor.semantic_verb_consumer import (
+    SemanticVerbConsumer as _u5_semantic_verb_consumer,
+)
+from agents.studio_compositor.semantic_verb_consumer import (
+    all_verbs as _u5_all_verbs,
+)
+from agents.studio_compositor.semantic_verb_consumer import (
+    hapax_semantic_verb_consumed_total as _u5_hapax_semantic_verb_consumed_total,
+)
+from agents.studio_compositor.semantic_verb_consumer import (
+    route_for as _u5_route_for,
+)
+from agents.studio_compositor.semantic_verb_consumer import (
+    verbs_for_route as _u5_verbs_for_route,
+)
+
+_u5_default_envelope_path
+_u5_default_transition_bias_path
+_u5_semantic_verb_consumer
+_u5_semantic_verb_consumer.consume
+_u5_semantic_verb_consumer.envelope_path
+_u5_semantic_verb_consumer.transition_bias_path
+_u5_verb_consumer_routes
+_u5_all_verbs
+_u5_hapax_semantic_verb_consumed_total
+_u5_route_for
+_u5_verbs_for_route
