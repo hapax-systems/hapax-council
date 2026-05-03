@@ -271,6 +271,12 @@ class PwLinkRunner:
 
 _PROM_DETECTED = "hapax_private_broadcast_leak_detected_total"
 _PROM_REPAIRED = "hapax_private_broadcast_leak_repaired_total"
+# cc-task audio-audit-H2-systemd-leak-guard-After-ordering (Auditor A
+# H2, 2026-05-03): tick-presence gauge so dashboards can alert when
+# the leak-guard hasn't run recently. Operators query
+# `hapax_private_leak_guard_active` against
+# `time() - timestamp(...) < 120` to detect a stalled guard.
+_PROM_ACTIVE = "hapax_private_leak_guard_active"
 
 
 def _emit_prometheus(metrics_path: Path | None, leaks: list[dict[str, Any]]) -> None:
@@ -300,6 +306,12 @@ def _emit_prometheus(metrics_path: Path | None, leaks: list[dict[str, Any]]) -> 
     lines.append(f"# TYPE {_PROM_REPAIRED} counter")
     for target, count in sorted(repaired_count.items()):
         lines.append(f'{_PROM_REPAIRED}{{target="{target}"}} {count}')
+    # H2: 1.0 on every successful tick. node_exporter sees the textfile
+    # mtime advance; alerting via `time() - file mtime` catches a stalled
+    # guard. Single-value gauge — no labels needed.
+    lines.append(f"# HELP {_PROM_ACTIVE} 1 on every successful leak-guard tick")
+    lines.append(f"# TYPE {_PROM_ACTIVE} gauge")
+    lines.append(f"{_PROM_ACTIVE} 1")
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
