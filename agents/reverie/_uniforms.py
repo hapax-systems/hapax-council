@@ -8,11 +8,12 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from agents.reverie.programme_context import ProgrammeProvider
 from agents.reverie.substrate_palette import compute_substrate_saturation
+from shared.visual_mode_bias import VisualModeBias, get_visual_mode_bias
 
 log = logging.getLogger("reverie.uniforms")
 
@@ -39,6 +40,79 @@ MATERIAL_MAP = {"water": 0, "fire": 1, "earth": 2, "air": 3, "void": 4}
 _BITCHX_COLOR_SATURATION: float = 0.40
 _BITCHX_COLOR_HUE_ROTATE: float = 180.0
 _BITCHX_COLOR_BRIGHTNESS: float = 0.85
+
+
+# U8 Phase 1 — mode palette tint (cc-task u8-imagination-mode-tint).
+# `shared/visual_mode_bias.PALETTE_HINT` carries the per-mode dominant
+# RGB tuple. The colorgrade WGSL exposes `hue_rotate` (°, ±180), not
+# explicit tint_r/g/b channels (see `agents/shaders/nodes/colorgrade.wgsl`
+# Params struct). The smaller, ship-able move is to convert PALETTE_HINT
+# [mode][0] → HSV.h → colorgrade `hue_rotate` so the visual surface
+# pulls toward the mode-appropriate hue without needing a shader-side
+# Params struct change. Homage damping (`_apply_homage_package_damping`)
+# is called AFTER and stays authoritative when an active homage package
+# pins the keys.
+def _rgb_to_hsv_hue(r: int, g: int, b: int) -> float:
+    """Convert RGB (0-255) → HSV.h (0-360°). Pure stdlib; no colorsys
+    dep so testing stays deterministic across float precision."""
+    rn, gn, bn = r / 255.0, g / 255.0, b / 255.0
+    cmax = max(rn, gn, bn)
+    cmin = min(rn, gn, bn)
+    delta = cmax - cmin
+    if delta == 0:
+        return 0.0
+    if cmax == rn:
+        h = 60.0 * (((gn - bn) / delta) % 6.0)
+    elif cmax == gn:
+        h = 60.0 * (((bn - rn) / delta) + 2.0)
+    else:
+        h = 60.0 * (((rn - gn) / delta) + 4.0)
+    if h < 0:
+        h += 360.0
+    return h
+
+
+def _palette_hint_to_hue_rotate(palette_hint: tuple[tuple[int, int, int], ...]) -> float:
+    """Map PALETTE_HINT[mode][0] dominant RGB to a colorgrade `hue_rotate`
+    target in colorgrade's symmetric ±180° space.
+
+    Empty palette → 0.0 (no rotation, identity). Hues > 180° wrap to the
+    negative half so blues (≈205°) become -155° instead of +205°
+    (out-of-range for the WGSL Params struct's signed hue_rotate field).
+    """
+    if not palette_hint:
+        return 0.0
+    r, g, b = palette_hint[0]
+    h_deg = _rgb_to_hsv_hue(r, g, b)
+    if h_deg > 180.0:
+        return h_deg - 360.0
+    return h_deg
+
+
+def _apply_mode_palette_tint(
+    uniforms: dict[str, float],
+    bias_provider: Callable[[], VisualModeBias] = get_visual_mode_bias,
+) -> None:
+    """Write `color.hue_rotate` derived from `PALETTE_HINT[mode][0]`.
+
+    Closes the U8 visible-difference gap between research and rnd modes:
+    the research palette (Solarized blue, ≈205° → -155°) pulls the
+    colorgrade pass toward cool tones, the rnd palette (Gruvbox bright-
+    red, ≈5° → +5°) holds it in the warm register. Mode flips propagate
+    at the next `write_uniforms` tick because `get_visual_mode_bias()`
+    re-reads `~/.cache/hapax/working-mode` per call.
+
+    Called BEFORE `_apply_homage_package_damping` so an active homage
+    package overrides the mode tint when present (homage is per-package
+    and authoritative; mode tint is the default ground).
+    """
+    try:
+        bias = bias_provider()
+    except Exception:
+        log.debug("visual_mode_bias read failed; skipping mode tint", exc_info=True)
+        return
+    uniforms["color.hue_rotate"] = _palette_hint_to_hue_rotate(bias.palette_hint)
+
 
 _plan_defaults_cache: dict[str, float] | None = None
 _plan_defaults_mtime: float = 0.0
@@ -256,6 +330,12 @@ def write_uniforms(
             if isinstance(dim_data, dict):
                 worst_infra = max(worst_infra, dim_data.get("value", 0.0))
         uniforms["signal.color_warmth"] = worst_infra
+
+    # U8 Phase 1 — apply per-mode palette tint to colorgrade.hue_rotate
+    # BEFORE homage damping so an active homage package's hue rotation
+    # remains authoritative. Default ground (no homage) carries the
+    # mode-appropriate hue: research → cool (-155°), rnd → warm (+5°).
+    _apply_mode_palette_tint(uniforms)
 
     # HOMAGE Phase A6 — substrate invariant. Apply the active package's
     # colorgrade damping AFTER plan_defaults + chain deltas so the damped
