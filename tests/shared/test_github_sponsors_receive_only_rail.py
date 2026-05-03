@@ -60,7 +60,7 @@ def test_ingest_created_event_unsigned_returns_normalized_event():
     assert isinstance(event, SponsorshipEvent)
     assert event.event_kind is SponsorshipEventKind.CREATED
     assert event.sponsor_login == "octocat"
-    assert event.tier_amount_usd == 25.0
+    assert event.amount_usd_cents == 2500
     assert event.occurred_at == datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
     assert len(event.raw_payload_sha256) == 64
 
@@ -79,7 +79,7 @@ def test_ingest_tier_changed_event_returns_normalized_event():
     )
     assert event is not None
     assert event.event_kind is SponsorshipEventKind.TIER_CHANGED
-    assert event.tier_amount_usd == 100.0
+    assert event.amount_usd_cents == 10000
 
 
 def test_ingest_pending_cancellation_event_uses_effective_date_or_created_at():
@@ -285,7 +285,7 @@ def test_sponsorship_event_is_frozen_no_pii_fields():
     with pytest.raises(Exception):  # noqa: B017 — pydantic ValidationError
         SponsorshipEvent(
             sponsor_login="octocat",
-            tier_amount_usd=25.0,
+            amount_usd_cents=2500,
             event_kind=SponsorshipEventKind.CREATED,
             occurred_at=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
             raw_payload_sha256="a" * 64,
@@ -293,12 +293,101 @@ def test_sponsorship_event_is_frozen_no_pii_fields():
         )
 
 
-def test_tier_amount_in_cents_is_normalized_to_dollars():
-    """If GitHub emits monthly_price_in_cents, the receiver normalizes."""
+def test_tier_amount_in_cents_passes_through_as_int():
+    """If GitHub emits monthly_price_in_cents, it's passed through as int."""
     receiver = GitHubSponsorsRailReceiver()
     payload = _payload()
     del payload["sponsorship"]["tier"]["monthly_price_in_dollars"]
     payload["sponsorship"]["tier"]["monthly_price_in_cents"] = 2500
     event = receiver.ingest_webhook(payload, signature=None)
     assert event is not None
-    assert event.tier_amount_usd == 25.0
+    assert event.amount_usd_cents == 2500
+    assert isinstance(event.amount_usd_cents, int)
+
+
+# ---------------------------------------------------------------------------
+# jr-github-sponsors-rail-cents-normalization regression pins
+# ---------------------------------------------------------------------------
+
+
+def test_amount_usd_cents_is_int_not_float():
+    """SponsorshipEvent.amount_usd_cents must be int (not float, no drift)."""
+    receiver = GitHubSponsorsRailReceiver()
+    event = receiver.ingest_webhook(_payload(monthly_usd=25), signature=None)
+    assert event is not None
+    assert isinstance(event.amount_usd_cents, int)
+    # Floats explicitly disallowed by Pydantic when type is int.
+
+
+def test_dollars_value_with_fractional_cents_rejected():
+    """$1.234 doesn't multiply to integer cents — fail closed."""
+    receiver = GitHubSponsorsRailReceiver()
+    payload = _payload()
+    payload["sponsorship"]["tier"]["monthly_price_in_dollars"] = 1.234
+    with pytest.raises(ReceiveOnlyRailError, match="does not multiply to integer cents"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_cents_field_with_bool_rejected():
+    """``monthly_price_in_cents=True`` is not a valid int (bool is also int)."""
+    receiver = GitHubSponsorsRailReceiver()
+    payload = _payload()
+    del payload["sponsorship"]["tier"]["monthly_price_in_dollars"]
+    payload["sponsorship"]["tier"]["monthly_price_in_cents"] = True
+    with pytest.raises(ReceiveOnlyRailError, match="must be int"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_dollars_field_with_bool_rejected():
+    """``monthly_price_in_dollars=False`` is not a valid amount."""
+    receiver = GitHubSponsorsRailReceiver()
+    payload = _payload()
+    payload["sponsorship"]["tier"]["monthly_price_in_dollars"] = False
+    with pytest.raises(ReceiveOnlyRailError, match="must be int or float"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_canonical_bytes_helper_is_only_canonicalizer():
+    """Module source must not carry any inline json.dumps with sort_keys.
+
+    The receiver canonicalizes via :func:`_canonical_bytes`; any other
+    inline call is a drift item that breaks the SHA echo invariant.
+    """
+    import inspect
+
+    import shared.github_sponsors_receive_only_rail as mod
+
+    src = inspect.getsource(mod)
+    occurrences = src.count("json.dumps(")
+    # Exactly one occurrence allowed — inside _canonical_bytes itself.
+    assert occurrences == 1, f"expected 1 json.dumps call in module, got {occurrences}"
+
+
+def test_dollars_value_at_one_dollar_yields_one_hundred_cents():
+    """$1.00 → 100 cents (the canonical happy path for dollars input)."""
+    receiver = GitHubSponsorsRailReceiver()
+    payload = _payload(monthly_usd=1)
+    event = receiver.ingest_webhook(payload, signature=None)
+    assert event is not None
+    assert event.amount_usd_cents == 100
+
+
+def test_dollars_value_with_two_decimals_yields_correct_cents():
+    """$1.99 → 199 cents (no float drift)."""
+    receiver = GitHubSponsorsRailReceiver()
+    payload = _payload()
+    payload["sponsorship"]["tier"]["monthly_price_in_dollars"] = 1.99
+    event = receiver.ingest_webhook(payload, signature=None)
+    assert event is not None
+    assert event.amount_usd_cents == 199
+
+
+def test_cents_field_preferred_over_dollars_when_both_present():
+    """When both fields present, monthly_price_in_cents wins (canonical wire shape)."""
+    receiver = GitHubSponsorsRailReceiver()
+    payload = _payload()
+    payload["sponsorship"]["tier"]["monthly_price_in_dollars"] = 99
+    payload["sponsorship"]["tier"]["monthly_price_in_cents"] = 12345
+    event = receiver.ingest_webhook(payload, signature=None)
+    assert event is not None
+    assert event.amount_usd_cents == 12345  # cents wins, not 99 * 100 = 9900

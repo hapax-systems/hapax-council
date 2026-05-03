@@ -16,7 +16,7 @@ The publisher writes one **aggregate manifest row** per dispatch to
 ``{output_dir}/event-{sha}.md`` where ``sha`` is the first 16 chars
 of ``SponsorshipEvent.raw_payload_sha256``. The body carries only the
 aggregate fields surfaced on the normalized event (``event_kind``,
-``tier_amount_usd``, ``occurred_at``, ``sponsor_login``) — *no* tier
+``amount_usd_cents``, ``occurred_at``, ``sponsor_login``) — *no* tier
 name, *no* sponsor email, *no* free-text supporter messages, and *no*
 GitHub-internal IDs are persisted.
 
@@ -112,7 +112,7 @@ class GitHubSponsorsPublisher(Publisher):
             text=body,
             metadata={
                 "sponsor_login": event.sponsor_login,
-                "tier_amount_usd": event.tier_amount_usd,
+                "amount_usd_cents": event.amount_usd_cents,
                 "raw_payload_sha256": event.raw_payload_sha256,
                 "occurred_at_iso": event.occurred_at.isoformat(),
             },
@@ -134,7 +134,7 @@ class GitHubSponsorsPublisher(Publisher):
             "",
             f"- **Event kind:** {event.event_kind.value}",
             f"- **Sponsor:** {event.sponsor_login}",
-            f"- **Tier (USD):** {event.tier_amount_usd:.2f}",
+            f"- **Tier (USD cents):** {event.amount_usd_cents}",
             f"- **Occurred at:** {event.occurred_at.isoformat()}",
             f"- **Payload SHA-256:** `{event.raw_payload_sha256}`",
             "",
@@ -146,12 +146,12 @@ class GitHubSponsorsPublisher(Publisher):
         result = write_manifest_entry(self.output_dir, payload, log=log)
         if result.ok and payload.target == SponsorshipEventKind.CANCELLED.value:
             sha = str(payload.metadata.get("raw_payload_sha256", ""))[:16] or "unknown"
-            tier_amount = payload.metadata.get("tier_amount_usd", 0.0)
+            cents = payload.metadata.get("amount_usd_cents", 0)
             auto_link_cancellation_to_refusal_log(
                 payload,
                 axiom=CANCELLATION_REFUSAL_AXIOM,
                 surface=CANCELLATION_REFUSAL_SURFACE,
-                reason=f"github-sponsors cancellation: tier_amount_usd={tier_amount} sha16={sha}",
+                reason=f"github-sponsors cancellation: amount_usd_cents={cents} sha16={sha}",
                 log=log,
             )
         return result
@@ -182,7 +182,7 @@ def event_to_manifest_record(event: SponsorshipEvent) -> dict[str, object]:
     return {
         "event_kind": event.event_kind.value,
         "sponsor_login": event.sponsor_login,
-        "tier_amount_usd": float(event.tier_amount_usd),
+        "amount_usd_cents": int(event.amount_usd_cents),
         "occurred_at_iso": event.occurred_at.isoformat(),
         "raw_payload_sha256": event.raw_payload_sha256,
     }
