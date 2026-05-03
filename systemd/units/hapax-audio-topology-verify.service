@@ -1,0 +1,29 @@
+[Unit]
+Description=Hapax PipeWire topology boot-time + periodic verifier (audit A#5)
+Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-audio-topology
+After=pipewire.service wireplumber.service pipewire-pulse.service
+Wants=pipewire.service wireplumber.service pipewire-pulse.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/install -d -m 0755 /dev/shm/hapax-audio
+ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council \
+    python /home/hapax/projects/hapax-council/scripts/hapax-audio-topology \
+    verify config/audio-topology.yaml \
+    --strict --json --output /dev/shm/hapax-audio/topology-verify.json
+SuccessExitStatus=0 2
+TimeoutStartSec=30s
+MemoryMax=128M
+CPUQuota=20%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-audio-topology-verify
+
+[Install]
+WantedBy=default.target
