@@ -38,6 +38,15 @@ orphans:
   - hapax-private-monitor-bridge.conf
   - hapax-stream-split.conf
 
+  # PR A — Phase 3 PC volume isolation foundation. Single conf file
+  # bundles three nodes (pc-router null-sink + pc-monitor + pc-broadcast
+  # filter-chains) so they share a single PipeWire config-load event.
+  # The yaml models all three nodes with hand-written params (chain_kind
+  # is left None because the LADSPA control values are inlined in the
+  # conf rather than generated from chain_kind/limit_db templates).
+  # Tracked under cc-task `audio-pc-volume-isolation` PR A of 8.
+  - hapax-pc-router.conf
+
   # USB line-driver — see audit finding #4 (WET_PATH_USB_BIAS).
   - hapax-music-usb-line-driver.conf
 

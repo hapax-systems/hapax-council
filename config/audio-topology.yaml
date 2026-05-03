@@ -385,6 +385,53 @@ nodes:
       playback_positions: RL RR
       notification_excluded: true
 
+  - id: pc-router
+    kind: tap
+    pipewire_name: hapax-pc-router
+    description: PC audio fork point — null-sink with monitor, dormant until PR B
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      monitor.passthrough: true
+      dormant_until_pr_b: true
+
+  - id: pc-monitor
+    kind: filter_chain
+    pipewire_name: hapax-pc-monitor
+    description: Operator headphone path — limiter -1 dBTP to Yeti, private off-L-12
+    target_object: hapax-pc-router
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      stream.capture.sink: true
+      state.restore: false
+      stream.dont-remix: true
+      playback_target: alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo
+      private_monitor_endpoint: true
+      forbidden_target_family: l12-broadcast
+      ladspa_plugin: fast_lookahead_limiter_1913
+      limit_db: -1.0
+
+  - id: pc-broadcast
+    kind: filter_chain
+    pipewire_name: hapax-pc-broadcast
+    description: L-12 broadcast path — limiter -18 dBFS to L-12 USB return RL/RR
+    target_object: hapax-pc-router
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      stream.capture.sink: true
+      state.restore: false
+      stream.dont-remix: true
+      playback_target: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
+      playback_positions: RL RR
+      ladspa_plugin: fast_lookahead_limiter_1913
+      limit_db: -18.0
+      dormant_until_pr_b: true
+
   - id: music-loudnorm
     kind: filter_chain
     pipewire_name: hapax-music-loudnorm
@@ -568,3 +615,13 @@ edges:
   # runtime artifact explicitly instead of encoding it as intended graph.
   - source: m8-usb-source
     target: m8-instrument-capture
+
+  # PR A — hapax-pc-router fork (Phase 3 PC volume isolation foundation).
+  # Both subscribers read pc-router's monitor port. Dormant in PR A
+  # (WirePlumber preferred-target stays on hapax-pc-loudnorm). PR B flips
+  # the preferred-target so apps land on pc-router and these edges activate.
+  - source: pc-router
+    target: pc-monitor
+
+  - source: pc-router
+    target: pc-broadcast
