@@ -84,6 +84,43 @@ def _default_layout_dir() -> Path:
     return home_dir  # last-resort: return the home path even if missing
 
 
+def _extra_layout_dirs(primary: Path) -> list[Path]:
+    """Additional layout dirs the LayoutStore should scan.
+
+    The LayoutSwitcher's KNOWN_LAYOUTS (``default``, ``default-legacy``,
+    ``consent-safe``, ``vinyl-focus``) historically lived in
+    ``config/compositor-layouts/`` (with ``vinyl-focus`` in
+    ``examples/``). Without an install step the LayoutStore would only
+    see ``config/layouts/garage-door.json``, blocking the u6-periodic-
+    tick-driver from ever switching off ``garage-door``.
+
+    Returns repo-local fallback dirs that are NOT the primary. On
+    name collision the primary wins (it's scanned last in
+    ``_scan_directory``, but we suppress duplicates by tracking
+    ``on_disk`` keys via the primary first).
+    """
+    extras: list[Path] = []
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "config" / "compositor-layouts"
+        if candidate.exists() and candidate.resolve() != primary.resolve():
+            extras.append(candidate)
+            examples = candidate / "examples"
+            if examples.exists():
+                extras.append(examples)
+            break
+    # Also include repo-local config/layouts/ if primary is the home dir
+    # and the primary doesn't shadow garage-door.
+    home_dir = Path.home() / ".config" / "hapax-compositor" / "layouts"
+    if primary.resolve() == home_dir.resolve():
+        for parent in here.parents:
+            candidate = parent / "config" / "layouts"
+            if candidate.exists():
+                extras.append(candidate)
+                break
+    return extras
+
+
 class LayoutStore:
     """Thread-safe holder for the current Layout with disk watch.
 
@@ -104,7 +141,17 @@ class LayoutStore:
     """
 
     def __init__(self, layout_dir: Path | None = None) -> None:
+        # Track whether caller passed an explicit dir (test isolation):
+        # when explicit, do NOT pull in repo-local fallbacks.
+        explicit = layout_dir is not None
         self._layout_dir = layout_dir or _default_layout_dir()
+        # u6-periodic-tick-driver: also scan additional repo-local
+        # compositor-layouts dirs so the 4 KNOWN_LAYOUTS the switcher
+        # uses (``default``, ``default-legacy``, ``consent-safe``,
+        # ``vinyl-focus``) are discoverable without an install step —
+        # but only when falling back to the default layout dir, so
+        # tests passing tmp_path stay isolated.
+        self._extra_dirs: list[Path] = [] if explicit else _extra_layout_dirs(self._layout_dir)
         self._layouts: dict[str, Layout] = {}
         self._mtimes: dict[str, float] = {}
         self._active_name: str | None = None
@@ -187,14 +234,27 @@ class LayoutStore:
 
         Returns the list of layout names that were added or modified.
         """
+        # u6-periodic-tick-driver: scan extras first so the primary
+        # layout_dir (operator's ~/.config dir) overrides on name
+        # collision. Extras are repo-local fallbacks for the 4 known
+        # KNOWN_LAYOUTS the switcher depends on.
+        on_disk: dict[str, Path] = {}
+        for extra in self._extra_dirs:
+            if not extra.exists():
+                continue
+            for path in sorted(extra.glob("*.json")):
+                on_disk[path.stem] = path
+
         if not self._layout_dir.exists():
             log.debug("Layout dir %s does not exist", self._layout_dir)
-            return []
+            if not on_disk:
+                return []
+            # Otherwise extras provide layouts even without the primary.
 
         changed: list[str] = []
 
-        # Discover current files on disk
-        on_disk: dict[str, Path] = {}
+        # Discover current files in the primary dir; primary OVERRIDES
+        # extras on name collision (operator edits win).
         for path in sorted(self._layout_dir.glob("*.json")):
             on_disk[path.stem] = path
 

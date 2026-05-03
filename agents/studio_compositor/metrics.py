@@ -146,6 +146,17 @@ HAPAX_COMPOSITOR_LAYOUT_SWITCH_TOTAL: Any = None
 # instant-query to confirm the current selection. Set on every
 # LayoutStore.set_active call.
 HAPAX_COMPOSITOR_LAYOUT_ACTIVE: Any = None
+# u6-periodic-tick-driver (cc-task u6-periodic-tick-driver, 2026-05-03):
+# every tick of the layout-switch driver dispatches a recommendation,
+# regardless of whether the cooldown gate accepts it. Counter covers
+# all driver runs so the operator can see the driver is alive even
+# when the surface looks frozen (cooldown-blocked / same-layout no-op).
+# ``layout`` = the recommendation; ``reason`` = the trigger that
+# named it (consent_safe, vinyl_playing, director_activity_<name>,
+# stream_mode_deep, default_fallback). Distinct from
+# ``hapax_compositor_layout_switch_total`` which fires only on
+# applied switches.
+HAPAX_LAYOUT_SWITCH_DISPATCHED_TOTAL: Any = None
 # FINDING-R diagnostics (2026-04-21 wiring audit): per-ward blit
 # accounting on the post-FX cairooverlay. WARD_BLIT_TOTAL counts every
 # successful blit_scaled call labeled by ward; WARD_BLIT_SKIPPED_TOTAL
@@ -534,6 +545,82 @@ def _init_metrics() -> None:
         ["layout"],
         registry=REGISTRY,
     )
+
+    # u6-periodic-tick-driver (cc-task u6-periodic-tick-driver, 2026-05-03):
+    # every dispatch attempt by the layout-switch driver. Distinct from
+    # ``hapax_compositor_layout_switch_total`` (applied-switches only) —
+    # this proves the periodic driver is alive even when no actual
+    # switch occurs (same-layout no-op, cooldown-blocked). Operators
+    # query
+    # ``rate(hapax_layout_switch_dispatched_total[5m]) > 0``
+    # to confirm the driver thread has not silently died.
+    global HAPAX_LAYOUT_SWITCH_DISPATCHED_TOTAL
+    HAPAX_LAYOUT_SWITCH_DISPATCHED_TOTAL = Counter(
+        "hapax_layout_switch_dispatched_total",
+        "Layout-switch recommendations dispatched by the periodic driver, "
+        "labelled by recommended layout and the trigger reason. Increments "
+        "every tick regardless of whether the cooldown gate accepts the "
+        "switch. Operators alert on rate=0 to detect a dead driver.",
+        ["layout", "reason"],
+        registry=REGISTRY,
+    )
+
+    # u4-micromove-advance-tick-consumer (cc-task u4, 2026-05-03):
+    # the micromove consumer counter from ``micromove_consumer.py`` is
+    # registered against the prometheus_client default registry. Re-
+    # register it here on the compositor REGISTRY so the :9482 metrics
+    # endpoint exposes it; the dashboard at
+    # ``grafana/dashboards/director-moves.json`` queries this metric
+    # by name. Best-effort; if the consumer module hasn't been imported
+    # yet the increments stay on the default registry.
+    try:
+        from agents.studio_compositor import micromove_consumer as _u4_mod
+
+        _existing = _u4_mod.hapax_micromove_advance_total
+        # If already on REGISTRY (re-init path) skip.
+        try:
+            REGISTRY.unregister(_existing)
+        except Exception:
+            pass
+        new_counter = Counter(
+            "hapax_micromove_advance_total",
+            "Number of micromove cycle advances per slot (re-registered on "
+            "compositor REGISTRY for :9482 scrape).",
+            ["slot"],
+            registry=REGISTRY,
+        )
+        _u4_mod.hapax_micromove_advance_total = new_counter
+    except Exception:
+        log.debug(
+            "u4 hapax_micromove_advance_total re-register on compositor REGISTRY failed",
+            exc_info=True,
+        )
+
+    # u5-verb-prometheus-counter (cc-task u5, 2026-05-03):
+    # same pattern — counter from ``semantic_verb_consumer.py`` defined
+    # against the default registry; re-register on the compositor
+    # REGISTRY for :9482 scrape.
+    try:
+        from agents.studio_compositor import semantic_verb_consumer as _u5_mod
+
+        _existing = _u5_mod.hapax_semantic_verb_consumed_total
+        try:
+            REGISTRY.unregister(_existing)
+        except Exception:
+            pass
+        new_counter = Counter(
+            "hapax_semantic_verb_consumed_total",
+            "Number of semantic-verb consumption attempts, by verb and outcome "
+            "(re-registered on compositor REGISTRY for :9482 scrape).",
+            ["verb", "outcome"],
+            registry=REGISTRY,
+        )
+        _u5_mod.hapax_semantic_verb_consumed_total = new_counter
+    except Exception:
+        log.debug(
+            "u5 hapax_semantic_verb_consumed_total re-register on compositor REGISTRY failed",
+            exc_info=True,
+        )
 
     # Task #129 Stage 3 — per-camera face-obscure counter. Labelled by
     # camera role and a ``has_faces`` flag so dashboards can both track

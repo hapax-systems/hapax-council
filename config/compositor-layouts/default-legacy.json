@@ -1,6 +1,6 @@
 {
   "name": "default-legacy",
-  "description": "Default studio compositor layout — post-epic operator defaults. Reverie upper-right, Vitruvian Man (token_pole) upper-left, album lower-left, chat stats (stream_overlay) lower-right. These assignments are a starting point; Hapax content programming ultimately drives which sources feed which quadrants via the affordance pipeline + command registry.",
+  "description": "Default studio compositor layout \u2014 post-epic operator defaults. Reverie upper-right, Vitruvian Man (token_pole) upper-left, album lower-left, chat stats (stream_overlay) lower-right. These assignments are a starting point; Hapax content programming ultimately drives which sources feed which quadrants via the affordance pipeline + command registry.",
   "sources": [
     {
       "id": "token_pole",
@@ -81,6 +81,26 @@
       "tags": [
         "continuous-loop-3-4"
       ]
+    },
+    {
+      "id": "programme_banner",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ProgrammeBannerWard",
+        "natural_w": 900,
+        "natural_h": 120
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": [
+        "programme",
+        "ward",
+        "lower-third"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": "programme-banner"
     }
   ],
   "surfaces": [
@@ -209,6 +229,24 @@
       "blend_mode": "over",
       "z_order": 102,
       "update_cadence": "always"
+    },
+    {
+      "id": "programme-banner-top",
+      "geometry": {
+        "kind": "rect",
+        "x": 510,
+        "y": 84,
+        "w": 900,
+        "h": 120,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 28,
+      "update_cadence": "rate"
     }
   ],
   "assignments": [
@@ -248,6 +286,15 @@
       "transform": {},
       "opacity": 0.92,
       "per_assignment_effects": []
+    },
+    {
+      "source": "programme_banner",
+      "surface": "programme-banner-top",
+      "transform": {},
+      "opacity": 1.0,
+      "per_assignment_effects": [],
+      "non_destructive": true,
+      "render_stage": "pre_fx"
     }
   ]
 }
