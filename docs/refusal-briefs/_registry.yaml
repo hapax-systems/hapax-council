@@ -36,3 +36,18 @@ refusals:
     cc_task: direct-debit-active-reception-refusal-brief
     publisher_class: agents.publication_bus.publisher_kit.refused.WiseDirectDebitRefusedPublisher
     lifecycle_probe: wise-direct-debit-payer-mandate-shape
+  twitter-x-account:
+    brief: docs/refusal-briefs/twitter-x-account.md
+    cc_task: leverage-REFUSED-twitter-linkedin-substack-accounts
+    publisher_class: agents.publication_bus.publisher_kit.refused.TwitterRefusedPublisher
+    lifecycle_probe: twitter-machine-author-broadcast-tier
+  linkedin-account:
+    brief: docs/refusal-briefs/linkedin-account.md
+    cc_task: leverage-REFUSED-twitter-linkedin-substack-accounts
+    publisher_class: agents.publication_bus.publisher_kit.refused.LinkedInRefusedPublisher
+    lifecycle_probe: linkedin-machine-author-broadcast-tier
+  substack-account:
+    brief: docs/refusal-briefs/substack-account.md
+    cc_task: leverage-REFUSED-twitter-linkedin-substack-accounts
+    publisher_class: agents.publication_bus.publisher_kit.refused.SubstackRefusedPublisher
+    lifecycle_probe: substack-automated-digest-tier
