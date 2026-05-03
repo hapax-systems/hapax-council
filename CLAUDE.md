@@ -21,6 +21,8 @@ CLAUDE.md rotation policy: `docs/superpowers/specs/2026-04-13-claude-md-excellen
 
 **Infrastructure**: Docker Compose for databases/proxies (13 containers), systemd user units for all application services. No process-compose in production. See `systemd/README.md` for boot sequence, resource isolation, and recovery chain. **Canonical path for new systemd units: `systemd/units/`** — `scripts/hapax-post-merge-deploy` matches `systemd/units/*.service|*.timer` only; files placed elsewhere (e.g., `systemd/user/`) are silently invisible to the deploy chain.
 
+> **Qdrant collection footnote (24h auditor finding #11, 2026-05-02):** The `operator-patterns` collection in the workspace Qdrant schema has zero upsert callers across the codebase (dead schema). Marked **pending retire decision** — do not add new writers; route operator-pattern facts through `profile-facts` or `operator-corrections` until a decommission PR lands.
+
 **Key services**: `hapax-secrets` (credentials) → `logos-api` (:8051) → `waybar` (GTK4 status bar) → `tabbyapi` (GPU, EXL3 inference :5000) → `hapax-daimonion` (GPU STT, CPU TTS) → `visual-layer-aggregator` → `studio-compositor` (GPU). Timers for sync, health, backups. Archival pipeline (audio/video recording, classification, RAG ingest) disabled — see `systemd/README.md § Disabled Services`.
 
 ## Design Language
@@ -104,7 +106,7 @@ Per-node shader params flow from Python visual chain → `uniforms.json` → Rus
 
 Everything that appears — visual content, tool invocation, vocal expression, destination routing — is recruited through a single `AffordancePipeline`. No bypass paths. Spec: `docs/superpowers/specs/2026-04-02-unified-semantic-recruitment-design.md`.
 
-**Mechanism:** Impingement → embed narrative → cosine similarity against Qdrant `affordances` collection → score (0.50×similarity + 0.20×base_level + 0.10×context_boost + 0.20×thompson) → governance veto → recruited capabilities activate. Thompson sampling (optimistic prior: Beta(2,1)) + Hebbian associations learn from outcomes across sessions. Activation state persisted every 60s via background thread + on shutdown.
+**Mechanism:** Impingement → embed narrative → cosine similarity against Qdrant `affordances` collection → score `(0.50×similarity + 0.20×base_level + 0.10×context_boost + 0.20×thompson + w_recency×recency_distance − exact_recency_penalty) × cost_weight` → governance veto → recruited capabilities activate. `cost_weight = 1.0 − cost×0.5` where `cost = 0.3` for GPU-required capabilities and `max(cost, 0.5)` for slow-latency-class capabilities (`shared/affordance_pipeline.py:756`). Thompson sampling (optimistic prior: Beta(2,1)) + Hebbian associations learn from outcomes across sessions; alpha/beta posterior parameters are clamped to `[1.0, 10.0]` via `_TS_FLOOR`/`_TS_CAP` to prevent saturation (geometric decay `α·γ + 1` with γ=0.99 would otherwise converge alpha→100 and produce deterministic Beta(100, ~0) samples — see `shared/affordance.py:109,129`). Activation state persisted every 60s via background thread + on shutdown.
 
 **Taxonomy (6 domains):** perception, expression, recall, action, communication, regulation. Each capability has a Gibson-verb affordance description (15-30 words, cognitive function not implementation). Three-level Rosch structure: Domain → Affordance (embedded in Qdrant) → Instance (metadata payload).
 
@@ -152,6 +154,8 @@ GStreamer-based livestream pipeline. Distinct from Reverie (the wgpu visual surf
 Test harness in `scripts/`: `studio-install-udev-rules.sh`, `studio-simulate-usb-disconnect.sh <role>`, `studio-smoke-test.sh`.
 
 ## Reverie Vocabulary Integrity
+
+Effect-graph WGSL inventory: **64 shader nodes** in-tree (`find . -name '*.wgsl' | wc -l`, verified 2026-05-02 per 24h auditor finding #11; previously stated as 56 in user-memory `project_effect_graph` — refresh that index entry). 30 presets in `presets/`, glfeedback Rust plugin, SlotPipeline.
 
 The reverie mixer caches the vocabulary preset (`presets/reverie_vocabulary.json`) in memory via `SatelliteManager._core_vocab`. `SatelliteManager.maybe_rebuild()` reloads the preset from disk on `GraphValidationError`, so recovery is automatic at the next rebuild tick after any validation failure.
 
