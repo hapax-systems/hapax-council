@@ -56,3 +56,32 @@ parallel this session. Operator updates the `pr:` field as each PR merges.
 - Constitutional: `feedback_l12_equals_livestream_invariant` (L-12 = livestream invariant — no carve-outs)
 - Working mode: `~/.cache/hapax/working-mode` SSOT
 - L-12 scenes: `docs/audio/l12-scenes.md`
+
+## Open follow-up — broadcast-egress LUFS probe target
+
+`docs/research/2026-05-03-pipewire-filter-chain-monitor-semantics.md`
+established that PipeWire filter-chain monitor ports carry **pre-chain**
+(input-side) audio, not post-process. Implication for finding #3
+("Broadcast egress 13.9 dB below -14 LUFS target"):
+
+* `shared/broadcast_audio_health.py::_evaluate_loudness` runs
+  `scripts/audio-measure.sh 5 hapax-broadcast-normalized`. If
+  `hapax-broadcast-normalized` resolves to a sink-monitor probe path,
+  the LUFS measurement reflects audio entering the master-loudnorm
+  stage, NOT the post-loudnorm output that finding #3 cares about.
+* `audio-topology.yaml` declares `broadcast-normalized-capture` as a
+  filter_chain with `chain_kind: None` and `playback_source:
+  hapax-broadcast-normalized` — the corresponding `.conf` lives
+  outside the council repo (operator-managed under the workstation's
+  llm-stack tree), so the resolved media.class of
+  `hapax-broadcast-normalized` is operator-side knowledge.
+* **Operator-action for finding #3 follow-up:** verify whether
+  `hapax-broadcast-normalized` is exposed as `Audio/Source` (post-
+  process — probe target correct) or `Audio/Sink` (pre-process —
+  probe target wrong; loudness number measures input not egress). If
+  the latter, repoint the probe at the chain's playback side or a
+  downstream Audio/Source.
+* Touches `_emit_lufs_gauge()` from #2340 (H3 audit) — the
+  `hapax_audio_egress_lufs_dbfs{stage="broadcast-master"}` Prometheus
+  gauge inherits the same probe target, so the gauge value carries
+  the same caveat.
