@@ -1,0 +1,12 @@
+[Unit]
+Description=Boot-time + periodic Hapax PipeWire topology drift verifier (audit A#5)
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=120s
+AccuracySec=10s
+Unit=hapax-audio-topology-verify.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target
