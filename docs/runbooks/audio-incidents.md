@@ -20,6 +20,26 @@ messages so the operator's notification carries the recovery URL.
 
 ---
 
+## Diagnostic-first command
+
+Before drilling into a specific incident anchor below, snapshot the
+declared graph shape so the recovery walks against a known matrix:
+
+```
+uv run python -m agents.audio_codegen.caps           # markdown table
+uv run python -m agents.audio_codegen.caps --json    # machine-readable
+```
+
+The matrix lists every node × kind × chain-template × in-edge / out-edge
+× ducks-flag from `config/audio-topology.yaml`. A node missing here
+when `pw-link -l` shows it live (or vice-versa) is the upstream cause
+of most "the surface used to work" incidents. Reads only the YAML —
+no live PipeWire dependency, safe to run while audio is broken.
+
+cc-task: `audio-audit-F-source-capability-matrix-cli`.
+
+---
+
 ## Private-playback → L-12 leak (Option C lost)
 
 **Anchor:** `private-leak-l12`
