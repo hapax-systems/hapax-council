@@ -1,0 +1,47 @@
+{
+  "name": "Liquid Flow Fluid",
+  "description": "Liquid-flow lineage (1/2): fluid_sim + syrup distortion — organic, breath-driven motion that channels Bachelard amendments 7+8 (roundness/miniature) without the static intimacy of those amendments. Lineage: liquid-flow.",
+  "lineage": "liquid-flow",
+  "transition_ms": 3800,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.0,
+        "contrast": 1.05,
+        "saturation": 1.12,
+        "hue_rotate": -4
+      }
+    },
+    "fluid_motion": {
+      "type": "fluid_sim",
+      "params": {
+        "viscosity": 0.6,
+        "speed": 0.25,
+        "amount": 0.32
+      }
+    },
+    "syrup_thick": {
+      "type": "syrup",
+      "params": {
+        "thickness": 0.35,
+        "speed": 0.18
+      }
+    },
+    "vignette": {
+      "type": "vignette",
+      "params": {
+        "intensity": 0.3,
+        "radius": 0.78
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
