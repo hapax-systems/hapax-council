@@ -36,6 +36,7 @@ DEFAULT_TOPOLOGY_DESCRIPTOR = REPO_ROOT / "config" / "audio-topology.yaml"
 DEFAULT_AUDIO_SAFETY_STATE = Path("/dev/shm/hapax-audio-safety/state.json")
 DEFAULT_AUDIO_DUCKER_STATE = Path("/dev/shm/hapax-audio-ducker/state.json")
 DEFAULT_VOICE_OUTPUT_WITNESS = Path("/dev/shm/hapax-daimonion/voice-output-witness.json")
+DEFAULT_EGRESS_LOOPBACK_WITNESS = Path("/dev/shm/hapax-broadcast/egress-loopback.json")
 
 TOPOLOGY_VERIFY_COMMAND = (
     "scripts/hapax-audio-topology",
@@ -103,6 +104,25 @@ class BroadcastAudioHealth(BaseModel):
     owners: dict[str, str] = Field(default_factory=dict)
 
 
+class EgressLoopbackWitness(BaseModel):
+    """Live signal-level snapshot of the broadcast egress sink.
+
+    Written by an out-of-band sampler daemon (e.g. `pw-cat --record --target
+    hapax-livestream` → DSP → atomic JSON write). The producer is out of
+    scope for this consume-side gate; the producer cc-task is a follow-up.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    checked_at: str
+    rms_dbfs: float
+    peak_dbfs: float
+    silence_ratio: float = Field(ge=0.0, le=1.0)
+    window_seconds: float = Field(gt=0.0)
+    target_sink: str = Field(min_length=1)
+    error: str | None = None
+
+
 class BroadcastAudioHealthEnvelope(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -116,6 +136,7 @@ class BroadcastAudioHealthPaths:
     audio_safety_state: Path = DEFAULT_AUDIO_SAFETY_STATE
     audio_ducker_state: Path = DEFAULT_AUDIO_DUCKER_STATE
     voice_output_witness: Path = DEFAULT_VOICE_OUTPUT_WITNESS
+    egress_loopback_witness: Path = DEFAULT_EGRESS_LOOPBACK_WITNESS
 
 
 @dataclass(frozen=True)
@@ -127,6 +148,9 @@ class BroadcastAudioHealthThresholds:
     command_timeout_s: float = 15.0
     loudness_timeout_extra_s: float = 8.0
     loudness_duration_s: int = 5
+    loopback_max_age_s: float = 60.0
+    silence_ratio_max: float = 0.85
+    rms_dbfs_floor: float = -55.0
 
     @property
     def loudness_min_lufs_i(self) -> float:
@@ -243,6 +267,14 @@ def resolve_broadcast_audio_health(
         thresholds=t,
     )
     _evaluate_egress_binding(evidence=evidence, blocking=blocking, runner=runner, thresholds=t)
+    _evaluate_egress_loopback(
+        p.egress_loopback_witness,
+        current,
+        t,
+        evidence=evidence,
+        blocking=blocking,
+        warnings=warnings,
+    )
     _evaluate_voice_output_witness(
         p.voice_output_witness,
         current,
@@ -583,6 +615,114 @@ def _evaluate_egress_binding(
                 "or hapax-obs-broadcast-remap"
             ),
             evidence_refs=["egress_binding"],
+        )
+
+
+def _evaluate_egress_loopback(
+    path: Path,
+    now: float,
+    thresholds: BroadcastAudioHealthThresholds,
+    *,
+    evidence: dict[str, Any],
+    blocking: list[AudioHealthReason],
+    warnings: list[AudioHealthReason],
+) -> None:
+    data, age_s, error = _read_json_file(path, now)
+    record: dict[str, Any] = {
+        "egress_loopback_path": str(path),
+        "egress_loopback_age_s": age_s,
+    }
+    if error is not None:
+        record["status"] = "unknown"
+        record["error"] = error
+        evidence["egress_loopback"] = record
+        _block(
+            blocking,
+            code=f"egress_loopback_{error}",
+            owner=str(path),
+            message=f"egress loopback witness is {error}",
+            evidence_refs=["egress_loopback"],
+        )
+        return
+    if age_s is None or age_s > thresholds.loopback_max_age_s:
+        record["status"] = "stale"
+        evidence["egress_loopback"] = record
+        _block(
+            blocking,
+            code="egress_loopback_stale",
+            owner=str(path),
+            message=(
+                f"egress loopback witness is stale ({age_s}s > {thresholds.loopback_max_age_s}s)"
+            ),
+            evidence_refs=["egress_loopback"],
+        )
+        return
+
+    try:
+        witness = EgressLoopbackWitness.model_validate(data)
+    except ValidationError as exc:
+        record["status"] = "malformed"
+        record["error"] = str(exc)
+        evidence["egress_loopback"] = record
+        _block(
+            blocking,
+            code="egress_loopback_schema_invalid",
+            owner=str(path),
+            message=f"egress loopback witness failed schema validation: {exc}",
+            evidence_refs=["egress_loopback"],
+        )
+        return
+
+    record.update(
+        {
+            "status": "live",
+            "rms_dbfs": witness.rms_dbfs,
+            "peak_dbfs": witness.peak_dbfs,
+            "silence_ratio": witness.silence_ratio,
+            "window_seconds": witness.window_seconds,
+            "target_sink": witness.target_sink,
+        }
+    )
+    if witness.error:
+        record["producer_error"] = witness.error
+    evidence["egress_loopback"] = record
+
+    if witness.error:
+        _block(
+            blocking,
+            code="egress_loopback_producer_failed",
+            owner=str(path),
+            message=f"egress loopback producer reported error: {witness.error}",
+            evidence_refs=["egress_loopback"],
+        )
+        return
+
+    if witness.silence_ratio > thresholds.silence_ratio_max:
+        _block(
+            blocking,
+            code="egress_loopback_silent",
+            owner=str(path),
+            message=(
+                "egress loopback silence ratio "
+                f"{witness.silence_ratio:.2f} > {thresholds.silence_ratio_max:.2f} "
+                f"(target_sink={witness.target_sink})"
+            ),
+            evidence_refs=["egress_loopback"],
+        )
+        return
+
+    if witness.rms_dbfs < thresholds.rms_dbfs_floor:
+        warnings.append(
+            AudioHealthReason(
+                code="egress_loopback_low_signal",
+                severity=ReasonSeverity.WARNING,
+                owner=str(path),
+                message=(
+                    "egress loopback rms below floor "
+                    f"({witness.rms_dbfs:.1f} dBFS < {thresholds.rms_dbfs_floor:.1f} dBFS)"
+                ),
+                evidence_refs=["egress_loopback"],
+            )
         )
 
 

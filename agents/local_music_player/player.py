@@ -253,13 +253,13 @@ def _build_url_pipeline(url: str, *, sink: str) -> tuple[list[str], list[str], l
         "-f",
         "s16le",
         "-ar",
-        "44100",
+        "48000",
         "-ac",
         "2",
         "pipe:1",
     ]
     pw = ["pw-cat", "--playback", "--target", sink]
-    pw.extend(["--format", "s16", "--rate", "44100", "--channels", "2", "--raw", "-"])
+    pw.extend(["--format", "s16", "--rate", "48000", "--channels", "2", "--raw", "-"])
     return yt, ffmpeg, pw
 
 

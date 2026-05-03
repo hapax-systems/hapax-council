@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""Hapax xHCI death watchdog.
+
+Watches the kernel journal for the xHCI controller-death pattern
+(``HC died`` / ``Abort failed to stop command ring``) and runs the
+PCIe ``remove`` + ``rescan`` recovery sequence that is the only
+known software-only recovery path. Cooldown is per-BDF (180s) to
+avoid recovery storms when a controller flaps.
+
+Motivated by the 2026-05-02 ASMedia ASM4242 (PCI ``0000:71:00.0``)
+death incident where the controller stopped servicing transfers
+mid-livestream and the manual `echo 1 > .../remove && echo 1 >
+/sys/bus/pci/rescan` brought it back. Research:
+``/tmp/usb-hardening-research-2026-05-02.md`` §1.
+
+The script does not run during install — only when systemd starts the
+unit. Operator owns ``systemctl enable --now``. Recovery requires
+root because writing to ``/sys/bus/pci/.../remove`` is privileged.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+DEFAULT_STATE_DIR = Path("/run/hapax-xhci-death-watchdog")
+DEFAULT_STATE_FILE = DEFAULT_STATE_DIR / "last-recovery.json"
+DEFAULT_COOLDOWN_SEC = 180
+
+# Compiled at module level: cheaper than per-line, and tests can rebuild.
+_BDF_RE = re.compile(r"xhci_hcd\s+(?P<bdf>[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]+)")
+_DEFAULT_PATTERNS = (
+    "HC died",
+    "Abort failed to stop command ring",
+)
+
+POST_RECOVERY_UNITS = (
+    "hapax-usb-router.service",
+    "hapax-usb-topology-witness.service",
+)
+
+
+@dataclass(frozen=True)
+class JournalLine:
+    """A single line of journal/dmesg output we are scanning."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class DeathEvent:
+    """An xHCI death pattern matched against a journal line."""
+
+    bdf: str
+    pattern: str
+    line: str
+
+
+@dataclass
+class RecoveryState:
+    """Per-BDF cooldown state, persisted across restarts."""
+
+    last_recovery: dict[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def from_path(cls, path: Path) -> RecoveryState:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return cls()
+        last = payload.get("last_recovery", {})
+        if not isinstance(last, dict):
+            return cls()
+        cleaned: dict[str, float] = {}
+        for key, value in last.items():
+            if isinstance(key, str) and isinstance(value, (int, float)):
+                cleaned[key] = float(value)
+        return cls(last_recovery=cleaned)
+
+    def to_path(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps({"last_recovery": self.last_recovery}, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+
+    def in_cooldown(self, bdf: str, *, now: float, cooldown_sec: int) -> bool:
+        last = self.last_recovery.get(bdf)
+        if last is None:
+            return False
+        return (now - last) < cooldown_sec
+
+    def mark_recovery(self, bdf: str, *, now: float) -> None:
+        self.last_recovery[bdf] = now
+
+
+def detect_event(line: str, *, patterns: Iterable[str] = _DEFAULT_PATTERNS) -> DeathEvent | None:
+    """Return a DeathEvent if the line matches any death pattern."""
+
+    for pattern in patterns:
+        # Case-sensitive on the pattern itself (kernel emits the exact form),
+        # but we tolerate either side of the BDF being on the same line.
+        if pattern in line:
+            match = _BDF_RE.search(line)
+            if match is None:
+                continue
+            return DeathEvent(bdf=match.group("bdf"), pattern=pattern, line=line)
+    return None
+
+
+def log(*parts: object, stream=sys.stdout) -> None:
+    """Single-line journal-friendly log helper."""
+
+    print(" ".join(str(part) for part in parts), file=stream, flush=True)
+
+
+def _runner_default(
+    argv: list[str], *, timeout_s: float = 10.0
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+
+
+def _write_sysfs(path: Path, value: str) -> bool:
+    """Write ``value`` to ``path`` under /sys. Returns True on success."""
+
+    try:
+        path.write_text(value, encoding="utf-8")
+        return True
+    except OSError as exc:
+        log(f"sysfs write failed: {path}: {exc}", stream=sys.stderr)
+        return False
+
+
+def perform_recovery(
+    bdf: str,
+    *,
+    sys_pci_root: Path = Path("/sys/bus/pci"),
+    sleep_fn: Callable[[float], None] = time.sleep,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = _runner_default,
+    sysfs_writer: Callable[[Path, str], bool] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Run the PCIe remove+rescan sequence for one BDF.
+
+    Returns a structured result dict for testability + journal logging.
+    """
+
+    pci_dev = sys_pci_root / "devices" / bdf
+    rescan = sys_pci_root / "rescan"
+    writer = sysfs_writer or _write_sysfs
+    result: dict[str, Any] = {
+        "bdf": bdf,
+        "dry_run": dry_run,
+        "remove_attempted": False,
+        "remove_succeeded": False,
+        "rescan_attempted": False,
+        "rescan_succeeded": False,
+        "reappeared": False,
+        "post_recovery_restarts": [],
+    }
+
+    if dry_run:
+        log(f"[dry-run] would echo 1 > {pci_dev}/remove")
+        log(f"[dry-run] would echo 1 > {rescan}")
+        result["remove_attempted"] = True
+        result["rescan_attempted"] = True
+        return result
+
+    log(f"xHCI death detected at {bdf}, attempting PCIe rebind")
+
+    result["remove_attempted"] = True
+    result["remove_succeeded"] = writer(pci_dev / "remove", "1")
+    if not result["remove_succeeded"]:
+        log(f"recovery aborted: remove failed for {bdf}", stream=sys.stderr)
+        return result
+
+    sleep_fn(2)
+
+    result["rescan_attempted"] = True
+    result["rescan_succeeded"] = writer(rescan, "1")
+    if not result["rescan_succeeded"]:
+        log(f"recovery aborted: rescan failed for {bdf}", stream=sys.stderr)
+        return result
+
+    sleep_fn(5)
+
+    # Verify that the device came back. Prefer pure sysfs check (no lspci dep).
+    result["reappeared"] = pci_dev.exists()
+    if result["reappeared"]:
+        log(f"{bdf} re-enumerated OK")
+    else:
+        log(
+            f"WARNING: {bdf} did not come back after rescan — operator intervention required",
+            stream=sys.stderr,
+        )
+
+    # Best-effort post-recovery service restart. Errors are tolerated and
+    # logged (the watchdog must not crash if these units don't exist).
+    for unit in POST_RECOVERY_UNITS:
+        completed = runner(["systemctl", "restart", unit], timeout_s=10.0)
+        ok = completed.returncode == 0
+        result["post_recovery_restarts"].append({"unit": unit, "succeeded": ok})
+        if not ok:
+            log(
+                f"post-recovery restart of {unit} failed (rc={completed.returncode}): "
+                f"{completed.stderr.strip()}",
+                stream=sys.stderr,
+            )
+
+    return result
+
+
+def journal_iterator(*, since_epoch: int | None = None) -> Iterator[JournalLine]:
+    """Tail kernel journal lines. Default mode: follow live."""
+
+    cmd = ["journalctl", "-k", "--no-pager", "--output=cat"]
+    if since_epoch is not None:
+        cmd.extend(["--since", f"@{since_epoch}"])
+    else:
+        cmd.append("--follow")
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.stdout is None:
+        return
+    try:
+        for raw in proc.stdout:
+            yield JournalLine(text=raw.rstrip("\n"))
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def watch_loop(
+    *,
+    state_path: Path,
+    cooldown_sec: int,
+    dry_run: bool,
+    lines: Iterable[JournalLine],
+    patterns: Iterable[str] = _DEFAULT_PATTERNS,
+    now_fn: Callable[[], float] = time.time,
+    recovery_fn: Callable[..., dict[str, Any]] = perform_recovery,
+) -> int:
+    """Main loop. Reads ``lines``, detects events, runs recoveries.
+
+    Returns the count of recoveries actually run (useful in tests).
+    """
+
+    state = RecoveryState.from_path(state_path)
+    log(f"hapax-xhci-death-watchdog starting (cooldown={cooldown_sec}s, dry_run={dry_run})")
+    recoveries = 0
+    for entry in lines:
+        event = detect_event(entry.text, patterns=patterns)
+        if event is None:
+            continue
+        now = now_fn()
+        if state.in_cooldown(event.bdf, now=now, cooldown_sec=cooldown_sec):
+            log(f"skipping {event.bdf} (cooldown active)")
+            continue
+        log(f"death pattern '{event.pattern}' detected on {event.bdf}: {event.line}")
+        outcome = recovery_fn(event.bdf, dry_run=dry_run)
+        recoveries += 1
+        # Mark cooldown even on partial failure: we don't want to retry-storm
+        # on a controller that genuinely cannot be revived without reboot.
+        state.mark_recovery(event.bdf, now=now)
+        try:
+            state.to_path(state_path)
+        except OSError as exc:
+            log(f"state persist failed: {exc}", stream=sys.stderr)
+        log(f"recovery outcome for {event.bdf}: {json.dumps(outcome)}")
+    return recoveries
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Watch for xHCI controller death and run PCIe remove+rescan.",
+    )
+    parser.add_argument(
+        "--state-file",
+        type=Path,
+        default=DEFAULT_STATE_FILE,
+        help=f"Per-BDF cooldown state file (default: {DEFAULT_STATE_FILE})",
+    )
+    parser.add_argument(
+        "--cooldown-sec",
+        type=int,
+        default=DEFAULT_COOLDOWN_SEC,
+        help=f"Per-BDF cooldown in seconds (default: {DEFAULT_COOLDOWN_SEC})",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Detect and log but do not write to /sys/bus/pci",
+    )
+    parser.add_argument(
+        "--input-file",
+        type=Path,
+        default=None,
+        help="Read journal lines from a file instead of journalctl (for tests)",
+    )
+    return parser.parse_args(argv)
+
+
+def _file_iterator(path: Path) -> Iterator[JournalLine]:
+    with path.open("r", encoding="utf-8") as fh:
+        for raw in fh:
+            yield JournalLine(text=raw.rstrip("\n"))
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    state_path: Path = args.state_file
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.input_file is not None:
+        lines: Iterable[JournalLine] = _file_iterator(args.input_file)
+    else:
+        lines = journal_iterator()
+    watch_loop(
+        state_path=state_path,
+        cooldown_sec=args.cooldown_sec,
+        dry_run=args.dry_run,
+        lines=lines,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

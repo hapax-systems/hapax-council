@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# hapax-show-stable-card-ids — report which ALSA cards are using the
+# symbolic ids pinned by config/udev/rules.d/50-hapax-alsa-card-ids.rules
+# and which are still on default ALSA-assigned numeric ids.
+#
+# Today's incident (2026-05-02): card numbers shifted across reboots and
+# configs hardcoding hw:CARD=11 broke. This script makes the drift visible
+# at a glance: it prints each /proc/asound/cards entry and tells you whether
+# its id matches the one the udev rule should have pinned.
+#
+# Usage:
+#   hapax-show-stable-card-ids
+#
+# Exit codes:
+#   0  all expected pinned ids are present
+#   1  one or more expected ids missing — udev rules likely not installed
+#      OR the device is not currently plugged in
+#   2  /proc/asound/cards is unreadable
+
+set -uo pipefail
+
+# (card-id, vendor:product description) pairs we expect.
+EXPECTED=(
+    "L12:Zoom LiveTrak L-12 (1686:03d5)"
+    "S4:Torso Electronics S-4 (1d6b:0104)"
+    "Yeti:Blue Microphones Yeti (b58e:9e84)"
+    "M8:Dirtywave M8 (16c0:048a)"
+    "Dispatch:Erica MIDI Dispatch (381a:1003)"
+    "Brio0:Logitech BRIO #43B0576A"
+    "Brio1:Logitech BRIO #5342C819"
+    "Brio2:Logitech BRIO #9726C031"
+    "C920a:Logitech C920 #2657DFCF"
+    "C920b:Logitech C920 #7B88C71F"
+    "C920c:Logitech C920 #86B6B75F"
+)
+
+if ! [[ -r /proc/asound/cards ]]; then
+    echo "ERROR: /proc/asound/cards not readable" >&2
+    exit 2
+fi
+
+cards_text=$(cat /proc/asound/cards)
+present_ids=$(printf '%s\n' "$cards_text" | awk -F'[][]' '/\[/ { gsub(/[[:space:]]+/, "", $2); print $2 }')
+
+# Parse out (number, id) pairs for diagnostic listing. /proc/asound/cards looks like:
+#   11 [L12            ]: USB-Audio - L-12
+#       Zoom Corporation L-12 at usb-...
+echo "ALSA cards currently bound:"
+echo "----------------------------"
+printf '%s\n' "$cards_text"
+echo
+echo "Pinned card-id audit:"
+echo "---------------------"
+
+missing=0
+for entry in "${EXPECTED[@]}"; do
+    card_id="${entry%%:*}"
+    desc="${entry#*:}"
+    if printf '%s\n' "$present_ids" | grep -qx "$card_id"; then
+        printf '  [OK]      %-9s  %s\n' "$card_id" "$desc"
+    else
+        printf '  [missing] %-9s  %s\n' "$card_id" "$desc"
+        missing=$((missing + 1))
+    fi
+done
+
+# Also report any USB-audio cards using default numeric ids (no symbolic pin).
+default_id_pattern='^[A-Za-z0-9]+_[12]$|^[0-9]+$'
+unpinned=$(
+    printf '%s\n' "$cards_text" \
+        | awk -F'[][]' '/\[/ { id=$2; gsub(/[[:space:]]+/, "", id); print id }' \
+        | grep -E "$default_id_pattern" || true
+)
+
+if [[ -n "$unpinned" ]]; then
+    echo
+    echo "Cards still on default ALSA-assigned ids (udev pin not active for these):"
+    echo "  $unpinned"
+fi
+
+echo
+if (( missing > 0 )); then
+    cat <<-EOF
+WARNING: $missing expected card-id(s) missing.
+
+Possible causes:
+  1. The udev rule file is not installed:
+       sudo install -m 644 \\
+           config/udev/rules.d/50-hapax-alsa-card-ids.rules \\
+           /etc/udev/rules.d/
+       sudo udevadm control --reload
+       sudo udevadm trigger --subsystem-match=sound
+  2. Some devices are not currently plugged in (e.g. M8, S-4 detached).
+  3. A device serial differs from the one recorded in the rule file —
+     check 'udevadm info /dev/snd/controlC<N>' and update the rule.
+
+See docs/governance/persistent-alsa-card-ids.md for full install + add-device
+flow.
+EOF
+    exit 1
+fi
+
+echo "OK: all expected pinned card ids are present."
+exit 0

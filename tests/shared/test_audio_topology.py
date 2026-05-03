@@ -247,6 +247,6 @@ class TestTopologyDescriptor:
     def test_schema_version_pinned(self) -> None:
         with pytest.raises(ValidationError):
             TopologyDescriptor(
-                schema_version=2,  # future; not yet supported
+                schema_version=3,  # future; not yet supported
                 nodes=[Node(id="a", kind=NodeKind.TAP, pipewire_name="x")],
             )

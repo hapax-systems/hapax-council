@@ -185,6 +185,83 @@ class TestInstrumentedQdrantClient:
         assert wrapped.get_collections() == ["a", "b"]
 
 
+# ── get_qdrant_instrumented factory ──────────────────────────────────────────
+
+
+class TestGetQdrantInstrumentedFactory:
+    """Closes the wire half of cc-task
+    ``r16-langfuse-qdrant-microprobe-agentrunner-wire-delete`` for the
+    InstrumentedQdrantClient surface. The wrapper class always existed
+    (R-16 audit confirmed correctness), but the factory entry point was
+    missing — hence zero production callsites for 6 days. This factory
+    is the missing wire path.
+    """
+
+    def test_no_bus_returns_consent_gated_client_unchanged(self):
+        """Without an event_bus, the factory returns the same
+        consent-gated client as ``get_qdrant()``. Safe drop-in for
+        callers with no bus to wire."""
+        from unittest.mock import patch
+
+        # Patch get_qdrant() to return a sentinel so we can identify
+        # what the factory hands back.
+        sentinel = object()
+        with patch("shared.config.get_qdrant", return_value=sentinel):
+            from shared.config import get_qdrant_instrumented
+
+            result = get_qdrant_instrumented(agent_name="test-no-bus", event_bus=None)
+        assert result is sentinel, (
+            "factory must return the consent-gated client unchanged when "
+            "event_bus is None — degrades cleanly for bus-less callers"
+        )
+
+    def test_with_bus_wraps_in_instrumented_client(self):
+        """With an event_bus, the factory composes
+        InstrumentedQdrantClient(consent-gated-client, bus). The two
+        __getattr__ layers (instrumentation outer, consent gate inner)
+        compose: instrumented ops route through the gate."""
+        from unittest.mock import MagicMock, patch
+
+        from shared.config import InstrumentedQdrantClient
+
+        mock_consent_gated = MagicMock()
+        mock_consent_gated.search.return_value = [{"id": 42}]
+        bus = EventBus()
+        with patch("shared.config.get_qdrant", return_value=mock_consent_gated):
+            from shared.config import get_qdrant_instrumented
+
+            wrapped = get_qdrant_instrumented(agent_name="test-with-bus", event_bus=bus)
+
+        assert isinstance(wrapped, InstrumentedQdrantClient)
+        # The instrumented op delegates through the consent-gated client.
+        result = wrapped.search("col", query_vector=[1.0])
+        assert result == [{"id": 42}]
+        mock_consent_gated.search.assert_called_once_with(collection_name="col", query_vector=[1.0])
+        # And emits the FlowEvent.
+        events = bus.recent()
+        assert len(events) == 1
+        assert events[0].kind == "qdrant.op"
+        assert events[0].source == "test-with-bus"
+        assert events[0].label == "search/col"
+
+    def test_passthrough_attribute_via_factory(self):
+        """Non-instrumented attribute access proxies through the
+        instrumentation layer's __getattr__ to the consent-gated
+        client's __getattr__."""
+        from unittest.mock import MagicMock, patch
+
+        mock_consent_gated = MagicMock()
+        mock_consent_gated.get_collections.return_value = ["c1", "c2"]
+        bus = EventBus()
+        with patch("shared.config.get_qdrant", return_value=mock_consent_gated):
+            from shared.config import get_qdrant_instrumented
+
+            wrapped = get_qdrant_instrumented(agent_name="passthrough-test", event_bus=bus)
+        # get_collections is not in the instrumented op-list, so it
+        # passes through both __getattr__ layers.
+        assert wrapped.get_collections() == ["c1", "c2"]
+
+
 # ── ReactiveEngine._agent_from_path ──────────────────────────────────────────
 
 

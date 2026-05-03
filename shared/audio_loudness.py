@@ -74,9 +74,13 @@ MASTER_LIMITER_LOOKAHEAD_MS: float = 5.0
 MASTER_LIMITER_RELEASE_MS: float = 50.0
 
 # Master input makeup gain (Phase 1.5 calibration, 2026-04-23).
-# Compensates for analog losses in the L-12 → AUX-B → Evil Pet → L-12 USB
-# return path so the post-master sum lands near EGRESS_TARGET_LUFS_I.
-# Calibrated subjectively with operator listening to lo-fi music alone:
+# Compensates for ANALOG wet-path losses ONLY (Evil Pet return → L-12
+# multichannel capture bus attenuation). Decoupled from any USB-vs-
+# analog-LINE trim asymmetry — see WET_PATH_USB_BIAS_*_DB and spec §10
+# for that compensation. Until a separate analog-only measurement
+# justifies a change, leave at +1.0 dB.
+#
+# Original calibration narrative (subjective, music-alone, 2026-04-23):
 # - +19 dB landed music alone at -15 LUFS-I → too hot (sums with voice/TTS
 #   would push above target)
 # - +14 dB landed music alone at -20 LUFS-I → still 5 dB too hot
@@ -99,6 +103,30 @@ MASTER_INPUT_MAKEUP_DB: float = 1.0
 # with fast_lookahead_limiter_1913 true-peak limiter).
 MUSIC_TO_L12_PEAK_DBFS: float = -18.0
 MUSIC_LIMITER_RELEASE_MS: float = 200.0
+
+# ── USB IN line-driver bias — analog-trim substitute (spec §10) ───────
+#
+# USB IN line-driver bias — substitutes for the analog channel-strip TRIM
+# stage that L-12 USB IN lacks (analog LINE IN has it, USB IN does not).
+# Each source routed via USB IN to the L-12 declares its own bias constant.
+# Per-source constants prevent collision with future per-source LUFS
+# targeting (Phase 3).
+#
+# Calibrated 2026-05-02 from live measurement: music-duck output at
+# -18 dBFS → broadcast capture at -45 dBFS = 27 dB loss in
+# L-12 USB-IN-to-broadcast-capture path. Bias of +27 dB lands the
+# per-source signal where the analog LINE-IN design assumption expected.
+WET_PATH_USB_BIAS_MUSIC_DB: float = 27.0
+
+# Reserved for TTS USB-IN path; defer measurement + activation until
+# TTS path is the active audit subject. Constant is reserved so the
+# schema is ready when needed.
+WET_PATH_USB_BIAS_TTS_DB: float = 27.0  # reserved, not yet activated
+
+# Bias-stage limiter ceiling — same as PRE_NORM_TRUE_PEAK_DBTP, i.e.
+# brick-wall at the same headroom as every other safety stage.
+WET_PATH_USB_BIAS_CEILING_DBTP: float = -1.0
+WET_PATH_USB_BIAS_RELEASE_MS: float = 50.0
 
 # ── Headroom budget ───────────────────────────────────────────────────
 #

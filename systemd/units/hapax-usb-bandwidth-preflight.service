@@ -1,0 +1,20 @@
+[Unit]
+Description=Hapax USB bandwidth preflight — Prometheus textfile
+Documentation=file:///usr/local/bin/hapax-usb-bandwidth-preflight
+Documentation=file:///home/hapax/projects/hapax-council/docs/governance/usb-bandwidth-preflight.md
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hapax-usb-bandwidth-preflight --prometheus
+StandardOutput=append:/var/lib/node-exporter/textfile/hapax-usb-bandwidth.prom.tmp
+ExecStartPost=/bin/sh -c 'mv /var/lib/node-exporter/textfile/hapax-usb-bandwidth.prom.tmp /var/lib/node-exporter/textfile/hapax-usb-bandwidth.prom'
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/node-exporter/textfile
+MemoryMax=64M
+SuccessExitStatus=0 1 2
+
+[Install]
+WantedBy=multi-user.target

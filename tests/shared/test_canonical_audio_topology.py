@@ -28,7 +28,7 @@ def test_canonical_descriptor_parses() -> None:
         "config/audio-topology.yaml missing - canonical descriptor deleted?"
     )
     d = _descriptor()
-    assert d.schema_version == 1
+    assert d.schema_version == 2
 
 
 def test_canonical_has_current_livestream_node_ids() -> None:

@@ -1,0 +1,28 @@
+[Unit]
+Description=Hapax xHCI death watchdog — auto-recover dead xhci controllers
+Documentation=file:///usr/local/bin/hapax-xhci-death-watchdog
+Documentation=file:///home/hapax/projects/hapax-council/docs/governance/xhci-death-watchdog.md
+After=systemd-journald.service
+Wants=systemd-journald.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hapax-xhci-death-watchdog
+Restart=always
+RestartSec=10
+# Needs root to write /sys/bus/pci/devices/.../remove and /sys/bus/pci/rescan
+User=root
+# Hardening — only needs journal read + PCI sysfs write + state dir
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/sys/bus/pci /run/hapax-xhci-death-watchdog
+StateDirectory=hapax-xhci-death-watchdog
+RuntimeDirectory=hapax-xhci-death-watchdog
+RuntimeDirectoryPreserve=yes
+StandardOutput=journal
+StandardError=journal
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target
