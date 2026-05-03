@@ -63,6 +63,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore,
+)
+
 GITHUB_SPONSORS_WEBHOOK_SECRET_ENV = "GITHUB_SPONSORS_WEBHOOK_SECRET"
 
 
@@ -249,8 +256,14 @@ class GitHubSponsorsRailReceiver:
     socket, writes to disk, or contacts any external system.
     """
 
-    def __init__(self, *, secret_env_var: str = GITHUB_SPONSORS_WEBHOOK_SECRET_ENV) -> None:
+    def __init__(
+        self,
+        *,
+        secret_env_var: str = GITHUB_SPONSORS_WEBHOOK_SECRET_ENV,
+        idempotency_store: IdempotencyStore | None = None,
+    ) -> None:
         self._secret_env_var = secret_env_var
+        self._idempotency_store = idempotency_store
 
     def _resolve_secret(self) -> str:
         return os.environ.get(self._secret_env_var, "")
@@ -261,6 +274,7 @@ class GitHubSponsorsRailReceiver:
         signature: str | None,
         *,
         raw_body: bytes | None = None,
+        delivery_id: str | None = None,
     ) -> SponsorshipEvent | None:
         """Validate + normalize a single GitHub Sponsors webhook delivery.
 
@@ -297,6 +311,19 @@ class GitHubSponsorsRailReceiver:
         amount_usd_cents = _extract_amount_usd_cents(payload)
         occurred_at = _extract_occurred_at(payload)
 
+        if self._idempotency_store is not None:
+            if not delivery_id:
+                raise ReceiveOnlyRailError(
+                    "idempotency_store provided but delivery_id missing — "
+                    "GitHub webhook deliveries carry the per-delivery "
+                    "identifier in the X-GitHub-Delivery header"
+                )
+            try:
+                if not self._idempotency_store.record_or_skip(delivery_id):
+                    return None
+            except _SharedIdempotencyError as exc:
+                raise ReceiveOnlyRailError(str(exc)) from exc
+
         try:
             return SponsorshipEvent(
                 sponsor_login=sponsor_login,
@@ -312,6 +339,7 @@ class GitHubSponsorsRailReceiver:
 __all__ = [
     "GITHUB_SPONSORS_WEBHOOK_SECRET_ENV",
     "GitHubSponsorsRailReceiver",
+    "IdempotencyStore",
     "ReceiveOnlyRailError",
     "SponsorshipEvent",
     "SponsorshipEventKind",
