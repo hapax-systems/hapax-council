@@ -37,3 +37,19 @@ For a specific merge commit:
 jq 'select(.event == "post_merge_deploy" and .sha == "<merge-sha>")' \
   ~/.cache/hapax/post-merge-traces/post-merge-traces.jsonl
 ```
+
+## Auto-invocation
+
+As of 2026-05-03 the deploy script is fired automatically by
+`hapax-post-merge-deploy.path` whenever the canonical local main ref
+(`~/projects/hapax-council/.git/refs/heads/main`) advances. The `.service`
+unit resolves the new HEAD via `git rev-parse main` and hands it to the
+script — see `systemd/README.md` § "Post-Merge Auto-Deploy".
+
+Confirm a fire landed in the trace after a merge:
+
+```bash
+systemctl --user status hapax-post-merge-deploy.path
+journalctl --user -u hapax-post-merge-deploy.service -n 50 --no-pager
+tail -n 5 ~/.cache/hapax/post-merge-traces/post-merge-traces.jsonl | jq .
+```
