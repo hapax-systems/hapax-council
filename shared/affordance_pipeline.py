@@ -23,6 +23,7 @@ from shared.conative_impingement import action_tendency_prior_for_candidate
 from shared.embed_cache import DiskEmbeddingCache
 from shared.exploration import ExplorationSignal
 from shared.impingement import Impingement, render_impingement_text
+from shared.visual_mode_bias import get_visual_mode_bias
 
 log = logging.getLogger("affordance_pipeline")
 
@@ -739,6 +740,14 @@ class AffordancePipeline:
             w_recency = float(os.environ.get(RECENCY_WEIGHT_ENV, W_RECENCY_DEFAULT))
         except (TypeError, ValueError):
             w_recency = W_RECENCY_DEFAULT
+        # u8-compositor-preset-bias-consumer: snapshot the per-mode
+        # bias once for the whole select() call. get_visual_mode_bias()
+        # reads the working-mode file at-call-cost; capturing once per
+        # impingement (rather than per-candidate) honors the helper's
+        # docstring contract while still flipping within 60s of a
+        # `hapax-working-mode` CLI mode change. Defaults to 1.0 for
+        # any capability NOT in the PRESET_FAMILY_WEIGHTS table.
+        visual_bias = get_visual_mode_bias()
         for c in candidates:
             state = self._activation.get(c.capability_name, ActivationState())
             c.base_level = self._normalize_base_level(state.base_level(now))
@@ -774,6 +783,15 @@ class AffordancePipeline:
                 capability_name=c.capability_name,
                 payload=c.payload,
             )
+            # u8-compositor-preset-bias-consumer: mode-aware multiplier
+            # on `fx.family.*` candidates per shared/visual_mode_bias.py
+            # PRESET_FAMILY_WEIGHTS table. RND favors audio-reactive +
+            # glitch-dense; research favors calm-textural + warm-minimal.
+            # SOFT-PRIOR multiplier — never a candidate filter. Capability
+            # names outside `fx.family.*` pass through with weight 1.0
+            # (default in `family_weight()`), so this is a no-op for them.
+            if c.capability_name.startswith("fx.family."):
+                c.combined *= visual_bias.family_weight(c.capability_name)
         # Phase 4 of programme-layer plan (D-28): apply programme bias as
         # SOFT PRIOR multiplier on the composed score. Per
         # `project_programmes_enable_grounding` memory + spec §5.1: the
