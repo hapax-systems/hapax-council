@@ -1410,3 +1410,25 @@ event_to_manifest_record
 manifest_path_for_event
 GITHUB_SPONSORS_SIGNATURE_HEADER
 receive_github_sponsors_webhook
+
+# R9 dynamic compositor-layout switcher (cc-task
+# dynamic-compositor-layout-switching). Pure logic + cooldown wrapper
+# shipped in isolation; integration into the director loop / systemd
+# timer is a follow-up PR per the task scope. Whitelisted until that
+# integration lands.
+from agents.studio_compositor.layout_switcher import (
+    LayoutSelection as _r9_LayoutSelection,
+)
+from agents.studio_compositor.layout_switcher import (
+    LayoutSwitcher as _r9_LayoutSwitcher,
+)
+from agents.studio_compositor.layout_switcher import (
+    select_layout as _r9_select_layout,
+)
+
+_r9_LayoutSelection
+_r9_LayoutSwitcher
+_r9_select_layout
+_r9_LayoutSwitcher.current_layout
+_r9_LayoutSwitcher.should_switch
+_r9_LayoutSwitcher.record_switch
