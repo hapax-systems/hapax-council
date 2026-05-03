@@ -127,8 +127,16 @@ async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
     """Multimodal evaluative call via gemini-flash — sees the visual surface directly."""
     import os
 
+    # cc-task jr-gemini-3-flash-vision-router-update: route DMN per-tick
+    # vision through `vision-fast` (= gemini-3-flash-preview) with
+    # `media_resolution="low"` for the price-performance leader on 10fps
+    # vision (~$0.00014/frame). MODELS resolution import-local to avoid a
+    # circular import (shared.config doesn't import this module).
+    from shared.config import MODELS
+
+    vision_model = MODELS["vision-fast"]
     metrics_ctx = (
-        llm_call_span(model="gemini-flash", route="dmn-multimodal")
+        llm_call_span(model=vision_model, route="dmn-multimodal")
         if llm_call_span is not None
         else nullcontext(None)
     )
@@ -145,14 +153,17 @@ async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
                 {"type": "text", "text": prompt},
             ]
             resp = await client.chat.completions.create(
-                model="gemini-flash",
+                model=vision_model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.1,
                 max_tokens=256,
-                extra_body={"thinking": {"type": "disabled", "budget_tokens": 0}},
+                extra_body={
+                    "thinking": {"type": "disabled", "budget_tokens": 0},
+                    "media_resolution": "low",
+                },
             )
             return resp.choices[0].message.content.strip()
     except Exception as exc:
