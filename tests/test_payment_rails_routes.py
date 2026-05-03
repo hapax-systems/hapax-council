@@ -2403,6 +2403,7 @@ def _mercury_payload(
     currency: str = "USD",
     kind: str = "ach_incoming",
     occurred_at: str = "2026-05-03T00:00:00Z",
+    txn_id: str = "txn-mercury-incoming-1",
 ) -> dict:
     """Realistic Mercury delivery for an incoming ACH transfer.
 
@@ -2412,7 +2413,7 @@ def _mercury_payload(
     return {
         "type": event_type,
         "data": {
-            "id": "txn-mercury-incoming-1",
+            "id": txn_id,
             "amount": amount,
             "currency": currency,
             "kind": kind,
@@ -2438,6 +2439,17 @@ def mercury_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def mercury_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(MERCURY_WEBHOOK_SECRET_ENV, _MERCURY_VALID_SECRET)
     return _MERCURY_VALID_SECRET
+
+
+@pytest.fixture
+def mercury_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Mercury idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._mercury_idempotency_store = None
+    yield tmp_path / "mercury" / "idempotency.db"
+    routes_mod._mercury_idempotency_store = None
 
 
 @pytest.mark.asyncio
@@ -2569,6 +2581,88 @@ def test_mercury_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Mercury — idempotency hard pin (cc-task jr-mercury-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_mercury_route_replays_same_txn_id_returns_duplicate(
+    mercury_output_dir: Path,
+    mercury_secret_env: str,
+    mercury_idempotency_isolated: Path,
+) -> None:
+    payload = _mercury_payload(txn_id="txn-mercury-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mercury_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {"X-Mercury-Signature": sig}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/mercury", content=raw, headers=headers)
+        second = await client.post("/api/payment-rails/mercury", content=raw, headers=headers)
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["transaction_id"] == "txn-mercury-replay-001"
+    files = list(mercury_output_dir.glob("event-transaction_created-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_mercury_route_distinct_txn_ids_both_processed(
+    mercury_output_dir: Path,
+    mercury_secret_env: str,
+    mercury_idempotency_isolated: Path,
+) -> None:
+    payload_a = _mercury_payload(txn_id="txn-mercury-a")
+    payload_b = _mercury_payload(txn_id="txn-mercury-b", counterparty="Foo Foundation")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(mercury_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(mercury_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw_a,
+            headers={"X-Mercury-Signature": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw_b,
+            headers={"X-Mercury-Signature": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(mercury_output_dir.glob("event-transaction_created-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_mercury_route_missing_data_id_returns_400(
+    mercury_output_dir: Path,
+    mercury_secret_env: str,
+    mercury_idempotency_isolated: Path,
+) -> None:
+    payload = _mercury_payload()
+    del payload["data"]["id"]
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mercury_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw,
+            headers={"X-Mercury-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "data.id" in response.json()["detail"]
 
 
 # ===========================================================================

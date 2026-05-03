@@ -138,6 +138,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore,
+)
+
 MERCURY_WEBHOOK_SECRET_ENV = "MERCURY_WEBHOOK_SECRET"
 
 _ISO_4217_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -458,8 +465,10 @@ class MercuryRailReceiver:
         self,
         *,
         secret_env_var: str = MERCURY_WEBHOOK_SECRET_ENV,
+        idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._secret_env_var = secret_env_var
+        self._idempotency_store = idempotency_store
 
     def _resolve_secret(self) -> str:
         return os.environ.get(self._secret_env_var, "")
@@ -516,6 +525,20 @@ class MercuryRailReceiver:
         amount_cents, currency = _extract_amount_and_currency(txn)
         occurred_at = _extract_occurred_at(payload, txn)
 
+        if self._idempotency_store is not None:
+            txn_id = txn.get("id")
+            if not isinstance(txn_id, str) or not txn_id:
+                raise ReceiveOnlyRailError(
+                    "idempotency_store provided but data.id missing — "
+                    "Mercury transactions carry the per-delivery identifier "
+                    "in data.id"
+                )
+            try:
+                if not self._idempotency_store.record_or_skip(txn_id):
+                    return None
+            except _SharedIdempotencyError as exc:
+                raise ReceiveOnlyRailError(str(exc)) from exc
+
         try:
             return MercuryTransactionEvent(
                 counterparty_handle=counterparty_handle,
@@ -532,6 +555,7 @@ class MercuryRailReceiver:
 
 __all__ = [
     "MERCURY_WEBHOOK_SECRET_ENV",
+    "IdempotencyStore",
     "MercuryEventKind",
     "MercuryRailReceiver",
     "MercuryTransactionDirection",
