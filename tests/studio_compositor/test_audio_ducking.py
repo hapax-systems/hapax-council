@@ -1,4 +1,4 @@
-"""Tests for the 24c bidirectional audio-ducking controller (CVS #145)."""
+"""Tests for the backing-mix bidirectional audio-ducking controller (CVS #145)."""
 
 from __future__ import annotations
 
@@ -102,7 +102,7 @@ class TestStateMachine:
         # Dispatched ducks YT and keeps backing open.
         sinks = {sink for sink, _ in dispatched}
         assert "hapax-ytube-ducked" in sinks
-        assert "hapax-24c-ducked" in sinks
+        assert "hapax-backing-ducked" in sinks
 
     def test_voice_active_back_to_normal_after_debounce(self) -> None:
         vad = _MutableSignal(True)
@@ -134,7 +134,7 @@ class TestStateMachine:
         # -18 dB ≈ 0.126 linear
         assert gains_by_sink["hapax-ytube-ducked"] < 0.15
         # Backing stays open under voice priority.
-        assert gains_by_sink["hapax-24c-ducked"] >= 0.99
+        assert gains_by_sink["hapax-backing-ducked"] >= 0.99
 
     def test_yt_only_ducks_backing(self) -> None:
         vad = _MutableSignal(False)
@@ -145,7 +145,7 @@ class TestStateMachine:
 
         gains_by_sink = {sink: gain for sink, gain in dispatched}
         # -6 dB ≈ 0.501 linear for backing.
-        assert 0.45 < gains_by_sink["hapax-24c-ducked"] < 0.55
+        assert 0.45 < gains_by_sink["hapax-backing-ducked"] < 0.55
         # YT bed itself stays open.
         assert gains_by_sink["hapax-ytube-ducked"] >= 0.99
 

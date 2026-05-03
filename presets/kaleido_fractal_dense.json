@@ -1,0 +1,47 @@
+{
+  "name": "Kaleido Fractal Dense",
+  "description": "Kaleidoscope-fractal lineage (2/2): heavier kaleidoscope segmentation + tunnel + chromatic for deep recursive dense patterns. Lineage: kaleidoscope-fractal.",
+  "lineage": "kaleidoscope-fractal",
+  "transition_ms": 2400,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.06,
+        "contrast": 1.24,
+        "saturation": 1.4,
+        "hue_rotate": -6
+      }
+    },
+    "kaleido_dense": {
+      "type": "kaleidoscope",
+      "params": {
+        "segments": 14,
+        "rotation": 0.32
+      }
+    },
+    "tunnel_kaleido": {
+      "type": "tunnel",
+      "params": {
+        "depth": 0.3,
+        "speed": 0.12,
+        "twist": 0.18
+      }
+    },
+    "chroma_kaleido": {
+      "type": "chromatic_aberration",
+      "params": {
+        "offset_x": 2,
+        "offset_y": 1
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}

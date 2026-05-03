@@ -133,7 +133,7 @@ class TestDirectorRefusalGateCounter:
 
 
 class TestAudioDuckingGauge:
-    """CVS #145 — bidirectional 24c ducker state gauge."""
+    """CVS #145 — bidirectional backing-mix ducker state gauge."""
 
     def test_gauge_registered_with_prepopulated_labels(self) -> None:
         # _init_metrics pre-populates every state label so Grafana always
