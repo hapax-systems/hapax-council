@@ -350,6 +350,23 @@ STUDIO_AFFORDANCES = [
             consent_required=False,
         ),
     ),
+    # cc-task m8-remote-button-control-daemon. Hardware-actuation
+    # affordance (buttons, keyjazz, theme, display reset). No PII —
+    # button presses don't carry operator-identifying data — so
+    # consent_required=False per the cc-task spec.
+    CapabilityRecord(
+        name="studio.m8_remote_control",
+        description=(
+            "Actuate the Dirtywave M8's buttons and synth voice via serial "
+            "to navigate UI, queue songs, or audition notes programmatically"
+        ),
+        daemon="m8_control",
+        operational=_public_operational(
+            latency_class="realtime",
+            medium="action",
+            consent_required=False,
+        ),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
