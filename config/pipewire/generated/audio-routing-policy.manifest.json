@@ -1,5 +1,7 @@
 {
   "artifact_paths": [
+    "config/pipewire/hapax-backing-ducked-sidechain.conf",
+    "config/pipewire/hapax-backing-ducked.conf",
     "config/pipewire/hapax-l12-evilpet-capture.conf",
     "config/pipewire/hapax-m8-loudnorm.conf",
     "config/pipewire/hapax-music-duck.conf",
@@ -13,9 +15,7 @@
     "config/pipewire/hapax-voice-fx-chain.conf",
     "config/pipewire/hapax-voice-fx-loudnorm.conf",
     "config/pipewire/hapax-yt-loudnorm.conf",
-    "config/pipewire/hapax-yt-over-24c-duck.conf",
     "config/pipewire/s4-usb-sink.conf",
-    "config/pipewire/ytube-over-24c-duck.conf",
     "config/wireplumber/10-default-sink-ryzen.conf",
     "config/wireplumber/50-hapax-voice-duck.conf",
     "config/wireplumber/54-hapax-m8-instrument.conf",

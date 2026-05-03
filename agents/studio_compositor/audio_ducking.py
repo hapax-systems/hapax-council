@@ -1,9 +1,11 @@
-"""24c mix ducking around YouTube/React audio (CVS #145).
+"""Backing-mix ducking around YouTube/React audio (CVS #145).
 
-A bidirectional audio ducking controller for the Studio 24c output mix.
-Complements the operator-voice-over-YouTube sidechain compressor shipped
-via ``config/pipewire/voice-over-ytube-duck.conf`` (VAD + VAD-driven
-ramp) with a state machine that couples:
+A bidirectional audio ducking controller for the broadcast backing mix
+(DAW returns, synth strips, MPC pads — historically the PreSonus Studio
+24c hardware before its 2026-05 retirement). Complements the
+operator-voice-over-YouTube sidechain compressor shipped via
+``config/pipewire/voice-over-ytube-duck.conf`` (VAD + VAD-driven ramp)
+with a state machine that couples:
 
 * **Voice activity** — operator speaking (from ``vad_ducking.VOICE_STATE_FILE``).
 * **YouTube/React audio activity** — the React audio player / browser
@@ -19,9 +21,9 @@ State machine (4 states):
     BOTH_ACTIVE   — both fire; voice takes priority, YT further to -18 dB.
 
 Gains are applied via PipeWire. Preferred transport: ``pw-cli set-param``
-on the ``hapax-ytube-ducked`` and ``hapax-24c-ducked`` filter-chain sink
-input-gain controls. Fallback: ``wpctl set-volume`` on the sink itself
-(coarser but portable).
+on the ``hapax-ytube-ducked`` and ``hapax-backing-ducked`` filter-chain
+sink input-gain controls. Fallback: ``wpctl set-volume`` on the sink
+itself (coarser but portable).
 
 **Feature flag:** ``HAPAX_AUDIO_DUCKING_ACTIVE`` (default ``0``). When
 off, the controller runs but dispatches no PipeWire changes — useful for
@@ -114,15 +116,15 @@ class _GainTargets:
 
 @dataclass
 class AudioDuckingController:
-    """State machine + dispatcher for the bidirectional 24c duck.
+    """State machine + dispatcher for the bidirectional backing-mix duck.
 
     Runs on its own background thread. Reads VAD + YT-audio state at
     30 ms cadence; on state transitions, dispatches the target gains to
     PipeWire via the configured ``gain_dispatcher`` callable.
 
     The default dispatcher routes through ``pw-cli set-param`` on the
-    ``hapax-ytube-ducked`` and ``hapax-24c-ducked`` filter-chain inputs.
-    Tests override ``gain_dispatcher`` to a capturing stub.
+    ``hapax-ytube-ducked`` and ``hapax-backing-ducked`` filter-chain
+    inputs. Tests override ``gain_dispatcher`` to a capturing stub.
     """
 
     vad_state_reader: Callable[[], bool | None] = field(default=None)  # type: ignore[assignment]
@@ -255,7 +257,7 @@ class AudioDuckingController:
             return
         try:
             dispatcher("hapax-ytube-ducked", targets.yt_bed_linear)
-            dispatcher("hapax-24c-ducked", targets.backing_linear)
+            dispatcher("hapax-backing-ducked", targets.backing_linear)
         except Exception:
             log.debug("audio_ducking: dispatcher failed", exc_info=True)
 

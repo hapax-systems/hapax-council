@@ -67,24 +67,29 @@ header; sensible starting point: `-30 dBFS`, `8:1`, `5 ms`, `300 ms`.
 
 Depends on the `sc4m_1916` LADSPA plugin (``swh-plugins`` on Arch).
 
-## YouTube → 24c backing ducker (CVS #145)
+## YouTube → backing-mix ducker (CVS #145)
 
-`hapax-yt-over-24c-duck.conf` is the symmetric partner of
-`voice-over-ytube-duck.conf`: it creates a `hapax-24c-ducked` sink that
-the Python `AudioDuckingController` modulates when YouTube/React audio
-is active, so the 24c backing bed ducks under the YT content (operator
+`hapax-backing-ducked.conf` is the symmetric partner of
+`voice-over-ytube-duck.conf`: it creates a `hapax-backing-ducked` sink
+that the Python `AudioDuckingController` modulates when YouTube/React
+audio is active, so the backing bed ducks under the YT content (operator
 has said "pull the backing down while the video plays").
+
+Historical: previously named `hapax-yt-over-24c-duck.conf` (sink
+`hapax-24c-ducked`) — renamed 2026-05 with the PreSonus Studio 24c
+hardware retirement. The bidirectional ducker concept itself is still
+load-bearing; only the dead hardware reference came out of the names.
 
 Install + verify:
 
 ```fish
-cp config/pipewire/hapax-yt-over-24c-duck.conf ~/.config/pipewire/pipewire.conf.d/
+cp config/pipewire/hapax-backing-ducked.conf ~/.config/pipewire/pipewire.conf.d/
 systemctl --user restart pipewire pipewire-pulse wireplumber
-pactl list short sinks | grep hapax-24c-ducked
+pactl list short sinks | grep hapax-backing-ducked
 ```
 
 Route backing sources (DAW returns, synth strip, MPC pads) through
-**Hapax 24c Ducker** via per-application audio assignment. Flip
+**Hapax Backing Ducker** via per-application audio assignment. Flip
 `HAPAX_AUDIO_DUCKING_ACTIVE=1` on the compositor unit env to enable the
 state-machine driver; the sink stays at unity gain until then.
 
@@ -92,26 +97,31 @@ See `docs/runbooks/audio-topology.md § 5` for the full ducking matrix.
 
 ## Vinyl-on-stream routing (HOMAGE Phase D1 verification)
 
-Vinyl audio reaches the broadcast via the PreSonus Studio 24c analog mix:
-turntable line-out → Studio 24c hardware input → 24c output mix →
+Historical (PreSonus Studio 24c was decommissioned 2026-05): vinyl audio
+reached the broadcast via the 24c analog mix — turntable line-out →
+Studio 24c hardware input → 24c output mix →
 `alsa_output.usb-PreSonus_Studio_24c...` default sink → OBS PipeWire
-capture → RTMP egress. No dedicated vinyl filter-chain preset exists or
-is required; vinyl shares the 24c mix with DAW returns, synth strips, and
-MPC pads.
+capture → RTMP egress. No dedicated vinyl filter-chain preset existed
+or was required; vinyl shared the 24c mix with DAW returns, synth
+strips, and MPC pads.
 
-When the YT-over-24c ducker is installed (`hapax-yt-over-24c-duck.conf`, CVS
-#145), vinyl routes through `hapax-24c-ducked` so `AudioDuckingController`
-can pull the backing bed down while YouTube content plays. Install path:
-route the turntable return strip through **Hapax 24c Ducker** per-
-application once the preset is active. See `docs/runbooks/audio-topology.md`
-§2 (sinks) and §5 (ducking matrix) for the authoritative routing table.
+When the backing-mix ducker is installed (`hapax-backing-ducked.conf`,
+CVS #145), backing sources route through `hapax-backing-ducked` so
+`AudioDuckingController` can pull the backing bed down while YouTube
+content plays. Install path: route the relevant return strip through
+**Hapax Backing Ducker** per-application once the preset is active. See
+`docs/runbooks/audio-topology.md` §2 (sinks) and §5 (ducking matrix) for
+the authoritative routing table.
 
-Verify vinyl reaches the broadcast:
+Verify vinyl reaches the broadcast (HISTORICAL — written when the 24c
+was the default sink; verification commands referencing
+`PreSonus_Studio_24c` are no longer applicable post-decommission. Use
+the current default sink in their place.):
 
 ```fish
-# 1. Confirm the 24c sink is live and the default sink.
+# 1. Confirm the default sink is live (formerly: the 24c sink).
 pactl info | grep 'Default Sink'
-pactl list short sinks | grep PreSonus_Studio_24c
+pactl list short sinks | grep PreSonus_Studio_24c   # historical
 
 # 2. While a record is playing, confirm energy on the default-sink monitor.
 pw-cat --record --target @DEFAULT_MONITOR@ --format s16 --rate 48000 \
@@ -124,7 +134,7 @@ ffprobe -v error -show_format -show_streams /tmp/vinyl-probe.wav
 # turntable strip is not routed to the default sink.
 
 # 3. Confirm OBS sees the same energy on its PipeWire capture source
-#    (Audio Mixer → 24c capture channel should show non-silent meters).
+#    (Audio Mixer → broadcast capture channel should show non-silent meters).
 ```
 
 ## S-4 USB content loopback (evilpet-s4-routing Phase 1, R3)
@@ -217,11 +227,11 @@ ffmpeg -i /tmp/yt-bed-30s.wav -af loudnorm=print_format=summary -f null -
 - **Sink does not appear after install:** verify `pipewire.service` and
   `wireplumber.service` are running under systemd user scope; check
   `journalctl --user -u pipewire` for filter-chain load errors.
-- **Hardware target not found:** the `target.object` in each preset points
-  at the PreSonus Studio 24c analog output. Edit it to match your own
-  `pactl list short sinks` output if you are running on different
-  hardware, or remove the `target.object` line to let wireplumber choose
-  the default sink.
+- **Hardware target not found:** historically the `target.object` in
+  each preset pointed at the PreSonus Studio 24c analog output (now
+  decommissioned). Edit it to match your own `pactl list short sinks`
+  output if you are running on different hardware, or remove the
+  `target.object` line to let wireplumber choose the default sink.
 - **Restart safety:** switching presets at runtime will briefly unhook the
   sink; the daimonion's pw-cat subprocess auto-restarts on broken pipe,
   so an in-flight TTS utterance may stutter but the daemon recovers.
