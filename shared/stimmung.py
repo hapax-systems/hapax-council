@@ -42,11 +42,23 @@ class Stance(StrEnum):
 
 
 class DimensionReading(BaseModel, frozen=True):
-    """A single dimension measurement."""
+    """A single dimension measurement.
+
+    Phase A posterior promotion (audit-3-fix-3): ``sigma`` and ``n`` are
+    additive fields with backward-compatible defaults.  ``sigma=0.0``
+    means "treat as point estimate" (legacy behavior); downstream
+    consumers that don't inspect sigma/n are unchanged.
+
+    Phase C will introduce a posterior-aware stance aggregator gated on
+    ``HAPAX_STIMMUNG_POSTERIOR_STANCE=1``; until then, sigma and n are
+    informational only (surfaced in format_for_prompt and chronicle).
+    """
 
     value: float = 0.0  # 0.0 = good, 1.0 = bad
     trend: str = "stable"  # rising | falling | stable
     freshness_s: float = 0.0  # seconds since last update
+    sigma: float = 0.0  # posterior std-dev (0.0 = point estimate)
+    n: int = 1  # sample count in the rolling window
 
 
 # ── SystemStimmung ───────────────────────────────────────────────────────────
@@ -88,6 +100,8 @@ class SystemStimmung(BaseModel):
             dim: DimensionReading = getattr(self, name)
             if dim.freshness_s > _STALE_THRESHOLD_S:
                 lines.append(f"  {name}: stale ({dim.freshness_s:.0f}s)")
+            elif dim.sigma > 0:
+                lines.append(f"  {name}: {dim.value:.2f}±{dim.sigma:.2f} ({dim.trend}, n={dim.n})")
             else:
                 lines.append(f"  {name}: {dim.value:.2f} ({dim.trend})")
         return "\n".join(lines)
@@ -463,6 +477,8 @@ class StimmungCollector:
                                     "dimension_name": name,
                                     "value": round(reading.value, 3),
                                     "trend": reading.trend,
+                                    "sigma": round(reading.sigma, 4),
+                                    "n": reading.n,
                                     "previous_value": round(prev, 3) if prev is not None else None,
                                 },
                             )
