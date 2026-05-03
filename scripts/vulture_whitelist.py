@@ -1835,3 +1835,29 @@ _audit_E_validate_param_value
 # pydantic at model construction (cc-task audio-audit-E Phase 0).
 _audit_E_ladspa_param_spec._name_no_internal_whitespace_collapse
 _audit_E_ladspa_param_spec._validate_range_consistency
+
+# Audio-source-class taxonomy (cc-task audio-audit-D-source-class-taxonomy
+# Phase 0): Phase 1 wires AudioSourceClass + validate_no_private_to_public_edges
+# into shared/audio_topology.py + the leak-guard daemon. Until then the
+# taxonomy + edge guard are exercised by tests only.
+from shared.audio_source_class import (
+    ALL_AUDIO_SOURCE_CLASSES as _audit_D_all_source_classes,
+)
+from shared.audio_source_class import (
+    AudioEdgeRef as _audit_D_audio_edge_ref,
+)
+from shared.audio_source_class import (
+    PrivateToPublicEdgeError as _audit_D_private_to_public_edge_error,
+)
+from shared.audio_source_class import (
+    is_private_to_public_edge as _audit_D_is_private_to_public_edge,
+)
+from shared.audio_source_class import (
+    validate_no_private_to_public_edges as _audit_D_validate_no_private_to_public_edges,
+)
+
+_audit_D_all_source_classes
+_audit_D_audio_edge_ref
+_audit_D_private_to_public_edge_error
+_audit_D_is_private_to_public_edge
+_audit_D_validate_no_private_to_public_edges
