@@ -367,6 +367,23 @@ STUDIO_AFFORDANCES = [
             consent_required=False,
         ),
     ),
+    # cc-task m8-song-queue-control. Symbolic-name → button-sequence
+    # dispatcher built on m8_remote_control. Recruitment can route
+    # "queue tonally-aligned M8 set" to this affordance with a
+    # project_name argument.
+    CapabilityRecord(
+        name="studio.m8_song_queue",
+        description=(
+            "Queue a Dirtywave M8 project by symbolic name so the next "
+            "chain swap loads a musically-aligned set automatically"
+        ),
+        daemon="m8_control",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="action",
+            consent_required=False,
+        ),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
