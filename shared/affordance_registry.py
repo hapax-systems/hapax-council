@@ -1165,6 +1165,141 @@ SHADER_NODE_AFFORDANCES = [
         daemon="reverie",
         operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
+    # cc-task wgsl-node-affordance-coverage-batch-4 (Phase 4 of audit U7,
+    # 2026-05-03): close the registration gap. 45 → 60, full coverage of
+    # agents/shaders/nodes/*.wgsl.
+    CapabilityRecord(
+        name="node.grain_bump",
+        description=(
+            "Overlay film-grain texture as a tactile noise field for analog "
+            "celluloid and photographic-print register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.luma_key",
+        description=(
+            "Mask the visual field by luminance threshold for shadow-mask and "
+            "high-key compositing register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.noise_overlay",
+        description=(
+            "Layer animated noise atop the visual field for static-snow and "
+            "broadcast-interference register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.palette_extract",
+        description=(
+            "Sample dominant colors from the visual field for swatch-extraction "
+            "and palette-discovery register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.rutt_etra",
+        description=(
+            "Extrude scanlines into 3D ridge geometry for analog-video-synthesizer "
+            "and topographic-elevation register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.sharpen",
+        description=("Boost edge contrast for crisp-detail high-frequency-emphasis register"),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.sierpinski_lines",
+        description=(
+            "Draw Sierpinski triangular line-art subdivision for fractal-geometry "
+            "and recursive-pattern register (companion to sierpinski_content)"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.solid",
+        description=(
+            "Fill the visual field with a single solid color for backdrop-fill "
+            "and color-card register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.stutter",
+        description=(
+            "Repeat short visual fragments out of sequence for glitch-stutter "
+            "and breakcore-rhythmic register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.syrup",
+        description=(
+            "Slow the visual field's temporal flow as viscous syrupy lag for "
+            "underwater-dream and somnambulant register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.threshold",
+        description=(
+            "Binarize the visual field at a luminance cutoff for stencil-cut "
+            "and pure-monochrome high-contrast register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.tile",
+        description=(
+            "Replicate the visual field as a grid of repeating tiles for "
+            "Warhol-pop and CCTV-multiviewer register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.transform",
+        description=(
+            "Apply affine transform — translate rotate scale — to the visual "
+            "field for spatial reorientation"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.vignette",
+        description=(
+            "Darken the visual field's perimeter into a soft vignette for "
+            "intimate-portrait and lens-falloff register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.warp",
+        description=(
+            "Bend the visual field's geometry through nonlinear warping for "
+            "funhouse-mirror and dream-distortion register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
