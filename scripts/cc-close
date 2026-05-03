@@ -68,6 +68,27 @@ if ! command -v python3 &>/dev/null; then
   exit 3
 fi
 
+# Closure-discipline gate (cc-task cc-task-closure-hook-acceptance-criteria-gate):
+# refuse the move when any `## Acceptance criteria` checkbox is unchecked.
+# The Bash PreToolUse hook catches manual mv / git mv; this call catches
+# the cc-close path (which uses python rename, invisible to the Bash hook).
+# Both surfaces share the same checker. Bypass via HAPAX_CC_TASK_CLOSURE_GATE_OFF=1.
+# Skip the gate for non-`done` outcomes (withdrawn / superseded close paths
+# are operator-marked terminal states where the AC-completeness contract
+# does not apply).
+if [[ "$final_status" == "done" ]]; then
+  CHECKER="$SCRIPT_DIR/cc-task-closure-check.py"
+  if [[ -f "$CHECKER" ]]; then
+    set +e
+    python3 "$CHECKER" "$note_path"
+    gate_rc=$?
+    set -e
+    if [[ "$gate_rc" -ne 0 ]]; then
+      exit "$gate_rc"
+    fi
+  fi
+fi
+
 python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" <<'PYEOF'
 import re
 import sys
