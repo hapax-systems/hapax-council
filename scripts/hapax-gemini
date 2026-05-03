@@ -1,0 +1,352 @@
+#!/usr/bin/env bash
+# Launch Gemini CLI Interactive as a first-class Hapax coding interface.
+#
+# Symmetric peer of scripts/hapax-claude (Claude Code) and scripts/hapax-codex
+# (Codex). Replaces the one-shot Jr-Gemini packet model with a persistent
+# interactive REPL lane backed by Gemini CLI 0.40.x's `--resume latest`
+# session continuity. Three jobs:
+#
+#   1. Identity: set HAPAX_AGENT_INTERFACE=gemini, HAPAX_AGENT_NAME=$role,
+#      GEMINI_ROLE=$role, HAPAX_WORKTREE_ROLE=$role.
+#   2. Worktree: cd to the role's canonical worktree ($root/hapax-council--$role).
+#   3. Visibility: spawn a tmux session named hapax-gemini-$role so
+#      hapax-gemini-send (and the watchdog) can find the lane.
+#
+# We invoke `gemini --approval-mode plan` so the lane runs as a read-only
+# sandbox parity with Claude Code plan mode. Plan mode constraints (no shell
+# exec, no file write, no commits) are enforced both by Gemini CLI itself and
+# by the policy file at ~/.gemini/policies/hapax-governance-firewall.toml.
+#
+# Per the 3-researcher recommendation 2026-05-03, the first lane to
+# provision is `iota`. If iota proves stable for 24h, follow-up PRs add
+# kappa/lambda/mu using the same launcher.
+
+set -euo pipefail
+
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+
+usage() {
+  cat <<'EOF'
+usage: hapax-gemini [--role iota|kappa|lambda|mu] [--cd DIR]
+                    [--terminal none|tmux|foot] [--force] [--dry-run]
+                    [--] [gemini args...]
+
+Defaults:
+  - role inferred from HAPAX_AGENT_NAME / GEMINI_ROLE / cwd basename
+  - worktree selected from the role when --cd is omitted
+    (iota -> $HAPAX_GEMINI_WORKTREE_ROOT/hapax-council--iota)
+  - terminal=none: exec gemini in the current terminal
+  - terminal=tmux: detach into a tmux session named hapax-gemini-<role>
+  - terminal=foot: tmux + a foot window attached to the same session
+  - --dry-run: print the gemini argv that would be exec'd, then exit 0
+
+Vault and relay are passed via --include-directories so plan-mode reads
+of cc-task notes work without requiring sandbox widening:
+  HAPAX_GEMINI_VAULT_DIR (default: $HOME/Documents/Personal)
+  HAPAX_GEMINI_RELAY_DIR (default: $HOME/.cache/hapax/relay)
+
+Environment:
+  HAPAX_GEMINI_BIN          override `gemini` location
+  HAPAX_GEMINI_POLICY       override policy file
+                            (default: $HOME/.gemini/policies/hapax-governance-firewall.toml)
+  HAPAX_GEMINI_TERMINAL     default --terminal value
+  HAPAX_GEMINI_RESUME       default resume target (default: latest)
+                            set empty to disable --resume
+  HAPAX_GEMINI_APPROVAL_MODE default --approval-mode (default: plan)
+EOF
+}
+
+ROLE=""
+WORKDIR=""
+WORKDIR_EXPLICIT=0
+TERMINAL="${HAPAX_GEMINI_TERMINAL:-none}"
+FORCE=0
+DRY_RUN=0
+GEMINI_EXTRA=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --role|--session|--name)
+      ROLE="${2:-}"
+      shift 2
+      ;;
+    --role=*|--session=*|--name=*)
+      ROLE="${1#*=}"
+      shift
+      ;;
+    --cd|-C)
+      WORKDIR="${2:-}"
+      WORKDIR_EXPLICIT=1
+      shift 2
+      ;;
+    --cd=*)
+      WORKDIR="${1#--cd=}"
+      WORKDIR_EXPLICIT=1
+      shift
+      ;;
+    --terminal)
+      TERMINAL="${2:-}"
+      shift 2
+      ;;
+    --terminal=*)
+      TERMINAL="${1#--terminal=}"
+      shift
+      ;;
+    --force)
+      FORCE=1
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      GEMINI_EXTRA+=("$@")
+      break
+      ;;
+    iota|kappa|lambda|mu)
+      if [ -z "$ROLE" ]; then
+        ROLE="$1"
+      else
+        GEMINI_EXTRA+=("$1")
+      fi
+      shift
+      ;;
+    *)
+      GEMINI_EXTRA+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$ROLE" ]; then
+  ROLE="${HAPAX_AGENT_NAME:-${GEMINI_ROLE:-${HAPAX_AGENT_ROLE:-}}}"
+fi
+if [ -z "$ROLE" ]; then
+  case "$(basename "$PWD")" in
+    hapax-council--iota*) ROLE="iota" ;;
+    hapax-council--kappa*) ROLE="kappa" ;;
+    hapax-council--lambda*) ROLE="lambda" ;;
+    hapax-council--mu*) ROLE="mu" ;;
+  esac
+fi
+
+case "$ROLE" in
+  iota|kappa|lambda|mu) ;;
+  *)
+    echo "hapax-gemini: invalid role '$ROLE' (expected iota|kappa|lambda|mu)" >&2
+    exit 2
+    ;;
+esac
+
+case "$TERMINAL" in
+  none|tmux|foot) ;;
+  *)
+    echo "hapax-gemini: invalid terminal '$TERMINAL'" >&2
+    exit 2
+    ;;
+esac
+
+gemini_default_worktree() {
+  local role="$1"
+  local root="${HAPAX_GEMINI_WORKTREE_ROOT:-$HOME/projects}"
+  printf '%s\n' "$root/hapax-council--$role"
+}
+
+if [ -z "$WORKDIR" ]; then
+  WORKDIR="$(gemini_default_worktree "$ROLE")"
+fi
+
+if [ "$DRY_RUN" -ne 1 ] && [ ! -d "$WORKDIR" ]; then
+  echo "hapax-gemini: worktree not found for role '$ROLE': $WORKDIR" >&2
+  echo "  pass --cd <DIR> to override, or git worktree add it first" >&2
+  exit 3
+fi
+if [ -d "$WORKDIR" ]; then
+  WORKDIR="$(cd "$WORKDIR" && pwd)"
+fi
+
+session_is_protected() {
+  local role="$1"
+  local protection_file="${HAPAX_SESSION_PROTECTION_FILE:-$HOME/.cache/hapax/relay/session-protection.md}"
+  [ -f "$protection_file" ] || return 1
+  awk -v role="$role" '
+    {
+      line = tolower($0)
+      needle = "`" role "`"
+      if (index($0, needle) && line ~ /protected/) found = 1
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$protection_file"
+}
+
+live_gemini_session_exists() {
+  local role="$1"
+  local class="hapax-gemini-$role"
+  local tmux_name="hapax-gemini-$role"
+  if command -v hyprctl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    if hyprctl clients -j 2>/dev/null \
+      | jq -e --arg class "$class" 'any(.[]?; .class == $class)' >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$tmux_name" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+if [ "$FORCE" -ne 1 ] && [ "$DRY_RUN" -ne 1 ] && [ "$TERMINAL" != "none" ]; then
+  if session_is_protected "$ROLE" && live_gemini_session_exists "$ROLE"; then
+    echo "hapax-gemini: refusing to relaunch protected live role '$ROLE' (pass --force to override)" >&2
+    exit 12
+  fi
+fi
+
+GEMINI_BIN="${HAPAX_GEMINI_BIN:-$(command -v gemini || true)}"
+if [ -z "$GEMINI_BIN" ]; then
+  GEMINI_BIN="$HOME/.npm-global/bin/gemini"
+fi
+if [ "$DRY_RUN" -ne 1 ] && [ ! -x "$GEMINI_BIN" ]; then
+  echo "hapax-gemini: gemini not found in PATH (looked at HAPAX_GEMINI_BIN, command -v, $GEMINI_BIN)" >&2
+  exit 4
+fi
+
+POLICY_FILE="${HAPAX_GEMINI_POLICY:-$HOME/.gemini/policies/hapax-governance-firewall.toml}"
+RESUME_TARGET="${HAPAX_GEMINI_RESUME-latest}"
+APPROVAL_MODE="${HAPAX_GEMINI_APPROVAL_MODE:-plan}"
+VAULT_DIR="${HAPAX_GEMINI_VAULT_DIR:-$HOME/Documents/Personal}"
+RELAY_DIR="${HAPAX_GEMINI_RELAY_DIR:-$HOME/.cache/hapax/relay}"
+
+# include-directories list (skip missing dirs gracefully)
+INCLUDE_LIST=""
+for dir in "$VAULT_DIR" "$RELAY_DIR"; do
+  if [ -d "$dir" ] || [ "$DRY_RUN" -eq 1 ]; then
+    if [ -z "$INCLUDE_LIST" ]; then
+      INCLUDE_LIST="$dir"
+    else
+      INCLUDE_LIST="$INCLUDE_LIST,$dir"
+    fi
+  fi
+done
+
+GEMINI_DEFAULT_ARGS=(--approval-mode "$APPROVAL_MODE")
+if [ -n "$INCLUDE_LIST" ]; then
+  GEMINI_DEFAULT_ARGS+=(--include-directories "$INCLUDE_LIST")
+fi
+if [ -n "$POLICY_FILE" ] && { [ -f "$POLICY_FILE" ] || [ "$DRY_RUN" -eq 1 ]; }; then
+  GEMINI_DEFAULT_ARGS+=(--policy "$POLICY_FILE")
+fi
+if [ -n "$RESUME_TARGET" ]; then
+  GEMINI_DEFAULT_ARGS+=(--resume "$RESUME_TARGET")
+fi
+
+TMUX_NAME="hapax-gemini-$ROLE"
+STDERR_LOG="${HAPAX_GEMINI_STDERR_LOG:-/tmp/hapax-gemini-$ROLE.stderr.log}"
+
+if [ "$TERMINAL" != "none" ] && [ "$DRY_RUN" -ne 1 ]; then
+  TMUX_BIN="$(command -v tmux || true)"
+  if [ -z "$TMUX_BIN" ]; then
+    echo "hapax-gemini: tmux not found; --terminal=$TERMINAL requires tmux" >&2
+    exit 10
+  fi
+  if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+    echo "hapax-gemini: tmux session already exists: $TMUX_NAME (pass --force to recreate)" >&2
+    exit 11
+  fi
+fi
+
+# Identity wiring (matches scripts/hapax-claude / scripts/hapax-codex semantics
+# so shared hooks can read either GEMINI_ROLE or HAPAX_AGENT_NAME).
+export HAPAX_AGENT_INTERFACE="gemini"
+export HAPAX_AGENT_NAME="$ROLE"
+export GEMINI_ROLE="$ROLE"
+export HAPAX_AGENT_ROLE="$ROLE"
+export HAPAX_WORKTREE_ROLE="$ROLE"
+export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s' "$GEMINI_BIN"
+  for arg in "${GEMINI_DEFAULT_ARGS[@]}"; do
+    printf ' %q' "$arg"
+  done
+  for arg in "${GEMINI_EXTRA[@]}"; do
+    printf ' %q' "$arg"
+  done
+  printf '\n'
+  exit 0
+fi
+
+if [ "$TERMINAL" = "none" ]; then
+  cd "$WORKDIR"
+  exec "$GEMINI_BIN" "${GEMINI_DEFAULT_ARGS[@]}" "${GEMINI_EXTRA[@]}" 2>>"$STDERR_LOG"
+fi
+
+# tmux/foot path: build a runner script that re-execs hapax-gemini with
+# --terminal none so the inner process inherits identity.
+SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/gemini-spawns"
+mkdir -p "$SPAWN_DIR"
+RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'set -euo pipefail'
+  printf 'cd %q\n' "$WORKDIR"
+  printf 'export HAPAX_AGENT_INTERFACE=gemini\n'
+  printf 'export HAPAX_AGENT_NAME=%q\n' "$ROLE"
+  printf 'export GEMINI_ROLE=%q\n' "$ROLE"
+  printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
+  printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
+  printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
+  printf 'exec %q' "$GEMINI_BIN"
+  for arg in "${GEMINI_DEFAULT_ARGS[@]}"; do
+    printf ' %q' "$arg"
+  done
+  for arg in "${GEMINI_EXTRA[@]}"; do
+    printf ' %q' "$arg"
+  done
+  printf ' 2>>%q\n' "$STDERR_LOG"
+} >"$RUNNER"
+chmod 700 "$RUNNER"
+
+case "$TERMINAL" in
+  tmux)
+    "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    # pipe-pane so the watchdog can scan the session for Flash-downgrade banners
+    PIPE_LOG="${HAPAX_GEMINI_PIPE_LOG:-/tmp/hapax-gemini-$ROLE.pipe.log}"
+    "$TMUX_BIN" pipe-pane -t "$TMUX_NAME" -o "cat >>$PIPE_LOG" 2>/dev/null || true
+    printf '%s\n' "$TMUX_NAME"
+    ;;
+  foot)
+    FOOT_BIN="$(command -v footclient || command -v foot || true)"
+    if [ -z "$FOOT_BIN" ]; then
+      echo "hapax-gemini: footclient/foot not found" >&2
+      exit 10
+    fi
+    if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
+      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+      PIPE_LOG="${HAPAX_GEMINI_PIPE_LOG:-/tmp/hapax-gemini-$ROLE.pipe.log}"
+      "$TMUX_BIN" pipe-pane -t "$TMUX_NAME" -o "cat >>$PIPE_LOG" 2>/dev/null || true
+    fi
+    case "$(basename "$FOOT_BIN")" in
+      footclient)
+        "$FOOT_BIN" -E -N \
+          --app-id "hapax-gemini-$ROLE" \
+          --title "$ROLE" \
+          --working-directory "$WORKDIR" \
+          "$TMUX_BIN" attach-session -t "$TMUX_NAME"
+        ;;
+      *)
+        setsid -f "$FOOT_BIN" \
+          --app-id "hapax-gemini-$ROLE" \
+          --title "$ROLE" \
+          --working-directory "$WORKDIR" \
+          "$TMUX_BIN" attach-session -t "$TMUX_NAME" >/dev/null 2>&1
+        ;;
+    esac
+    ;;
+esac

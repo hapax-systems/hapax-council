@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+# Send an instruction to a live Hapax Gemini CLI Interactive session.
+#
+# Mirror of scripts/hapax-claude-send and scripts/hapax-codex-send for the
+# greek-named Gemini lanes (iota, kappa, lambda, mu). Same transport and ACK
+# semantics:
+#
+#   - tmux paste-and-submit with token-based ACK file confirmation
+#   - 10-second screen-idle stability check before sending, to avoid Ink/React
+#     redraw races (Gemini CLI's TUI re-renders frequently)
+#   - busy-pane refusal (StreamingState spinner / "Working on" indicator)
+#   - JSONL-tail ACK fallback: scans the latest session file in
+#     ~/.gemini/tmp/<friendly_project_name>/chats/ for a new model event
+#     terminating with a tokens block, in case the prompt fails to write
+#     the ACK sentinel
+#
+# Together with hapax-claude-send and hapax-codex-send this gives synchronous
+# parent->child RPC across all three peer interfaces. Default ACK timeout is
+# intentionally short (60s) per the operator's "never stall, revert acceptable"
+# rule.
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: hapax-gemini-send --session ROLE [--transport tmux]
+                          [--no-submit] [--append] [--require-ack]
+                          [--ack-timeout SECONDS] [--ack-mode sentinel|jsonl|both]
+                          [--json] [--stdin]
+                          [--] MESSAGE...
+
+ROLE is the greek lane name: iota, kappa, lambda, mu. Override the
+allowlist via HAPAX_GEMINI_SEND_ROLE_ALLOWLIST="iota kappa lambda mu ...".
+
+Sends MESSAGE to a visible Hapax Gemini CLI session. Targets a tmux
+session named hapax-gemini-ROLE.
+
+Tunables (env vars):
+  HAPAX_GEMINI_SEND_ACK_TIMEOUT          ack wait, seconds (default 60)
+  HAPAX_GEMINI_SEND_ACK_NUDGE_SECONDS    re-press-Enter cadence (default 5)
+  HAPAX_GEMINI_SEND_ACK_NUDGE_LIMIT      max nudges (default 3)
+  HAPAX_GEMINI_SEND_BUSY_REGEX           extended grep regex for "busy"
+                                         pane state (default covers Gemini
+                                         CLI's StreamingState spinner verbs)
+  HAPAX_GEMINI_SEND_ALLOW_BUSY=1         skip busy-pane refusal
+  HAPAX_GEMINI_SEND_STABILITY_SECONDS    screen-idle stability window
+                                         (default 10, set 0 to disable)
+  HAPAX_GEMINI_SEND_STABILITY_TIMEOUT    max wait for stability (default 60)
+  HAPAX_GEMINI_SEND_STABILITY_INTERVAL   poll interval seconds (default 1)
+  HAPAX_GEMINI_SEND_CLEAR_DELAY          (s) sleep after Ctrl-U
+  HAPAX_GEMINI_SEND_PASTE_DELAY          (s) sleep after paste
+  HAPAX_GEMINI_SEND_SUBMIT_DELAY         (s) sleep before Enter
+  HAPAX_GEMINI_SEND_AFTER_SUBMIT_DELAY   (s) sleep after Enter
+  HAPAX_GEMINI_SEND_ROLE_ALLOWLIST       space-separated greek lanes
+  HAPAX_GEMINI_TMP_DIR                   override ~/.gemini/tmp
+  HAPAX_GEMINI_PROJECT_NAME              override friendly-project-name lookup
+EOF
+}
+
+SESSION=""
+TRANSPORT="tmux"
+SUBMIT=1
+CLEAR_INPUT=1
+REQUIRE_ACK=0
+ACK_INSTRUCTION=1
+ACK_TIMEOUT="${HAPAX_GEMINI_SEND_ACK_TIMEOUT:-60}"
+ACK_NUDGE_SECONDS="${HAPAX_GEMINI_SEND_ACK_NUDGE_SECONDS:-5}"
+ACK_NUDGE_LIMIT="${HAPAX_GEMINI_SEND_ACK_NUDGE_LIMIT:-3}"
+ACK_FILE=""
+ACK_TOKEN=""
+ACK_MODE="sentinel"
+JSON_OUTPUT=0
+USED_TRANSPORT=""
+READ_STDIN=0
+MESSAGE_PARTS=()
+TMP_FILES=()
+
+STABILITY_SECONDS="${HAPAX_GEMINI_SEND_STABILITY_SECONDS:-10}"
+STABILITY_TIMEOUT="${HAPAX_GEMINI_SEND_STABILITY_TIMEOUT:-60}"
+STABILITY_INTERVAL="${HAPAX_GEMINI_SEND_STABILITY_INTERVAL:-1}"
+
+ROLE_ALLOWLIST="${HAPAX_GEMINI_SEND_ROLE_ALLOWLIST:-iota kappa lambda mu}"
+
+# Default busy regex covers Gemini CLI's StreamingState spinner indicators
+# (Working/Pondering/Thinking, plus the rotating Ink spinner glyphs and the
+# explicit StreamingState markers from the TUI). Tune via env var rather
+# than editing the script.
+DEFAULT_BUSY_REGEX='(StreamingState|Working|Pondering|Thinking|Investigating|Generating|Analyzing|Reasoning|Searching|Querying|Exploring|Reading|Tool execution|esc to cancel)\.\.?\.|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏'
+BUSY_REGEX="${HAPAX_GEMINI_SEND_BUSY_REGEX:-$DEFAULT_BUSY_REGEX}"
+
+cleanup_tmp_files() {
+  if [ "${#TMP_FILES[@]}" -gt 0 ]; then
+    rm -f "${TMP_FILES[@]}"
+  fi
+}
+trap cleanup_tmp_files EXIT
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session|--thread|--name|--role)
+      SESSION="${2:-}"
+      shift 2
+      ;;
+    --session=*|--thread=*|--name=*|--role=*)
+      SESSION="${1#*=}"
+      shift
+      ;;
+    --transport)
+      TRANSPORT="${2:-}"
+      shift 2
+      ;;
+    --transport=*)
+      TRANSPORT="${1#--transport=}"
+      shift
+      ;;
+    --no-submit)
+      SUBMIT=0
+      shift
+      ;;
+    --append)
+      CLEAR_INPUT=0
+      shift
+      ;;
+    --require-ack)
+      REQUIRE_ACK=1
+      shift
+      ;;
+    --no-ack-instruction)
+      ACK_INSTRUCTION=0
+      shift
+      ;;
+    --ack-timeout)
+      ACK_TIMEOUT="${2:-}"
+      shift 2
+      ;;
+    --ack-timeout=*)
+      ACK_TIMEOUT="${1#--ack-timeout=}"
+      shift
+      ;;
+    --ack-file)
+      ACK_FILE="${2:-}"
+      shift 2
+      ;;
+    --ack-file=*)
+      ACK_FILE="${1#--ack-file=}"
+      shift
+      ;;
+    --ack-token)
+      ACK_TOKEN="${2:-}"
+      shift 2
+      ;;
+    --ack-token=*)
+      ACK_TOKEN="${1#--ack-token=}"
+      shift
+      ;;
+    --ack-mode)
+      ACK_MODE="${2:-}"
+      shift 2
+      ;;
+    --ack-mode=*)
+      ACK_MODE="${1#--ack-mode=}"
+      shift
+      ;;
+    --json)
+      JSON_OUTPUT=1
+      shift
+      ;;
+    --stdin)
+      READ_STDIN=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      MESSAGE_PARTS+=("$@")
+      break
+      ;;
+    *)
+      MESSAGE_PARTS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$SESSION" ]; then
+  echo "hapax-gemini-send: --session is required" >&2
+  exit 2
+fi
+
+ROLE_OK=0
+for r in $ROLE_ALLOWLIST; do
+  if [ "$r" = "$SESSION" ]; then
+    ROLE_OK=1
+    break
+  fi
+done
+if [ "$ROLE_OK" -ne 1 ]; then
+  echo "hapax-gemini-send: invalid role '$SESSION' (allowed: $ROLE_ALLOWLIST)" >&2
+  echo "  override via HAPAX_GEMINI_SEND_ROLE_ALLOWLIST=\"iota kappa ...\"" >&2
+  exit 2
+fi
+
+case "$TRANSPORT" in
+  tmux)
+    ;;
+  *)
+    echo "hapax-gemini-send: invalid transport '$TRANSPORT' (only tmux supported)" >&2
+    exit 2
+    ;;
+esac
+
+case "$ACK_MODE" in
+  sentinel|jsonl|both) ;;
+  *)
+    echo "hapax-gemini-send: invalid --ack-mode '$ACK_MODE' (sentinel|jsonl|both)" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$READ_STDIN" -eq 1 ]; then
+  MESSAGE="$(cat)"
+else
+  if [ "${#MESSAGE_PARTS[@]}" -eq 0 ]; then
+    echo "hapax-gemini-send: missing MESSAGE" >&2
+    exit 2
+  fi
+  MESSAGE="${MESSAGE_PARTS[*]}"
+fi
+
+if [ -z "$MESSAGE" ]; then
+  echo "hapax-gemini-send: refusing to send an empty message" >&2
+  exit 2
+fi
+
+case "$ACK_TIMEOUT" in
+  ''|*[!0-9.]*)
+    echo "hapax-gemini-send: invalid --ack-timeout '$ACK_TIMEOUT'" >&2
+    exit 2
+    ;;
+esac
+
+case "$STABILITY_SECONDS" in
+  ''|*[!0-9.]*)
+    echo "hapax-gemini-send: invalid HAPAX_GEMINI_SEND_STABILITY_SECONDS '$STABILITY_SECONDS'" >&2
+    exit 2
+    ;;
+esac
+
+json_string() {
+  python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+JSONL_BASELINE_COUNT=0
+JSONL_BASELINE_FILE=""
+
+ack_setup() {
+  [ "$REQUIRE_ACK" -eq 1 ] || return 0
+  if [ -z "$ACK_TOKEN" ]; then
+    ACK_TOKEN="ack-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+  fi
+  if [ -z "$ACK_FILE" ]; then
+    ACK_FILE="${XDG_RUNTIME_DIR:-/tmp}/hapax-gemini-acks/$SESSION-$ACK_TOKEN"
+  fi
+  mkdir -p "$(dirname "$ACK_FILE")"
+  rm -f "$ACK_FILE"
+  export HAPAX_GEMINI_SEND_ACK_FILE="$ACK_FILE"
+  export HAPAX_GEMINI_SEND_ACK_TOKEN="$ACK_TOKEN"
+  if [ "$ACK_INSTRUCTION" -eq 1 ] && [ "$ACK_MODE" != "jsonl" ]; then
+    # The session bootstrap teaches the lane to write the ACK sentinel
+    # via /tmp/hapax-gemini-<role>.ack on receipt. We additionally include
+    # the explicit per-prompt token so jsonl-mode lanes can also verify.
+    MESSAGE="$MESSAGE
+
+ACK REQUIRED: write '$ACK_TOKEN' to '$ACK_FILE' to confirm receipt."
+  fi
+  # Baseline the JSONL file BEFORE send so subsequent appends are detected.
+  if [ "$ACK_MODE" = "jsonl" ] || [ "$ACK_MODE" = "both" ]; then
+    local jsonl_state
+    jsonl_state="$(jsonl_ack_baseline)"
+    JSONL_BASELINE_COUNT="$(printf '%s' "$jsonl_state" | sed -n '1p')"
+    JSONL_BASELINE_FILE="$(printf '%s' "$jsonl_state" | sed -n '2p')"
+    JSONL_BASELINE_COUNT="${JSONL_BASELINE_COUNT:-0}"
+  fi
+}
+
+# Discover the latest JSONL session file under ~/.gemini/tmp/<friendly>/chats/.
+# Friendly project name is the basename of the launched cwd; fall back to
+# HAPAX_GEMINI_PROJECT_NAME or scan all subdirs.
+gemini_latest_session_file() {
+  local tmp_root="${HAPAX_GEMINI_TMP_DIR:-$HOME/.gemini/tmp}"
+  [ -d "$tmp_root" ] || return 1
+
+  local friendly="${HAPAX_GEMINI_PROJECT_NAME:-}"
+  local candidates=()
+  if [ -n "$friendly" ]; then
+    candidates+=("$tmp_root/$friendly/chats")
+  fi
+  # iota worktree default
+  candidates+=("$tmp_root/hapax-council--$SESSION/chats")
+  candidates+=("$tmp_root/hapax-council/chats")
+
+  local dir
+  for dir in "${candidates[@]}"; do
+    [ -d "$dir" ] || continue
+    # Pick newest .jsonl by mtime
+    local newest
+    newest="$(find "$dir" -maxdepth 1 -name 'session-*.jsonl' -printf '%T@ %p\n' 2>/dev/null \
+      | sort -nr | head -n1 | awk '{print $2}')"
+    if [ -n "$newest" ]; then
+      printf '%s\n' "$newest"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# JSONL-tail ACK: returns 0 once the session file shows a new model event
+# terminating with a `tokens` block (Gemini CLI's signal that the model
+# reply is complete). Records the file's pre-send line count so we only
+# count new events.
+jsonl_ack_baseline() {
+  local sess_file
+  sess_file="$(gemini_latest_session_file 2>/dev/null || true)"
+  if [ -z "$sess_file" ] || [ ! -f "$sess_file" ]; then
+    printf '0\n'
+    printf '\n'
+    return 0
+  fi
+  local count
+  count="$(wc -l <"$sess_file" 2>/dev/null || printf '0')"
+  printf '%s\n' "$count"
+  printf '%s\n' "$sess_file"
+}
+
+jsonl_ack_satisfied() {
+  local baseline_count="$1"
+  local baseline_file="$2"
+  local sess_file="${baseline_file:-$(gemini_latest_session_file 2>/dev/null || true)}"
+  [ -n "$sess_file" ] && [ -f "$sess_file" ] || return 1
+  local current
+  current="$(wc -l <"$sess_file" 2>/dev/null || printf '0')"
+  [ "$current" -gt "$baseline_count" ] || return 1
+  # Look for a new model event with a tokens block in the appended lines
+  tail -n "$((current - baseline_count))" "$sess_file" 2>/dev/null \
+    | grep -F '"type":"gemini"' \
+    | grep -Eq '"tokens":\{[^}]*"total":[0-9]+' || return 1
+  return 0
+}
+
+# Wait for screen-idle stability: tmux capture-pane output unchanged for
+# STABILITY_SECONDS consecutive seconds. Avoids Ink/React redraw races
+# where send-keys lands mid-redraw and Gemini CLI drops the input.
+wait_for_screen_idle() {
+  local target="$1"
+  local idle_seconds="$STABILITY_SECONDS"
+  if awk "BEGIN { exit !($idle_seconds <= 0) }"; then
+    return 0
+  fi
+  local interval="$STABILITY_INTERVAL"
+  local timeout="$STABILITY_TIMEOUT"
+  local start now elapsed
+  local prev_snap=""
+  local stable_for=0
+  start="$(date +%s)"
+  while true; do
+    local snap
+    snap="$(tmux capture-pane -pt "$target" -S -50 2>/dev/null || true)"
+    if [ "$snap" = "$prev_snap" ] && [ -n "$snap" ]; then
+      stable_for="$(awk -v s="$stable_for" -v i="$interval" 'BEGIN { print s + i }')"
+      if awk -v s="$stable_for" -v target="$idle_seconds" 'BEGIN { exit !(s >= target) }'; then
+        return 0
+      fi
+    else
+      stable_for=0
+    fi
+    prev_snap="$snap"
+    now="$(date +%s)"
+    elapsed=$((now - start))
+    if awk -v e="$elapsed" -v t="$timeout" 'BEGIN { exit !(e >= t) }'; then
+      echo "hapax-gemini-send: screen-idle stability not reached within ${timeout}s for $SESSION" >&2
+      return 1
+    fi
+    sleep "$interval"
+  done
+}
+
+wait_for_ack() {
+  [ "$REQUIRE_ACK" -eq 1 ] || return 0
+  local sentinel_active=0
+  local jsonl_active=0
+  case "$ACK_MODE" in
+    sentinel) sentinel_active=1 ;;
+    jsonl) jsonl_active=1 ;;
+    both) sentinel_active=1; jsonl_active=1 ;;
+  esac
+
+  local jsonl_baseline_count="${JSONL_BASELINE_COUNT:-0}"
+  local jsonl_baseline_file="${JSONL_BASELINE_FILE:-}"
+
+  local start now elapsed nudge_after nudges
+  start="$(date +%s)"
+  nudges=0
+  while true; do
+    if [ "$sentinel_active" -eq 1 ] \
+      && [ -f "$ACK_FILE" ] \
+      && grep -Fxq "$ACK_TOKEN" "$ACK_FILE" 2>/dev/null; then
+      return 0
+    fi
+    if [ "$jsonl_active" -eq 1 ] \
+      && jsonl_ack_satisfied "$jsonl_baseline_count" "$jsonl_baseline_file"; then
+      return 0
+    fi
+    now="$(date +%s)"
+    elapsed=$((now - start))
+    if [ "$USED_TRANSPORT" = "tmux" ] && [ "$SUBMIT" -eq 1 ] && [ "$nudges" -lt "$ACK_NUDGE_LIMIT" ]; then
+      nudge_after="$(awk -v n="$nudges" -v s="$ACK_NUDGE_SECONDS" 'BEGIN { print (n + 1) * s }')"
+      if awk -v elapsed="$elapsed" -v nudge_after="$nudge_after" 'BEGIN { exit !(elapsed >= nudge_after) }'; then
+        tmux send-keys -t "hapax-gemini-$SESSION" C-m 2>/dev/null || true
+        nudges=$((nudges + 1))
+      fi
+    fi
+    if awk "BEGIN { exit !($elapsed >= $ACK_TIMEOUT) }"; then
+      echo "hapax-gemini-send: ack timeout for $SESSION after ${ACK_TIMEOUT}s ($ACK_FILE)" >&2
+      return 12
+    fi
+    sleep 0.25
+  done
+}
+
+emit_status() {
+  [ "$JSON_OUTPUT" -eq 1 ] || return 0
+  printf '{"session":%s,"transport":%s,"submitted":%s,"cleared_input":%s,"ack_required":%s,"ack_mode":%s' \
+    "$(json_string "$SESSION")" \
+    "$(json_string "$USED_TRANSPORT")" \
+    "$SUBMIT" \
+    "$CLEAR_INPUT" \
+    "$REQUIRE_ACK" \
+    "$(json_string "$ACK_MODE")"
+  if [ "$REQUIRE_ACK" -eq 1 ]; then
+    printf ',"ack_file":%s,"ack_token":%s' "$(json_string "$ACK_FILE")" "$(json_string "$ACK_TOKEN")"
+  fi
+  printf '}\n'
+}
+
+ack_setup
+
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+tmux_target_exists() {
+  have_cmd tmux || return 1
+  tmux has-session -t "hapax-gemini-$SESSION" 2>/dev/null
+}
+
+send_tmux() {
+  local target="hapax-gemini-$SESSION"
+  local tmp buffer
+  if [ "$REQUIRE_ACK" -eq 1 ] && [ "${HAPAX_GEMINI_SEND_ALLOW_BUSY:-0}" != "1" ]; then
+    if tmux capture-pane -pt "$target" -S -30 2>/dev/null \
+      | grep -Eq "$BUSY_REGEX"; then
+      echo "hapax-gemini-send: $SESSION appears busy (StreamingState); refusing to queue ACK-gated message" >&2
+      echo "  override with HAPAX_GEMINI_SEND_ALLOW_BUSY=1, or wait for the pane to idle" >&2
+      exit 14
+    fi
+  fi
+
+  # Screen-idle stability: avoids Ink redraw races
+  if [ "$REQUIRE_ACK" -eq 1 ] || [ "${HAPAX_GEMINI_SEND_FORCE_STABILITY:-0}" = "1" ]; then
+    wait_for_screen_idle "$target" || exit 15
+  fi
+
+  tmp="$(mktemp)"
+  buffer="hapax-gemini-send-$SESSION-$$-$RANDOM"
+  TMP_FILES+=("$tmp")
+  printf '%s' "$MESSAGE" >"$tmp"
+
+  tmux load-buffer -b "$buffer" "$tmp"
+  if [ "$CLEAR_INPUT" -eq 1 ]; then
+    tmux send-keys -t "$target" C-u
+    sleep "${HAPAX_GEMINI_SEND_CLEAR_DELAY:-0.05}"
+  fi
+  tmux paste-buffer -b "$buffer" -t "$target"
+  tmux delete-buffer -b "$buffer" 2>/dev/null || true
+  if [ "$SUBMIT" -eq 1 ]; then
+    sleep "${HAPAX_GEMINI_SEND_SUBMIT_DELAY:-1.10}"
+    tmux send-keys -t "$target" C-m
+    sleep "${HAPAX_GEMINI_SEND_AFTER_SUBMIT_DELAY:-0.35}"
+  fi
+}
+
+case "$TRANSPORT" in
+  tmux)
+    tmux_target_exists || {
+      echo "hapax-gemini-send: no tmux session hapax-gemini-$SESSION" >&2
+      exit 11
+    }
+    USED_TRANSPORT="tmux"
+    send_tmux
+    ;;
+esac
+
+wait_for_ack
+emit_status
