@@ -5,6 +5,23 @@ Gemini is useful here as a junior reviewer/scout, not as a production agent.
 This runner keeps it packet-only: Gemini can produce review/research artifacts,
 but cannot claim tasks, edit files, create PRs, merge, deploy, restart services,
 or mutate Obsidian work state.
+
+Beyond `dispatch`/`plan`/`status` (the original surface), the CLI now exposes a
+status state-machine for senior intake:
+
+- `consume <packet> --by alpha --artefact pr/2417` records that a senior peer
+  pulled the packet's findings into a real artefact.
+- `supersede <packet> --by alpha --reason "covered by ..."` records an explicit
+  no-op decision so a packet doesn't sit forever in "ready_for_senior_review".
+- `triage [--older-than N] [--since ISO] [--role JR_ROLE]` lists pending
+  unconsumed packets and (optionally) fires ntfy when the count crosses a
+  threshold.
+
+Each `consume` / `supersede` rewrites the packet's frontmatter atomically,
+flipping `senior_review_required: false` and recording `consumed_at` /
+`consumed_by` plus either `consumption_artefact` or `superseded_reason`. A
+companion vault dashboard at `_dashboard/jr-spark-leverage.md` tracks the
+counters in real time.
 """
 
 from __future__ import annotations
@@ -17,7 +34,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 LATEST_ADVANCED_GEMINI_MODEL = "gemini-3.1-pro-preview"
@@ -127,6 +144,16 @@ def _dashboard_path() -> Path:
     )
 
 
+def _leverage_dashboard_path() -> Path:
+    return Path(
+        os.environ.get(
+            "HAPAX_GEMINI_JR_LEVERAGE_DASHBOARD",
+            Path.home()
+            / "Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/jr-spark-leverage.md",
+        )
+    )
+
+
 def _prompt_from_args(args: argparse.Namespace) -> str:
     if args.prompt and args.prompt_file:
         raise SystemExit("--prompt and --prompt-file are mutually exclusive")
@@ -221,6 +248,268 @@ def _packet_path(role: str, task_id: str) -> Path:
     return _packet_dir() / f"{_stamp()}-{role}-{_safe_slug(task_id)}.md"
 
 
+# --- Frontmatter state-machine helpers (consume / supersede / triage) -------
+
+
+def _split_frontmatter(text: str) -> tuple[dict[str, str], str, list[str]]:
+    """Parse a packet's YAML frontmatter into (kv, body, ordered_keys).
+
+    Preserves key order so we can rewrite the file deterministically. Values are
+    stored as raw strings (un-quoted JSON for `title` is preserved as-is).
+    """
+    if not text.startswith("---\n"):
+        raise ValueError("packet missing leading frontmatter")
+    rest = text[4:]
+    end = rest.find("\n---\n")
+    if end == -1:
+        raise ValueError("packet missing closing frontmatter")
+    fm_text = rest[:end]
+    body = rest[end + 5 :]
+    kv: dict[str, str] = {}
+    ordered_keys: list[str] = []
+    for line in fm_text.splitlines():
+        if not line or ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        k = k.strip()
+        v = v.strip()
+        if k not in kv:
+            ordered_keys.append(k)
+        kv[k] = v
+    return kv, body, ordered_keys
+
+
+def _rewrite_frontmatter(path: Path, updates: dict[str, str | None]) -> None:
+    """Atomically rewrite a packet's frontmatter with the given updates.
+
+    Keys whose value is None are deleted. New keys are appended in stable order
+    at the end of the existing frontmatter block. Write goes through a tmp file
+    then `os.replace`, so concurrent readers never see a half-written packet.
+    """
+    text = path.read_text(encoding="utf-8")
+    kv, body, ordered_keys = _split_frontmatter(text)
+    for k, v in updates.items():
+        if v is None:
+            kv.pop(k, None)
+            if k in ordered_keys:
+                ordered_keys.remove(k)
+        else:
+            if k not in kv:
+                ordered_keys.append(k)
+            kv[k] = v
+    fm_lines = ["---"]
+    for k in ordered_keys:
+        if k in kv:
+            fm_lines.append(f"{k}: {kv[k]}")
+    fm_lines.append("---")
+    new_text = "\n".join(fm_lines) + "\n" + body
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _resolve_packet(name_or_path: str) -> Path:
+    candidate = Path(name_or_path)
+    if candidate.is_absolute() and candidate.exists():
+        return candidate
+    in_dir = _packet_dir() / name_or_path
+    if in_dir.exists():
+        return in_dir
+    if not name_or_path.endswith(".md"):
+        with_ext = _packet_dir() / f"{name_or_path}.md"
+        if with_ext.exists():
+            return with_ext
+    raise SystemExit(f"packet not found: {name_or_path}")
+
+
+def _ts_from_filename(name: str) -> datetime | None:
+    """Filenames start with `YYYYMMDDTHHMMSSZ-...`. Return None on parse failure."""
+    if len(name) < 17 or name[8] != "T" or name[15] != "Z":
+        return None
+    try:
+        return datetime.strptime(name[:16], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _iter_packets() -> list[Path]:
+    return sorted(_packet_dir().glob("*.md"))
+
+
+def _packet_summary(path: Path) -> dict[str, str]:
+    try:
+        kv, _body, _keys = _split_frontmatter(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return kv
+
+
+def _format_age(dt: datetime) -> str:
+    delta = _now() - dt
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h"
+    days = hours // 24
+    return f"{days}d"
+
+
+def _pending_packets(
+    *,
+    older_than_minutes: int = 0,
+    since: str | None = None,
+    role: str | None = None,
+) -> list[tuple[datetime, Path, dict[str, str]]]:
+    cutoff = _now()
+    if older_than_minutes > 0:
+        cutoff = cutoff - timedelta(minutes=older_than_minutes)
+    since_dt = None
+    if since:
+        since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        if since_dt.tzinfo is None:
+            since_dt = since_dt.replace(tzinfo=UTC)
+    pending: list[tuple[datetime, Path, dict[str, str]]] = []
+    for p in _iter_packets():
+        kv = _packet_summary(p)
+        if kv.get("status") != "ready_for_senior_review":
+            continue
+        if str(kv.get("senior_review_required", "")).lower() == "false":
+            continue
+        ts = _ts_from_filename(p.name)
+        if ts is None:
+            continue
+        if since_dt is not None and ts < since_dt:
+            continue
+        if ts > cutoff:
+            continue
+        if role and kv.get("jr_role", "") != role:
+            continue
+        pending.append((ts, p, kv))
+    pending.sort()
+    return pending
+
+
+def _maybe_ntfy(count: int, threshold: int) -> None:
+    """Fire a single ntfy notification when pending count crosses the threshold.
+
+    Dedupes by writing a marker file at $XDG_RUNTIME_DIR/hapax-gemini-jr-ntfy.last
+    so repeated `triage` runs within the same elevated period only fire once
+    per 30-minute window.
+    """
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+    marker = runtime / "hapax-gemini-jr-ntfy.last"
+    now = int(time.time())
+    last = 0
+    try:
+        last = int(marker.read_text())
+    except (OSError, ValueError):
+        last = 0
+    if now - last < 30 * 60:
+        return
+    try:
+        subprocess.run(
+            [
+                "curl",
+                "-s",
+                "-X",
+                "POST",
+                "-H",
+                "Title: Jr/Spark packets pending senior review",
+                "-H",
+                "Tags: warning",
+                "-d",
+                f"{count} packets pending (threshold {threshold}). hapax-gemini-jr-team triage",
+                "http://localhost:8080/hapax",
+            ],
+            check=False,
+            timeout=5,
+        )
+        marker.write_text(str(now))
+    except Exception:
+        pass
+
+
+# --- Verbs ---------------------------------------------------------------
+
+
+def _consume(args: argparse.Namespace) -> int:
+    path = _resolve_packet(args.packet)
+    updates: dict[str, str | None] = {
+        "status": "consumed",
+        "consumed_at": _iso(),
+        "consumed_by": args.by,
+        "consumption_artefact": args.artefact,
+        "senior_review_required": "false",
+    }
+    if args.note:
+        updates["consumption_note"] = json.dumps(args.note)
+    _rewrite_frontmatter(path, updates)
+    _write_leverage_dashboard()
+    print(f"consumed: {path} -> {args.artefact} (by {args.by})")
+    return 0
+
+
+def _supersede(args: argparse.Namespace) -> int:
+    path = _resolve_packet(args.packet)
+    updates: dict[str, str | None] = {
+        "status": "superseded",
+        "consumed_at": _iso(),
+        "consumed_by": args.by,
+        "superseded_reason": json.dumps(args.reason),
+        "senior_review_required": "false",
+    }
+    _rewrite_frontmatter(path, updates)
+    _write_leverage_dashboard()
+    print(f"superseded: {path} (by {args.by}: {args.reason})")
+    return 0
+
+
+def _triage(args: argparse.Namespace) -> int:
+    """List unconsumed ready_for_senior_review packets."""
+    pending = _pending_packets(
+        older_than_minutes=args.older_than,
+        since=args.since,
+        role=args.role,
+    )
+    if args.json:
+        out = [
+            {
+                "packet": str(p),
+                "filename": p.name,
+                "created_at": ts.isoformat().replace("+00:00", "Z"),
+                "age": _format_age(ts),
+                "role": kv.get("jr_role", ""),
+                "task_id": kv.get("task_id", ""),
+                "title": kv.get("title", "").strip('"'),
+            }
+            for ts, p, kv in pending
+        ]
+        print(json.dumps(out, indent=2))
+    else:
+        if not pending:
+            print("(no pending packets)")
+        else:
+            print(f"{len(pending)} unconsumed packet(s):")
+            print()
+            for ts, p, kv in pending:
+                age = _format_age(ts)
+                role = kv.get("jr_role", "")
+                task = kv.get("task_id", "")
+                title = kv.get("title", "").strip('"')[:80]
+                print(f"  [{age:>4}] {role:22} {task:50} {title}")
+                print(f"         {p}")
+    if args.refresh_dashboard:
+        _write_leverage_dashboard()
+    if args.ntfy_threshold > 0 and len(pending) >= args.ntfy_threshold:
+        _maybe_ntfy(len(pending), args.ntfy_threshold)
+    return 0
+
+
+# --- Packet writer + activity dashboard (existing) -----------------------
+
+
 def _write_packet(
     *,
     path: Path,
@@ -277,6 +566,8 @@ def _write_packet(
                 "- Verify every path, claim, PR state, and source before acting.",
                 "- Convert useful work into a normal cc-task/branch/PR only through a senior lane.",
                 "- Discard the packet if it invents state, requests authority, or lacks evidence.",
+                "- When you act on this packet, record it: `hapax-gemini-jr-team consume <path> --by <role> --artefact <pr/NNNN|cc-task/SLUG|spec/PATH>`.",
+                "- When you decide it is no-op, record that: `hapax-gemini-jr-team supersede <path> --by <role> --reason '<why>'`.",
                 "",
             ]
         ),
@@ -386,6 +677,111 @@ def _write_dashboard() -> None:
     )
 
 
+def _write_leverage_dashboard() -> None:
+    path = _leverage_dashboard_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending: list[tuple[datetime, Path, dict[str, str]]] = []
+    consumed: list[tuple[datetime, Path, dict[str, str]]] = []
+    superseded_count = 0
+    consumed_count = 0
+    for p in _iter_packets():
+        kv = _packet_summary(p)
+        ts = _ts_from_filename(p.name)
+        if ts is None:
+            continue
+        status = kv.get("status", "")
+        if (
+            status == "ready_for_senior_review"
+            and str(kv.get("senior_review_required", "")).lower() != "false"
+        ):
+            pending.append((ts, p, kv))
+        elif status == "consumed":
+            consumed.append((ts, p, kv))
+            consumed_count += 1
+        elif status == "superseded":
+            superseded_count += 1
+    pending.sort()
+    consumed.sort(reverse=True)
+
+    rows_pending = []
+    for ts, p, kv in pending[-50:]:
+        age = _format_age(ts)
+        role = kv.get("jr_role", "")
+        task = kv.get("task_id", "")
+        rows_pending.append(
+            f"| {ts.isoformat().replace('+00:00', 'Z')} | {age} | {role} | {task} | `{p.name}` |"
+        )
+    if not rows_pending:
+        rows_pending.append("| - | - | - | - | (none pending) |")
+
+    rows_consumed = []
+    for _ts, _p, kv in consumed[:25]:
+        artefact = kv.get("consumption_artefact", "").strip('"')
+        rows_consumed.append(
+            "| {ca} | {by} | {role} | {task} | {art} |".format(
+                ca=kv.get("consumed_at", "").strip('"'),
+                by=kv.get("consumed_by", ""),
+                role=kv.get("jr_role", ""),
+                task=kv.get("task_id", ""),
+                art=artefact,
+            )
+        )
+    if not rows_consumed:
+        rows_consumed.append("| - | - | - | - | (no consumed packets yet) |")
+
+    path.write_text(
+        "\n".join(
+            [
+                "---",
+                "type: jr-spark-leverage-dashboard",
+                "title: Jr/Spark Packet Leverage",
+                f"updated_at: {_iso()}",
+                "tags: [gemini, jr-team, codex-spark, leverage, audit]",
+                "---",
+                "",
+                "# Jr/Spark Packet Leverage",
+                "",
+                "Every `ready_for_senior_review` packet must be either **consumed** (with",
+                "an artefact reference) or **superseded** (with a recorded reason). This",
+                "dashboard surfaces leakage in real time.",
+                "",
+                "## Counters",
+                "",
+                f"- Pending senior review: **{len(pending)}**",
+                f"- Consumed (lifetime): **{consumed_count}**",
+                f"- Superseded (lifetime): **{superseded_count}**",
+                "",
+                "## Verbs",
+                "",
+                "```sh",
+                "# Senior consumes a packet (records artefact reference)",
+                "hapax-gemini-jr-team consume <packet> --by alpha --artefact 'pr/2417'",
+                "",
+                "# Senior records explicit no-op decision",
+                "hapax-gemini-jr-team supersede <packet> --by alpha --reason 'covered by cc-task X'",
+                "",
+                "# List pending older than N minutes",
+                "hapax-gemini-jr-team triage --older-than 60",
+                "```",
+                "",
+                "## Pending senior review (oldest 50)",
+                "",
+                "| Created | Age | Role | Task | Packet |",
+                "|---|---|---|---|---|",
+                *rows_pending,
+                "",
+                "## Recently consumed (last 25)",
+                "",
+                "| Consumed at | By | Role | Task | Artefact |",
+                "|---|---|---|---|---|",
+                *rows_consumed,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     supplied = _prompt_from_args(args)
     sidecar_prompt = _build_prompt(
@@ -459,6 +855,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     _append_metadata(record)
     _write_relay(record)
     _write_dashboard()
+    _write_leverage_dashboard()
     print(packet_path)
     return result.returncode
 
@@ -474,10 +871,12 @@ def _plan(_: argparse.Namespace) -> int:
 
 def _status(_: argparse.Namespace) -> int:
     _write_dashboard()
+    _write_leverage_dashboard()
     latest = _recent_records(1)
     if latest:
         _write_relay(latest[-1])
     print(_dashboard_path())
+    print(_leverage_dashboard_path())
     return 0
 
 
@@ -498,10 +897,65 @@ def _parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--timeout", type=float, default=300.0)
     dispatch.add_argument("--dry-run", action="store_true")
     dispatch.set_defaults(func=_dispatch)
+
     plan = sub.add_parser("plan", help="List safe junior roles and authority boundaries.")
     plan.set_defaults(func=_plan)
+
     status = sub.add_parser("status", help="Refresh the Gemini JR dashboard and relay.")
     status.set_defaults(func=_status)
+
+    consume = sub.add_parser(
+        "consume",
+        help="Record that a senior peer pulled this packet's findings into a real artefact.",
+    )
+    consume.add_argument("packet", help="Packet filename or absolute path.")
+    consume.add_argument("--by", required=True, help="Senior role (alpha, beta, cx-red, ...).")
+    consume.add_argument(
+        "--artefact",
+        required=True,
+        help="Artefact reference: pr/NNNN | cc-task/SLUG | commit/SHA | spec/PATH | handoff/PATH.",
+    )
+    consume.add_argument("--note", default="", help="Free-text note for the consumption record.")
+    consume.set_defaults(func=_consume)
+
+    supersede = sub.add_parser(
+        "supersede",
+        help="Record an explicit no-op decision (packet superseded / out of scope).",
+    )
+    supersede.add_argument("packet", help="Packet filename or absolute path.")
+    supersede.add_argument("--by", required=True, help="Senior role recording the no-op.")
+    supersede.add_argument("--reason", required=True, help="Why this packet is no-op.")
+    supersede.set_defaults(func=_supersede)
+
+    triage = sub.add_parser(
+        "triage",
+        help="List unconsumed ready_for_senior_review packets, optionally filtering by age/role.",
+    )
+    triage.add_argument(
+        "--older-than",
+        type=int,
+        default=0,
+        help="Only show packets older than N minutes (0 = no filter).",
+    )
+    triage.add_argument(
+        "--since",
+        default=None,
+        help="ISO timestamp: only show packets newer than this (e.g. 2026-05-03T00:00Z).",
+    )
+    triage.add_argument("--role", default=None, help="Filter to a single jr_role.")
+    triage.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
+    triage.add_argument(
+        "--refresh-dashboard",
+        action="store_true",
+        help="Refresh the leverage dashboard after listing.",
+    )
+    triage.add_argument(
+        "--ntfy-threshold",
+        type=int,
+        default=0,
+        help="Fire ntfy when pending count >= threshold (0 = disabled).",
+    )
+    triage.set_defaults(func=_triage)
     return parser
 
 
