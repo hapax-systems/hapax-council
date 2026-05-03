@@ -2221,3 +2221,59 @@ _M8ControlClient.theme
 from agents.m8_control.daemon import M8ButtonRequest as _M8ButtonRequest
 
 _M8ButtonRequest._validate_button_names  # type: ignore[attr-defined]
+
+# audio_graph SSOT (P1, this PR): Pydantic field_validator + model_validator
+# methods are invoked by pydantic via reflection during construction; vulture
+# can't see those call sites. Public-API methods are reserved for downstream
+# phases (P2 daemon shadow, P4 daemon takeover, P5 breaker hardening) and the
+# CLI entry-point (scripts/hapax-audio-graph-validate).
+from shared.audio_graph.schema import (
+    AudioGraph as _AG_AudioGraph,
+)
+from shared.audio_graph.schema import (
+    AudioLink as _AG_AudioLink,
+)
+from shared.audio_graph.schema import (
+    AudioNode as _AG_AudioNode,
+)
+from shared.audio_graph.schema import (
+    ChannelMap as _AG_ChannelMap,
+)
+from shared.audio_graph.schema import (
+    GainStage as _AG_GainStage,
+)
+from shared.audio_graph.validator import (
+    AudioGraphValidator as _AG_Validator,
+)
+
+# Pydantic validators (reflection-invoked).
+_AG_ChannelMap._positions_match_count  # type: ignore[attr-defined]
+_AG_GainStage._gain_is_finite  # type: ignore[attr-defined]
+_AG_GainStage._overrides_in_range  # type: ignore[attr-defined]
+_AG_AudioNode._id_is_kebab  # type: ignore[attr-defined]
+_AG_AudioNode._hardware_nodes_have_hw  # type: ignore[attr-defined]
+_AG_AudioLink._gain_in_range  # type: ignore[attr-defined]
+_AG_AudioGraph._node_ids_unique  # type: ignore[attr-defined]
+_AG_AudioGraph._links_reference_valid_nodes  # type: ignore[attr-defined]
+_AG_AudioGraph._gain_stages_reference_valid_nodes  # type: ignore[attr-defined]
+_AG_AudioGraph._loopbacks_reference_valid_nodes  # type: ignore[attr-defined]
+
+# Public AudioGraph navigation API — used by P2+ daemon (current()/verify_live).
+_AG_AudioGraph.node_by_id
+_AG_AudioGraph.links_from
+_AG_AudioGraph.links_to
+
+# Public Validator API — invoked from scripts/hapax-audio-graph-validate
+# (entry-point script, not a library import vulture chains to).
+_AG_Validator.decompose
+
+# Reserved opaque-format extractors — wired in P4 when the validator emits
+# AudioLink instances from filter-graph internals. Kept now to keep the
+# parser structure complete + obvious to readers.
+from shared.audio_graph.validator import (
+    _extract_quoted_string,
+    _extract_token,
+)
+
+_extract_quoted_string  # noqa: B018
+_extract_token  # noqa: B018

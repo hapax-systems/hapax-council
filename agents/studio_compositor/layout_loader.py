@@ -276,6 +276,14 @@ class LayoutStore:
                     layout = Layout.model_validate_json(path.read_text())
                 except (ValidationError, OSError, ValueError) as exc:
                     log.warning("Failed to load layout %s: %s", path, exc)
+                    # Cache the mtime even on validation failure so we don't
+                    # re-log the same warning on every reload tick (1 Hz). A
+                    # broken file gets logged once per actual file change,
+                    # not once per scan. mobile.json was emitting ~1620
+                    # warnings/hour against this loader before this cache
+                    # (vertical-mobile schema; a future feature, not a
+                    # current-schema layout).
+                    self._mtimes[name] = mtime
                     continue
                 # A+ Stage 2 (2026-04-17): rescale absolute pixel coords
                 # by LAYOUT_COORD_SCALE so existing 1920x1080-authored
