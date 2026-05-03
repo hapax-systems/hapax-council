@@ -1,22 +1,28 @@
-name: Audio Graph Validate
-
-# Per spec §5 P1 — passive validator gate. Decomposes every conf in
-# tests/audio_graph/fixtures/real-confs/ into an AudioGraph and fails
-# CI when any conf does not decompose cleanly. The fixture directory
-# is a snapshot of the operator's live PipeWire conf.d at the time
-# the schema lands.
-#
-# Refresh procedure: when operator confs change in a way that the
-# schema doesn't yet handle, regenerate the fixture by running
-# `cp ~/.config/pipewire/pipewire.conf.d/*.conf tests/audio_graph/fixtures/real-confs/`
-# and either (a) extend the schema/validator, or (b) document the
-# new gap in the PR body.
+name: audio-graph-validate
 
 on:
   push:
     branches: [main]
+    paths:
+      - "shared/audio_graph/**"
+      - "shared/audio_topology*.py"
+      - "scripts/hapax-audio-graph-validate"
+      - "tests/audio_graph/**"
+      - "config/audio-topology.yaml"
+      - "config/pipewire/**"
+      - "config/wireplumber/**"
+      - ".github/workflows/audio-graph-validate.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "shared/audio_graph/**"
+      - "shared/audio_topology*.py"
+      - "scripts/hapax-audio-graph-validate"
+      - "tests/audio_graph/**"
+      - "config/audio-topology.yaml"
+      - "config/pipewire/**"
+      - "config/wireplumber/**"
+      - ".github/workflows/audio-graph-validate.yml"
 
 permissions:
   contents: read
@@ -26,44 +32,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  audio_graph_validate:
-    name: audio-graph-validate
+  passive-validator:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - name: Set up uv + Python
-        uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-
-      - name: Install minimal dependencies in venv
+      - name: Install dependencies (no system audio needed; pure file-read)
+        run: uv sync --extra ci
+      - name: Run audio_graph schema + invariant tests
         run: |
-          uv venv .venv-audio-graph
-          uv pip install --python .venv-audio-graph/bin/python 'pydantic>=2.12.5' 'pyyaml>=6.0'
-
-      - name: Run validator on fixture confs
+          uv run pytest tests/audio_graph/test_schema.py \
+                        tests/audio_graph/test_compiler.py \
+                        tests/audio_graph/test_invariants.py \
+                        tests/audio_graph/test_validator.py \
+                        -q --no-header
+      - name: Validate config/pipewire and config/wireplumber (in-tree copies)
         run: |
-          set -euo pipefail
-          mkdir -p audio-graph-validate-output
-          .venv-audio-graph/bin/python scripts/hapax-audio-graph-validate \
-              --source tests/audio_graph/fixtures/real-confs/ \
-              --json-output audio-graph-validate-output/report.json \
-              | tee audio-graph-validate-output/run.log
-
-      - name: Show report (always, even on failure)
-        if: always()
-        run: |
-          if [ -f audio-graph-validate-output/report.json ]; then
-            echo "::group::Report JSON"
-            cat audio-graph-validate-output/report.json
-            echo "::endgroup::"
+          if [ -d "config/pipewire" ]; then
+            uv run scripts/hapax-audio-graph-validate \
+              --pipewire-conf-dir config/pipewire \
+              --wireplumber-conf-dir config/wireplumber \
+              --pretty > audio-graph-validate.json
+            cat audio-graph-validate.json
+            failures=$(uv run python -c "import json; d=json.load(open('audio-graph-validate.json')); print(len(d['decompose_failures']))")
+            if [ "$failures" != "0" ]; then
+              echo "::error::$failures conf(s) failed to decompose"
+              exit 1
+            fi
+          else
+            echo "config/pipewire not present; skipping in-tree decomposition"
           fi
-
-      - name: Upload report as artifact
+      - name: Upload validator JSON
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: audio-graph-validate-report
-          path: audio-graph-validate-output/
-          retention-days: 30
+          name: audio-graph-validate
+          path: audio-graph-validate.json
+          if-no-files-found: ignore
