@@ -114,6 +114,22 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "to the canonical refusal log under axiom full_auto_or_nothing."
         ),
     ),
+    "liberapay-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.CONDITIONAL_ENGAGE,
+        api="webhook-via-bridge",
+        dispatch_entry="logos.api.routes.payment_rails:receive_liberapay_webhook",
+        activation_path="agents.publication_bus.liberapay_publisher.LiberapayPublisher",
+        scope_note=(
+            "Second wired monetization rail. POST /api/payment-rails/liberapay on "
+            "logos :8051. Liberapay does not natively ship webhooks — bridge "
+            "(cloudmailin/mailgun/n8n) forwards parsed deliveries with optional "
+            "HMAC SHA-256 via X-Liberapay-Signature + LIBERAPAY_WEBHOOK_SECRET env. "
+            "IP allowlist gate via LIBERAPAY_REQUIRE_IP_ALLOWLIST=1. CONDITIONAL_ENGAGE "
+            "until the bridge is bootstrapped (operator-action: configure email "
+            "forwarder + n8n parser flow). Tip-cancellation events auto-link to "
+            "the canonical refusal log."
+        ),
+    ),
     "arena-post": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",

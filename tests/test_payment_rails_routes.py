@@ -394,3 +394,214 @@ def test_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Liberapay rail integration tests (cc-task liberapay-end-to-end-wiring)
+# ===========================================================================
+
+from agents.publication_bus.liberapay_publisher import (
+    CANCELLATION_REFUSAL_AXIOM as LIBERAPAY_REFUSAL_AXIOM,
+)
+from agents.publication_bus.liberapay_publisher import (
+    CANCELLATION_REFUSAL_SURFACE as LIBERAPAY_REFUSAL_SURFACE,
+)
+from shared.liberapay_receive_only_rail import (
+    LIBERAPAY_WEBHOOK_SECRET_ENV,
+)
+
+
+def _liberapay_payload(
+    *,
+    event: str = "payin_succeeded",
+    donor: str = "alice-donor",
+    amount: str = "5.00",
+    occurred_at: str = "2026-05-03T00:00:00Z",
+) -> dict:
+    """Realistic Liberapay donation envelope as produced by an upstream bridge."""
+    return {
+        "event": event,
+        "donor": {
+            "username": donor,
+            "id": 99999999,
+        },
+        "amount": {
+            "amount": amount,
+            "currency": "EUR",
+        },
+        "occurred_at": occurred_at,
+        "source_ip": "127.0.0.1",
+        "tip_message": "thanks for the work",  # PII-ish; rail must NOT extract
+    }
+
+
+@pytest.fixture
+def liberapay_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    return tmp_path / "hapax-state" / "publications" / "liberapay"
+
+
+@pytest.fixture
+def liberapay_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv(LIBERAPAY_WEBHOOK_SECRET_ENV, "liberapay-secret-XYZ")
+    return "liberapay-secret-XYZ"
+
+
+@pytest.mark.asyncio
+async def test_liberapay_signed_payin_succeeded_writes_manifest(
+    liberapay_output_dir: Path, liberapay_secret_env: str
+) -> None:
+    payload = _liberapay_payload(event="payin_succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={"X-Liberapay-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "received"
+    assert body["event_kind"] == "payin_succeeded"
+    files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+    contents = files[0].read_text()
+    assert "alice-donor" in contents
+    assert "Liberapay donation event" in contents
+
+
+@pytest.mark.asyncio
+async def test_liberapay_dotted_form_alias_accepted(
+    liberapay_output_dir: Path, liberapay_secret_env: str
+) -> None:
+    """Bridges may forward Liberapay's dotted form (`payin.succeeded`)."""
+    payload = _liberapay_payload(event="payin.succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={"X-Liberapay-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["event_kind"] == "payin_succeeded"
+
+
+@pytest.mark.asyncio
+async def test_liberapay_tip_cancelled_appends_to_refusal_log(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    refusal_log_dir: Path,
+) -> None:
+    payload = _liberapay_payload(event="tip_cancelled", donor="bob-donor")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={"X-Liberapay-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["event_kind"] == "tip_cancelled"
+
+    log_file = refusal_log_dir / "log.jsonl"
+    assert log_file.exists(), "refusal log was not written"
+    rows = [json.loads(line) for line in log_file.read_text().splitlines() if line]
+    cancellation_rows = [r for r in rows if r.get("surface") == LIBERAPAY_REFUSAL_SURFACE]
+    assert cancellation_rows
+    assert cancellation_rows[0]["axiom"] == LIBERAPAY_REFUSAL_AXIOM
+
+
+@pytest.mark.asyncio
+async def test_liberapay_bad_signature_returns_400(
+    liberapay_output_dir: Path, liberapay_secret_env: str
+) -> None:
+    payload = _liberapay_payload()
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={"X-Liberapay-Signature": "0" * 64},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_liberapay_non_eur_currency_returns_400(
+    liberapay_output_dir: Path, liberapay_secret_env: str
+) -> None:
+    """Liberapay rail rejects non-EUR; bridge must convert upstream."""
+    payload = _liberapay_payload()
+    payload["amount"]["currency"] = "USD"
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={"X-Liberapay-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "non-EUR" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_liberapay_missing_donor_returns_400(
+    liberapay_output_dir: Path, liberapay_secret_env: str
+) -> None:
+    payload = _liberapay_payload()
+    del payload["donor"]
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={"X-Liberapay-Signature": sig},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_liberapay_empty_body_returns_ping_ok() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=b"",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ping_ok"
+
+
+def test_liberapay_publisher_module_carries_no_send_path() -> None:
+    import inspect
+
+    import agents.publication_bus.liberapay_publisher as mod
+
+    src = inspect.getsource(mod).lower()
+    forbidden_verbs = (
+        "def send",
+        "def initiate",
+        "def payout",
+        "def transfer",
+        "def origination",
+    )
+    for token in forbidden_verbs:
+        assert token not in src, f"unexpected send-path: {token!r}"

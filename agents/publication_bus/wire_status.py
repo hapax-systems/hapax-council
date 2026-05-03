@@ -133,6 +133,27 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.liberapay_publisher": WireEntry(
+        module="agents.publication_bus.liberapay_publisher",
+        surface_slug="liberapay-receiver",
+        status="WIRED",
+        pass_key_required="liberapay/webhook-secret",
+        rationale=(
+            "Second wired monetization rail (cc-task liberapay-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/liberapay which captures the raw body + "
+            "X-Liberapay-Signature header and dispatches accepted events through "
+            "LiberapayPublisher.publish_event(). Liberapay does not natively ship "
+            "webhooks (per liberapay/liberapay.com#688); upstream bridge "
+            "(cloudmailin / mailgun / n8n) parses Liberapay outbound emails or "
+            "CSV exports and POSTs to this endpoint. Webhook secret from "
+            "LIBERAPAY_WEBHOOK_SECRET env var (hapax-secrets.service from pass "
+            "`liberapay/webhook-secret`); IP allowlist gate via "
+            "LIBERAPAY_REQUIRE_IP_ALLOWLIST=1. Tip-cancellation events emit a "
+            "RefusalEvent to the canonical refusal log under axiom "
+            "full_auto_or_nothing for the refusal_annex_renderer to aggregate."
+        ),
+    ),
     "agents.publication_bus.github_sponsors_publisher": WireEntry(
         module="agents.publication_bus.github_sponsors_publisher",
         surface_slug="github-sponsors-receiver",
