@@ -135,6 +135,20 @@ _ko_fi_idempotency_store: _RailIdempotencyStore | None = None
 _buy_me_a_coffee_idempotency_store: _RailIdempotencyStore | None = None
 _liberapay_idempotency_store: _RailIdempotencyStore | None = None
 _open_collective_idempotency_store: _RailIdempotencyStore | None = None
+_mercury_idempotency_store: _RailIdempotencyStore | None = None
+
+
+def _get_mercury_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Mercury.
+
+    Keyed on the in-payload ``data.id`` Mercury transaction identifier.
+    """
+    global _mercury_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _mercury_idempotency_store is None:
+        _mercury_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("mercury"),
+        )
+    return _mercury_idempotency_store
 
 
 def _get_open_collective_idempotency_store() -> _RailIdempotencyStore:
@@ -870,7 +884,7 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
         MERCURY_LEGACY_SIGNATURE_HEADER
     )
 
-    receiver = MercuryRailReceiver()
+    receiver = MercuryRailReceiver(idempotency_store=_get_mercury_idempotency_store())
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except MercuryReceiveOnlyRailError as exc:
@@ -878,6 +892,11 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate transaction id — both 200 OK.
+        txn_id = (payload.get("data") or {}).get("id") if isinstance(payload, dict) else None
+        if payload and isinstance(txn_id, str) and txn_id:
+            log.info("mercury webhook duplicate: %s", txn_id)
+            return JSONResponse({"status": "duplicate", "transaction_id": txn_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = MercuryPublisher()
