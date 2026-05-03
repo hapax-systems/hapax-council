@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse
 from agents.publication_bus.github_sponsors_publisher import (
     GitHubSponsorsPublisher,
 )
+from agents.publication_bus.ko_fi_publisher import KoFiPublisher
 from agents.publication_bus.liberapay_publisher import LiberapayPublisher
 from agents.publication_bus.open_collective_publisher import (
     OpenCollectivePublisher,
@@ -52,6 +53,12 @@ from shared.github_sponsors_receive_only_rail import (
 )
 from shared.github_sponsors_receive_only_rail import (
     ReceiveOnlyRailError as GitHubSponsorsReceiveOnlyRailError,
+)
+from shared.ko_fi_receive_only_rail import (
+    KoFiRailReceiver,
+)
+from shared.ko_fi_receive_only_rail import (
+    ReceiveOnlyRailError as KoFiReceiveOnlyRailError,
 )
 from shared.liberapay_receive_only_rail import (
     LiberapayRailReceiver,
@@ -369,6 +376,70 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
         )
     if publish_result.error:
         log.error("stripe_payment_link publish error: %s", publish_result.detail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"publisher transport error: {publish_result.detail}",
+        )
+
+    return JSONResponse(
+        {
+            "status": "received",
+            "event_kind": event.event_kind.value,
+            "publish_detail": publish_result.detail,
+            "raw_payload_sha256": event.raw_payload_sha256,
+        }
+    )
+
+
+@router.post("/ko-fi")
+async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
+    """Receive a Ko-fi webhook delivery and dispatch.
+
+    Ko-fi uses **token-in-payload verification** (not HMAC). The
+    sender includes a ``verification_token`` field in the JSON body
+    matching the per-page secret configured in the Ko-fi dashboard.
+    The rail's ``ingest_webhook`` reads the token field inline and
+    fails closed on mismatch.
+    """
+    raw_body = await request.body()
+
+    if not raw_body:
+        receiver = KoFiRailReceiver()
+        result = receiver.ingest_webhook({}, verify_token=False)
+        if result is None:
+            return JSONResponse({"status": "ping_ok"})
+        raise HTTPException(status_code=500, detail="unexpected non-None result from heartbeat")
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        log.warning("ko_fi webhook: malformed JSON")
+        raise HTTPException(status_code=400, detail=f"malformed JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+    receiver = KoFiRailReceiver()
+    try:
+        event = receiver.ingest_webhook(payload, verify_token=True)
+    except KoFiReceiveOnlyRailError as exc:
+        log.warning("ko_fi webhook rejected: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if event is None:
+        return JSONResponse({"status": "ping_ok"})
+
+    publisher = KoFiPublisher()
+    publish_result = publisher.publish_event(event)
+
+    if publish_result.refused:
+        log.info("ko_fi publish refused: %s", publish_result.detail)
+        return JSONResponse(
+            {"status": "refused", "detail": publish_result.detail},
+            status_code=200,
+        )
+    if publish_result.error:
+        log.error("ko_fi publish error: %s", publish_result.detail)
         raise HTTPException(
             status_code=500,
             detail=f"publisher transport error: {publish_result.detail}",
