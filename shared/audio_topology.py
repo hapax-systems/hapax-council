@@ -36,7 +36,7 @@ from __future__ import annotations
 import math
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -196,11 +196,14 @@ class TopologyDescriptor(BaseModel, frozen=True):
     changes so older descriptors can be migrated explicitly. Current
     = 2 (2026-05-02 — symbolic ALSA card-id migration: hw: fields use
     ``hw:CARD=<id>`` pinned by udev rather than fragile numeric indices).
-    Schema 1 still parses for backward compatibility; new descriptors
-    write 2.
+    Schema 1 is retired (audit finding E#13, 2026-05-02). The Pydantic
+    field type and the ``from_yaml`` parser both fail on unknown versions
+    rather than silently accepting them.
     """
 
-    schema_version: Literal[1, 2] = 2
+    SUPPORTED_SCHEMA_VERSIONS: ClassVar[frozenset[int]] = frozenset({2})
+
+    schema_version: Literal[2] = 2
     description: str = ""
     nodes: list[Node]
     edges: list[Edge] = Field(default_factory=list)
@@ -255,4 +258,14 @@ class TopologyDescriptor(BaseModel, frozen=True):
         else:
             raw = source
         data = yaml.safe_load(raw)
+        # Audit finding E#13 (2026-05-02): explicit-fail-on-unknown-version
+        # instead of silently dropping into the Literal validator with a
+        # confusing pydantic error. Surfaces forward-incompatibility (e.g.
+        # someone wrote schema_version: 4 by mistake) at the parser
+        # boundary so the caller knows to bump the descriptor or this code.
+        if isinstance(data, dict):
+            sv = data.get("schema_version")
+            if sv is not None and sv not in cls.SUPPORTED_SCHEMA_VERSIONS:
+                supported = ", ".join(str(v) for v in sorted(cls.SUPPORTED_SCHEMA_VERSIONS))
+                raise ValueError(f"unknown schema_version: {sv!r}; supported: {supported}")
         return cls.model_validate(data)
