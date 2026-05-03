@@ -1,0 +1,28 @@
+[Unit]
+Description=Hapax M8 remote button control daemon (UDS → serial 'C' command)
+Documentation=cc-task m8-remote-button-control-daemon
+# Pulled into the active graph by the same udev rule that pulls
+# hapax-m8-monitor (systemd/udev/99-hapax-m8.rules) when the M8 USB
+# device appears. The udev rule's SYSTEMD_USER_WANTS will need a
+# follow-up edit to add this service alongside hapax-m8-monitor;
+# until that edit lands, this unit can be started manually via
+# `systemctl --user start hapax-m8-control`.
+After=graphical-session.target
+PartOf=hapax.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.m8_control
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=10
+MemoryMax=64M
+# Run with the same user as the rest of the application stack —
+# UDS at /run/hapax/m8-control.sock with mode 0600 means only the
+# operator can submit commands.
+RuntimeDirectory=hapax
+RuntimeDirectoryMode=0700
+
+[Install]
+WantedBy=hapax.target
